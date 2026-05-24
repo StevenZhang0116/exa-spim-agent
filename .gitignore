@@ -6,6 +6,9 @@
 .env
 .env.*
 
+# Internal data references — not for public repo
+exaspim_image_prefixes.json
+
 # Local dataset caches (re-buildable from GCS)
 dataset_cache_*.pkl
 *.pkl
