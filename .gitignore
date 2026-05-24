@@ -1,0 +1,29 @@
+# Credentials / tokens — never commit
+*_gcs_token.json
+*_token.json
+*.pem
+*.key
+.env
+.env.*
+
+# Local dataset caches (re-buildable from GCS)
+dataset_cache_*.pkl
+*.pkl
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+*.swp
