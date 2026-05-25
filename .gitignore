@@ -1,32 +1,75 @@
-# Credentials / tokens — never commit
-*_gcs_token.json
-*_token.json
+# Data files and caches
+*.pkl
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.zarr
+dataset_cache_*.pkl
+
+# Output directories
+metrics_out/
+outputs/
+results/
+checkpoints/
+logs/
+
+# Credentials and tokens
+*.json
+!exaspim_image_prefixes.json
+zihan_gcs_token.json
 *.pem
 *.key
-.env
-.env.*
+credentials.*
 
-# Internal data references — not for public repo
-exaspim_image_prefixes.json
-
-# Local dataset caches (re-buildable from GCS)
-dataset_cache_*.pkl
-*.pkl
-
-# Jupyter
+# Jupyter Notebook checkpoints
 .ipynb_checkpoints/
-*.ipynb_checkpoints
+*/.ipynb_checkpoints/*
 
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
 *.egg-info/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+.installed.cfg
+*.egg
 
-# OS / editor
-.DS_Store
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
 .vscode/
 .idea/
 *.swp
+*.swo
+*~
+.DS_Store
+
+# Large data files
+*.tif
+*.tiff
+*.zarr/
+*.n5/
+
+# Temporary files
+*.tmp
+*.bak
+*.log
+.cache/
