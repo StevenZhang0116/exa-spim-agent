@@ -16,7 +16,6 @@ logs/
 
 # Credentials and tokens
 *.json
-!exaspim_image_prefixes.json
 zihan_gcs_token.json
 *.pem
 *.key
