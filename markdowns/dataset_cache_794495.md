@@ -1,59 +1,45 @@
 # `dataset_cache_794495` — Dataset Description
 
-`dataset_cache_794495.pkl` is a ~592 MB on-disk cache of a `BrainDataset` for
-ExaSPIM brain **794495**. It is produced by `notebooks/load_skeletons.ipynb`
-and consumed by the visualization, evaluation, and proofreading scripts. It
-bundles two neuron-skeleton graphs plus the parameters needed to re-open the
-raw image lazily.
-
-This dataset is the primary evaluation target for the project
-**"Agentic Neuron Proofreading for ExaSPIM Whole-Brain Reconstructions"**
-(see `main.tex`): correcting the systematic split/merge errors in an automated
-U-Net neuron reconstruction so that the wiring diagram extracted from a whole
-mouse brain becomes trustworthy for downstream connectivity analysis.
+`dataset_cache_794495.pkl` is a ~592 MB Python pickle holding a cached
+`BrainDataset` for **ExaSPIM brain 794495**. It bundles two neuron-skeleton
+graphs — a human ground-truth reconstruction and an automated U-Net
+reconstruction of the same brain — plus the parameters and cloud paths needed
+to lazily re-open the raw image volume. It is the evaluation target for a
+project on **agentic, post-hoc proofreading of whole-brain neuron
+reconstructions**: correcting the systematic split/merge errors in the
+automated reconstruction so the extracted wiring diagram becomes trustworthy
+for downstream connectivity analysis.
 
 ---
 
 ## 1) Dataset context
 
 **Origin.** The data comes from a single mouse brain (specimen ID **794495**)
-imaged with **ExaSPIM**, the Allen Institute for Neural Dynamics light-sheet
-platform that combines tissue expansion with selective-plane illumination
-microscopy to achieve sub-micron, whole-brain fluorescence imaging of sparsely
-labeled neurons. At this resolution individual axons can be traced across an
-entire brain, but each brain is tens of terabytes, so fully manual
-reconstruction is infeasible and automated segmentation is required. The fused
-image volume for this brain lives in the AIND open-data S3 bucket:
-
-```
-s3://aind-open-data/exaSPIM_794495_2026-01-21_14-25-07_processed_2026-01-29_22-02-08/fusion/fused.zarr/
-```
-
-(resolved from `configs/exaspim_image_prefixes.json`; the cache reads scale
-level `0`, the full-resolution tier).
+imaged with **ExaSPIM**, a light-sheet platform that combines tissue expansion
+with selective-plane illumination microscopy to achieve sub-micron, whole-brain
+fluorescence imaging of sparsely labeled neurons (voxel size
+**0.748 × 0.748 × 1.0 µm**). At this resolution individual axons can be traced
+across an entire brain, but each brain is tens of terabytes, so fully manual
+reconstruction is infeasible and automated segmentation is required.
 
 **What the cache captures.** The brain has been processed into three aligned
-data products, two of which are stored in the cache as graphs and one of which
-is referenced by path and read on demand:
+data products. Two are stored in the cache as graphs; the third (the raw image)
+is referenced by cloud path and streamed on demand:
 
-1. **Raw fluorescence image** — the ExaSPIM volume itself, a Zarr array on S3.
-   *Not* pickled into the cache; only its path is stored. It is re-opened
-   lazily through `TensorStoreImage` because patch reads stream directly from
-   cloud storage.
+1. **Raw fluorescence image** — the ExaSPIM volume, a Zarr array on cloud
+   storage. *Not* embedded in the pickle; only its path is stored, and the
+   reader re-opens it lazily so patches stream directly from the cloud.
 
 2. **UNet fragment skeletons** (`fragments_graph`) — the automated
-   reconstruction. A **3D U-Net** segmentation model
-   (`raw.unet_449_splits_and_merges_900000`) predicted an instance-level voxel
-   labeling of the brain; each predicted fragment was skeletonized into an SWC
-   tree (3D coordinates, radius, connectivity). These SWCs were read from
-   `gs://allen-nd-goog/from_google/794495/whole_brain/raw.unet_449_splits_and_merges_900000/swcs`
-   and loaded into a graph. This is the *machine* reconstruction containing the
-   errors the proofreader must fix — roughly **10,000 fragments** for this brain.
+   reconstruction. A 3D U-Net predicted an instance-level voxel labeling of the
+   brain; each predicted fragment was skeletonized into an SWC tree (3D
+   coordinates, radius, connectivity) and loaded into a graph. This is the
+   *machine* reconstruction containing the errors to be fixed — roughly
+   **10,000 fragments** for this brain.
 
 3. **Ground-truth tracings** (`gt_graph`) — human-traced neuron skeletons for
-   **18 neurons**, read from `gs://allen-nd-goog/ground_truth_tracings/794495/voxel`.
-   These are the gold-standard morphologies used to train and evaluate the
-   automated reconstruction.
+   **18 neurons**. These are the gold-standard morphologies used to train and
+   evaluate the automated reconstruction.
 
 **The errors that motivate the project.** Deep-learning segmentation introduces
 two systematic *topological* errors:
@@ -63,9 +49,8 @@ two systematic *topological* errors:
 - **Merge errors** — two distinct neurons are erroneously joined, typically
   where neurites run close together.
 
-A whole-brain skeleton-metrics evaluation against the 18 human tracings
-(stored in `metrics_out/794495/raw.unet_449_splits_and_merges_900000/`)
-quantifies the baseline:
+Scoring the automated reconstruction against the 18 human tracings gives this
+baseline (skeleton-based topology metrics):
 
 | Metric | Value |
 |---|---|
@@ -77,11 +62,11 @@ quantifies the baseline:
 | % Split Edges | 0.32 % |
 | % Omit Edges | 1.36 % |
 | % Merged Edges | 24.55 % |
-| ERL | 5,090.6 µm |
+| ERL (Expected Run Length) | 5,090.6 µm |
 | Normalized ERL | 0.0095 |
 
 Splits dominate (a true neuron broken into hundreds of pieces); merges are
-rarer but individually costly. These topological errors — not voxel-level
+rarer but individually costly. These *topological* errors — not voxel-level
 mislabeling — are what corrupt downstream connectivity, which is why
 skeleton-based metrics (splits/neuron, edge accuracy, normalized ERL) are the
 appropriate evaluation targets.
@@ -89,15 +74,15 @@ appropriate evaluation targets.
 **How the data was gathered / known gaps.**
 
 - **Ground truth is sparse and skeleton-only.** Only 18 neurons were traced
-  (named `N001-794495-JT`, `N002-794495-PP`, … — the suffix is the annotator's
-  initials). There is **no dense ground-truth voxel volume**: GT exists only as
-  center-line skeletons in `gt_graph`. A region with no traced neuron is simply
-  unlabeled, not labeled "background."
-- **Fragments are filtered at load time.** When the cache was built, UNet
-  fragments shorter than `min_cable_length = 1000` µm of total path length were
-  dropped, removing short/noisy false-positive fragments. Skeletons were also
-  resampled to a target inter-node spacing of `node_spacing = 5` µm, so node
-  geometry is decimated relative to the original SWCs.
+  (named like `N001-794495-JT`, `N002-794495-PP`, … — the suffix is the human
+  annotator's initials). There is **no dense ground-truth voxel volume**: GT
+  exists only as center-line skeletons in `gt_graph`. A region with no traced
+  neuron is simply unlabeled, not labeled "background."
+- **Fragments are filtered.** When the cache was built, UNet fragments shorter
+  than `min_cable_length = 1000` µm of total path length were dropped, removing
+  short/noisy false-positive fragments. Skeletons were also resampled to a
+  target inter-node spacing of `node_spacing = 5` µm, so node geometry is
+  decimated relative to the original SWCs.
 - **Anisotropic voxels.** ExaSPIM samples X/Y more finely than Z, so voxels are
   not cubic. The cache stores `anisotropy = (0.748, 0.748, 1.0)` (µm per voxel
   in x, y, z) and uses it to convert between SWC physical coordinates (µm) and
@@ -109,29 +94,31 @@ appropriate evaluation targets.
 
 ### On-disk layout
 
-The pickle is a single dict (written by `BrainDataset.save`) with these keys:
+The pickle is a single dict with these keys:
 
 | Key | Type | Meaning |
 |---|---|---|
-| `fragments_path` | `str` | GCS path to the UNet fragment SWCs. |
-| `gt_path` | `str` | GCS path to the human ground-truth SWCs. |
-| `img_path` | `str` | S3 path to the raw ExaSPIM image (used to rebuild the lazy reader, **not** pickled image data). |
+| `fragments_path` | `str` | Cloud path to the UNet fragment SWCs. |
+| `gt_path` | `str` | Cloud path to the human ground-truth SWCs. |
+| `img_path` | `str` | Cloud path to the raw ExaSPIM image (used to rebuild the lazy reader; **not** embedded image data). |
 | `anisotropy` | `tuple` | `(0.748, 0.748, 1.0)` — µm/voxel in **(x, y, z)** order. |
 | `min_cable_length` | `int` | `1000` — µm threshold; shorter fragments were discarded. |
 | `node_spacing` | `int` | `5` — target µm spacing between adjacent skeleton nodes. |
 | `fragments_graph` | `SkeletonGraph` | Automated UNet reconstruction (~10k components). |
 | `gt_graph` | `SkeletonGraph` | Human ground-truth reconstruction (18 neurons). |
 
-On reload, `BrainDataset.load_from_cache` restores the two graphs and
-re-instantiates `img = TensorStoreImage(img_path)` (a lazy cloud reader); the
-raw image data itself is never stored in the pickle.
+Loading requires the `agentic_neuron_proofreader` package on the path (the
+pickle stores `SkeletonGraph` / `BrainDataset` instances). The raw image data
+is never stored in the pickle; only `img_path` is, and the reader is
+re-instantiated from it on load.
 
 ### Loading the cache (sample code)
 
 ```python
 import os
-# GCS/S3 credentials are needed only to re-open the lazy image reader.
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "zihan_gcs_token.json"
+# Cloud credentials are needed only to re-open the lazy image reader,
+# not to access the cached graphs.
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "gcs_token.json"
 os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
 
 from agentic_neuron_proofreader.data_modules.datasets import BrainDataset
@@ -140,35 +127,43 @@ dataset = BrainDataset.load_from_cache("dataset_cache_794495.pkl")
 
 gt    = dataset.gt_graph         # SkeletonGraph: 18 human-traced neurons
 frags = dataset.fragments_graph  # SkeletonGraph: ~10k UNet fragments
-img   = dataset.img              # TensorStoreImage: lazy reader for raw volume
+img   = dataset.img              # lazy cloud reader for the raw volume
 
 print(gt.summary(prefix="GroundTruth"))
 print(frags.summary(prefix="Fragments"))
 # -> # Connected Components / # Nodes / # Edges / Memory Consumption
 ```
 
-### Rebuilding the cache from scratch (sample code)
-
-Equivalent to `notebooks/load_skeletons.ipynb` — reads the SWCs from cloud
-(~15 min) and re-pickles the two graphs:
+If you only need the graphs (no image access, no package import gymnastics),
+the dict can also be unpickled directly:
 
 ```python
-brain_id        = "794495"
-segmentation_id = "raw.unet_449_splits_and_merges_900000"
+import pickle
 
-gt_path        = f"gs://allen-nd-goog/ground_truth_tracings/{brain_id}/voxel"
-fragments_path = f"gs://allen-nd-goog/from_google/{brain_id}/whole_brain/{segmentation_id}/swcs"
-img_path       = "s3://aind-open-data/exaSPIM_794495_.../fusion/fused.zarr/0"  # from configs
+with open("dataset_cache_794495.pkl", "rb") as f:
+    payload = pickle.load(f)   # requires agentic_neuron_proofreader importable
 
+gt_graph        = payload["gt_graph"]
+fragments_graph = payload["fragments_graph"]
+anisotropy      = payload["anisotropy"]        # (0.748, 0.748, 1.0)
+```
+
+### Rebuilding the cache from scratch (sample code)
+
+The cache is produced by reading the SWCs from cloud storage (~15 min) and
+pickling the two resulting graphs. The cloud paths are exactly the
+`fragments_path` / `gt_path` / `img_path` stored in the pickle:
+
+```python
 dataset = BrainDataset(
-    fragments_path,
-    gt_path,
-    img_path,
+    fragments_path,                  # payload["fragments_path"]
+    gt_path,                         # payload["gt_path"]
+    img_path,                        # payload["img_path"]
     anisotropy=(0.748, 0.748, 1.0),  # (x, y, z) µm/voxel
     min_cable_length=1000,           # drop fragments shorter than 1000 µm
     node_spacing=5,                  # resample skeletons to 5 µm node spacing
 )
-dataset.save(f"dataset_cache_{brain_id}.pkl")
+dataset.save("dataset_cache_794495.pkl")
 ```
 
 ### `SkeletonGraph` structure
@@ -176,7 +171,7 @@ dataset.save(f"dataset_cache_{brain_id}.pkl")
 `SkeletonGraph` subclasses `networkx.Graph`. A **node** is one point on a
 neuron center-line; an **edge** connects adjacent points along the neurite.
 Per-node attributes are stored as parallel NumPy arrays indexed by integer
-node ID (not as NetworkX node dicts):
+node ID (not as NetworkX node-attribute dicts):
 
 | Attribute | Shape / type | Meaning |
 |---|---|---|
@@ -200,7 +195,7 @@ print("GT components:   ", nx.number_connected_components(gt))     # ~18
 print("Frag components: ", nx.number_connected_components(frags))  # ~10k
 
 # Node-level access
-node = next(iter(gt.nodes))
+node  = next(iter(gt.nodes))
 xyz   = gt.node_xyz[node]           # (x, y, z) in microns
 voxel = gt.node_voxel(node)         # (z, y, x) voxel index (xyz / anisotropy, reversed)
 swc   = gt.node_swc_id(node)        # e.g. "N001-794495-JT.0"
@@ -214,27 +209,18 @@ branch = frags.branching_nodes()    # degree-3+ nodes
 dist, nearest_gt_node = gt.kdtree.query(frags.node_xyz[leaves[0]])
 ```
 
-**Reading aligned image / segmentation patches (sample code):**
+**Reading aligned image / skeleton patches (sample code):**
 
 ```python
-from agentic_neuron_proofreader.utils import img_util
-
 # Center a patch on a GT node and read the raw fluorescence around it
 node        = next(iter(gt.nodes))
 center      = gt.node_voxel(node)          # (z, y, x)
 patch_shape = (128, 128, 128)
 img_patch   = dataset.img.read(center, patch_shape)   # raw fluorescence
 
-# The U-Net label volume is read the same way (NOT in the cache; read by path)
-seg = img_util.TensorStoreImage(
-    "gs://allen-nd-goog/from_google/794495/whole_brain/"
-    "raw.unet_449_splits_and_merges_900000/"
-)
-seg_patch = seg.read(center, patch_shape)              # integer labels, 0 = bg
-
 # Skeleton geometry within the same patch, in LOCAL (z, y, x) voxels:
 offset            = tuple(c - s // 2 for c, s in zip(center, patch_shape))
-nodes_local       = gt.nodes_in_patch(offset, patch_shape)           # (M, 3)
+nodes_local       = gt.nodes_in_patch(offset, patch_shape)            # (M, 3)
 edges, edge_comps = gt.edges_in_patch(offset, patch_shape, return_components=True)
 ```
 
@@ -254,30 +240,13 @@ edges, edge_comps = gt.edges_in_patch(offset, patch_shape, return_components=Tru
   GT components are named `N0XX-794495-<initials>` where the trailing initials
   denote the human annotator.
 
-### Associated (non-cached) data products
-
-These are referenced by the scripts but live outside the pickle:
-
-- **Segmentation volume** — `gs://allen-nd-goog/from_google/794495/whole_brain/raw.unet_449_splits_and_merges_900000/`,
-  read via `TensorStoreImage` as integer label patches (0 = background).
-- **`metrics_out/794495/raw.unet_449_splits_and_merges_900000/`** — whole-brain
-  evaluation outputs:
-  - `results.csv` — one row per GT neuron. Columns: `SWC Run Length`,
-    `# Splits`, `# Merges`, `% Split Edges`, `% Omit Edges`, `% Merged Edges`,
-    `ERL`, `Normalized ERL`, `Edge Accuracy`, `Split Rate`, `Merge Rate`.
-  - `results_overview.txt` — run-length-weighted averages plus totals.
-  - `merge_sites.csv` — one row per detected merge error. Columns:
-    `Merge_ID`, `Fragment_Name`, `Segment_ID`, `GroundTruth_ID`, `Label`,
-    `Voxel` (z, y, x), `World` (physical x/y/z), `Added Cable Length (μm)`.
-  - `fragments_with_merges.zip` — SWCs of fragments implicated in merges.
-
-**Metric glossary** (from `scripts/proofreading_stats.py` and the skeleton-metrics framework):
+**Skeleton-metric glossary** (used when scoring a reconstruction against GT):
 
 - **Split** — a single true neuron fragmented into multiple segments (false
-  discontinuity). **# Splits** counts them; **% Split Edges** is the fraction of
-  GT edges where neighboring nodes carry different predicted labels.
+  discontinuity); **% Split Edges** is the fraction of GT edges whose
+  neighboring nodes carry different predicted labels.
 - **Merge** — two distinct neurons fused into one predicted segment (false
-  connection). **# Merges** / **% Merged Edges** quantify these.
+  connection); **% Merged Edges** quantifies these.
 - **% Omit Edges** — GT edges whose nodes have no predicted label (missed).
 - **ERL (Expected Run Length)** — average error-free path length along a neuron;
   higher is better. **Normalized ERL** divides by total run length.
@@ -288,29 +257,29 @@ These are referenced by the scripts but live outside the pickle:
 
 ## 3) Intent
 
-The high-level goal is **agentic, post-hoc proofreading of the ExaSPIM 794495
+The high-level goal is **agentic, post-hoc proofreading of the brain-794495
 neuron reconstruction**: take the error-prone U-Net reconstruction
 (`fragments_graph`) and correct it toward the human ground truth (`gt_graph`),
 with the largest gains coming from fixing **splits** (re-joining fragments of
 the same neuron) and resolving **merges** (separating wrongly fused neurons).
-This is complementary to topology-aware *segmentation* losses: those reduce
-errors at training time, whereas this project repairs the residual split/merge
-errors that survive in existing SWC fragments.
+This is complementary to topology-aware *segmentation* losses, which reduce
+errors at training time; here the aim is to repair the residual split/merge
+errors that survive in the existing SWC fragments.
 
-The existing `NeuronProofreader` pipeline does split correction in a single
-forward pass — build a `ProposalGraph`, generate reconnection proposals between
-nearby fragment endpoints (KD-tree search within ~20 µm, aligned to branch
-tangents), extract skeleton + image features (two-channel 96³ patches),
-classify with **VisionHGAT** (a heterogeneous GATv2 over skeleton topology plus
-a CNN image encoder), and accept proposals in a progressive threshold sweep
-(0.99 down, cycle-free). A separate CNN `MergeDetector` slides along skeletons
-to flag merge sites. The repository's `train_and_run_neuron_proofreader.py`
-implements training + inference of this pipeline, and `proofreading_stats.py`
-scores the result by re-running skeleton metrics **before vs. after** correction.
+A conventional split-correction pipeline does this in a single forward pass:
+generate reconnection proposals between nearby fragment endpoints (KD-tree
+search within ~20 µm, aligned to branch tangents), extract skeleton + image
+features (two-channel 96³ patches), classify each proposal with a graph neural
+network (a heterogeneous graph-attention network over skeleton topology plus a
+CNN image encoder), and accept proposals in a progressive confidence-threshold
+sweep that forbids cycles. A separate CNN slides along skeletons to flag merge
+sites. Success is measured by re-computing the skeleton metrics **before vs.
+after** correction and reporting the reduction in splits/merges and the gain in
+ERL and edge accuracy.
 
-The **agentic** framework this dataset supports aims to overcome the single-pass
-pipeline's structural limits, and these are the areas the system can use to
-loosely steer exploration (not prescriptive hypotheses):
+An **agentic** framework over this dataset aims to overcome the single-pass
+pipeline's structural limits. These are the areas the system can use to loosely
+steer exploration (not prescriptive hypotheses):
 
 - **Re-planning after topology changes** — once fragments merge, new endpoints
   and shorter gaps appear; regenerate proposals instead of reconnecting once.
@@ -333,6 +302,6 @@ gap size) vs. where split/merge errors concentrate; whether error rates vary by
 **annotator** (the GT initials suffix); geometric signatures of recoverable
 splits (endpoint distance, orientation agreement, radius continuity); and the
 trade-off between aggressive merging (raising ERL) and false merges (the
-costlier error). Evaluation follows `main.tex`: topological accuracy
-(split/merge reduction, ERL and edge-accuracy gains), proposal precision/recall,
+costlier error). Evaluation centers on topological accuracy (split/merge
+reduction, ERL and edge-accuracy gains), proposal precision/recall,
 computational efficiency, and robustness to noise and fragment density.
