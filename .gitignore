@@ -62,6 +62,9 @@ ENV/
 *~
 .DS_Store
 
+# Claude Code local settings (keep .claude/agents/ and settings.json tracked)
+.claude/settings.local.json
+
 # Large data files
 *.tif
 *.tiff
