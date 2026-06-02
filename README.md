@@ -10,7 +10,8 @@ exa-spim-agent/
 │   ├── load_skeletons.ipynb       # 1. Load SWCs from GCS, build graphs, save cache
 │   ├── evaluate_skeleton_metrics.ipynb  # 2. Run full skeleton metrics evaluation
 │   ├── load_skeletons_from_cache.ipynb  # 3. Reload cache, visualize, compute metrics
-│   └── run_neuron_proofreader.ipynb     # 4. Run split correction pipeline
+│   ├── explore_proofreader_pipeline.ipynb      # 4a. Walk through the pipeline steps (demo)
+│   └── run_neuron_proofreader_train_infer.ipynb  # 4b. Train + run split correction
 ├── scripts/                       # Standalone Python scripts
 │   └── visualize_napari.py        # Interactive 3D viewer with Napari
 ├── configs/                       # Configuration files
@@ -29,7 +30,9 @@ exa-spim-agent/
 
 3. **`notebooks/load_skeletons_from_cache.ipynb`** — Reloads the cached dataset, visualizes patches (image, segmentation, skeletons), computes patch-local skeleton metrics, and displays whole-brain metrics for skeletons in the patch. Run after steps 1 and 2.
 
-4. **`notebooks/run_neuron_proofreader.ipynb`** — Demonstrates the full split correction pipeline: proposal generation, feature extraction, GNN inference, and progressive merging.
+4. **`notebooks/explore_proofreader_pipeline.ipynb`** — Exploratory walkthrough of the split correction pipeline, one step at a time: build a `ProposalGraph`, generate proposals, load ground truth, and inspect feature extraction. Illustrative only — the graphs built here are for inspecting counts and tuning parameters; they are not consumed by training/inference.
+
+5. **`notebooks/run_neuron_proofreader_train_infer.ipynb`** — The end-to-end workflow: train `VisionHGAT` with `FragmentsDatasetCollection`/`Trainer`, run `InferencePipeline` to score proposals and progressively merge accepted ones, then compute before/after metrics. Self-contained (rebuilds its own graphs and proposals); does not depend on notebook 4.
 
 ## Scripts
 
