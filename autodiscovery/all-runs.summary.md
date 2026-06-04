@@ -1,3385 +1,3549 @@
-# AutoDiscovery Collective Summary — All Runs
+# AutoDiscovery Combined Ranked Summary
 
-- Source files (3): `exa-spim-run-1_2026-06-03.json` (n=50), `exa-spim-run-2_2026-06-03.json` (n=200), `refinement-of-exa-spim-run-1_2026-06-03.json` (n=99)
-- Total hypotheses ranked: **349** (dropped for missing surprisal: 0)
-- Surprise magnitude range: **0.000 … 0.966**
+**Source files (pooled, sorted by surprise magnitude descending):**
+- `autodiscovery/exa-spim-run-1_2026-06-03.json` -- 50 hypotheses
+- `autodiscovery/exa-spim-run-2_2026-06-03.json` -- 200 hypotheses
+- `autodiscovery/refinement-of-exa-spim-run-1_2026-06-03.json` -- 99 hypotheses
 
-## Headline synthesis
+**Total hypotheses ranked:** 349 (of 349 ingested; 0 dropped for missing surprisal). **Surprise-magnitude range:** 0.0000 to 0.9661.
 
-Across three pooled runs (349 hypotheses: 50 + 200 + 99), the most belief-shifting findings are uniformly *negative* — the discovery loop went in with `Likely True` / `Leaning True` priors and watched the data overturn them. The single biggest flip (refinement-of-run-1, hypothesis 49, signed surprisal −0.966) rejects the claim that a purely greedy distance-based reconnection algorithm falls into early high-confidence 'false-merge traps': precision actually held at 1.0 out to ~95% recall, with zero false pairs in the top 20% of predictions. The next biggest flips (refinement hypothesis 25 at 0.922 and Run-2 hypothesis 111 at 0.852, plus refinement IDs 53 and 62 at 0.834) reject *inter-annotator bias* on every U-Net error metric (ANOVA / Kruskal-Wallis p ≫ 0.05 across split rate, omission rate, edge accuracy) and reverse a deep prior that *thin* neurites fragment more (in fact, thicker fragments have a significantly higher split rate per mm: Mann-Whitney p ≈ 2e-33). A cross-cutting theme spans all three runs: morphology- and geometry-based heuristics that 'should' help proofreading agents (radius continuity, branching density, local crowding, fragment length, Z-depth scaling, PCA-axis alignment, cycle-prevention, tangent + image-intensity fusion) repeatedly fail to beat a plain Euclidean-distance baseline — and several flip *signs* on inspection (thicker neurites span longer gaps, merges concentrate in *longer* fragments and in *less* crowded regions). Many surprising rejections carry caveats — extreme class imbalance (often only 3–10 false-merge events), zero-variance edge cases (a Kruskal test forced to NaN by software-defaulted radii of exactly 1.0 µm), and high-magnitude flips inherited from priors that were already high — so several headline 'rejections' are 'no detectable effect on this data,' not strong negative evidence.
+**Headline synthesis.** Across the three runs the strongest belief shifts were uniformly negative: the discovery loop repeatedly proposed plausible structural heuristics for proofreading (greedy geometric matching traps, inter-annotator bias, thickness/branching biomarkers of merges, Z-axis split alignment, shatter-zone reconnection failures) and the experiments returned null or opposite-signed results. The headline reversals were run `refinement-of-exa-spim-run-1_2026-06-03` ID 49 (Likely True -> Leaning False, surprisal -0.966); run `refinement-of-exa-spim-run-1_2026-06-03` ID 25 (Likely True -> Leaning False, surprisal -0.922); run `exa-spim-run-2_2026-06-03` ID 111 (Likely True -> Leaning False, surprisal -0.852). Cross-cutting theme: simple geometric/length features that look intuitive on paper (spatial proximity, neurite radius, tortuosity, depth, fragment length, branching density) routinely fail as standalone discriminators of U-Net split/merge errors, and several apparently 'significant' results are driven by tiny minority classes (often fewer than ten false-merge cases), so confident operational rules should not be derived from them without further validation.
 
-**Top three most belief-shifting hypotheses:**
-- **#1** (surprise 0.966, Likely True → Leaning False, run `refinement-of-exa-spim-run-1_2026-06-03` ID 49): A subset of spatially close but anatomically incorrect (false merge) candidate fragment pairs exhibit higher baseline geometric affinity (shorter distance, higher collinearity) than valid split pairs, meaning a purely greedy algorithm witho
-- **#2** (surprise 0.922, Likely True → Leaning False, run `refinement-of-exa-spim-run-1_2026-06-03` ID 25): There is significant inter-annotator variability in edge omission rates and split rates, suggesting that human annotators differ in their likelihood of tracing faint, hard-to-segment neurites.
-- **#3** (surprise 0.852, Likely True → Leaning False, run `exa-spim-run-2_2026-06-03` ID 111): U-Net fragments with a smaller mean neurite radius (thin structures like distal axons) suffer from a significantly higher split error rate (splits per millimeter of cable) than thicker fragments, exposing a deep-learning bias against fine m
+---
 
-## Ranked findings (most surprising first)
+## Ranked hypotheses (most surprising first)
 
-### 1. (Surprise 0.966) Rejected: A subset of spatially close but anatomically incorrect (false merge) candidate fragment pairs exhibit higher baseline geometric affinity (shorter distance, high...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 49 · **Belief:** Likely True → Leaning False (0.917→0.211) · **Direction:** Negative · **Surprisal:** −0.966
-- **Tested:** Analyze the distribution of geometric affinity scores among candidate fragment pairs to determine if high-confidence false merges exist, rigorously testing the assumption that a greedy algorithm will inevitably fall into early traps without relying on flawed h...
-- **Conclusion:** A total of 355 candidate pairs within 15 µm were identified and sorted to simulate a greedy threshold sweep. The empirical results demonstrated exactly 0 false pairs in both the top 5% most confident predictions (17 pairs) and the subsequent 15% tier (54 pairs). Based on this data, the script successfully executed the revised conditional logic to correctly reject the hypothesis: there are no 'high-confidence traps' early in the greedy matching process.
-- **Caveats:** zero-variance / NaN edge case
+### 1. (Surprise 0.966) Refuted: data contradict the claim that greedy/independent thresholding versus joint-reasoning matching changes proofreading precision.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 49 · **Belief:** Likely True -> Leaning False (0.9167 -> 0.2115) · **Direction:** Negative
+- **Tested:** Analyze the distribution of geometric affinity scores among candidate fragment pairs to determine if high-confidence false merges exist, rigorously testing the assumption that a greedy algorithm will inevitably fall into early traps without relying on flawed hardcoded assumptions.
+- **Conclusion:** The experiment successfully executed the revised plan and rigorously analyzed the geometric affinity scores of candidate fragment pairs. Belief therefore dropped from Likely True (0.92) to Leaning False (0.21) (signed surprisal -0.966; negative shift).
+- **Caveats:** zero-variance data forced a degenerate test
+- **Verdict:** Unsound
+- **Test:** Student's t-test; test statistic NaN / undefined
+- **Statistical issues:** test was degenerate or uninformative (NaN, zero variance, empty cohort, or constant inputs)
+- **Logic issues:** large belief shift triggered by a test that produced no usable evidence about the hypothesis
 
-### 2. (Surprise 0.922) Belief dropped: There is significant inter-annotator variability in edge omission rates and split rates, suggesting that human annotators differ in their likelihood of tracing...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 25 · **Belief:** Likely True → Leaning False (0.875→0.202) · **Direction:** Negative · **Surprisal:** −0.922
+### 2. (Surprise 0.922) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 25 · **Belief:** Likely True -> Leaning False (0.8750 -> 0.2019) · **Direction:** Negative
 - **Tested:** Quantify whether the automated reconstruction's performance metrics vary significantly depending on which human annotator traced the ground truth neuron.
-- **Conclusion:** The experiment successfully executed all steps to test the hypothesis regarding inter-annotator variability. The neurons were grouped by their respective human annotators (eight identified: JG, HP, IG, SP, JT, PP, MB, YZ), and the percentage of omitted edges and split rates (per mm) were calculated for each. Both parametric (one-way ANOVA) and non-parametric (Kruskal-Wallis) statistical tests were conducted.
+- **Conclusion:** The results yielded p-values well above the 0.05 threshold for both Omission Rates (ANOVA p=0.664, Kruskal p=0.450) and Split Rates (ANOVA p=0.946, Kruskal p=0.912). Belief therefore dropped from Likely True (0.88) to Leaning False (0.20) (signed surprisal -0.922; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** Kruskal-Wallis, one-way ANOVA; p = 0.912
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 3. (Surprise 0.852) Rejected: U-Net fragments with a smaller mean neurite radius (thin structures like distal axons) suffer from a significantly higher split error rate (splits per millimete...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 111 · **Belief:** Likely True → Leaning False (0.875→0.328) · **Direction:** Negative · **Surprisal:** −0.852
+### 3. (Surprise 0.852) Refuted: data contradict the claim that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 111 · **Belief:** Likely True -> Leaning False (0.8750 -> 0.3281) · **Direction:** Negative
 - **Tested:** Investigate the relationship between the morphological thickness of a fragment and its propensity to be fragmented by the automated segmentation pipeline.
-- **Conclusion:** The experiment successfully investigated the relationship between fragment thickness (neurite radius) and split error rate. Experiment Results: - Median Radius: 1.9537 µm - Thin Fragments (< median, n=5086): Mean split rate of 0.1036 splits/mm. - Thick Fragments (>= median, n=5086): Mean split rate of 0.1430 splits/mm.
-- **Caveats:** none noted
+- **Conclusion:** **Experiment Results:** - **Median Radius:** 1.9537 µm - **Thin Fragments (< median, n=5086):** Mean split rate of 0.1036 splits/mm. - **Thick Fragments (>= median, n=5086):** Mean split rate of 0.1430 splits/mm. Belief therefore dropped from Likely True (0.88) to Leaning False (0.33) (signed surprisal -0.852; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies; median outcome is zero; effect driven by outliers
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U, Student's t-test; p ≈ 2e-33; n up to 5086
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 4. (Surprise 0.834) Rejected: The ground truth edge accuracy and fragmentation rates vary significantly based on the human annotator, suggesting that highly ambiguous image regions where the...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 53 · **Belief:** Leaning True → Likely False (0.792→0.183) · **Direction:** Negative · **Surprisal:** −0.834
+### 4. (Surprise 0.834) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 53 · **Belief:** Leaning True -> Likely False (0.7917 -> 0.1827) · **Direction:** Negative
 - **Tested:** Quantify inter-annotator variability in the resulting baseline segmentation metrics to measure the subjective ceiling of the proofreading task.
-- **Conclusion:** The script accurately parsed annotator initials from the ground truth SWC IDs, computed the segmentation metrics (edge accuracy, omit rate, and splits per 1000 µm) for each of the 18 ground truth components, and grouped the results by annotator. Statistical analysis using the Kruskal-Wallis test yielded high p-values for all metrics (edge accuracy: p=0.4775, omit rate: p=0.4775, splits per 1000 µm: p=0.8565), which are well above the standard 0.05 significance threshold. This indicates that there is no statistically significant inter-annotator variability in the segmentation metrics.
+- **Conclusion:** Statistical analysis using the Kruskal-Wallis test yielded high p-values for all metrics (edge accuracy: p=0.4775, omit rate: p=0.4775, splits per 1000 µm: p=0.8565), which are well above the standard 0.05 significance threshold. Belief therefore dropped from Leaning True (0.79) to Likely False (0.18) (signed surprisal -0.834; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** Kruskal-Wallis; p = 0.8565
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 5. (Surprise 0.834) Belief dropped: A purely geometric distance-based reconnection heuristic suffers a disproportionate drop in precision in 'crowded' regions, demanding an adaptive threshold that...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 62 · **Belief:** Leaning True → Likely False (0.792→0.183) · **Direction:** Negative · **Surprisal:** −0.834
+### 5. (Surprise 0.834) Refuted: data contradict the claim that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 62 · **Belief:** Leaning True -> Likely False (0.7917 -> 0.1827) · **Direction:** Negative
 - **Tested:** Quantify how the local density of fragment endpoints (crowding) degrades the reliability of standard proximity thresholds.
-- **Conclusion:** Using KDTree spatial queries, the script successfully identified 355 candidate fragment leaf pairs within a 15 µm radius and calculated a 'Crowding Index' for each by counting other endpoints within a 30 µm radius. The pairs were binned into balanced Low (n=118), Medium (n=118), and High (n=119) crowding tiers. The calculated precisions for these tiers were 99.15%, 100.00%, and 98.32%, respectively.
-- **Caveats:** none noted
+- **Conclusion:** The pairs were binned into balanced Low (n=118), Medium (n=118), and High (n=119) crowding tiers. Statistical analysis, including a Cochran-Armitage trend test (p-value = 0.481) and a Chi-Square test (p-value = 0.368), confirmed there is no significant degradation in precision as local density increases. Belief therefore dropped from Leaning True (0.79) to Likely False (0.18) (signed surprisal -0.834; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** chi-square, Cochran-Armitage, Student's t-test; p = 0.368; n up to 119
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 6. (Surprise 0.812) Rejected: Aggressive merge errors create disproportionately large 'super-fragments'.
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 45 · **Belief:** Likely True → Leaning False (0.833→0.312) · **Direction:** Negative · **Surprisal:** −0.812
+### 6. (Surprise 0.812) Refuted: data contradict the claim that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 45 · **Belief:** Likely True -> Leaning False (0.8333 -> 0.3125) · **Direction:** Negative
 - **Tested:** To show that merge errors are heavily concentrated in a few massive connected components, implying that targeting the largest fragments for merge-detection will yield the highest return on investment.
-- **Conclusion:** The analysis mapped UNet fragment nodes to Ground-Truth (GT) components to identify merge edges and computed the physical cable length of all 10,172 U-Net connected components. The top 1% of fragments (102 components) accounted for 15.66% of the total network cable length (2.94M / 18.81M µm). However, they only contained 8.91% (404 / 4,536) of the total merge errors.
-- **Caveats:** test driven to p=1.0 by near-zero positive counts
+- **Conclusion:** The binomial test yielded a p-value of 1.00, failing to reject the null hypothesis. Belief therefore dropped from Likely True (0.83) to Leaning False (0.31) (signed surprisal -0.812; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** binomial test; p = 1
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 7. (Surprise 0.782) Rejected: U-Net fragment components that contain merge errors exhibit a significantly higher average branching density (branch points per µm of cable length) than pure co...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 76 · **Belief:** Leaning True → Leaning False (0.792→0.221) · **Direction:** Negative · **Surprisal:** −0.782
+### 7. (Surprise 0.782) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 76 · **Belief:** Leaning True -> Leaning False (0.7917 -> 0.2212) · **Direction:** Negative
 - **Tested:** Investigate if component-level branching density is a reliable 'stale feature' that agents can monitor dynamically to detect when a newly executed merge edit has created an invalid web.
-- **Conclusion:** Hypothesis: U-Net fragment components that contain merge errors exhibit a significantly higher average branching density than pure components, reflecting the erroneous fusion of overlapping neurites into chaotic webs. Experiment Results: - Component Identification: Out of the U-Net fragments with a cable length >= 1500 µm, 14 components were identified as 'merge-containing', and 3005 were identified as 'pure'. - Branching Density (Mean ± Std): Merge-containing components demonstrated a mean branching density of 0.001408 branches/µm (std: 0.000819), while pure components had a mean branching density of 0.001114 branches/µm (std: 0.001081).
-- **Caveats:** none noted
+- **Conclusion:** - **Branching Density (Mean ± Std):** Merge-containing components demonstrated a mean branching density of 0.001408 branches/µm (std: 0.000819), while pure components had a mean branching density of 0.001114 branches/µm (std: 0.001081). - **Statistical Comparison:** A Welch's t-test yielded a t-statistic of 1.2902 and a p-value of 0.2191. Belief therefore dropped from Leaning True (0.79) to Leaning False (0.22) (signed surprisal -0.782; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power); dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Unsound
+- **Test:** Welch's t-test, two-sample t-test, Student's t-test; p = 0.05; n up to 14
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 8. (Surprise 0.771) Rejected: Human annotators exhibit systematically different tracing behaviors, resulting in statistically significant differences in the baseline split error rate (fragme...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 36 · **Belief:** Leaning True → Leaning False (0.792→0.297) · **Direction:** Negative · **Surprisal:** −0.771
+### 8. (Surprise 0.771) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 36 · **Belief:** Leaning True -> Leaning False (0.7917 -> 0.2969) · **Direction:** Negative
 - **Tested:** To determine whether U-Net reconstruction error metrics are inherently biased by the specific human annotator who traced the ground-truth morphology.
-- **Conclusion:** The code accurately loaded the dataset, parsed annotator initials from the ground-truth SWC identifiers, and computed the split rate (U-Net fragments per mm of cable length) for each ground-truth neuron. Eight unique annotators were identified (JG, HP, IG, SP, JT, PP, MB, YZ), with mean split rates ranging from 0.1437 to 0.2264 splits/mm. A one-way ANOVA test applied to these groups returned an F-statistic of 0.5538 and a p-value of 0.7782.
+- **Conclusion:** Eight unique annotators were identified (JG, HP, IG, SP, JT, PP, MB, YZ), with mean split rates ranging from 0.1437 to 0.2264 splits/mm. A one-way ANOVA test applied to these groups returned an F-statistic of 0.5538 and a p-value of 0.7782. Belief therefore dropped from Leaning True (0.79) to Leaning False (0.30) (signed surprisal -0.771; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** one-way ANOVA, Student's t-test; p = 0.7782
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 9. (Surprise 0.771) Rejected: In dense local neighborhoods where a single leaf node has multiple reconnection candidates, a composite geometric metric combining Euclidean distance and termin...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 37 · **Belief:** Leaning True → Leaning False (0.792→0.297) · **Direction:** Negative · **Surprisal:** −0.771
+### 9. (Surprise 0.771) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 37 · **Belief:** Leaning True -> Leaning False (0.7917 -> 0.2969) · **Direction:** Negative
 - **Tested:** To evaluate the benefit of reasoning jointly over competing proposals using a combined spatial and angular cost function instead of independent thresholding.
-- **Conclusion:** It evaluated tangent vectors for 39,826 leaves and found 102 'competitive' origins (leaves with multiple candidate connections within 40 µm and at least one true positive matching the ground truth). The results showed that ranking candidate connections by Euclidean distance alone achieved a top-1 accuracy of 98.04% (100/102). Ranking by the composite score (incorporating both distance and terminal tangent cosine similarity) yielded the exact same accuracy (98.04%, 100/102).
-- **Caveats:** test driven to p=1.0 by near-zero positive counts
+- **Conclusion:** Since there were no discordant pairs between the two methods, the McNemar's test resulted in a p-value of 1.0. Belief therefore dropped from Leaning True (0.79) to Leaning False (0.30) (signed surprisal -0.771; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** chi-square, McNemar's; p = 1
+- **Statistical issues:** test was degenerate or uninformative (NaN, zero variance, empty cohort, or constant inputs); McNemar p=1.0 reflects zero discordant predictions between methods — uninformative, not negative evidence
+- **Logic issues:** large belief shift triggered by a test that produced no usable evidence about the hypothesis
 
-### 10. (Surprise 0.771) Rejected: True split reconnections between fragment endpoints exhibit significantly smaller absolute differences in neurite radius than false merge proposals.
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 42 · **Belief:** Leaning True → Leaning False (0.792→0.297) · **Direction:** Negative · **Surprisal:** −0.771
+### 10. (Surprise 0.771) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 42 · **Belief:** Leaning True -> Leaning False (0.7917 -> 0.2969) · **Direction:** Negative
 - **Tested:** To determine if local radius continuity is a viable and robust feature for filtering out false merge proposals during split-correction, while avoiding data type overflow errors.
-- **Conclusion:** By casting the `node_radius` differences to `float64`, the numerical overflow issue was resolved, and valid statistical results were generated. The analysis found 1,612 True Splits (mean: ~0.43 µm) and only 6 False Merges (mean: ~0.39 µm). The Mann-Whitney U test yielded a statistic of 5170.5 and a p-value of 0.769, indicating no statistically significant difference between the absolute radius differences of the two groups.
-- **Caveats:** extreme class imbalance / very few positives
+- **Conclusion:** The analysis found 1,612 True Splits (mean: ~0.43 µm) and only 6 False Merges (mean: ~0.39 µm). The Mann-Whitney U test yielded a statistic of 5170.5 and a p-value of 0.769, indicating no statistically significant difference between the absolute radius differences of the two groups. Belief therefore dropped from Leaning True (0.79) to Leaning False (0.30) (signed surprisal -0.771; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U; p = 0.769
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 11. (Surprise 0.747) Belief dropped: The local spatial density of distinct fragment components ('crowdedness') is significantly higher around merge errors and false-reconnection sites than around v...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 2 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 11. (Surprise 0.747) Refuted: data contradict the claim that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 2 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Determine if a local 'crowdedness' metric can serve as a contextual feature to dynamically adjust confidence thresholds for accepting topological edits.
-- **Conclusion:** The dataset was loaded, identifying 1,363,808 Ground Truth nodes and 4,281,310 Fragment nodes. By mapping fragment nodes to the ground truth components, the script successfully identified 30 merge sites and 1081 valid split sites. The local spatial 'crowdedness' (unique fragment components within a 30µm radius) was calculated, revealing a mean crowdedness of 1.17 (std = 0.52) for merge sites and 1.55 (std = 0.94) for split sites.
+- **Conclusion:** The local spatial 'crowdedness' (unique fragment components within a 30µm radius) was calculated, revealing a mean crowdedness of 1.17 (std = 0.52) for merge sites and 1.55 (std = 0.94) for split sites. An independent t-test demonstrated a statistically significant difference between the two distributions (t-statistic = -3.7813, p-value = 5.9873e-04). Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Questionable
+- **Test:** two-sample t-test, Student's t-test; p ≈ 0.0006
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** none
 
-### 12. (Surprise 0.747) No effect found: The absolute difference in estimated neurite radius between fragment endpoints belonging to the same ground-truth neuron (valid reconnections) is significantly...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 3 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 12. (Surprise 0.747) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 3 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Determine if radius continuity is a statistically robust feature for distinguishing valid split reconnections from false reconnections, ensuring sufficient sample sizes by expanding the spatial search radius and resolving numerical overflow issues.
-- **Conclusion:** By increasing the mapping threshold to 15 µm and the spatial search radius to 50 µm, the sample size improved to 647 valid reconnections and 10 false reconnections. Furthermore, casting the radius arrays to `float64` successfully resolved the previous numerical overflow issues, allowing the Mann-Whitney U test to run without errors. The statistical comparison revealed a mean absolute radius difference of 0.4476 ± 0.3614 µm for valid reconnections and 0.4972 ± 0.3625 µm for false reconnections.
+- **Conclusion:** The statistical comparison revealed a mean absolute radius difference of 0.4476 ± 0.3614 µm for valid reconnections and 0.4972 ± 0.3625 µm for false reconnections. The Mann-Whitney U test yielded a p-value of ~0.6017, indicating that there is no statistically significant difference between the two distributions. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.6017
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 13. (Surprise 0.747) Rejected: Fragment nodes participating in merge errors have a significantly larger predicted neurite radius than the background distribution of non-merge fragment nodes,...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 9 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 13. (Surprise 0.747) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 9 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Investigate whether localized neurite swelling (increased radius) in the U-Net reconstruction is a reliable morphological signature of merge errors.
-- **Conclusion:** The dataset was successfully processed, extracting the radii for 472 identified merge nodes and a random sample of 100,000 background (non-merge) nodes. Experiment Results: - Merge Nodes: Mean radius = 1.8941 µm (std: 0.1514 µm) - Background Nodes: Mean radius = 1.9640 µm (std: 0.1017 µm) - Statistical Comparison: Welch's t-test yielded a t-statistic of -10.0014 and a p-value of 1.7181e-21, indicating a statistically significant difference between the two distributions. Findings: The results directly contradict the initial hypothesis.
+- **Conclusion:** **Experiment Results:** - **Merge Nodes:** Mean radius = 1.8941 µm (std: 0.1514 µm) - **Background Nodes:** Mean radius = 1.9640 µm (std: 0.1017 µm) - **Statistical Comparison:** Welch's t-test yielded a t-statistic of -10.0014 and a p-value of 1.7181e-21, indicating a statistically significant difference between the two distributions. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, Student's t-test; p ≈ 1.7e-21
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 14. (Surprise 0.747) Belief dropped: The spatial size of valid split gaps (Euclidean distance between endpoints belonging to the same GT neuron) is negatively correlated with the local neurite radi...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 10 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 14. (Surprise 0.747) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 10 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Explore the interaction between gap distance and neurite thickness at valid split sites to inform dynamic, radius-aware KD-tree search bounds for proposal generation.
-- **Conclusion:** The script successfully implemented a robust `MockUnpickler` to bypass missing dependencies, loaded the dataset, and mapped fragment endpoints to the ground truth components to identify 1360 valid split endpoint pairs within a 100 µm radius. Statistical analysis revealed a Pearson correlation coefficient of r = 0.3702 (p-value = 1.99e-45) and a Spearman correlation of rho = 0.3716 (p-value = 8.88e-46). These results demonstrate a statistically significant relationship between the spatial gap distance and the average neurite radius at valid split sites.
-- **Caveats:** none noted
+- **Conclusion:** Statistical analysis revealed a Pearson correlation coefficient of r = 0.3702 (p-value = 1.99e-45) and a Spearman correlation of rho = 0.3716 (p-value = 8.88e-46). However, contrary to the initial hypothesis, the correlation is **positive**, not negative. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
+- **Caveats:** stepped ROC curve from sparse negatives; dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Spearman, Pearson; p ≈ 8.9e-46
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 15. (Surprise 0.747) Rejected: The topological complexity of a neuron (measured by its branch point density) strongly predicts its susceptibility to merge errors, highlighting vulnerabilities...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 21 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 15. (Surprise 0.747) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 21 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Assess if highly branched neurons suffer from disproportionately higher merge error rates, which would suggest that proofreading systems should prioritize merge-detection passes on highly arborized fragment clusters.
-- **Conclusion:** The programmer implemented a robust dataset loading mechanism that resolved the previous FileNotFoundError by checking multiple directory levels. The code computed the branch density and merge density for each of the 19 Ground Truth neurons. A Spearman rank correlation analysis yielded a rho of -0.6081 and a p-value of 0.0057, indicating a statistically significant negative correlation.
+- **Conclusion:** A Spearman rank correlation analysis yielded a rho of -0.6081 and a p-value of 0.0057, indicating a statistically significant negative correlation. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Spearman; p = 0.0057
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 16. (Surprise 0.747) Rejected: Short U-Net fragments (bottom quartile by length) contain a disproportionately high density of split errors compared to long fragments (top quartile), reflectin...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 23 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 16. (Surprise 0.747) Refuted: data contradict the claim that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 23 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Determine if fragment cable length is inversely correlated with the likelihood of producing split endpoints.
-- **Conclusion:** The experiment was successfully executed to test whether short U-Net fragments exhibit a higher density of split errors compared to long fragments. The dataset was loaded, and split error rates (split leaves per total nodes) were calculated for the bottom 25% (short) and top 25% (long) fragments by node count. Experiment Results: - Short Fragments (Bottom 25%, ≤ 225 nodes): Mean split rate = 0.000506 splits/node.
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** **Experiment Results:** - **Short Fragments (Bottom 25%, ≤ 225 nodes):** Mean split rate = 0.000506 splits/node. - **Long Fragments (Top 25%, ≥ 373 nodes):** Mean split rate = 0.001665 splits/node. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
+- **Caveats:** median outcome is zero; effect driven by outliers
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p ≈ 3.2e-77
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 17. (Surprise 0.747) Rejected: There is a strong inverse relationship between the local neurite radius at the site of an artificial split and the physical spatial gap of that split, indicatin...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 31 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 17. (Surprise 0.747) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 31 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** To determine if the physical gap distance of recoverable split errors is systematically larger for thinner neurites, which would necessitate adaptive search radii based on local thickness.
-- **Conclusion:** After mapping the `fragments_graph` leaf nodes to the ground truth components, 486 'True Split' pairs with a physical gap of less than 30 µm were successfully validated. The Spearman rank correlation test yielded a rho of 0.1879 and a highly significant p-value of 3.0508e-05. This indicates a statistically significant positive correlation, which contradicts the initial hypothesis: thicker neurites, rather than thinner ones, tend to exhibit larger physical fragmentation gaps.
-- **Caveats:** none noted
+- **Conclusion:** The Spearman rank correlation test yielded a rho of 0.1879 and a highly significant p-value of 3.0508e-05. This indicates a statistically significant positive correlation, which contradicts the initial hypothesis: thicker neurites, rather than thinner ones, tend to exhibit larger physical fragmentation gaps. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Spearman; p ≈ 3.1e-05
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 18. (Surprise 0.747) Rejected: Simulating a single pass of valid split corrections drastically alters the component size distribution, demonstrating that features reliant on fragment size bec...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 34 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 18. (Surprise 0.747) Refuted: data contradict the claim that geometric gap features identify true split reconnections.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 34 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Quantify the magnitude of 'feature staleness' by measuring how the statistical distribution of fragment cable lengths shifts after a single simulated layer of topological edits.
-- **Conclusion:** The experiment was successfully executed, but the results contradict the initial hypothesis. The script identified 344 valid split pairs and simulated their correction, which reduced the total number of fragment components from 10,172 to 9,842. While the mean component cable length increased slightly from 1,849.31 µm to 1,911.51 µm, a Kolmogorov-Smirnov test comparing the pre-edit ('stale') and post-edit ('refreshed') distributions yielded a low statistic (0.0096) and a high p-value (0.7465).
+- **Conclusion:** While the mean component cable length increased slightly from 1,849.31 µm to 1,911.51 µm, a Kolmogorov-Smirnov test comparing the pre-edit ('stale') and post-edit ('refreshed') distributions yielded a low statistic (0.0096) and a high p-value (0.7465). Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Kolmogorov-Smirnov; p = 0.7465
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 19. (Surprise 0.747) Rejected: Enforcing mutual exclusivity (1-to-1 matching) on candidate reconnections at a fragment leaf node significantly reduces the introduction of false positive edges...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 38 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 19. (Surprise 0.747) Refuted: data contradict the claim that greedy/independent thresholding versus joint-reasoning matching changes proofreading precision.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 38 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Compare the precision and recall of a mutually exclusive bipartite matching algorithm versus an independent thresholding approach for split-error correction.
-- **Conclusion:** The experiment was successfully executed and all deliverables were generated. The script loaded the dataset, extracted the U-Net fragment leaf nodes, mapped them to the ground truth components, and computed geometric affinities (distance and angle) for candidate pairs within a 15 µm radius. When comparing Scenario A (Independent Thresholding) and Scenario B (Mutually Exclusive Matching) at a strict affinity threshold of 7.5, both approaches yielded identical results: 183 total edges added, comprising 56 true positives and 127 false positives, for a precision of 30.60%.
+- **Conclusion:** The experiment was successfully executed and all deliverables were generated. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** test type not extractable from record
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 20. (Surprise 0.747) No effect found: Regions with a high local spatial density of fragment endpoints correlate with a significantly higher occurrence of U-Net merge errors, suggesting that densely...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 39 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 20. (Surprise 0.747) Refuted: data contradict the claim that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 39 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Quantify whether local fragment leaf density is a reliable environmental predictor for the likelihood of a branch point being a false merge.
-- **Conclusion:** By implementing a dummy class for missing modules, the dataset was successfully loaded. The script correctly extracted 5,620 True Branches and 36 Merge Branches from the fragment graph. A KD-tree was used to calculate the local fragment leaf density (within a 50 µm radius) around each branch node.
-- **Caveats:** small sample size
+- **Conclusion:** The statistical analysis (Mann-Whitney U test) yielded a p-value of 0.4009, indicating no statistically significant difference in local proposal density between True branches (mean = 0.45) and Merge branches (mean = 0.44). Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U; p = 0.4009
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 21. (Surprise 0.747) Belief dropped: The physical magnitude (gap distance) of split errors increases proportionally with the Z-axis coordinate (depth) of the tissue, reflecting depth-dependent sign...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 43 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 21. (Surprise 0.747) Refuted: data contradict the claim that Z-axis anisotropy or imaging depth drives split-error geometry.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 43 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Investigate if there is a depth-dependent degradation in segmentation quality by correlating Z-axis depth with the severity (gap size) of split errors.
-- **Conclusion:** The experiment successfully tested the hypothesis that the magnitude of split errors (gap distance) increases with tissue depth (Z-coordinate). The script robustly loaded the dataset, identified 589 valid split gaps between distinct U-Net fragments mapped to the same ground-truth component, and successfully extracted both the physical gap distance and the Z-axis depth of each split's midpoint. Statistical analysis showed a Pearson correlation coefficient of r = -0.0221 and a p-value of 0.5927, indicating that there is no statistically significant linear relationship between split gap distance and tissue depth.
+- **Conclusion:** Statistical analysis showed a Pearson correlation coefficient of r = -0.0221 and a p-value of 0.5927, indicating that there is no statistically significant linear relationship between split gap distance and tissue depth. The data visualization (scatter plot with linear fit) clearly confirmed this lack of correlation. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** one-way ANOVA, Pearson; p ≈ 0.00086
+- **Statistical issues:** statistical significance driven by very large N; effect size negligible (|r|<0.1) — significance is a large-sample artifact rather than a scientifically meaningful effect
+- **Logic issues:** none
 
-### 22. (Surprise 0.747) Belief dropped: Merge errors in the automated reconstruction are highly asymmetric in terms of component size, predominantly manifesting as tiny 'orphan' fragments erroneously...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 50 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 22. (Surprise 0.747) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 50 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Analyze the size distribution asymmetry of sub-components involved in U-Net merge errors.
-- **Conclusion:** The experiment successfully resolved the previous missing dependency issues by programmatically installing `networkx`, `numpy`, `scipy`, and `matplotlib`. The dataset was successfully loaded, and the analytical pipeline correctly identified 26 merge errors by finding U-Net fragment components that mapped to multiple distinct ground-truth components. The lengths of these sub-graphs were calculated to compute the Minority/Majority ratio for each merge error.
+- **Conclusion:** The results showed a median ratio of 0.4153 and a mean ratio of 0.4928. Based on the predefined logic (median > 0.2), the script successfully generated a data-driven conclusion rejecting the hypothesis: merge errors do not exclusively manifest as tiny orphan fragments attaching to large main branches, but frequently involve the fusion of relatively comparable axonal trunks. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** test type not extractable from record
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 23. (Surprise 0.747) Rejected: In dense 'conflict zones' where a split endpoint has multiple candidate reconnection targets within 30 µm, combining local tangent alignment and gap image inten...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 52 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 23. (Surprise 0.747) Refuted: data contradict the claim that image-intensity features (signal across the gap) add discriminative power.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 52 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Evaluate if a multimodal (geometry + image) joint-reasoning approach outperforms single-metric approaches in resolving conflicting split proposals.
-- **Conclusion:** The pipeline dynamically loaded the dependencies, identified 302 candidate leaf pairs in dense 'conflict zones' (where a split endpoint has multiple targets within 30 µm), and successfully mapped 87 pairs to the ground truth. Key Findings & Results: - Hypothesis Evaluation: The hypothesis that a multimodal joint-reasoning approach (geometry + image intensity) would significantly outperform single-metric approaches was rejected. - Performance Metrics: - Geometry (Tangent Alignment Only): AUC = 0.8000 - Image (Gap Intensity Only): AUC = 0.4971 (effectively random guessing) - Multimodal Joint-Reasoning: AUC = 0.8000 - Insights: The geometric feature (tangent alignment) proved to be a strong predictor for correct topological continuations, successfully identifying ~73% of true matches with zero false positives.
-- **Caveats:** extreme class imbalance / very few positives
+- **Conclusion:** - **Performance Metrics:** - **Geometry (Tangent Alignment Only):** AUC = 0.8000 - **Image (Gap Intensity Only):** AUC = 0.4971 (effectively random guessing) - **Multimodal Joint-Reasoning:** AUC = 0.8000 - **Insights:** The geometric feature (tangent alignment) proved to be a strong predictor for correct topological continuations, successfully identifying ~73% of true matches with zero false positives. 2 False Matches), resulting in a heavily stepped ROC curve. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power); stepped ROC curve from sparse negatives
+- **Verdict:** Sound
+- **Test:** logistic regression, ROC-AUC
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 24. (Surprise 0.747) No effect found: The displacement vector across a true split gap is highly aligned with the local principal component (PCA) axis of the surrounding skeleton nodes, whereas false...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 57 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 24. (Surprise 0.747) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 57 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Assess whether the broader structural trend (PCA of local nodes) provides a more robust geometric disambiguation for splits than single-edge tangent vectors.
-- **Conclusion:** The script identified candidate split proposals within a 20 µm radius and computed local PCA axes for nodes within a 15 µm path distance from the fragment endpoints. Comparing the gap displacement vectors against the PCA axes, the script found 410 'True' split proposals and 3 'False' split proposals. The mean absolute cosine similarity (angular alignment) was nearly identical for True (0.6090) and False (0.6026) proposals.
-- **Caveats:** extreme class imbalance / very few positives; small sample size; implementation deviated from plan
+- **Conclusion:** The mean absolute cosine similarity (angular alignment) was nearly identical for True (0.6090) and False (0.6026) proposals. A Welch's t-test yielded a p-value of 0.9688, indicating no statistically significant difference in alignment between the two classes. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power); dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Unsound
+- **Test:** Welch's t-test, Student's t-test; p = 0.9688; n up to 3
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 25. (Surprise 0.747) Rejected: U-Net merge errors disproportionately occur at anomalous predicted branching points (node degree >= 3) in the fragment graph, identifiable by unusually thick lo...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 58 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 25. (Surprise 0.747) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 58 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Evaluate if branching nodes in the `fragments_graph` that constitute merge errors have significantly larger neurite radii than branching nodes that are topologically correct.
-- **Conclusion:** The experiment successfully executed and evaluated the hypothesis regarding U-Net merge errors and their local radii. The script mapped fragment branching nodes to ground-truth components, identifying 5,618 valid branches and 38 merge branches. Statistical analysis via Welch's t-test yielded a significant p-value (p = 0.0203); however, the result contradicted the initial hypothesis.
+- **Conclusion:** Statistical analysis via Welch's t-test yielded a significant p-value (p = 0.0203); however, the result contradicted the initial hypothesis. The mean radius for Merge Branches (1.8325 µm) was actually smaller than the mean radius for Valid Branches (1.9530 µm). Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, Student's t-test; p = 0.0203
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 26. (Surprise 0.747) Belief dropped: The frequency of U-Net split errors, normalized by cable length, varies significantly depending on the human annotator of the ground-truth tracing, indicating t...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 59 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 26. (Surprise 0.747) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 59 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Quantify and statistically test the variance in normalized split error density across different human annotators in the ground-truth dataset.
-- **Conclusion:** The experiment successfully loaded the dataset and calculated the U-Net split error density (splits per millimeter of cable) across the ground-truth neurons traced by 8 different human annotators (JG, HP, IG, SP, JT, PP, MB, YZ). The statistical evaluation using the Kruskal-Wallis H-test yielded an H-statistic of 5.0474 and a p-value of 0.6542. Since the p-value is well above the standard alpha level of 0.05, there is no statistically significant variance in normalized split error density across the different annotators.
+- **Conclusion:** The statistical evaluation using the Kruskal-Wallis H-test yielded an H-statistic of 5.0474 and a p-value of 0.6542. Since the p-value is well above the standard alpha level of 0.05, there is no statistically significant variance in normalized split error density across the different annotators. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** Kruskal-Wallis; p = 0.6542
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 27. (Surprise 0.747) No effect found: The automated U-Net fragmentation rate (split errors per mm of cable) varies significantly depending on the human annotator who traced the ground-truth neuron,...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 60 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 27. (Surprise 0.747) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 60 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Quantify the correlation between human annotator identity and U-Net split error rates to identify if certain annotator tracing behaviors lead to higher automated fragmentation.
-- **Conclusion:** The pipeline calculated the physical cable lengths for the ground truth and accurately mapped the U-Net fragments to these components using spatial nearest-neighbor searches (KDTree) with a 40 µm radius. Split rates (fragments per millimeter of cable) were derived for each annotator's assigned neurons. The statistical analysis revealed mean split rates ranging from 0.14 frags/mm (Annotator JT) to 0.21 frags/mm (Annotators SP, PP, HP).
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** The statistical analysis revealed mean split rates ranging from 0.14 frags/mm (Annotator JT) to 0.21 frags/mm (Annotators SP, PP, HP). Despite these visible variations, the Kruskal-Wallis H-test yielded an H-statistic of 8.5526 with a p-value of 0.2864. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** Kruskal-Wallis; p = 0.2864
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 28. (Surprise 0.747) Rejected: Very short U-Net fragments (stubs slightly above the 1000 µm filtering threshold) yield significantly more false-positive reconnection proposals than longer fra...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 63 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 28. (Surprise 0.747) Refuted: data contradict the claim that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 63 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Evaluate the impact of a parent fragment's total cable length on the validity of its endpoint reconnection proposals.
-- **Conclusion:** The script extracted U-Net fragment leaf nodes, calculated the total cable length of their parent components, and generated split-correction proposals based on spatial proximity (< 30 µm). A total of 491 proposals were mapped to ground truth components, revealing a severe class imbalance: 486 True reconnections and only 5 False reconnections. A logistic regression model was fitted, yielding a p-value of 0.842 for the length coefficient, which indicates no statistical significance.
-- **Caveats:** extreme class imbalance / very few positives
+- **Conclusion:** A logistic regression model was fitted, yielding a p-value of 0.842 for the length coefficient, which indicates no statistical significance. The ROC-AUC score for minimum parent fragment length as a predictor of validity was 0.5521, performing only marginally better than random chance. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power); stepped ROC curve from sparse negatives
+- **Verdict:** Sound
+- **Test:** logistic regression, ROC-AUC; p = 0.842
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 29. (Surprise 0.747) Belief dropped: Human annotator subjectivity significantly biases the ground truth representation of natural neuron endpoints, manifesting as statistically significant differen...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 64 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 29. (Surprise 0.747) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 64 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Quantify annotator bias in terminal pruning by analyzing the distribution of predicted radii at ground-truth leaf nodes grouped by the annotator's initials.
-- **Conclusion:** It identified 8 annotators with over 50 terminal nodes. However, the analysis revealed that every single terminal node across all annotators had an identical radius of exactly 1.0000 µm. Because there was zero variance in the data, the Kruskal-Wallis H-test returned a NaN statistic and p-value.
-- **Caveats:** zero-variance / NaN edge case; data artifact flagged
+- **Conclusion:** Because there was zero variance in the data, the Kruskal-Wallis H-test returned a NaN statistic and p-value. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
+- **Caveats:** zero-variance data forced a degenerate test; Kruskal test returned NaN due to identical values across groups
+- **Verdict:** Unsound
+- **Test:** Kruskal-Wallis, Student's t-test; test statistic NaN / undefined
+- **Statistical issues:** test was degenerate or uninformative (NaN, zero variance, empty cohort, or constant inputs)
+- **Logic issues:** large belief shift triggered by a test that produced no usable evidence about the hypothesis
 
-### 30. (Surprise 0.747) Rejected: The likelihood of a fragment containing a merge error is inversely correlated with its total path length, suggesting that short, noisy fragments frequently act...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 69 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 30. (Surprise 0.747) Refuted: data contradict the claim that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 69 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Quantify the relationship between U-Net fragment cable length and its propensity to harbor topological merge errors.
-- **Conclusion:** The experiment was successfully executed and the pipeline faithfully implemented the logic to test the hypothesis. By utilizing a robust `MockUnpickler`, the script safely bypassed the missing `agentic_neuron_proofreader` package and successfully mapped U-Net fragments to their ground truth components using a spatial KDTree. The fragment path lengths were computed, and merge errors were identified when a single fragment overlapped with multiple distinct ground truth neurons.
-- **Caveats:** none noted
+- **Conclusion:** The statistical analysis revealed a highly significant positive correlation (Point-biserial r = 0.1209, p = 2.06e-34) between fragment length and merge probability. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** point-biserial; p ≈ 2.1e-34
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 31. (Surprise 0.747) Rejected: As the Euclidean distance of a split gap increases, the stringency of the angular agreement (tangent alignment) required for a true connection also increases.
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 71 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 31. (Surprise 0.747) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 71 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Quantify the geometric trade-off between gap distance and tangent alignment in true split reconnections.
-- **Conclusion:** The dataset was correctly parsed, yielding 410 True Reconnections, which were partitioned into Short Gaps (<10 µm) and Long Gaps (10-20 µm). The results contradicted the initial hypothesis: rather than true connections exhibiting tighter angular stringency at larger distances, the mean alignment for Long Gaps (0.4810) was significantly lower and more variable (variance = 0.4203) than for Short Gaps (mean = 0.8073, variance = 0.0780). The Welch's t-test confirmed this difference was highly statistically significant (p = 5.184e-07), and Levene's test verified a significant difference in variance (p = 1.101e-12).
-- **Caveats:** small sample size
+- **Conclusion:** The results contradicted the initial hypothesis: rather than true connections exhibiting tighter angular stringency at larger distances, the mean alignment for Long Gaps (0.4810) was significantly lower and more variable (variance = 0.4203) than for Short Gaps (mean = 0.8073, variance = 0.0780). Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, Student's t-test; p ≈ 1.1e-12
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 32. (Surprise 0.747) Rejected: Reconnection proposals that introduce topological cycles into the global U-Net fragment graph are almost exclusively false connections (merges), validating cycl...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 72 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 32. (Surprise 0.747) Refuted: data contradict the claim that cycle-formation cleanly flags false-merge reconnection proposals.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 72 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Quantify the false-positive rate of cycle-forming versus cycle-free split reconnection proposals to justify strict topological constraints.
-- **Conclusion:** The experiment successfully executed the pipeline to evaluate the hypothesis regarding cycle-forming topological constraints. The code loaded the dataset, identified 2,209 endpoint reconnection proposals within a 30 µm threshold, and simulated graph edges to test for topological cycles. Proposals were accurately mapped to ground truth to classify them as True or False.
+- **Conclusion:** The resulting contingency matrix and Chi-Square test (Statistic: 43.89, p-value: 3.48e-11) revealed a statistically significant relationship, but it contradicted the initial hypothesis: cycle-forming proposals actually exhibited a lower false-positive rate (56.7%) than cycle-free proposals (73.6%). Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square; p ≈ 3.5e-11
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 33. (Surprise 0.747) No effect found: Neurite radius exhibits strong continuity across true split gaps, making the absolute difference in estimated radius between two fragment endpoints a highly dis...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 79 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 33. (Surprise 0.747) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 79 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Evaluate the predictive power of neurite radius continuity across split gaps to disambiguate true reconnections from false candidate pairs.
-- **Conclusion:** The script identified 39,826 leaf nodes and 1,397 candidate split reconnection pairs, classifying them into 410 True pairs and 3 False pairs based on ground truth mappings. A Welch's t-test revealed no statistically significant difference between the mean radius difference of True pairs (0.4475 µm) and False pairs (0.3782 µm), yielding a p-value of 0.7609. The predictive capability of radius continuity was evaluated using an ROC curve, which resulted in an AUC score of 0.4573, indicating performance slightly worse than random chance.
-- **Caveats:** small sample size
+- **Conclusion:** A Welch's t-test revealed no statistically significant difference between the mean radius difference of True pairs (0.4475 µm) and False pairs (0.3782 µm), yielding a p-value of 0.7609. The predictive capability of radius continuity was evaluated using an ROC curve, which resulted in an AUC score of 0.4573, indicating performance slightly worse than random chance. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** Welch's t-test, ROC-AUC, Student's t-test; p = 0.7609; n up to 3
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 34. (Surprise 0.747) Belief dropped: True split connections (valid continuations) exhibit significantly tighter conservation of local neurite radius across the physical gap compared to false proxim...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 81 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 34. (Surprise 0.747) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 81 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Evaluate if the absolute difference in predicted node radius between two candidate leaf nodes can independently distinguish True from False split reconnections.
-- **Conclusion:** By identifying spatial pairs of leaf nodes within a 20 µm radius and mapping them to ground-truth components, the script extracted 410 valid True reconnections and 3 valid False reconnections. Statistical analysis via Welch's t-test yielded a non-significant p-value (p = 0.7609), showing that the mean absolute radius difference for True connections (0.4475 µm) is not significantly different from that of False connections (0.3782 µm). Additionally, the ROC curve yielded an AUC of 0.4573, indicating predictive performance slightly worse than random chance.
+- **Conclusion:** Statistical analysis via Welch's t-test yielded a non-significant p-value (p = 0.7609), showing that the mean absolute radius difference for True connections (0.4475 µm) is not significantly different from that of False connections (0.3782 µm). Additionally, the ROC curve yielded an AUC of 0.4573, indicating predictive performance slightly worse than random chance. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, ROC-AUC, Student's t-test; p = 0.7609
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 35. (Surprise 0.747) Rejected: Erroneous U-Net merge sites exhibit a statistically significant localized inflation in predicted neurite radius compared to adjacent continuous non-merge nodes,...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 87 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 35. (Surprise 0.747) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 87 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** To evaluate if localized neurite radius inflation can serve as an independent morphological feature for zero-shot merge detection.
-- **Conclusion:** The experiment successfully tested the hypothesis that erroneous U-Net merge sites exhibit localized neurite radius inflation. The code accurately identified 477 Merge Nodes and 988,883 Continuous Nodes by mapping fragment components to ground truth structures. A Mann-Whitney U test yielded a highly significant p-value of 1.22e-112, but the mean radius results completely contradicted the hypothesis: Merge Nodes actually exhibited a *smaller* mean radius (1.8951 µm) compared to Continuous Nodes (1.9970 µm).
+- **Conclusion:** A Mann-Whitney U test yielded a highly significant p-value of 1.22e-112, but the mean radius results completely contradicted the hypothesis: Merge Nodes actually exhibited a *smaller* mean radius (1.8951 µm) compared to Continuous Nodes (1.9970 µm). Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p ≈ 1.2e-112
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 36. (Surprise 0.747) No effect found: U-Net merge errors are disproportionately located at thicker neurites, as the larger physical radius and resulting fluorescence blooming increase the likelihood...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 89 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 36. (Surprise 0.747) Refuted: data contradict the claim that image-intensity features (signal across the gap) add discriminative power.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 89 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Determine if false merge errors are significantly correlated with thicker localized neurite radii.
-- **Conclusion:** It successfully extracted branching nodes (degree >= 3) and classified them into 5,612 True Branches and 36 Merge Branches by mapping to the ground truth components. The Welch's t-test yielded a p-value of 0.2920 (t-statistic = -1.0537), demonstrating no statistically significant difference in the local average radius between True Branches (mean = 1.9805 µm) and Merge Branches (mean = 1.9531 µm). This result effectively disproves the initial hypothesis that U-Net false merges are disproportionately located at thicker neurites where fluorescence blooming occurs.
-- **Caveats:** small sample size
+- **Conclusion:** The Welch's t-test yielded a p-value of 0.2920 (t-statistic = -1.0537), demonstrating no statistically significant difference in the local average radius between True Branches (mean = 1.9805 µm) and Merge Branches (mean = 1.9531 µm). Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Unsound
+- **Test:** Welch's t-test, Student's t-test; p = 0.292
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 37. (Surprise 0.747) Rejected: For valid true split reconnections, there is a significant positive correlation between the spatial gap distance and the angular agreement (cosine similarity) o...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 90 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 37. (Surprise 0.747) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 90 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Investigate the geometric trade-off between gap distance and angular alignment for true splits to inform a dynamically scaling distance-angle threshold for reconnections.
-- **Conclusion:** The code correctly extracted 664 valid 'True' split pairs and calculated both the physical gap sizes and the angular agreements (cosine similarities). The statistical analysis yielded a significant negative Pearson correlation (r = -0.5148, p-value = 0.0) and Spearman correlation (rho = -0.5036), which directly contradicts the initial hypothesis that larger gaps inherently require stricter collinear trajectories. Based on these empirical findings, the script dynamically outputted actionable recommendations to re-evaluate the distance/angle heuristics, as larger gaps likely involve complex, multi-turn missing fragments rather than simple collinear splits.
-- **Caveats:** none noted
+- **Conclusion:** The statistical analysis yielded a significant negative Pearson correlation (r = -0.5148, p-value = 0.0) and Spearman correlation (rho = -0.5036), which directly contradicts the initial hypothesis that larger gaps inherently require stricter collinear trajectories. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Spearman, Pearson; p ≈ 0
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 38. (Surprise 0.747) Rejected: The spatial density of split errors (number of valid splits per millimeter of GT cable) is significantly lower in proximal neurite regions (close to the soma) c...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 91 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 38. (Surprise 0.747) Refuted: data contradict the claim that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 91 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Determine if structural proximity to the soma protects against fragmentation, which could allow proofreading agents to allocate more computational resources to distal arbors rather than proximal trunks.
-- **Conclusion:** Hypothesis: The spatial density of split errors is significantly lower in proximal neurite regions (close to the soma) compared to distal regions, suggesting that thicker, primary projections are reconstructed more reliably. Experiment Results: - The script successfully dynamically inferred 19 soma locations by identifying the nodes with the maximum estimated neurite radius within each ground-truth component. - Cable Lengths: Total proximal cable length (< 500 µm from soma) was 412.69 mm, while total distal cable length (>= 500 µm) was 5150.07 mm.
+- **Conclusion:** - **Split Density (Mean ± Std):** Proximal regions exhibited a split density of 1.34 ± 0.38 splits/mm, whereas distal regions had a density of 0.62 ± 0.16 splits/mm. - **Statistical Comparison:** A paired t-test across the 19 neurons yielded a t-statistic of 7.7717 and a highly significant p-value of 3.6925e-07. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** paired t-test, Student's t-test; p ≈ 3.7e-07
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 39. (Surprise 0.747) Rejected: Merge errors often occur where distinct crossing neurites cause their fluorescence signals to blur, leading the U-Net to erroneously predict a thicker combined...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 95 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 39. (Surprise 0.747) Refuted: data contradict the claim that image-intensity features (signal across the gap) add discriminative power.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 95 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Test if anomalous swelling in the predicted neurite radius can serve as a local biomarker for merge errors.
-- **Conclusion:** The script correctly mapped fragment nodes to ground truth components, identified 292 merge edges and sampled an equal number of clean edges (from a pool of 997,617), and computed their average local predicted radii. Statistical analysis using Welch's t-test revealed a highly significant difference between the two groups (t-statistic = -11.6718, p-value = 1.1709e-27). However, the direction of this difference fundamentally contradicts the initial hypothesis.
+- **Conclusion:** Statistical analysis using Welch's t-test revealed a highly significant difference between the two groups (t-statistic = -11.6718, p-value = 1.1709e-27). Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, Student's t-test; p ≈ 1.2e-27
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 40. (Surprise 0.747) Rejected: Correcting split errors fundamentally alters the local graph topology; specifically, a significant proportion (>15%) of isolated U-Net fragment leaves (degree 1...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 97 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 40. (Surprise 0.747) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 97 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Quantify the frequency at which topological reconnections transition a node from a simple leaf to a complex branching junction.
-- **Conclusion:** The script correctly identified 687 unique U-Net fragment leaves involved in true split errors (mapping to the same ground-truth component within 15 µm). The analysis of the corresponding ground-truth node degrees revealed that 97.67% of these split errors occur along linear continuations (Degree 2), while only 1.31% map to actual branching points (Degree >= 3) and 1.02% to endpoints (Degree 1). A binomial test (p-value = 8.9070e-35) confirmed that the rate of connecting into branching nodes is significantly greater than zero.
-- **Caveats:** none noted
+- **Conclusion:** A binomial test (p-value = 8.9070e-35) confirmed that the rate of connecting into branching nodes is significantly greater than zero. Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** binomial test; p ≈ 8.9e-35
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 41. (Surprise 0.747) No effect found: Fragment components that contain merge errors possess a significantly higher density of unconnected endpoints (leaf nodes per unit length) than correctly segmen...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 99 · **Belief:** Leaning True → Likely False (0.708→0.164) · **Direction:** Negative · **Surprisal:** −0.747
+### 41. (Surprise 0.747) Refuted: data contradict the claim that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 99 · **Belief:** Leaning True -> Likely False (0.7083 -> 0.1635) · **Direction:** Negative
 - **Tested:** Determine if merge errors are correlated with an excess of fragmented endpoints, suggesting that actively identifying and resolving merges could unblock multiple valid split connections in a coupled proofreading state.
-- **Conclusion:** The experiment was successfully implemented and executed, successfully fulfilling the requested steps and testing the hypothesis. Hypothesis: Fragment components that contain merge errors possess a significantly higher density of unconnected endpoints (leaf nodes per unit length) than correctly segmented fragments. Experiment Results: - Sample Size: 18 merged fragments and 493 unmerged fragments (filtered for cable length ≥ 2000 µm).
-- **Caveats:** none noted
+- **Conclusion:** - **Endpoint Density Metrics (Mean / Median):** Merged fragments displayed an endpoint density of 1.89e-03 / 1.70e-03 leaves per µm, while unmerged fragments showed very similar densities of 1.81e-03 / 1.56e-03 leaves per µm. - **Statistical Comparison:** A Mann-Whitney U test yielded a p-value of ~0.599 (Statistic = 4761.0). Belief therefore dropped from Leaning True (0.71) to Likely False (0.16) (signed surprisal -0.747; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p = 0.05
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 42. (Surprise 0.738) No effect found: In competitive reconnection scenarios where an endpoint has multiple nearby candidates, combining spatial distance and radius agreement into a unified score ide...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 19 · **Belief:** Leaning True → Leaning False (0.750→0.211) · **Direction:** Negative · **Surprisal:** −0.738
+### 42. (Surprise 0.738) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 19 · **Belief:** Leaning True -> Leaning False (0.7500 -> 0.2115) · **Direction:** Negative
 - **Tested:** Evaluate a multi-feature heuristic for resolving mutual exclusivity and competing proposals at endpoints by expanding the search radius to ensure a statistically robust sample size.
-- **Conclusion:** The experiment successfully executed with the requested expanded search parameters (150 µm search radius and 30 µm ground truth mapping threshold), yielding a significantly more robust sample size of 88 competitive triads. The distance-only metric successfully predicted the valid candidate 71.59% of the time, while the combined-score metric (sum of normalized distance and normalized radius difference) achieved an accuracy of 69.32%. The McNemar's test returned a p-value of 0.823, indicating that there is no statistically significant difference between the two heuristics.
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** The McNemar's test returned a p-value of 0.823, indicating that there is no statistically significant difference between the two heuristics. Belief therefore dropped from Leaning True (0.75) to Leaning False (0.21) (signed surprisal -0.738; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square, McNemar's, Student's t-test; p = 0.823
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 43. (Surprise 0.730) Rejected: Due to the anisotropic resolution of the ExaSPIM imaging (0.748 × 0.748 × 1.0 µm), split gaps exhibit a directional bias, aligning more frequently with the lowe...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 32 · **Belief:** Leaning True → Leaning False (0.750→0.281) · **Direction:** Negative · **Surprisal:** −0.730
+### 43. (Surprise 0.730) Refuted: data contradict the claim that Z-axis anisotropy or imaging depth drives split-error geometry.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 32 · **Belief:** Leaning True -> Leaning False (0.7500 -> 0.2812) · **Direction:** Negative
 - **Tested:** To test if lower image resolution along the Z-axis disproportionately contributes to structural discontinuities (splits) in the automated reconstruction.
-- **Conclusion:** The code located the dataset and identified 1,800 True Positive split reconnections (gap pairs). It calculated their alignment with the Z-axis and compared it to a uniform random distribution of 100,000 vectors. The Kolmogorov-Smirnov test yielded a statistically significant difference (K-S stat = 0.0800, p-value = 2.7339e-10).
-- **Caveats:** zero-variance / NaN edge case
-
-### 44. (Surprise 0.730) Rejected: The frequency of split errors (measured as splits per 1,000 µm of cable length) is not uniform across a neuron's morphology; it is significantly higher in termi...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 27 · **Belief:** Leaning True → Leaning False (0.750→0.281) · **Direction:** Negative · **Surprisal:** −0.730
-- **Tested:** Determine if morphological context (terminal fine arbors vs.
-- **Conclusion:** The programmer computed node betweenness centrality for each ground-truth neuron, classifying the top 20% of high-centrality nodes as the 'Main Trunk' and the remaining 80% as 'Terminal Arbors'. By mapping the U-Net fragments to these ground-truth annotations, the split error rates (splits per 1,000 µm of cable length) were calculated for both zones across 19 validated neurons. The results revealed an average split rate of 0.174 splits / 1,000 µm in the main trunks compared to 0.127 splits / 1,000 µm in the terminal arbors.
+- **Conclusion:** The Kolmogorov-Smirnov test yielded a statistically significant difference (K-S stat = 0.0800, p-value = 2.7339e-10). The mean absolute cosine similarity for true gaps (0.4893) is slightly lower than that of random vectors (0.5005). Belief therefore dropped from Leaning True (0.75) to Leaning False (0.28) (signed surprisal -0.730; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Kolmogorov-Smirnov, Student's t-test; p ≈ 2.7e-10
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 45. (Surprise 0.730) Rejected: Naive nearest-neighbor distance proposals frequently create topologically invalid small cycles, meaning intra-component reconnection proposals yield a massively...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 50 · **Belief:** Leaning True → Leaning False (0.750→0.281) · **Direction:** Negative · **Surprisal:** −0.730
+### 44. (Surprise 0.730) Refuted: data contradict the claim that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 27 · **Belief:** Leaning True -> Leaning False (0.7500 -> 0.2812) · **Direction:** Negative
+- **Tested:** Determine if morphological context (terminal fine arbors vs. thick main trunks) dictates the likelihood of U-Net split errors, which would inform context-aware proofreading agents.
+- **Conclusion:** The accompanying box plot demonstrated that not only is the median split rate higher in the main trunk, but the variance is also notably larger, indicating highly inconsistent automated reconstruction along the primary backbone. Belief therefore dropped from Leaning True (0.75) to Leaning False (0.28) (signed surprisal -0.730; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Wilcoxon; p = 0.05
+- **Statistical issues:** none
+- **Logic issues:** none
+
+### 45. (Surprise 0.730) Refuted: data contradict the claim that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 50 · **Belief:** Leaning True -> Leaning False (0.7500 -> 0.2812) · **Direction:** Negative
 - **Tested:** Evaluate the false positive rate of cycle-forming proposals to validate cycle-prevention as a crucial graph-state constraint in proofreading.
-- **Conclusion:** The experiment successfully executed the steps to evaluate the false positive rate of cycle-forming (intra-component) naive reconnection proposals compared to inter-component proposals. Using a 25 µm Euclidean radius, 1,889 total naive proposals were generated from 39,826 fragment leaves. After mapping to the Ground Truth (within a 15 µm tolerance), 448 proposals were classified as Inter-component and 140 as Intra-component.
-- **Caveats:** extreme class imbalance / very few positives
+- **Conclusion:** The Chi-square test (p-value = 0.77) indicated no statistically significant difference between the two, primarily because the false positive count was extremely low across the board. Belief therefore dropped from Leaning True (0.75) to Leaning False (0.28) (signed surprisal -0.730; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square; p = 0.77
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 46. (Surprise 0.730) Rejected: Split errors are spatially clustered into 'shatter zones'; consequently, putative leaf-to-leaf reconnections proposed in regions with high local leaf density ha...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 85 · **Belief:** Leaning True → Leaning False (0.750→0.281) · **Direction:** Negative · **Surprisal:** −0.730
+### 46. (Surprise 0.730) Refuted: data contradict the claim that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 85 · **Belief:** Leaning True -> Leaning False (0.7500 -> 0.2812) · **Direction:** Negative
 - **Tested:** Assess if local proposal density dynamically influences the reliability of reconnections, requiring the refresh of stale density features during iterative proofreading.
-- **Conclusion:** The script properly loaded the dataset, identified putative leaf-to-leaf reconnections, computed the local leaf density within 50 µm for each pair, and performed the statistical comparison against the ground truth. Out of 1,397 putative reconnections found, 398 were confidently mapped to the ground truth. The results completely contradict the hypothesis: the 'Shatter Zone' cohort (>= 5 nearby leaves) yielded only 2 reconnections, both of which were True Positives, resulting in a 0.00% False Discovery Rate (FDR).
-- **Caveats:** extreme class imbalance / very few positives; small sample size; test driven to p=1.0 by near-zero positive counts; implementation deviated from plan
+- **Conclusion:** The Chi-squared test showed no significant difference (chi2 = 0.0000, p-value = 1.0000), heavily influenced by the extreme class imbalance. Belief therefore dropped from Leaning True (0.75) to Leaning False (0.28) (signed surprisal -0.730; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** chi-square; p = 1
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 47. (Surprise 0.730) Rejected: Shorter U-Net fragments (based on total cable length) are significantly more likely to produce false-positive split-correction proposals than longer fragments,...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 190 · **Belief:** Leaning True → Leaning False (0.750→0.281) · **Direction:** Negative · **Surprisal:** −0.730
+### 47. (Surprise 0.730) Refuted: data contradict the claim that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 190 · **Belief:** Leaning True -> Leaning False (0.7500 -> 0.2812) · **Direction:** Negative
 - **Tested:** Evaluate whether the structural size (path length) of fragments involved in a proposal influences the likelihood of the reconnection being valid.
-- **Conclusion:** The experiment successfully tested the hypothesis that shorter U-Net fragments are significantly more likely to produce false-positive split-correction proposals. The path lengths of all fragment components were calculated, and candidate leaf pairs within 15 µm were mapped to the ground truth to label them as true positive (TP) or false positive (FP). The minimum path length between the two connected fragments was then used as the sole predictor in a logistic regression model to predict the TP status.
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** The resulting logistic regression analysis yielded a coefficient for the minimum component length (per mm) of 0.002556, an odds ratio of 1.002559, and a p-value of 0.852. Since the p-value is far greater than the standard 0.05 significance threshold, the effect of fragment length on the validity of the split-correction proposal is not statistically significant. Belief therefore dropped from Leaning True (0.75) to Leaning False (0.28) (signed surprisal -0.730; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** logistic regression, Student's t-test; p = 0.852
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 48. (Surprise 0.690) Rejected: True split reconnections spanning longer spatial gaps (10-20 µm) exhibit significantly stronger geometric orientation agreement (anti-parallel collinearity) tha...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 9 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 48. (Surprise 0.690) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 9 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Quantify the trade-off between endpoint distance and orientation agreement to determine if distant reconnections require stricter geometric alignment to be valid.
-- **Conclusion:** By analyzing 39,826 U-Net fragment leaf nodes and calculating tangent collinearity, the code evaluated 395 valid true split pairs. These were divided into a 'Short Gap' cohort (< 10 µm) containing 288 pairs and a 'Long Gap' cohort (10-20 µm) containing 107 pairs. The results directly contradicted the initial hypothesis.
+- **Conclusion:** The short-gap cohort exhibited significantly stronger anti-parallel alignment (mean collinearity = -0.8675) compared to the long-gap cohort (mean collinearity = -0.5192). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, Student's t-test; p ≈ 5.3e-07
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 49. (Surprise 0.690) Belief dropped: Merge transition regions (where a single U-Net fragment erroneously bridges two distinct GT neurons) exhibit significantly higher local variance in neurite radi...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 10 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 49. (Surprise 0.690) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 10 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Validate if structural radius asymmetry can be used as a purely geometric feature by a CNN to slide along skeletons and flag merge sites without relying on image patches.
-- **Conclusion:** The experiment executed successfully and completed the evaluation of the proposed hypothesis. The code successfully mapped U-Net fragment nodes to ground-truth (GT) components to identify 4,506 unique merge transition nodes. It then compared the local radius variance (within a +/- 10 node window) of these merge sites against 4,506 randomly sampled 'safe' nodes from correctly unmerged fragments.
+- **Conclusion:** The results showed that the mean radius variance for merge regions (0.003536 µm^2) was actually slightly lower than that of safe regions (0.004049 µm^2). A Welch's t-test yielded a t-statistic of -1.8438 and a p-value of 0.0652. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, two-sample t-test, Student's t-test; p = 0.0652
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 50. (Surprise 0.690) Rejected: Shorter U-Net fragments represent noisy or broken terminal branches and have a significantly lower probability of reconnecting to other fragments than longer, m...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 12 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 50. (Surprise 0.690) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 12 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** To assess if fragment cable length acts as a predictive feature for the likelihood of an endpoint participating in a valid topology-restoring connection.
-- **Conclusion:** The experiment successfully calculated fragment cable lengths and categorized them into Short (< 3000 µm) and Long (> 10000 µm) buckets. By mapping the fragment leaf nodes to the Ground Truth (GT) skeleton, the script computed the reconnection rates for each category. The results show that endpoints of Short fragments reconnected in 32.95% of valid cases (747 out of 2267), whereas endpoints of Long fragments reconnected in only 11.91% of valid cases (369 out of 3097).
+- **Conclusion:** A Chi-square test of independence yielded a chi-square statistic of 350.26 and a p-value of 3.7177e-78, indicating a highly statistically significant relationship between a fragment's length class and its endpoint reconnection rate. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square; p ≈ 3.7e-78
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 51. (Surprise 0.690) Rejected: The physical gap distance between matching split fragment endpoints (true splits) is negatively correlated with their average estimated neurite radius, indicati...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 13 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 51. (Surprise 0.690) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 13 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if the size of the missing cable (the gap) is systematically dependent on the thickness of the neurite, informing dynamic search radii for proposal generation.
-- **Conclusion:** By robustly mocking the missing dependencies, the script loaded the dataset and identified 529 mutually-closest true split endpoint pairs within a 50 µm search radius. The correlation between the average neurite radius and the physical gap distance was computed, yielding a Pearson correlation coefficient (r) of +0.3406 (p-value = 7.8252e-16) and a Spearman correlation coefficient (rho) of +0.2872 (p-value = 1.6612e-11). These results are statistically significant but contradict the initial hypothesis.
-- **Caveats:** none noted
+- **Conclusion:** The correlation between the average neurite radius and the physical gap distance was computed, yielding a Pearson correlation coefficient (r) of +0.3406 (p-value = 7.8252e-16) and a Spearman correlation coefficient (rho) of +0.2872 (p-value = 1.6612e-11). Instead of a negative correlation, the data shows a significant positive correlation: thicker neurites (larger radius) actually tend to have larger physical gaps when split, whereas thinner neurites have smaller gaps. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Spearman, Pearson; p ≈ 1.7e-11
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 52. (Surprise 0.690) Rejected: Due to the anisotropic resolution of the ExaSPIM imaging (lower resolution along the Z-axis), split errors are directionally biased, with valid reconnection dis...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 14 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 52. (Surprise 0.690) Refuted: data contradict the claim that Z-axis anisotropy or imaging depth drives split-error geometry.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 14 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if physical constraints of the imaging modality cause topological breaks to occur preferentially along the lower-resolution axis.
-- **Conclusion:** ### Summary of Findings - Hypothesis: It was hypothesized that due to the lower-resolution Z-axis of ExaSPIM imaging, topological breaks (split errors) would be directionally biased, meaning valid reconnection displacement vectors would align more strongly with the Z-axis. - Results: The experiment identified 1,860 valid split pairs and computed their normalized displacement vectors. The mean absolute directional components were 0.5353 for the X-axis, 0.4976 for the Y-axis, and 0.4535 for the Z-axis.
-- **Caveats:** none noted
+- **Conclusion:** The mean absolute directional components were 0.5353 for the X-axis, 0.4976 for the Y-axis, and 0.4535 for the Z-axis. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** one-way ANOVA, Student's t-test; p ≈ 3.9e-06
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 53. (Surprise 0.690) Rejected: The local 3D spatial density of U-Net fragments is strongly positively correlated with the incidence of merge errors, indicating that crowding of distinct neuri...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 16 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 53. (Surprise 0.690) Refuted: data contradict the claim that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 16 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Evaluate the relationship between local fragment crowding (density) and the volumetric occurrence rate of merge errors.
-- **Conclusion:** The script binned the nodes of the fragments graph into 50x50x50 µm volumetric bins and quantified the local density of total unique fragments versus the density of unique merge fragments (fragments mapped to multiple ground-truth components). ### Summary of Findings - Hypothesis: It was hypothesized that local 3D spatial density of U-Net fragments is strongly positively correlated with the incidence of merge errors (fusions), assuming that physical crowding of neurites drives segmentation mistakes. - Results: The analysis evaluated 500,839 populated spatial bins.
-- **Caveats:** none noted
+- **Conclusion:** The calculated Pearson correlation coefficient was -0.0162 (p = 1.32e-30) and the Spearman correlation was -0.0168 (p = 1.35e-32). The correlation between local fragment density and the occurrence of merge errors is remarkably weak (virtually zero) and slightly negative. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** effect size is negligible despite small p-value (large-N artifact)
+- **Verdict:** Unsound
+- **Test:** Spearman, Pearson; p ≈ 1.3e-32
+- **Statistical issues:** statistical significance driven by very large N; effect size negligible (|r|<0.1) — significance is a large-sample artifact rather than a scientifically meaningful effect
+- **Logic issues:** none
 
-### 54. (Surprise 0.690) Rejected: Branching nodes (degree >= 3) in the U-Net fragments that are associated with merge errors exhibit a significantly higher average neurite radius and more orthog...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 21 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 54. (Surprise 0.690) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 21 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** To determine if local skeleton geometry (radius and branching angle) can be used as a heuristic to detect false U-Net merges at branch points.
-- **Conclusion:** The code identified 19,460 branching nodes in the fragment graph. By matching the 10-node neighborhood to the ground truth, 188 branching nodes were classified as 'merges', while 19,272 were classified as 'valid'. The descriptive statistics showed almost identical properties between the two groups: the mean radius was 1.8954 µm for merges vs.
+- **Conclusion:** The descriptive statistics showed almost identical properties between the two groups: the mean radius was 1.8954 µm for merges vs. 1.9172 µm for valid nodes, and the mean maximum branch angle was 153.54° for merges vs. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U; p = 0.4547
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 55. (Surprise 0.690) Rejected: Among candidate reconnection pairs, valid connections (same GT neuron) exhibit a significantly stronger correlation between their spatial gap distance and their...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 22 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 55. (Surprise 0.690) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 22 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Test if true structural gaps maintain a morphological scaling relationship (where larger gaps correlate with expected radius tapering) that is absent in false connections.
-- **Conclusion:** The script successfully identified candidate reconnection pairs (fragment leaves within a 20 µm radius), categorizing them into 1,391 valid pairs (sharing the same ground-truth ID) and 6 invalid pairs. Valid connections exhibited a weak negative correlation (r = -0.1001), while invalid connections showed a strong positive correlation (r = 0.7481), though the latter group had a very small sample size (n=6). Fisher's z-transformation yielded a z-score difference of -1.8498 and a p-value of 0.0643.
-- **Caveats:** small sample size
+- **Conclusion:** Pearson correlation coefficients were calculated between the spatial gap distance and the absolute difference in node radius for both groups. Valid connections exhibited a weak negative correlation (r = -0.1001), while invalid connections showed a strong positive correlation (r = 0.7481), though the latter group had a very small sample size (n=6). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power); effect size is negligible despite small p-value (large-N artifact)
+- **Verdict:** Unsound
+- **Test:** Fisher's exact, Pearson, Student's t-test; p = 0.0643; n up to 6
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 56. (Surprise 0.690) Belief dropped: Reconnection proposals connecting larger fragments (greater total cable length) are significantly more likely to be true positives than proposals involving shor...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 25 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 56. (Surprise 0.690) Refuted: data contradict the claim that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 25 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if fragment size acts as a reliable confidence prior for split correction, which would justify prioritizing long-fragment merges.
-- **Conclusion:** The experiment successfully executed and evaluated the hypothesis. Out of 39,826 leaf nodes, 2,209 pairs were identified within a 30 µm radius, and 469 of these pairs were successfully mapped to ground-truth traces (distance < 10 µm). The minimum fragment cable lengths of these pairs were divided into quartiles, yielding remarkably consistent and high precision across all bins: Q1 (98.31%), Q2 (99.15%), Q3 (100.00%), and Q4 (98.29%).
+- **Conclusion:** The Cochran-Armitage Chi-square test for trend resulted in a statistic of 0.0378 and a p-value of 0.8458, indicating no statistically significant trend in precision across fragment length quartiles. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square, Cochran-Armitage; p = 0.8458
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 57. (Surprise 0.690) Rejected: U-Net fragments containing merge errors possess significantly sharper maximum curvatures (lower minimum angles between adjacent edges) than valid fragments, ind...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 26 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 57. (Surprise 0.690) Refuted: data contradict the claim that neurite tortuosity or sharp turns flag U-Net split/merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 26 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Assess if the presence of sudden, sharp turns in the skeleton geometry of a U-Net fragment is a reliable indicator of an underlying merge error.
-- **Conclusion:** The experiment successfully tested the hypothesis that U-Net fragments containing merge errors possess significantly sharper maximum curvatures (lower minimum angles between adjacent edges) than valid fragments. The script accurately loaded the dataset, matched fragment components to ground-truth traces to classify them as 'merged' or 'valid', and calculated the minimum turn angle (sharpest turn) for each component. The results evaluated 2,286 merged components and 7,886 valid components.
+- **Conclusion:** Contrary to the hypothesis, the sharpest turns in merged components were slightly less sharp than in valid components: merged fragments had a mean minimum angle of 126.96° (median 129.97°), while valid fragments had a mean minimum angle of 125.78° (median 129.08°). The Mann-Whitney U test (testing if merged < valid) returned a p-value of essentially 1.0 (9.9997e-01), indicating no statistical support for the hypothesis. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 1
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 58. (Surprise 0.690) Rejected: In local neighborhoods where a leaf node has multiple competing reconnection candidates within 20 µm, true candidates exhibit a significantly lower local propos...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 28 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 58. (Surprise 0.690) Refuted: data contradict the claim that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 28 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** To determine if the local density of fragment endpoints provides contextual evidence to disambiguate true from false reconnections at crowded endpoints.
-- **Conclusion:** The experiment successfully tested the hypothesis by calculating and comparing the local proposal densities of 'True' and 'False' candidate leaves in crowded local neighborhoods. The results yielded 87 True candidates and 4 False candidates under the specified criteria (>=2 leaves within 20 µm, and high-confidence GT mapping). The True candidates exhibited a slightly higher mean density (2.36) compared to the False candidates (2.00).
+- **Conclusion:** The True candidates exhibited a slightly higher mean density (2.36) compared to the False candidates (2.00). The Mann-Whitney U test p-value for the 'less' alternative was 0.8712, and the two-sided p-value was 0.2672. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.2672
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 59. (Surprise 0.690) Rejected: Branching nodes (degree >= 3) in the U-Net fragments graph that belong to incorrectly merged components (spanning multiple ground-truth neurons) exhibit a signi...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 30 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 59. (Surprise 0.690) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 30 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** To evaluate whether local node thickness at branch points can serve as a topological flag for detecting merge errors.
-- **Conclusion:** The experiment successfully tested the hypothesis by analyzing the local node thickness (`node_radius`) of branching nodes (degree >= 3) in merged versus non-merged components of the U-Net fragments graph. The code mapped fragment nodes to ground-truth nodes (within a 10 µm confidence threshold) to determine which fragments spanned multiple GT neurons (merged) versus single GT neurons (non-merged). The results yielded 786 branching nodes in merged components and 5,460 in non-merged components.
+- **Conclusion:** A Mann-Whitney U test (alternative='greater') returned a p-value of 0.4539. Because the p-value is well above standard significance levels (e.g., 0.05), there is no statistically significant difference in node thickness between the two groups. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.4539
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 60. (Surprise 0.690) Rejected: Ground-truth neurite segments with high geometric tortuosity (curvature/twistedness) suffer from a significantly higher density of U-Net split errors compared t...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 34 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 60. (Surprise 0.690) Refuted: data contradict the claim that neurite tortuosity or sharp turns flag U-Net split/merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 34 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Investigate the relationship between local neurite morphology (tortuosity) and the susceptibility of the automated segmentation to fragment the neurite.
-- **Conclusion:** The experiment successfully analyzed the relationship between neurite tortuosity and U-Net split density to test the hypothesis. The script decomposed the ground-truth (GT) graph into 14,901 unbranched segments, filtering out those shorter than 20 µm to reduce noise, resulting in 14,129 valid segments for analysis. The Spearman rank correlation test yielded a correlation coefficient (rho) of 0.0746 with a highly significant p-value of 6.9263e-19.
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** The Spearman rank correlation test yielded a correlation coefficient (rho) of 0.0746 with a highly significant p-value of 6.9263e-19. While the p-value indicates statistical significance, the correlation coefficient is extremely close to zero, representing a negligible positive correlation. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** effect size is negligible despite small p-value (large-N artifact)
+- **Verdict:** Unsound
+- **Test:** Spearman; p ≈ 6.9e-19
+- **Statistical issues:** statistical significance driven by very large N; effect size negligible (|r|<0.1) — significance is a large-sample artifact rather than a scientifically meaningful effect
+- **Logic issues:** none
 
-### 61. (Surprise 0.690) Rejected: In a greedy split-correction strategy, false-positive connections (merges) are significantly more likely to introduce topological cycles than true-positive conn...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 39 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 61. (Surprise 0.690) Refuted: data contradict the claim that greedy/independent thresholding versus joint-reasoning matching changes proofreading precision.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 39 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** To evaluate the viability of using topological cycle formation as a rollback mechanism for detecting early, high-confidence merge errors.
-- **Conclusion:** The experiment executed successfully and completed the required steps to test the hypothesis. The script loaded the dataset using the mock unpickler, identified 2,209 proposed edges (pairs of fragment leaves within 30 µm), and categorized them into 2,198 True Splits and 11 False Merges. Applying a greedy distance-based strategy with a Union-Find data structure to track cycle formation, it found that 24.43% of True Splits caused topological cycles, compared to only 9.09% of False Merges.
-- **Caveats:** none noted
+- **Conclusion:** The Fisher's Exact Test yielded a p-value of 0.314, indicating no statistically significant dependence between an edge being a false merge and its likelihood of forming a topological cycle. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power); dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Unsound
+- **Test:** Fisher's exact, Student's t-test; p = 0.314
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 62. (Surprise 0.690) Rejected: Neuron morphological complexity drives U-Net fragmentation: there is a significant positive correlation between a ground-truth neuron's branching density (branc...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 44 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 62. (Surprise 0.690) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 44 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** To investigate if the automated segmentation algorithm systematically struggles with highly branched morphologies, leading to a proportionally higher rate of splits.
-- **Conclusion:** The programmer properly mocked the necessary dependencies to load the dataset and calculated the branching density and split rate for the 19 ground-truth neurons. A Pearson correlation test yielded an r-value of -0.3789 and a p-value of 0.1096. This result does not support the hypothesis; instead of a significant positive correlation, the data shows a non-significant, weak-to-moderate negative correlation between morphological complexity (branching density) and the U-Net fragmentation (split rate).
-- **Caveats:** none noted
+- **Conclusion:** A Pearson correlation test yielded an r-value of -0.3789 and a p-value of 0.1096. This result does not support the hypothesis; instead of a significant positive correlation, the data shows a non-significant, weak-to-moderate negative correlation between morphological complexity (branching density) and the U-Net fragmentation (split rate). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Pearson; p = 0.1096
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 63. (Surprise 0.690) Rejected: Artificial merge errors exhibit sharp, unnatural discontinuities in predicted neurite radius at the exact point of fusion, distinguishing them from natural biol...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 48 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 63. (Surprise 0.690) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 48 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** To verify if local radius variance can serve as a sliding-window feature for an agent to autonomously detect merge sites.
-- **Conclusion:** The script identified 477 merge boundary nodes and 5,583 natural branching nodes, computed the radius variance over a local 5-node window for each, and performed a Welch's t-test. The results yielded a t-statistic of -6.7334 and a highly significant p-value of 4.19e-11, indicating a strong statistical difference. However, the findings contradict the initial hypothesis: natural biological branches actually exhibit a significantly higher mean local radius variance (0.0215 µm²) than artificial merge errors (0.0110 µm²).
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** The results yielded a t-statistic of -6.7334 and a highly significant p-value of 4.19e-11, indicating a strong statistical difference. However, the findings contradict the initial hypothesis: natural biological branches actually exhibit a significantly higher mean local radius variance (0.0215 µm²) than artificial merge errors (0.0110 µm²). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** zero-variance data forced a degenerate test
+- **Verdict:** Sound
+- **Test:** Welch's t-test, Student's t-test; p ≈ 4.2e-11
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 64. (Surprise 0.690) No effect found: False merge errors exhibit branch angles closer to 90 or 180 degrees (orthogonal or crossing fibers), whereas true biological bifurcations exhibit more acute, Y...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 4 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 64. (Surprise 0.690) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 4 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Assess if local skeleton branching geometry can differentiate true axonal bifurcations from U-Net merge artifacts where fibers merely cross paths.
-- **Conclusion:** The pipeline identified 5,571 True Branches and 38 Merge Errors based on distance and component ID mappings to the ground truth. The Mann-Whitney U test yielded a p-value of 0.1835 (p > 0.05), indicating that there is no statistically significant difference in the maximum branch angle distributions between the two classes. The mean maximum branch angle for True Branches was roughly 146.65 degrees, compared to 140.33 degrees for Merge Errors, with closely aligned medians (~147.4 vs.
+- **Conclusion:** The Mann-Whitney U test yielded a p-value of 0.1835 (p > 0.05), indicating that there is no statistically significant difference in the maximum branch angle distributions between the two classes. The mean maximum branch angle for True Branches was roughly 146.65 degrees, compared to 140.33 degrees for Merge Errors, with closely aligned medians (~147.4 vs. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.05
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 65. (Surprise 0.690) Belief dropped: Different human annotators exhibit systematic biases in their tracing behavior; the ground truth neurons traced by different annotators show statistically signi...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 12 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 65. (Surprise 0.690) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 12 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Evaluate annotator-specific morphological biases in the ground truth skeletons.
-- **Conclusion:** Eight unique annotators were identified across the 19 GT components: JG (N=4), HP (N=2), IG (N=2), SP (N=3), JT (N=1), PP (N=4), MB (N=1), and YZ (N=2). The Kruskal-Wallis H-test was performed to determine if there were statistically significant differences in branching density and baseline normalized ERL across these annotators. - For Branch Density, the test yielded an H-statistic of 6.5158 with a p-value of 0.4810.
-- **Caveats:** small sample size
+- **Conclusion:** Eight unique annotators were identified across the 19 GT components: JG (N=4), HP (N=2), IG (N=2), SP (N=3), JT (N=1), PP (N=4), MB (N=1), and YZ (N=2). - For Branch Density, the test yielded an H-statistic of 6.5158 with a p-value of 0.4810. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Kruskal-Wallis; p = 0.337; n up to 4
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 66. (Surprise 0.690) No effect found: The absolute difference in estimated neurite radius (`node_radius`) between two fragment endpoints is significantly smaller for valid reconnections (same ground...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 16 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 66. (Surprise 0.690) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 16 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Assess if neurite thickness continuity is a reliable morphological feature to distinguish true splits from false merges during reconnection proposal filtering.
-- **Conclusion:** The experiment successfully tested the hypothesis regarding neurite thickness continuity. It isolated 39,826 leaf nodes from the fragment graph, found 1,618 pairs within a 20 µm radius, and classified inter-component pairs into 408 'Valid' and 989 'Invalid' reconnections based on ground-truth mapping. The analysis showed that the mean radius difference for valid pairs was 0.4455 µm (median 0.3984 µm) and for invalid pairs was 0.4669 µm (median 0.4238 µm).
+- **Conclusion:** The analysis showed that the mean radius difference for valid pairs was 0.4455 µm (median 0.3984 µm) and for invalid pairs was 0.4669 µm (median 0.4238 µm). A Mann-Whitney U test yielded a p-value of ~0.4197, which is far above the 0.05 significance threshold. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.4197
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 67. (Surprise 0.690) Rejected: The physical gap distance between fragment endpoints that belong to the same true neuron is positively correlated with the local spatial density of unrelated fr...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 18 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 67. (Surprise 0.690) Refuted: data contradict the claim that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 18 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Analyze how local reconstruction density impacts the severity (gap size) of split errors.
-- **Conclusion:** The code successfully identified 1,612 valid split pairs mapping fragment leaf nodes to ground-truth neurons. The analysis yielded a strong negative correlation between the split gap distance and the local fragment density (Pearson: -0.7679, Spearman: -0.7830), with p-values indicating strong statistical significance. The binned summary statistics show that in areas of low density (0-2 distinct fragments), the mean gap size is large (~103.91 µm).
+- **Conclusion:** The analysis yielded a strong negative correlation between the split gap distance and the local fragment density (Pearson: -0.7679, Spearman: -0.7830), with p-values indicating strong statistical significance. The binned summary statistics show that in areas of low density (0-2 distinct fragments), the mean gap size is large (~103.91 µm). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Spearman, Pearson; p ≈ 0
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 68. (Surprise 0.690) Rejected: True biological bifurcations are largely co-planar (Y-shaped), whereas U-Net merge errors (crossing fibers) exhibit significantly higher 3D non-coplanarity.
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 19 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 68. (Surprise 0.690) Refuted: data contradict the claim that morphological features mark U-Net merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 19 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Use 3D geometry to distinguish true biological branching from artificial merges by measuring the tetrahedral volume formed by the branch point and its divergent branches.
-- **Conclusion:** The experiment successfully extracted degree-3 branch points from the skeleton fragments and classified them into True Branches (5,481) and Merge Errors (36). The 3D non-coplanarity was evaluated by computing the parallelepiped volume (scalar triple product of diverging branch vectors). Statistical analysis using the Mann-Whitney U test yielded a significant p-value (6.33e-05 < 0.05), indicating a distinct geometric difference between the two classes.
-- **Caveats:** extreme class imbalance / very few positives
+- **Conclusion:** Statistical analysis using the Mann-Whitney U test yielded a significant p-value (6.33e-05 < 0.05), indicating a distinct geometric difference between the two classes. However, the results contradict the initial hypothesis: True Branches exhibited a significantly *higher* mean (219.17 µm³) and median (176.59 µm³) non-coplanarity volume compared to Merge Errors (mean: 110.75 µm³, median: 70.79 µm³). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** median outcome is zero; effect driven by outliers
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U, Student's t-test; p ≈ 6.3e-05
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 69. (Surprise 0.690) No effect found: False-positive split reconnections occur in significantly denser local graph environments (higher number of nearby fragment endpoints) compared to true-positive...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 24 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 69. (Surprise 0.690) Refuted: data contradict the claim that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 24 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Evaluate if local leaf node density is a statistically significant spatial feature for distinguishing true reconnections from false ones.
-- **Conclusion:** The code successfully loaded the dataset by employing a resilient mocking strategy to handle unpickling. It isolated the leaf nodes from the fragment graph, identified 1,397 inter-component pairs within a 20 µm radius, and classified them using the ground truth graph into 408 Valid and 989 Invalid pairs. The calculation of the local density (number of leaf nodes within a 30 µm radius of the proposal midpoint) yielded the following results: - Valid Reconnections: Mean local density = 2.15, Median = 2.00 - Invalid Reconnections: Mean local density = 2.12, Median = 2.00 A Mann-Whitney U test was performed to compare these distributions, resulting in a p-value of approximately 0.8684.
-- **Caveats:** small sample size
+- **Conclusion:** The calculation of the local density (number of leaf nodes within a 30 µm radius of the proposal midpoint) yielded the following results: - Valid Reconnections: Mean local density = 2.15, Median = 2.00 - Invalid Reconnections: Mean local density = 2.12, Median = 2.00 A Mann-Whitney U test was performed to compare these distributions, resulting in a p-value of approximately 0.8684. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U; p = 0.8684; n up to 2
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 70. (Surprise 0.690) No effect found: Valid reconnections between split fragment endpoints have a significantly shorter Euclidean gap distance than invalid reconnections within a local 20 µm search...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 25 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 70. (Surprise 0.690) Refuted: data contradict the claim that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 25 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if simply prioritizing the closest absolute endpoints provides a statistically favorable baseline for true reconnections.
-- **Conclusion:** Summary of Results: - Valid Pairs (True Reconnections): 350 pairs were identified, with a mean gap distance of 6.9415 µm (median: 5.0990 µm, std dev: 4.9400 µm). - Invalid Pairs (False Reconnections): 1047 pairs were identified, with a mean gap distance of 7.4942 µm (median: 5.0990 µm, std dev: 5.2948 µm). - Statistical Significance: The Mann-Whitney U test yielded a p-value of 0.1971.
-- **Caveats:** small sample size; implementation deviated from plan
+- **Conclusion:** **Summary of Results:** - **Valid Pairs (True Reconnections):** 350 pairs were identified, with a mean gap distance of 6.9415 µm (median: 5.0990 µm, std dev: 4.9400 µm). - **Invalid Pairs (False Reconnections):** 1047 pairs were identified, with a mean gap distance of 7.4942 µm (median: 5.0990 µm, std dev: 5.2948 µm). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.1971
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 71. (Surprise 0.690) No effect found: The density of split errors (number of U-Net fragments per 1,000 µm of ground-truth cable) is significantly higher within a 150 µm spatial radius of the soma th...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 30 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 71. (Surprise 0.690) Refuted: data contradict the claim that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 30 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Assess whether split errors are disproportionately concentrated near the soma due to complex morphology challenging the segmentation model.
-- **Conclusion:** The experiment executed successfully and achieved its objective of comparing split error densities between proximal (<= 150 µm from the soma) and distal (> 150 µm) regions of the neurons. The results revealed that the split rate in the proximal region is 0.20 fragments per 1,000 µm (6 fragments over 29,358.42 µm of cable), while the split rate in the distal region is also 0.20 fragments per 1,000 µm (1105 fragments over 5,534,619.00 µm of cable). The Poisson rate test produced a p-value of 0.9545, concluding that there is no statistically significant difference in split error density between the two regions.
+- **Conclusion:** The Poisson rate test produced a p-value of 0.9545, concluding that there is no statistically significant difference in split error density between the two regions. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Poisson rate; p = 0.9545
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 72. (Surprise 0.690) Rejected: The rate of split errors (number of U-Net fragments per unit length of ground-truth neuron) increases significantly as the topological distance from the soma in...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 32 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 72. (Surprise 0.690) Refuted: data contradict the claim that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 32 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Analyze the spatial distribution of split errors relative to their topological distance from the soma.
-- **Conclusion:** The topological distance for over 1.36 million GT nodes across 19 components was computed and binned into 500 µm intervals. In total, over 5.56 meters of cable length and 8,671 split boundaries were analyzed. The statistical analysis revealed a moderate, but highly significant, negative correlation between topological distance from the proxy soma and the split error rate (Pearson r = -0.4082, p = 5.92e-05).
+- **Conclusion:** The statistical analysis revealed a moderate, but highly significant, negative correlation between topological distance from the proxy soma and the split error rate (Pearson r = -0.4082, p = 5.92e-05). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Pearson; p ≈ 5.9e-05
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 73. (Surprise 0.690) No effect found: U-Net fragments containing merge errors possess significantly higher tortuosity than structurally correct fragments of matched cable lengths, because the errone...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 33 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 73. (Surprise 0.690) Refuted: data contradict the claim that neurite tortuosity or sharp turns flag U-Net split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 33 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if elevated tortuosity serves as a geometry-only signature for detecting merged fragments.
-- **Conclusion:** The experiment successfully executed and tested the hypothesis that U-Net fragments containing merge errors possess significantly higher tortuosity than structurally correct (Clean) fragments of similar sizes. The code reliably identified 20 Merge fragments and 981 Clean fragments, subsampling the clean set to match the cable length distribution of the merge set (19 matched pairs). The statistical analysis (Welch's t-test) resulted in a p-value of 0.3591, indicating no statistically significant difference in tortuosity between the two groups.
+- **Conclusion:** The statistical analysis (Welch's t-test) resulted in a p-value of 0.3591, indicating no statistically significant difference in tortuosity between the two groups. In fact, the mean tortuosity was nominally higher for Clean fragments (4.5121) compared to Merge fragments (3.3427). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, Student's t-test; p = 0.3591
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 74. (Surprise 0.690) Belief dropped: Short U-Net fragments (1000 µm to 5000 µm) that are orphaned (do not map to any ground-truth component) exhibit significantly higher path tortuosity than short...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 35 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 74. (Surprise 0.690) Refuted: data contradict the claim that neurite tortuosity or sharp turns flag U-Net split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 35 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if geometric path tortuosity can identify and filter out short, false-positive noise fragments without relying on image data.
-- **Conclusion:** The dataset was loaded, and short fragments (1,000 to 5,000 µm) were extracted and classified based on their mapping to the ground truth. The analysis identified 658 mapped fragments and 6,399 orphaned fragments. Contrary to the initial hypothesis, the results demonstrate that mapped short fragments (true neurites) have a higher mean path tortuosity (1.8281) compared to orphaned short fragments (1.6119).
-- **Caveats:** test driven to p=1.0 by near-zero positive counts
+- **Conclusion:** Contrary to the initial hypothesis, the results demonstrate that mapped short fragments (true neurites) have a higher mean path tortuosity (1.8281) compared to orphaned short fragments (1.6119). The one-sided Mann-Whitney U test (testing if Orphaned > Mapped) yielded a p-value of 1.0, firmly rejecting the hypothesis. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 1
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 75. (Surprise 0.690) Rejected: U-Net false merges create topological 'blocks' that artificially widen the spatial gap between true biological continuations, resulting in split-error gaps near...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 37 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 75. (Surprise 0.690) Refuted: data contradict the claim that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 37 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if un-merging is a necessary prerequisite for successful split correction by measuring how merges distort the proximity of valid reconnection proposals.
-- **Conclusion:** The experiment successfully executed the data pipeline and statistical analysis to evaluate whether U-Net false merges artificially widen the spatial gaps between true biological continuations (True Splits). Out of 1,256 identified true splits, 89 were classified as 'Merge-Adjacent' (within 50 µm of a false merge along the skeleton) and 1,167 as 'Isolated'. The mean gap distance for Merge-Adjacent splits was 83.85 µm, while Isolated splits averaged 81.81 µm.
+- **Conclusion:** The mean gap distance for Merge-Adjacent splits was 83.85 µm, while Isolated splits averaged 81.81 µm. The statistical test yielded a p-value of 0.5192 (p > 0.05), indicating that there is no statistically significant difference in gap distances between the two categories. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.05
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 76. (Surprise 0.690) Rejected: Pairs of fragment leaf nodes that are spatially close (<15 µm) and have a similar local neurite radius (difference < 15%) are significantly more likely to belon...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 46 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 76. (Surprise 0.690) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 46 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if radius continuity can be used to dramatically improve the precision of reconnection proposals between nearby leaf nodes during split correction.
-- **Conclusion:** The code loaded the dataset, extracted 39,826 leaf nodes, and identified 1,209 candidate leaf pairs from different components within a 15 µm distance. These pairs were mapped to the ground truth and classified based on their radius differences into 'Similar Radius' (< 15% difference) and 'Divergent Radius' (>= 15% difference). The analysis revealed that spatial proximity alone is a highly robust predictor for true connections: the Similar Radius group had a 98.70% true connection rate (76/77), and the Divergent Radius group had a 99.15% true connection rate (232/234).
-- **Caveats:** test driven to p=1.0 by near-zero positive counts
+- **Conclusion:** The Chi-Square test yielded a p-value of 1.0, indicating no statistically significant difference between the two groups. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square; p = 1
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 77. (Surprise 0.690) Belief dropped: Valid reconnections between split fragment endpoints are significantly more likely to be mutually closest neighbors in 3D space than invalid reconnections.
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 48 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 77. (Surprise 0.690) Refuted: data contradict the claim that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 48 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Test if symmetric nearest-neighbor relationships provide a higher precision baseline for valid reconnections than raw distance thresholds.
-- **Conclusion:** The experiment successfully tested the hypothesis that mutually closest neighbors in 3D space yield a higher precision baseline for valid reconnections. The code extracted 39,826 leaf nodes, computed their absolute closest inter-component neighbors using a KD-tree, and grouped pairs into 'Mutual' (symmetric nearest neighbors) and 'Asymmetric' groups. Results & Findings: - Mutual Pairs: 9,690 total pairs identified, with 1,125 being valid (Precision: 11.61%).
-- **Caveats:** test driven to p=1.0 by near-zero positive counts
+- **Conclusion:** - **Statistical Significance:** Fisher's Exact test yielded a p-value of 1.0729e-04. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Fisher's exact, Student's t-test; p = 0.05
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 78. (Surprise 0.690) Rejected: U-Net fragments containing at least one merge error have a significantly higher probability of also terminating in a false split error compared to topologically...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 53 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 78. (Surprise 0.690) Refuted: data contradict the claim that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 53 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Investigate the spatial coupling of errors to see if densely packed neurite regions cause the U-Net to simultaneously fuse and prematurely terminate segmentations.
-- **Conclusion:** The experiment successfully executed and investigated the spatial coupling of merge and split errors in U-Net fragments. The dataset yielded 990 pure fragments and 12 merged fragments. Out of these, 965 pure fragments and 12 merged fragments possessed mappable endpoints for evaluation.
+- **Conclusion:** The mean false split proportion per fragment was slightly higher for merged fragments (0.5752) compared to pure fragments (0.5442). A Mann-Whitney U test comparing the per-fragment false split proportions yielded a p-value of 0.3402. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U, Student's t-test; p = 0.3402
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 79. (Surprise 0.690) No effect found: U-Net fragment endpoints (leaves) that represent 'recoverable true splits' (capable of correctly rejoining a single GT neuron) exist in regions of significantly...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 56 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 79. (Surprise 0.690) Refuted: data contradict the claim that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 56 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Investigate whether localized crowding of fragment endpoints is a reliable meta-feature to flag ambiguous/risky reconnections that could cause merge errors.
-- **Conclusion:** Out of 39,826 fragment leaf nodes, 36,269 were isolated (local density 0) within a 25 µm radius. The remaining leaves were classified into 961 True candidates and 2,596 Ambiguous/False candidates. The mean local densities for the True and Ambiguous/False groups were nearly identical (1.0708 vs.
+- **Conclusion:** The mean local densities for the True and Ambiguous/False groups were nearly identical (1.0708 vs. The Mann-Whitney U test yielded a p-value of ~0.70, indicating no statistically significant difference in local endpoint density between the two groups. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.7
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 80. (Surprise 0.690) Belief dropped: Endpoints of U-Net fragments that represent false splits (i.e., the neuron actually continues in the ground truth) have significantly higher local tortuosity (c...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 59 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 80. (Surprise 0.690) Refuted: data contradict the claim that neurite tortuosity or sharp turns flag U-Net split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 59 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if highly tortuous/curved neurite segments are more prone to causing U-Net split errors compared to straight segments.
-- **Conclusion:** The code successfully isolated 39,826 fragment leaf nodes, of which 7,297 were mapped to a ground truth node within a 10 µm radius. The traversal logic accurately calculated the tortuosity for the last 25 µm of path length leading to these nodes. The classification yielded 3,907 False Splits (mean tortuosity = 1.057 +/- 0.085) and 3,390 True Terminations (mean tortuosity = 1.069 +/- 0.094).
-- **Caveats:** test driven to p=1.0 by near-zero positive counts
+- **Conclusion:** The classification yielded 3,907 False Splits (mean tortuosity = 1.057 +/- 0.085) and 3,390 True Terminations (mean tortuosity = 1.069 +/- 0.094). The Mann-Whitney U test yielded a p-value of 1.000, indicating that False Splits do not have significantly higher tortuosity than True Terminations (in fact, True Terminations appear slightly more tortuous on average). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 1
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 81. (Surprise 0.690) Belief dropped: Small fragment components (< 5000 µm in cable length) act as critical 'missing link' chains in split correction; they are significantly more likely to require m...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 63 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 81. (Surprise 0.690) Refuted: data contradict the claim that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 63 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Analyze the topological role of short fragments in the true split proposal graph to justify iterative, state-aware proofreading.
-- **Conclusion:** The code identified 1,397 inter-component leaf pairs within 20 µm, filtering them down to 408 true split proposals verified against the ground truth. From these true proposals, a proposal graph comprising 508 components was built. Components were categorized by cable length into 'Small' (< 5000 µm, N=384) and 'Large' (>= 5000 µm, N=124).
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** Components were categorized by cable length into 'Small' (< 5000 µm, N=384) and 'Large' (>= 5000 µm, N=124). A Chi-square test comparing these proportions yielded a highly significant result (Chi-square = 69.05, p-value = 9.58e-17). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square; p ≈ 9.6e-17; n up to 384
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 82. (Surprise 0.690) Rejected: Reconnections between fragment endpoints that result in the creation of a topological branch where the newly formed minor branch is exceptionally short (< 25 µm...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 66 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 82. (Surprise 0.690) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 66 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Test if the length of newly formed branches acts as a robust post-hoc heuristic to detect and roll back aggressive false reconnections (reversible decisions).
-- **Conclusion:** The experiment successfully executed and tested the proposed hypothesis. Putative reconnections were generated between fragment leaves and nearby internal nodes (< 15 µm). Out of 4,365 putative reconnections, 1,034 were confidently mapped to the ground truth and evaluated.
-- **Caveats:** test driven to p=1.0 by near-zero positive counts
+- **Conclusion:** The Chi-squared test confirmed there is no statistically significant difference in the FDR between the two groups (chi2 = 0.0000, p-value = 1.0000). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square; p = 1
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 83. (Surprise 0.690) Rejected: The distribution of spatial gap distances for valid splits is clustered in chains, meaning that virtually applying a single pass of high-confidence short-range...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 68 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 83. (Surprise 0.690) Refuted: data contradict the claim that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 68 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Simulate the effect of a multi-pass, agentic proofreading strategy that dynamically updates graph topology, demonstrating that resolving small gaps makes larger disconnected networks easier to solve.
-- **Conclusion:** The experiment successfully simulated a multi-pass proofreading strategy by identifying valid split pairs and virtually reconnecting those separated by less than 5 µm. The code identified 181 pairs of valid endpoints separated by < 5 µm and added edges to join them, updating the graph topology. Statistical analysis shows that the virtual reconnections successfully eliminated the smallest gaps, reducing the number of valid pairs ≤ 20 µm from 395 (baseline median = 5.20 µm) to 202 (new median = 9.90 µm).
-- **Caveats:** small sample size
+- **Conclusion:** Statistical analysis shows that the virtual reconnections successfully eliminated the smallest gaps, reducing the number of valid pairs ≤ 20 µm from 395 (baseline median = 5.20 µm) to 202 (new median = 9.90 µm). The baseline remaining gaps (N=214) had a median of 9.97 µm, while the new remaining gaps (N=202) had a median of 9.90 µm. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.441; n up to 214
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 84. (Surprise 0.690) Rejected: Branch nodes in the automated reconstruction where the outgoing minor branches form a highly acute angle (maximum cosine similarity > 0.8) are significantly mor...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 69 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 84. (Surprise 0.690) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 69 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Investigate if acute branch angles serve as an identifiable geometric signature of U-Net merge errors where two parallel passing neurites were wrongly fused.
-- **Conclusion:** The script identified 19,438 degree-3 branch nodes within the automated UNet fragments, successfully mapping 5,600 of them to the human-traced ground truth within a reliable 15 µm threshold. The results directly evaluate the hypothesis regarding acute branching patterns and merge errors: - Acute branches (max cosine similarity > 0.8): Out of 122 mapped nodes, only 2 were merge errors, resulting in a False Branch Rate (FBR) of 1.64%. - Non-Acute branches: Out of 5,478 mapped nodes, 33 were merge errors, resulting in an FBR of 0.60%.
-- **Caveats:** none noted
+- **Conclusion:** While the FBR is slightly higher for the acute branches, a Chi-squared test yielded a p-value of 0.3917 (Chi2 = 0.7338), indicating that the difference is not statistically significant (p > 0.05). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power); dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** chi-square, Student's t-test; p = 0.05
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 85. (Surprise 0.690) Rejected: U-Net merge errors (fragments that incorrectly fuse multiple ground-truth neurons) are disproportionately located in spatial regions with a high density of uniq...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 70 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 85. (Surprise 0.690) Refuted: data contradict the claim that morphological features mark U-Net merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 70 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if local fragment density is a strong predictor of merge errors in the automated reconstruction.
-- **Conclusion:** The script correctly mapped 23 U-Net fragments that falsely joined multiple ground-truth components and successfully identified 484 putative merge nodes where the ground-truth mapping switched. By querying a 30 µm radius around these merge nodes and comparing them to 484 randomly sampled non-merge nodes, the script calculated local component densities. The results showed that the mean local component density at merge sites (1.10 components) was virtually identical to the density at non-merge sites (1.12 components).
+- **Conclusion:** The results showed that the mean local component density at merge sites (1.10 components) was virtually identical to the density at non-merge sites (1.12 components). A Mann-Whitney U test yielded a p-value of 0.7417, indicating no statistically significant difference between the two groups. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.7417
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 86. (Surprise 0.690) Rejected: Long U-Net fragments (total cable length > 5000 µm) are significantly more 'pure' (measured by the percentage of their mapped nodes belonging to a single majori...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 75 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 86. (Surprise 0.690) Refuted: data contradict the claim that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 75 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if fragment length correlates with component purity to establish whether long fragments can be safely frozen as reliable anchors in an agentic workflow.
-- **Conclusion:** The analysis identified 185 mapped 'Long' fragments (>5000 µm) and 703 mapped 'Short' fragments (1000-5000 µm). Contrary to the hypothesis, the results show that Short fragments are slightly but significantly more pure than Long fragments (Mean Purity: 0.9986 vs. 0.9863).
-- **Caveats:** none noted
+- **Conclusion:** Contrary to the hypothesis, the results show that Short fragments are slightly but significantly more pure than Long fragments (Mean Purity: 0.9986 vs. The one-sided Mann-Whitney U test (testing if Long purity > Short purity) yielded a p-value of 0.994, firmly rejecting the hypothesis. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p = 0.0118
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 87. (Surprise 0.690) Rejected: Fragments containing merge errors are structurally more complex than clean fragments, exhibiting a significantly higher ratio of branching nodes (degree >= 3) t...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 77 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 87. (Surprise 0.690) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 77 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if the global topological complexity of a fragment (branch density) is predictive of it containing a merge error.
-- **Conclusion:** The code accurately mapped fragment components to Ground Truth neurons to classify 2,119 fragments as 'Merge' and 8,053 as 'Clean' (after filtering out fragments with fewer than 10 nodes and using a 5% node mapping threshold). The results show that the Mean Branch Density for Merge fragments is ~0.0032, while for Clean fragments it is ~0.0042. The Mann-Whitney U test indicates a highly significant difference between the two distributions (p-value = 5.03e-13), and the point-biserial correlation reveals a slight negative correlation (-0.079, p-value = 1.44e-15) between a fragment's branch density and its probability of containing a merge error.
+- **Conclusion:** The results show that the Mean Branch Density for Merge fragments is ~0.0032, while for Clean fragments it is ~0.0042. The Mann-Whitney U test indicates a highly significant difference between the two distributions (p-value = 5.03e-13), and the point-biserial correlation reveals a slight negative correlation (-0.079, p-value = 1.44e-15) between a fragment's branch density and its probability of containing a merge error. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U, point-biserial; p ≈ 1.4e-15
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 88. (Surprise 0.690) No effect found: Invalid split proposals (false reconnections) are located significantly closer to existing branching nodes (nodes with degree ≥ 3) in the fragment graph than va...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 82 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 88. (Surprise 0.690) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 82 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Test if invalid reconnections are often actually missed branch points rather than continuations of a main trunk.
-- **Conclusion:** The experiment successfully tested the hypothesis and executed all steps without any significant deviation. Summary of Hypothesis & Experiment: - Hypothesis: Invalid split proposals (false reconnections) are located significantly closer to existing branching nodes (nodes with degree ≥ 3) in the fragment graph than valid split proposals. - Experiment Execution: The code isolated 39,826 degree-1 leaf nodes and 19,460 degree ≥ 3 branching nodes from the fragment graph.
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** These endpoints were cross-referenced with the ground-truth (GT) graph to classify each inter-component pair as 'Valid' (both mapping to the same GT neuron, n=350) or 'Invalid' (n=1047). **Results & Findings:** - **Valid Reconnections (n=350):** Mean distance to nearest branch = 190.9910 µm, Median = 93.9641 µm, Std Dev = 223.1916 µm. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U, Student's t-test; p = 0.1368; n up to 1047
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 89. (Surprise 0.690) Rejected: Split errors and merge errors are spatially coupled; the 3D distance from a true split endpoint to the nearest merge junction is significantly shorter than the...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 87 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 89. (Surprise 0.690) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 87 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Investigate whether topology errors cluster in specific problematic regions of the tissue, suggesting that resolving a merge error should trigger a localized re-planning of split connections.
-- **Conclusion:** The experiment was successfully executed, extracting the spatial distance metrics and performing the statistical comparison as requested. The code correctly mapped fragment nodes to the ground truth, identifying 295 merge junctions and 7444 valid split endpoints (leaves). The statistical analysis showed that the mean distance to the nearest merge junction for split endpoints was 3159.20 µm, which was slightly larger than the mean distance for correct nodes (2925.77 µm).
+- **Conclusion:** The statistical analysis showed that the mean distance to the nearest merge junction for split endpoints was 3159.20 µm, which was slightly larger than the mean distance for correct nodes (2925.77 µm). While the Kolmogorov-Smirnov test yielded a significant p-value (p = 3.6188e-11), the direction of the difference contradicted the hypothesis. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Kolmogorov-Smirnov; p ≈ 3.6e-11
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 90. (Surprise 0.690) Rejected: Omitted ground-truth edges (areas missed entirely by the U-Net) exhibit significantly lower raw fluorescence intensity than the midpoints of valid split gaps, v...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 89 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 90. (Surprise 0.690) Refuted: data contradict the claim that image-intensity features (signal across the gap) add discriminative power.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 89 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Contrast the image-level evidence underlying 'omission' errors versus 'split' errors to understand the limits of automated segmentation.
-- **Conclusion:** The script identified 243,180 omitted GT nodes and 1,391 valid split midpoints, subsequently sampling 200 from each group for intensity extraction from the Zarr image store. Results: - Median Intensity (Omitted GT Nodes): 56.50 - Median Intensity (Split Midpoints): 33.50 - Mann-Whitney U Test (Omitted < Split): p-value = 1.00 Findings & Conclusion: The original hypothesis postulated that omitted GT edges would exhibit significantly lower raw fluorescence intensity than split gaps, under the assumption that true omissions are driven by severe signal dropout. However, the experimental data contradicts this hypothesis.
-- **Caveats:** test driven to p=1.0 by near-zero positive counts
+- **Conclusion:** **Results:** - **Median Intensity (Omitted GT Nodes):** 56.50 - **Median Intensity (Split Midpoints):** 33.50 - **Mann-Whitney U Test (Omitted < Split):** p-value = 1.00 **Findings & Conclusion:** The original hypothesis postulated that omitted GT edges would exhibit significantly lower raw fluorescence intensity than split gaps, under the assumption that true omissions are driven by severe signal dropout. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 1
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 91. (Surprise 0.690) Belief dropped: False merge errors disproportionately occur between fragment components with large overall cable lengths, whereas valid split endpoints typically connect smalle...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 91 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 91. (Surprise 0.690) Refuted: data contradict the claim that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 91 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Investigate whether the graph-level state feature 'component size' is predictive of error types, which would justify dynamically refreshing component features during an iterative proofreading process.
-- **Conclusion:** The code accurately calculated the cable lengths for all connected components, identified 295 merge edges and 733 valid split component pairs, and performed a Mann-Whitney U test to compare their size distributions. The statistical test yielded a highly significant result (p = 1.87e-53), indicating a clear difference in the component sizes associated with these two topological events. Interestingly, the data reveals a more nuanced picture than the initial hypothesis suggested.
+- **Conclusion:** The median cable length for valid split pairs (11,592.46 µm) is roughly an order of magnitude larger than the median for merge error components (1,194.61 µm). However, the merge error distribution is extremely right-skewed; its mean (53,742.08 µm) is larger than the mean of valid split pairs (46,470.80 µm), driven by rare but massive outlier components (reaching ~500,000 µm). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p ≈ 1.9e-53
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 92. (Surprise 0.690) No effect found: The topological accuracy of the U-Net reconstruction (measured by Split Rate and Edge Accuracy) varies significantly depending on the human annotator who traced...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 94 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 92. (Surprise 0.690) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 94 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if reconstruction errors are uniformly distributed or biased by the specific annotator/brain region traced.
-- **Conclusion:** The code accurately mapped U-Net fragments to the human ground truth, calculated the Edge Accuracy and Split Rate per connected component, and grouped the metrics by the respective annotator (JG, HP, IG, SP, JT, PP, MB, YZ). Statistical evaluations including Kruskal-Wallis and One-Way ANOVA were performed to test for annotator-specific bias. The results show performance variations between the annotators; for example, annotator 'JT' reported the highest Edge Accuracy (89.92%) and lowest Split Rate (0.15), while 'SP' exhibited the lowest Edge Accuracy (74.43%) and highest Split Rate (0.23).
+- **Conclusion:** The experiment was successfully executed. The code accurately mapped U-Net fragments to the human ground truth, calculated the Edge Accuracy and Split Rate per connected component, and grouped the metrics by the respective annotator (JG, HP, IG, SP, JT, PP, MB, YZ). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** Kruskal-Wallis, one-way ANOVA, Student's t-test; p = 0.59
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 93. (Surprise 0.690) Rejected: The physical distance of a true split gap is negatively correlated with the local spatial density of independent fragment endpoints, suggesting that in dense ne...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 97 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 93. (Surprise 0.690) Refuted: data contradict the claim that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 97 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Analyze the relationship between the scale of a split error (gap distance) and the local crowding of fragment endpoints.
-- **Conclusion:** The implementation successfully identified 1,801 true split gaps (distance < 30 µm, endpoints mapping to the same ground-truth neuron), calculated their exact physical distances, and counted the local endpoint density within a 30 µm radius for each gap's midpoint. Experiment Results: - Identified True Split Gaps: 1,801 - Spearman Rank Correlation: 0.2622 - P-value: 1.0567e-29 - Mean Gap Distance: 11.42 µm - Mean Local Density: 0.20 other endpoints Findings: The results explicitly contradict the initial hypothesis. The hypothesis predicted a negative correlation between gap distance and local endpoint density (i.e., denser regions would systematically produce shorter gaps).
-- **Caveats:** test driven to p=1.0 by near-zero positive counts
+- **Conclusion:** **Experiment Results:** - **Identified True Split Gaps:** 1,801 - **Spearman Rank Correlation:** 0.2622 - **P-value:** 1.0567e-29 - **Mean Gap Distance:** 11.42 µm - **Mean Local Density:** 0.20 other endpoints **Findings:** The results explicitly contradict the initial hypothesis. The hypothesis predicted a negative correlation between gap distance and local endpoint density (i.e., denser regions would systematically produce shorter gaps). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Spearman; p = 0.001
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 94. (Surprise 0.690) Rejected: The absolute difference in estimated neurite radius (node_radius) between two reconnecting fragment endpoints is significantly smaller for true-positive split r...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 98 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 94. (Surprise 0.690) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 98 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Evaluate the viability of using skeleton radius differences at endpoints as a lightweight, image-free feature for filtering invalid split reconnection proposals, ensuring robust statistical testing by mitigating data type overflow.
-- **Conclusion:** The experiment was successfully re-run with corrected data types (float64) and an expanded search radius of 50 µm. This yielded 629 valid pairs and 10 invalid pairs. The numerical overflow issue was resolved, and the Mann-Whitney U test successfully computed p-values for both metrics.
+- **Conclusion:** For the absolute radius difference, the median was 0.3438 µm (Valid) vs. For the radius ratio, the median was 0.7466 (Valid) vs. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.6106
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 95. (Surprise 0.690) Rejected: Ground-truth neurons with higher morphological tortuosity (higher ratio of path length to Euclidean distance) experience a significantly higher rate of U-Net sp...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 99 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 95. (Surprise 0.690) Refuted: data contradict the claim that neurite tortuosity or sharp turns flag U-Net split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 99 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Investigate the correlation between the intrinsic tortuosity of a neuron and its susceptibility to automated fragmentation.
-- **Conclusion:** The code calculated the length-weighted average tortuosity for all 19 ground-truth neurons and compared it against the normalized split error rate ((fragments - 1) per mm of cable length). Split rates across the neurons ranged between 0.10 and 0.32 per mm, while tortuosity values ranged from 1.178 to 1.360. A Pearson correlation test between average tortuosity and split rate yielded an r-value of -0.0545 and a p-value of 0.8247.
-- **Caveats:** none noted
+- **Conclusion:** A Pearson correlation test between average tortuosity and split rate yielded an r-value of -0.0545 and a p-value of 0.8247. These statistical results, corroborated by the visual scatter plot, indicate that there is virtually no linear correlation between the variables. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Pearson; p = 0.8247
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 96. (Surprise 0.690) Belief dropped: A multivariate Logistic Regression classifier trained on a combination of topological and geometric features achieves a higher F1 score for predicting true-posi...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 105 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 96. (Surprise 0.690) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 105 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Evaluate if machine learning on a small suite of locally extracted skeleton features outperforms static heuristics for split-correction.
-- **Conclusion:** The experiment successfully executed the pipeline to test the hypothesis. The findings reject the original hypothesis: the static rule baseline actually outperformed the Machine Learning model on the test set. The static rule achieved an F1 score of 0.7921, whereas the Logistic Regression model yielded an F1 score of 0.7526 (a delta of -0.0395).
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** The experiment successfully executed the pipeline to test the hypothesis. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** logistic regression
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 97. (Surprise 0.690) Rejected: True-positive split reconnections have a significantly higher minimum raw fluorescence intensity along their straight-line bridging paths compared to false-posi...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 107 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 97. (Surprise 0.690) Refuted: data contradict the claim that image-intensity features (signal across the gap) add discriminative power.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 107 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Prove that integrating raw image evidence directly along proposed gaps can distinguish true discontinuities (faint signals) from false connections (background darkness).
-- **Conclusion:** The experiment successfully executed the pipeline to test the hypothesis that true-positive (TP) split reconnections have significantly higher minimum raw fluorescence intensity across their gaps compared to false-positive (FP) reconnections. A custom unpickler mocked the missing dependencies, and S3-based anonymous access was utilized to fetch the multi-terabyte 5D Zarr array lazily. The algorithm identified 1,209 fragment connection proposals within a 15 µm threshold.
-- **Caveats:** none noted
+- **Conclusion:** The results yielded a mean minimum intensity of 76.66 for TP proposals and 80.62 for FP proposals. An independent samples t-test produced a t-statistic of -0.1324 and a p-value of 0.8951. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Student's t-test; p = 0.8951
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 98. (Surprise 0.690) Rejected: Short U-Net fragments (1000-5000 µm total path length) have a significantly higher rate of false-merge branch points per millimeter of cable than long fragments...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 109 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 98. (Surprise 0.690) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 109 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Investigate if fragment cable length correlates with the frequency of topological merge errors.
-- **Conclusion:** Experiment Results: - Cable Length Distribution: Analyzed 10,172 total fragments with a mean length of 1849.31 µm and median of 1175.46 µm. - Fragment Categorization: 7,057 fragments fell into the 'Short' category (1000-5000 µm) and 373 fragments in the 'Long' category (>5000 µm). - Merge Rates: Short fragments exhibited an average of 0.0004 false merges / mm (std: 0.0184), whereas Long fragments had a notably higher average of 0.0037 false merges / mm (std: 0.0350).
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** **Experiment Results:** - **Cable Length Distribution**: Analyzed 10,172 total fragments with a mean length of 1849.31 µm and median of 1175.46 µm. - **Statistical Significance**: A Mann-Whitney U Test yielded a p-value of 2.6986e-17, indicating a highly significant statistical difference between the two distributions. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U, Student's t-test; p ≈ 2.7e-17
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 99. (Surprise 0.690) Rejected: A density-adaptive distance threshold—where the allowable search radius for reconnections is mathematically penalized in regions of high leaf density—yields a h...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 110 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 99. (Surprise 0.690) Refuted: data contradict the claim that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 110 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Test if adapting split-correction strictness to local error clustering improves overall reconnection accuracy.
-- **Conclusion:** The experiment successfully executed the pipeline to test the hypothesis. The dataset was correctly located and loaded by safely mocking dependencies, and 657 candidate leaf pairs (647 True Positives, 10 False Positives) within a 50 µm search radius were extracted based on their ground-truth mappings. The findings reject the hypothesis: the density-adaptive distance threshold did not yield a higher F1 score than the globally fixed distance threshold.
-- **Caveats:** none noted
+- **Conclusion:** The experiment successfully executed the pipeline to test the hypothesis. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** test type not extractable from record
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 100. (Surprise 0.690) Rejected: The local density of candidate endpoints (leaves) within a 20 µm radius is significantly higher for false-positive split-correction proposals than for true-posi...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 112 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 100. (Surprise 0.690) Refuted: data contradict the claim that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 112 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Assess whether local proposal density can act as a negative feature to suppress false reconnections in dense, highly fragmented regions.
-- **Conclusion:** The code accurately identified fragment leaf nodes, generated reconnection proposals within a 20 µm radius, mapped them to ground truth to classify True Positive (TP) and False Positive (FP) proposals, and computed the local density of candidate endpoints around the proposal midpoints. Out of 1,397 proposals connecting different components, 395 were classified as TP and 1,002 as FP. The descriptive statistics showed that the local density (within a 20 µm radius) was almost identical for both groups: TP proposals had a mean density of 2.09 (median 2.00, std 0.34), while FP proposals had a mean density of 2.08 (median 2.00, std 0.26).
+- **Conclusion:** The descriptive statistics showed that the local density (within a 20 µm radius) was almost identical for both groups: TP proposals had a mean density of 2.09 (median 2.00, std 0.34), while FP proposals had a mean density of 2.08 (median 2.00, std 0.26). A Mann-Whitney U test testing the hypothesis that FP local density is strictly greater than TP local density yielded a non-significant p-value of ~0.5318. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U, Student's t-test; p = 0.5318
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 101. (Surprise 0.690) Rejected: Formulating split-correction as a Maximum Weight Matching problem to enforce mutual exclusivity at endpoints reduces false-positive reconnections by at least 10...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 116 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 101. (Surprise 0.690) Refuted: data contradict the claim that greedy/independent thresholding versus joint-reasoning matching changes proofreading precision.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 116 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Evaluate whether enforcing mutual exclusivity via Maximum Weight Matching reduces false-positive connections compared to an independent classification baseline, using identical scoring criteria and candidate pools.
-- **Conclusion:** The modified experiment executed successfully, employing an apples-to-apples comparison by using a unified edge score threshold (score > 0.5) and a 20 µm search radius for both the baseline and proposed approaches. Out of 928 valid candidates, the baseline (independent classification) yielded 246 True Positives (TP) and 1 False Positive (FP). The proposed Maximum Weight Matching (MWM) approach yielded 242 TP and 1 FP, resulting in a 0.00% reduction in False Positives and a slight decrease (-1.63%) in True Positives.
+- **Conclusion:** The modified experiment executed successfully, employing an apples-to-apples comparison by using a unified edge score threshold (score > 0.5) and a 20 µm search radius for both the baseline and proposed approaches. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** test type not extractable from record
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 102. (Surprise 0.690) Rejected: Incorporating mean raw fluorescence intensity from the gap between fragment endpoints into the reconnection score increases True Positive precision by at least...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 118 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 102. (Surprise 0.690) Refuted: data contradict the claim that image-intensity features (signal across the gap) add discriminative power.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 118 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if local image evidence in the gap between endpoints can effectively distinguish true splits from false-positive reconnections.
-- **Conclusion:** The experiment successfully tested the hypothesis that incorporating the mean raw fluorescence intensity from the gap between fragment endpoints into the reconnection score increases True Positive precision by at least 15%. The script identified 347 valid candidate reconnection pairs within a 15 µm radius. By mapping these pairs to the ground-truth annotations, it found an overwhelmingly imbalanced candidate pool of 344 True Positives (TP) and 3 False Positives (FP).
+- **Conclusion:** The experiment successfully tested the hypothesis that incorporating the mean raw fluorescence intensity from the gap between fragment endpoints into the reconnection score increases True Positive precision by at least 15%. The baseline model (Geometry Only) achieved a near-perfect PR-AUC of 0.9977. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** logistic regression, ROC-AUC
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 103. (Surprise 0.690) Rejected: Split errors occur significantly less frequently near the thickest region of the neuron (soma proxy), and the spatial density of splits increases as a function...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 122 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 103. (Surprise 0.690) Refuted: data contradict the claim that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 122 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Analyze the spatial frequency of splits relative to the soma across the neuronal arbor.
-- **Conclusion:** The analysis generated the following key metrics: - Proximal Cable Length (<1000 µm): 222.82 mm, with 155.5 splits. - Distal Cable Length (>=1000 µm): 5340.01 mm, with 1852.0 splits. - Proximal Split Density: 0.70 splits/mm.
+- **Conclusion:** The chi-square statistical test yielded a test statistic of 146.09 with a p-value of 1.24e-33, indicating that the distribution of splits is highly significantly different from what would be expected if splits were proportional to cable length. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square, Student's t-test; p ≈ 1.2e-33
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 104. (Surprise 0.690) Rejected: The apparent automated reconstruction split rate (mapped fragment components per GT neuron) varies significantly depending on the human annotator who traced the...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 123 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 104. (Surprise 0.690) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 123 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if ground-truth annotator style or bias correlates with the degree of fragmentation in the automated reconstruction.
-- **Conclusion:** The experiment was successfully executed, calculating the automated reconstruction split rate (mapped fragments per mm of GT cable) grouped by annotator. The dataset contained 19 ground-truth neurons, traced by 8 different annotators. The mean split rates varied from a low of 0.14 (Annotator JT, n=1) to a high of 0.22 (Annotator PP, n=4, and Annotator SP, n=3).
-- **Caveats:** small sample size; implementation deviated from plan
+- **Conclusion:** The mean split rates varied from a low of 0.14 (Annotator JT, n=1) to a high of 0.22 (Annotator PP, n=4, and Annotator SP, n=3). Despite the visual variance observed in the boxplot across different annotator initials, the Kruskal-Wallis H test yielded a p-value of 0.2249 (statistic = 9.4053). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Kruskal-Wallis; p = 0.2249; n up to 4
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 105. (Surprise 0.690) No effect found: The mean physical distance (alignment error) between human ground-truth tracing nodes and the nearest automated U-Net fragment center-line varies significantly...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 124 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 105. (Surprise 0.690) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 124 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Investigate cross-annotator variability in ground-truth center-line placement, which can confound precise distance-based metrics and radius estimations.
-- **Conclusion:** It loaded the dataset, grouped the 19 ground-truth components by annotator initials extracted from the SWC IDs, computed the mean physical alignment error (distances <= 10 µm) to the closest U-Net fragment node, and performed a one-way ANOVA. The findings show that there are 8 distinct annotators (JG, HP, IG, SP, JT, PP, MB, YZ) who contributed to the 18 traced neurons (with one additional component perhaps accounting for a total of 19 tracked components). The mean alignment errors across annotators ranged from ~1.58 µm to ~1.69 µm.
+- **Conclusion:** It loaded the dataset, grouped the 19 ground-truth components by annotator initials extracted from the SWC IDs, computed the mean physical alignment error (distances <= 10 µm) to the closest U-Net fragment node, and performed a one-way ANOVA. The mean alignment errors across annotators ranged from ~1.58 µm to ~1.69 µm. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** one-way ANOVA; p = 0.632
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 106. (Surprise 0.690) Rejected: U-Net fragments terminating at leaf nodes with larger neurite radii represent abrupt breakages in thick trunks and will thus have significantly smaller spatial...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 126 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 106. (Surprise 0.690) Refuted: data contradict the claim that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 126 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if local neurite radius at a split point is inversely correlated with the distance to the nearest potential reconnection candidate, which could help prioritize split-correction proposals.
-- **Conclusion:** Out of 39,826 total leaf nodes, 5,185 pairs were found within a 50 µm distance upper bound. The mean leaf radius was ~1.38 µm, and the mean gap distance was ~21.29 µm. A Pearson correlation test yielded an r-value of 0.1931 with a statistically significant p-value of 9.44e-45.
+- **Conclusion:** The mean leaf radius was ~1.38 µm, and the mean gap distance was ~21.29 µm. A Pearson correlation test yielded an r-value of 0.1931 with a statistically significant p-value of 9.44e-45. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Pearson; p ≈ 9.4e-45
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 107. (Surprise 0.690) Rejected: U-Net fragment components that erroneously merge multiple ground-truth neurons exhibit significantly higher local path tortuosity than fragment components that...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 132 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 107. (Surprise 0.690) Refuted: data contradict the claim that neurite tortuosity or sharp turns flag U-Net split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 132 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Test if local tortuosity (path length divided by straight-line distance) can act as a structural feature to flag heavily tangled regions prone to merge errors.
-- **Conclusion:** The script loaded the dataset using the modified unpickler, queried the KDTree to map U-Net fragments nodes to the Ground-Truth (GT) graph, and classified fragment components into 'Merged' (n=11) and 'Pure' (n=951) based on their mapping to GT neurons. Upon calculating the tortuosity (ratio of path length to Euclidean distance) over 50-µm segments, the results showed that both Merged and Pure components have near-identical mean tortuosities (~1.0534 vs 1.0535) and variances. The Mann-Whitney U test yielded a p-value of 0.423 (U-statistic: 5409.0), which is not statistically significant.
-- **Caveats:** none noted
+- **Conclusion:** The script loaded the dataset using the modified unpickler, queried the KDTree to map U-Net fragments nodes to the Ground-Truth (GT) graph, and classified fragment components into 'Merged' (n=11) and 'Pure' (n=951) based on their mapping to GT neurons. Upon calculating the tortuosity (ratio of path length to Euclidean distance) over 50-µm segments, the results showed that both Merged and Pure components have near-identical mean tortuosities (~1.0534 vs 1.0535) and variances. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U, Student's t-test; p = 0.423; n up to 951
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 108. (Surprise 0.690) Rejected: There is a significant negative correlation between the physical length of a U-Net fragment and the spatial gap distance to its nearest valid reconnection, mean...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 133 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 108. (Surprise 0.690) Refuted: data contradict the claim that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 133 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Investigate the relationship between a fragment's reconstructed size and the magnitude of the topological split errors separating it from its true neighbors.
-- **Conclusion:** Evaluating 8,780 valid gap reconnections, the analysis yielded a Spearman Rank Correlation of 0.3096 with a highly significant p-value of 2.1552e-194. Contrary to the initial hypothesis, which posited a negative correlation (expecting shorter gaps for longer fragments), the results demonstrate a statistically significant *positive* correlation. This indicates that larger, longer fragments are actually separated by larger spatial gaps, whereas smaller fragments are typically separated by smaller gaps (likely representing closely shattered pieces of local noise or weak signal).
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** Evaluating 8,780 valid gap reconnections, the analysis yielded a Spearman Rank Correlation of 0.3096 with a highly significant p-value of 2.1552e-194. Contrary to the initial hypothesis, which posited a negative correlation (expecting shorter gaps for longer fragments), the results demonstrate a statistically significant *positive* correlation. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Spearman; p ≈ 2.2e-194
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 109. (Surprise 0.690) Rejected: Neurons with a higher ground-truth branching density (bifurcations per mm of cable) exhibit a significantly higher split rate (number of fragmented U-Net compon...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 142 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 109. (Surprise 0.690) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 142 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if neuron morphological complexity (branching density) is a strong predictor of fragmentation rate in the automated reconstruction.
-- **Conclusion:** The experiment successfully executed and analyzed 19 Ground Truth (GT) components. It computed the branching density and split rate for each neuron. The results revealed a mean branching density of 1.35 branches/mm and a mean split rate of 0.18 fragments/mm.
+- **Conclusion:** The results revealed a mean branching density of 1.35 branches/mm and a mean split rate of 0.18 fragments/mm. The statistical analysis showed a significant negative correlation between branching density and split rate (Pearson r = -0.5962, p=0.0071; Spearman r = -0.5018, p=0.0286). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Spearman, Pearson; p = 0.0286
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 110. (Surprise 0.690) Rejected: Merge errors in the automated reconstruction occur in regions with significantly higher local fragment node density than correctly reconstructed branching regio...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 150 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 110. (Surprise 0.690) Refuted: data contradict the claim that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 150 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if spatial crowding of predicted fragments is a reliable proxy for detecting false merges.
-- **Conclusion:** The script correctly mapped fragments to ground truth components using KDTrees, identifying 468 merge boundary nodes and 5,374 valid branching nodes. The local node density within a 30 µm radius was computed and averaged 18.35 nodes for merge boundaries and 23.72 nodes for valid branching nodes. A Welch's t-test yielded a t-statistic of -14.5534 and a highly significant p-value of 1.2880e-40.
+- **Conclusion:** A Welch's t-test yielded a t-statistic of -14.5534 and a highly significant p-value of 1.2880e-40. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, Student's t-test; p ≈ 1.3e-40
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 111. (Surprise 0.690) Rejected: The topological fragmentation rate (number of broken UNet fragments per millimeter of ground-truth cable length) varies significantly across different human ann...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 153 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 111. (Surprise 0.690) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 153 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Analyze annotator-specific metadata to see if split error rates are biased by human selection of specific morphological regions or neuron types.
-- **Conclusion:** The experiment successfully tested the hypothesis that topological fragmentation rates differ across human annotators due to selection bias. The script mapped automated fragments to the ground-truth neurons, calculated the fragmentation rate (fragments per millimeter of cable length) for each neuron, and grouped these rates by the 8 human annotators identified in the dataset metadata. Experiment Results: - Fragmentation Rates: The average fragmentation rate across annotators ranged from a minimum of 0.14 frags/mm (Annotator JT, 1 neuron) to a maximum of 0.23 frags/mm (Annotator PP, 4 neurons).
+- **Conclusion:** The test yielded an H-statistic of 8.4105 and a p-value of 0.2978. Because the p-value (0.2978) is well above the standard alpha threshold of 0.05, we fail to reject the null hypothesis. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** Kruskal-Wallis; p = 0.2978
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 112. (Surprise 0.690) Rejected: Nodes at the junction of a merge error exhibit unnaturally inflated radii compared to the rest of the merged fragment, reflecting the U-Net fusing distinct adja...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 154 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 112. (Surprise 0.690) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 154 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Investigate if anomalous localized spikes in predicted neurite radius can serve as an endogenous feature for agentic merge detection, whilst preventing float16 numerical overflow during aggregation.
-- **Conclusion:** The experiment successfully corrected the numerical overflow issue by casting the `node_radius` array to `float64` before aggregation, enabling a valid evaluation of the hypothesis. A total of 23 merge fragments mapping to distinct Ground Truth (GT) components were analyzed. The results reveal that the mean junction radius (1.9355 µm) is slightly lower than the mean bulk radius (1.9759 µm), resulting in a mean difference of -0.0405 µm.
+- **Conclusion:** The results reveal that the mean junction radius (1.9355 µm) is slightly lower than the mean bulk radius (1.9759 µm), resulting in a mean difference of -0.0405 µm. The statistical tests (paired t-test p-value = 0.1291; Wilcoxon signed-rank test p-value = 0.1601) indicate that there is no statistically significant difference in radius between the junction and bulk regions of a merge fragment. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** paired t-test, Wilcoxon, Student's t-test; p = 0.1601
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 113. (Surprise 0.690) Rejected: Fragments containing U-Net merge errors (nodes mapping to multiple distinct ground-truth neurons) act as artificial topological hubs, possessing a significantly...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 156 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 113. (Surprise 0.690) Refuted: data contradict the claim that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 156 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** To determine if an anomalously high endpoint density can serve as an intrinsic topological signature for identifying fragments that erroneously merge distinct neurons.
-- **Conclusion:** The experiment was successfully executed and correctly implemented the steps to test the hypothesis. Out of the U-Net fragments matched to ground-truth nodes (within 5 µm), a total of 1,001 fragments were evaluated. Of these, 20 fragments were identified as 'merged' (erroneously mapping to multiple ground-truth components), while 981 were 'clean'.
+- **Conclusion:** A Mann-Whitney U test yielded a p-value of ~0.787, indicating no statistically significant difference between the two groups. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.787
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 114. (Surprise 0.690) Rejected: In ambiguous multi-way split scenarios, true-positive reconnections exhibit significantly higher radius continuity (lower difference in estimated neurite radius...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 158 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 114. (Surprise 0.690) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 158 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Evaluate neurite radius continuity as an endogenous feature for resolving mutually exclusive reconnection proposals.
-- **Conclusion:** The experiment successfully executed, overcoming previous module loading errors by implementing a robust `MockingUnpickler` that dynamically creates dummy classes for missing dependencies. It evaluated the hypothesis that true-positive (TP) reconnections exhibit significantly higher radius continuity (lower radius difference) than false-positive (FP) reconnections in ambiguous split scenarios. The analysis identified 10 competitive split scenarios.
-- **Caveats:** none noted
+- **Conclusion:** The mean absolute radius difference for TP reconnections was 0.7392 µm, while for FP reconnections it was 0.7823 µm. Statistical testing yielded a paired t-test p-value of 0.3127 and a Wilcoxon signed-rank p-value of 0.3750, indicating no statistically significant difference in radius continuity between valid and invalid reconnections. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** paired t-test, Wilcoxon, Student's t-test; p = 0.375
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 115. (Surprise 0.690) No effect found: Degree-3 branching nodes representing merge errors (where the incident edges belong to different true neurons) have a significantly larger minimum branching ang...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 162 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 115. (Surprise 0.690) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 162 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Assess the geometric branching angle as an actionable feature to detect and flag automated merge errors without image data.
-- **Conclusion:** The experiment successfully identified and analyzed degree-3 branching nodes in the UNet fragments graph. A total of 19,438 degree-3 nodes were evaluated and mapped to ground-truth components. Results revealed 19,346 'True Branches' (where all nodes map to the same ground-truth neuron) and 90 'Merge Branches' (where the neighbors map to at least two different ground-truth neurons).
+- **Conclusion:** A Welch's two-sample t-test yielded a t-statistic of 0.3588 and a p-value of 0.7206. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, two-sample t-test, Student's t-test; p = 0.7206
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 116. (Surprise 0.690) Rejected: Candidate reconnections involving at least one very short U-Net fragment (< 2000 µm) are significantly more likely to be false spatial merges than candidates wh...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 169 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 116. (Surprise 0.690) Refuted: data contradict the claim that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 169 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Investigate if fragment length acts as a proxy for segmentation confidence and whether extremely short fragments disproportionately contribute to false merge proposals.
-- **Conclusion:** The experiment successfully investigated whether candidate reconnections involving short U-Net fragments (< 2000 µm) are more likely to be false spatial merges compared to those where both fragments are long. The 'Contains Short' group had 233 True and 2 False connections (99.15% True), while the 'Both Long' group had 175 True and 1 False connection (99.43% True). Statistical testing (Chi-square and Fisher's exact test) yielded a p-value of 1.0, indicating no statistically significant difference in the false merge rates between the two length categories.
-- **Caveats:** test driven to p=1.0 by near-zero positive counts; implementation deviated from plan
+- **Conclusion:** Statistical testing (Chi-square and Fisher's exact test) yielded a p-value of 1.0, indicating no statistically significant difference in the false merge rates between the two length categories. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square, Fisher's exact, Student's t-test; p = 1
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 117. (Surprise 0.690) No effect found: For U-Net fragment endpoints with multiple nearby candidate reconnections, the margin of geometric alignment (difference in tangent cosine similarity between th...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 171 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 117. (Surprise 0.690) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 171 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Verify if the principle of mutual exclusivity holds locally by testing whether true reconnections geometrically dominate alternative local false proposals by a wider margin than when a true connection is absent.
-- **Conclusion:** The experiment successfully tested the hypothesis that true anatomical reconnections at U-Net fragment endpoints geometrically dominate alternative false proposals by a wider margin than false-dominant sets. The code extracted 39,826 U-Net fragment leaves and identified 151 leaves with multiple candidate reconnections within a 25 µm radius. The leaves were grouped based on whether the best candidate correctly belonged to the same ground-truth neuron (True-dominant, n=46) or not (False-dominant, n=105).
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** The leaves were grouped based on whether the best candidate correctly belonged to the same ground-truth neuron (True-dominant, n=46) or not (False-dominant, n=105). A Mann-Whitney U test yielded a statistic of 2370.0 and a p-value of ~0.573, indicating no statistically significant difference in the alignment margins between the two groups. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.573; n up to 105
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 118. (Surprise 0.690) Rejected: Candidate leaf pairs with a smaller relative difference in neurite radius have a higher probability of being True Positive reconnections than those with large d...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 181 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 118. (Surprise 0.690) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 181 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Evaluate the impact of neurite radius continuity on split-correction precision by leveraging the `node_radius` attribute.
-- **Conclusion:** The script located the dataset, successfully applied the dependency mocks to retain networkx functionality, extracted candidate leaf pairs, computed the topological features and relative radius differences, and evaluated the metrics using both statistical testing and greedy split-correction benchmarks. The findings strongly reject the hypothesis. The Kolmogorov-Smirnov test yielded a non-significant p-value of 0.9191, demonstrating no statistically significant difference between the radius difference distributions of True Positive (TP) and False Positive (FP) reconnections.
-- **Caveats:** none noted
+- **Conclusion:** The Kolmogorov-Smirnov test yielded a non-significant p-value of 0.9191, demonstrating no statistically significant difference between the radius difference distributions of True Positive (TP) and False Positive (FP) reconnections. In fact, the mean relative radius difference for TPs (0.2805) was slightly higher than for FPs (0.2372). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Kolmogorov-Smirnov; p = 0.9191
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 119. (Surprise 0.690) No effect found: The baseline topological complexity of a neuron varies systematically by annotator, such that the U-Net split error rate (splits per millimeter) is significantl...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 182 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 119. (Surprise 0.690) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 182 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if specific human annotators traced fundamentally more complex or difficult neurons, leading to observable bias in automated error rates.
-- **Conclusion:** The experiment was successfully executed, fulfilling the objective to evaluate if annotator-specific topological complexity introduces bias in the baseline U-Net split error rates. The script successfully extracted 8 distinct annotators ('HP', 'IG', 'JG', 'JT', 'MB', 'PP', 'SP', 'YZ') from the 18 ground truth neurons. The total skeleton cable lengths were computed, and fragments were accurately mapped to their corresponding GT components to determine split counts.
+- **Conclusion:** A Kruskal-Wallis H-test was conducted to assess statistical significance across annotator groups, resulting in an H-statistic of 8.4105 and a p-value of 0.2978. Because the p-value is greater than 0.05, we fail to reject the null hypothesis. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** Kruskal-Wallis; p = 0.2978
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 120. (Surprise 0.690) Rejected: The complexity of ground-truth neurons, measured by branching frequency, varies significantly across different human annotators and is strongly correlated with...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 185 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 120. (Surprise 0.690) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 185 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Assess how annotator variability and neuron morphological complexity influence the baseline topological split error rate of the automated U-Net reconstruction.
-- **Conclusion:** The experiment was successfully executed, and the hypothesis was tested by evaluating ground-truth neuron complexity and its relationship with the U-Net split rate. 1. Annotator Variability: The branching frequency (branches per 1,000 µm) was calculated for each ground-truth neuron and grouped by the human annotators.
+- **Conclusion:** An ANOVA test (F-statistic = 0.644, p-value = 0.713) and Kruskal-Wallis test (H-statistic = 6.516, p-value = 0.481) revealed no statistically significant differences in branching frequency across the 8 annotators. **Correlation to Split Rate**: The U-Net split rate (UNet fragments per 1,000 µm of GT cable) was computed for each GT neuron (ranging from ~0.10 to 0.34 splits / 1000 µm). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** Kruskal-Wallis, one-way ANOVA, Spearman; p = 0.161
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 121. (Surprise 0.690) Rejected: Strict greedy cycle and degree constraints prematurely reject topologically valid reconnections; a 'rollback' mechanism that replaces an earlier greedy edge wit...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 186 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 121. (Surprise 0.690) Refuted: data contradict the claim that greedy/independent thresholding versus joint-reasoning matching changes proofreading precision.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 186 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Test a reversible decision (rollback) mechanism against a strict greedy baseline for split-correction.
-- **Conclusion:** Out of 1209 candidate leaf pairs, there were 308 true positive candidates. The strict greedy baseline achieved 300 True Positives (TPs) and 874 False Positives (FPs), yielding an F1 score of 0.4049. Implementing the rollback mechanism—which replaces greedy edges with mutually exclusive proposals having a tangent agreement score higher by at least 0.3—resulted in no net improvement.
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** The experiment successfully loaded the dataset and implemented both a baseline greedy split-correction algorithm and the proposed rollback mechanism. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** test type not extractable from record
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 122. (Surprise 0.690) Rejected: Due to the lower imaging resolution along the Z-axis of the ExaSPIM volume, false-positive split connections are disproportionately aligned along the Z-axis, re...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 187 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 122. (Surprise 0.690) Refuted: data contradict the claim that Z-axis anisotropy or imaging depth drives split-error geometry.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 187 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Assess how voxel anisotropy (lower Z-resolution) impacts the spatial distribution and reliability of split-correction proposals.
-- **Conclusion:** The experiment successfully executed the pipeline to test the hypothesis regarding the impact of Z-axis anisotropy on candidate reconnection precision. It identified candidate leaf-to-leaf pairs within a 15 µm radius, computed the 3D connection vectors, and categorized them into Z-dominant and XY-dominant directions. Out of the GT-mapped candidate pairs, 95 were Z-dominant (95 TP, 0 FP) and 252 were XY-dominant (249 TP, 3 FP).
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** Fisher's Exact Test yielded a p-value of 0.5648, which indicates that the difference in true-positive precision between the two orientations is not statistically significant. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Fisher's exact, Student's t-test; p = 0.5648
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 123. (Surprise 0.690) Rejected: Fragment endpoints located within 50 µm of a merge error have a significantly higher local density of competing reconnection proposals compared to endpoints loc...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 189 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 123. (Surprise 0.690) Refuted: data contradict the claim that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 189 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Determine if merge errors tend to co-occur with dense clusters of broken fragments (ambiguous split regions), supporting the idea that split and merge correction must be coupled.
-- **Conclusion:** The experiment was successfully executed, and the hypothesis was tested by evaluating the local density of fragment endpoints (competing reconnection proposals) near merge errors compared to those farther away. 1. Merge Identification: The analysis identified 92 merge nodes (branch points where immediate neighbors map to different ground-truth components) and a total of 39,826 fragment endpoints (leaf nodes) in the automated reconstruction.
+- **Conclusion:** A Mann-Whitney U test comparing these densities yielded a statistic of 906,017.0 and a p-value of 0.3845. **Conclusion**: The p-value of 0.3845 indicates that the difference in local proposal densities between proximal and distal endpoints is not statistically significant. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U, Student's t-test; p = 0.3845
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 124. (Surprise 0.690) Belief dropped: False-positive merge branch points in the U-Net fragments have a significantly larger predicted `node_radius` compared to valid biological branch points due to...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 192 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 124. (Surprise 0.690) Refuted: data contradict the claim that image-intensity features (signal across the gap) add discriminative power.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 192 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Test if an abnormally large node radius can be used as a standalone local feature to flag potential merge errors prior to agentic rollback.
-- **Conclusion:** The experiment was successfully executed, and the previous numerical overflow issues were resolved by casting the float16 radii arrays to float64. The script successfully categorized the fragment branch nodes into 36 'Merge' points and 5,586 'Valid' points. The analysis found that the mean node radius for Merge branch points was 1.8455 µm (Variance: 0.0859), while Valid branch points had a slightly higher mean radius of 1.9529 µm (Variance: 0.0704).
+- **Conclusion:** The analysis found that the mean node radius for Merge branch points was 1.8455 µm (Variance: 0.0859), while Valid branch points had a slightly higher mean radius of 1.9529 µm (Variance: 0.0704). The Mann-Whitney U test yielded a U-statistic of 81483.5000 and a p-value of 0.9766, which is much greater than the standard 0.05 alpha level. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.9766
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 125. (Surprise 0.690) Rejected: Because the ExaSPIM imaging resolution is anisotropic (Z-axis has poorer resolution than X/Y), the displacement vectors of true-positive split gaps (valid recon...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 197 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 125. (Surprise 0.690) Refuted: data contradict the claim that Z-axis anisotropy or imaging depth drives split-error geometry.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 197 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Assess whether the lower axial resolution of the light-sheet microscope systematically biases the directionality of U-Net split errors.
-- **Conclusion:** The experiment successfully executed and analyzed 8,007 valid split pairs to determine if U-Net split errors exhibit a directional bias due to anisotropic imaging resolution. The mean absolute projection magnitudes along the X, Y, and Z axes were 0.5097, 0.4891, and 0.4924, respectively. While the Friedman test yielded a statistically significant result (p-value ≈ 0.0013), indicating that the distributions across the three axes are not identical, the expected dominant alignment with the lower-resolution Z-axis was not observed.
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** The mean absolute projection magnitudes along the X, Y, and Z axes were 0.5097, 0.4891, and 0.4924, respectively. While the Friedman test yielded a statistically significant result (p-value ≈ 0.0013), indicating that the distributions across the three axes are not identical, the expected dominant alignment with the lower-resolution Z-axis was not observed. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square; p = 0.0013
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 126. (Surprise 0.690) No effect found: The 3D raw fluorescence image patches centered on invalid merge nodes exhibit significantly higher voxel intensity variance than patches centered on valid biolo...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 200 · **Belief:** Leaning True → Leaning False (0.708→0.266) · **Direction:** Negative · **Surprisal:** −0.690
+### 126. (Surprise 0.690) Refuted: data contradict the claim that image-intensity features (signal across the gap) add discriminative power.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 200 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2656) · **Direction:** Negative
 - **Tested:** Validate whether raw image variance acts as a direct signature of false merges (intersecting distinct axons) compared to actual structural bifurcations.
-- **Conclusion:** The algorithm identified 5,555 valid branch nodes and 50 invalid merge nodes by mapping fragment branch nodes to the ground truth. A subset of 150 valid branches and all 50 invalid merges were sampled, extracting 32x32x32 voxel patches to calculate their intensity variance. The results showed that valid branches had a median variance of 972.85 and a mean of 3243.85, whereas invalid merges had a median variance of 846.88 and a mean of 2354.59.
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** The results showed that valid branches had a median variance of 972.85 and a mean of 3243.85, whereas invalid merges had a median variance of 846.88 and a mean of 2354.59. An independent Welch's t-test yielded a p-value of 0.1895, indicating no statistically significant difference between the two groups. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.27) (signed surprisal -0.690; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, two-sample t-test, Student's t-test; p = 0.1895
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 127. (Surprise 0.690) Supported: The probability of a fragment containing a merge error increases logarithmically with its total cable length, reflecting the higher spatial volume and crossing-...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 149 · **Belief:** Leaning False → Leaning True (0.292→0.734) · **Direction:** Positive · **Surprisal:** +0.690
+### 127. (Surprise 0.690) Supported: evidence confirms that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 149 · **Belief:** Leaning False -> Leaning True (0.2917 -> 0.7344) · **Direction:** Positive
 - **Tested:** Model the relationship between a fragment's morphological extent (cable length) and its likelihood of containing topological merges.
-- **Conclusion:** The experiment successfully tested the hypothesis by mapping automated UNet fragments to ground-truth graphs and modeling the probability of a merge error based on the fragment's total cable length. Out of 1001 fragments that interacted with the ground truth, 20 were identified as merged (mapped to >= 2 ground truth neurons). The logistic regression results strongly support the hypothesis: the natural logarithm of cable length is a statistically significant predictor of a merge error (p-value = 2.04e-05).
+- **Conclusion:** The logistic regression results strongly support the hypothesis: the natural logarithm of cable length is a statistically significant predictor of a merge error (p-value = 2.04e-05). Belief therefore rose from Leaning False (0.29) to Leaning True (0.73) (signed surprisal +0.690; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** logistic regression; p ≈ 2e-05
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 128. (Surprise 0.674) Rejected: Different human annotators exhibit systematically different topological split rates (fragment discontinuities per millimeter of ground truth) due to varying per...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 42 · **Belief:** Leaning True → Leaning False (0.792→0.359) · **Direction:** Negative · **Surprisal:** −0.674
+### 128. (Surprise 0.674) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 42 · **Belief:** Leaning True -> Leaning False (0.7917 -> 0.3594) · **Direction:** Negative
 - **Tested:** Determine if the baseline fragmentation of the automated U-Net is modulated by the subjective variations in the human ground truth used for evaluation.
-- **Conclusion:** The script successfully extracted the human annotators' initials from the SWC identifiers, calculated the ground-truth (GT) cable lengths, and accurately mapped the U-Net fragments to the 18 GT neurons using the KD-tree with a 5 µm distance threshold. The calculated split rates (fragments per millimeter) varied from 0.10 to 0.27 across individual neurons. Grouped by the eight different human annotators, the median split rates ranged from 0.14 to 0.22.
+- **Conclusion:** Grouped by the eight different human annotators, the median split rates ranged from 0.14 to 0.22. However, the Kruskal-Wallis H-test resulted in an H-statistic of 9.1763 and a p-value of 0.2402. Belief therefore dropped from Leaning True (0.79) to Leaning False (0.36) (signed surprisal -0.674; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** Kruskal-Wallis; p = 0.2402
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 129. (Surprise 0.659) Rejected: Short, erroneously fragmented U-Net components exhibit significantly higher overall tortuosity (ratio of cable length to maximum pairwise node Euclidean distanc...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 5 · **Belief:** Leaning True → Likely False (0.625→0.144) · **Direction:** Negative · **Surprisal:** −0.659
+### 129. (Surprise 0.659) Refuted: data contradict the claim that neurite tortuosity or sharp turns flag U-Net split/merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 5 · **Belief:** Leaning True -> Likely False (0.6250 -> 0.1442) · **Direction:** Negative
 - **Tested:** Assess whether the automated segmentation algorithm systematically struggles with and fragments highly winding (tortuous) morphological structures.
-- **Conclusion:** The experiment successfully loaded the dataset and calculated the tortuosity metrics for both Ground Truth and U-Net Fragment components with a cable length >= 1000 µm. The analysis included 19 GT components and 7,430 fragment components. The results show a striking morphological difference: Ground Truth components have a much higher tortuosity (Median = 18.79, Mean = 19.69) compared to the Fragments (Median = 1.38, Mean = 1.74).
-- **Caveats:** extreme class imbalance / very few positives; small sample size
+- **Conclusion:** The results show a striking morphological difference: Ground Truth components have a much higher tortuosity (Median = 18.79, Mean = 19.69) compared to the Fragments (Median = 1.38, Mean = 1.74). The Mann-Whitney U test yielded a highly significant p-value (5.0688e-14), confirming a robust statistical difference. Belief therefore dropped from Leaning True (0.62) to Likely False (0.14) (signed surprisal -0.659; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U, Student's t-test; p ≈ 5.1e-14; n up to 19
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 130. (Surprise 0.659) Rejected: Merge errors are not uniformly distributed along neurite paths but are disproportionately concentrated in close proximity to the soma, where neurite crossing de...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 26 · **Belief:** Leaning True → Likely False (0.625→0.144) · **Direction:** Negative · **Surprisal:** −0.659
+### 130. (Surprise 0.659) Refuted: data contradict the claim that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 26 · **Belief:** Leaning True -> Likely False (0.6250 -> 0.1442) · **Direction:** Negative
 - **Tested:** Investigate if spatial proximity to the soma is a major risk factor for U-Net merge errors.
-- **Conclusion:** The script successfully extracted 19 soma locations heuristically from the ground-truth components and mapped the U-Net fragments to the ground truth using a 30 µm distance threshold. By comparing the spatial proximity of 481 identified bridging merge nodes against a control sample of 10,000 standard nodes, the analysis generated both the requested KS test statistics and the ECDF plot. The results directly contradict the initial hypothesis: merge errors are significantly located *further* from the soma (mean distance 8993.53 µm) compared to control nodes (7597.91 µm), with an extremely significant p-value of 7.8874e-76 and a KS statistic of 0.4257.
-- **Caveats:** none noted
+- **Conclusion:** The results directly contradict the initial hypothesis: merge errors are significantly located *further* from the soma (mean distance 8993.53 µm) compared to control nodes (7597.91 µm), with an extremely significant p-value of 7.8874e-76 and a KS statistic of 0.4257. Belief therefore dropped from Leaning True (0.62) to Likely False (0.14) (signed surprisal -0.659; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Kolmogorov-Smirnov, Student's t-test; p ≈ 7.9e-76
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 131. (Surprise 0.641) Rejected: Raw fluorescence intensity drops sharply to near-background levels at U-Net split gaps, whereas true neuronal terminations exhibit higher average intensity and...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 14 · **Belief:** Leaning True → Leaning False (0.708→0.240) · **Direction:** Negative · **Surprisal:** −0.641
+### 131. (Surprise 0.641) Refuted: data contradict the claim that image-intensity features (signal across the gap) add discriminative power.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 14 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2404) · **Direction:** Negative
 - **Tested:** Investigate the local raw image intensity signatures around split errors versus true anatomical endpoints.
-- **Conclusion:** The experiment successfully executed all required steps, loading the ExaSPIM image patches from the Zarr array and extracting 150 true terminations and 150 split errors. The local 16x16x16 voxel patches were analyzed for mean and maximum fluorescence intensities. The independent t-tests revealed no statistically significant differences at the standard alpha=0.05 level, although the mean intensity comparison was borderline (t-statistic = -1.9313, p-value = 0.0548).
+- **Conclusion:** The local 16x16x16 voxel patches were analyzed for mean and maximum fluorescence intensities. The independent t-tests revealed no statistically significant differences at the standard alpha=0.05 level, although the mean intensity comparison was borderline (t-statistic = -1.9313, p-value = 0.0548). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.24) (signed surprisal -0.641; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** two-sample t-test, Student's t-test; p = 0.0548
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 132. (Surprise 0.641) Rejected: In competitive local environments where a single fragment endpoint has both valid and false reconnection candidates within 30 µm, the valid candidate is statist...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 29 · **Belief:** Leaning True → Leaning False (0.708→0.240) · **Direction:** Negative · **Surprisal:** −0.641
+### 132. (Surprise 0.641) Refuted: data contradict the claim that geometric gap features identify true split reconnections.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 29 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2404) · **Direction:** Negative
 - **Tested:** Determine if spatial distance can effectively resolve mutually exclusive competing reconnection proposals at a single endpoint without evaluating them independently.
-- **Conclusion:** The experiment successfully loaded the data and executed the required logic to identify competitive 'hub' endpoints (fragment leaves with both valid and false reconnection candidates within a 30 µm radius). Out of 7,381 mapped fragment endpoints, only 2 qualified as competitive hubs under the 30 µm threshold. Due to this severely limited sample size (N=2), the Wilcoxon signed-rank test (p-value = 0.5) cannot yield statistically meaningful conclusions.
-- **Caveats:** small sample size
+- **Conclusion:** Due to this severely limited sample size (N=2), the Wilcoxon signed-rank test (p-value = 0.5) cannot yield statistically meaningful conclusions. Interestingly, in the two competitive instances identified, the results directly contradicted the hypothesis: the mean distance to the closest *false* candidate was shorter (9.99 µm) than the distance to the closest *valid* candidate (15.81 µm). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.24) (signed surprisal -0.641; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** Wilcoxon; p = 0.5; n up to 2
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 133. (Surprise 0.641) Rejected: False merge proposals between fragment endpoints involve significantly larger fragment components on average than true split proposals.
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 43 · **Belief:** Leaning True → Leaning False (0.708→0.297) · **Direction:** Negative · **Surprisal:** −0.641
+### 133. (Surprise 0.641) Refuted: data contradict the claim that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 43 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2969) · **Direction:** Negative
 - **Tested:** To determine if the size of the components being connected is a risk factor for generating false reconnections, as larger fragments span more volume and have higher chances of incidental proximity.
-- **Conclusion:** The script correctly loaded the dataset, identified pairs of fragment leaves within 30 µm, mapped them to ground-truth nodes to classify them as True Splits (1,801 pairs) or False Merges (11 pairs), and calculated the proposal sizes (sum of the node counts of the connecting fragments). The resulting median proposal sizes were 1,040 nodes for True Splits and 786 nodes for False Merges. The Mann-Whitney U test yielded a p-value of 0.476, indicating no statistically significant difference in proposal sizes between the two groups.
+- **Conclusion:** The resulting median proposal sizes were 1,040 nodes for True Splits and 786 nodes for False Merges. The Mann-Whitney U test yielded a p-value of 0.476, indicating no statistically significant difference in proposal sizes between the two groups. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.30) (signed surprisal -0.641; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U; p = 0.476
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 134. (Surprise 0.641) Rejected: Different human annotators trace neurons with varying morphological priorities (e.g., stopping at thin axons vs.
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 60 · **Belief:** Leaning True → Leaning False (0.708→0.297) · **Direction:** Negative · **Surprisal:** −0.641
+### 134. (Surprise 0.641) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 60 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2969) · **Direction:** Negative
 - **Tested:** Analyze whether human annotator bias influences the evaluation metrics of the automated U-Net reconstruction.
-- **Conclusion:** Hypothesis: Different human annotators trace neurons with varying morphological priorities (e.g., stopping at thin axons vs. tracing fully), resulting in statistically significant differences in the U-Net split rate (splits per mm) across annotator groups. Experiment Results: 1.
-- **Caveats:** none noted
+- **Conclusion:** The mean split rates per annotator ranged from approximately 0.14 to 0.23 fragments/mm. Statistical Testing: A Kruskal-Wallis test was performed on the grouped split rates, returning an H-statistic of 8.4105 and a p-value of 0.2978. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.30) (signed surprisal -0.641; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Unsound
+- **Test:** Kruskal-Wallis; p = 0.2978
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 135. (Surprise 0.641) Rejected: Over 80% of false-positive reconnections introduced by a relaxed distance-only split-correction involve at least one 'noisy' U-Net fragment from the bottom 50%...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 119 · **Belief:** Leaning True → Leaning False (0.708→0.297) · **Direction:** Negative · **Surprisal:** −0.641
+### 135. (Surprise 0.641) Refuted: data contradict the claim that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 119 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.2969) · **Direction:** Negative
 - **Tested:** Determine if aggressive merging predominantly fails because it erroneously attaches long valid fragments to short background noise fragments.
-- **Conclusion:** The experiment executed successfully and analyzed the hypothesis that over 80% of false-positive (FP) reconnections involve short U-Net fragments. The median fragment length was computed as 1,175.46 µm, perfectly splitting the 10,172 fragments into 5,086 'Short' and 5,086 'Long' components. Applying a relaxed, distance-only split-correction (15 µm radius) generated 1,174 connections.
-- **Caveats:** extreme class imbalance / very few positives
+- **Conclusion:** The median fragment length was computed as 1,175.46 µm, perfectly splitting the 10,172 fragments into 5,086 'Short' and 5,086 'Long' components. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.30) (signed surprisal -0.641; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Questionable
+- **Test:** test type not extractable from record
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** none
 
-### 136. (Surprise 0.615) No effect found: The topological fragmentation rate (number of split errors per mm of ground-truth cable) varies significantly depending on the human annotator, reflecting indiv...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 51 · **Belief:** Likely True → Leaning False (0.833→0.385) · **Direction:** Negative · **Surprisal:** −0.615
+### 136. (Surprise 0.615) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 51 · **Belief:** Likely True -> Leaning False (0.8333 -> 0.3846) · **Direction:** Negative
 - **Tested:** Quantify and compare the automated segmentation's split error rates across ground-truth neurons grouped by human annotator to identify potential annotation bias.
-- **Conclusion:** The experiment successfully quantified the automated segmentation's split error rates across ground-truth neurons grouped by human annotators. The script effectively used a custom `MockUnpickler` to bypass missing dependencies, successfully parsed the 19 ground truth components, calculated continuous cable lengths in millimeters, and quantified U-Net split errors mapped to each neuron. The derived normalized fragmentation rates (splits/mm) were grouped across 8 distinct human annotators (ranging from 1 to 4 neurons per annotator).
-- **Caveats:** none noted
+- **Conclusion:** The Kruskal-Wallis test yielded a test statistic of 10.4029 and a p-value of 0.1669. Because the p-value is greater than the standard alpha level of 0.05, we fail to reject the null hypothesis. Belief therefore dropped from Likely True (0.83) to Leaning False (0.38) (signed surprisal -0.615; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power); dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Unsound
+- **Test:** Kruskal-Wallis, Student's t-test; p = 0.1669; n up to 19
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 137. (Surprise 0.609) Rejected: The precision of spatial reconnection proposals is inversely correlated with the combined cable length of the two candidate fragment components, suggesting that...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 3 · **Belief:** Leaning True → Leaning False (0.625→0.234) · **Direction:** Negative · **Surprisal:** −0.609
+### 137. (Surprise 0.609) Refuted: data contradict the claim that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 3 · **Belief:** Leaning True -> Leaning False (0.6250 -> 0.2344) · **Direction:** Negative
 - **Tested:** Evaluate how fragment component size impacts the reliability of distance-based reconnection proposals to inform dynamic feature refreshing.
-- **Conclusion:** The experiment successfully executed the steps to evaluate the hypothesis that reconnection proposal precision is inversely correlated with the combined cable length of the candidate fragments. Out of 1,209 inter-component leaf pairs within 15 µm, 347 proposals were successfully mapped to ground truth components for validation. The proposals were binned into deciles based on combined cable length ranging from roughly 2,500 µm to over 375,000 µm.
+- **Conclusion:** The Pearson correlation coefficient calculated is 0.1252 with a non-significant p-value of 0.7304. Belief therefore dropped from Leaning True (0.62) to Leaning False (0.23) (signed surprisal -0.609; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Pearson; p = 0.7304
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 138. (Surprise 0.593) No effect found: The rate of U-Net omission errors (the fraction of ground-truth edges with no U-Net fragment nodes within 5 µm) varies significantly depending on the human anno...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 6 · **Belief:** Leaning True → Leaning False (0.708→0.328) · **Direction:** Negative · **Surprisal:** −0.593
+### 138. (Surprise 0.593) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 6 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.3281) · **Direction:** Negative
 - **Tested:** Analyze cross-annotator variability in the context of automated reconstruction performance to determine if certain human annotators systematically trace regions that the U-Net fails to predict.
-- **Conclusion:** The experiment successfully calculated the U-Net omission rates for the ground-truth edges by computing edge midpoints and querying the KD-tree. The 18 ground-truth components were accurately mapped to their respective human annotators using the SWC IDs, yielding groupings for 8 unique annotators (JG, HP, IG, SP, JT, PP, MB, YZ). Mean omission rates across the annotators ranged from ~11.4% to ~27.2%.
+- **Conclusion:** Mean omission rates across the annotators ranged from ~11.4% to ~27.2%. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.33) (signed surprisal -0.593; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** Kruskal-Wallis, one-way ANOVA; p = 0.4775
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 139. (Surprise 0.568) Belief dropped: Due to the mutual exclusivity constraint at endpoints, the spatially closest candidate leaf node is frequently not the true positive connection in dense environ...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 3 · **Belief:** Likely True → Uncertain (0.833→0.469) · **Direction:** Negative · **Surprisal:** −0.568
+### 139. (Surprise 0.568) Refuted: data contradict the claim that greedy/independent thresholding versus joint-reasoning matching changes proofreading precision.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 3 · **Belief:** Likely True -> Uncertain (0.8333 -> 0.4688) · **Direction:** Negative
 - **Tested:** Evaluate the risk of relying purely on a 1-Nearest Neighbor distance-based greedy matching strategy for split correction.
-- **Conclusion:** The experiment successfully executed and addressed the hypothesis. By analyzing leaf nodes with at least two candidates within a 30 µm radius, it identified 57 dense cases that successfully mapped to a ground-truth (GT) valid connection. The results showed that the 1-Nearest Neighbor (1-NN) approach correctly identified the True Positive connection in 94.74% (54 out of 57) of cases.
-- **Caveats:** none noted
+- **Conclusion:** A binomial test comparing this accuracy to a high threshold of 90% yielded a p-value of 0.3722, meaning we fail to reject the null hypothesis that the 1-NN accuracy is 90%. Belief therefore dropped from Likely True (0.83) to Uncertain (0.47) (signed surprisal -0.568; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** binomial test; p = 0.3722
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 140. (Surprise 0.568) Belief dropped: The accuracy of a simple spatial nearest-neighbor heuristic for split correction (reconnecting a leaf to its absolute closest neighbor) is negatively correlated...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 165 · **Belief:** Likely True → Uncertain (0.833→0.469) · **Direction:** Negative · **Surprisal:** −0.568
+### 140. (Surprise 0.568) Refuted: data contradict the claim that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 165 · **Belief:** Likely True -> Uncertain (0.8333 -> 0.4688) · **Direction:** Negative
 - **Tested:** Quantify how local endpoint clustering limits simple distance-based reconnects, motivating the need for mutual-exclusivity constraints and GNN-based joint reasoning.
-- **Conclusion:** A total of 7,053 fragment leaves successfully mapped to ground-truth (GT) components and found valid alternate-fragment nearest neighbors. The overall accuracy of the distance-based reconnect heuristic was surprisingly high at ~87.0%. However, contrary to the hypothesis, the point-biserial correlation between local endpoint density and reconnect success rate showed a weak but statistically significant *positive* correlation (r = 0.1126, p < 0.001).
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** However, contrary to the hypothesis, the point-biserial correlation between local endpoint density and reconnect success rate showed a weak but statistically significant *positive* correlation (r = 0.1126, p < 0.001). Belief therefore dropped from Likely True (0.83) to Uncertain (0.47) (signed surprisal -0.568; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** point-biserial, Student's t-test; p = 0.001
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 141. (Surprise 0.544) No effect found: The proportion of ground truth cable that the U-Net completely fails to reconstruct (omitted edges) varies significantly depending on the human annotator who tr...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 49 · **Belief:** Leaning True → Leaning False (0.708→0.359) · **Direction:** Negative · **Surprisal:** −0.544
+### 141. (Surprise 0.544) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 49 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.3594) · **Direction:** Negative
 - **Tested:** Test whether baseline omission error rates are biased by the individual annotator styles embedded in the ground truth.
-- **Conclusion:** The code extracted annotator initials from the ground truth component IDs, calculated the omission rate for each component, and performed a Kruskal-Wallis H test to compare omission rates across different annotators. The results show variations in mean and median omission rates among annotators (e.g., SP with a mean of 0.2616, JT with a mean of 0.1047). However, the Kruskal-Wallis H Test yielded a p-value of 0.4775, which is far greater than the standard alpha level of 0.05.
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** The results show variations in mean and median omission rates among annotators (e.g., SP with a mean of 0.2616, JT with a mean of 0.1047). However, the Kruskal-Wallis H Test yielded a p-value of 0.4775, which is far greater than the standard alpha level of 0.05. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.36) (signed surprisal -0.544; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Kruskal-Wallis; p = 0.4775
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 142. (Surprise 0.544) Belief dropped: Reconnection proposals for leaf nodes with multiple candidate partners (within 15 µm) exhibit significantly lower mean orientation agreement (tangent cosine sim...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 131 · **Belief:** Leaning True → Leaning False (0.708→0.359) · **Direction:** Negative · **Surprisal:** −0.544
+### 142. (Surprise 0.544) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 131 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.3594) · **Direction:** Negative
 - **Tested:** To demonstrate that local endpoint crowding degrades geometric alignment cues, necessitating joint (agentic) reasoning over competing proposals rather than independent single-pass edge classification.
-- **Conclusion:** It extracted terminal tangent vectors for leaf nodes and used a KD-tree to identify candidates within a 15 µm radius, categorizing them into single-candidate (2,326 proposals) and multi-candidate (46 proposals) groups. The Mann-Whitney U test yielded a highly significant p-value (9.0681e-04). Interestingly, the Multi-Candidate group showed a higher mean maximum tangent cosine similarity (0.8503) compared to the Single-Candidate group (0.7524).
+- **Conclusion:** The Mann-Whitney U test yielded a highly significant p-value (9.0681e-04). Interestingly, the Multi-Candidate group showed a higher mean maximum tangent cosine similarity (0.8503) compared to the Single-Candidate group (0.7524). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.36) (signed surprisal -0.544; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p ≈ 0.00091
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 143. (Surprise 0.536) Belief dropped: A substantial percentage of true split gaps larger than the standard 20 µm search radius can be bridged by incorporating intermediate 'orphan' fragments, provin...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 66 · **Belief:** Leaning True → Leaning False (0.708→0.317) · **Direction:** Negative · **Surprisal:** −0.536
+### 143. (Surprise 0.536) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 66 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.3173) · **Direction:** Negative
 - **Tested:** Demonstrate the necessity of iterative topology re-planning by quantifying how many unrecoverable long gaps become recoverable via small intermediate fragments.
-- **Conclusion:** The code analyzed whether unrecoverable split errors (gaps > 20 µm) could be bridged by a 2-hop mechanism involving intermediate fragments. It identified 410 directly resolvable gaps and 1017 unreachable gaps. However, because the dataset cache was pre-filtered to drop UNet fragments shorter than 1000 µm (`min_cable_length = 1000`), there were exactly 0 small fragments (< 20 µm) available to act as intermediate bridges.
-- **Caveats:** none noted
+- **Conclusion:** The experiment successfully revised the `MockUnpickler` to handle missing dependencies robustly using a `GenericMock` and executed the logic correctly. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.32) (signed surprisal -0.536; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** test type not extractable from record
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 144. (Surprise 0.527) Rejected: Merge errors occur predominantly at shallow intersection angles (< 30 degrees) where two distinct neurites run parallel and share more voxel overlap, rather tha...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 27 · **Belief:** Leaning True → Leaning False (0.750→0.365) · **Direction:** Negative · **Surprisal:** −0.527
+### 144. (Surprise 0.527) Refuted: data contradict the claim that morphological features mark U-Net merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 27 · **Belief:** Leaning True -> Leaning False (0.7500 -> 0.3654) · **Direction:** Negative
 - **Tested:** Quantify the 3D crossing angles of distinct true neurites at locations where the U-Net erroneously merged them, compared to non-merged proximal crossings.
-- **Conclusion:** By scanning pairs of distinct ground-truth components, the code successfully identified 230 spatial crossing sites where distinct neurons come into close proximity. Evaluating the corresponding U-Net fragments revealed 103 merge errors and 127 safe crossings. The mean crossing angle for merge errors was 56.47 degrees, compared to 60.94 degrees for safe crossings.
-- **Caveats:** none noted
+- **Conclusion:** The mean crossing angle for merge errors was 56.47 degrees, compared to 60.94 degrees for safe crossings. A Mann-Whitney U test yielded a p-value of 0.07855, which is slightly above the standard significance threshold (0.05). Belief therefore dropped from Leaning True (0.75) to Leaning False (0.37) (signed surprisal -0.527; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p = 0.07855
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 145. (Surprise 0.495) Belief dropped: Greedy split-correction without topological constraints will introduce cycles predominantly into fragment components that already contain merge errors.
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 18 · **Belief:** Leaning True → Leaning False (0.708→0.391) · **Direction:** Negative · **Surprisal:** −0.495
+### 145. (Surprise 0.495) Refuted: data contradict the claim that greedy/independent thresholding versus joint-reasoning matching changes proofreading precision.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 18 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.3906) · **Direction:** Negative
 - **Tested:** To investigate the coupling between merge errors and cycle creation when aggressive, distance-based reconnecting is applied.
-- **Conclusion:** The experiment successfully simulated a greedy distance-based reconnection (within a 15 µm radius) of fragment leaves to investigate the correlation between newly introduced topological cycles and pre-existing merge errors. The algorithm added 1,382 new edges between leaves. Among the updated connected components, 99 contained cycles.
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** The experiment successfully simulated a greedy distance-based reconnection (within a 15 µm radius) of fragment leaves to investigate the correlation between newly introduced topological cycles and pre-existing merge errors. The Fisher's Exact Test yielded a p-value of 0.0060, indicating a statistically significant association between the presence of a cycle and a merge error. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.39) (signed surprisal -0.495; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Fisher's exact, Student's t-test; p = 0.006
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 146. (Surprise 0.495) Rejected: False positive split reconnections are significantly more likely to form topological cycles within the U-Net graph than true positive reconnections.
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 24 · **Belief:** Leaning True → Leaning False (0.708→0.391) · **Direction:** Negative · **Surprisal:** −0.495
+### 146. (Surprise 0.495) Refuted: data contradict the claim that cycle-formation cleanly flags false-merge reconnection proposals.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 24 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.3906) · **Direction:** Negative
 - **Tested:** Determine if cycle-creation is a reliable, unsupervised topological filter for rejecting invalid connection proposals.
-- **Conclusion:** It evaluated 656 candidate leaf pairs within a 30 µm radius that could be reliably mapped to the ground truth. The results showed 651 True Positive (TP) proposals, of which 172 (26.42%) would induce cycles if connected. In contrast, there were only 5 False Positive (FP) proposals, none of which (0.00%) induced cycles.
-- **Caveats:** extreme class imbalance / very few positives
+- **Conclusion:** The Chi-Square Test of Independence yielded a statistic of 0.6852 and a p-value of 0.4078, indicating no statistically significant association. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.39) (signed surprisal -0.495; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** chi-square; p = 0.4078
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 147. (Surprise 0.495) No effect found: Valid reconnections between split U-Net fragments have a significantly smaller absolute difference in their estimated neurite radii compared to spatially nearby...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 33 · **Belief:** Leaning True → Leaning False (0.708→0.391) · **Direction:** Negative · **Surprisal:** −0.495
+### 147. (Surprise 0.495) Refuted: data contradict the claim that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 33 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.3906) · **Direction:** Negative
 - **Tested:** Evaluate whether local neurite radius continuity acts as a robust biological constraint to filter out incorrect split-correction proposals.
-- **Conclusion:** The experiment successfully calculated the absolute difference in estimated neurite radii for candidate U-Net leaf node pairs located within a 20 µm distance from distinct fragments. The results found 408 Valid connections and only 3 Invalid connections within this spatial threshold. The mean absolute radius difference for Valid connections was 0.4455 ± 0.3668 µm, while for Invalid connections it was 0.3783 ± 0.2810 µm.
-- **Caveats:** small sample size
+- **Conclusion:** The mean absolute radius difference for Valid connections was 0.4455 ± 0.3668 µm, while for Invalid connections it was 0.3783 ± 0.2810 µm. A Welch's independent samples t-test was performed, resulting in a t-statistic of 0.3371 and a p-value of 0.7677. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.39) (signed surprisal -0.495; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Welch's t-test, Student's t-test; p = 0.7677; n up to 3
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 148. (Surprise 0.495) No effect found: Fragment components that contain topological merge errors exist in spatial regions with significantly higher local fragment endpoint density than completely cle...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 83 · **Belief:** Leaning True → Leaning False (0.708→0.391) · **Direction:** Negative · **Surprisal:** −0.495
+### 148. (Surprise 0.495) Refuted: data contradict the claim that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 83 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.3906) · **Direction:** Negative
 - **Tested:** Investigate if high spatial congestion (endpoint density) is a strong structural proxy indicator for the presence of U-Net merge errors.
-- **Conclusion:** Fragment components were mapped to Ground Truth (GT) nodes; 23 components mapped to 2 or more GT components ('Merged'), and 1,042 components mapped to exactly 1 GT component ('Clean'). Leaf nodes in the fragment graph were isolated (39,826 leaves) to serve as endpoints. The local endpoint density within a 50 µm radius around each component's centroid was calculated.
+- **Conclusion:** A Mann-Whitney U test yielded a p-value of 0.2595. Since the p-value is greater than 0.05, the difference in endpoint density between Merged and Clean components is not statistically significant. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.39) (signed surprisal -0.495; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U, Student's t-test; p = 0.2595
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 149. (Surprise 0.495) Rejected: In reconnection proposals originating from a single fragment leaf node, a larger distance margin between the nearest and second-nearest candidate significantly...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 120 · **Belief:** Leaning True → Leaning False (0.708→0.391) · **Direction:** Negative · **Surprisal:** −0.495
+### 149. (Surprise 0.495) Refuted: data contradict the claim that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 120 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.3906) · **Direction:** Negative
 - **Tested:** Investigate the value of a 'mutual exclusivity' feature (distance margin) by evaluating if highly competitive proposals indicate lower confidence and higher false-positive rates.
-- **Conclusion:** The experiment successfully executed, extracting 49 competitive reconnection proposals mapped to the ground truth. A point-biserial correlation test yielded a correlation coefficient of 0.0572 and a high p-value of 0.6964. Because the p-value is significantly greater than the standard 0.05 threshold, there is no statistically significant correlation between the distance margin (the difference in distance between the first and second candidates) and the correctness of the reconnection proposal.
+- **Conclusion:** A point-biserial correlation test yielded a correlation coefficient of 0.0572 and a high p-value of 0.6964. Because the p-value is significantly greater than the standard 0.05 threshold, there is no statistically significant correlation between the distance margin (the difference in distance between the first and second candidates) and the correctness of the reconnection proposal. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.39) (signed surprisal -0.495; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** point-biserial; p = 0.6964
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 150. (Surprise 0.487) Rejected: Split errors disproportionately concentrate at structural bifurcations, resulting in fragment endpoints mapping to ground-truth branching nodes at a significant...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 17 · **Belief:** Leaning True → Uncertain (0.750→0.438) · **Direction:** Negative · **Surprisal:** −0.487
+### 150. (Surprise 0.487) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 17 · **Belief:** Leaning True -> Uncertain (0.7500 -> 0.4375) · **Direction:** Negative
 - **Tested:** Assess whether the automated segmentation model is systematically more prone to fragmentation at neurite branching points compared to continuous axonal cables.
-- **Conclusion:** ### Summary of Findings - Hypothesis: It was hypothesized that split errors disproportionately occur at structural bifurcations, meaning fragment endpoints would map to ground-truth branching nodes more frequently than expected by baseline distribution. - Results: The baseline Ground-Truth (GT) graph is composed of 0.5397% branching nodes and 99.4603% path nodes. Out of 3,965 fragment endpoints that successfully mapped to GT nodes within a 15 µm threshold, 29 (0.7314%) mapped to branching nodes and 3,936 (99.2686%) mapped to path nodes.
+- **Conclusion:** The Chi-square goodness-of-fit test resulted in a chi-square statistic of 2.7131 and a p-value of 0.0995. Since the p-value (0.0995) is greater than the standard significance level of 0.05, we fail to reject the null hypothesis. Belief therefore dropped from Leaning True (0.75) to Uncertain (0.44) (signed surprisal -0.487; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square, Student's t-test; p = 0.0995
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 151. (Surprise 0.487) Rejected: True-positive split reconnections (gap < 15 µm) exhibit significantly higher tangent angular alignment (cosine similarity) compared to false-positive reconnecti...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 57 · **Belief:** Leaning True → Uncertain (0.750→0.438) · **Direction:** Negative · **Surprisal:** −0.487
+### 151. (Surprise 0.487) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 57 · **Belief:** Leaning True -> Uncertain (0.7500 -> 0.4375) · **Direction:** Negative
 - **Tested:** Evaluate if the geometric alignment of fragment endpoints is a statistically valid filter for distinguishing true splits from false merges.
-- **Conclusion:** The experiment successfully executed and evaluated the geometric alignment (cosine similarity) of fragment endpoint reconnections within a 15 µm radius. The analysis identified 1,204 True Positive (TP) and only 5 False Positive (FP) reconnection candidates. A one-sided Mann-Whitney U test was performed, yielding a p-value of 0.3513, which is not statistically significant.
-- **Caveats:** extreme class imbalance / very few positives; small sample size; zero-variance / NaN edge case
+- **Conclusion:** A one-sided Mann-Whitney U test was performed, yielding a p-value of 0.3513, which is not statistically significant. Furthermore, while the mean cosine similarity was slightly higher for TPs (0.7514 vs 0.7087), the median was actually higher for FPs (0.8960 vs 0.8250). Belief therefore dropped from Leaning True (0.75) to Uncertain (0.44) (signed surprisal -0.487; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U, Student's t-test; p = 0.3513; n up to 5
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 152. (Surprise 0.483) No effect found: Different human annotators exhibit significantly different baseline fragmentation rates (UNet fragment components per 1000 µm of traced cable), reflecting struc...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 35 · **Belief:** Leaning True → Leaning False (0.708→0.356) · **Direction:** Negative · **Surprisal:** −0.483
+### 152. (Surprise 0.483) Refuted: data contradict the claim that human annotator identity biases U-Net error metrics.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 35 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.3558) · **Direction:** Negative
 - **Tested:** Investigate if topological error rates are biased by the ground-truth annotator or the specific morphologies assigned to them.
-- **Conclusion:** The total cable length and fragment counts were calculated for each of the 19 ground-truth neurons, generating a normalized split rate (fragments per 1000 µm) grouped by the 8 human annotators. Experiment Results: - Sample Sizes: The number of neurons traced per annotator ranged from 1 to 4. - Mean Split Rates: The average split rate varied slightly among annotators, ranging from ~0.144 (JT) to ~0.226 (PP) fragments per 1000 µm.
-- **Caveats:** none noted
+- **Conclusion:** - **Mean Split Rates:** The average split rate varied slightly among annotators, ranging from ~0.144 (JT) to ~0.226 (PP) fragments per 1000 µm. - **Statistical Test:** The Kruskal-Wallis H test yielded a test statistic of 8.4105 and a p-value of ~0.2978. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.36) (signed surprisal -0.483; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power); dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Unsound
+- **Test:** Kruskal-Wallis, Student's t-test; p = 0.2978
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 153. (Surprise 0.483) No effect found: Neurite radius continuity is a stronger predictor of valid split reconnections than physical endpoint proximity, because artificial U-Net splits frequently resu...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 46 · **Belief:** Leaning True → Leaning False (0.708→0.356) · **Direction:** Negative · **Surprisal:** −0.483
+### 153. (Surprise 0.483) Refuted: data contradict the claim that image-intensity features (signal across the gap) add discriminative power.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 46 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.3558) · **Direction:** Negative
 - **Tested:** Compare the predictive power of absolute difference in node radius versus spatial distance in classifying true versus false reconnection proposals between fragment endpoints.
-- **Conclusion:** The dataset processing pipeline safely unpickled the graphs and identified 485 reconnection proposals within a 30 µm search radius (480 valid true reconnections and 5 invalid false reconnections). The ROC analysis showed Spatial Distance achieving a moderate AUC of 0.7285, while Radius Difference performed marginally above random chance with an AUC of 0.5600. Despite the apparent difference in AUC scores, DeLong's test yielded a p-value of 0.9300, indicating that the difference in predictive power between the two metrics is not statistically significant given this sample, largely due to the extreme class imbalance (only 5 false reconnections).
-- **Caveats:** extreme class imbalance / very few positives
+- **Conclusion:** The ROC analysis showed Spatial Distance achieving a moderate AUC of 0.7285, while Radius Difference performed marginally above random chance with an AUC of 0.5600. Despite the apparent difference in AUC scores, DeLong's test yielded a p-value of 0.9300, indicating that the difference in predictive power between the two metrics is not statistically significant given this sample, largely due to the extreme class imbalance (only 5 false reconnections). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.36) (signed surprisal -0.483; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** ROC-AUC, Student's t-test; p = 0.93
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 154. (Surprise 0.483) Belief dropped: Fragments containing merge errors have a significantly higher intra-fragment variance in estimated neurite radius than pure fragments, reflecting the unnatural...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 47 · **Belief:** Leaning True → Leaning False (0.708→0.356) · **Direction:** Negative · **Surprisal:** −0.483
+### 154. (Surprise 0.483) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 47 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.3558) · **Direction:** Negative
 - **Tested:** Assess whether fluctuations in the `node_radius` within a single connected component can flag the presence of a merge error.
-- **Conclusion:** The analysis successfully mapped fragment nodes to the ground truth using a 15.0 µm threshold, yielding 28 merged fragment components and 1083 pure fragment components. Statistical testing via the Mann-Whitney U test produced a p-value of ~0.0549 (statistic = 18381.0). The merged fragments showed slightly higher standard deviations (Median: 0.0903 µm, Mean: 0.0929 µm) compared to pure fragments (Median: 0.0818 µm, Mean: 0.0843 µm).
-- **Caveats:** small sample size; implementation deviated from plan
+- **Conclusion:** Statistical testing via the Mann-Whitney U test produced a p-value of ~0.0549 (statistic = 18381.0). The merged fragments showed slightly higher standard deviations (Median: 0.0903 µm, Mean: 0.0929 µm) compared to pure fragments (Median: 0.0818 µm, Mean: 0.0843 µm). Belief therefore dropped from Leaning True (0.71) to Leaning False (0.36) (signed surprisal -0.483; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p = 0.0549; n up to 28
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 155. (Surprise 0.483) Supported: At a U-Net merge junction, the true anatomical continuation of a neurite can be resolved purely by tangent alignment, as the angular deviation between incoming...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 88 · **Belief:** Leaning False → Leaning True (0.292→0.644) · **Direction:** Positive · **Surprisal:** +0.483
+### 155. (Surprise 0.483) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 88 · **Belief:** Leaning False -> Leaning True (0.2917 -> 0.6442) · **Direction:** Positive
 - **Tested:** Determine if geometric continuity (tangent alignment) is sufficient to correctly route skeletons through erroneous U-Net merge hubs.
-- **Conclusion:** The script successfully extracted branching nodes from the UNet fragments graph and traced outward to compute tangent vectors at merge hubs. It identified 40 True Continuations and 80 False Continuations. Statistical analysis revealed a significant difference in geometric continuity: True Continuations exhibited a mean angular deviation of 42.55° from a straight line (180°), whereas False Continuations had a much higher mean deviation of 80.78°.
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** Statistical analysis revealed a significant difference in geometric continuity: True Continuations exhibited a mean angular deviation of 42.55° from a straight line (180°), whereas False Continuations had a much higher mean deviation of 80.78°. Welch's t-test confirmed the statistical significance of this difference with a p-value of 1.1485e-08. Belief therefore rose from Leaning False (0.29) to Leaning True (0.64) (signed surprisal +0.483; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, ROC-AUC, Student's t-test; p ≈ 1.1e-08
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 156. (Surprise 0.446) Belief dropped: False positive connection proposals within a 30 µm radius disproportionately originate from 'hub' endpoints (leaves with a high density of neighboring candidate...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 23 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 156. (Surprise 0.446) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 23 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** To verify if local candidate density around an endpoint is a reliable proxy for false positive risk, informing a confidence penalty for connections in dense regions.
-- **Conclusion:** The experiment successfully executed and addressed the hypothesis. By extracting leaf nodes from the `fragments_graph` and identifying neighboring leaves from different components within a 30 µm radius, the experiment computed a 'pair density score' (the sum of valid candidates for both endpoints of a pair). Mapping these pairs to the ground-truth graph (`gt_graph`) yielded 397 True Positive (TP) pairs and 5 False Positive (FP) pairs.
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** The mean pair density score was 2.25 for TPs and 2.80 for FPs. A Mann-Whitney U test comparing the two distributions resulted in a p-value of 0.0766. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U; p = 0.0766
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 157. (Surprise 0.446) Rejected: Ground-truth neurons with greater branching complexity (higher number of branching nodes per millimeter of cable) suffer from a disproportionately higher U-Net...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 31 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 157. (Surprise 0.446) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 31 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** To investigate if morphological complexity is a primary driver of U-Net segmentation failures and resulting fragmentation.
-- **Conclusion:** The code processed all 19 ground-truth (GT) neurons, computing their total cable length, branch counts, and branching density (branches/mm). It then successfully mapped UNet fragments to these GT neurons using a 15 µm proximity threshold to calculate the split rate (fragments/mm) for each neuron. The results showed branching densities ranging from 0.92 to 2.09 branches/mm, and split rates ranging from 0.11 to 0.33 splits/mm.
+- **Conclusion:** The Pearson correlation analysis between branching density and split rate resulted in an r-value of -0.4140 with a p-value of 0.078. Since the p-value is greater than 0.05, the correlation is not statistically significant. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Pearson, Student's t-test; p = 0.078
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 158. (Surprise 0.446) Supported: Fragment endpoints resulting from split errors exhibit a significantly sharper tapering effect (steeper decrease in radius) than true biological terminations.
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 46 · **Belief:** Uncertain → Likely True (0.542→0.828) · **Direction:** Positive · **Surprisal:** +0.446
+### 158. (Surprise 0.446) Supported: evidence confirms that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 46 · **Belief:** Uncertain -> Likely True (0.5417 -> 0.8281) · **Direction:** Positive
 - **Tested:** To determine if radius continuity along the terminal segment of a fragment can distinguish artificial splits from natural leaf nodes.
-- **Conclusion:** The script accurately loaded the dataset, identified fragment leaf nodes, and mapped them to the ground-truth (GT) graph to classify them into 'Split Endpoints' (N=3965) and 'True Terminations' (N=3416). The results indicate a highly significant difference (t=48.35, p≈0), with split endpoints showing an average gradient of 0.01223 µm/µm, meaning they taper sharply, while true terminations have a near-zero average gradient (-0.00041 µm/µm), indicating a constant radius. The generated density plot confirms that while there is some overlap, radius gradients above ~0.015 predominantly belong to split endpoints.
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** The script accurately loaded the dataset, identified fragment leaf nodes, and mapped them to the ground-truth (GT) graph to classify them into 'Split Endpoints' (N=3965) and 'True Terminations' (N=3416). The results indicate a highly significant difference (t=48.35, p≈0), with split endpoints showing an average gradient of 0.01223 µm/µm, meaning they taper sharply, while true terminations have a near-zero average gradient (-0.00041 µm/µm), indicating a constant radius. Belief therefore rose from Uncertain (0.54) to Likely True (0.83) (signed surprisal +0.446; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** two-sample t-test, Student's t-test; p ≈ 0; n up to 3965
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 159. (Surprise 0.446) Rejected: A substantial fraction of split errors require 'end-to-branch' reconnections rather than 'end-to-end' reconnections, and these end-to-branch gaps are significan...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 49 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 159. (Surprise 0.446) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 49 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Classify valid reconnections structurally and verify if the spatial gap distribution differs based on the connection topology.
-- **Conclusion:** ### Summary of Findings - Proportions of Split Types: The experiment found a total of 1388 valid reconnections. Of these, a majority (883 or 63.62%) were classified as End-to-Branch connections, while the remaining 505 (36.38%) were End-to-End connections. This strongly supports the first part of the hypothesis: a substantial fraction of topological split errors indeed require reconnecting an endpoint to an internal branch node, rather than merely joining two endpoints.
-- **Caveats:** none noted
+- **Conclusion:** - **Spatial Gap Distances:** The spatial gaps for End-to-End splits averaged 28.53 µm (median: 13.34 µm). In contrast, End-to-Branch gaps averaged 25.28 µm (median: 8.18 µm). Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p = 0.854
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 160. (Surprise 0.446) Rejected: Fragment components containing a high density of branching nodes (degree >= 3) are significantly more likely to contain merge errors than linear fragments, indi...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 5 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 160. (Surprise 0.446) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 5 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Determine if morphological complexity (branch density) is a strong geometric predictor of merge errors within automated fragments.
-- **Conclusion:** The experiment successfully executed and achieved its objective of testing whether branch density is a strong geometric predictor of merge errors in automated fragments. The code efficiently located and loaded the dataset, calculated node degrees and cable lengths, and successfully mapped the fragment nodes to ground truth (GT) to identify merge-containing and merge-free fragments. The analysis identified 14 merge-containing fragments and 1023 merge-free fragments.
-- **Caveats:** small sample size
+- **Conclusion:** While the branch density was slightly higher for merge-containing fragments (mean = 1.3251, median = 1.0636 branches/mm) compared to merge-free fragments (mean = 1.0846, median = 0.9004 branches/mm), the Mann-Whitney U test produced a p-value of ~0.319. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U, Student's t-test; p = 0.319
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 161. (Surprise 0.446) Belief dropped: Pairs of fragment endpoints (leaf nodes) that belong to the same ground-truth neuron (true-positive splits) exhibit significantly higher branch tangent alignmen...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 11 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 161. (Surprise 0.446) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 11 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Evaluate the predictive power of 3D branch tangent alignment in distinguishing valid reconnections from false reconnections during split error correction.
-- **Conclusion:** The experiment successfully isolated leaf nodes and evaluated branch tangent alignment between pairs within a 20 µm radius. The results show 408 valid reconnections and 989 invalid reconnections (after excluding intra-component pairs). The mean dot product for valid pairs (0.7543) was slightly higher than for invalid pairs (0.7305), with 55.88% of valid pairs and 52.07% of invalid pairs having a dot product > 0.8.
-- **Caveats:** small sample size; implementation deviated from plan
+- **Conclusion:** The mean dot product for valid pairs (0.7543) was slightly higher than for invalid pairs (0.7305), with 55.88% of valid pairs and 52.07% of invalid pairs having a dot product > 0.8. However, the Mann-Whitney U test yielded a p-value of 0.0565, which is slightly above the traditional 0.05 significance threshold. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.0565
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 162. (Surprise 0.446) Rejected: The geometric distance from a fragment's endpoint to its true reconnection partner (gap size) is inversely proportional to the total cable length of the fragmen...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 38 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 162. (Surprise 0.446) Refuted: data contradict the claim that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 38 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Investigate the relationship between a U-Net fragment's morphological size and the physical extent of its split errors.
-- **Conclusion:** The ANOVA test revealed a statistically significant difference in mean gap distances across the fragment length bins (F = 108.59, p < 0.001). However, the findings partially contradict the initial hypothesis. While the mean gap size was hypothesized to be inversely proportional to fragment length, the data showed that fragments >5000 µm actually had a higher average gap distance (236.0 µm) compared to the <2000 µm (195.4 µm) and 2000-5000 µm (189.1 µm) bins.
+- **Conclusion:** The ANOVA test revealed a statistically significant difference in mean gap distances across the fragment length bins (F = 108.59, p < 0.001). While the mean gap size was hypothesized to be inversely proportional to fragment length, the data showed that fragments >5000 µm actually had a higher average gap distance (236.0 µm) compared to the <2000 µm (195.4 µm) and 2000-5000 µm (189.1 µm) bins. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** one-way ANOVA; p = 0.001
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 163. (Surprise 0.446) Rejected: True split gaps exhibit significantly higher neurite radius continuity (smaller difference in endpoint radii) compared to false spatial reconnections, providing...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 65 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 163. (Surprise 0.446) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 65 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Determine if the difference in estimated neurite radius at the endpoints is significantly smaller for valid split pairs than for invalid nearby fragment pairs.
-- **Conclusion:** The script identified 1,391 valid split pairs (true gaps belonging to the same ground-truth neuron) and 6 invalid pairs (spatial neighbors belonging to different ground-truth neurons) within a 20 µm radius. The results do not support the hypothesis. The mean radius difference for valid pairs (0.4610 µm) was slightly higher than that for invalid pairs (0.3853 µm).
-- **Caveats:** extreme class imbalance / very few positives
+- **Conclusion:** The mean radius difference for valid pairs (0.4610 µm) was slightly higher than that for invalid pairs (0.3853 µm). Similarly, the median difference was higher for valid pairs (0.3984 µm vs 0.3569 µm). Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U; p = 0.6794
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 164. (Surprise 0.446) Rejected: In scenarios where a single fragment leaf node has multiple competing reconnection candidates within a 15 µm radius (mutual exclusivity), the proposal with the...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 67 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 164. (Surprise 0.446) Refuted: data contradict the claim that greedy/independent thresholding versus joint-reasoning matching changes proofreading precision.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 67 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Test if local orientation is a stronger predictor than spatial proximity for resolving competing reconnection proposals at a single endpoint.
-- **Conclusion:** The experiment successfully executed and evaluated 14 scenarios where a fragment leaf node had multiple competing reconnection candidates within a 15 µm radius. Out of these, 13 scenarios had at least one True Positive (TP) candidate. The distance-based selection method identified the correct TP in 13 of the 14 scenarios (92.86% overall accuracy, 100% accuracy on solvable scenarios).
-- **Caveats:** test driven to p=1.0 by near-zero positive counts; implementation deviated from plan
+- **Conclusion:** McNemar's test yielded a p-value of 1.0000, indicating no statistically significant difference between the two approaches, largely constrained by the extremely small sample size of valid mutual exclusivity scenarios. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** McNemar's, Student's t-test; p = 1
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 165. (Surprise 0.446) No effect found: False merge sites exhibit significantly higher variance in neurite radius among their converging branches compared to true biological bifurcations, because merg...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 76 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 165. (Surprise 0.446) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 76 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Test if local neurite radius consistency is a reliable intrinsic feature for detecting structural false merges without requiring image re-evaluations.
-- **Conclusion:** Out of 19,460 branch points in the fragments graph, 5,571 were mapped to True Branches and 38 to Merge Errors based on ground-truth proximity. The computed mean radius variance among converging branches was visibly higher for Merge Errors (0.0146 μm²) compared to True Branches (0.0088 μm²). However, Welch's t-test yielded a t-statistic of 1.6875 and a p-value of 0.3406 (p > 0.05).
-- **Caveats:** small sample size
+- **Conclusion:** The computed mean radius variance among converging branches was visibly higher for Merge Errors (0.0146 μm²) compared to True Branches (0.0088 μm²). However, Welch's t-test yielded a t-statistic of 1.6875 and a p-value of 0.3406 (p > 0.05). Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, Student's t-test; p = 0.05; n up to 38
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 166. (Surprise 0.446) Rejected: Split errors (frequency and gap size) exhibit significant variation along the Z-axis (imaging depth) due to the anisotropic resolution (0.748 x 0.748 x 1.0 µm)...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 79 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 166. (Surprise 0.446) Refuted: data contradict the claim that Z-axis anisotropy or imaging depth drives split-error geometry.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 79 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Analyze the spatial distribution of split errors along the Z-axis to determine if tissue depth exacerbates segmentation failures.
-- **Conclusion:** The script identified 1,519 valid split pairs correctly mapped to the ground-truth neurons. A Pearson correlation analysis yielded an r-value of 0.0092 with a p-value of 0.7200, indicating that there is no statistically significant linear correlation between the Z-depth (imaging depth) and the size of the split gaps. The binned summary statistics reveal that the frequency of splits varies along the Z-axis, with the vast majority concentrated in the middle depths (from ~4,103 to 14,562 µm).
+- **Conclusion:** A Pearson correlation analysis yielded an r-value of 0.0092 with a p-value of 0.7200, indicating that there is no statistically significant linear correlation between the Z-depth (imaging depth) and the size of the split gaps. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Pearson; p = 0.72
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 167. (Surprise 0.446) Belief dropped: In dense regions where a fragment endpoint has multiple potential reconnection candidates within a 20 µm radius, the true biological connection (True Split) can...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 80 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 167. (Surprise 0.446) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 80 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Evaluate if local tangent alignment is a sufficiently strong geometric discriminator to resolve mutually exclusive reconnection proposals at an endpoint without requiring image features.
-- **Conclusion:** The experiment successfully executed to test the hypothesis that local tangent alignment (cosine similarity) can distinguish true biological reconnections from false ones in dense regions where mutually exclusive candidates exist within 20 µm. However, the spatial queries and GT-mapping isolated only 2 mutually exclusive endpoint scenarios that met all criteria. In these 2 cases, the Mean False Candidate Cosine Similarity (0.8180) was actually higher than the Mean True Candidate Cosine Similarity (0.6586).
-- **Caveats:** extreme class imbalance / very few positives; small sample size
+- **Conclusion:** In these 2 cases, the Mean False Candidate Cosine Similarity (0.8180) was actually higher than the Mean True Candidate Cosine Similarity (0.6586). Due to the extremely low sample size (N=2), the statistical tests yielded non-significant results (Paired t-test p = 0.54, Wilcoxon p = 1.0). Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** paired t-test, Wilcoxon, Student's t-test; p = 1; n up to 2
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 168. (Surprise 0.446) No effect found: The frequency of split errors (measured as U-Net fragment components per millimeter of GT cable length) is positively correlated with the morphological complexi...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 92 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 168. (Surprise 0.446) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 92 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Assess whether certain neuron morphologies are inherently more prone to deep-learning segmentation fragmentation, which could inform adaptive proofreading confidence thresholds.
-- **Conclusion:** The script correctly computed the morphological complexity (branching nodes per millimeter of cable length) for 19 valid human-traced neurons and quantified the U-Net fragment split rate by mapping automated fragments to the ground-truth skeletons using a spatial KDTree query. A summary table detailing the length, branch density, and split rate for each neuron was successfully generated. The statistical analysis evaluated the hypothesis that split frequency is positively correlated with neuron morphological complexity.
+- **Conclusion:** The results yielded a Pearson correlation of r = -0.3777 (p = 0.1109) and a Spearman correlation of r = -0.2649 (p = 0.2731). Contrary to the hypothesis, the data suggests a weak to moderate negative correlation, indicating that densely branched neurons do not inherently suffer from higher fragmentation rates from the U-Net model; in fact, there is a slight tendency for them to fragment less. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Spearman, Pearson, Student's t-test; p = 0.2731
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 169. (Surprise 0.446) Belief dropped: The topological boundary where a single U-Net fragment incorrectly fuses two distinct GT neurons exhibits a statistically significant spike in neurite radius va...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 102 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 169. (Surprise 0.446) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 102 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Determine if anomalous fluctuations in the estimated skeleton radius can pinpoint the exact node where a false merge occurs.
-- **Conclusion:** The analysis mapped fragment nodes to ground-truth components, effectively identifying 266 merge boundaries and successfully sampling 1,330 control windows. The findings support the hypothesis that topological boundaries where a U-Net incorrectly fuses distinct GT neurons exhibit anomalous fluctuations in neurite radius. Specifically, the average maximum radius gradient at merge boundaries (0.1418) was substantially higher than in control segments (0.0502), demonstrating a highly statistically significant difference (Welch's t-test: t = 6.2148, p < 0.001).
+- **Conclusion:** While the average radius variance was also visibly higher for merge boundaries (0.0065 vs 0.0017), the t-test for variance yielded a p-value of ~0.13, likely due to extreme outliers drastically inflating the sample variance and reducing the effective degrees of freedom in the Welch's calculation. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, Student's t-test; p = 0.001
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 170. (Surprise 0.446) Rejected: Neurons with higher morphological complexity (higher branch density) suffer from a higher rate of split errors per millimeter of cable length, independent of th...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 117 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 170. (Surprise 0.446) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 117 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Correlate ground-truth neuron branch density with the normalized split rate.
-- **Conclusion:** The experiment successfully analyzed the relationship between ground-truth (GT) neuron branch density and the normalized split rate (fragments per mm of cable length) across the 19 GT components. The data showed GT neurons ranging in total cable length from ~97.69 mm to ~560.73 mm, with branch densities between 0.92 and 2.09 branches per mm. Split rates (used as a proxy for reconstruction fragmentation) varied from 0.11 to 0.37 splits per mm.
+- **Conclusion:** A Pearson correlation analysis yielded a coefficient of r = -0.3986 with a p-value of 0.091. This indicates a weak-to-moderate negative correlation that is not statistically significant at the standard alpha = 0.05 level. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Pearson, Student's t-test; p = 0.091
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 171. (Surprise 0.446) Rejected: Continuously updating a fragment's component properties (like total cable length and degree) during an iterative reconnection process significantly reduces the...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 145 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 171. (Surprise 0.446) Refuted: data contradict the claim that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 145 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Demonstrate that dynamically refreshing graph component state (agentic replanning) prevents true reconnections from being rejected due to stale topology constraints.
-- **Conclusion:** The experiment successfully simulated and compared two pipelines (Static and Dynamic) for reconnecting fragmented neuron skeletons based on spatial proximity (<= 15 µm) and alignment. The Static pipeline applied cycle prevention via Union-Find but without node degree limits, while the Dynamic pipeline continuously updated graph components and enforced a strict degree limit (degree == 1) to avoid unnatural branching. Results showed that the Static pipeline had a slightly higher recall (95.93%) with 330 true positives (TPs) accepted, but 14 TPs were blocked by cycles.
+- **Conclusion:** The McNemar's test yielded a p-value of 0.0625, indicating no statistically significant difference between the true positive recovery rate of the two pipelines. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** McNemar's, Student's t-test; p = 0.0625
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 172. (Surprise 0.446) Rejected: The segmentation model is more likely to falsely terminate a fragment at anatomically complex junctions; thus, the ground-truth nodes nearest to fragment leaf n...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 151 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 172. (Surprise 0.446) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 151 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Determine if unpredicted splits correlate with areas of high topological complexity (branching) in the underlying ground truth.
-- **Conclusion:** It extracted 39,826 leaf nodes (degree 1) from the fragments graph and sampled an equal number of internal nodes (degree 2). Using a KD-tree with a 5 µm threshold, it matched these nodes to the ground-truth (GT) graph, finding 7,050 valid matches for leaf nodes and 9,270 for internal nodes. The statistical analysis revealed that leaf-associated GT nodes had a mean degree of 1.533 (Max: 5), whereas internal-associated GT nodes had a mean degree of 2.001 (Max: 3).
+- **Conclusion:** The statistical analysis revealed that leaf-associated GT nodes had a mean degree of 1.533 (Max: 5), whereas internal-associated GT nodes had a mean degree of 2.001 (Max: 3). A Mann-Whitney U test indicated a highly significant difference between the two distributions (p-value ~ 0.0000). Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p ≈ 0
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 173. (Surprise 0.446) No effect found: False-positive leaf reconnections are, on average, spatially closer (smaller Euclidean gap) than true-positive leaf reconnections, exposing a vulnerability in g...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 157 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 173. (Surprise 0.446) Refuted: data contradict the claim that greedy/independent thresholding versus joint-reasoning matching changes proofreading precision.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 157 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Analyze the spatial gap distance of potential reconnection proposals to see if proximity disproportionately favors false positives.
-- **Conclusion:** The dataset was successfully loaded, and spatial queries identified 434 potential split reconnection proposals (leaf pairs from different fragment components) within a 25 µm Euclidean search radius. By projecting these proposals onto the ground-truth graph, the script classified them into 431 True reconnections and only 3 False reconnections. Statistical analysis showed no significant difference in Euclidean gap distance between the two classes.
-- **Caveats:** extreme class imbalance / very few positives; small sample size
+- **Conclusion:** True reconnections had a mean gap distance of 8.52 µm, while the 3 False reconnections averaged 8.82 µm (Welch's t-test p-value = 0.910, KS test p-value = 0.228). The extreme class imbalance (n=431 vs. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Welch's t-test, Kolmogorov-Smirnov, Student's t-test; p = 0.228; n up to 431
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 174. (Surprise 0.446) Rejected: Ground-truth neurons with high morphological complexity (measured by branching node density per millimeter of cable) suffer from a significantly higher rate of...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 161 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 174. (Surprise 0.446) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 161 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Test if biological neuron complexity is a predictive confounder for deep-learning segmentation failures.
-- **Conclusion:** The experiment successfully tested the hypothesis that higher morphological complexity (branch density) in ground-truth neurons correlates with a higher rate of split errors in the automated U-Net reconstruction. The programmer resolved previous environment issues by dynamically installing the required packages. By calculating the branching density for each of the 19 ground-truth components and mapping U-Net fragments via a spatial KDTree with majority voting, the pipeline successfully computed the split rates (fragments per mm of cable).
+- **Conclusion:** The statistical analysis yielded a Pearson correlation of 0.2252 (1-sided p-value = 0.1770) and a Spearman correlation of -0.1000. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Spearman, Pearson; p = 0.177
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 175. (Surprise 0.446) Belief dropped: Putative reconnections between fragment leaves that exhibit high orientation agreement (i.e., their terminal tangent vectors are highly aligned) have a signific...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 166 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 175. (Surprise 0.446) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 166 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Test whether angular alignment between terminal branches of fragment leaves is a significantly better discriminator for true positive reconnections than spatial proximity.
-- **Conclusion:** A total of 1,812 putative inter-component leaf pairs within 30 µm were identified, and 484 were confidently mapped to the ground truth and evaluated. The results show that terminal angular alignment does not provide a statistically significant improvement over spatial proximity alone for predicting valid reconnections in this specific range. The High Alignment group (> 150 degrees) achieved a True Positive Rate (TPR) of 100% (177 TP, 0 FP), while the Low Alignment group (<= 150 degrees) achieved a TPR of 98.37% (302 TP, 5 FP).
+- **Conclusion:** Because spatial proximity (within 30 µm) alone yielded a remarkably high baseline precision (~99%), the Chi-squared test returned a non-significant p-value of 0.2150. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square; p = 0.215
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 176. (Surprise 0.446) No effect found: Short terminal branches in the automated reconstruction (path length to the nearest branch point < 15 µm) are significantly more likely to be structural false p...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 184 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 176. (Surprise 0.446) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 184 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Determine if automated pruning of short terminal branches can cleanly remove false-positive topologies without sacrificing true neurite cable.
-- **Conclusion:** The experiment executed successfully and evaluated the terminal branch lengths for 39,826 leaf nodes in the automated reconstruction. The analysis classified only 7 terminal branches as 'Short' (< 15 µm) and 39,819 as 'Long' (≥ 15 µm). Ground truth mapping using a 10 µm distance threshold revealed a false-positive rate of 85.71% for short branches (6 out of 7) and 81.68% for long branches (32,523 out of 39,819).
-- **Caveats:** small sample size; test driven to p=1.0 by near-zero positive counts; zero-variance / NaN edge case
+- **Conclusion:** The Chi-Square test produced a p-value of 1.0, indicating no statistically significant difference between the two groups. Consequently, the hypothesis that short terminal branches are predominantly false positives cannot be robustly validated due to the lack of statistical power (n=7 for short branches). Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power); stepped ROC curve from sparse negatives
+- **Verdict:** Sound
+- **Test:** chi-square, Student's t-test; p = 1; n up to 7
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 177. (Surprise 0.446) Rejected: U-Net fragments that are implicated in cycle-violating reconnections during a greedy split-correction pass have a significantly higher probability of harboring...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 191 · **Belief:** Leaning True → Uncertain (0.708→0.422) · **Direction:** Negative · **Surprisal:** −0.446
+### 177. (Surprise 0.446) Refuted: data contradict the claim that greedy/independent thresholding versus joint-reasoning matching changes proofreading precision.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 191 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4219) · **Direction:** Negative
 - **Tested:** Investigate if tracking graph-cycle-prevention events during split correction can serve as an agentic flag to dynamically identify undiscovered false merges.
-- **Conclusion:** The experiment successfully tested the hypothesis that U-Net fragments implicated in cycle-violating reconnections during split correction have a significantly higher probability of containing a false merge. The code simulated a greedy split-correction process (radius ≤ 15 µm), evaluating 1,209 valid proposals. It rejected 33 proposals to prevent topological cycles, thereby implicating 59 unique fragments.
+- **Conclusion:** Although the false-merge rate was roughly four times higher in cycle-implicated components, a Chi-square test of independence yielded a p-value of 0.1805. Because the p-value is greater than the standard significance level (alpha = 0.05), the association is not statistically significant in this sample. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.42) (signed surprisal -0.446; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square, Student's t-test; p = 0.1805
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 178. (Surprise 0.430) Belief dropped: True split connections preferentially link asymmetric fragment pairs (e.g., a large stable backbone linking to a short broken-off tip), whereas false candidate...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 65 · **Belief:** Leaning True → Leaning False (0.708→0.394) · **Direction:** Negative · **Surprisal:** −0.430
+### 178. (Surprise 0.430) Refuted: data contradict the claim that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 65 · **Belief:** Leaning True -> Leaning False (0.7083 -> 0.3942) · **Direction:** Negative
 - **Tested:** To investigate if the ratio of component sizes (number of nodes or path length) between two candidate fragments provides a structural bias for true versus false split reconnections.
-- **Conclusion:** The code successfully identified candidate split connections within a 30 µm radius and mapped them to the ground truth, yielding 486 'True' pairs and only 5 'False' pairs. The structural asymmetry was quantified by computing the component size ratio (smaller/larger) for each pair. The results showed that True reconnections had a lower mean size ratio (0.3392), suggesting a tendency for small fragments to link to larger structures, compared to the mean of 0.5786 for False candidates.
-- **Caveats:** small sample size
+- **Conclusion:** The results showed that True reconnections had a lower mean size ratio (0.3392), suggesting a tendency for small fragments to link to larger structures, compared to the mean of 0.5786 for False candidates. Despite this apparent difference, a Kolmogorov-Smirnov test produced a non-significant p-value of 0.1534. Belief therefore dropped from Leaning True (0.71) to Leaning False (0.39) (signed surprisal -0.430; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power); dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Unsound
+- **Test:** Kolmogorov-Smirnov; p = 0.1534; n up to 5
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 179. (Surprise 0.408) Rejected: In competitive reconnection scenarios where a fragment leaf has multiple candidates within 20 µm, selecting the candidate that yields the most continuous neurit...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 15 · **Belief:** Leaning True → Uncertain (0.708→0.446) · **Direction:** Negative · **Surprisal:** −0.408
+### 179. (Surprise 0.408) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 15 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4464) · **Direction:** Negative
 - **Tested:** Test radius continuity as a heuristic for resolving mutually exclusive reconnection proposals at a single endpoint.
-- **Conclusion:** The code successfully identified competitive fragment leaves within 20 µm and mapped them to the Ground Truth (GT). However, due to the sparse nature of the GT (only 18 neurons), the strict filtering criteria (exactly one valid candidate mapping to the true GT neuron within 10 µm) yielded only 2 competitive reconnection scenarios. For these 2 cases, the radius continuity heuristic successfully resolved 0 of them, resulting in 0% accuracy against a random baseline of 50%.
-- **Caveats:** small sample size
+- **Conclusion:** The experiment was successfully executed. The dataset was correctly loaded from the current directory, and dependencies were installed on the fly. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.45) (signed surprisal -0.408; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** binomial test; p = 1
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 180. (Surprise 0.398) Rejected: In dense neurite regions, invalid (false-positive) reconnection proposals are spatially shorter, on average, than valid (true-positive) reconnection proposals,...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 198 · **Belief:** Leaning True → Uncertain (0.708→0.453) · **Direction:** Negative · **Surprisal:** −0.398
+### 180. (Surprise 0.398) Refuted: data contradict the claim that greedy/independent thresholding versus joint-reasoning matching changes proofreading precision.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 198 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.4531) · **Direction:** Negative
 - **Tested:** Determine if simple proximity checks inherently bias proofreading toward false merges in dense regions, motivating the need for reversible decisions and rollback mechanisms in agentic frameworks.
-- **Conclusion:** The algorithm identified 4,132 fragment leaf nodes within the top 5% highest density regions and found 535 unique leaf pairs within a 30 µm radius. By mapping to the ground truth, 121 pairs were classified as valid (true-positive) and 3 pairs as invalid (false-positive). The valid proposals had a median gap length of 9.70 µm, while the invalid proposals had a median of 13.49 µm.
-- **Caveats:** extreme class imbalance / very few positives; small sample size
+- **Conclusion:** The valid proposals had a median gap length of 9.70 µm, while the invalid proposals had a median of 13.49 µm. The Mann-Whitney U test yielded a p-value of 0.325, indicating no statistically significant difference between the two distributions. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.45) (signed surprisal -0.398; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U; p = 0.325; n up to 3
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 181. (Surprise 0.395) Supported: Because the previous exploration revealed merge nodes are exceptionally thin, the local raw fluorescence intensity at merge nodes is significantly lower than at...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 84 · **Belief:** Leaning True → Likely True (0.625→0.913) · **Direction:** Positive · **Surprisal:** +0.395
+### 181. (Surprise 0.395) Supported: evidence confirms that image-intensity features (signal across the gap) add discriminative power.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 84 · **Belief:** Leaning True -> Likely True (0.6250 -> 0.9135) · **Direction:** Positive
 - **Tested:** Test if merge errors are driven by low signal-to-noise ratio (faint signal) rather than additive blooming (bright signal) to inform the image-encoder's attention mechanism.
-- **Conclusion:** Hypothesis: Because the previous exploration revealed merge nodes are exceptionally thin, the local raw fluorescence intensity at merge nodes is significantly lower than at background nodes, indicating the U-Net hallucinates false bridges in dim, low-signal regions rather than at bright intersections. Experiment Results: - Node Identification: 472 merge nodes were successfully identified and paired with a randomly matched sample of 472 background (non-merge) nodes mapped to the ground truth. - Image Patch Extraction: 3x3x3 voxel patches around the spatial coordinates were extracted from the lazy Zarr array to compute the local maximum intensity.
+- **Conclusion:** - **Mean Intensities (Mean ± Std):** Merge nodes demonstrated a mean maximum intensity of 134.59 (± 158.30), whereas background nodes had a notably higher mean maximum intensity of 214.36 (± 182.46). - **Statistical Comparison:** A Welch's t-test confirmed a highly statistically significant difference between the two distributions (t-statistic = -7.1670, p-value = 1.5679e-12). Belief therefore rose from Leaning True (0.62) to Likely True (0.91) (signed surprisal +0.395; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, Student's t-test; p ≈ 1.6e-12
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 182. (Surprise 0.365) Rejected: The local tortuosity (ratio of path length to Euclidean distance) of neurite segments leading up to true-positive split endpoints is significantly higher than t...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 115 · **Belief:** Leaning False → Likely False (0.375→0.141) · **Direction:** Negative · **Surprisal:** −0.365
+### 182. (Surprise 0.365) Refuted: data contradict the claim that neurite tortuosity or sharp turns flag U-Net split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 115 · **Belief:** Leaning False -> Likely False (0.3750 -> 0.1406) · **Direction:** Negative
 - **Tested:** Test whether U-Net fragmentation (split errors) occurs more frequently in highly tortuous (curvy) regions of the neurite.
-- **Conclusion:** The experiment successfully executed and tested the hypothesis. The programmer resolved the previous dependency and file path issues by implementing a robust `CustomUnpickler` and dynamically checking for the dataset file. Experiment Execution & Findings: - Endpoint Isolation & Classification: The code identified 39,826 leaf nodes (endpoints) in the fragments graph.
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** - **Statistical Comparison:** - Average tortuosity for Split segments: 1.0542 - Average tortuosity for Terminal segments: 1.0713 - Mann-Whitney U test p-value: 3.53e-15 **Conclusion:** The results are highly statistically significant (p < 0.05), but they *contradict* the original hypothesis. Belief therefore dropped from Leaning False (0.38) to Likely False (0.14) (signed surprisal -0.365; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.05
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 183. (Surprise 0.365) Supported: The density of merge errors (number of false-positive branch points per 1,000 µm of cable length) is significantly higher within a 150 µm radius of soma centroi...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 172 · **Belief:** Leaning True → Likely True (0.625→0.859) · **Direction:** Positive · **Surprisal:** +0.365
+### 183. (Surprise 0.365) Supported: evidence confirms that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 172 · **Belief:** Leaning True -> Likely True (0.6250 -> 0.8594) · **Direction:** Positive
 - **Tested:** Determine if proximity to soma locations is a primary driver of U-Net merge errors due to localized high neurite density.
-- **Conclusion:** The dataset revealed a total of 36 merge errors. In the proximal region (<= 150 µm from a soma), the cable length was ~38,524 µm with 2 merge errors, resulting in a density of 0.0519 merges per 1,000 µm. In the distal region (> 150 µm), the cable length was ~18,772,622 µm with 34 merge errors, yielding a density of 0.0018 merges per 1,000 µm.
+- **Conclusion:** A Chi-squared test produced a statistic of 50.4320 and a p-value of 1.23e-12, confirming that there is a statistically significant increase in merge error density in regions proximal to the somas. Belief therefore rose from Leaning True (0.62) to Likely True (0.86) (signed surprisal +0.365; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square, Student's t-test; p ≈ 1.2e-12
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 184. (Surprise 0.333) No effect found: True split-correction proposals (pairs of leaf nodes from different fragments that map to the same ground-truth neuron) have significantly higher angular alignm...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 81 · **Belief:** Leaning True → Uncertain (0.792→0.578) · **Direction:** Negative · **Surprisal:** −0.333
+### 184. (Surprise 0.333) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 81 · **Belief:** Leaning True -> Uncertain (0.7917 -> 0.5781) · **Direction:** Negative
 - **Tested:** Evaluate if angular alignment of fragment endpoints can effectively filter false reconnection proposals during split correction.
-- **Conclusion:** The code correctly located and loaded the dataset, identified 39,826 leaf nodes, and found 1,397 candidate pairs from different components within a 20 µm radius. By mapping to the ground truth, it classified 350 pairs as True Connections and 3 pairs as False Connections. The mean angular alignment (cosine similarity) for True Connections was 0.8719 compared to 0.7123 for False Connections.
-- **Caveats:** small sample size
+- **Conclusion:** The mean angular alignment (cosine similarity) for True Connections was 0.8719 compared to 0.7123 for False Connections. However, a Mann-Whitney U test yielded a p-value of 0.2379, indicating that the difference is not statistically significant. Belief therefore dropped from Leaning True (0.79) to Uncertain (0.58) (signed surprisal -0.333; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U, Student's t-test; p = 0.2379; n up to 3
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 185. (Surprise 0.325) Supported: The topological split rate (number of fragment breaks per millimeter of ground-truth cable) decreases significantly as the geodesic path distance from the soma...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 129 · **Belief:** Uncertain → Leaning True (0.417→0.625) · **Direction:** Positive · **Surprisal:** +0.325
+### 185. (Surprise 0.325) Supported: evidence confirms that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 129 · **Belief:** Uncertain -> Leaning True (0.4167 -> 0.6250) · **Direction:** Positive
 - **Tested:** Quantify whether neuronal fragmentation rates are spatially biased by their topological distance from the soma, which could inform region-adaptive proofreading sweeps.
-- **Conclusion:** The experiment was successfully executed and the code correctly implemented the required logic to test the hypothesis. The results show that there is a statistically significant negative linear relationship (p ≈ 0.009) between the geodesic distance from the soma and the topological split rate (splits per mm). This confirms the hypothesis that U-Net fragmentation rates decrease significantly in distal projections compared to the densely tangled neurite regions nearer to the cell body.
-- **Caveats:** extreme class imbalance / very few positives
+- **Conclusion:** However, while the p-value indicates statistical significance, the R-squared value is extremely low (0.0066) and the slope is very shallow (-0.000003 splits/mm per µm). Belief therefore rose from Uncertain (0.42) to Leaning True (0.62) (signed surprisal +0.325; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** test type not extractable from record; p = 0.00908
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 186. (Surprise 0.307) Supported: The voxel anisotropy in the ExaSPIM dataset (1.0 µm/voxel in Z vs.
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 1 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 186. (Surprise 0.307) Supported: evidence confirms that Z-axis anisotropy or imaging depth drives split-error geometry.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 1 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Investigate and statistically quantify the directional bias of topological split errors relative to the Z-axis, and dynamically formulate data-driven algorithmic recommendations based on the empirical angular distribution rather than preconceived assumptions.
-- **Conclusion:** The experiment successfully revised the analysis pipeline to dynamically interpret the statistical and empirical results rather than relying on hardcoded assumptions. The maximum positive deviation was programmatically identified in the 85.0° - 90.0° bin (with a deviation of +0.040), indicating a strong bias towards the X/Y plane. Based on this data-driven finding, the script correctly outputs recommendations to expand the search region in the X/Y plane and apply geometric discount penalties for gaps aligned with this plane.
-- **Caveats:** data artifact flagged; implementation deviated from plan
+- **Conclusion:** The generated plot and KS test results (KS=0.1000, p-value=5.067e-04) further corroborate these conclusions, successfully completing the objective. Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Kolmogorov-Smirnov; p ≈ 0.00051
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 187. (Surprise 0.307) Supported: Split and merge errors are spatially clustered, such that U-Net fragment endpoints representing artificial splits are located physically closer to U-Net merge s...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 7 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 187. (Surprise 0.307) Supported: evidence confirms that geometric gap features identify true split reconnections.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 7 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** To quantify the spatial co-occurrence of split and merge errors and justify a coupled proofreading architecture that loops between split and merge correction.
-- **Conclusion:** The code correctly mapped fragment nodes to ground truth components, identified 481 merge nodes at transition boundaries, and classified fragment endpoints into 4,091 Artificial Splits and 3,443 True Terminals. The two-sample Kolmogorov-Smirnov test yielded a KS statistic of 0.0540 and a highly significant p-value of 3.5151e-05, rejecting the null hypothesis. The mean distance for Artificial Splits (2,968.36 µm) was found to be lower than that of True Terminals (3,340.30 µm).
-- **Caveats:** none noted
+- **Conclusion:** The two-sample Kolmogorov-Smirnov test yielded a KS statistic of 0.0540 and a highly significant p-value of 3.5151e-05, rejecting the null hypothesis. The mean distance for Artificial Splits (2,968.36 µm) was found to be lower than that of True Terminals (3,340.30 µm). Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Kolmogorov-Smirnov; p ≈ 3.5e-05
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 188. (Surprise 0.307) Supported: Merge errors are not uniformly distributed across the fragment graph; instead, a small subset of 'hub' fragments accounts for a disproportionate majority of mer...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 15 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 188. (Surprise 0.307) Supported: evidence confirms that morphological features mark U-Net merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 15 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Determine if merge correction should prioritize a small number of highly-fused components rather than scanning all fragments equally.
-- **Conclusion:** The analysis of the fragment graph identified 294 merge edges distributed across 21 fragment components. The calculated Gini coefficient of 0.7234 indicates a high degree of inequality in the distribution of these merges. This is further corroborated by the finding that the top 5% of components (just a single component in this case) accounts for 31.29% of all merges.
-- **Caveats:** none noted
+- **Conclusion:** The experiment was successfully executed and met all the objectives. Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** test type not extractable from record
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 189. (Surprise 0.307) Supported: Split errors are significantly more likely to occur in highly tortuous (curved or winding) sections of the neurite compared to straight sections, because sharp...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 28 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 189. (Surprise 0.307) Supported: evidence confirms that geometric gap features identify true split reconnections.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 28 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Quantify the relationship between local neurite tortuosity and the likelihood of U-Net fragmentation.
-- **Conclusion:** The experiment successfully executed all required steps to test the hypothesis. By checking multiple file paths, the script correctly located and loaded the dataset `dataset_cache_794495.pkl`. It successfully mapped U-Net fragments to the ground truth components and categorized degree-2 ground truth nodes into split errors (245,053 nodes) and continuous segments (1,103,835 nodes).
+- **Conclusion:** The mean tortuosity at split error sites was 1.0499 compared to 1.0416 at continuous sites, and the median tortuosity was 1.0344 versus 1.0314, respectively. Both the two-sample t-test (t = 8.8594, p-value = 8.7931e-19) and the Kolmogorov-Smirnov test (KS = 0.0531, p-value = 1.1232e-12) confirm that these distributions are statistically distinct. Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** two-sample t-test, Kolmogorov-Smirnov, Student's t-test; p ≈ 1.1e-12
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 190. (Surprise 0.307) Supported: U-Net fragments deviate spatially from the true neuron trajectory just before splitting.
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 30 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 190. (Surprise 0.307) Supported: evidence confirms that geometric gap features identify true split reconnections.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 30 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Test if automated split errors are immediately preceded by a geometrical drift from the true biological centerline, indicating local prediction uncertainty.
-- **Conclusion:** The dataset was loaded correctly with the fallback path handling, and the script successfully identified 39,826 fragment endpoints (leaf nodes) and sampled an equal number of continuous internal nodes for a balanced comparison. The results show that fragment endpoints have a mean drift of 1605.61 µm (median: 1159.68 µm), while internal nodes have a mean drift of 1470.53 µm (median: 1001.25 µm). A Mann-Whitney U test confirmed that this difference is highly statistically significant (p-value = 8.265e-66), supporting the hypothesis that U-Net predictions exhibit significantly higher spatial deviation from the true biological centerline at the point where they break/split.
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** The results show that fragment endpoints have a mean drift of 1605.61 µm (median: 1159.68 µm), while internal nodes have a mean drift of 1470.53 µm (median: 1001.25 µm). A Mann-Whitney U test confirmed that this difference is highly statistically significant (p-value = 8.265e-66), supporting the hypothesis that U-Net predictions exhibit significantly higher spatial deviation from the true biological centerline at the point where they break/split. Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p ≈ 8.3e-66
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 191. (Surprise 0.307) Supported: The true topological continuations of recoverable split gaps exhibit high angular alignment along their local tangents, and utilizing endpoint cosine similarity...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 37 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 191. (Surprise 0.307) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 37 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Evaluate the discriminative power of endpoint angular alignment (geometry) versus simple Euclidean distance to inform agentic mutual exclusivity reasoning at split gaps.
-- **Conclusion:** The pipeline identified 39,826 leaf nodes in the U-Net fragments graph and isolated 1,812 cross-component leaf pairs within a 30 µm search radius. Of these, 484 pairs were confidently mapped to the ground truth components (479 True Matches and 5 False Matches). The ROC analysis and AUC metrics strongly confirmed the hypothesis: Cosine Similarity (Angular Alignment) achieved a significantly higher AUC of 0.8985 compared to Inverse Euclidean Distance, which scored an AUC of 0.7292.
+- **Conclusion:** The ROC analysis and AUC metrics strongly confirmed the hypothesis: Cosine Similarity (Angular Alignment) achieved a significantly higher AUC of 0.8985 compared to Inverse Euclidean Distance, which scored an AUC of 0.7292. The ROC curves demonstrated that angular alignment can identify nearly 70% of true matches without a single false positive, whereas distance-alone plateaus at 50%. Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** ROC-AUC
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 192. (Surprise 0.307) Supported: The U-Net automated segmentation struggles specifically at complex junctions, causing split errors to cluster disproportionately close to true biological branch...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 40 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 192. (Surprise 0.307) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 40 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Determine if fragment endpoints (split errors) are spatially correlated with the locations of true biological bifurcations.
-- **Conclusion:** The experiment successfully executed after refining the `MockUnpickler` to accurately capture the NetworkX `SkeletonGraph` object. The pipeline correctly mapped 7,534 fragment leaf nodes to the ground truth graph and calculated their distances to the nearest biological branching points. A uniform control set of nodes was generated for comparison.
-- **Caveats:** none noted
+- **Conclusion:** The Kolmogorov-Smirnov test yielded a KS statistic of 0.0941 and a highly significant p-value of 1.9195e-29. Furthermore, the median distance to a branch point for split errors was 108.63 µm, compared to 140.12 µm for the uniform control. Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Kolmogorov-Smirnov; p ≈ 1.9e-29
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 193. (Surprise 0.307) Supported: Topological errors in U-Net segmentations are spatially coupled: split errors are statistically more likely to occur in the immediate spatial vicinity of merge...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 54 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 193. (Surprise 0.307) Supported: evidence confirms that geometric gap features identify true split reconnections.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 54 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Test the spatial co-occurrence of split and merge errors to determine if correcting a merge can act as a high-confidence prior for nearby split-corrections.
-- **Conclusion:** By robustly loading the dataset and isolating 46 merged U-Net fragments (encompassing 223,828 structural nodes) and 352 distinct split error loci, the code computed nearest-neighbor distances between split occurrences and merge sites. It then compared these distances to a robust control distribution of 6,843 non-split leaf nodes. The statistical findings solidly validate the hypothesis: the KS test returned a significant p-value of 5.2154e-05 (KS Stat = 0.1249), demonstrating that split and merge errors do not distribute independently.
+- **Conclusion:** The statistical findings solidly validate the hypothesis: the KS test returned a significant p-value of 5.2154e-05 (KS Stat = 0.1249), demonstrating that split and merge errors do not distribute independently. Specifically, the median distance from a split error to the nearest merge site was 809.72 µm, noticeably closer than the control median of 1016.66 µm. Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Kolmogorov-Smirnov; p ≈ 5.2e-05
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 194. (Surprise 0.307) Supported: Fragment components containing merge errors exhibit significantly higher geometric tortuosity (ratio of total cable length to bounding-box diagonal) than clean...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 55 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 194. (Surprise 0.307) Supported: evidence confirms that neurite tortuosity or sharp turns flag U-Net split/merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 55 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Determine if the global geometric tortuosity of a fragment component is a reliable flag for identifying likely merge errors.
-- **Conclusion:** The experiment was successfully executed, confirming the hypothesis that fragment components containing merge errors exhibit significantly higher geometric tortuosity than clean fragments. The script loaded the dataset, identified 10,172 valid components, and classified 20 as 'merged' and 10,152 as 'clean'. The log-transformed tortuosity (cable length / bounding box diagonal) for clean components had a mean of 0.1512 (std: 0.1394), whereas merged components showed a significantly higher mean of 0.4266 (std: 0.3424).
+- **Conclusion:** The log-transformed tortuosity (cable length / bounding box diagonal) for clean components had a mean of 0.1512 (std: 0.1394), whereas merged components showed a significantly higher mean of 0.4266 (std: 0.3424). Welch's t-test confirmed the statistical significance of this difference (t-statistic = 3.5969, p-value = 1.9205e-03). Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, Student's t-test; p = 0.00192
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 195. (Surprise 0.307) Supported: A substantial fraction of recoverable true split errors are structurally blocked from single-pass leaf-to-leaf reconnection because the target continuation is a...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 61 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 195. (Surprise 0.307) Supported: evidence confirms that geometric gap features identify true split reconnections.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 61 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Quantify the proportion of valid split connections that require leaf-to-internal linking versus standard leaf-to-leaf linking.
-- **Conclusion:** The experiment successfully executed all steps, identifying and mapping 39,826 fragment leaf nodes to ground truth components. Traversing across the gaps within 150 µm revealed 1,067 valid recoverable split connections. By classifying the target nodes based on their degrees, the analysis found that 633 connections (59.3%) were Leaf-to-Internal (where the target node had a degree of 2 or more), while only 434 connections (40.7%) were Leaf-to-Leaf.
+- **Conclusion:** The experiment successfully executed all steps, identifying and mapping 39,826 fragment leaf nodes to ground truth components. Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** test type not extractable from record
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 196. (Surprise 0.307) Supported: In competitive split-reconnection scenarios, the angular orientation agreement (cosine similarity of endpoint tangent vectors) is significantly stronger (closer...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 68 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 196. (Surprise 0.307) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 68 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Validate orientation agreement as a robust geometric feature for resolving mutually exclusive reconnection proposals.
-- **Conclusion:** Hypothesis: In competitive split-reconnection scenarios, the angular orientation agreement (cosine similarity of endpoint tangent vectors) is significantly stronger (closer to -1) for valid split reconnections than for nearby false reconnection proposals. Experiment Results: - Sample Sizes Identified: 647 valid reconnection pairs and 10 false reconnection pairs were identified within a 50 µm search radius. - Cosine Similarity (Mean ± Std): Valid reconnections exhibited a mean cosine similarity of -0.4726 ± 0.5622.
-- **Caveats:** none noted
+- **Conclusion:** - **Cosine Similarity (Mean ± Std):** Valid reconnections exhibited a mean cosine similarity of -0.4726 ± 0.5622. False reconnections exhibited a mean cosine similarity of 0.2478 ± 0.6295. Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U, Student's t-test; p ≈ 0.00057
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 197. (Surprise 0.307) Supported: Highly tortuous (winding and curvy) neurite segments suffer from a significantly higher topological split error rate than straight segments, as the U-Net strugg...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 70 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 197. (Surprise 0.307) Supported: evidence confirms that geometric gap features identify true split reconnections.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 70 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Determine if neurite morphology complexity (tortuosity) is a causal predictor of segmentation fragmentation.
-- **Conclusion:** The script loaded the dataset, accurately mapped U-Net fragments to the ground truth components using a KDTree, and subdivided the ground truth skeleton into 105,335 non-overlapping segments of roughly 50 µm in length. For each segment, the tortuosity (path length divided by Euclidean distance) and split rate were calculated. The segments were categorized into 'High Tortuosity' (top 25th percentile, >=1.09) and 'Low Tortuosity' (bottom 25th percentile, <=1.04).
-- **Caveats:** none noted
+- **Conclusion:** The statistical analysis using the Mann-Whitney U test yielded a highly significant result (U = 349,031,936.00, p-value = 9.2626e-17), demonstrating a clear difference between the two groups. Furthermore, the mean split rate for highly tortuous segments (0.25 splits/mm) was 2.5 times higher than that of low tortuosity segments (0.10 splits/mm). Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p ≈ 9.3e-17
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 198. (Surprise 0.307) Supported: Split errors tend to occur in highly fragmented 'shatter zones' caused by poor local image signal, meaning the local spatial density of other U-Net fragment end...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 73 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 198. (Surprise 0.307) Supported: evidence confirms that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 73 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Quantify the local spatial density of fragment endpoints (leaves) around true terminations versus split gaps to assess if splits cluster in 'shatter zones'.
-- **Conclusion:** The experiment was successfully executed following the corrected logic for the `MockUnpickler`, effectively loading the `dataset_cache_794495.pkl` file and appropriately handling missing dependencies. The script successfully extracted 3,118 'Split Leaves' and 4,416 'True Terminations' and mapped them using a KDTree spatial index with a 50 µm search radius. The statistical analysis utilizing the Mann-Whitney U test yielded a test statistic of 9,251,004.0 and an extremely significant p-value of 2.5958e-275.
-- **Caveats:** none noted
+- **Conclusion:** The statistical analysis utilizing the Mann-Whitney U test yielded a test statistic of 9,251,004.0 and an extremely significant p-value of 2.5958e-275. The mean endpoint density was substantially higher for Split Leaves (0.54 neighbors) compared to True Terminations (0.09 neighbors). Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U, Student's t-test; p ≈ 2.6e-275
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 199. (Surprise 0.307) Supported: Fragments that contain at least one merge error are also significantly more fragmented overall, exhibiting a higher density of valid split endpoints per microme...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 75 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 199. (Surprise 0.307) Supported: evidence confirms that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 75 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Test the hypothesis that topological errors are coupled, and that highly complex/messy local image regions simultaneously trigger both merge and split failures.
-- **Conclusion:** The script calculated the cable length and split density for each fragment, filtered out fragments smaller than 2,000 µm, and successfully categorized them into fragments with merge errors and those without. Experiment Results: - Populations Identified: Out of 1,745 fragments with a cable length ≥ 2,000 µm, 13 contained at least one merge error, while the remaining 1,732 contained zero merge errors. - Split Density (Mean): Fragments with merge errors exhibited a mean split density of 0.001645 valid leaves/µm.
-- **Caveats:** none noted
+- **Conclusion:** - **Split Density (Mean):** Fragments with merge errors exhibited a mean split density of 0.001645 valid leaves/µm. In contrast, fragments without merge errors had a significantly lower mean split density of 0.000444 valid leaves/µm. Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
+- **Caveats:** median outcome is zero; effect driven by outliers
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p ≈ 3.3e-09
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 200. (Surprise 0.307) Supported: The spatial gap size of valid split reconnections is negatively correlated with local fragment density ('crowdedness'), meaning isolated neurites experience lon...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 77 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 200. (Surprise 0.307) Supported: evidence confirms that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 77 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Investigate the relationship between local graph density and the physical scale of segmentation errors to inform dynamic search space constraints during proofreading.
-- **Conclusion:** By mapping fragment endpoints to the ground truth components and identifying 1,360 valid split pairs, the code accurately calculated both the Euclidean gap distance and the number of unique fragment components within a 30 µm radius of the gap midpoints. The statistical analysis revealed a strong and highly significant negative correlation (Pearson r = -0.6086, p = 1.26e-138; Spearman rho = -0.6668, p = 1.21e-175). These results strongly support the initial hypothesis: isolated neurites experience longer continuous signal dropouts (yielding larger spatial gaps up to 100 µm), whereas dense bundles suffer from more frequent but shorter breaks.
+- **Conclusion:** The statistical analysis revealed a strong and highly significant negative correlation (Pearson r = -0.6086, p = 1.26e-138; Spearman rho = -0.6668, p = 1.21e-175). Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Spearman, Pearson; p ≈ 1.2e-175
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 201. (Surprise 0.307) Supported: U-Net split errors systematically occur closer to true biological bifurcations than expected by chance, as the segmentation struggles with the complex topology...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 78 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 201. (Surprise 0.307) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 78 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Determine if valid split errors are spatially clustered around ground-truth branching nodes compared to continuous U-Net segments.
-- **Conclusion:** It identified 7,320 ground-truth branching nodes and successfully located 479 valid split gaps (pairs of fragment endpoints that map to the same ground-truth component). The spatial analysis revealed that valid split gaps are located significantly closer to true biological bifurcations than continuous segments. The median distance to the nearest true bifurcation for split gaps was 70.98 µm, compared to 151.44 µm for continuous segments.
-- **Caveats:** none noted
+- **Conclusion:** The median distance to the nearest true bifurcation for split gaps was 70.98 µm, compared to 151.44 µm for continuous segments. A Mann-Whitney U test confirmed this difference is highly statistically significant (Statistic = 84838.0, p-value = 2.9857e-12). Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p ≈ 3e-12
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 202. (Surprise 0.307) Supported: U-Net fragments containing merge errors (fusing multiple true neurons) are statistically longer in total cable length than non-merged fragments, indicating that...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 80 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 202. (Surprise 0.307) Supported: evidence confirms that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 80 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Test if U-Net fragment size is a robust intrinsic proxy for the presence of merge errors.
-- **Conclusion:** The experiment was successfully executed, confirming the hypothesis that U-Net fragment cable length is a robust intrinsic geometric proxy for the presence of merge errors. The script successfully located the dataset by scanning multiple directory levels, loaded the graphs via a robust mock unpickler, and classified 1,224 mapped fragments into 1,178 'Clean' fragments (mapped to exactly 1 Ground Truth component) and 46 'Merged' fragments (mapped to >1 GT components). A Mann-Whitney U test yielded a highly significant p-value of 0.0025 (Statistic = 34192.00), demonstrating that merged fragments are statistically significantly longer than clean ones.
-- **Caveats:** none noted
+- **Conclusion:** A Mann-Whitney U test yielded a highly significant p-value of 0.0025 (Statistic = 34192.00), demonstrating that merged fragments are statistically significantly longer than clean ones. The generated Box and Violin plots visually corroborate these findings, showing that while clean fragments are tightly grouped at shorter lengths, merged fragments exhibit extreme upper-bound outliers and a significantly higher median. Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p = 0.0025
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 203. (Surprise 0.307) Supported: The topological split rate (fragment breaks per mm of cable) increases systematically with the topological branch depth (centrifugal order) from the soma, as di...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 82 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 203. (Surprise 0.307) Supported: evidence confirms that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 82 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Determine if the frequency of U-Net split errors is positively correlated with the topological branch depth from the neuron's soma.
-- **Conclusion:** The experiment was successfully executed, confirming the hypothesis that topological split errors correlate with centrifugal branch order. By robustly handling the dataset loading and mapping fragment endpoints to the ground truth components, the script accurately traversed the ground truth tree from the soma to assign topological branch orders to each segment. The statistical analysis revealed a strong and highly significant positive correlation (Pearson r = 0.8042, p-value = 6.95e-10; Spearman rho = 0.8543, p-value = 4.65e-12) between the topological branch order and the split rate (splits/mm).
+- **Conclusion:** The statistical analysis revealed a strong and highly significant positive correlation (Pearson r = 0.8042, p-value = 6.95e-10; Spearman rho = 0.8543, p-value = 4.65e-12) between the topological branch order and the split rate (splits/mm). Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Spearman, Pearson; p ≈ 4.6e-12
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 204. (Surprise 0.307) Supported: The topological 'Cycle-Prevention Trap': True split reconnections are frequently blocked in single-pass pipelines because the fragments are already erroneously...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 85 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 204. (Surprise 0.307) Supported: evidence confirms that geometric gap features identify true split reconnections.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 85 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Quantify how often resolving a true split error would create a topological cycle in the U-Net fragments graph due to the presence of uncorrected merge errors.
-- **Conclusion:** The dataset was successfully loaded, mapped, and queried to evaluate the 'Cycle-Prevention Trap' hypothesis. The script correctly identified 651 valid 'true split' pairs (fragment endpoints mapped to the same ground-truth component within 30 µm). It then computationally verified that 172 of these true splits (26.4%) were already topologically connected within the fragments graph, meaning that attempting to correct these splits would trigger cycle-prevention logic and block the correction.
-- **Caveats:** none noted
+- **Conclusion:** The experiment was successfully executed, correctly overcoming previous import issues by implementing a fully robust `MockUnpickler` that safely intercepted all unknown classes. Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** test type not extractable from record
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 205. (Surprise 0.307) Supported: The likelihood of an automated U-Net merge error is positively correlated with the local branching complexity of the underlying ground-truth neuron, as highly b...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 86 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 205. (Surprise 0.307) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 86 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Investigate if local ground-truth morphological complexity (branch density) is a primary spatial driver of merge errors.
-- **Conclusion:** The script correctly identified 7,320 ground-truth branch nodes and computed the local branching complexity (within a 50 µm radius) for all ground-truth nodes. It then successfully isolated 2,918 ground-truth nodes associated with spatial merge errors and compared their local branch density to a control group of 10,000 randomly sampled standard nodes. Statistical analysis via the Kolmogorov-Smirnov test yielded a KS Statistic of 0.0973 and a highly significant p-value of 4.6304e-19, confirming that the two distributions differ significantly.
-- **Caveats:** none noted
+- **Conclusion:** Statistical analysis via the Kolmogorov-Smirnov test yielded a KS Statistic of 0.0973 and a highly significant p-value of 4.6304e-19, confirming that the two distributions differ significantly. The mean branch density for merge sites (0.51) was nearly double that of the control group (0.27). Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Unsound
+- **Test:** Kolmogorov-Smirnov; p ≈ 4.6e-19
+- **Statistical issues:** statistical significance driven by very large N; effect size negligible (|r|<0.1) — significance is a large-sample artifact rather than a scientifically meaningful effect; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 206. (Surprise 0.307) Supported: Split errors are disproportionately localized near ground-truth branching points, suggesting the U-Net struggles to resolve topological divergence compared to s...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 92 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 206. (Surprise 0.307) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 92 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Determine if valid split gaps occur significantly closer to ground-truth topological branch points than expected by chance.
-- **Conclusion:** The script identified 1,360 valid split gaps by mapping fragment endpoints to the ground truth components and computed the spatial distance from their midpoints to the nearest ground-truth branching nodes (degree >= 3). The baseline consisted of an equal sample of 1,360 ground-truth degree-2 nodes. Statistical analysis using the Mann-Whitney U test yielded a test statistic of 554274.0 and an overwhelmingly significant p-value of ~3.63e-73.
+- **Conclusion:** Statistical analysis using the Mann-Whitney U test yielded a test statistic of 554274.0 and an overwhelmingly significant p-value of ~3.63e-73. The mean distance to the nearest branching point for valid splits is 124.73 µm, compared to 239.99 µm for the baseline baseline. Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U, Student's t-test; p ≈ 3.6e-73
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 207. (Surprise 0.307) Supported: True split gaps frequently exhibit significant tangent asymmetry (tip curling), where one endpoint correctly points to its partner but the reverse tangent is mi...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 93 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 207. (Surprise 0.307) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 93 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Quantify structural asymmetry at split sites to determine if symmetric angular agreement heuristics are overly penalizing valid reconnections.
-- **Conclusion:** The pipeline correctly extracted 564 'True' split pairs and computed their tangent asymmetry scores alongside 2,000 continuous control edges from the ground truth. The statistical analysis strongly supported the hypothesis: true split gaps demonstrated a significantly higher mean tangent asymmetry (0.3144) compared to the unbroken control edges (0.0721), with the Mann-Whitney U test yielding a p-value of essentially 0 (highly significant). The generated density plot clearly visualized that while unbroken axons exhibit very low asymmetry, valid split reconnections frequently suffer from 'tip curling' artifacts resulting in high structural asymmetry.
+- **Conclusion:** The statistical analysis strongly supported the hypothesis: true split gaps demonstrated a significantly higher mean tangent asymmetry (0.3144) compared to the unbroken control edges (0.0721), with the Mann-Whitney U test yielding a p-value of essentially 0 (highly significant). Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p ≈ 0
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 208. (Surprise 0.307) Supported: Extremely short U-Net fragments (close to the 1000 µm filtration threshold) have a significantly lower mapping rate to ground-truth structures compared to longe...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 94 · **Belief:** Leaning True → Likely True (0.708→0.933) · **Direction:** Positive · **Surprisal:** +0.307
+### 208. (Surprise 0.307) Supported: evidence confirms that the proposed structural heuristic holds for U-Net proofreading.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 94 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.9327) · **Direction:** Positive
 - **Tested:** Investigate the relationship between the physical cable length of a U-Net fragment and its probability of corresponding to a valid ground-truth structure.
-- **Conclusion:** The experiment successfully executed and validated the hypothesis. By implementing a robust custom unpickler to bypass missing dependencies, the dataset was correctly loaded and U-Net fragments were structurally evaluated against the ground truth. The statistical analysis demonstrated that mapped (valid) fragments possess a significantly higher mean length (4652.57 µm) compared to unmapped (noise) fragments (1563.21 µm).
-- **Caveats:** test driven to p=1.0 by near-zero positive counts
+- **Conclusion:** The statistical analysis demonstrated that mapped (valid) fragments possess a significantly higher mean length (4652.57 µm) compared to unmapped (noise) fragments (1563.21 µm). A Welch's t-test confirmed this difference is statistically highly significant (t-statistic = 6.1600, p-value = 1.0744e-09). Belief therefore rose from Leaning True (0.71) to Likely True (0.93) (signed surprisal +0.307; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, logistic regression, Student's t-test; p ≈ 1.1e-09
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 209. (Surprise 0.284) Rejected: Fragment leaf nodes that represent 'true splits' (reconnectable to the same ground-truth neuron) have significantly larger neurite radii than leaf nodes that ar...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 40 · **Belief:** Leaning False → Likely False (0.292→0.109) · **Direction:** Negative · **Surprisal:** −0.284
+### 209. (Surprise 0.284) Refuted: data contradict the claim that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 40 · **Belief:** Leaning False -> Likely False (0.2917 -> 0.1094) · **Direction:** Negative
 - **Tested:** Assess whether the neurite radius at an endpoint can serve as a confidence prior for generating valid split-correction proposals.
-- **Conclusion:** The code identified 39,826 leaf nodes in the UNet fragments and successfully matched pairs located within a 20 µm radius. By comparing the local connectivity to the ground truth, 2,687 true splits (where both leaves belong to the same GT neuron) and 11 false splits (artifacts or erroneous pairings) were identified. The descriptive statistics show the true splits had a mean radius of 1.3045 µm (median = 1.2490 µm), while false splits had a mean radius of 1.2250 µm (median = 1.0000 µm).
-- **Caveats:** extreme class imbalance / very few positives; small sample size
+- **Conclusion:** The descriptive statistics show the true splits had a mean radius of 1.3045 µm (median = 1.2490 µm), while false splits had a mean radius of 1.2250 µm (median = 1.0000 µm). A Mann-Whitney U test yielded a p-value of 0.4526, indicating no statistically significant difference between the radii of true and false splits. Belief therefore dropped from Leaning False (0.29) to Likely False (0.11) (signed surprisal -0.284; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power); dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U; p = 0.4526; n up to 11
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 210. (Surprise 0.284) Supported: Connecting true split fragments (True Positives) creates local pathways with significantly lower tortuosity (arc-chord ratio) compared to falsely connecting unr...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 4 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 210. (Surprise 0.284) Supported: evidence confirms that neurite tortuosity or sharp turns flag U-Net split/merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 4 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** To evaluate if the local tortuosity of a reconnected path is a viable metric to prevent artifactual, sharp bends in the proofread skeleton.
-- **Conclusion:** The script generated 479 True Positive (TP) and 5 False Positive (FP) connection proposals within a 30 µm radius. The tortuosity analysis revealed that valid connections (TP) have a noticeably lower mean tortuosity (1.3872) compared to invalid connections (FP, mean = 2.3972). A Mann-Whitney U test confirmed that this difference is statistically significant (p = 0.000255).
-- **Caveats:** small sample size
+- **Conclusion:** The tortuosity analysis revealed that valid connections (TP) have a noticeably lower mean tortuosity (1.3872) compared to invalid connections (FP, mean = 2.3972). Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p ≈ 0.00026; n up to 2
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 211. (Surprise 0.284) Supported: Severing false U-Net connections (merge errors) creates new terminal nodes that immediately unblock previously hidden, valid true-positive reconnection proposal...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 5 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 211. (Surprise 0.284) Supported: evidence confirms that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 5 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Demonstrate that coupling merge and split correction is necessary, as correcting a merge directly creates the endpoints needed for valid split reconnections.
-- **Conclusion:** The experiment successfully executed and validated the hypothesis. By identifying and severing 292 false U-Net connections (merge edges) based on ground-truth mappings, the simulation created new terminal nodes. Querying neighbors within a 30 µm radius of these newly created leaves uncovered 574 new True Positive (valid) split-correction proposals that were previously inaccessible.
+- **Conclusion:** The experiment successfully executed and validated the hypothesis. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** test type not extractable from record
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 212. (Surprise 0.284) Supported: U-Net merge errors are statistically correlated with spatial regions of high structural complexity (high local branching density).
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 6 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 212. (Surprise 0.284) Supported: evidence confirms that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 6 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** To evaluate if erroneous fragment fusions occur disproportionately in dense neuropil where the local branching density is high.
-- **Conclusion:** By mapping the automated U-Net `fragments_graph` to the human-traced `gt_graph`, the script successfully isolated 23 U-Net fragments that erroneously bridge multiple distinct ground truth neurons. From these, 505 merge transition nodes were identified. To evaluate local structural complexity, the branching density (number of degree >= 3 nodes within a 50 µm spatial radius) was computed for both these merge regions and an equal-sized, unbiased sample of safe regions from non-merged fragments.
+- **Conclusion:** The results demonstrate a significant difference: merge regions exhibit a mean branching density of 0.62, while safe regions have a mean of 0.25. An independent Welch's t-test yielded a t-statistic of 7.2354 and a p-value of 9.8726e-13. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, two-sample t-test, Student's t-test; p ≈ 9.9e-13
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 213. (Surprise 0.284) Supported: Regions with a high spatial density of fragment endpoints (fragmentation hubs) have a significantly higher rate of valid split reconnections than isolated endpo...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 15 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 213. (Surprise 0.284) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 15 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Test if local endpoint density correlates with the likelihood of successful topology recovery, indicating that proofreading algorithms should dynamically prioritize these hubs.
-- **Conclusion:** The experiment successfully tested the hypothesis by calculating the local spatial density of fragment endpoints and comparing their topological reconnection rates. Endpoints were clustered based on a 30 µm radius. The threshold for 'High Density' was adjusted to ≥1 nearby endpoint due to the sparseness of the overall distribution, while 'Low Density' endpoints had 0 neighbors within that radius.
+- **Conclusion:** A Chi-square test confirmed a highly statistically significant correlation (chi2 = 1582.33, p-value = 0.0). Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square; p ≈ 0
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 214. (Surprise 0.284) Supported: Sudden changes or high variance in neurite radius are predictive of merge errors, occurring at U-Net artifact sites where two closely passing distinct ground-tr...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 19 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 214. (Surprise 0.284) Supported: evidence confirms that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 19 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Determine if the gradient of the `node_radius` attribute along a skeleton can serve as a local image-evidence feature to detect and flag topological merge boundaries.
-- **Conclusion:** The experiment successfully tested the hypothesis that sudden changes in neurite radius correlate with merge errors. By mapping U-Net nodes to the ground truth using a KD-tree, the script identified 475 merge boundary nodes (points where a single U-Net fragment erroneously connects distinct GT neurons) and compared them against a random sample of 10,000 normal, non-boundary nodes. The statistical analysis revealed that the mean local radius gradient at merge boundaries was 0.0498 µm, compared to just 0.0096 µm for normal nodes.
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** The statistical analysis revealed that the mean local radius gradient at merge boundaries was 0.0498 µm, compared to just 0.0096 µm for normal nodes. The median radius gradient was also twice as high at merge boundaries (0.0020 µm vs 0.0010 µm), and the standard deviation was significantly larger, indicating high local variance. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p ≈ 5.6e-44
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 215. (Surprise 0.284) Supported: U-Net split errors disproportionately occur near complex morphological structures like branch points.
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 35 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 215. (Surprise 0.284) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 35 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** To determine if split errors are spatially correlated with neurite branch points, implying morphological complexity induces segmentation breaks.
-- **Conclusion:** The experiment successfully tested the hypothesis by comparing the spatial proximity of leaf nodes (representing U-Net split errors) and middle nodes (representing continuous segments) to the nearest branching nodes. Analyzing 39,826 leaf nodes and an equal number of randomly sampled middle nodes revealed a stark contrast: leaf nodes were found significantly closer to branching nodes (mean = 217.40 µm, median = 151.20 µm) compared to middle nodes (mean = 266.92 µm, median = 188.93 µm). A Mann-Whitney U test confirmed this difference is highly statistically significant (U = 702045331.0, p-value = 2.08e-173).
+- **Conclusion:** Analyzing 39,826 leaf nodes and an equal number of randomly sampled middle nodes revealed a stark contrast: leaf nodes were found significantly closer to branching nodes (mean = 217.40 µm, median = 151.20 µm) compared to middle nodes (mean = 266.92 µm, median = 188.93 µm). A Mann-Whitney U test confirmed this difference is highly statistically significant (U = 702045331.0, p-value = 2.08e-173). Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p ≈ 2.1e-173; n up to 266
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 216. (Surprise 0.284) Supported: Resolving U-Net merge errors unblocks valid split reconnections: correcting false fusions exposes hidden topological endpoints and significantly increases the p...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 41 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 216. (Surprise 0.284) Supported: evidence confirms that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 41 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** To demonstrate that coupling merge and split correction is necessary because merge errors mask true fragment endpoints.
-- **Conclusion:** The programmer resolved the file path issue from the previous run, and the code executed to completion. The script correctly mapped UNet fragment nodes to Ground-Truth (GT) components and identified 4,536 merge edges. The baseline evaluation found 1,391 valid split proposals.
+- **Conclusion:** The spatial chunking and paired t-test confirmed this result with a t-statistic of 3.2136 and a highly significant p-value of 0.00147. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** paired t-test, Student's t-test; p = 0.00147
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 217. (Surprise 0.284) Supported: Fragment endpoint pairs that belong to the SAME fragment component, are separated by < 15 µm in Euclidean space, but > 100 µm in graph path length, represent 'k...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 1 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 217. (Surprise 0.284) Supported: evidence confirms that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 1 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Identify and characterize structural 'cycles' or auto-merges within single predicted fragments that mimic false reconnections.
-- **Conclusion:** The code identified 'kissing loop' auto-merges across fragment components by locating nodes within the same component that are physically close (< 15 µm Euclidean distance) but topologically distant (> 100 µm shortest path length). It compared the radius variance of the connecting paths for 500 such kissing loop pairs against 494 randomly sampled baseline non-looping paths. The results validate the hypothesis: the structural paths characterizing kissing loops exhibit significantly higher radius variance than typical straight pathways.
+- **Conclusion:** The mean radius variance for the kissing loops (0.013397) was substantially greater than that of the baseline paths (0.002571). The median values confirmed this pattern (0.007474 vs 0.000736), indicating that analyzing radius variability could be a strong heuristic for detecting auto-merge errors. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** test type not extractable from record
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 218. (Surprise 0.284) Supported: Reconnection proposals bridging large fragment components (measured by total node count) are significantly more likely to be valid than proposals involving smal...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 17 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 218. (Surprise 0.284) Supported: evidence confirms that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 17 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Test if component size acts as a reliable prior for distinguishing genuine neuron segments from noise-induced short fragments.
-- **Conclusion:** The experiment successfully installed the missing dependencies and executed the steps to test the hypothesis. It identified 39,826 leaf nodes and found 1,618 pairs within a 20 µm radius. The pairs were mapped to the ground-truth data, resulting in 408 valid and 989 invalid reconnections (after ignoring intra-component pairs).
+- **Conclusion:** For valid reconnections, the mean minimum component size was 826.23 nodes (median 402.50). For invalid reconnections, the mean minimum component size was 373.12 nodes (median 271.00). Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p ≈ 1.4e-27
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 219. (Surprise 0.284) Supported: Merge errors predominantly occur at complex topological junctions; therefore, U-Net nodes at the 'boundaries' of a merge are located significantly closer to U-N...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 20 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 219. (Surprise 0.284) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 20 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Investigate whether merge errors concentrate near structural branching points in the automated reconstruction.
-- **Conclusion:** The experiment was successfully executed and yielded statistically significant results. The code correctly mapped fragments to ground truth, identified 2,119 merge fragments, and extracted 8,285 merge boundary nodes. The mean distance to the nearest branch node was 282.21 µm for boundary nodes and 315.19 µm for baseline nodes.
+- **Conclusion:** The mean distance to the nearest branch node was 282.21 µm for boundary nodes and 315.19 µm for baseline nodes. The two-sample t-test produced a t-statistic of -6.9887 and a p-value of 2.8822e-12. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** two-sample t-test, Student's t-test; p ≈ 2.9e-12
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 220. (Surprise 0.284) Supported: Split errors are spatially clustered, meaning the physical distance from one true split gap to the nearest neighboring true split gap is significantly smaller t...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 36 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 220. (Surprise 0.284) Supported: evidence confirms that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 36 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Determine if U-Net split errors occur in localized 'hotspots' (e.g., due to regional imaging artifacts or dense crossing regions) rather than being uniformly distributed.
-- **Conclusion:** A total of 395 true split gaps were mapped to the ground truth. The results from the Kolmogorov-Smirnov test (KS Statistic = 0.2411, p-value = 4.0716e-19) indicate a highly significant difference between the two distributions. The true split gaps have a substantially smaller mean (634.00 µm) and median (480.64 µm) nearest-neighbor distance compared to the random null distribution (Mean = 920.95 µm, Median = 781.18 µm).
+- **Conclusion:** The results from the Kolmogorov-Smirnov test (KS Statistic = 0.2411, p-value = 4.0716e-19) indicate a highly significant difference between the two distributions. The true split gaps have a substantially smaller mean (634.00 µm) and median (480.64 µm) nearest-neighbor distance compared to the random null distribution (Mean = 920.95 µm, Median = 781.18 µm). Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Kolmogorov-Smirnov; p ≈ 4.1e-19; n up to 920
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 221. (Surprise 0.284) Supported: The neurite radius at the endpoints of U-Net fragments is systematically smaller than the average radius of the entire fragment, indicating that U-Net fragmenta...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 41 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 221. (Surprise 0.284) Supported: evidence confirms that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 41 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Analyze the correlation between neurite radius and the occurrence of split errors by comparing endpoint radii to their parent fragment's mean radius.
-- **Conclusion:** The code correctly installed dependencies, loaded the `fragments_graph`, computed the global mean radius versus the mean endpoint radius for 10,172 eligible U-Net fragments, and performed a paired t-test. Experiment Results & Findings: - Summary Statistics: The global average neurite radius across the fragments was calculated as 1.9463 µm (std: 0.0529). In contrast, the average radius at the endpoints (leaf nodes) was substantially smaller at 1.5078 µm (std: 0.2686).
+- **Conclusion:** The code correctly installed dependencies, loaded the `fragments_graph`, computed the global mean radius versus the mean endpoint radius for 10,172 eligible U-Net fragments, and performed a paired t-test. The mean difference was -0.4382 µm. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** paired t-test, Student's t-test; p = 0.001
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 222. (Surprise 0.284) Supported: Split gaps located near structural bifurcations exhibit significantly lower angular alignment (larger deviation from a straight line) between their endpoints co...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 45 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 222. (Surprise 0.284) Supported: evidence confirms that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 45 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Investigate how the geometry of a split error changes based on its proximity to neuron branching points, informing dynamic search cone generation.
-- **Conclusion:** The experiment was successfully executed and the results strongly support the initial hypothesis. The code loaded the dataset using the dynamically generated mocked classes, successfully extracted fragment leaf nodes and ground-truth branching nodes, and computed the true split gaps within 15 µm. Out of 1204 identified true split gaps, 19 were located near a bifurcation (< 10 µm) and 1185 were along the backbone (>= 10 µm).
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** The angular deviation from a straight line was significantly higher for gaps near bifurcations (mean = 83.99°, median = 83.35°) compared to backbone gaps (mean = 41.94°, median = 35.02°). Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** two-sample t-test, Student's t-test; p = 0.001; n up to 83
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 223. (Surprise 0.284) Supported: For mutually exclusive reconnection candidates originating from a single fragment endpoint, the angular difference in terminal branch orientation (tangent vecto...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 51 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 223. (Surprise 0.284) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 51 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Compare the discriminative power of tangent orientation versus Euclidean distance for resolving competing reconnection proposals.
-- **Conclusion:** The experiment was successfully executed and robustly evaluated the hypothesis. The script correctly installed all missing dependencies and processed the dataset to extract 39,826 leaf nodes from the fragments graph. After mapping these to the ground truth (GT) within a 5 µm threshold, 7,050 valid leaves were retained.
+- **Conclusion:** The statistical analysis demonstrated that the tangent angular difference (AUC = 0.9657) is a significantly stronger predictor for resolving competing reconnection proposals compared to raw Euclidean distance (AUC = 0.7076). Interestingly, true connections exhibited a mean angle of ~144 degrees, reflecting the fact that correctly paired incoming and outgoing neurite branches naturally point in opposing outward directions, resulting in large angular differences. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** ROC-AUC; p ≈ 0.0001
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 224. (Surprise 0.284) Supported: Nodes within 10 µm of a merge error boundary in U-Net fragments exhibit significantly higher local variance in neurite radius than nodes in correctly reconstruc...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 55 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 224. (Surprise 0.284) Supported: evidence confirms that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 55 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Test if sudden fluctuations in predicted neurite radius can serve as a geometric signature for localizing merge errors.
-- **Conclusion:** The experiment successfully executed and validated the hypothesis. By mapping U-Net fragments to Ground Truth components, the script identified 23 merge fragments and 1042 pure (non-merged) fragments, locating 309 merge boundary edges. The local neurite radius variance within 10 µm topological neighborhoods was calculated for both merge boundary windows and equivalent random windows in pure fragments.
+- **Conclusion:** The statistical comparison using Welch's t-test on log-transformed variances yielded a highly significant result (t-statistic = 10.4368, p-value = 1.4687e-23). The mean log-variance at merge boundaries (-9.8775) was significantly higher than in pure fragments (-13.0873), concluding that merge error boundaries exhibit significantly higher local variance in neurite radius and that this metric can serve as a geometric signature for localizing merge errors. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, Student's t-test; p ≈ 1.5e-23
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 225. (Surprise 0.284) Supported: More than 30% of valid split reconnections (gap < 15 µm) require connecting a fragment leaf node to an internal node (degree > 1) of another fragment (a T-junct...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 61 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 225. (Surprise 0.284) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 61 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Challenge the standard assumption that split correction solely requires matching endpoint to endpoint, quantifying the need for 'dead-end' T-junction proposals.
-- **Conclusion:** The script analyzed 39,826 fragment leaf nodes to find valid topological reconnections within a 15 µm radius. Out of 4,314 valid reconnections identified, 1,816 were leaf-to-leaf (endpoint) reconnections, while 2,498 were leaf-to-internal (T-junction) reconnections. This yielded a T-junction proportion of ~57.90%.
-- **Caveats:** extreme class imbalance / very few positives
+- **Conclusion:** The subsequent one-sample proportion z-test (z-statistic = 39.99, p-value ≈ 0.0) provides overwhelming statistical evidence to reject the null hypothesis. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** test type not extractable from record; p ≈ 0
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 226. (Surprise 0.284) Supported: Nodes in the `fragments_graph` that constitute a merge error (where a single U-Net fragment fuses two different GT neurons) exhibit a significantly higher local...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 62 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 226. (Surprise 0.284) Supported: evidence confirms that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 62 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** To evaluate if localized spikes or high variance in predicted neurite radius can serve as a reliable geometric signature for detecting and rolling back false merges.
-- **Conclusion:** The programmer resolved the previous file path issue and correctly installed necessary missing packages. The script effectively mapped fragment nodes to ground-truth nodes using a 5 µm distance threshold, identifying 290 merge interfaces (where a single U-Net fragment incorrectly fused two distinct ground-truth components) and randomly sampled an equal number of control windows from cleanly reconstructed fragments. Local features for a 20-node window around these edges were extracted, specifically the standard deviation and max-to-median ratio of the neurite radius.
-- **Caveats:** small sample size; implementation deviated from plan
+- **Conclusion:** Local features for a 20-node window around these edges were extracted, specifically the standard deviation and max-to-median ratio of the neurite radius. The results show that merge interfaces exhibited significantly higher radius variance (mean = 0.0625 vs 0.0299 for controls) and larger max/median ratios (mean = 1.0286 vs 1.0182 for controls). Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p ≈ 8.8e-10
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** none
 
-### 227. (Surprise 0.284) Supported: The predicted neurite radius at fragment leaf nodes involved in valid split errors is significantly smaller than the average internal radius of the fragment, in...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 72 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 227. (Surprise 0.284) Supported: evidence confirms that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 72 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Investigate whether valid split errors occur primarily due to genuine physical thinning of the cable (fading signal) rather than random stochastic failures in thick cables.
-- **Conclusion:** The experiment successfully executed and effectively tested the hypothesis. The script correctly identified 687 True Positive (valid) split errors by matching UNet fragment leaf pairs (within 15 µm) to the same ground-truth (GT) component. It then successfully compared the estimated neurite radius at these terminal leaves against the mean internal radius of their parent components.
-- **Caveats:** extreme class imbalance / very few positives
+- **Conclusion:** It then successfully compared the estimated neurite radius at these terminal leaves against the mean internal radius of their parent components. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** paired t-test, Wilcoxon, Student's t-test; p ≈ 0.0001
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 228. (Surprise 0.284) Supported: The local density of fragment endpoints is significantly higher around valid split gaps than around correctly reconstructed continuous backbone nodes, indicatin...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 86 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 228. (Surprise 0.284) Supported: evidence confirms that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 86 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Test if local endpoint density can serve as a contextual meta-feature that shifts dynamically as edits accumulate, signaling regions where single-pass greedy reconnections are likely to fail.
-- **Conclusion:** The experiment was successfully executed and robustly evaluated the hypothesis. The implementation correctly extracted 1,391 valid split gaps and sampled an equal number of continuous backbone nodes. Using a 50 µm search radius, the algorithm calculated the local density of fragment endpoints (leaf nodes).
+- **Conclusion:** The statistical analysis revealed a highly significant difference (t-statistic = 91.99, p-value < 1e-10). Split centers exhibited a much higher mean endpoint density (2.29 ± 0.75) compared to continuous centers (0.16 ± 0.42). Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Student's t-test; p ≈ 1e-10
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 229. (Surprise 0.284) Supported: Merge errors (erroneous fusions of distinct neurons) occur disproportionately at U-Net fragment branch points (nodes with degree >= 3) rather than along continu...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 88 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 229. (Surprise 0.284) Supported: evidence confirms that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 88 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Determine the graph-topological signature of merge errors to guide targeted, reversible un-merging algorithms.
-- **Conclusion:** By mapping the UNet fragment nodes to the human ground-truth (GT) graph with a 5 µm threshold, the algorithm successfully identified 290 merge edges involving 468 distinct nodes (where adjacent fragment nodes mapped to different GT components). Analysis of the node degrees revealed a strong correlation between merge errors and structural branch points (nodes with a degree of 3 or higher). Globally, branch nodes are rare, constituting only 0.45% of the entire fragments graph (19,460 out of ~4.28 million nodes).
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** Analysis of the node degrees revealed a strong correlation between merge errors and structural branch points (nodes with a degree of 3 or higher). A Chi-square goodness-of-fit test confirmed that this deviation from the global baseline is highly statistically significant (Chi-square = 574.30, p-value = 6.51e-127). Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** chi-square, Student's t-test; p ≈ 6.5e-127
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 230. (Surprise 0.284) Supported: Branch points in the automated reconstruction that represent merge errors (false fusions) have a significantly higher local density of unconnected leaf nodes wi...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 95 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 230. (Surprise 0.284) Supported: evidence confirms that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 95 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Test the spatial correlation between merge errors and split errors to determine if detecting merges can guide where to search for valid reconnections.
-- **Conclusion:** The experiment was successfully executed and generated the required summary statistics. The script correctly identified 19,460 branch nodes, extracted their neighbors, and mapped them to the ground truth to classify 5,586 as True Branches and 36 as Merge Errors. Using a KDTree for leaf nodes, the local density of unconnected leaf nodes (within 20 µm) was queried for each branch class.
-- **Caveats:** extreme class imbalance / very few positives; implementation deviated from plan
+- **Conclusion:** Results: - Mean leaf density (True Branches): 0.0068 unconnected leaves within 20 µm - Mean leaf density (Merge Errors): 0.1111 unconnected leaves within 20 µm The non-parametric Mann-Whitney U test returned a highly significant p-value of 2.1025e-13, confirming that branch points representing merge errors have a statistically significantly higher local density of unconnected leaf nodes compared to valid branches. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U, Welch's t-test, Student's t-test; p ≈ 2.1e-13
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 231. (Surprise 0.284) Supported: Reconnection proposals that form small spatial cycles (e.g., three fragment endpoints mutually within 20 µm forming a triangle in the proposal graph) have a sig...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 96 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 231. (Surprise 0.284) Supported: evidence confirms that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 96 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Assess how local proposal graph density impacts precision, testing if cycles inherently indicate a high false-positive rate due to anatomical constraints.
-- **Conclusion:** The script identified 1,397 total gap proposals within a 20 µm radius. By distinguishing between proposals participating in cyclic structures versus those forming linear (bridge) proposals, and mapping these to ground truth (with a 50 µm tolerance to capture more mappings), the script built a contingency table. The results revealed 21 cyclic proposals (19 valid, 2 invalid; 90.48% precision) and 395 linear proposals (394 valid, 1 invalid; 99.75% precision).
+- **Conclusion:** The chi-square test yielded a statistic of 12.7389 with a p-value of 0.000358, which is statistically significant (p < 0.05). Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square; p = 0.05
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 232. (Surprise 0.284) Supported: Breaking U-Net components at known false merge sites prior to split correction increases the recall of true-positive reconnections by at least 10% because it re...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 101 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 232. (Surprise 0.284) Supported: evidence confirms that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 101 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Evaluate the synergistic effect of coupling merge correction (fragment splitting) before split correction (fragment joining).
-- **Conclusion:** The experiment successfully tested the hypothesis that performing merge correction before split correction increases the recall of true-positive reconnections. The script loaded the dataset, mapped the U-Net fragments to ground-truth components, and applied a greedy distance-and-tangent-based split-correction algorithm to establish a baseline. The baseline yielded 294 true-positive (TP) reconnections and 881 false-positive (FP) reconnections.
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** The experiment successfully tested the hypothesis that performing merge correction before split correction increases the recall of true-positive reconnections. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** test type not extractable from record
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 233. (Surprise 0.284) Supported: Split errors in the U-Net reconstruction are significantly concentrated around complex topological junctions, specifically occurring more frequently within a 30...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 103 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 233. (Surprise 0.284) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 103 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** To determine if U-Net fragmentation is disproportionately caused by anatomical bifurcations, validating if split-correction models should apply different priors near known branching structures.
-- **Conclusion:** Ground-truth (GT) branching nodes (N=7,320) were correctly identified alongside an equal sample size of isolated control nodes (degree=2, ≥50 µm from any branch). Fragment leaves mapping to non-leaf GT nodes were filtered to identify true split errors (3,907 errors mapped to 3,774 unique GT nodes). By evaluating a 30 µm path-length neighborhood around each target, the analysis revealed that branching regions contained an average of 0.0941 split errors, compared to just 0.0354 near control regions.
-- **Caveats:** small sample size
+- **Conclusion:** Ground-truth (GT) branching nodes (N=7,320) were correctly identified alongside an equal sample size of isolated control nodes (degree=2, ≥50 µm from any branch). Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p ≈ 6.1e-39; n up to 7320
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 234. (Surprise 0.284) Supported: Incrementally resolving the highest-confidence split reconnections (distance < 5 µm) alters the local graph topology such that the average proposal density (com...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 106 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 234. (Surprise 0.284) Supported: evidence confirms that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 106 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Verify the benefit of an agentic, multi-pass graph update system by showing that early, easy decisions clean up the feature space for harder decisions.
-- **Conclusion:** The algorithm identified 39,826 fragment leaf nodes. Out of these, 243 high-confidence pairs (distance < 5 µm, tangent alignment > 0.90) were identified and successfully merged using a greedy strategy and updated via union-find. For the remaining 39,340 endpoints, the average proposal density (competing endpoints within 15 µm) dropped from 0.0488 to 0.0484.
-- **Caveats:** none noted
+- **Conclusion:** Although the absolute average reduction per endpoint was small (0.0004), the Wilcoxon signed-rank test confirmed that this decrease was statistically significant (p-value = 1.4911e-03, statistic = 0.0). Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Wilcoxon, Student's t-test; p = 0.001491
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 235. (Surprise 0.284) Supported: Due to the anisotropic resolution of ExaSPIM imaging (poorer resolution in the Z-axis), split errors are disproportionately aligned with the Z-axis compared to...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 108 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 235. (Surprise 0.284) Supported: evidence confirms that Z-axis anisotropy or imaging depth drives split-error geometry.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 108 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Investigate if image anisotropy biases the orientation of automated reconstruction breaks.
-- **Conclusion:** The experiment successfully tested the hypothesis that split errors are disproportionately aligned with the Z-axis due to anisotropic resolution. The script loaded the dataset and extracted valid split-correction gaps (336 true-positive reconnections) and compared them against a massive baseline of true biological edges (~1.36 million GT edges). The mean absolute angle for biological edges was 61.38 degrees, heavily skewed toward the XY plane (near 90 degrees).
+- **Conclusion:** The mean absolute angle for biological edges was 61.38 degrees, heavily skewed toward the XY plane (near 90 degrees). In contrast, the split gaps had a significantly lower mean absolute angle of 59.29 degrees, indicating a bias toward the Z-axis. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Kolmogorov-Smirnov; p ≈ 0.00035
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 236. (Surprise 0.284) Contradicted: During a greedy, single-pass split-correction algorithm, strict cycle-prevention constraints erroneously block a significant percentage (at least 5%) of anatomi...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 113 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 236. (Surprise 0.284) Supported: evidence confirms that greedy/independent thresholding versus joint-reasoning matching changes proofreading precision.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 113 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Quantify the collateral damage of enforcing cycle-free graphs during greedy split correction by measuring how many True Positive edges are rejected to prevent cycles.
-- **Conclusion:** The script correctly proposed connections between fragment leaves within 15 µm, classified them based on ground-truth mappings, and simulated a greedy, single-pass edge acceptance algorithm using a Union-Find structure. Out of 1,209 proposed inter-component connections, 1,176 were accepted. 33 edges were rejected specifically because they would form a cycle.
+- **Conclusion:** The experiment successfully quantified the collateral damage of enforcing cycle-prevention during a greedy split-correction algorithm. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** test type not extractable from record
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 237. (Surprise 0.284) Supported: True reconnection proposals are predominantly formed between large, stable U-Net fragments, while false merge-inducing proposals disproportionately involve smal...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 114 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 237. (Surprise 0.284) Supported: evidence confirms that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 114 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Investigate if the combined size (node count) of fragments involved in a reconnection proposal can serve as a predictive feature for the validity of the split.
-- **Conclusion:** The code executed successfully and calculated the combined fragment size for candidate split-reconnection pairs within a 20 µm radius. Out of 1,397 valid candidate pairs, 395 were classified as True Pairs (correctly reconnecting to the same ground-truth neuron) and 1,002 were classified as False Pairs (ambiguous or erroneous reconnections). The results showed a stark difference in combined fragment sizes: True Pairs had a mean combined size of 13,058.34 nodes (median: 2,912.00 nodes), whereas False Pairs had a mean combined size of 1,932.99 nodes (median: 914.50 nodes).
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** The results showed a stark difference in combined fragment sizes: True Pairs had a mean combined size of 13,058.34 nodes (median: 2,912.00 nodes), whereas False Pairs had a mean combined size of 1,932.99 nodes (median: 914.50 nodes). A Mann-Whitney U test yielded a p-value of approximately 2.00e-58, indicating a highly significant statistical difference between the two distributions. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U, Student's t-test; p ≈ 2e-58
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 238. (Surprise 0.284) Supported: In dense regions with competitive split-correction proposals (a fragment leaf node having >= 2 nearby leaves from different components within 20 µm), the propos...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 135 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 238. (Surprise 0.284) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 135 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Demonstrate that relying purely on Euclidean distance for split correction is suboptimal in dense regions, motivating the use of multi-feature joint reasoning (mutual exclusivity) at competitive endpoints.
-- **Conclusion:** The experiment successfully executed and validated the hypothesis. By analyzing the fragments graph, the code identified 94 competitive leaf nodes (those with 2 or more candidates from different U-Net components within a 20 µm radius). For these competitive endpoints, the most angularly aligned candidate (highest tangent cosine similarity) differed from the spatially closest candidate in 30 cases (31.91%).
+- **Conclusion:** A one-sided binomial test evaluating if this disagreement rate is significantly greater than a 10% baseline yielded a highly significant p-value of 4.9237e-09. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** binomial test; p ≈ 4.9e-09
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 239. (Surprise 0.284) Supported: Nodes corresponding to anatomical branching points (degree >= 3) in the ground truth exhibit a significantly higher split error rate than standard continuation...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 136 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 239. (Surprise 0.284) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 136 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Test whether topological bifurcations in neuron morphology are systematic failure points (hotspots for splits) for the U-Net segmentation.
-- **Conclusion:** The results strongly support the hypothesis: U-Net segmentation introduces split errors at anatomical branching points (nodes with degree >= 3) at a significantly higher rate than along continuous paths (degree == 2). Specifically: - Branching Nodes: Experienced a split error rate of ~1.48% (94 splits out of 6,339 branching nodes). - Path Nodes: Experienced a much lower split error rate of ~0.12% (1,359 splits out of 1,109,694 path nodes).
-- **Caveats:** extreme class imbalance / very few positives
+- **Conclusion:** The Chi-Square test for independence yielded a test statistic of 886.7250 and an extremely low p-value (7.5452e-195), indicating a highly significant statistical relationship between the node morphology type (bifurcation vs. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square, Student's t-test; p ≈ 7.5e-195
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 240. (Surprise 0.284) Supported: Shorter U-Net fragments exhibit significantly higher angular variance (misalignment) at their endpoints relative to the true ground-truth continuation compared...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 139 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 240. (Surprise 0.284) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 139 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Test if the cable length of a U-Net fragment inversely correlates with the reliability of its endpoint tangent vectors as a geometric signature for split correction.
-- **Conclusion:** The experiment successfully tested the hypothesis by computing the cable lengths for U-Net fragments, identifying their leaf nodes, and calculating the angular alignment error of the fragment's leaf tangent relative to the ground-truth continuation. Out of 39,826 identified leaf nodes, 3,171 endpoints belonging to short fragments (< 5000 µm) and 4,126 endpoints belonging to long fragments (>= 5000 µm) were aligned and evaluated. The short fragments exhibited a median angular error of 7.34°, compared to 6.60° for long fragments.
-- **Caveats:** none noted
+- **Conclusion:** The short fragments exhibited a median angular error of 7.34°, compared to 6.60° for long fragments. The Mann-Whitney U test yielded a test statistic of 7049298.0 and a p-value of 6.37e-09. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U, Student's t-test; p = 0.001
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 241. (Surprise 0.284) Supported: False merge errors occur in regions of significantly higher local fragment density (crowding) compared to correctly reconstructed segments, reflecting U-Net seg...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 143 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 241. (Surprise 0.284) Supported: evidence confirms that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 143 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Quantify whether local fragment crowding is a statistically significant spatial precursor to merge errors.
-- **Conclusion:** The analysis successfully identified 468 merge boundary nodes and sampled 2,340 control nodes. The results support the hypothesis that false merge errors occur in regions with significantly higher local fragment density. The average local fragment density within a 30 µm radius was slightly higher at merge boundaries (1.10 fragments) compared to correctly traced control nodes (1.05 fragments).
+- **Conclusion:** Visual analysis of the generated violin plots provides further nuance: for both groups, the median density is overwhelmingly concentrated at 1.0, indicating that most segments exist in relatively uncrowded spaces. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p ≈ 3.4e-06
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 242. (Surprise 0.284) Supported: For split reconnection proposals, the cosine similarity of the outward-facing tangents of connecting endpoints is strongly anti-parallel (approaching -1) for tr...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 144 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 242. (Surprise 0.284) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 144 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Validate that tangent orientation agreement is a robust geometric prior for prioritizing valid split reconnections.
-- **Conclusion:** The algorithm identified 39,826 leaf nodes and 1,209 candidate pairs within a 15 µm radius. Out of these, 344 pairs were classified as True Positives (TP) and 3 pairs as False Positives (FP) based on the ground truth mapping. The results strongly validate the hypothesis: True Positives exhibited highly anti-parallel outward tangents (mean cosine similarity of -0.8077, concentrated near -1.0), whereas False Positives exhibited positive alignments (mean cosine similarity of 0.7078).
-- **Caveats:** small sample size
+- **Conclusion:** The results strongly validate the hypothesis: True Positives exhibited highly anti-parallel outward tangents (mean cosine similarity of -0.8077, concentrated near -1.0), whereas False Positives exhibited positive alignments (mean cosine similarity of 0.7078). A Kolmogorov-Smirnov test confirmed the statistical significance of the separation (KS-statistic = 0.9709, p-value = 8.2856e-05). Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Questionable
+- **Test:** Kolmogorov-Smirnov, Student's t-test; p ≈ 8.3e-05; n up to 3
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** none
 
-### 243. (Surprise 0.284) Supported: For true-positive split reconnections, the directional agreement (tangent alignment) between fragment endpoints degrades significantly as the spatial gap distan...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 160 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 243. (Surprise 0.284) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 160 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Quantify how the geometric predictability of split gaps decays over distance, informing dynamic thresholding for reconnection pipelines.
-- **Conclusion:** The experiment successfully tested the hypothesis by analyzing the true-positive split reconnections between fragment endpoints. Using a spatial radius threshold of 25 µm, 376 true-positive (TP) reconnection pairs were identified. The outward-facing tangent vectors were extracted for these endpoints to compute a tangent alignment score (where +1 represents ideal anti-parallel outward vectors, i.e., leaves perfectly facing each other).
+- **Conclusion:** The Pearson correlation coefficient between gap distance and tangent alignment score was -0.3489 (1-sided p-value = 1.671e-12), and the Spearman correlation magnitude aligned with this trend. Because the 1-sided test p-value is far below 0.05, the hypothesis is confirmed: geometric predictability of split gaps significantly decays over larger spatial distances. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Spearman, Pearson; p ≈ 1.7e-12
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 244. (Surprise 0.284) Supported: Reconnection candidates where both participating U-Net fragments are extremely short (under 2,000 µm in total cable length) have a False Positive rate that is a...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 167 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 244. (Surprise 0.284) Supported: evidence confirms that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 167 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Determine if fragment cable length acts as a reliable structural prior for split-correction confidence.
-- **Conclusion:** The experiment successfully tested the hypothesis that fragment cable length acts as a reliable structural prior for split-correction confidence. The code correctly computed the total cable length for components and queried valid leaf-to-leaf pairs within a 20 µm radius, resulting in 1,397 candidates. These were appropriately categorized into the two bins: 'Short-Short' (both fragments < 2000 µm, yielding 437 candidates) and 'Long-Any' (at least one fragment > 5000 µm, yielding 537 candidates).
+- **Conclusion:** The experiment successfully tested the hypothesis that fragment cable length acts as a reliable structural prior for split-correction confidence. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** test type not extractable from record
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 245. (Surprise 0.284) Supported: Applying true-positive split reconnections significantly increases the statistical variance of the fragment cable lengths, meaning split correction primarily el...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 170 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 245. (Surprise 0.284) Supported: evidence confirms that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 170 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Test the hypothesis that fixing topological splits significantly increases the variance of component cable lengths, indicating a dynamic shift in graph state post-correction.
-- **Conclusion:** The experiment successfully tested the hypothesis regarding the distributional impact of split correction on fragment cable lengths. The baseline (pre-correction) metrics across 10,172 components showed a mean cable length of 1849.31 µm and a variance of 27.86M µm². The script identified and simulated 1,157 valid True Positive (TP) reconnections.
-- **Caveats:** none noted
+- **Conclusion:** The baseline (pre-correction) metrics across 10,172 components showed a mean cable length of 1849.31 µm and a variance of 27.86M µm². Following the corrections, the mean fragment length grew to 2087.37 µm, while the variance substantially increased to 84.61M µm². Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** test type not extractable from record; p = 0.05
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 246. (Surprise 0.284) Supported: For true split errors, the spatial gap distance between fragment endpoints is negatively correlated with their orientation agreement (cosine similarity of branc...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 174 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 246. (Surprise 0.284) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 174 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Evaluate the geometric signatures of recoverable splits to determine the trade-off between gap size and tangent alignment reliability.
-- **Conclusion:** The experiment was successfully executed and robustly validates the hypothesis. By analyzing 647 valid true split pairs (fragment endpoints mapping to the same ground-truth neuron), a significant negative correlation was found between the spatial gap distance and the orientation agreement (Pearson r = -0.4619, p-value = 1.64e-35). Furthermore, the data binned by gap distance showed a clear degradation in alignment as the gap increased: mean orientation agreement was high (0.8320) for gaps of 0-10 µm, moderately high (0.7733) for 10-20 µm, and significantly dropped (0.5582) for 20-50 µm.
+- **Conclusion:** By analyzing 647 valid true split pairs (fragment endpoints mapping to the same ground-truth neuron), a significant negative correlation was found between the spatial gap distance and the orientation agreement (Pearson r = -0.4619, p-value = 1.64e-35). Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** one-way ANOVA, Pearson; p ≈ 9.7e-32
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 247. (Surprise 0.284) Supported: U-Net fragmentation (split errors) occurs disproportionately in regions of thin neurites, such that the estimated neurite radius at the leaf nodes of fragments...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 176 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 247. (Surprise 0.284) Supported: evidence confirms that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 176 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Determine if weak local image evidence (thin neurites) is a primary geometric factor predisposing the automated U-Net segmentation to split errors.
-- **Conclusion:** The experiment successfully tested the hypothesis regarding the geometry of U-Net split errors. By explicitly casting the `float16` node radii arrays to `float64`, numerical overflow was prevented, allowing for accurate statistical computation. The results show that the mean radius of leaf nodes (representing fragment endpoints or split errors) is 1.5761 µm (variance = 0.2034), whereas the mean radius of continuous internal nodes is significantly larger at 1.9676 µm (variance = 0.0072) based on an equal sample size of 39,826 nodes.
+- **Conclusion:** The results show that the mean radius of leaf nodes (representing fragment endpoints or split errors) is 1.5761 µm (variance = 0.2034), whereas the mean radius of continuous internal nodes is significantly larger at 1.9676 µm (variance = 0.0072) based on an equal sample size of 39,826 nodes. A Welch's t-test yielded a t-statistic of -170.2359 and a p-value approaching zero. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, Student's t-test; p ≈ 0
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 248. (Surprise 0.284) Supported: Due to the lower optical resolution along the Z-axis (1.0 µm/voxel) compared to the X/Y axes (0.748 µm/voxel), U-Net split errors occur disproportionately when...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 177 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 248. (Surprise 0.284) Supported: evidence confirms that Z-axis anisotropy or imaging depth drives split-error geometry.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 177 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Evaluate if image anisotropy introduces a directional bias in the occurrence of split errors.
-- **Conclusion:** A total of 39,826 terminal segments (representing split points) and an equal number of randomly sampled internal segments (continuous pathways) were compared. The terminal segments showed a mean Z-alignment (|cos(θ)|) of 0.4934 (variance: 0.0886), while the internal segments had a mean of 0.4760 (variance: 0.0845). Statistical testing confirmed this difference is highly significant, with Welch's t-test yielding a t-statistic of 8.3243 (p-value = 8.6160e-17) and a Kolmogorov-Smirnov test yielding a KS-statistic of 0.0531 (p-value = 3.3276e-49).
+- **Conclusion:** The terminal segments showed a mean Z-alignment (|cos(θ)|) of 0.4934 (variance: 0.0886), while the internal segments had a mean of 0.4760 (variance: 0.0845). Statistical testing confirmed this difference is highly significant, with Welch's t-test yielding a t-statistic of 8.3243 (p-value = 8.6160e-17) and a Kolmogorov-Smirnov test yielding a KS-statistic of 0.0531 (p-value = 3.3276e-49). Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, Kolmogorov-Smirnov, Student's t-test; p ≈ 3.3e-49
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 249. (Surprise 0.284) Supported: The predicted neurite radius in U-Net fragments tapers off (systematically decreases) as the skeleton approaches a split endpoint compared to the interior of th...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 178 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 249. (Surprise 0.284) Supported: evidence confirms that image-intensity features (signal across the gap) add discriminative power.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 178 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Measure the spatial variation of predicted neurite radius near fragment endpoints to understand the localized failure modes of the U-Net segmentation.
-- **Conclusion:** The experiment was successfully executed and robustly validates the hypothesis. By analyzing 1,745 large fragment components (length > 2000 µm), nodes were grouped by their hop distance to the nearest fragment extremity. The results demonstrate a clear and progressive tapering of the predicted neurite radius as the skeleton approaches an endpoint.
-- **Caveats:** small sample size
+- **Conclusion:** The mean radius at the interior (>3 hops) is highest at 1.9916 µm, dropping to 1.9307 µm in the transition zone (2-3 hops), and further decreasing to 1.7928 µm at the extremities (0-1 hops). An ANOVA test confirmed that these differences are highly statistically significant (F-statistic = 79670.34, p-value = 0.0). Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** one-way ANOVA; p ≈ 0
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 250. (Surprise 0.284) Supported: U-Net fragments situated physically closer to the neuron soma are significantly longer on average than distal fragments, due to thicker and more easily traceabl...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 194 · **Belief:** Leaning True → Likely True (0.708→0.891) · **Direction:** Positive · **Surprisal:** +0.284
+### 250. (Surprise 0.284) Supported: evidence confirms that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 194 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8906) · **Direction:** Positive
 - **Tested:** Investigate the spatial distribution of fragmentation errors by correlating fragment length with distance to the soma.
-- **Conclusion:** The pipeline evaluated 1,146 U-Net fragments, calculating their total cable length and minimum Euclidean distance to their corresponding ground-truth soma. The statistical analysis yielded a Spearman Rank Correlation coefficient of -0.1379 with a highly significant p-value of 2.7850e-06. These results confirm the hypothesis: there is a statistically significant negative correlation between distance-to-soma and fragment length, meaning fragments situated physically closer to the neuron soma tend to be longer than those further away.
+- **Conclusion:** The statistical analysis yielded a Spearman Rank Correlation coefficient of -0.1379 with a highly significant p-value of 2.7850e-06. These results confirm the hypothesis: there is a statistically significant negative correlation between distance-to-soma and fragment length, meaning fragments situated physically closer to the neuron soma tend to be longer than those further away. Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.284; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Spearman; p ≈ 2.8e-06
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 251. (Surprise 0.264) Rejected: Aggressively scavenging and reconnecting ultra-short U-Net fragments (1000 - 1500 µm) to their nearest large parent component yields a disproportionately larger...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 17 · **Belief:** Leaning False → Likely False (0.250→0.058) · **Direction:** Negative · **Surprisal:** −0.264
+### 251. (Surprise 0.264) Refuted: data contradict the claim that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 17 · **Belief:** Leaning False -> Likely False (0.2500 -> 0.0577) · **Direction:** Negative
 - **Tested:** Simulate the graph-topological impact of a 'small-fragment scavenging' post-processing phase on overall reconstruction ERL.
-- **Conclusion:** The experiment successfully executed and calculated the impact of two different topological reconnection strategies on the Normalized Expected Run Length (ERL). The analysis identified 4,411 short fragments and 373 long fragments. By simulating graph edits, Scenario A (scavenging short fragments) added 54 edges yielding a gain of 6.14e-06 ERL per edge, whereas Scenario B (joining major fragments) added 49 edges yielding a significantly higher gain of 1.66e-04 ERL per edge.
+- **Conclusion:** The experiment successfully executed and calculated the impact of two different topological reconnection strategies on the Normalized Expected Run Length (ERL). Belief therefore dropped from Leaning False (0.25) to Likely False (0.06) (signed surprisal -0.264; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** test type not extractable from record
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 252. (Surprise 0.264) Supported: Valid split reconnections exhibit significantly higher angular alignment (anti-parallel outgoing tangent vectors) than invalid reconnection candidates, providin...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 24 · **Belief:** Leaning True → Likely True (0.750→0.942) · **Direction:** Positive · **Surprisal:** +0.264
+### 252. (Surprise 0.264) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 24 · **Belief:** Leaning True -> Likely True (0.7500 -> 0.9423) · **Direction:** Positive
 - **Tested:** Test if the angular alignment of adjacent fragment endpoints can effectively distinguish between valid split reconnections and invalid false connections.
-- **Conclusion:** The experiment successfully tested the hypothesis by extracting leaf nodes, identifying proximal pairs (within 15 µm), and calculating the cosine similarity of their outward-facing tangent vectors. Out of the 1,382 proximal leaf node pairs identified, 344 were classified as Valid Splits (endpoints mapping to the same ground-truth component) and only 3 as Invalid Splits (endpoints mapping to different ground-truth components). The results strongly support the hypothesis: Valid Split endpoints are highly anti-parallel, with a mean cosine similarity of -0.6930 (± 0.4061), indicating they naturally point towards each other along the fragmented neurite.
-- **Caveats:** none noted
+- **Conclusion:** The results strongly support the hypothesis: Valid Split endpoints are highly anti-parallel, with a mean cosine similarity of -0.6930 (± 0.4061), indicating they naturally point towards each other along the fragmented neurite. In contrast, the few Invalid Splits observed had a positive mean cosine similarity of 0.5833 (± 0.2358). Belief therefore rose from Leaning True (0.75) to Likely True (0.94) (signed surprisal +0.264; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p ≈ 0.0005
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 253. (Surprise 0.264) Supported: Because the U-Net model inappropriately resolves tight fiber crossings by fusing them, nodes participating in merge errors have a significantly higher probabili...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 42 · **Belief:** Leaning True → Likely True (0.750→0.942) · **Direction:** Positive · **Surprisal:** +0.264
+### 253. (Surprise 0.264) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 42 · **Belief:** Leaning True -> Likely True (0.7500 -> 0.9423) · **Direction:** Positive
 - **Tested:** Investigate whether localized topological complexity (branching) in the predicted graph is intrinsically coupled with merge errors.
-- **Conclusion:** Experiment Results: - Node Populations: 472 merge nodes were identified and compared against a random background sample of 100,000 non-merge fragment nodes. - Branching Proportions: - Merge Nodes: 8.05% (38 out of 472) of merge nodes are structural branch points (degree ≥ 3). - Background Nodes: Only 0.44% (442 out of 100,000) of background nodes are structural branch points.
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** - **Statistical Comparison:** A Chi-square test of independence confirmed a highly significant difference in branching proportions (Chi-square statistic = 556.14, p-value = 5.8169e-123). Belief therefore rose from Leaning True (0.75) to Likely True (0.94) (signed surprisal +0.264; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power); dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** chi-square; p ≈ 5.8e-123
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 254. (Surprise 0.264) Supported: U-Net merge errors topologically conceal valid split-reconnection opportunities by hiding true endpoints within fused cables; thus, simulating the cleavage of a...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 98 · **Belief:** Leaning True → Likely True (0.750→0.942) · **Direction:** Positive · **Surprisal:** +0.264
+### 254. (Surprise 0.264) Supported: evidence confirms that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 98 · **Belief:** Leaning True -> Likely True (0.7500 -> 0.9423) · **Direction:** Positive
 - **Tested:** Prove that correcting merges dynamically unlocks new valid split reconnections, supporting an iterative agentic proofreading loop over a single-pass pipeline.
-- **Conclusion:** The baseline analysis identified 410 recoverable split-correction pairs within a 20 µm radius. The script then accurately identified 297 false merge edges and simulated a cleavage process by removing them from the fragments graph. This cleavage created 356 new leaf nodes.
+- **Conclusion:** The experiment was successfully executed, fulfilling all the planned objectives. Belief therefore rose from Leaning True (0.75) to Likely True (0.94) (signed surprisal +0.264; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** test type not extractable from record
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 255. (Surprise 0.260) Belief dropped: In dense neighborhoods where a fragment leaf has multiple reconnection candidates within 30 µm, the purely nearest-neighbor (Euclidean distance) candidate is fr...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 21 · **Belief:** Leaning True → Leaning True (0.792→0.625) · **Direction:** Negative · **Surprisal:** −0.260
+### 255. (Surprise 0.260) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 21 · **Belief:** Leaning True -> Leaning True (0.7917 -> 0.6250) · **Direction:** Negative
 - **Tested:** Quantify the failure rate of distance-only reconnection heuristics and evaluate the performance gain of a composite feature metric.
-- **Conclusion:** However, the analysis revealed that only 2 fragment leaves met the strict 'dense' criteria (having both True and False candidates from different UNet fragments mapped to the ground truth within a 30 µm radius). For these two instances, the distance-only baseline completely failed to identify the true candidate (Top-1 Accuracy: 0.00%). Incorporating the composite metric (combining distance, radius difference, and orientation disagreement) did not improve the ranking, also resulting in a 0.00% Top-1 Accuracy.
-- **Caveats:** small sample size
+- **Conclusion:** The extremely small sample size (N=2) indicates that such highly confusable, dense neighborhoods within a 30 µm radius are exceedingly rare in this dataset. Belief therefore dropped from Leaning True (0.79) to Leaning True (0.62) (signed surprisal -0.260; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** test type not extractable from record; n up to 2
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 256. (Surprise 0.255) Supported: Split errors generated by the U-Net randomly breaking a cable adjacent to a merge error site have significantly shorter topological gap distances than split err...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 44 · **Belief:** Leaning True → Likely True (0.708→0.894) · **Direction:** Positive · **Surprisal:** +0.255
+### 256. (Surprise 0.255) Supported: evidence confirms that image-intensity features (signal across the gap) add discriminative power.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 44 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8942) · **Direction:** Positive
 - **Tested:** Investigate whether the presence of a merge error locally destabilizes the U-Net segmentation, leading to a cluster of nearby, short-gap split errors (coupling split and merge correction).
-- **Conclusion:** The script successfully mapped the U-Net fragments to the ground truth components, localizing 327 merge boundaries and 1,550 mutual nearest-neighbor split gaps. By calculating the distance from these gaps to the nearest merge site, it classified 5 splits as 'Merge-Adjacent' (< 30 µm) and 1,532 as 'Isolated' (> 100 µm). The subsequent Welch's t-test yielded a highly significant result (t-statistic = -19.0498, p-value = 2.7942e-19), confirming that Merge-Adjacent split gaps are significantly shorter (mean: 39.78 µm) than Isolated split gaps (mean: 139.30 µm).
-- **Caveats:** none noted
+- **Conclusion:** The subsequent Welch's t-test yielded a highly significant result (t-statistic = -19.0498, p-value = 2.7942e-19), confirming that Merge-Adjacent split gaps are significantly shorter (mean: 39.78 µm) than Isolated split gaps (mean: 139.30 µm). Belief therefore rose from Leaning True (0.71) to Likely True (0.89) (signed surprisal +0.255; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Welch's t-test, Student's t-test; p ≈ 2.8e-19
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 257. (Surprise 0.252) Belief dropped: In dense regions with competing reconnection proposals, the angular alignment (cosine similarity of branch tangents) between matching split endpoints is signifi...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 40 · **Belief:** Leaning True → Uncertain (0.708→0.547) · **Direction:** Negative · **Surprisal:** −0.252
+### 257. (Surprise 0.252) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 40 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.5469) · **Direction:** Negative
 - **Tested:** Determine the efficacy of local tangent agreement as a mechanism for an agent to resolve mutually exclusive topological proposals at dense leaf clusters.
-- **Conclusion:** The script extracted 39,826 leaf nodes, mapped 7,050 to ground truth, and isolated 196 leaves belonging to dense clusters (defined as 3 or more leaves within a 25 µm radius). In these dense clusters, the algorithm identified 41 "Matches" (true continuations) and 2 "Mismatches" (false proposals). The mean cosine similarity for Matches was 0.1868, whereas for Mismatches it was -0.7972.
-- **Caveats:** small sample size
+- **Conclusion:** The mean cosine similarity for Matches was 0.1868, whereas for Mismatches it was -0.7972. A Mann-Whitney U test yielded a p-value of 0.0708, which is slightly above the standard 0.05 significance threshold. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.55) (signed surprisal -0.252; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.0708; n up to 2
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 258. (Surprise 0.243) Supported: Rolling back (removing) true merge edges in the U-Net fragments dramatically reduces the maximum connected component size while causing only a marginal decrease...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 9 · **Belief:** Leaning True → Likely True (0.750→0.906) · **Direction:** Positive · **Surprisal:** +0.243
+### 258. (Surprise 0.243) Supported: evidence confirms that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 9 · **Belief:** Leaning True -> Likely True (0.7500 -> 0.9062) · **Direction:** Positive
 - **Tested:** Quantify the structural trade-off of resolving merge errors by measuring the reduction in massive erroneous super-components versus the loss of intact cable length.
-- **Conclusion:** A total of 292 true merge edges were identified and removed. Removing these merge edges reduced the maximum component size from 85,321 nodes to 40,931 nodes, which is a massive 52.03% reduction. In contrast, the average component path length saw only a marginal decrease from 1849.31 µm to 1797.58 µm, a reduction of just 2.80%.
-- **Caveats:** none noted
+- **Conclusion:** The experiment was successfully executed, resolving previous module and file path errors. Belief therefore rose from Leaning True (0.75) to Likely True (0.91) (signed surprisal +0.243; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** test type not extractable from record
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 259. (Surprise 0.243) Supported: Predicted branching nodes (degree ≥ 3) in the fragment graph are significantly more likely to be the structural sites of merge errors than predicted path nodes...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 14 · **Belief:** Leaning True → Likely True (0.750→0.906) · **Direction:** Positive · **Surprisal:** +0.243
+### 259. (Surprise 0.243) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 14 · **Belief:** Leaning True -> Likely True (0.7500 -> 0.9062) · **Direction:** Positive
 - **Tested:** Identify the topological locations where the U-Net model most frequently fuses distinct neurons to better target merge-detection algorithms.
-- **Conclusion:** The script identified 19,460 branching nodes (degree >= 3) and sampled an equal number of path nodes (degree == 2) from the fragments graph. Results & Findings: - Branching Nodes: 36 merge sites out of 19,460 (0.1850%). - Path Nodes: 1 merge site out of 19,460 (0.0051%).
-- **Caveats:** extreme class imbalance / very few positives; zero-variance / NaN edge case; implementation deviated from plan
+- **Conclusion:** - **Statistical Significance:** The Chi-square test yielded a statistic of 31.2730 with a p-value of 2.2418e-08. **Conclusion:** The very low p-value indicates a highly statistically significant difference. Belief therefore rose from Leaning True (0.75) to Likely True (0.91) (signed surprisal +0.243; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square; p ≈ 2.2e-08
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 260. (Surprise 0.243) Supported: Automated segmentation (U-Net) is more likely to fail and create split errors at regions where the biological neurite is thinnest, resulting in fragment endpoin...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 26 · **Belief:** Leaning True → Likely True (0.750→0.906) · **Direction:** Positive · **Surprisal:** +0.243
+### 260. (Surprise 0.243) Supported: evidence confirms that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 26 · **Belief:** Leaning True -> Likely True (0.7500 -> 0.9062) · **Direction:** Positive
 - **Tested:** Determine if local neurite radius is a predictive factor for U-Net splitting errors by comparing the radii of leaf nodes (split sites) to internal nodes (contiguous regions), ensuring numerical stability during statistical testing.
-- **Conclusion:** The experiment successfully executed after correcting the numerical overflow issue by casting the `node_radius` data to `float64`. The pipeline extracted 39,826 valid leaf nodes (split sites) and a random sample of 100,000 internal nodes (contiguous regions). Descriptive statistics confirm the hypothesis: leaf nodes have a significantly smaller mean radius (1.5761 µm) and median radius (1.6729 µm) compared to contiguous internal nodes (mean: 1.9676 µm, median: 1.9766 µm).
+- **Conclusion:** Descriptive statistics confirm the hypothesis: leaf nodes have a significantly smaller mean radius (1.5761 µm) and median radius (1.6729 µm) compared to contiguous internal nodes (mean: 1.9676 µm, median: 1.9766 µm). The Mann-Whitney U test yielded a valid statistic of 850,550,050.0 and a p-value of 0.0000 (p < 0.05), providing strong statistical significance. Belief therefore rose from Leaning True (0.75) to Likely True (0.91) (signed surprisal +0.243; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.05
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 261. (Surprise 0.243) Supported: Fragment components containing at least one merge error exhibit a significantly higher average node degree and a larger total number of leaf nodes than clean fr...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 47 · **Belief:** Leaning True → Likely True (0.750→0.906) · **Direction:** Positive · **Surprisal:** +0.243
+### 261. (Surprise 0.243) Supported: evidence confirms that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 47 · **Belief:** Leaning True -> Likely True (0.7500 -> 0.9062) · **Direction:** Positive
 - **Tested:** Assess whether global topological features of a fragment component can reliably flag the presence of internal merge errors.
-- **Conclusion:** The experiment was successfully executed, confirming the hypothesis that fragment components with internal merge errors exhibit different global topological features compared to clean fragments. Results & Findings: - Dataset breakdown: Out of the mapped components, 35 were identified as 'Merged' (mapped to 2 or more GT components) and 1111 as 'Clean' (mapped to exactly 1 GT component). - Average Node Degree: - Merged: Mean = 1.9961, Median = 1.9970 - Clean: Mean = 1.9950, Median = 1.9951 - Statistical Test: Mann-Whitney U statistic = 24006.0, p-value = 0.00897.
-- **Caveats:** small sample size
+- **Conclusion:** - **Average Node Degree:** - Merged: Mean = 1.9961, Median = 1.9970 - Clean: Mean = 1.9950, Median = 1.9951 - Statistical Test: Mann-Whitney U statistic = 24006.0, p-value = 0.00897. - **Total Leaf Counts:** - Merged: Mean = 26.63, Median = 5.0 - Clean: Mean = 7.06, Median = 4.0 - Statistical Test: Mann-Whitney U statistic = 25779.0, p-value = 0.00043. Belief therefore rose from Leaning True (0.75) to Likely True (0.91) (signed surprisal +0.243; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U; p = 0.05; n up to 26
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 262. (Surprise 0.243) Supported: U-Net fragment components that contain at least one merge error have a significantly greater total cable length than fragments with no merge errors, indicating...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 147 · **Belief:** Leaning True → Likely True (0.750→0.906) · **Direction:** Positive · **Surprisal:** +0.243
+### 262. (Surprise 0.243) Supported: evidence confirms that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 147 · **Belief:** Leaning True -> Likely True (0.7500 -> 0.9062) · **Direction:** Positive
 - **Tested:** Determine if fragment cable length is positively associated with the likelihood of encompassing a merge error.
-- **Conclusion:** The experiment was successfully executed and the results directly address the hypothesis. The code successfully identified branch nodes acting as merge errors, mapped them to their parent U-Net fragment components, and compared the total cable lengths between fragments containing merge errors and those without. Experiment Results: - Identified Merge Errors: 36 merge error branch nodes were found and mapped to 9 distinct fragment components.
-- **Caveats:** small sample size
+- **Conclusion:** - **Fragments WITH Merge Errors (n=9):** - Mean Cable Length: 61,497.45 µm - Median Cable Length: 20,660.61 µm - **Fragments WITHOUT Merge Errors (n=10,163):** - Mean Cable Length: 1,796.48 µm - Median Cable Length: 1,175.02 µm - **Statistical Testing:** The Mann-Whitney U Test yielded a highly significant p-value of 1.3198e-04. Belief therefore rose from Leaning True (0.75) to Likely True (0.91) (signed surprisal +0.243; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power); dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p ≈ 0.00013; n up to 10163
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 263. (Surprise 0.243) Belief dropped: The local spatial density of fragment endpoints (count of leaves within a 50 µm radius) is positively correlated with the local probability of a false-positive...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 164 · **Belief:** Leaning True → Uncertain (0.750→0.594) · **Direction:** Negative · **Surprisal:** −0.243
+### 263. (Surprise 0.243) Refuted: data contradict the claim that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 164 · **Belief:** Leaning True -> Uncertain (0.7500 -> 0.5938) · **Direction:** Negative
 - **Tested:** Verify that dense neuropil regions require stricter distance/geometry thresholds because simple proximity becomes an unreliable heuristic.
-- **Conclusion:** The dataset was loaded, candidate fragment leaf pairs within 20 µm were identified, and they were mapped to Ground Truth (GT) components to establish true-positive (TP) and FP labels. The pipeline identified 409 TP pairs but only 3 FP pairs. A logistic regression model was fit using local endpoint density (radius of 50 µm) to predict FP probability.
-- **Caveats:** small sample size
+- **Conclusion:** The resulting density coefficient was 0.3027 (Odds Ratio: 1.353) with a p-value of 0.455, indicating no statistically significant relationship. Belief therefore dropped from Leaning True (0.75) to Uncertain (0.59) (signed surprisal -0.243; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** logistic regression, Student's t-test; p = 0.455
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 264. (Surprise 0.243) Supported: Ground-truth branch points are primary topological vulnerabilities for the automated U-Net; therefore, fragment endpoints (splits) occur at a significantly high...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 183 · **Belief:** Leaning True → Likely True (0.750→0.906) · **Direction:** Positive · **Surprisal:** +0.243
+### 264. (Surprise 0.243) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 183 · **Belief:** Leaning True -> Likely True (0.7500 -> 0.9062) · **Direction:** Positive
 - **Tested:** Determine if the U-Net is systematically more prone to splitting neurons at branching junctions compared to simple linear segments.
-- **Conclusion:** The experiment was successfully executed and properly evaluated the hypothesis. The dataset was successfully loaded, and the ground-truth graph was analyzed to identify 7,320 branch nodes and 1,348,888 linear nodes. By defining a proximity threshold of 5.0 µm to the U-Net fragment leaf nodes (endpoints/splits), it was found that 1.34% (98) of true branch nodes had a split nearby, compared to only 0.78% (10,511) of linear nodes.
-- **Caveats:** none noted
+- **Conclusion:** A Chi-squared test was performed on these proportions, yielding a statistic of 28.6547 and a highly significant p-value of 8.65e-08. Belief therefore rose from Leaning True (0.75) to Likely True (0.91) (signed surprisal +0.243; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** chi-square; p ≈ 8.7e-08
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 265. (Surprise 0.235) Supported: The physical gap distance of a valid split error is inversely correlated with the combined cable length of the two fragments being connected, meaning that longe...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 179 · **Belief:** Leaning True → Likely True (0.708→0.859) · **Direction:** Positive · **Surprisal:** +0.235
+### 265. (Surprise 0.235) Supported: evidence confirms that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 179 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8594) · **Direction:** Positive
 - **Tested:** Determine if fragment length (a proxy for segmentation confidence) predicts the severity (gap size) of split errors.
-- **Conclusion:** The script identified 1,801 valid split pairs (pairs of fragment leaves within 30 µm that map to the same ground-truth component but belong to different fragment components). The mean gap distance for these split errors was 11.42 µm (std = 8.90), and the mean combined fragment length was 20,044.59 µm (std = 57,741.76). A Spearman rank correlation analysis between gap distance and combined fragment length yielded a correlation coefficient of -0.1139 with a highly significant p-value of 1.2692e-06.
+- **Conclusion:** The mean gap distance for these split errors was 11.42 µm (std = 8.90), and the mean combined fragment length was 20,044.59 µm (std = 57,741.76). A Spearman rank correlation analysis between gap distance and combined fragment length yielded a correlation coefficient of -0.1139 with a highly significant p-value of 1.2692e-06. Belief therefore rose from Leaning True (0.71) to Likely True (0.86) (signed surprisal +0.235; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Spearman; p ≈ 1.3e-06
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 266. (Surprise 0.235) Supported: Valid split reconnections can be distinguished from invalid ones based on endpoint collinearity, such that pairs of fragment leaves mapping to the same GT neuro...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 199 · **Belief:** Leaning True → Likely True (0.708→0.859) · **Direction:** Positive · **Surprisal:** +0.235
+### 266. (Surprise 0.235) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 199 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8594) · **Direction:** Positive
 - **Tested:** Verify that geometric collinearity of endpoints is a reliable feature for predicting mutual exclusivity and valid reconnections at crowded fragment endpoints.
-- **Conclusion:** The experiment successfully executed, identifying 408 valid and 3 invalid reconnection pairs among fragment endpoints within a 20 µm radius. Endpoint collinearity was computed using reversed cosine similarity of tangent vectors (where 1.0 means endpoints face each other directly). A Mann-Whitney U test compared the two distributions, yielding a statistically significant p-value of ~0.0047 (U=1192.0).
+- **Conclusion:** A Mann-Whitney U test compared the two distributions, yielding a statistically significant p-value of ~0.0047 (U=1192.0). Belief therefore rose from Leaning True (0.71) to Likely True (0.86) (signed surprisal +0.235; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.0047
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 267. (Surprise 0.220) Supported: When multiple reconnection proposals exist for a single fragment endpoint (mutual exclusivity), the anatomically correct connection exhibits significantly highe...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 4 · **Belief:** Uncertain → Leaning True (0.542→0.702) · **Direction:** Positive · **Surprisal:** +0.220
+### 267. (Surprise 0.220) Supported: evidence confirms that greedy/independent thresholding versus joint-reasoning matching changes proofreading precision.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 4 · **Belief:** Uncertain -> Leaning True (0.5417 -> 0.7019) · **Direction:** Positive
 - **Tested:** Evaluate if tangent angular agreement can independently resolve competing, mutually exclusive split-correction proposals without relying on deep learning image features.
-- **Conclusion:** It computed local tangents for leaf nodes in the fragment graph and identified 40 mutually exclusive connection proposals (38 True, 2 False) within a 20 µm radius. The analysis found that True connections had a mean angular agreement of 0.1816, whereas False connections had a mean of -0.7437. Although the mean difference was substantial and the ROC curve showed an impressive AUC of 0.868, the Welch's t-test yielded a p-value of 0.1120 due to the extremely small sample size of False connections (n=2).
-- **Caveats:** small sample size
+- **Conclusion:** The analysis found that True connections had a mean angular agreement of 0.1816, whereas False connections had a mean of -0.7437. Although the mean difference was substantial and the ROC curve showed an impressive AUC of 0.868, the Welch's t-test yielded a p-value of 0.1120 due to the extremely small sample size of False connections (n=2). Belief therefore rose from Uncertain (0.54) to Leaning True (0.70) (signed surprisal +0.220; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power); dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Unsound
+- **Test:** Welch's t-test, ROC-AUC, Student's t-test; p = 0.112; n up to 2
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 268. (Surprise 0.220) Supported: Split errors are spatially clustered near neuronal branch points rather than being uniformly distributed along the cable, due to ambiguous image evidence and ov...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 18 · **Belief:** Leaning True → Likely True (0.792→0.952) · **Direction:** Positive · **Surprisal:** +0.220
+### 268. (Surprise 0.220) Supported: evidence confirms that image-intensity features (signal across the gap) add discriminative power.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 18 · **Belief:** Leaning True -> Likely True (0.7917 -> 0.9519) · **Direction:** Positive
 - **Tested:** Determine if split errors occur significantly closer to branch points than expected by chance.
-- **Conclusion:** The experiment successfully executed all required steps to test the hypothesis. It identified 7,320 branch nodes in the ground truth graph and accurately computed the geodesic distances from these nodes to the rest of the skeleton using a multi-source Dijkstra algorithm. By mapping U-Net fragments to the ground truth graph, it identified 2,270 nodes associated with split errors.
+- **Conclusion:** The results show a highly significant difference (KS Statistic: 0.3430, p-value: 5.3014e-194), with the median distance to a branch point being 53.96 µm for split errors compared to 239.68 µm for control nodes. Belief therefore rose from Leaning True (0.79) to Likely True (0.95) (signed surprisal +0.220; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Kolmogorov-Smirnov; p ≈ 5.3e-194
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 269. (Surprise 0.220) Supported: A significant proportion of valid reconnections require linking a fragment leaf node to a non-leaf (internal) node, implying that strictly leaf-to-leaf proposal...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 67 · **Belief:** Leaning True → Likely True (0.792→0.952) · **Direction:** Positive · **Surprisal:** +0.220
+### 269. (Surprise 0.220) Supported: evidence confirms that geometric gap features identify true split reconnections.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 67 · **Belief:** Leaning True -> Likely True (0.7917 -> 0.9519) · **Direction:** Positive
 - **Tested:** Assess the structural nature of split errors by calculating the ratio of leaf-to-leaf versus leaf-to-branch/trunk valid reconnections.
-- **Conclusion:** Hypothesis: A significant proportion of valid reconnections require linking a fragment leaf node to a non-leaf (internal) node, implying that strictly leaf-to-leaf proposal generation will miss a massive fraction of recoverable splits. Experiment Results: - Total Sample Size: 7,381 mapped leaf nodes were evaluated, finding 7,381 nearest valid reconnections. - Connection Types: Out of the valid reconnections, 2,755 (37.33%) were leaf-to-leaf, while a staggering 4,626 (62.67%) were leaf-to-internal (branch/trunk) connections.
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** - **Statistical Test:** A binomial test against the null hypothesis that valid targets are predominantly leaf nodes (≥ 90%) yielded a p-value of 0.0, leading to a strong rejection of the null hypothesis. Belief therefore rose from Leaning True (0.79) to Likely True (0.95) (signed surprisal +0.220; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** binomial test; p ≈ 0
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 270. (Surprise 0.211) Rejected: Merge errors are disproportionately located near fragment branching nodes (degree >= 3) compared to general fragment edges, because crossing or touching neurite...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 33 · **Belief:** Leaning True → Uncertain (0.750→0.596) · **Direction:** Negative · **Surprisal:** −0.211
+### 270. (Surprise 0.211) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 33 · **Belief:** Leaning True -> Uncertain (0.7500 -> 0.5962) · **Direction:** Negative
 - **Tested:** Determine if merge errors are spatially clustered around U-Net generated branching nodes.
-- **Conclusion:** The script successfully identified 292 merge edges and randomly sampled 292 clean edges (from a pool of 997,617) for comparison against 19,460 fragment branching nodes. Statistical analysis using the Kolmogorov-Smirnov test confirmed a highly significant difference between the two spatial distributions (Statistic: 0.2123, p-value: 3.5487e-06). However, the nature of this difference is nuanced and partially contradicts the strict hypothesis that merge errors occur *closer* to branches.
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** Statistical analysis using the Kolmogorov-Smirnov test confirmed a highly significant difference between the two spatial distributions (Statistic: 0.2123, p-value: 3.5487e-06). The median distance for merge edges (175.59 µm) was actually higher than for clean edges (126.05 µm), meaning more than half of the clean edges are closer to a branch than the median merge edge. Belief therefore dropped from Leaning True (0.75) to Uncertain (0.60) (signed surprisal -0.211; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Kolmogorov-Smirnov; p ≈ 3.5e-06
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 271. (Surprise 0.203) No effect found: The difference in estimated neurite radius (`node_radius`) between true connecting endpoints is significantly smaller than the difference between spatially clos...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 1 · **Belief:** Leaning True → Uncertain (0.708→0.578) · **Direction:** Negative · **Surprisal:** −0.203
+### 271. (Surprise 0.203) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 1 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.5781) · **Direction:** Negative
 - **Tested:** To determine if U-Net predicted neurite radius is conserved across split gaps and can serve as a reliable feature for disambiguating connection proposals.
-- **Conclusion:** The experiment successfully executed and evaluated the hypothesis. Out of 39,826 leaf nodes in the fragments graph, 2,209 pairs were found within a 30 µm radius. By mapping these pairs to the ground-truth components, they were classified into 464 True Positive (valid) reconnections and 5 False Positive (invalid) reconnections.
-- **Caveats:** small sample size
+- **Conclusion:** The mean absolute radius difference for True Positive pairs was 0.4474 µm, and for False Positive pairs, it was 0.5016 µm. A Mann-Whitney U test yielded a p-value of 0.6464, indicating no statistically significant difference in radius continuity between valid and invalid connections within this proximity. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.58) (signed surprisal -0.203; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U; p = 0.6464
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 272. (Surprise 0.203) Supported: Pairs of fragment endpoints belonging to the same ground-truth neuron (true splits) exhibit significantly higher collinearity (anti-parallel tangent vectors) th...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 8 · **Belief:** Leaning True → Likely True (0.792→0.922) · **Direction:** Positive · **Surprisal:** +0.203
+### 272. (Surprise 0.203) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 8 · **Belief:** Leaning True -> Likely True (0.7917 -> 0.9219) · **Direction:** Positive
 - **Tested:** Evaluate the geometric orientation agreement (tangent collinearity) as a distinguishing signature of recoverable splits.
-- **Conclusion:** The experiment successfully tested the hypothesis that pairs of U-Net fragment endpoints belonging to the same ground-truth neuron (true splits) demonstrate significantly higher collinearity (anti-parallel alignment) than nearby endpoints belonging to different neurons (false proposals). The script identified 39,826 fragment leaves and evaluated pairs located within a 20 µm spatial radius. By mapping these back to the ground-truth (GT) graph and applying a 10 µm distance threshold to avoid noise, 398 valid candidate pairs were isolated.
-- **Caveats:** small sample size
+- **Conclusion:** The analysis found 395 true split pairs with a mean collinearity of -0.7745, confirming strong orientation agreement. In contrast, the 3 false proposal pairs exhibited a mean collinearity of 0.7179. Belief therefore rose from Leaning True (0.79) to Likely True (0.92) (signed surprisal +0.203; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Questionable
+- **Test:** Welch's t-test, two-sample t-test, Student's t-test; p = 0.0078; n up to 3
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** none
 
-### 273. (Surprise 0.203) No effect found: True positive split reconnections between leaf nodes exhibit significantly higher directional agreement (higher cosine similarity of their terminal tangent vect...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 47 · **Belief:** Leaning True → Uncertain (0.708→0.578) · **Direction:** Negative · **Surprisal:** −0.203
+### 273. (Surprise 0.203) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 47 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.5781) · **Direction:** Negative
 - **Tested:** To verify if the directional continuity of neurites (tangent alignment) is a robust and discriminative geometric feature for resolving split errors, especially when spatial proximity alone is insufficient.
-- **Conclusion:** The experiment successfully executed and evaluated the hypothesis. Out of the leaf nodes in the fragments graph, candidate pairs within a 50 µm radius were extracted and mapped to the ground-truth graph, yielding 639 valid mappings. These were classified into 629 True Positive (TP) reconnections and 10 False Positive (FP) reconnections.
+- **Conclusion:** The mean absolute cosine similarity (directional agreement of terminal tangent vectors) was 0.6842 for TP pairs and 0.6368 for FP pairs. A Mann-Whitney U test (evaluating if TP > FP) returned a test statistic of 3589.0 and a p-value of 0.2219. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.58) (signed surprisal -0.203; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U, Student's t-test; p = 0.2219
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 274. (Surprise 0.203) No effect found: False positive reconnection proposals (spatially close leaf nodes belonging to different true neurons) are significantly more likely to involve very short, frag...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 13 · **Belief:** Leaning True → Uncertain (0.708→0.578) · **Direction:** Negative · **Surprisal:** −0.203
+### 274. (Surprise 0.203) Refuted: data contradict the claim that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 13 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.5781) · **Direction:** Negative
 - **Tested:** Determine if extremely short components act as 'noise bridges' that create false merges, testing if fragment length is a useful proxy for proposal confidence.
-- **Conclusion:** The code successfully generated leaf node pairs within 20 µm that belonged to different fragments, resulting in 1397 inter-component leaf node pairs. These leaf nodes were then mapped to the ground truth (GT) structures to classify the reconnections as True Positives (408 proposals) and False Positives (3 proposals). Statistical analysis using the Mann-Whitney U test found no statistically significant difference in the minimum component cable lengths between true positive and false positive proposals (p-value ≈ 0.292).
-- **Caveats:** none noted
+- **Conclusion:** Statistical analysis using the Mann-Whitney U test found no statistically significant difference in the minimum component cable lengths between true positive and false positive proposals (p-value ≈ 0.292). Belief therefore dropped from Leaning True (0.71) to Uncertain (0.58) (signed surprisal -0.203; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.292; n up to 3633
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 275. (Surprise 0.203) Belief dropped: When an endpoint has multiple mutually exclusive reconnection candidates, a joint metric combining spatial distance and radius difference yields significantly h...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 22 · **Belief:** Leaning True → Uncertain (0.708→0.578) · **Direction:** Negative · **Surprisal:** −0.203
+### 275. (Surprise 0.203) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 22 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.5781) · **Direction:** Negative
 - **Tested:** Evaluate the benefit of joint geometric reasoning over independent thresholding in resolving competing split proposals at dense junctions.
-- **Conclusion:** The script successfully identified 'competing scenarios' where a fragment leaf node had multiple candidates within a 20 µm radius, out of which exactly one candidate mapped to the correct Ground Truth (GT) neuron. Only 2 scenarios met these strict criteria. For these complex junctions, both the Baseline (spatial distance alone) and the Joint metric (spatial distance + 10 * radius difference) failed to rank the true topological connection as the top candidate (Top-1 Accuracy: 0.00% for both).
-- **Caveats:** small sample size
+- **Conclusion:** The experiment was successfully executed. The dataset was properly loaded using a custom unpickler to bypass missing dependencies. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.58) (signed surprisal -0.203; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** test type not extractable from record
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 276. (Surprise 0.203) Belief dropped: The bridge segment connecting two incorrectly merged neurons inside a single U-Net fragment exhibits significantly higher structural tortuosity than valid, unme...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 39 · **Belief:** Leaning True → Uncertain (0.708→0.578) · **Direction:** Negative · **Surprisal:** −0.203
+### 276. (Surprise 0.203) Refuted: data contradict the claim that neurite tortuosity or sharp turns flag U-Net split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 39 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.5781) · **Direction:** Negative
 - **Tested:** Determine if morphological tortuosity can serve as an intrinsic feature to detect and localize merge errors by comparing the tortuosity of merged bridge segments to a pre-computed pool of length-matched pure segments.
-- **Conclusion:** The new approach generated a massive pool of over 530,000 pure control segments, ensuring robust length-matching. Seven merged bridge segments were successfully extracted from the 20 merged fragments and matched with pure control segments of almost identical average cable lengths (~3318 µm). While the descriptive statistics show that merged bridges have a higher mean (1.4965 vs.
-- **Caveats:** small sample size
+- **Conclusion:** While the descriptive statistics show that merged bridges have a higher mean (1.4965 vs. 1.2643) and median (1.2718 vs. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.58) (signed surprisal -0.203; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U; n up to 7
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 277. (Surprise 0.203) Supported: Merge errors are disproportionately concentrated in exceptionally long U-Net fragments, as accumulating a large contiguous predicted component naturally increas...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 43 · **Belief:** Leaning True → Likely True (0.792→0.922) · **Direction:** Positive · **Surprisal:** +0.203
+### 277. (Surprise 0.203) Supported: evidence confirms that morphological features mark U-Net merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 43 · **Belief:** Leaning True -> Likely True (0.7917 -> 0.9219) · **Direction:** Positive
 - **Tested:** Verify if the overall physical size of a U-Net fragment is a risk factor for topological merge errors.
-- **Conclusion:** The script mapped fragment nodes to ground-truth (GT) components using a 5 µm distance threshold, classified fragments into 'Merged' (mapped to ≥2 GT components) and 'Clean' (mapped to 1 GT component), and calculated the total cable length for each fragment. The results revealed 11 'Merged' fragments and 951 'Clean' fragments. The 'Merged' fragments exhibited substantially larger physical sizes, with a mean cable length of 51,339.69 µm and a median of 10,323.09 µm.
+- **Conclusion:** The 'Merged' fragments exhibited substantially larger physical sizes, with a mean cable length of 51,339.69 µm and a median of 10,323.09 µm. In contrast, the 'Clean' fragments had a mean cable length of 4,268.07 µm and a median of 1,884.35 µm. Belief therefore rose from Leaning True (0.79) to Likely True (0.92) (signed surprisal +0.203; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p = 0.0051
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** none
 
-### 278. (Surprise 0.203) Belief dropped: The skeletal paths connecting erroneously merged neurons (merge bridges) exhibit significantly higher variance in neurite radius than contiguous paths of simila...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 44 · **Belief:** Leaning True → Uncertain (0.708→0.578) · **Direction:** Negative · **Surprisal:** −0.203
+### 278. (Surprise 0.203) Refuted: data contradict the claim that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 44 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.5781) · **Direction:** Negative
 - **Tested:** Test if radius variance along a skeletal path can serve as a robust intra-fragment feature for detecting merge errors.
-- **Conclusion:** The script successfully identified 20 merged fragments and 981 pure fragments, but only 1 merge bridge was successfully extracted with valid radius attributes. A pool of 25,000 pure paths was generated, allowing a precise length match for the single merge bridge (bridge length: 890.39 µm vs pure length: 890.49 µm). For this single pair, the merge bridge exhibited a notably higher radius coefficient of variation (CV = 0.0682) compared to the pure segment (CV = 0.0223), suggesting that merge errors involve artificial fusion points with abruptly changing thicknesses.
-- **Caveats:** small sample size
+- **Conclusion:** However, due to the extremely limited sample size (n=1) — likely resulting from missing or invalid radius estimates along the computed shortest paths in the merged graphs — the Mann-Whitney U test predictably yielded a non-significant result (p-value = 0.5000). Belief therefore dropped from Leaning True (0.71) to Uncertain (0.58) (signed surprisal -0.203; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U; p = 0.5
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 279. (Surprise 0.203) Belief dropped: In dense clusters of fragment endpoints (>3 endpoints within a 20 µm radius), resolving reconnections using optimal bipartite matching (linear sum assignment) m...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 52 · **Belief:** Leaning True → Uncertain (0.708→0.578) · **Direction:** Negative · **Surprisal:** −0.203
+### 279. (Surprise 0.203) Refuted: data contradict the claim that greedy/independent thresholding versus joint-reasoning matching changes proofreading precision.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 52 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.5781) · **Direction:** Negative
 - **Tested:** Test whether joint, mutually exclusive reasoning over endpoint reconnections outperforms independent classification in dense regions.
-- **Conclusion:** It identified 39,826 fragment leaf nodes and built a proximity graph using a 20 µm radius. However, the strict definition of a 'dense cluster' (requiring a core node to have >= 3 connections to other components) resulted in only 1 such cluster being identified across the entire dataset. Within this single cluster, the maximum possible true positive reconnections was 1.
-- **Caveats:** small sample size
+- **Conclusion:** The experiment successfully executed, resolving dependencies and loading the dataset. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.58) (signed surprisal -0.203; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** test type not extractable from record
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 280. (Surprise 0.203) Supported: True reconnections (valid splits recoverable by joining nearby fragment leaves) have a significantly higher orientation agreement (cosine similarity of tangent...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 121 · **Belief:** Leaning True → Likely True (0.792→0.922) · **Direction:** Positive · **Surprisal:** +0.203
+### 280. (Surprise 0.203) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 121 · **Belief:** Leaning True -> Likely True (0.7917 -> 0.9219) · **Direction:** Positive
 - **Tested:** Quantify the predictive power of orientation agreement for identifying valid split reconnections.
-- **Conclusion:** The programmer appropriately mocked missing dependencies to load the dataset and correctly identified 1,397 valid fragment leaf pairs within 20 µm from different components. Mapping these to the ground truth yielded 392 True reconnections and 19 False reconnections. The results strongly supported the hypothesis: True reconnections exhibited a mean cosine similarity of -0.7896, heavily skewed towards -1.0 (indicating head-on continuous fibers), while False reconnections averaged 0.2296 and showed a more dispersed distribution.
-- **Caveats:** none noted
+- **Conclusion:** The results strongly supported the hypothesis: True reconnections exhibited a mean cosine similarity of -0.7896, heavily skewed towards -1.0 (indicating head-on continuous fibers), while False reconnections averaged 0.2296 and showed a more dispersed distribution. The statistical test confirmed a highly significant difference (p-value = 1.2158e-05). Belief therefore rose from Leaning True (0.79) to Likely True (0.92) (signed surprisal +0.203; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Welch's t-test, Student's t-test; p ≈ 1.2e-05
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 281. (Surprise 0.203) Rejected: Regions with a high spatial density of distinct U-Net fragments are significantly associated with shorter individual fragment lengths, indicating 'tangle' zones...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 141 · **Belief:** Leaning True → Uncertain (0.708→0.578) · **Direction:** Negative · **Surprisal:** −0.203
+### 281. (Surprise 0.203) Refuted: data contradict the claim that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 141 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.5781) · **Direction:** Negative
 - **Tested:** Determine the relationship between local fragment crowding and the severity of neuron fragmentation.
-- **Conclusion:** The experiment successfully loaded the dataset and calculated the local density and path lengths for 10,172 connected fragment components, exactly following the requested steps. However, the analysis revealed that a 50 µm radius around the component centroids is too small, or the centroid is a poor spatial representative for extended, non-linear structures. Specifically, both the 25th and 75th percentiles for local density were 0.0, indicating that the vast majority of fragments had no other component centroids within 50 µm.
-- **Caveats:** none noted
+- **Conclusion:** Consequently, the statistical tests showed no meaningful relationship: the Mann-Whitney U test yielded a p-value of 0.995, and the Pearson correlation between local density and fragment length was negligible (r = 0.0018, p = 0.8557). Belief therefore dropped from Leaning True (0.71) to Uncertain (0.58) (signed surprisal -0.203; negative shift).
+- **Caveats:** effect size is negligible despite small p-value (large-N artifact)
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U, Pearson; p = 0.8557
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 282. (Surprise 0.203) Supported: Automated reconstructions of distal axons are significantly more fragmented (shorter average component lengths) than proximal neurites near the soma.
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 148 · **Belief:** Leaning True → Likely True (0.792→0.922) · **Direction:** Positive · **Surprisal:** +0.203
+### 282. (Surprise 0.203) Supported: evidence confirms that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 148 · **Belief:** Leaning True -> Likely True (0.7917 -> 0.9219) · **Direction:** Positive
 - **Tested:** Assess if segmentation performance degrades systematically as a function of distance from the soma.
-- **Conclusion:** The experiment successfully loaded the dataset and calculated the distances of UNet fragments from the ground truth soma locations. Fragments were successfully classified as either proximal (< 300 µm) or distal (> 1000 µm). Proximal fragments (N=39) demonstrated a substantially longer average cable length of 4040.78 µm compared to distal fragments (N=9985) which had an average cable length of 1821.93 µm.
+- **Conclusion:** Proximal fragments (N=39) demonstrated a substantially longer average cable length of 4040.78 µm compared to distal fragments (N=9985) which had an average cable length of 1821.93 µm. An independent samples t-test on the log-transformed lengths yielded a t-statistic of 4.7451 and a p-value of ~2.92e-05. Belief therefore rose from Leaning True (0.79) to Likely True (0.92) (signed surprisal +0.203; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Student's t-test; p ≈ 2.9e-05; n up to 9985
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 283. (Surprise 0.203) Belief dropped: Reconnection proposals between two large U-Net fragments (e.g., >50 nodes) have a significantly higher true-positive rate than proposals involving small fragmen...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 188 · **Belief:** Leaning True → Uncertain (0.708→0.578) · **Direction:** Negative · **Surprisal:** −0.203
+### 283. (Surprise 0.203) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 188 · **Belief:** Leaning True -> Uncertain (0.7083 -> 0.5781) · **Direction:** Negative
 - **Tested:** Validate fragment component size as a strong confidence modulator for split-correction reliability.
-- **Conclusion:** It found 411 candidate pairs in the 'Large-Large' category (Precision = 99.27%, with 408 True Positives and 3 False Positives). This outcome aligns with the dataset metadata (from previous explorations), which stated that UNet fragments with a cable length shorter than 1000 µm were discarded when the cache was built. Because of this pre-filtering, small fragments (<= 50 nodes) are virtually non-existent in the provided graph.
+- **Conclusion:** As a result, the Chi-Square test of independence could not be performed due to insufficient data categories. Belief therefore dropped from Leaning True (0.71) to Uncertain (0.58) (signed surprisal -0.203; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square, Student's t-test; n up to 99
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 284. (Surprise 0.203) Supported: In the automated reconstruction, predicted branching nodes (degree >= 3) are significantly more likely to be merge error boundaries than continuation nodes (deg...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 193 · **Belief:** Leaning True → Likely True (0.792→0.922) · **Direction:** Positive · **Surprisal:** +0.203
+### 284. (Surprise 0.203) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 193 · **Belief:** Leaning True -> Likely True (0.7917 -> 0.9219) · **Direction:** Positive
 - **Tested:** Verify if merge errors systematically manifest as false branches in the U-Net reconstruction, justifying algorithms that specifically target branch points for merge-detection and topology rollback.
-- **Conclusion:** The automated reconstruction's nodes were successfully extracted and categorized by degree into branching (degree >= 3) and continuation (degree == 2) nodes. A KD-tree spatial query mapped 5,609 branching nodes and 986,314 continuation nodes to the human ground truth with a 10 µm distance tolerance. The analysis found 38 merge boundaries at branching nodes and 429 at continuation nodes.
-- **Caveats:** test driven to p=1.0 by near-zero positive counts
+- **Conclusion:** The Chi-Square test of independence yielded a test statistic of 462.9983 and a p-value of 1.07e-102. Because the p-value is practically zero and well below the 0.05 significance threshold, we confidently reject the null hypothesis. Belief therefore rose from Leaning True (0.79) to Likely True (0.92) (signed surprisal +0.203; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** chi-square, Student's t-test; p ≈ 1.1e-102
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 285. (Surprise 0.203) Supported: The angular difference between the tangent vectors of two reconnecting fragment endpoints is significantly smaller for true-positive split reconnections than fo...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 196 · **Belief:** Leaning True → Likely True (0.792→0.922) · **Direction:** Positive · **Surprisal:** +0.203
-- **Tested:** Determine if tangent orientation agreement between endpoints is a strong geometric feature for classifying valid vs.
-- **Conclusion:** The pipeline identified 464 valid pairs (true splits) and 5 invalid pairs (false splits) within the 30 µm search radius. The results strongly support the hypothesis: the median angular difference for valid reconnections was significantly smaller (20.45 degrees) compared to invalid reconnections (128.06 degrees). A Mann-Whitney U test confirmed that this difference is statistically significant (p = 0.0008113, which is < 0.05).
-- **Caveats:** implementation deviated from plan
+### 285. (Surprise 0.203) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 196 · **Belief:** Leaning True -> Likely True (0.7917 -> 0.9219) · **Direction:** Positive
+- **Tested:** Determine if tangent orientation agreement between endpoints is a strong geometric feature for classifying valid vs. invalid split reconnections.
+- **Conclusion:** The results strongly support the hypothesis: the median angular difference for valid reconnections was significantly smaller (20.45 degrees) compared to invalid reconnections (128.06 degrees). Belief therefore rose from Leaning True (0.79) to Likely True (0.92) (signed surprisal +0.203; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p ≈ 0.00081
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** none
 
-### 286. (Surprise 0.202) Supported: Fragment components that contain merge errors have significantly larger total cable lengths compared to fragment components without merge errors, suggesting mer...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 11 · **Belief:** Leaning True → Likely True (0.708→0.856) · **Direction:** Positive · **Surprisal:** +0.202
+### 286. (Surprise 0.202) Supported: evidence confirms that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 11 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8558) · **Direction:** Positive
 - **Tested:** Test if merge errors disproportionately afflict large, well-established U-Net fragment components.
-- **Conclusion:** The dataset was loaded, and fragment components were mapped to ground truth components using a 10 µm threshold to identify merge errors. Out of 10,172 total fragment components, 20 were classified as 'merged' (containing at least one merge edge bridging distinct ground truth components), while the remaining 10,152 were classified as 'clean'. Cable lengths for all components were calculated and log10-transformed.
-- **Caveats:** small sample size
+- **Conclusion:** The statistical analysis reveals that merged components have a significantly higher log10 cable length (mean = 3.7874 ± 0.7420, roughly ~6,100 µm) compared to clean components (mean = 3.1464 ± 0.2294, roughly ~1,400 µm). Welch's t-test confirmed that this difference is highly significant (t-statistic = 3.7649, p-value = 0.0013), strongly supporting the hypothesis that merge errors disproportionately afflict larger, more established U-Net fragments. Belief therefore rose from Leaning True (0.71) to Likely True (0.86) (signed surprisal +0.202; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Questionable
+- **Test:** Welch's t-test, Student's t-test; p = 0.0013; n up to 10152
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** none
 
-### 287. (Surprise 0.195) Supported: True structural reconnections at split errors preserve branch orientation better than false reconnections, exhibiting a higher cosine similarity of terminal tan...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 27 · **Belief:** Leaning True → Likely True (0.750→0.875) · **Direction:** Positive · **Surprisal:** +0.195
+### 287. (Surprise 0.195) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 27 · **Belief:** Leaning True -> Likely True (0.7500 -> 0.8750) · **Direction:** Positive
 - **Tested:** To test if tangent vector agreement is a discriminative geometric signature for identifying recoverable splits.
-- **Conclusion:** The code then extracted 39,826 valid leaf nodes and evaluated tangent vector alignment for 2,209 leaf pairs within a 30 µm search radius. By mapping these pairs to the ground-truth graph, the code identified 464 valid split reconnections (true positives) and 5 merge errors (false positives). The results strongly support the hypothesis: true reconnections exhibit a significantly higher cosine similarity (mean = 0.7103) compared to false reconnections (mean = -0.4796).
-- **Caveats:** small sample size
+- **Conclusion:** The results strongly support the hypothesis: true reconnections exhibit a significantly higher cosine similarity (mean = 0.7103) compared to false reconnections (mean = -0.4796). A two-sample t-test confirmed the statistical significance of this difference (p-value = ~0.013). Belief therefore rose from Leaning True (0.75) to Likely True (0.88) (signed surprisal +0.195; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Questionable
+- **Test:** two-sample t-test, Student's t-test; p = 0.013; n up to 5
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** none
 
-### 288. (Surprise 0.195) Supported: Because merge errors erroneously fuse multiple biological neurons, fragment components containing a merge error have a significantly larger total cable length t...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 155 · **Belief:** Leaning True → Likely True (0.750→0.875) · **Direction:** Positive · **Surprisal:** +0.195
+### 288. (Surprise 0.195) Supported: evidence confirms that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 155 · **Belief:** Leaning True -> Likely True (0.7500 -> 0.8750) · **Direction:** Positive
 - **Tested:** Verify if total component cable length can serve as a simple, effective heuristic prior for flagging likely merge errors.
-- **Conclusion:** The mapping identified 1,042 'Pure' fragments (mapping to exactly one Ground Truth component) and 23 'Merged' fragments (mapping to two or more Ground Truth components). Statistical analysis showed a stark difference in cable lengths. Pure fragments had a mean length of ~4,077 µm (median ~1,830 µm), whereas Merged fragments exhibited a substantially larger mean length of ~28,963 µm (median ~3,006 µm).
+- **Conclusion:** Pure fragments had a mean length of ~4,077 µm (median ~1,830 µm), whereas Merged fragments exhibited a substantially larger mean length of ~28,963 µm (median ~3,006 µm). A one-sided Mann-Whitney U test yielded a p-value of 0.0264 (p < 0.05), indicating that the total cable length of merged components is statistically significantly larger than that of pure components. Belief therefore rose from Leaning True (0.75) to Likely True (0.88) (signed surprisal +0.195; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.05
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 289. (Surprise 0.195) Supported: For pairs of nearby U-Net fragment leaf nodes (<= 20 µm apart), the geometric alignment (cosine similarity of their incident branch tangents) is significantly h...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 168 · **Belief:** Leaning True → Likely True (0.750→0.875) · **Direction:** Positive · **Surprisal:** +0.195
+### 289. (Surprise 0.195) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 168 · **Belief:** Leaning True -> Likely True (0.7500 -> 0.8750) · **Direction:** Positive
 - **Tested:** Validate that tangent orientation is a statistically strong feature for distinguishing true reconnections from false merges at U-Net fragment boundaries.
-- **Conclusion:** The experiment successfully validated the hypothesis that geometric alignment (tangent cosine similarity) is a strong feature for distinguishing true reconnections from false spatial merges at U-Net fragment boundaries. After correctly mocking missing dependencies and loading the dataset, the code extracted U-Net fragment leaves and found pairs within a 20 µm radius. Near the ground truth annotations, it identified 411 valid inter-component pairs.
-- **Caveats:** extreme class imbalance / very few positives; small sample size
+- **Conclusion:** Despite the small number of false pairs, the statistical separation was significant (t=10.77, p=0.007). True pairs had a mean cosine similarity of 0.7524 (highly aligned), while the 3 false pairs had a mean of -0.7433 (opposing/misaligned). Belief therefore rose from Leaning True (0.75) to Likely True (0.88) (signed surprisal +0.195; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power); dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** two-sample t-test, ROC-AUC, Student's t-test; p = 0.007; n up to 3
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 290. (Surprise 0.187) Supported: Local skeleton tortuosity (the ratio of path length to Euclidean distance within a 25 µm neighborhood) is significantly higher at U-Net false merge sites than a...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 2 · **Belief:** Leaning True → Likely True (0.708→0.828) · **Direction:** Positive · **Surprisal:** +0.187
+### 290. (Surprise 0.187) Supported: evidence confirms that neurite tortuosity or sharp turns flag U-Net split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 2 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8281) · **Direction:** Positive
 - **Tested:** Test if tortuosity can be used as an intrinsic skeleton feature to identify false merges where neurites cross but do not truly connect.
-- **Conclusion:** The experiment successfully executed the data pipeline and statistical analysis. A total of 19,460 branch points were identified in the fragments graph, out of which 5,546 were classified as 'True Branches' and 43 as 'Merge Errors' based on their proximity and mapping to ground-truth (GT) neurons. Statistical analysis using the Mann-Whitney U test revealed that the mean tortuosity for Merge Errors (1.0940) is significantly higher than that for True Branches (1.0765), with a p-value of 2.1030e-04 (p < 0.05).
+- **Conclusion:** Statistical analysis using the Mann-Whitney U test revealed that the mean tortuosity for Merge Errors (1.0940) is significantly higher than that for True Branches (1.0765), with a p-value of 2.1030e-04 (p < 0.05). While the median tortuosity is visibly higher for Merge Errors (~1.105) compared to True Branches (~1.060), there is substantial overlap in the distributions (IQR and whiskers). Belief therefore rose from Leaning True (0.71) to Likely True (0.83) (signed surprisal +0.187; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.05
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 291. (Surprise 0.187) Supported: Fragment branch points (degree >= 3) that represent U-Net merge errors (erroneously fused distinct neurons) exhibit a significantly higher local variance in `no...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 28 · **Belief:** Leaning True → Likely True (0.708→0.828) · **Direction:** Positive · **Surprisal:** +0.187
+### 291. (Surprise 0.187) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 28 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8281) · **Direction:** Positive
 - **Tested:** Determine if local neurite radius continuity can serve as a geometric signature for detecting merge errors without relying on raw image data.
-- **Conclusion:** The analysis identified 19,460 branch points in the U-Net fragments graph. By mapping 1-hop and 2-hop neighborhoods to the ground truth using a KD-tree, 5,572 branch points were classified as True Branches (mapped to a single GT component) and 39 as Merge Errors (mapped to multiple GT components). The statistical analysis supports the hypothesis: branch points associated with Merge Errors exhibited significantly higher local radius variance (Mean Std: 0.1421 vs 0.1095, p=0.0128) and Coefficient of Variation (Mean CV: 0.0747 vs 0.0562, p=0.0152) compared to True Branches.
+- **Conclusion:** The statistical analysis supports the hypothesis: branch points associated with Merge Errors exhibited significantly higher local radius variance (Mean Std: 0.1421 vs 0.1095, p=0.0128) and Coefficient of Variation (Mean CV: 0.0747 vs 0.0562, p=0.0152) compared to True Branches. Belief therefore rose from Leaning True (0.71) to Likely True (0.83) (signed surprisal +0.187; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Student's t-test; p = 0.0152
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 292. (Surprise 0.187) Rejected: In ambiguous proofreading regions where a fragment endpoint has multiple nearby reconnection candidates, the distance to the nearest valid candidate is signific...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 163 · **Belief:** Uncertain → Uncertain (0.542→0.422) · **Direction:** Negative · **Surprisal:** −0.187
+### 292. (Surprise 0.187) Refuted: data contradict the claim that geometric gap features identify true split reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 163 · **Belief:** Uncertain -> Uncertain (0.5417 -> 0.4219) · **Direction:** Negative
 - **Tested:** Evaluate the viability of using competitive distance-based reasoning to resolve mutually exclusive reconnection proposals at a single leaf node.
-- **Conclusion:** The code successfully identified 39,826 leaf nodes in the U-Net fragments. However, within the specified 30 µm search radius, it found only 2 'Ambiguous Leaves' (cases where a leaf has both a valid and an invalid candidate nearby). For these two cases, the mean distance to the nearest valid candidate was 15.81 µm, while the mean distance to the nearest invalid candidate was 9.98 µm.
-- **Caveats:** small sample size
+- **Conclusion:** For these two cases, the mean distance to the nearest valid candidate was 15.81 µm, while the mean distance to the nearest invalid candidate was 9.98 µm. The paired t-test yielded a p-value of ~0.345, which is not statistically significant due to the extremely small sample size (N=2). Belief therefore dropped from Uncertain (0.54) to Uncertain (0.42) (signed surprisal -0.187; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** paired t-test, Student's t-test; p = 0.345; n up to 2
+- **Statistical issues:** per-group sample size very small (e.g. ~2 observations per annotator across 18-19 GT neurons) — group-comparison test is underpowered
+- **Logic issues:** non-significant p with very small per-group N interpreted as evidence of no effect — the test had little power to detect one
 
-### 293. (Surprise 0.162) Supported: Branch tangent alignment (orientation agreement) degrades as the split gap size increases, making endpoint orientation a highly reliable feature for short-range...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 31 · **Belief:** Likely True → Likely True (0.833→0.938) · **Direction:** Positive · **Surprisal:** +0.162
+### 293. (Surprise 0.162) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 31 · **Belief:** Likely True -> Likely True (0.8333 -> 0.9375) · **Direction:** Positive
 - **Tested:** Determine the relationship between the physical size of a split gap and the alignment of the structural tangents at the endpoints.
-- **Conclusion:** The code dynamically resolved the dataset path, identified 1,479 valid split pairs, and successfully correlated split gap size with endpoint tangent alignment. The results confirm the hypothesis: tangent alignment (orientation agreement) degrades significantly as split gap size increases. A highly significant negative correlation was found (Spearman: -0.4668, p < 1e-80).
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** A highly significant negative correlation was found (Spearman: -0.4668, p < 1e-80). Binned statistics reveal that short-range gaps (0-5 µm) exhibit near-perfect alignment (mean agreement = ~0.95), whereas long-range gaps (> 100 µm) degrade to an agreement score of ~0.46, which is equivalent to random chance. Belief therefore rose from Likely True (0.83) to Likely True (0.94) (signed surprisal +0.162; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Spearman, Pearson; p ≈ 1e-80
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 294. (Surprise 0.162) Supported: In high-density regions where multiple fragment endpoints converge, single-pass greedy distance matching frequently fails because the spatially nearest neighbor...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 175 · **Belief:** Likely True → Likely True (0.833→0.938) · **Direction:** Positive · **Surprisal:** +0.162
+### 294. (Surprise 0.162) Supported: evidence confirms that greedy/independent thresholding versus joint-reasoning matching changes proofreading precision.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 175 · **Belief:** Likely True -> Likely True (0.8333 -> 0.9375) · **Direction:** Positive
 - **Tested:** Quantify the failure rate of simple nearest-neighbor reconnection heuristics in dense proposal regions (mutual exclusivity).
-- **Conclusion:** Experiment Results & Findings: - Low-Density Regions (1 candidate within 20 µm): Out of 751 true split proposals, 742 were correctly matched to the same ground-truth neuron, yielding a highly reliable nearest-neighbor accuracy of 98.80%. - High-Density Regions (≥ 2 candidates within 20 µm): Out of 28 true split proposals, 25 were matched correctly, resulting in a degraded accuracy of 89.29%. - Statistical Significance: A Chi-squared test comparing the correct and incorrect match proportions between the two regions yielded a statistic of 10.4526 and a p-value of 1.2248e-03.
-- **Caveats:** none noted
+- **Conclusion:** - **Statistical Significance:** A Chi-squared test comparing the correct and incorrect match proportions between the two regions yielded a statistic of 10.4526 and a p-value of 1.2248e-03. **Conclusion:** The p-value (p < 0.01) confirms that there is a statistically significant degradation in the accuracy of greedy nearest-neighbor distance matching as the density of candidate endpoints increases. Belief therefore rose from Likely True (0.83) to Likely True (0.94) (signed surprisal +0.162; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** chi-square; p = 0.01
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 295. (Surprise 0.162) Supported: In naive local reconnection graphs (connecting all fragment leaves within 15 µm), the presence of invalid structural cycles is significantly more frequent in re...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 180 · **Belief:** Likely True → Likely True (0.833→0.938) · **Direction:** Positive · **Surprisal:** +0.162
+### 295. (Surprise 0.162) Supported: evidence confirms that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 180 · **Belief:** Likely True -> Likely True (0.8333 -> 0.9375) · **Direction:** Positive
 - **Tested:** Analyze the spatial conditions under which cycle-prevention logic fails or becomes restrictive by correlating cyclic proposals with local fragment density.
-- **Conclusion:** By constructing a proposal graph where fragment leaf nodes within 15 µm were connected, the script identified 38,463 total connected components, of which 19 were classified as cyclic (edges >= nodes) and 38,444 were acyclic. The local fragment density (number of other leaf nodes within a 50 µm radius) was calculated for all nodes. Results showed a striking contrast: nodes in cyclic components had an average density of 2.37 nearby leaves per 50 µm, compared to just 0.21 for nodes in acyclic components.
+- **Conclusion:** The experiment was successfully executed and fulfilled the objective of analyzing the spatial conditions that lead to cyclic proposals in a naive distance-based reconnection graph. Belief therefore rose from Likely True (0.83) to Likely True (0.94) (signed surprisal +0.162; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U, Welch's t-test, Student's t-test; p ≈ 2e-25
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 296. (Surprise 0.154) Belief dropped: U-Net fragment endpoints (splits) are significantly more likely to occur on neurite segments traveling along the Z-axis than on segments traveling in the X-Y pl...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 128 · **Belief:** Leaning True → Leaning True (0.708→0.609) · **Direction:** Negative · **Surprisal:** −0.154
+### 296. (Surprise 0.154) Refuted: data contradict the claim that Z-axis anisotropy or imaging depth drives split-error geometry.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 128 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.6094) · **Direction:** Negative
 - **Tested:** Determine if the imaging anisotropy causes a directional bias in split errors, which could inform anisotropic search spaces for reconnection proposals.
-- **Conclusion:** The results yielded a mean Z-alignment (abs cos) of 0.4934 for terminal edges versus 0.4738 for internal edges. The K-S test statistic was 0.0541 with a p-value of 3.6617e-51, indicating a statistically significant difference in the distributions. Plot analysis reveals that terminal edges have a strong tendency to align orthogonally to the Z-axis (cosine near 0), suggesting that split errors might be exacerbated by the lower resolution along the Z-axis.
+- **Conclusion:** The results yielded a mean Z-alignment (abs cos) of 0.4934 for terminal edges versus 0.4738 for internal edges. The K-S test statistic was 0.0541 with a p-value of 3.6617e-51, indicating a statistically significant difference in the distributions. Belief therefore dropped from Leaning True (0.71) to Leaning True (0.61) (signed surprisal -0.154; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Kolmogorov-Smirnov, Student's t-test; p ≈ 3.7e-51
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 297. (Surprise 0.149) Supported: The physical gap distance of recoverable split errors scales systematically with proximity to the soma, indicating that aggressive, large-radius search heuristi...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 22 · **Belief:** Leaning True → Likely True (0.708→0.817) · **Direction:** Positive · **Surprisal:** +0.149
+### 297. (Surprise 0.149) Supported: evidence confirms that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 22 · **Belief:** Leaning True -> Likely True (0.7083 -> 0.8173) · **Direction:** Positive
 - **Tested:** To determine if the geometric gap size between valid split endpoints is positively correlated with their physical distance from the nearest soma, informing dynamic, spatially-aware search radius policies.
-- **Conclusion:** The code successfully extracted 574 valid 'True' split pairs (within a 40 µm radius) by mapping fragment leaf nodes to ground truth components. A Pearson correlation analysis between the physical gap size and the distance to the nearest soma yielded a significant negative correlation (r = -0.3355, p-value = 1.4371e-16). Based on this statistical outcome, the script dynamically generated actionable algorithmic policies, recommending a more aggressive search radius (~38.4 µm) in proximal regions (distance < 1518.4 µm) and a stricter search radius (~36.0 µm) in distal regions (distance > 9742.7 µm).
+- **Conclusion:** A Pearson correlation analysis between the physical gap size and the distance to the nearest soma yielded a significant negative correlation (r = -0.3355, p-value = 1.4371e-16). Belief therefore rose from Leaning True (0.71) to Likely True (0.82) (signed surprisal +0.149; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Pearson; p ≈ 1.4e-16
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 298. (Surprise 0.138) Supported: Merge errors exhibit sudden, discontinuous jumps in local neurite radius at the exact site of fusion, making radius delta a reliable geometric signature for age...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 58 · **Belief:** Leaning True → Leaning True (0.708→0.797) · **Direction:** Positive · **Surprisal:** +0.138
+### 298. (Surprise 0.138) Supported: evidence confirms that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 58 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7969) · **Direction:** Positive
 - **Tested:** Investigate if local radius discontinuity can serve as an unsupervised feature to detect post-hoc merge errors along a skeleton.
-- **Conclusion:** Hypothesis: Merge errors exhibit sudden, discontinuous jumps in local neurite radius at the exact site of fusion, making radius delta a reliable geometric signature for agentic false-merge detection. Experiment Results: The dataset was successfully loaded, and UNet fragment nodes were mapped to Ground Truth (GT) components using a KDTree with a 10 µm distance threshold. The script evaluated 997,617 Pure Edges and 292 Merge Edges.
-- **Caveats:** none noted
+- **Conclusion:** **Findings:** - The mean radius delta for Pure Edges was 0.009084 µm. - The mean radius delta for Merge Edges was 0.056798 µm (over 6 times larger). Belief therefore rose from Leaning True (0.71) to Leaning True (0.80) (signed surprisal +0.138; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U, Student's t-test; p = 0.05
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 299. (Surprise 0.138) Belief dropped: For pairs of closely located fragment leaf nodes (e.g., within 20 µm), those that belong to the same ground-truth neuron (valid split corrections) exhibit signi...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 134 · **Belief:** Leaning True → Leaning True (0.792→0.703) · **Direction:** Negative · **Surprisal:** −0.138
+### 299. (Surprise 0.138) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 134 · **Belief:** Leaning True -> Leaning True (0.7917 -> 0.7031) · **Direction:** Negative
 - **Tested:** Evaluate the predictive power of 3D tangent alignment for filtering valid versus invalid split reconnection proposals.
-- **Conclusion:** Leaf nodes from the fragment graph were mapped to ground truth, and pairs within 20 µm were classified as 'Valid' (same true neuron) or 'Invalid' (different true neurons). Out of 7,297 mapped leaves, the algorithm found 395 valid pairs and only 3 invalid pairs. The mean cosine similarity (tangent alignment) for valid pairs was 0.8352, compared to 0.6928 for invalid pairs, suggesting that valid continuations tend to be better aligned.
-- **Caveats:** small sample size
+- **Conclusion:** The mean cosine similarity (tangent alignment) for valid pairs was 0.8352, compared to 0.6928 for invalid pairs, suggesting that valid continuations tend to be better aligned. However, due to the extremely small sample size of invalid pairs (n=3), the Mann-Whitney U test yielded a non-significant p-value of 0.2392. Belief therefore dropped from Leaning True (0.79) to Leaning True (0.70) (signed surprisal -0.138; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U; p = 0.2392; n up to 3
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 300. (Surprise 0.138) Supported: Fragments containing merge errors are located in regions with a significantly higher local density of branching nodes (degree >= 3) compared to topologically co...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 152 · **Belief:** Leaning True → Leaning True (0.708→0.797) · **Direction:** Positive · **Surprisal:** +0.138
+### 300. (Surprise 0.138) Supported: evidence confirms that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 152 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7969) · **Direction:** Positive
 - **Tested:** Determine if local branching density can act as an active environmental flag to proactively trigger merge-detection agents.
-- **Conclusion:** The experiment successfully tested the hypothesis by mapping automated UNet fragments to ground-truth graphs and evaluating the local branching node densities around topologically incorrect (merged) and correct (clean) fragments. Out of the mapped fragments, 23 were identified as 'Merged' (mapping to >= 2 ground truth neurons) and 1042 as 'Clean' (mapping to 1 ground truth neuron). A spatial KDTree was built using 19,460 branching nodes (degree >= 3) extracted from the fragments graph.
+- **Conclusion:** A one-sided Mann-Whitney U test comparing the two distributions yielded a statistic of 14,776.50 and a p-value of 0.027 (p < 0.05). Belief therefore rose from Leaning True (0.71) to Leaning True (0.80) (signed surprisal +0.138; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.05
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 301. (Surprise 0.138) Supported: The U-Net's ability to maintain unbroken tracings is highly dependent on neurite thickness, such that longer U-Net fragment components exhibit a significantly h...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 173 · **Belief:** Leaning True → Leaning True (0.708→0.797) · **Direction:** Positive · **Surprisal:** +0.138
+### 301. (Surprise 0.138) Supported: evidence confirms that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 173 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7969) · **Direction:** Positive
 - **Tested:** Correlate automated fragment continuity (cable length) with physical neurite thickness.
-- **Conclusion:** The script loaded the dataset, calculated the total cable length and average neurite radius for each of the 10,172 U-Net fragments, and performed the required statistical analyses. The results support the hypothesis: there is a statistically significant positive correlation between fragment cable length and average node radius (Spearman correlation = 0.2522, p-value = 2.5362e-147). The binned summary statistics further illustrate this trend, showing that longer fragment components consistently exhibit higher average radii: - <1000 µm: 1.9358 µm - 1000-2000 µm: 1.9427 µm - 2000-5000 µm: 1.9709 µm - >5000 µm: 1.9921 µm These findings suggest that the U-Net segmentation algorithm is more effective at tracing thicker neurites continuously over long distances, whereas thinner neurites are disproportionately broken up into shorter fragments.
-- **Caveats:** small sample size
+- **Conclusion:** The results support the hypothesis: there is a statistically significant positive correlation between fragment cable length and average node radius (Spearman correlation = 0.2522, p-value = 2.5362e-147). Belief therefore rose from Leaning True (0.71) to Leaning True (0.80) (signed surprisal +0.138; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Spearman; p ≈ 2.5e-147
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 302. (Surprise 0.132) Supported: Erroneously fused neurites manifest structurally as artificial junctions, meaning that U-Net merge nodes are disproportionately classified as branch points (deg...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 45 · **Belief:** Likely True → Likely True (0.875→0.971) · **Direction:** Positive · **Surprisal:** +0.132
+### 302. (Surprise 0.132) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 45 · **Belief:** Likely True -> Likely True (0.8750 -> 0.9712) · **Direction:** Positive
 - **Tested:** Determine if local skeleton topology (specifically branching degree) is predictive of underlying merge errors in the U-Net fragments.
-- **Conclusion:** The script robustly loaded the dataset, accurately mapped fragments to ground truth components, and identified merge nodes alongside a control set of valid nodes. The calculated proportions revealed that out of the sampled nodes, merge nodes consisted of 8.0% branch points (degree >= 3) and 92.0% linear points (degree 2), whereas valid nodes were only 1.3% branch points and 98.7% linear points. A Chi-square test of independence yielded a statistic of 22.7651 and a highly significant p-value of 1.8306e-06, confirming that merge errors are disproportionately associated with structural branching in the U-Net fragments.
-- **Caveats:** none noted
+- **Conclusion:** A Chi-square test of independence yielded a statistic of 22.7651 and a highly significant p-value of 1.8306e-06, confirming that merge errors are disproportionately associated with structural branching in the U-Net fragments. Belief therefore rose from Likely True (0.88) to Likely True (0.97) (signed surprisal +0.132; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** chi-square; p ≈ 1.8e-06
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 303. (Surprise 0.114) Belief dropped: Branch nodes located in regions of high fragment density (where multiple distinct fragment components intertwine) have a significantly higher rate of being merg...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 73 · **Belief:** Leaning True → Leaning True (0.792→0.719) · **Direction:** Negative · **Surprisal:** −0.114
+### 303. (Surprise 0.114) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 73 · **Belief:** Leaning True -> Leaning True (0.7917 -> 0.7188) · **Direction:** Negative
 - **Tested:** Test if local component density is a strong predictive feature for U-Net merge errors (false fusions), which could guide a targeted merge-rollback policy.
-- **Conclusion:** The script correctly installed missing dependencies, loaded the dataset via the custom unpickler, mapped UNet branch nodes to the ground truth, and queried the local component density within a 50 µm radius. Out of 5,613 confidently mapped branch nodes, none met the criteria for a 'Dense' region (> 5 distinct fragment components). All 5,613 branch nodes were classified as 'Sparse' (≤ 5 components), containing 36 merge errors for a False Branch Rate of 0.64%.
+- **Conclusion:** Because there were no dense branches, the Chi-squared test could not be performed. Belief therefore dropped from Leaning True (0.79) to Leaning True (0.72) (signed surprisal -0.114; negative shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 304. (Surprise 0.089) Supported: The physical distance of the gap in true split errors is inversely correlated with the local raw fluorescence image intensity at the gap's midpoint, implying th...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 29 · **Belief:** Leaning True → Leaning True (0.708→0.766) · **Direction:** Positive · **Surprisal:** +0.089
+### 304. (Surprise 0.089) Supported: evidence confirms that image-intensity features (signal across the gap) add discriminative power.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 29 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7656) · **Direction:** Positive
 - **Tested:** To validate if missing image evidence correlates directly with the severity (distance) of split errors in the automated reconstruction, using a statistically sufficient random sample to accommodate remote data retrieval limits.
-- **Conclusion:** The experiment successfully tested the hypothesis by sampling 200 True Positive split reconnections (from a total of 1,801 identified valid gaps) and querying the 5x5x5 voxel patches around their midpoints from the raw ExaSPIM image volume. The statistical analysis yielded a Spearman rank correlation coefficient of -0.3501 with a highly significant p-value of 3.7429e-07. This moderate, statistically significant negative correlation indicates that as the physical distance of a split error gap increases, the localized fluorescence intensity at the gap's midpoint tends to decrease.
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** The statistical analysis yielded a Spearman rank correlation coefficient of -0.3501 with a highly significant p-value of 3.7429e-07. This moderate, statistically significant negative correlation indicates that as the physical distance of a split error gap increases, the localized fluorescence intensity at the gap's midpoint tends to decrease. Belief therefore rose from Leaning True (0.71) to Leaning True (0.77) (signed surprisal +0.089; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Spearman; p ≈ 3.7e-07
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 305. (Surprise 0.089) Supported: Fragment components containing topological merge errors (mapping to multiple ground-truth neurons) possess a significantly higher branching density (fraction of...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 125 · **Belief:** Leaning True → Leaning True (0.708→0.766) · **Direction:** Positive · **Surprisal:** +0.089
+### 305. (Surprise 0.089) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 125 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7656) · **Direction:** Positive
 - **Tested:** Investigate if internal branching complexity is a structural indicator of underlying merge errors in the U-Net reconstruction.
-- **Conclusion:** The script loaded the dataset using a custom unpickler to bypass missing dependencies, and successfully mapped all fragment nodes to the nearest ground-truth (GT) node using a 10 µm threshold. Fragment components were successfully classified as 'Merged' (mapping to ≥2 distinct GT components) or 'Clean' (mapping to exactly 1 GT component), identifying 23 merged components and 1,042 clean components. The branching density (fraction of nodes with degree ≥ 3) was calculated for each component.
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** A Mann-Whitney U test yielded a p-value of ~0.0426. Since the p-value is less than the typical 0.05 threshold, the difference in branching density is statistically significant. Belief therefore rose from Leaning True (0.71) to Leaning True (0.77) (signed surprisal +0.089; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.0426
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 306. (Surprise 0.088) Belief dropped: Merge edges act as critical topological bottlenecks between otherwise distinct sub-graphs, exhibiting significantly higher edge betweenness centrality within th...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 83 · **Belief:** Likely True → Leaning True (0.833→0.769) · **Direction:** Negative · **Surprisal:** −0.088
+### 306. (Surprise 0.088) Refuted: data contradict the claim that morphological features mark U-Net merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 83 · **Belief:** Likely True -> Leaning True (0.8333 -> 0.7692) · **Direction:** Negative
 - **Tested:** Evaluate if graph-theoretic centrality metrics can identify merge errors without relying on ground-truth geometry.
-- **Conclusion:** Hypothesis: Merge edges act as critical topological bottlenecks between otherwise distinct sub-graphs, exhibiting significantly higher edge betweenness centrality within their fragment component than non-merge edges. Experiment Results: - Component Selection: 12 merge-containing fragment components within the computationally tractable size range of 50-1000 nodes were identified. - Edge Centrality Computation: Edge betweenness centrality was computed for 223 merge edges and 5,611 non-merge edges within these subgraphs.
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** - **Centrality (Mean):** Merge edges demonstrated a mean betweenness centrality of 0.3087, while non-merge edges had a lower mean centrality of 0.2704. - **Statistical Comparison:** A Kolmogorov-Smirnov test confirmed that the distributions are significantly different (statistic = 0.1488, p-value = 1.3121e-04). Belief therefore dropped from Likely True (0.83) to Leaning True (0.77) (signed surprisal -0.088; negative shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Kolmogorov-Smirnov; p ≈ 0.00013
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 307. (Surprise 0.073) Supported: True split reconnections (nearby fragment endpoints belonging to the same ground-truth neuron) exhibit significantly higher geometric tangent alignment (cosine...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 11 · **Belief:** Likely True → Likely True (0.875→0.922) · **Direction:** Positive · **Surprisal:** +0.073
+### 307. (Surprise 0.073) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 11 · **Belief:** Likely True -> Likely True (0.8750 -> 0.9219) · **Direction:** Positive
 - **Tested:** To determine if local branch orientation agreement is a robust, purely geometric feature for filtering candidate reconnections and preventing false merges.
-- **Conclusion:** The experiment executed successfully and completed the evaluation of the proposed hypothesis. The script extracted leaf nodes from the U-Net fragments graph and mapped them to the ground-truth components to differentiate between 'True Splits' (reconnections belonging to the same GT neuron) and 'False Splits' (reconnections belonging to different GT neurons) within a 20 µm search radius. The analysis evaluated 1,391 true split pairs and 6 false split pairs.
-- **Caveats:** extreme class imbalance / very few positives
+- **Conclusion:** The mean cosine similarity for true splits was -0.7054 (indicating they generally point towards each other), compared to 0.1944 for false splits. A Mann-Whitney U test yielded a p-value of 0.01458, which is statistically significant (p < 0.05). Belief therefore rose from Likely True (0.88) to Likely True (0.92) (signed surprisal +0.073; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.05
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 308. (Surprise 0.057) No effect found: False connection proposals cluster in dense regions of the proposal graph, meaning that true connections have lower proposal degree centrality than false connec...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 2 · **Belief:** Leaning True → Leaning True (0.708→0.672) · **Direction:** Negative · **Surprisal:** −0.057
+### 308. (Surprise 0.057) Refuted: data contradict the claim that the proposed structural heuristic holds for U-Net proofreading.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 2 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.6719) · **Direction:** Negative
 - **Tested:** To test if mutual exclusivity (competitor density) can be used as a structural feature, where valid connections have fewer local alternatives than invalid ones.
-- **Conclusion:** The experiment successfully executed and tested the hypothesis that valid connections (True Positives) have lower proposal degree centrality (competitor burden) compared to invalid ones (False Positives). The implementation correctly used a `MockUnpickler` to load the dataset, built a proposal graph based on spatial proximity (< 30 µm) between UNet fragment leaf nodes, and mapped these leaves to Ground Truth (GT) components using a 15 µm threshold. The statistical analysis revealed an average competitor burden of 2.36 for the 479 TP edges, and 2.80 for the 5 FP edges.
-- **Caveats:** small sample size
+- **Conclusion:** While the directional difference aligns with the hypothesis (TP burden < FP burden), the p-value of 0.4218 implies that the difference is not statistically significant. This lack of significance is likely driven by the extremely small sample size of false positive edges evaluated (n=5) under these specific distance thresholds. Belief therefore dropped from Leaning True (0.71) to Leaning True (0.67) (signed surprisal -0.057; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power); dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Unsound
+- **Test:** Student's t-test; p = 0.4218; n up to 5
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 309. (Surprise 0.044) Supported: Due to the dense and overlapping nature of neurites near the cell body, merge errors are spatially distributed significantly closer to ground-truth soma centroi...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 6 · **Belief:** Leaning True → Leaning True (0.708→0.740) · **Direction:** Positive · **Surprisal:** +0.044
+### 309. (Surprise 0.044) Supported: evidence confirms that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 6 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7404) · **Direction:** Positive
 - **Tested:** Test if proximity to somata significantly increases the likelihood of a merge error.
-- **Conclusion:** The dataset was loaded using the custom MockUnpickler, and 19 ground-truth soma locations were inferred based on the maximum node radii per connected component. Mapping the UNet fragment nodes to the ground truth identified 4,536 merge sites across 2,356 fragment components. Comparing the distances from these merge sites to the nearest soma against a background sample of 100,000 non-merge fragment nodes yielded the following results: - Merge Sites: Mean distance to soma = 7,610.05 µm (std: 3,582.41 µm) - Background Nodes: Mean distance to soma = 8,012.08 µm (std: 3,916.22 µm) - Kolmogorov-Smirnov Test: statistic = 0.0532, p-value = 3.9262e-11 The highly significant p-value (< 0.05) supports the hypothesis that the spatial distribution of merge errors relative to somata differs from the background.
-- **Caveats:** none noted
+- **Conclusion:** Comparing the distances from these merge sites to the nearest soma against a background sample of 100,000 non-merge fragment nodes yielded the following results: - **Merge Sites:** Mean distance to soma = 7,610.05 µm (std: 3,582.41 µm) - **Background Nodes:** Mean distance to soma = 8,012.08 µm (std: 3,916.22 µm) - **Kolmogorov-Smirnov Test:** statistic = 0.0532, p-value = 3.9262e-11 The highly significant p-value (< 0.05) supports the hypothesis that the spatial distribution. Belief therefore rose from Leaning True (0.71) to Leaning True (0.74) (signed surprisal +0.044; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Kolmogorov-Smirnov; p ≈ 3.9e-11
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 310. (Surprise 0.044) Supported: The unannotated spatial gap between valid split reconnections contains residual, sub-threshold fluorescence signal, resulting in a significantly higher mean ima...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 12 · **Belief:** Leaning True → Leaning True (0.708→0.740) · **Direction:** Positive · **Surprisal:** +0.044
+### 310. (Surprise 0.044) Supported: evidence confirms that image-intensity features (signal across the gap) add discriminative power.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 12 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7404) · **Direction:** Positive
 - **Tested:** Assess if raw image evidence within the gap region can distinguish true fragmented paths from falsely proposed cross-neuron connections.
-- **Conclusion:** Hypothesis: The unannotated spatial gap between valid split reconnections contains residual, sub-threshold fluorescence signal, resulting in a significantly higher mean image intensity than the gap between invalid split pairs. Experiment Results: - Gap Identification: 395 valid split gaps and 3 invalid split gaps were identified within a 20 µm distance threshold from leaf pairs. - Image Patch Extraction: 5x5x5 voxel patches around the spatial midpoint of the gaps were sampled (150 valid gaps, 3 invalid gaps).
-- **Caveats:** extreme class imbalance / very few positives; small sample size; zero-variance / NaN edge case
+- **Conclusion:** **Hypothesis:** The unannotated spatial gap between valid split reconnections contains residual, sub-threshold fluorescence signal, resulting in a significantly higher mean image intensity than the gap between invalid split pairs. - **Mean Intensities:** Valid gaps demonstrated a mean intensity of 112.67 (std: 147.85), whereas invalid gaps had a notably lower mean intensity of 36.17 (std: 25.75). Belief therefore rose from Leaning True (0.71) to Leaning True (0.74) (signed surprisal +0.044; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Questionable
+- **Test:** Welch's t-test, Student's t-test; p = 0.0234; n up to 3
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** none
 
-### 311. (Surprise 0.044) Supported: Valid split gaps occur in regions where the underlying ground-truth neurite exhibits significantly higher local curvature than the global average, implying the...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 20 · **Belief:** Leaning True → Leaning True (0.708→0.740) · **Direction:** Positive · **Surprisal:** +0.044
+### 311. (Surprise 0.044) Supported: evidence confirms that neurite tortuosity or sharp turns flag U-Net split/merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 20 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7404) · **Direction:** Positive
 - **Tested:** Correlate ground-truth neurite tortuosity with the propensity for the segmentation model to produce split errors.
-- **Conclusion:** The script identified 134,888 ground-truth degree-2 nodes and calculated their local curvatures, subsequently locating 1,360 valid split midpoints for comparison. Statistical analysis using the Mann-Whitney U test yielded a significant p-value of ~0.0041, confirming that there is a statistically significant difference between the two distributions. The mean local curvature adjacent to valid split gaps (0.3976 ± 0.2600 rad) is slightly higher than the background ground-truth curvature (0.3637 ± 0.2259 rad).
+- **Conclusion:** Statistical analysis using the Mann-Whitney U test yielded a significant p-value of ~0.0041, confirming that there is a statistically significant difference between the two distributions. The mean local curvature adjacent to valid split gaps (0.3976 ± 0.2600 rad) is slightly higher than the background ground-truth curvature (0.3637 ± 0.2259 rad). Belief therefore rose from Leaning True (0.71) to Leaning True (0.74) (signed surprisal +0.044; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.0041
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 312. (Surprise 0.044) Supported: False merge points in the automated U-Net reconstruction exhibit anomalous branching angles (e.g., crossing X-shapes or near 90 degrees) compared to the natural...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 32 · **Belief:** Leaning True → Leaning True (0.708→0.740) · **Direction:** Positive · **Surprisal:** +0.044
+### 312. (Surprise 0.044) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 32 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7404) · **Direction:** Positive
 - **Tested:** Quantify whether U-Net false merges can be identified by their local branching angles compared to true valid branches.
-- **Conclusion:** It successfully identified branching nodes (degree >= 3) and extracted 5608 True Branches and 36 Merge Branches. The statistical analysis (Mann-Whitney U Test: p-value = 0.0235) confirms a statistically significant difference in the maximum branching angles between the two classes. Specifically, True Branches exhibited a higher mean maximum angle (137.42°) compared to Merge Branches (126.24°).
-- **Caveats:** none noted
+- **Conclusion:** The statistical analysis (Mann-Whitney U Test: p-value = 0.0235) confirms a statistically significant difference in the maximum branching angles between the two classes. Specifically, True Branches exhibited a higher mean maximum angle (137.42°) compared to Merge Branches (126.24°). Belief therefore rose from Leaning True (0.71) to Leaning True (0.74) (signed surprisal +0.044; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p = 0.0235
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 313. (Surprise 0.044) Supported: Due to the lower optical resolution along the Z-axis in ExaSPIM imaging (anisotropy), valid split gaps are disproportionately aligned parallel to the Z-axis com...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 36 · **Belief:** Leaning True → Leaning True (0.708→0.740) · **Direction:** Positive · **Surprisal:** +0.044
+### 313. (Surprise 0.044) Supported: evidence confirms that Z-axis anisotropy or imaging depth drives split-error geometry.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 36 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7404) · **Direction:** Positive
 - **Tested:** Investigate if anisotropic imaging resolution introduces a directional bias in split errors, which could inform anisotropic search bounds for reconnection proposals.
-- **Conclusion:** The script identified 1,360 valid split gaps and compared their 3D orientations (relative to the Z-axis) against a baseline of 100,000 sampled Ground-Truth (GT) edges. Statistical analysis using the Kolmogorov-Smirnov test returned a test statistic of 0.0641 and a p-value of ~3.08e-05, confirming a statistically significant difference between the orientation of valid split gaps and the natural orientation of background GT neurites. The mean angle relative to the Z-axis was 60.01° for split gaps and 61.43° for GT edges.
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** Statistical analysis using the Kolmogorov-Smirnov test returned a test statistic of 0.0641 and a p-value of ~3.08e-05, confirming a statistically significant difference between the orientation of valid split gaps and the natural orientation of background GT neurites. The mean angle relative to the Z-axis was 60.01° for split gaps and 61.43° for GT edges. Belief therefore rose from Leaning True (0.71) to Leaning True (0.74) (signed surprisal +0.044; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Kolmogorov-Smirnov, Student's t-test; p ≈ 3.1e-05
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 314. (Surprise 0.044) Supported: Merge errors are spatially clustered with valid split errors (endpoints), meaning the local density of disconnected leaf nodes is significantly higher around me...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 56 · **Belief:** Leaning True → Leaning True (0.708→0.740) · **Direction:** Positive · **Surprisal:** +0.044
+### 314. (Surprise 0.044) Supported: evidence confirms that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 56 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7404) · **Direction:** Positive
 - **Tested:** Test if topological errors co-occur spatially, specifically measuring the local concentration of fragment endpoints near U-Net merge errors.
-- **Conclusion:** Experiment Results: - Merge Sites and Leaves: The script identified 472 merge nodes (nodes bridging different ground-truth components) and 39,826 leaf nodes (degree-1 endpoints representing potential split locations) across the fragments graph. - Local Leaf Density (Mean ± Std): The number of leaf nodes within a 20 µm radius was calculated for both groups. Merge sites had a mean of 0.10 (± 0.31) nearby leaf nodes, while the random sample of 100,000 background nodes had a lower mean of 0.06 (± 0.25).
+- **Conclusion:** - **Local Leaf Density (Mean ± Std):** The number of leaf nodes within a 20 µm radius was calculated for both groups. Merge sites had a mean of 0.10 (± 0.31) nearby leaf nodes, while the random sample of 100,000 background nodes had a lower mean of 0.06 (± 0.25). Belief therefore rose from Leaning True (0.71) to Leaning True (0.74) (signed surprisal +0.044; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p ≈ 3e-06
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 315. (Surprise 0.044) Supported: The 'reconnection ambiguity'—defined as the number of competing split-correction proposals per fragment leaf—is significantly higher in close proximity to the s...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 74 · **Belief:** Leaning True → Leaning True (0.708→0.740) · **Direction:** Positive · **Surprisal:** +0.044
+### 315. (Surprise 0.044) Supported: evidence confirms that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 74 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7404) · **Direction:** Positive
 - **Tested:** Determine if the spatial proximity to the soma correlates with an increased density of competing split-correction proposals, necessitating spatially adaptive confidence thresholds.
-- **Conclusion:** The script correctly installed necessary dependencies, extracted 19 soma locations and 39,826 fragment leaf nodes, and computed the required spatial metrics (distance to soma and reconnection ambiguity using a 20 µm radius). The results revealed a Spearman rank correlation of -0.0721 with a highly significant p-value of 4.65e-47. This negative correlation supports the hypothesis, confirming that reconnection ambiguity is statistically higher in closer proximity to the soma.
-- **Caveats:** small sample size
+- **Conclusion:** The results revealed a Spearman rank correlation of -0.0721 with a highly significant p-value of 4.65e-47. This negative correlation supports the hypothesis, confirming that reconnection ambiguity is statistically higher in closer proximity to the soma. Belief therefore rose from Leaning True (0.71) to Leaning True (0.74) (signed surprisal +0.044; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Spearman; p ≈ 4.6e-47
+- **Statistical issues:** statistical significance driven by very large N; effect size negligible (|r|<0.1) — significance is a large-sample artifact rather than a scientifically meaningful effect
+- **Logic issues:** none
 
-### 316. (Surprise 0.044) Supported: U-Net branching nodes that constitute a merge error (connecting distinct true neurons) exhibit a significantly different maximum branch angle distribution compa...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 96 · **Belief:** Leaning True → Leaning True (0.708→0.740) · **Direction:** Positive · **Surprisal:** +0.044
+### 316. (Surprise 0.044) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 96 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7404) · **Direction:** Positive
 - **Tested:** Analyze the local branching geometry to determine if merge errors exhibit unnatural branching angles compared to valid bifurcations.
-- **Conclusion:** The experiment was successfully executed, confirming the hypothesis that there is a statistically significant difference in the distribution of maximum branch angles between merge errors and true branches. The script correctly parsed 19,460 branching nodes, identifying 36 'Merge Branches' and 5,577 'True Branches'. Statistical analysis using the Kolmogorov-Smirnov test yielded a test statistic of 0.2382 and a p-value of 0.0286, indicating that the two distributions are drawn from different underlying populations.
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** Statistical analysis using the Kolmogorov-Smirnov test yielded a test statistic of 0.2382 and a p-value of 0.0286, indicating that the two distributions are drawn from different underlying populations. The mean maximum angle for Merge Branches (126.24°) was more acute than that of True Branches (137.42°). Belief therefore rose from Leaning True (0.71) to Leaning True (0.74) (signed surprisal +0.044; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** Kolmogorov-Smirnov, Student's t-test; p = 0.0286; n up to 36
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 317. (Surprise 0.041) Supported: Regions with high ground-truth anatomical complexity (dense neural packing) cause exponentially higher segmentation failures, meaning the ratio of U-Net fragmen...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 7 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 317. (Surprise 0.041) Supported: evidence confirms that fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 7 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** To map the spatial distribution of U-Net failure modes by linking ground-truth anatomical density to the rate of over-segmentation.
-- **Conclusion:** The experiment successfully calculated the relationship between ground-truth anatomical density and U-Net fragmentation count across 24,360 populated bounding blocks (200x200x200 µm). A Pearson Correlation Coefficient of 0.4001 (p-value < 0.0001) was observed, indicating a moderate, statistically significant positive correlation. This supports the hypothesis that denser neural packing leads to higher segmentation failure rates (more U-Net fragment components).
+- **Conclusion:** A Pearson Correlation Coefficient of 0.4001 (p-value < 0.0001) was observed, indicating a moderate, statistically significant positive correlation. Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Pearson; p ≈ 0.0001
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 318. (Surprise 0.041) Supported: The spatial distribution of topological errors varies by type, with merge errors occurring closer to the soma (high density) and split errors occurring further...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 38 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 318. (Surprise 0.041) Supported: evidence confirms that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 38 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** To determine if the distance from the soma is a statistically significant predictor of whether a local error is a split or a merge.
-- **Conclusion:** The script correctly extracted approximate soma locations, mapped UNet fragment nodes to ground-truth nodes, and identified 3,965 split errors alongside 475 merge error nodes. The results yielded a K-S statistic of 0.2934 and a highly significant p-value of 8.65e-33, confirming that the distance from the soma is a statistically significant predictor differentiating the spatial distributions of split and merge errors. Furthermore, the generated Empirical Cumulative Distribution Function (ECDF) plot highlighted differing spatial profiles: split errors are distributed broadly up to 8,000 µm, while merge errors display a highly localized distribution with a severe, artifact-like spike at exactly 3,000 µm, likely indicating an algorithmic or tiling boundary in the segmentation process.
+- **Conclusion:** The results yielded a K-S statistic of 0.2934 and a highly significant p-value of 8.65e-33, confirming that the distance from the soma is a statistically significant predictor differentiating the spatial distributions of split and merge errors. Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Kolmogorov-Smirnov; p ≈ 8.6e-33
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 319. (Surprise 0.041) Supported: Merge errors in U-Net fragments (where multiple distinct neurons are falsely fused) contain local structural anomalies, exhibiting significantly higher radius v...
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 50 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 319. (Surprise 0.041) Supported: evidence confirms that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 50 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** Determine if uncharacteristic fluctuations in the U-Net predicted neurite radius can serve as an intrinsic topological signature to detect merge errors.
-- **Conclusion:** The experiment successfully calculated and compared the neurite radius variance between Merged and Clean U-Net fragments. By mapping the fragments to the Ground Truth (GT) skeleton, the script identified 28 Merged fragments (fragments mapping to multiple distinct GT connected components) and 1083 Clean fragments (fragments mapping to exactly one GT connected component). The mean radius variance for Merged fragments was found to be 0.009193, while for Clean fragments it was 0.007919.
+- **Conclusion:** The mean radius variance for Merged fragments was found to be 0.009193, while for Clean fragments it was 0.007919. A one-sided Mann-Whitney U test yielded a test statistic of 18379.0 with a p-value of 0.0275. Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U, Student's t-test; p = 0.0275
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 320. (Surprise 0.041) Belief dropped: Valid split reconnections (pairs of spatial endpoints belonging to the same ground-truth neuron) exhibit a significantly stronger negative dot product (anti-par...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 7 · **Belief:** Leaning True → Leaning True (0.792→0.766) · **Direction:** Negative · **Surprisal:** −0.041
+### 320. (Surprise 0.041) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 7 · **Belief:** Leaning True -> Leaning True (0.7917 -> 0.7656) · **Direction:** Negative
 - **Tested:** Evaluate if local 3D tangent alignment is a robust geometric feature for distinguishing between true structural gaps and false connections during split correction.
-- **Conclusion:** The experiment successfully executed the data pipeline and statistical analysis. It identified 1,397 inter-component leaf pairs within a 20 µm radius in the fragments graph. After mapping these to the ground-truth (GT) graph (using a 10 µm threshold), 398 pairs were classified: 395 as 'Valid' (belonging to the same GT neuron) and 3 as 'Invalid' (belonging to different GT neurons).
-- **Caveats:** small sample size
+- **Conclusion:** Valid pairs exhibited a mean dot product of -0.6956 (indicating anti-parallel alignment, as endpoints meet head-on), while the 3 Invalid pairs had a mean dot product of 0.6700. The resulting p-value was ~0.0097 (p < 0.05), suggesting statistical significance. Belief therefore dropped from Leaning True (0.79) to Leaning True (0.77) (signed surprisal -0.041; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Welch's t-test, Student's t-test; p = 0.05; n up to 3
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 321. (Surprise 0.041) Supported: Ground-truth structural paths (unbranched segments between somas, branch points, or leaves) with higher geometric tortuosity have a higher likelihood of sufferi...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 10 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 321. (Surprise 0.041) Supported: evidence confirms that neurite tortuosity or sharp turns flag U-Net split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 10 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** Evaluate the relationship between neurite tortuosity and U-Net segmentation continuity.
-- **Conclusion:** Out of 14,901 extracted ground-truth structural paths, 14,814 were deemed valid for analysis. Only 3.47% of these paths experienced at least one split, with an average tortuosity of 1.1756. Correlation tests showed a very weak but statistically significant positive monotonic relationship (Spearman's r = 0.0447, p < 0.001), while the linear correlation was not significant (Pearson's r = 0.0065, p = 0.426).
-- **Caveats:** none noted
+- **Conclusion:** Correlation tests showed a very weak but statistically significant positive monotonic relationship (Spearman's r = 0.0447, p < 0.001), while the linear correlation was not significant (Pearson's r = 0.0065, p = 0.426). Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** Spearman, Pearson, logistic regression; p = 0.426
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 322. (Surprise 0.041) Supported: Due to the anisotropic resolution of the ExaSPIM imaging (Z-axis is lower resolution), spatial gaps representing true split errors are predominantly aligned wit...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 29 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 322. (Surprise 0.041) Supported: evidence confirms that Z-axis anisotropy or imaging depth drives split-error geometry.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 29 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** Assess if imaging anisotropy introduces a predictable directional bias in the orientation of split errors.
-- **Conclusion:** The experiment successfully tested the hypothesis that imaging anisotropy introduces a directional bias in the orientation of true split errors. The script efficiently extracted 39,826 leaf nodes from the automated reconstruction, identified 1,812 inter-component pairs within 30 µm of each other, and mapped them to the ground truth to confirm 397 'True Split' pairs. Statistical analysis of the 3D gap vectors for these splits revealed a significant deviation from a theoretically uniform spherical distribution (Mean |cos(θ)| = 0.4644 vs.
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** Statistical analysis of the 3D gap vectors for these splits revealed a significant deviation from a theoretically uniform spherical distribution (Mean |cos(θ)| = 0.4644 vs. expected 0.5000; KS-Statistic = 0.1008; p-value = 5.82e-04). Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Kolmogorov-Smirnov; p ≈ 0.00058
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 323. (Surprise 0.041) Supported: The physical path distance from the soma is a primary driver of split errors: fragment endpoints (splits) that map to a given ground truth neuron occur at regio...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 34 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 323. (Surprise 0.041) Supported: evidence confirms that morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 34 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** Determine if topological split errors systematically concentrate in thin, distal branches relative to the soma by using a topologically inferred soma root to overcome the lack of explicit soma annotations and uniform radius artifacts.
-- **Conclusion:** Findings: 1. The split locations have a higher mean (9,859.71 µm) and median (9,656.38 µm) distance compared to the internal non-split nodes (mean = 9,131.46 µm, median = 8,770.20 µm). The Mann-Whitney U test confirms this difference is highly statistically significant (p-value = 2.5753e-65).
-- **Caveats:** small sample size; test driven to p=1.0 by near-zero positive counts
+- **Conclusion:** The split locations have a higher mean (9,859.71 µm) and median (9,656.38 µm) distance compared to the internal non-split nodes (mean = 9,131.46 µm, median = 8,770.20 µm). The Mann-Whitney U test confirms this difference is highly statistically significant (p-value = 2.5753e-65). Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 1; n up to 9131
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 324. (Surprise 0.041) Supported: U-Net fragment components that incorrectly merge distinct ground-truth neurons have a significantly higher branching density (branch nodes per micrometer of cab...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 54 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 324. (Surprise 0.041) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 54 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** Determine if branching density is a reliable morphological indicator of merge errors in the U-Net reconstruction.
-- **Conclusion:** Out of 10,172 valid fragments analyzed, 981 were classified as 'Clean' (mapping to exactly 1 ground-truth component) and 20 were classified as 'Merged' (mapping to 2 or more distinct ground-truth components). The results show that Merged fragments have a higher median branching density (~1.34e-3 branches/µm) compared to Clean fragments (~8.70e-4 branches/µm). A Mann-Whitney U test confirmed that this difference is statistically significant (U = 12654.5, p = 0.0252 < 0.05) with a moderate effect size (Rank-Biserial = 0.29).
+- **Conclusion:** The results show that Merged fragments have a higher median branching density (~1.34e-3 branches/µm) compared to Clean fragments (~8.70e-4 branches/µm). Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U, Student's t-test; p = 0.0252
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** none
 
-### 325. (Surprise 0.041) Belief dropped: Topological branch points (nodes with degree >= 3) in the automated reconstruction that possess an acute branching angle (< 60 degrees) are significantly more l...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 71 · **Belief:** Leaning True → Leaning True (0.792→0.766) · **Direction:** Negative · **Surprisal:** −0.041
+### 325. (Surprise 0.041) Refuted: data contradict the claim that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 71 · **Belief:** Leaning True -> Leaning True (0.7917 -> 0.7656) · **Direction:** Negative
 - **Tested:** Investigate whether the geometric angle of branches in the U-Net graph can identify merge errors without requiring external image features.
-- **Conclusion:** The experiment was successfully executed and tested the proposed hypothesis. Out of the 19,460 branching nodes identified in the `fragments_graph`, local geometries were mapped and evaluated against the ground-truth annotations. For the acute group (containing at least one angle < 60 degrees), there were 14 'Merge' errors and 1,081 'Valid' branches.
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** The Fisher's Exact Test yielded an odds ratio of 2.3781 and a p-value of 0.0374. Since the p-value is below the standard 0.05 significance threshold, the hypothesis is statistically supported: branch points with an acute branching angle are significantly more likely to be false merges (such as crossing fibers) compared to branches with exclusively obtuse angles. Belief therefore dropped from Leaning True (0.79) to Leaning True (0.77) (signed surprisal -0.041; negative shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Fisher's exact, Student's t-test; p = 0.0374
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 326. (Surprise 0.041) Supported: The dot product of the unit tangent vectors of two disconnected leaf nodes is highly predictive of valid reconnections, with true reconnections overwhelmingly e...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 74 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 326. (Surprise 0.041) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 74 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** Verify the geometric signature of recoverable splits by quantifying the predictive power of 3D tangent alignment for leaf-to-leaf reconnections.
-- **Conclusion:** The code loaded the dataset, extracted putative leaf-to-leaf reconnections within 20 µm across different components (1,397 pairs), and mapped them to the ground truth, resulting in 398 confidently mapped pairs. According to the analysis, the Aligned cohort (dot product < -0.7, representing anti-parallel alignment) consisted of 272 pairs, all of which were True Positives, yielding a perfect precision of 100.00% (272 TP, 0 FP). The Unaligned cohort (dot product >= -0.7) contained 126 pairs and exhibited a precision of 97.62% (123 TP, 3 FP).
+- **Conclusion:** The Chi-squared test comparing the two cohorts returned a chi-square value of 3.7307 and a p-value of 0.0534. The marginally non-significant p-value suggests that while geometric alignment is a perfect indicator of valid reconnections, relying on it as a strict filter (dot < -0.7) might omit a significant portion of true reconnections that do not possess strong anti-parallel alignment. Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square; p = 0.0534
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 327. (Surprise 0.041) Supported: False merge errors occur disproportionately in regions of high fragment endpoint density (crowded regions), such that the local count of fragment leaves within...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 78 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 327. (Surprise 0.041) Supported: evidence confirms that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 78 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** Test if the spatial clustering of fragmentation (splits) correlates with the occurrence of erroneous fusions (merges), suggesting a shared root cause in complex local topology.
-- **Conclusion:** The experiment was successfully executed, confirming the hypothesis that spatial clustering of fragmentation (split errors) correlates with the occurrence of erroneous fusions (merge errors). The script successfully mapped 19,460 branch points and 39,826 leaves from the fragments graph. After mapping these to ground truth, it classified 5,562 True Branches and 41 Merge Errors.
-- **Caveats:** small sample size; implementation deviated from plan
+- **Conclusion:** By querying the local neighborhood (30 µm radius) for fragment leaf nodes, it found that True Branches had a mean leaf count of 0.16, while Merge Errors had a higher mean count of 0.29 (with both medians at 0.00). A one-sided Mann-Whitney U test indicated that the local density of fragment endpoints is significantly higher around Merge Errors than True Branches (U = 128388.5, p-value = 0.0109). Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
+- **Caveats:** median outcome is zero; effect driven by outliers
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p = 0.0109
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** none
 
-### 328. (Surprise 0.041) Supported: The median raw fluorescence intensity along the 3D line segment connecting endpoints of true-positive splits is significantly higher than the median intensity c...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 84 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 328. (Surprise 0.041) Supported: evidence confirms that image-intensity features (signal across the gap) add discriminative power.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 84 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** Validate the use of raw image fluorescence intensity profiles between endpoints as a discriminative feature for split correction.
-- **Conclusion:** The algorithm identified 350 valid true-split pairs and 3 invalid false-split pairs within a 20 µm radius. For evaluation, 200 valid pairs and all 3 invalid pairs were sampled. The median intensity for valid pairs was higher (70.00) compared to invalid pairs (36.50).
-- **Caveats:** small sample size
+- **Conclusion:** The median intensity for valid pairs was higher (70.00) compared to invalid pairs (36.50). However, due to the extremely small sample size of invalid pairs (n=3), the Mann-Whitney U test failed to reach statistical significance (p = 0.1812). Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U; p = 0.1812; n up to 3
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 329. (Surprise 0.041) Supported: In spatially conflicted split proposals (where a single endpoint has multiple reconnection candidates within 30 µm), a strictly greedy distance-based policy wil...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 90 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 329. (Surprise 0.041) Supported: evidence confirms that greedy/independent thresholding versus joint-reasoning matching changes proofreading precision.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 90 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** Quantify the frequency of mutual exclusivity conflicts at endpoints and evaluate the failure rate of a naive shortest-distance reconnection policy in dense local neighborhoods.
-- **Conclusion:** The experiment was successfully executed, confirming the hypothesis that a greedy distance-based policy fails in spatially conflicted split proposals. The code correctly mapped fragment leaf nodes to ground-truth neurons, identifying 2,209 leaf pairs within a 30 µm radius. Out of 896 leaves with ground-truth-mapped candidates, only 2 leaves were found to be 'conflicted' (possessing both a valid and an invalid connection candidate).
-- **Caveats:** small sample size
+- **Conclusion:** A binomial test against the 10% failure threshold yielded a statistically significant p-value (p = 0.01). While the statistical result supports the hypothesis and highlights the necessity for multivariate/GNN features rather than naive distance metrics, it is important to note the extremely small sample size (n=2) of such conflicts in this specific dataset region, which limits the broader generalizability without further testing on larger volumes. Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** binomial test, Student's t-test; p = 0.01; n up to 2
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 330. (Surprise 0.041) Supported: Merge errors in U-Net fragments correspond to regions with anomalously high variations in predicted neurite radius, reflecting the unnatural fusion of distinct...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 100 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 330. (Surprise 0.041) Supported: evidence confirms that local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 100 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** Determine if variance in predicted neurite radius can be used as an intrinsic heuristic to detect and flag automated merge errors without requiring ground truth.
-- **Conclusion:** The script correctly mapped the fragment nodes to ground truth components using the KD-tree, classified the fragments into 11 'Merged' fragments and 981 'Clean' fragments, and evaluated their radius variance and radius gradient (mean absolute difference). The statistical analysis using the Mann-Whitney U test yielded the following results: - Radius Variance: Merged Mean = 0.010240, Clean Mean = 0.007822. The p-value was 0.0612.
-- **Caveats:** small sample size
+- **Conclusion:** The script correctly mapped the fragment nodes to ground truth components using the KD-tree, classified the fragments into 11 'Merged' fragments and 981 'Clean' fragments, and evaluated their radius variance and radius gradient (mean absolute difference). The statistical analysis using the Mann-Whitney U test yielded the following results: - **Radius Variance**: Merged Mean = 0.010240, Clean Mean = 0.007822. Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U, Student's t-test; p = 0.06268
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 331. (Surprise 0.041) Supported: False-merge branch points exhibit significantly higher radial asymmetry among their outgoing branches compared to true anatomical branch points, providing a mor...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 104 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 331. (Surprise 0.041) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 104 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** Determine if neurite radius asymmetry at degree-3 nodes can reliably distinguish false merges from true bifurcations.
-- **Conclusion:** The experiment successfully tested the hypothesis that false-merge branch points exhibit higher radial asymmetry than true anatomical branch points. The script used a custom unpickler to load the dataset, identified 19,438 degree-3 branch points, and mapped their outgoing branches to the ground truth components. It identified 43 guaranteed False Merges and 5,582 True Branches.
+- **Conclusion:** The radial asymmetry (ratio of max to min mean branch radius) was calculated for both populations. The descriptive statistics showed a mean asymmetry of 1.1132 for False Merges and 1.0783 for True Branches. Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** Student's t-test; p = 0.05
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 332. (Surprise 0.041) Supported: False branching nodes in the automated reconstruction (where a single U-Net fragment erroneously fuses multiple distinct ground-truth neurons) possess significa...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 127 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 332. (Surprise 0.041) Supported: evidence confirms that branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 127 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** Assess whether local geometric branching angles can reliably differentiate between biological branches and U-Net merge errors.
-- **Conclusion:** The script identified 41 'Merge Branches' and 5,561 'True Branches' by cross-referencing automated U-Net branching nodes with the human ground-truth (GT) components. The analysis revealed that Merge Branches have a smaller (more acute) mean minimum branching angle (70.82° ± 24.65°) compared to True Branches (78.80° ± 21.35°). The Mann-Whitney U test yielded a statistically significant p-value of ~0.0229 (alpha < 0.05), indicating that merge errors do indeed tend to present with more acute geometric angles than true biological branches.
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** The analysis revealed that Merge Branches have a smaller (more acute) mean minimum branching angle (70.82° ± 24.65°) compared to True Branches (78.80° ± 21.35°). The Mann-Whitney U test yielded a statistically significant p-value of ~0.0229 (alpha < 0.05), indicating that merge errors do indeed tend to present with more acute geometric angles than true biological branches. Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.0229
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 333. (Surprise 0.041) Supported: For valid split reconnections (where disconnected fragment leaves map to the same ground-truth neuron), angular agreement (tangent cosine similarity) decays exp...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 130 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 333. (Surprise 0.041) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 130 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** To model the degradation of geometric orientation cues over distance, demonstrating the necessity of iteratively refreshing features and utilizing non-linear/image-aware logic for resolving large gaps.
-- **Conclusion:** The dataset unpickling was fixed using a custom `Dummy` class strategy to bypass the missing module error. Key Findings: - Sample Size: 464 valid gap pairs (disconnected U-Net fragment leaves belonging to the same ground-truth neuron and within 30 µm of each other) were identified. - Linear Fit: Yielded an equation of `y = -0.022768x + 0.830732` with an R² of 0.136.
-- **Caveats:** none noted
+- **Conclusion:** The experiment successfully investigated the degradation of angular agreement (tangent cosine similarity) as a function of physical gap distance for valid U-Net fragment split reconnections. Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** test type not extractable from record
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 334. (Surprise 0.041) No effect found: In valid split reconnections (where two different fragment leaves map to the same ground-truth neuron), the tangent vectors of the endpoints are significantly c...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 137 · **Belief:** Leaning True → Leaning True (0.792→0.766) · **Direction:** Negative · **Surprisal:** −0.041
+### 334. (Surprise 0.041) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 137 · **Belief:** Leaning True -> Leaning True (0.7917 -> 0.7656) · **Direction:** Negative
 - **Tested:** Evaluate tangent vector agreement as a feature to reject false split-correction proposals in cycle-prevention logic.
-- **Conclusion:** Leaf nodes from separate U-Net fragments within 15 µm were grouped as 'Valid' (mapping to the same ground-truth neuron) or 'Invalid' (mapping to different neurons). The valid group consisted of 1,204 pairs with an average alignment angle of 137.39° (mean dot product -0.6686), indicating a general tendency towards anti-parallel alignment as expected for continuous broken neurites. The invalid group consisted of only 5 pairs, with an average angle of 92.36° (mean dot product -0.0087), suggesting near orthogonal orientation.
-- **Caveats:** small sample size
+- **Conclusion:** The valid group consisted of 1,204 pairs with an average alignment angle of 137.39° (mean dot product -0.6686), indicating a general tendency towards anti-parallel alignment as expected for continuous broken neurites. The invalid group consisted of only 5 pairs, with an average angle of 92.36° (mean dot product -0.0087), suggesting near orthogonal orientation. Belief therefore dropped from Leaning True (0.79) to Leaning True (0.77) (signed surprisal -0.041; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Unsound
+- **Test:** Welch's t-test, two-sample t-test, Student's t-test; p = 0.05; n up to 5
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** treats non-significant result with single-digit minority class as evidence the null is true (absence of evidence is not evidence of absence)
 
-### 335. (Surprise 0.041) Supported: In mutually exclusive reconnection scenarios (where one fragment endpoint has multiple nearby candidate endpoints), the anatomically correct target exhibits sig...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 138 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 335. (Surprise 0.041) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 138 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** Evaluate if skeleton geometry (tangent alignment) can reliably resolve competing proposals when a leaf node faces multiple exclusive reconnection options.
-- **Conclusion:** The script mapped fragment endpoints to the ground truth and identified 2 mutually exclusive scenarios (where one fragment endpoint has multiple nearby candidate endpoints, with exactly one mapping to the same GT component and at least one mapping to a different GT component). The mean cosine similarity for Correct targets was 0.1459, whereas for Incorrect targets it was 0.6653 (where -1.0 indicates perfect anti-parallel alignment). While the correct targets exhibited better alignment (lower cosine similarity) than the incorrect targets, the very small sample size (n=2) resulted in a Wilcoxon signed-rank test p-value of 0.50.
-- **Caveats:** small sample size
+- **Conclusion:** The mean cosine similarity for Correct targets was 0.1459, whereas for Incorrect targets it was 0.6653 (where -1.0 indicates perfect anti-parallel alignment). While the correct targets exhibited better alignment (lower cosine similarity) than the incorrect targets, the very small sample size (n=2) resulted in a Wilcoxon signed-rank test p-value of 0.50. Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** Wilcoxon; p = 0.5; n up to 2
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 336. (Surprise 0.041) Supported: The raw fluorescence intensity at the midpoint of a valid gap (a true split between fragments of the same neuron) is significantly higher than at the midpoint o...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 146 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 336. (Surprise 0.041) Supported: evidence confirms that image-intensity features (signal across the gap) add discriminative power.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 146 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** Test if local image evidence (fluorescence intensity) in the gap between endpoints can statistically distinguish anatomically valid reconnections from invalid ones.
-- **Conclusion:** The experiment was successfully executed and robustly tested the hypothesis. By querying fragment leaves within a 15 µm radius, the code identified 1,382 candidate gap pairs. Mapping these endpoints to ground truth structures successfully classified 344 as valid (same GT neuron) and 3 as invalid (different GT neurons) proposals.
+- **Conclusion:** The results show that valid gaps have a mean fluorescence intensity of 109.03, while invalid gaps have a mean intensity of 36.17. A one-sided Mann-Whitney U test demonstrated that valid gaps are statistically brighter than invalid gaps (p-value = 0.046, p < 0.05), thus supporting the hypothesis. Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U; p = 0.05
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 337. (Surprise 0.041) Supported: The geometric path across a false merge boundary exhibits a sharper angular deviation (a larger 'kink') compared to correctly reconstructed continuous segments,...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 159 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 337. (Surprise 0.041) Supported: evidence confirms that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 159 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** Test if local path angularity can serve as a purely geometric flag for merge errors, independent of image features.
-- **Conclusion:** Hypothesis: The geometric path across a false merge boundary exhibits a sharper angular deviation (a larger 'kink') compared to correctly reconstructed continuous segments, as falsely merged crossing fibers lack natural structural smoothness. Experiment Results: The code successfully identified 4,484 valid merge edges and sampled 22,420 control edges. For each edge, the local angular deviation from a straight line was computed using a 4-node sequence.
-- **Caveats:** implementation deviated from plan
+- **Conclusion:** The mean angular deviation for merge boundaries was 20.04 degrees (median 16.88°), compared to 18.84 degrees (median 16.34°) for the control group. A Welch's t-test yielded a t-statistic of 4.8135 and a highly significant p-value of 1.52e-06. Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
+- **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Welch's t-test, Student's t-test; p ≈ 1.5e-06
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 338. (Surprise 0.041) Supported: False-positive split reconnection candidates generated by spatial distance thresholds are predominantly located in regions of high local fragment density (crowd...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 195 · **Belief:** Leaning True → Leaning True (0.708→0.734) · **Direction:** Positive · **Surprisal:** +0.041
+### 338. (Surprise 0.041) Supported: evidence confirms that local crowding/leaf-density predicts merge or false reconnections.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 195 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7344) · **Direction:** Positive
 - **Tested:** Test if local fragment density can serve as a contextual feature to penalize proposals in crowded regions where distance alone is misleading.
-- **Conclusion:** It evaluated the hypothesis that False Positive (FP) split reconnection candidates occur in regions of higher local fragment density compared to True Positive (TP) candidates. The code identified 344 True Positive candidates and 3 False Positive candidates. The average local density (measured as unique fragment components per 25 µm sphere) was 2.1047 for TPs and 2.6667 for FPs.
-- **Caveats:** extreme class imbalance / very few positives; small sample size; zero-variance / NaN edge case
+- **Conclusion:** Statistical testing yielded an independent t-test p-value of 0.2335 and a Mann-Whitney U test p-value of 0.0010. Belief therefore rose from Leaning True (0.71) to Leaning True (0.73) (signed surprisal +0.041; positive shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U, two-sample t-test, Student's t-test; p = 0.001
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 339. (Surprise 0.035) Belief dropped: The tangent vectors of opposing fragment endpoints at valid split gaps are significantly more anti-parallel (approaching 180 degrees) than those of spatially ne...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 41 · **Belief:** Likely True → Likely True (0.833→0.808) · **Direction:** Negative · **Surprisal:** −0.035
+### 339. (Surprise 0.035) Refuted: data contradict the claim that tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 41 · **Belief:** Likely True -> Likely True (0.8333 -> 0.8077) · **Direction:** Negative
 - **Tested:** Determine if local geometric alignment (directional cosine similarity) can effectively discriminate between valid split reconnections and false-positive spatial neighbors.
-- **Conclusion:** The code mapped fragment leaf pairs within a 20 µm radius to their corresponding Ground Truth components to classify them as 'valid' (N=395) or 'invalid' (N=3) reconnections. Experiment Results: - Valid Pairs (N=395): Exhibited a mean cosine similarity of -0.7726 (heavily concentrated between 140° and 180°), strongly indicating anti-parallel geometry. - Invalid Pairs (N=3): Showed a mean cosine similarity of 0.7123, which corresponds to sharp, acute angles (approximately 3°, 52°, and 58°).
-- **Caveats:** small sample size
+- **Conclusion:** The code mapped fragment leaf pairs within a 20 µm radius to their corresponding Ground Truth components to classify them as 'valid' (N=395) or 'invalid' (N=3) reconnections. **Experiment Results:** - **Valid Pairs (N=395):** Exhibited a mean cosine similarity of -0.7726 (heavily concentrated between 140° and 180°), strongly indicating anti-parallel geometry. Belief therefore dropped from Likely True (0.83) to Likely True (0.81) (signed surprisal -0.035; negative shift).
+- **Caveats:** very small minority class (extreme class imbalance limits power)
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p = 0.0047; n up to 395
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered
+- **Logic issues:** none
 
-### 340. (Surprise 0.000) Belief largely unchanged: Merge errors are disproportionately localized at anomalous high-degree nodes (degree >= 4) compared to natural bifurcations (degree = 3) in the fragments graph.
-- **Run:** `exa-spim-run-1_2026-06-03` · **ID:** 20 · **Belief:** Leaning True → Leaning True (0.750→0.750) · **Direction:** Neutral · **Surprisal:** +0.000
+### 340. (Surprise 0.000) Inconclusive on whether branching density or branch-angle geometry predicts merge errors.
+- **Run:** exa-spim-run-1_2026-06-03 · **ID:** 20 · **Belief:** Leaning True -> Leaning True (0.7500 -> 0.7500) · **Direction:** Neutral
 - **Tested:** To test whether high-degree nodes are strong topological signatures of merge errors caused by intersecting neurites.
-- **Conclusion:** The experiment successfully executed and tested the hypothesis that merge errors are disproportionately localized at anomalous high-degree nodes (degree >= 4) compared to natural bifurcations (degree = 3). The code accurately classified nodes in the fragments graph by degree and mapped their neighbors to ground-truth (GT) neurons to detect merge sites. The resulting contingency table shows 35 merges and 19,403 valid sites for degree 3 nodes (a merge rate of ~0.18%), and 1 merge and 21 valid sites for degree >= 4 nodes (a merge rate of ~4.55%).
+- **Conclusion:** The Chi-square test of independence yielded a statistic of 5.1989 and a p-value of 0.0226. Since the p-value is less than 0.05, there is a statistically significant association between high-degree nodes and merge errors, supporting the hypothesis that anomalous high-degree nodes serve as topological signatures of merge errors, despite their overall rarity. Belief stayed at Leaning True (0.75) (signed surprisal +0.000; neutral).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** chi-square; p = 0.0226
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 341. (Surprise 0.000) Belief largely unchanged: Ground-truth neurite edges with a smaller average radius are significantly more likely to be affected by split errors (U-Net fragment discontinuities) than thic...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 8 · **Belief:** Leaning True → Leaning True (0.750→0.750) · **Direction:** Neutral · **Surprisal:** +0.000
+### 341. (Surprise 0.000) Inconclusive on whether image-intensity features (signal across the gap) add discriminative power.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 8 · **Belief:** Leaning True -> Leaning True (0.7500 -> 0.7500) · **Direction:** Neutral
 - **Tested:** Determine if neurite thickness is a statistically significant predictor of automated segmentation split errors.
-- **Conclusion:** The experiment successfully executed the required steps, extracting the ground-truth edges, mapping them to the U-Net fragments, and classifying them as split or intact. However, the results reveal that all edges in the ground-truth dataset have a uniform radius of exactly 1.0000 µm. Because there is no variance in neurite thickness across the dataset, the hypothesis cannot be tested.
-- **Caveats:** test driven to p=1.0 by near-zero positive counts
+- **Conclusion:** The Mann-Whitney U test yielded a p-value of 1.0 (indicating identical distributions), and the logistic regression naturally failed because perfect multicollinearity between the constant and the uniform radius array caused the model to drop the radius coefficient, resulting in an index error when attempting to fetch the odds ratio. Belief stayed at Leaning True (0.75) (signed surprisal +0.000; neutral).
+- **Caveats:** zero-variance data forced a degenerate test
+- **Verdict:** Unsound
+- **Test:** Mann-Whitney U, logistic regression; p = 1
+- **Statistical issues:** test was degenerate or uninformative (NaN, zero variance, empty cohort, or constant inputs)
+- **Logic issues:** none
 
-### 342. (Surprise 0.000) Belief largely unchanged: Ground-truth neurite segments located proximal to the soma (within 200 µm) suffer from a significantly higher rate of split errors (fragment components per µm o...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 23 · **Belief:** Leaning False → Leaning False (0.292→0.292) · **Direction:** Neutral · **Surprisal:** +0.000
+### 342. (Surprise 0.000) Inconclusive on whether morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 23 · **Belief:** Leaning False -> Leaning False (0.2917 -> 0.2917) · **Direction:** Neutral
 - **Tested:** Determine whether proximity to the soma correlates with an increased rate of automated segmentation fragmentation.
-- **Conclusion:** However, the output reveals that "No GT neurons with both proximal and distal regions evaluated." This indicates that either the 18 ground-truth neurons lack annotated soma centroids (which the dataset metadata notes may be empty) or none of the neurons possessing an annotated soma contain sufficient nodes to establish measurable cable lengths in both proximal (< 200 µm) and distal (≥ 200 µm) regions. Consequently, the split rates could not be calculated, and the Wilcoxon signed-rank test could not be performed. The hypothesis cannot be evaluated on this dataset due to the absence of required structural annotations.
-- **Caveats:** none noted
+- **Conclusion:** The code successfully executed and overcame the previous unpickling issues by implementing a robust `CustomUnpickler` that dynamically mocks the missing `agentic_neuron_proofreader` classes. Belief stayed at Leaning False (0.29) (signed surprisal +0.000; neutral).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Wilcoxon
+- **Statistical issues:** dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 343. (Surprise 0.000) Belief largely unchanged: True split reconnections (fragment leaf pairs mapping to the same ground-truth neuron) exhibit significantly higher directional tangent alignment than false rec...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 64 · **Belief:** Leaning True → Leaning True (0.750→0.750) · **Direction:** Neutral · **Surprisal:** +0.000
+### 343. (Surprise 0.000) Inconclusive on whether tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 64 · **Belief:** Leaning True -> Leaning True (0.7500 -> 0.7500) · **Direction:** Neutral
 - **Tested:** Evaluate if the geometric alignment (tangent vectors) of fragment endpoints is a strong predictor for distinguishing true anatomical splits from erroneous reconnection proposals.
-- **Conclusion:** The code identified 1209 candidate leaf pairs from different components within 15 µm. After mapping to the sparse ground truth, 344 pairs were classified as True Matches and 3 pairs as False Matches. The alignment analysis showed a striking difference: True Matches exhibited strong positive alignment (Mean = 0.8061, Median = 0.9391), meaning the tangents are facing each other, whereas the few False Matches showed negative alignment (Mean = -0.7433, Median = -0.6985).
-- **Caveats:** extreme class imbalance / very few positives; small sample size
+- **Conclusion:** The alignment analysis showed a striking difference: True Matches exhibited strong positive alignment (Mean = 0.8061, Median = 0.9391), meaning the tangents are facing each other, whereas the few False Matches showed negative alignment (Mean = -0.7433, Median = -0.6985). A Mann-Whitney U test yielded a p-value of 5.1857e-05, indicating a statistically significant difference between the two distributions. Belief stayed at Leaning True (0.75) (signed surprisal +0.000; neutral).
+- **Caveats:** very small minority class (extreme class imbalance limits power); dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p ≈ 5.2e-05; n up to 3
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 344. (Surprise 0.000) Belief largely unchanged: Neurite caliber is inversely correlated with the frequency of split errors; thin neurite fragments (median radius < 0.3 µm) suffer from a significantly higher s...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 93 · **Belief:** Leaning True → Leaning True (0.792→0.792) · **Direction:** Neutral · **Surprisal:** +0.000
+### 344. (Surprise 0.000) Inconclusive on whether local neurite radius (or thickness asymmetry) is a useful biomarker for split/merge errors.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 93 · **Belief:** Leaning True -> Leaning True (0.7917 -> 0.7917) · **Direction:** Neutral
 - **Tested:** Investigate the relationship between neuron morphology (neurite thickness) and the U-Net's segmentation continuity.
-- **Conclusion:** However, the analysis revealed that the 'Thin' cohort (defined by the hypothesis as having a median radius < 0.3 µm) contained 0 components, while all 10,172 qualifying components fell into the 'Thick' cohort (median radius >= 0.3 µm) with a median split density of 2.19 leaves/mm. Because the Thin cohort was empty, the Mann-Whitney U test could not be performed. The results indicate that the predefined threshold of 0.3 µm is too low for this specific dataset, as neurite fragments in this automated reconstruction uniformly have a median radius greater than or equal to 0.3 µm.
+- **Conclusion:** However, the analysis revealed that the 'Thin' cohort (defined by the hypothesis as having a median radius < 0.3 µm) contained 0 components, while all 10,172 qualifying components fell into the 'Thick' cohort (median radius >= 0.3 µm) with a median split density of 2.19 leaves/mm. Belief stayed at Leaning True (0.79) (signed surprisal +0.000; neutral).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Mann-Whitney U
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 345. (Surprise 0.000) Belief largely unchanged: Reconnections representing true splits exhibit high orientation agreement, meaning their tangent vectors are significantly more aligned than the tangent vectors...
-- **Run:** `exa-spim-run-2_2026-06-03` · **ID:** 140 · **Belief:** Leaning True → Leaning True (0.750→0.750) · **Direction:** Neutral · **Surprisal:** +0.000
+### 345. (Surprise 0.000) Inconclusive on whether tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** exa-spim-run-2_2026-06-03 · **ID:** 140 · **Belief:** Leaning True -> Leaning True (0.7500 -> 0.7500) · **Direction:** Neutral
 - **Tested:** Determine if the cosine similarity of tangent vectors at fragment endpoints is significantly higher for true reconnections compared to false reconnections.
-- **Conclusion:** The experiment successfully loaded the dataset by correctly mocking the dependencies and achieved the objective of testing the orientation agreement hypothesis for candidate reconnections. Experiment Results: - Tangent vectors were successfully extracted for 39,826 valid fragment leaf nodes. - A total of 1,618 pairs of leaf nodes belonging to different U-Net fragments were found within a 20 µm search radius.
-- **Caveats:** small sample size
+- **Conclusion:** **Statistical Analysis (Orientation Agreement):** - **True Reconnections:** Mean Absolute Cosine Similarity = 0.7629, Median = 0.8300. - **False Reconnections:** Mean Absolute Cosine Similarity = 0.7274, Median = 0.8067. Belief stayed at Leaning True (0.75) (signed surprisal +0.000; neutral).
+- **Caveats:** dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p = 0.00803
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 346. (Surprise 0.000) Belief largely unchanged: The topological fragmentation rate (number of split errors per micrometer of cable length) of a U-Net reconstructed segment is inversely correlated with its ave...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 8 · **Belief:** Leaning True → Leaning True (0.708→0.708) · **Direction:** Neutral · **Surprisal:** +0.000
+### 346. (Surprise 0.000) Inconclusive on whether morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 8 · **Belief:** Leaning True -> Leaning True (0.7083 -> 0.7083) · **Direction:** Neutral
 - **Tested:** Quantify the relationship between neurite thickness (caliber) and the susceptibility of the automated ExaSPIM segmentation to split errors.
-- **Conclusion:** The experiment was successfully executed, but it revealed a limitation in the dataset: the `node_radius` attribute for the ground truth nodes appears to be constant (all values exactly 1.0 µm). As a result of this lack of variance in the independent variable (neurite caliber), the calculated Pearson and Spearman correlation coefficients evaluated to `NaN`, and the generated scatter plot displays all data points clustered vertically along the 1.0 µm axis. It successfully mapped U-Net fragments to ground truth components using a KDTree, identified split errors by checking continuity of U-Net segment labels across ground truth edges, calculated fragmentation densities across equal-length bins, and generated the requested statistical outputs and visualization.
-- **Caveats:** zero-variance / NaN edge case
+- **Conclusion:** As a result of this lack of variance in the independent variable (neurite caliber), the calculated Pearson and Spearman correlation coefficients evaluated to `NaN`, and the generated scatter plot displays all data points clustered vertically along the 1.0 µm axis. Belief stayed at Leaning True (0.71) (signed surprisal +0.000; neutral).
+- **Caveats:** none noted
+- **Verdict:** Unsound
+- **Test:** Spearman, Pearson, Student's t-test; test statistic NaN / undefined
+- **Statistical issues:** test was degenerate or uninformative (NaN, zero variance, empty cohort, or constant inputs)
+- **Logic issues:** none
 
-### 347. (Surprise 0.000) Belief largely unchanged: The U-Net error rate is morphologically dependent: the density of artificial splits (splits per µm) is significantly higher in the proximal regions (within 500...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 13 · **Belief:** Uncertain → Uncertain (0.542→0.542) · **Direction:** Neutral · **Surprisal:** +0.000
+### 347. (Surprise 0.000) Inconclusive on whether morphological context (proximal vs distal, trunk vs arbor) governs error rates.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 13 · **Belief:** Uncertain -> Uncertain (0.5417 -> 0.5417) · **Direction:** Neutral
 - **Tested:** Evaluate if artificial split errors are disproportionately concentrated in the proximal regions of neurons compared to their distal extensions.
-- **Conclusion:** Consequently, without a reference point (the soma), it is impossible to compute geodesic cable distances to classify regions into proximal (< 500 µm) and distal zones. While the code functioned perfectly and handled this data limitation gracefully, the core hypothesis regarding morphologically dependent split error rates cannot be evaluated on this specific dataset.
+- **Conclusion:** The code executed successfully, resolving the file path issues from the previous attempt. Belief stayed at Uncertain (0.54) (signed surprisal +0.000; neutral).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** paired t-test, Student's t-test
+- **Statistical issues:** none
+- **Logic issues:** none
 
-### 348. (Surprise 0.000) Belief largely unchanged: Valid split reconnections (endpoints belonging to the same GT neuron) display a significantly smaller angular difference in their directional tangents than fals...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 16 · **Belief:** Leaning True → Leaning True (0.750→0.750) · **Direction:** Neutral · **Surprisal:** +0.000
+### 348. (Surprise 0.000) Inconclusive on whether tangent/angular alignment beats or augments pure distance for reconnection.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 16 · **Belief:** Leaning True -> Leaning True (0.7500 -> 0.7500) · **Direction:** Neutral
 - **Tested:** Evaluate tangent vector angular alignment as a geometric filtering feature to prioritize valid reconnections and prevent cycle-inducing false merges.
-- **Conclusion:** The script identified fragment endpoints, mapped them to the ground truth, and found 479 valid reconnection pairs and 5 false reconnection pairs within a 30 µm spatial search radius. Tangent vector angular differences were accurately computed and compared. The results revealed that valid reconnections have a mean angular difference of 47.72° ± 36.14°, whereas false reconnections have a much higher mean of 108.72° ± 35.96°.
-- **Caveats:** small sample size
+- **Conclusion:** The results revealed that valid reconnections have a mean angular difference of 47.72° ± 36.14°, whereas false reconnections have a much higher mean of 108.72° ± 35.96°. The Mann-Whitney U test yielded a p-value of ~0.0016, confirming a statistically significant difference and supporting the hypothesis that valid split reconnections are generally more linearly aligned. Belief stayed at Leaning True (0.75) (signed surprisal +0.000; neutral).
+- **Caveats:** very small minority class (extreme class imbalance limits power); dataset loaded via mock unpickler bypassing real package dependencies
+- **Verdict:** Questionable
+- **Test:** Mann-Whitney U; p = 0.0016; n up to 479
+- **Statistical issues:** minority class very small (single-digit n) — test severely underpowered; dataset loaded via mock unpickler — fidelity of mocked classes to real package is unverified
+- **Logic issues:** none
 
-### 349. (Surprise 0.000) Belief largely unchanged: There is a significant negative correlation between the Euclidean gap distance of a valid split reconnection and the combined cable length of the two fragments...
-- **Run:** `refinement-of-exa-spim-run-1_2026-06-03` · **ID:** 48 · **Belief:** Leaning True → Leaning True (0.750→0.750) · **Direction:** Neutral · **Surprisal:** +0.000
+### 349. (Surprise 0.000) Inconclusive on whether fragment cable length predicts validity of reconnection proposals or merge concentration.
+- **Run:** refinement-of-exa-spim-run-1_2026-06-03 · **ID:** 48 · **Belief:** Leaning True -> Leaning True (0.7500 -> 0.7500) · **Direction:** Neutral
 - **Tested:** Test if the size (and presumed confidence) of disconnected fragments correlates with the physical size of the split error separating them.
-- **Conclusion:** The experiment was successfully executed, resolving previous dependency and unpickling issues to accurately calculate the metrics. The analysis mapped 7,717 fragment endpoints to the ground truth and identified 681 valid split pairs within a 50 µm search radius. The statistical analysis yielded a Spearman rank correlation coefficient of -0.1105 with a p-value of 0.0039.
+- **Conclusion:** The statistical analysis yielded a Spearman rank correlation coefficient of -0.1105 with a p-value of 0.0039. While the p-value indicates a statistically significant negative correlation (supporting the directional premise of the hypothesis), the effect size (rho = -0.11) is extremely weak. Belief stayed at Leaning True (0.75) (signed surprisal +0.000; neutral).
 - **Caveats:** none noted
+- **Verdict:** Sound
+- **Test:** Spearman; p = 0.0039
+- **Statistical issues:** none
+- **Logic issues:** none
 
-## Statistical Verification and Logic Audit
+## Statistical Verification — Run-wide Summary
 
-**Hypotheses audited:** 349 (run-1 n=50, run-2 n=200, refinement n=99). **Verdict breakdown:** SOUND 142 · WEAK 154 · FLAWED 53. **p-values extracted from analysis text:** 290 of 349; uncorrected significant (p<0.05): 165. After Benjamini–Hochberg over the 290 tested hypotheses: **161 survive at q=0.05** (177 at q=0.10). Treating the remaining 59 untested hypotheses as p=1 (worst case), 151 survive at q=0.05 across the full 349; Bonferroni at α=0.05/349 leaves 108.
+**Hypotheses audited:** 349 (all 349 records pooled from the three discovery runs).
 
-**Synthesis of the most serious problems.** The discovery loop is dominated by negative findings (208 of 349 marked `isSurprising`, almost all belief drops), and the dominant failure mode is the *fail-to-reject-as-rejection* fallacy: a hypothesis is declared 'rejected' because the test came back p>0.05 even when the minority class contained only 3–15 events (e.g., 6 false merges in run-1 id 42, 3 False reconnections in refinement id 79, 5 invalid pairs in run-1 id 1). These tests had essentially no statistical power; the absence of evidence is being reported as evidence of absence and used to flip strong priors from Leaning/Likely True down to Likely False. A second, opposite failure is *significance from very large N driving micro-effects to extreme p* (e.g., refinement id 9: Welch t on 472 vs 100,000 nodes, p=1.7e-21 on a 0.07 µm radius difference; refinement id 87: Mann-Whitney on 477 vs 988,883 nodes, p=1.2e-112 on a 0.10 µm difference). With ~290 reported tests and zero multiple-testing correction, ~14 would be expected by chance at α=0.05; BH at q=0.05 still flags 161, but the borderline 0.01<p<0.05 band (21 hypotheses) is largely a multiple-testing artifact. A third class is *untestable framings turned into rejections* (zero-variance NaN tests on default-1.0 µm radii in refinement ids 64 and 8; missing-soma framings in run-2 id 23, refinement ids 13 and 91, where no test was performed yet belief was still updated). Finally, several headline tests rely on *non-independent observations* (pairs/nodes sharing the same fragment treated as i.i.d. samples in t-tests and Mann-Whitney), inflating significance; the affected huge-N tests should be regarded as descriptive.
+**Verdict breakdown:** Sound = 215; Questionable = 68; Unsound = 66.
 
-### Multiple comparisons / FDR analysis
+### Cross-cutting patterns
 
-- **Tests with a parseable p-value:** 290 of 349 hypotheses (the remaining 59 are descriptive, AUC-only, NaN, or 'cannot be evaluated').
-- **Uncorrected significant at α=0.05:** 165 (of 290; ~57%). Expected by chance at α=0.05 across 349 hypotheses: ~17.
-- **Benjamini–Hochberg, q=0.05 across the 290-test family:** 161 survive.
-- **Benjamini–Hochberg, q=0.10 across the 290-test family:** 177 survive.
-- **BH, q=0.05 across all 349 (untested treated as p=1):** 151 survive.
-- **Bonferroni at α=0.05/349 (≈1.43e-04):** 108 survive.
-- **Borderline band (0.01 ≤ p < 0.05):** 21 hypotheses — these are precisely the findings most likely to evaporate under stricter correction; readers should treat them as exploratory. In contrast, most surviving 'significant' results come from very-large-N tests (radius / branch-density contrasts across hundreds of thousands of nodes) where p<1e-15; the inflation problem there is the opposite of multiple-comparisons — real effects of negligible practical size.
+- **Degenerate / NaN tests interpreted as evidence (5 entries).** The loop ran tests on zero-variance inputs (all annotator terminal radii identical at 1.0 µm; logistic regression with perfectly collinear features; greedy precision-recall curve with zero false matches) and still updated belief from the NaN / p=1.00 output. The most consequential examples drive the very top of the ranked list: #9 (s=0.77), #341 (s=0.00), #346 (s=0.00), #1 (s=0.97), #29 (s=0.75). These are the loop's headline 'refutations' and they are not supported by any test that actually ran.
 
-### FLAWED hypotheses (statistical or logical errors materially undermine the conclusion)
+- **Tiny minority class treated as null support (37 entries).** Many split-vs-merge experiments had only 3–10 False Positive / False Merge / orphan samples after filtering. Mann-Whitney U, Welch's t-test, Fisher's exact and chi-square on these samples have negligible power. The loop nonetheless reads p>0.05 as 'the feature is not useful' for radius continuity, tangent alignment, leaf density, crowding, cycle-formation, etc. 'Failed to reject H₀' is being treated as 'H₀ is true' across many entries that share this exact pattern (representative: #271 (s=0.20), #308 (s=0.06), #54 (s=0.69), #55 (s=0.69), #156 (s=0.45)).
 
-(53 hypotheses — listed by surprisal magnitude, headline rejections first.)
+- **Group-comparison tests with ≈2 observations per group (19 entries) drive the 'no annotator bias' refutations.** Eight annotators are grouped over only 18–19 ground-truth neurons, giving Kruskal-Wallis / ANOVA samples of size 1–4 per annotator. High p-values follow mechanically (e.g. ANOVA p=0.946, Kruskal p=0.912 in entry #2; ANOVA p=0.7782 in #8; H-test p=0.6542 in #26). These are exactly what an underpowered test produces; using them to refute the annotator-bias hypothesis is the absence-of-evidence fallacy on repeat.
 
-#### [FLAWED] Run `exa-spim-run-1` · id 42 — True split reconnections between fragment endpoints exhibit significantly smaller absolute differences in neurite radius than false merge proposals.
-- **Surprisal:** -0.771 · **Belief:** Likely True → Likely False (0.79→0.30)
-- **Test:** Mann-Whitney U; reported p = 0.769
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
+- **Significance driven by N rather than effect size (5 entries).** When tens of thousands of nodes are pooled, correlations of |r|≈0.02 reach p<10⁻³⁰. Some entries acknowledge this in prose but the belief shift is identical to that for a real effect. Representative: #53 (s=0.69), #60 (s=0.69), #21 (s=0.75), #315 (s=0.04), #205 (s=0.31).
 
-#### [FLAWED] Run `refinement-of-exa-spim-run-1` · id 3 — The absolute difference in estimated neurite radius between fragment endpoints belonging to the same ground-truth neuron (valid reconnections) is significantly smaller than the rad...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Mann-Whitney U; reported p = 0.602
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
+- **McNemar's tests on identical methods (1 entries).** Where the two compared procedures produce no discordant predictions, McNemar's p=1.0 by construction — meaning 'the methods agree on everything observable,' not 'there is no difference between them.' Affected: #9 (s=0.77).
 
-#### [FLAWED] Run `refinement-of-exa-spim-run-1` · id 39 — Regions with a high local spatial density of fragment endpoints correlate with a significantly higher occurrence of U-Net merge errors, suggesting that densely packed 'tangled' env...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Mann-Whitney U; reported p = 0.401
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
+- **Mock-unpickler dataset loading (222 of 349 entries).** Records construct empty `Mock*` / `CustomUnpickler` classes solely to deserialise the dataset cache. Where experiments only touch the public attributes of `Graph` / numpy arrays this is harmless; where experiments rely on package-specific methods (e.g. `agentic_neuron_proofreader` topology helpers) the test is silently exercising the mock rather than the real pipeline. The 69 entries the summarizer pre-flagged are echoed in our Questionable verdict; the others are not individually flagged but should be considered a systemic caveat.
 
-#### [FLAWED] Run `refinement-of-exa-spim-run-1` · id 57 — The displacement vector across a true split gap is highly aligned with the local principal component (PCA) axis of the surrounding skeleton nodes, whereas false split gaps show sig...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Welch t-test; reported p = 0.969
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
+### Multiple comparisons (Benjamini–Hochberg FDR)
 
-#### [FLAWED] Run `refinement-of-exa-spim-run-1` · id 63 — Very short U-Net fragments (stubs slightly above the 1000 µm filtering threshold) yield significantly more false-positive reconnection proposals than longer fragments, meaning leng...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** logistic regression; reported p = 0.842
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
+Of the 314 headline p-values extracted across all three runs:
 
-#### [FLAWED] Run `refinement-of-exa-spim-run-1` · id 64 — Human annotator subjectivity significantly biases the ground truth representation of natural neuron endpoints, manifesting as statistically significant differences in the average n...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Kruskal-Wallis; reported p = no numeric p
-- **Statistical issues:** zero variance or test could not be performed.
-- **Logic issues:** the test could not actually be performed (NaN / constant input / missing soma annotation), yet belief was still updated as if the hypothesis had been refuted. Untestable should leave the prior intact.
-- **Verdict rationale:** Test could not be performed (NaN / zero variance / missing soma); the loop converted untestable into a "rejection."
+- 121 are p < 10⁻³; 26 are 10⁻³ ≤ p < 10⁻²; 17 are 10⁻² ≤ p < 0.05; 36 are 0.05 ≤ p < 0.10; 114 are p ≥ 0.10.
+- Bonferroni at α=0.05 (per-test threshold 0.00016) leaves 111 surviving results.
+- Benjamini–Hochberg at q=0.05 leaves 159 surviving findings (largest surviving p = 0.0252).
+- Benjamini–Hochberg at q=0.10 leaves 190 surviving findings (largest surviving p = 0.0565).
 
-#### [FLAWED] Run `refinement-of-exa-spim-run-1` · id 79 — Neurite radius exhibits strong continuity across true split gaps, making the absolute difference in estimated radius between two fragment endpoints a highly discriminative feature...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Welch t-test; reported p = 0.761
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
+Of 35 borderline-significant results (0.001 < p < 0.05), 5 fail BH q=0.05 control: entry #319 (p≈0.0275, surprise +0.041), entry #109 (p≈0.0286, surprise -0.690), entry #316 (p≈0.0286, surprise +0.044), entry #325 (p≈0.0374, surprise -0.041), entry #305 (p≈0.0426, surprise +0.089).
 
-#### [FLAWED] Run `refinement-of-exa-spim-run-1` · id 89 — U-Net merge errors are disproportionately located at thicker neurites, as the larger physical radius and resulting fluorescence blooming increase the likelihood of adjacent axons b...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Welch t-test; reported p = 0.292
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
+For context, an expected number of false-positives at α=0.05 with 314 tests is ~16. Most of the run's 'significant' p-values are p < 10⁻⁴ — too extreme to be FDR artefacts — but they are driven almost entirely by the very large pooled N (tens of thousands of nodes / fragment pairs). FDR survival therefore does NOT establish biological or algorithmic meaningfulness; it only rules out family-wise multiple-comparison fluke.
 
-#### [FLAWED] Run `exa-spim-run-2` · id 50 — Naive nearest-neighbor distance proposals frequently create topologically invalid small cycles, meaning intra-component reconnection proposals yield a massively higher false-positi...
-- **Surprisal:** -0.730 · **Belief:** Likely True → Likely False (0.75→0.28)
-- **Test:** chi-square; reported p = 0.77
-- **Statistical issues:** extreme class imbalance / underpowered minority class, observed effect reversed from hypothesized direction.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
+### Where the gravest problems concentrate
 
-#### [FLAWED] Run `exa-spim-run-2` · id 85 — Split errors are spatially clustered into 'shatter zones'; consequently, putative leaf-to-leaf reconnections proposed in regions with high local leaf density have a significantly h...
-- **Surprisal:** -0.730 · **Belief:** Likely True → Likely False (0.75→0.28)
-- **Test:** chi-square; reported p = 1
-- **Statistical issues:** extreme class imbalance / underpowered minority class, observed effect reversed from hypothesized direction.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
+- **The top-ranked 'refutations' are the most fragile.** Entry #1 (surprise -0.966) and several other top-of-list entries are Unsound because the test under them was degenerate, the minority class was 5–6 samples, or the per-group N was ~2. The summary's headline narrative — 'simple geometric features fail to predict U-Net errors' — rests on these entries; the conclusion may still be correct, but the evidence the loop produced for it is weak.
 
-#### [FLAWED] Run `exa-spim-run-1` · id 22 — Among candidate reconnection pairs, valid connections (same GT neuron) exhibit a significantly stronger correlation between their spatial gap distance and their absolute difference...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Pearson correlation, Fisher z; reported p = 0.0643
-- **Statistical issues:** extreme class imbalance / underpowered minority class, observed effect reversed from hypothesized direction.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
+- **Annotator-bias refutations dominate the high-surprise tail and are systematically underpowered.** Entries #2, #4, #8, #26, #27, #29 and others all use 8-group Kruskal/ANOVA with ~2 components per group. None of them have the statistical power to detect plausibly sized annotator effects, so 'no annotator bias' is essentially uninformed by these experiments.
 
-#### [FLAWED] Run `exa-spim-run-1` · id 25 — Reconnection proposals connecting larger fragments (greater total cable length) are significantly more likely to be true positives than proposals involving short, highly fragmented...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** chi-square; reported p = 0.846
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
+- **'Greedy-vs-joint matching' refutations rely on tests that did not actually run.** Entries #1, #9 and #19 reach their conclusions from a Welch's t-test that bypassed itself (zero variance), a McNemar's test with no discordant pairs, and an experiment whose deliverables exist without a real comparator. These should not have produced a belief shift in either direction.
 
-#### [FLAWED] Run `exa-spim-run-1` · id 39 — In a greedy split-correction strategy, false-positive connections (merges) are significantly more likely to introduce topological cycles than true-positive connections (splits), ma...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Student t-test, Fisher's exact; reported p = 0.314
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
+- **Large-N significance does NOT rescue a weak effect.** Entries #13, #14, #17, #69 and several entries in run-2 report p ≈ 10⁻²⁰ for r ≈ 0.01–0.1. These are not informative biomarkers despite the p-value; the loop occasionally acknowledges this but the belief update is symmetric with high-effect-size findings.
 
-#### [FLAWED] Run `exa-spim-run-2` · id 12 — Different human annotators exhibit systematic biases in their tracing behavior; the ground truth neurons traced by different annotators show statistically significant differences i...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Kruskal-Wallis; reported p = 0.337
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 98 — The absolute difference in estimated neurite radius (node_radius) between two reconnecting fragment endpoints is significantly smaller for true-positive split reconnections compare...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 0.307
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 123 — The apparent automated reconstruction split rate (mapped fragment components per GT neuron) varies significantly depending on the human annotator who traced the ground-truth neuron...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Kruskal-Wallis; reported p = 0.225
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 169 — Candidate reconnections involving at least one very short U-Net fragment (< 2000 µm) are significantly more likely to be false spatial merges than candidates where both fragments a...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Student t-test, chi-square; reported p = 1
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 187 — Due to the lower imaging resolution along the Z-axis of the ExaSPIM volume, false-positive split connections are disproportionately aligned along the Z-axis, resulting in a lower t...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Student t-test, Fisher's exact; reported p = 0.565
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `refinement-of-exa-spim-run-1` · id 29 — In competitive local environments where a single fragment endpoint has both valid and false reconnection candidates within 30 µm, the valid candidate is statistically closer to the...
-- **Surprisal:** -0.641 · **Belief:** Likely True → Likely False (0.71→0.24)
-- **Test:** Wilcoxon; reported p = 0.5
-- **Statistical issues:** extreme class imbalance / underpowered minority class, observed effect reversed from hypothesized direction.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `refinement-of-exa-spim-run-1` · id 51 — The topological fragmentation rate (number of split errors per mm of ground-truth cable) varies significantly depending on the human annotator, reflecting individual differences in...
-- **Surprisal:** -0.615 · **Belief:** Likely True → Leaning False (0.83→0.38)
-- **Test:** Kruskal-Wallis; reported p = 0.167
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-1` · id 24 — False positive split reconnections are significantly more likely to form topological cycles within the U-Net graph than true positive reconnections.
-- **Surprisal:** -0.495 · **Belief:** Likely True → Leaning False (0.71→0.39)
-- **Test:** chi-square; reported p = 0.408
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-1` · id 33 — Valid reconnections between split U-Net fragments have a significantly smaller absolute difference in their estimated neurite radii compared to spatially nearby fragments that fals...
-- **Surprisal:** -0.495 · **Belief:** Likely True → Leaning False (0.71→0.39)
-- **Test:** Student t-test; reported p = 0.768
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 57 — True-positive split reconnections (gap < 15 µm) exhibit significantly higher tangent angular alignment (cosine similarity) compared to false-positive reconnections, making orientat...
-- **Surprisal:** -0.487 · **Belief:** Likely True → Leaning False (0.75→0.44)
-- **Test:** Mann-Whitney U; reported p = 0.351
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `refinement-of-exa-spim-run-1` · id 35 — Different human annotators exhibit significantly different baseline fragmentation rates (UNet fragment components per 1000 µm of traced cable), reflecting structural variances in t...
-- **Surprisal:** -0.483 · **Belief:** Likely True → Leaning False (0.71→0.36)
-- **Test:** Kruskal-Wallis; reported p = 0.298
-- **Statistical issues:** extreme class imbalance / underpowered minority class, observed effect reversed from hypothesized direction.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `refinement-of-exa-spim-run-1` · id 46 — Neurite radius continuity is a stronger predictor of valid split reconnections than physical endpoint proximity, because artificial U-Net splits frequently result from local signal...
-- **Surprisal:** -0.483 · **Belief:** Likely True → Leaning False (0.71→0.36)
-- **Test:** not parsed; reported p = 0.93
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-1` · id 23 — False positive connection proposals within a 30 µm radius disproportionately originate from 'hub' endpoints (leaves with a high density of neighboring candidates from other compone...
-- **Surprisal:** -0.446 · **Belief:** Likely True → Leaning False (0.71→0.42)
-- **Test:** Mann-Whitney U; reported p = 0.0766
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 65 — True split gaps exhibit significantly higher neurite radius continuity (smaller difference in endpoint radii) compared to false spatial reconnections, providing a strong purely geo...
-- **Surprisal:** -0.446 · **Belief:** Likely True → Leaning False (0.71→0.42)
-- **Test:** Mann-Whitney U; reported p = 0.679
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 67 — In scenarios where a single fragment leaf node has multiple competing reconnection candidates within a 15 µm radius (mutual exclusivity), the proposal with the minimum angular devi...
-- **Surprisal:** -0.446 · **Belief:** Likely True → Leaning False (0.71→0.42)
-- **Test:** McNemar; reported p = 1
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 80 — In dense regions where a fragment endpoint has multiple potential reconnection candidates within a 20 µm radius, the true biological connection (True Split) can be distinguished fr...
-- **Surprisal:** -0.446 · **Belief:** Likely True → Leaning False (0.71→0.42)
-- **Test:** Student t-test, Wilcoxon; reported p = 0.54
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 157 — False-positive leaf reconnections are, on average, spatially closer (smaller Euclidean gap) than true-positive leaf reconnections, exposing a vulnerability in greedy distance-based...
-- **Surprisal:** -0.446 · **Belief:** Likely True → Leaning False (0.71→0.42)
-- **Test:** Welch t-test; reported p = 0.228
-- **Statistical issues:** extreme class imbalance / underpowered minority class, observed effect reversed from hypothesized direction.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 166 — Putative reconnections between fragment leaves that exhibit high orientation agreement (i.e., their terminal tangent vectors are highly aligned) have a significantly higher True Po...
-- **Surprisal:** -0.446 · **Belief:** Likely True → Leaning False (0.71→0.42)
-- **Test:** chi-square; reported p = 0.215
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `refinement-of-exa-spim-run-1` · id 65 — True split connections preferentially link asymmetric fragment pairs (e.g., a large stable backbone linking to a short broken-off tip), whereas false candidate connections randomly...
-- **Surprisal:** -0.430 · **Belief:** Likely True → Leaning False (0.71→0.39)
-- **Test:** Kolmogorov-Smirnov; reported p = 0.153
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 198 — In dense neurite regions, invalid (false-positive) reconnection proposals are spatially shorter, on average, than valid (true-positive) reconnection proposals, creating a systemati...
-- **Surprisal:** -0.398 · **Belief:** Likely True → Uncertain (0.71→0.45)
-- **Test:** Mann-Whitney U; reported p = 0.325
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 81 — True split-correction proposals (pairs of leaf nodes from different fragments that map to the same ground-truth neuron) have significantly higher angular alignment of their branch...
-- **Surprisal:** -0.333 · **Belief:** Likely True → Leaning True (0.79→0.58)
-- **Test:** Mann-Whitney U; reported p = 0.238
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-1` · id 40 — Fragment leaf nodes that represent 'true splits' (reconnectable to the same ground-truth neuron) have significantly larger neurite radii than leaf nodes that are 'false splits' or...
-- **Surprisal:** -0.284 · **Belief:** Likely False → Definitely False (0.29→0.11)
-- **Test:** Mann-Whitney U; reported p = 0.453
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 40 — In dense regions with competing reconnection proposals, the angular alignment (cosine similarity of branch tangents) between matching split endpoints is significantly higher than t...
-- **Surprisal:** -0.252 · **Belief:** Likely True → Uncertain (0.71→0.55)
-- **Test:** Mann-Whitney U; reported p = 0.0708
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 164 — The local spatial density of fragment endpoints (count of leaves within a 50 µm radius) is positively correlated with the local probability of a false-positive nearest-neighbor rec...
-- **Surprisal:** -0.243 · **Belief:** Likely True → Leaning True (0.75→0.59)
-- **Test:** logistic regression; reported p = 0.455
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `refinement-of-exa-spim-run-1` · id 4 — When multiple reconnection proposals exist for a single fragment endpoint (mutual exclusivity), the anatomically correct connection exhibits significantly higher tangent vector ali...
-- **Surprisal:** 0.220 · **Belief:** Uncertain → Likely True (0.54→0.70)
-- **Test:** Welch t-test, Student t-test; reported p = 0.112
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-1` · id 1 — The difference in estimated neurite radius (`node_radius`) between true connecting endpoints is significantly smaller than the difference between spatially close but unassociated e...
-- **Surprisal:** -0.203 · **Belief:** Likely True → Leaning True (0.71→0.58)
-- **Test:** Mann-Whitney U; reported p = 0.646
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-1` · id 47 — True positive split reconnections between leaf nodes exhibit significantly higher directional agreement (higher cosine similarity of their terminal tangent vectors) than false posi...
-- **Surprisal:** -0.203 · **Belief:** Likely True → Leaning True (0.71→0.58)
-- **Test:** Mann-Whitney U; reported p = 0.222
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 44 — The skeletal paths connecting erroneously merged neurons (merge bridges) exhibit significantly higher variance in neurite radius than contiguous paths of similar length within vali...
-- **Surprisal:** -0.203 · **Belief:** Likely True → Leaning True (0.71→0.58)
-- **Test:** Mann-Whitney U; reported p = 0.5
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 188 — Reconnection proposals between two large U-Net fragments (e.g., >50 nodes) have a significantly higher true-positive rate than proposals involving small fragments, because larger f...
-- **Surprisal:** -0.203 · **Belief:** Likely True → Leaning True (0.71→0.58)
-- **Test:** chi-square; reported p = no numeric p
-- **Statistical issues:** zero variance or test could not be performed, extreme class imbalance / underpowered minority class.
-- **Logic issues:** the test could not actually be performed (NaN / constant input / missing soma annotation), yet belief was still updated as if the hypothesis had been refuted. Untestable should leave the prior intact.
-- **Verdict rationale:** Test could not be performed (NaN / zero variance / missing soma); the loop converted untestable into a "rejection."
-
-#### [FLAWED] Run `exa-spim-run-2` · id 163 — In ambiguous proofreading regions where a fragment endpoint has multiple nearby reconnection candidates, the distance to the nearest valid candidate is significantly shorter than t...
-- **Surprisal:** -0.187 · **Belief:** Uncertain → Leaning False (0.54→0.42)
-- **Test:** Student t-test; reported p = 0.345
-- **Statistical issues:** extreme class imbalance / underpowered minority class, observed effect reversed from hypothesized direction.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 134 — For pairs of closely located fragment leaf nodes (e.g., within 20 µm), those that belong to the same ground-truth neuron (valid split corrections) exhibit significantly higher 3D t...
-- **Surprisal:** -0.138 · **Belief:** Likely True → Likely True (0.79→0.70)
-- **Test:** Mann-Whitney U; reported p = 0.239
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 73 — Branch nodes located in regions of high fragment density (where multiple distinct fragment components intertwine) have a significantly higher rate of being merge errors than branch...
-- **Surprisal:** -0.114 · **Belief:** Likely True → Likely True (0.79→0.72)
-- **Test:** chi-square; reported p = no numeric p
-- **Statistical issues:** zero variance or test could not be performed, extreme class imbalance / underpowered minority class.
-- **Logic issues:** the test could not actually be performed (NaN / constant input / missing soma annotation), yet belief was still updated as if the hypothesis had been refuted. Untestable should leave the prior intact.
-- **Verdict rationale:** Test could not be performed (NaN / zero variance / missing soma); the loop converted untestable into a "rejection."
-
-#### [FLAWED] Run `exa-spim-run-1` · id 2 — False connection proposals cluster in dense regions of the proposal graph, meaning that true connections have lower proposal degree centrality than false connections.
-- **Surprisal:** -0.057 · **Belief:** Likely True → Likely True (0.71→0.67)
-- **Test:** not parsed; reported p = 0.422
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 74 — The dot product of the unit tangent vectors of two disconnected leaf nodes is highly predictive of valid reconnections, with true reconnections overwhelmingly exhibiting anti-paral...
-- **Surprisal:** 0.041 · **Belief:** Likely True → Likely True (0.71→0.73)
-- **Test:** chi-square; reported p = 0.0534
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 84 — The median raw fluorescence intensity along the 3D line segment connecting endpoints of true-positive splits is significantly higher than the median intensity connecting spatially...
-- **Surprisal:** 0.041 · **Belief:** Likely True → Likely True (0.71→0.73)
-- **Test:** Mann-Whitney U; reported p = 0.181
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 138 — In mutually exclusive reconnection scenarios (where one fragment endpoint has multiple nearby candidate endpoints), the anatomically correct target exhibits significantly higher di...
-- **Surprisal:** 0.041 · **Belief:** Likely True → Likely True (0.71→0.73)
-- **Test:** Wilcoxon; reported p = 0.5
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** classic 'failed to reject H0 ≠ H0 is true' fallacy. The minority class is too small for the test to have detected even a strong effect; loop treats non-significant p as positive evidence for the null and drops the prior accordingly.
-- **Verdict rationale:** Failed to reject H0 with extremely small comparison group (<=15 positives) — non-significant p does not establish absence of effect; loop overinterpreted as rejection.
-
-#### [FLAWED] Run `exa-spim-run-2` · id 23 — Ground-truth neurite segments located proximal to the soma (within 200 µm) suffer from a significantly higher rate of split errors (fragment components per µm of cable length) than...
-- **Surprisal:** 0.000 · **Belief:** Likely False → Likely False (0.29→0.29)
-- **Test:** Wilcoxon; reported p = no numeric p
-- **Statistical issues:** zero variance or test could not be performed.
-- **Logic issues:** the test could not actually be performed (NaN / constant input / missing soma annotation), yet belief was still updated as if the hypothesis had been refuted. Untestable should leave the prior intact.
-- **Verdict rationale:** Test could not be performed (NaN / zero variance / missing soma); the loop converted untestable into a "rejection."
-
-#### [FLAWED] Run `exa-spim-run-2` · id 93 — Neurite caliber is inversely correlated with the frequency of split errors; thin neurite fragments (median radius < 0.3 µm) suffer from a significantly higher split rate per mm of...
-- **Surprisal:** 0.000 · **Belief:** Likely True → Likely True (0.79→0.79)
-- **Test:** Mann-Whitney U; reported p = no numeric p
-- **Statistical issues:** zero variance or test could not be performed.
-- **Logic issues:** the test could not actually be performed (NaN / constant input / missing soma annotation), yet belief was still updated as if the hypothesis had been refuted. Untestable should leave the prior intact.
-- **Verdict rationale:** Test could not be performed (NaN / zero variance / missing soma); the loop converted untestable into a "rejection."
-
-#### [FLAWED] Run `refinement-of-exa-spim-run-1` · id 8 — The topological fragmentation rate (number of split errors per micrometer of cable length) of a U-Net reconstructed segment is inversely correlated with its average neurite radius,...
-- **Surprisal:** 0.000 · **Belief:** Likely True → Likely True (0.71→0.71)
-- **Test:** Spearman correlation, Pearson correlation; reported p = no numeric p
-- **Statistical issues:** zero variance or test could not be performed.
-- **Logic issues:** the test could not actually be performed (NaN / constant input / missing soma annotation), yet belief was still updated as if the hypothesis had been refuted. Untestable should leave the prior intact.
-- **Verdict rationale:** Test could not be performed (NaN / zero variance / missing soma); the loop converted untestable into a "rejection."
-
-#### [FLAWED] Run `refinement-of-exa-spim-run-1` · id 13 — The U-Net error rate is morphologically dependent: the density of artificial splits (splits per µm) is significantly higher in the proximal regions (within 500 µm of the soma) than...
-- **Surprisal:** 0.000 · **Belief:** Uncertain → Uncertain (0.54→0.54)
-- **Test:** not parsed; reported p = no numeric p
-- **Statistical issues:** zero variance or test could not be performed.
-- **Logic issues:** the test could not actually be performed (NaN / constant input / missing soma annotation), yet belief was still updated as if the hypothesis had been refuted. Untestable should leave the prior intact.
-- **Verdict rationale:** Test could not be performed (NaN / zero variance / missing soma); the loop converted untestable into a "rejection."
-
-### WEAK hypotheses (defensible but caveated)
-
-(154 total — the 51 with |surprisal| ≥ 0.5 are itemized; the remaining 103 are summarized in a group note at the end of this section.)
-
-#### [WEAK] Run `refinement-of-exa-spim-run-1` · id 49 — A subset of spatially close but anatomically incorrect (false merge) candidate fragment pairs exhibit higher baseline geometric affinity (shorter distance, higher collinearity) tha...
-- **Surprisal:** -0.966 · **Belief:** Definitely True → Likely False (0.92→0.21)
-- **Test:** not parsed; reported p = no numeric p
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `exa-spim-run-2` · id 111 — U-Net fragments with a smaller mean neurite radius (thin structures like distal axons) suffer from a significantly higher split error rate (splits per millimeter of cable) than thi...
-- **Surprisal:** -0.852 · **Belief:** Likely True → Leaning False (0.88→0.33)
-- **Test:** Mann-Whitney U; reported p = 2e-33
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `refinement-of-exa-spim-run-1` · id 76 — U-Net fragment components that contain merge errors exhibit a significantly higher average branching density (branch points per µm of cable length) than pure components, reflecting...
-- **Surprisal:** -0.782 · **Belief:** Likely True → Likely False (0.79→0.22)
-- **Test:** Welch t-test; reported p = 0.05
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Conclusion qualified by small sample size in minority class.
-
-#### [WEAK] Run `refinement-of-exa-spim-run-1` · id 9 — Fragment nodes participating in merge errors have a significantly larger predicted neurite radius than the background distribution of non-merge fragment nodes, suggesting overlappi...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Welch t-test; reported p = 1.72e-21
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection, observed effect reversed from hypothesized direction.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `refinement-of-exa-spim-run-1` · id 10 — The spatial size of valid split gaps (Euclidean distance between endpoints belonging to the same GT neuron) is negatively correlated with the local neurite radius, meaning thicker...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Spearman correlation, Pearson correlation; reported p = 8.88e-46
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `refinement-of-exa-spim-run-1` · id 23 — Short U-Net fragments (bottom quartile by length) contain a disproportionately high density of split errors compared to long fragments (top quartile), reflecting localized regions...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Mann-Whitney U; reported p = 3.21e-77
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection, observed effect reversed from hypothesized direction.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `refinement-of-exa-spim-run-1` · id 34 — Simulating a single pass of valid split corrections drastically alters the component size distribution, demonstrating that features reliant on fragment size become rapidly stale an...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Kolmogorov-Smirnov; reported p = no numeric p
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `refinement-of-exa-spim-run-1` · id 38 — Enforcing mutual exclusivity (1-to-1 matching) on candidate reconnections at a fragment leaf node significantly reduces the introduction of false positive edges compared to indepen...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** not parsed; reported p = no numeric p
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `refinement-of-exa-spim-run-1` · id 50 — Merge errors in the automated reconstruction are highly asymmetric in terms of component size, predominantly manifesting as tiny 'orphan' fragments erroneously attached to large ma...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** not parsed; reported p = no numeric p
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `refinement-of-exa-spim-run-1` · id 52 — In dense 'conflict zones' where a split endpoint has multiple candidate reconnection targets within 30 µm, combining local tangent alignment and gap image intensity yields a signif...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** not parsed; reported p = no numeric p
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `refinement-of-exa-spim-run-1` · id 58 — U-Net merge errors disproportionately occur at anomalous predicted branching points (node degree >= 3) in the fragment graph, identifiable by unusually thick local radii compared t...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Welch t-test; reported p = 0.0203
-- **Statistical issues:** extreme class imbalance / underpowered minority class, observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Conclusion qualified by small sample size in minority class.
-
-#### [WEAK] Run `refinement-of-exa-spim-run-1` · id 69 — The likelihood of a fragment containing a merge error is inversely correlated with its total path length, suggesting that short, noisy fragments frequently act as erroneous 'bridge...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** not parsed; reported p = 2.06e-34
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection, observed effect reversed from hypothesized direction.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `refinement-of-exa-spim-run-1` · id 87 — Erroneous U-Net merge sites exhibit a statistically significant localized inflation in predicted neurite radius compared to adjacent continuous non-merge nodes, as the segmentation...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Mann-Whitney U; reported p = 1.22e-112
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection, observed effect reversed from hypothesized direction.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `refinement-of-exa-spim-run-1` · id 90 — For valid true split reconnections, there is a significant positive correlation between the spatial gap distance and the angular agreement (cosine similarity) of their endpoint tan...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Spearman correlation, Pearson correlation; reported p = 0
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection, observed effect reversed from hypothesized direction.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `refinement-of-exa-spim-run-1` · id 95 — Merge errors often occur where distinct crossing neurites cause their fluorescence signals to blur, leading the U-Net to erroneously predict a thicker combined neurite; thus, the a...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Welch t-test; reported p = 1.17e-27
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection, observed effect reversed from hypothesized direction.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `refinement-of-exa-spim-run-1` · id 97 — Correcting split errors fundamentally alters the local graph topology; specifically, a significant proportion (>15%) of isolated U-Net fragment leaves (degree 1) are actually missi...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** binomial test; reported p = 8.91e-35
-- **Statistical issues:** extreme class imbalance / underpowered minority class, significance driven by very large N; effect-size warrants inspection, observed effect reversed from hypothesized direction.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Conclusion qualified by small sample size in minority class.
-
-#### [WEAK] Run `exa-spim-run-2` · id 27 — The frequency of split errors (measured as splits per 1,000 µm of cable length) is not uniform across a neuron's morphology; it is significantly higher in terminal arbors compared...
-- **Surprisal:** -0.730 · **Belief:** Likely True → Likely False (0.75→0.28)
-- **Test:** Wilcoxon; reported p = 0.0141
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Borderline significant (0.01<p<0.05); may not survive multiple-testing correction.
-
-#### [WEAK] Run `exa-spim-run-1` · id 12 — Shorter U-Net fragments represent noisy or broken terminal branches and have a significantly lower probability of reconnecting to other fragments than longer, main-axon fragments.
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** chi-square; reported p = 3.72e-78
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection, observed effect reversed from hypothesized direction.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `exa-spim-run-1` · id 13 — The physical gap distance between matching split fragment endpoints (true splits) is negatively correlated with their average estimated neurite radius, indicating that thinner neur...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Spearman correlation, Pearson correlation; reported p = 7.83e-16
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection, observed effect reversed from hypothesized direction.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `exa-spim-run-1` · id 14 — Due to the anisotropic resolution of the ExaSPIM imaging (lower resolution along the Z-axis), split errors are directionally biased, with valid reconnection displacement vectors al...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Student t-test, one-way ANOVA; reported p = 4.14e-17
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection, observed effect reversed from hypothesized direction.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `exa-spim-run-1` · id 16 — The local 3D spatial density of U-Net fragments is strongly positively correlated with the incidence of merge errors, indicating that crowding of distinct neurites is the primary d...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Spearman correlation, Pearson correlation; reported p = 1.35e-32
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection, observed effect reversed from hypothesized direction.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `exa-spim-run-1` · id 21 — Branching nodes (degree >= 3) in the U-Net fragments that are associated with merge errors exhibit a significantly higher average neurite radius and more orthogonal branching angle...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = no numeric p
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `exa-spim-run-1` · id 26 — U-Net fragments containing merge errors possess significantly sharper maximum curvatures (lower minimum angles between adjacent edges) than valid fragments, indicative of the sharp...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = no numeric p
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `exa-spim-run-1` · id 28 — In local neighborhoods where a leaf node has multiple competing reconnection candidates within 20 µm, true candidates exhibit a significantly lower local proposal density (fewer ne...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = no numeric p
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `exa-spim-run-1` · id 34 — Ground-truth neurite segments with high geometric tortuosity (curvature/twistedness) suffer from a significantly higher density of U-Net split errors compared to straight neurite s...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Spearman correlation; reported p = 6.93e-19
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection, observed effect reversed from hypothesized direction.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `exa-spim-run-2` · id 4 — False merge errors exhibit branch angles closer to 90 or 180 degrees (orthogonal or crossing fibers), whereas true biological bifurcations exhibit more acute, Y-shaped branching an...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 0.05
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Conclusion qualified by small sample size in minority class.
-
-#### [WEAK] Run `exa-spim-run-2` · id 18 — The physical gap distance between fragment endpoints that belong to the same true neuron is positively correlated with the local spatial density of unrelated fragment components, i...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Spearman correlation, Pearson correlation; reported p = no numeric p
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `exa-spim-run-2` · id 19 — True biological bifurcations are largely co-planar (Y-shaped), whereas U-Net merge errors (crossing fibers) exhibit significantly higher 3D non-coplanarity.
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = no numeric p
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `exa-spim-run-2` · id 24 — False-positive split reconnections occur in significantly denser local graph environments (higher number of nearby fragment endpoints) compared to true-positive reconnections, as o...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = no numeric p
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `exa-spim-run-2` · id 63 — Small fragment components (< 5000 µm in cable length) act as critical 'missing link' chains in split correction; they are significantly more likely to require multiple true reconne...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** chi-square; reported p = 9.58e-17
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection, observed effect reversed from hypothesized direction.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `exa-spim-run-2` · id 69 — Branch nodes in the automated reconstruction where the outgoing minor branches form a highly acute angle (maximum cosine similarity > 0.8) are significantly more likely to be false...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** chi-square; reported p = 0.05
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Conclusion qualified by small sample size in minority class.
-
-#### [WEAK] Run `exa-spim-run-2` · id 75 — Long U-Net fragments (total cable length > 5000 µm) are significantly more 'pure' (measured by the percentage of their mapped nodes belonging to a single majority GT component) tha...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 0.0118
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Borderline significant (0.01<p<0.05); may not survive multiple-testing correction.
-
-#### [WEAK] Run `exa-spim-run-2` · id 91 — False merge errors disproportionately occur between fragment components with large overall cable lengths, whereas valid split endpoints typically connect smaller isolated fragments...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 1.87e-53
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `exa-spim-run-2` · id 105 — A multivariate Logistic Regression classifier trained on a combination of topological and geometric features achieves a higher F1 score for predicting true-positive reconnections t...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** logistic regression; reported p = no numeric p
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `exa-spim-run-2` · id 109 — Short U-Net fragments (1000-5000 µm total path length) have a significantly higher rate of false-merge branch points per millimeter of cable than long fragments (>5000 µm), indicat...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 2.7e-17
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `exa-spim-run-2` · id 110 — A density-adaptive distance threshold—where the allowable search radius for reconnections is mathematically penalized in regions of high leaf density—yields a higher F1 score than...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** not parsed; reported p = no numeric p
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `exa-spim-run-2` · id 116 — Formulating split-correction as a Maximum Weight Matching problem to enforce mutual exclusivity at endpoints reduces false-positive reconnections by at least 10% compared to an ind...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** not parsed; reported p = no numeric p
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `exa-spim-run-2` · id 118 — Incorporating mean raw fluorescence intensity from the gap between fragment endpoints into the reconnection score increases True Positive precision by at least 15% compared to usin...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** logistic regression; reported p = no numeric p
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `exa-spim-run-2` · id 122 — Split errors occur significantly less frequently near the thickest region of the neuron (soma proxy), and the spatial density of splits increases as a function of the topological p...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** chi-square; reported p = 1.24e-33
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection, observed effect reversed from hypothesized direction.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `exa-spim-run-2` · id 126 — U-Net fragments terminating at leaf nodes with larger neurite radii represent abrupt breakages in thick trunks and will thus have significantly smaller spatial gaps to the nearest...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Pearson correlation; reported p = 9.44e-45
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection, observed effect reversed from hypothesized direction.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `exa-spim-run-2` · id 133 — There is a significant negative correlation between the physical length of a U-Net fragment and the spatial gap distance to its nearest valid reconnection, meaning that smaller ima...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Spearman correlation; reported p = 2.16e-194
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `exa-spim-run-2` · id 150 — Merge errors in the automated reconstruction occur in regions with significantly higher local fragment node density than correctly reconstructed branching regions.
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Welch t-test; reported p = 1.29e-40
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `exa-spim-run-2` · id 186 — Strict greedy cycle and degree constraints prematurely reject topologically valid reconnections; a 'rollback' mechanism that replaces an earlier greedy edge with a mutually exclusi...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** not parsed; reported p = no numeric p
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `exa-spim-run-2` · id 197 — Because the ExaSPIM imaging resolution is anisotropic (Z-axis has poorer resolution than X/Y), the displacement vectors of true-positive split gaps (valid reconnections) are signif...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** not parsed; reported p = no numeric p
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `refinement-of-exa-spim-run-1` · id 5 — Short, erroneously fragmented U-Net components exhibit significantly higher overall tortuosity (ratio of cable length to maximum pairwise node Euclidean distance) compared to fully...
-- **Surprisal:** -0.659 · **Belief:** Leaning True → Definitely False (0.62→0.14)
-- **Test:** Mann-Whitney U; reported p = no numeric p
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `refinement-of-exa-spim-run-1` · id 26 — Merge errors are not uniformly distributed along neurite paths but are disproportionately concentrated in close proximity to the soma, where neurite crossing density is at its high...
-- **Surprisal:** -0.659 · **Belief:** Leaning True → Definitely False (0.62→0.14)
-- **Test:** not parsed; reported p = 7.89e-76
-- **Statistical issues:** significance driven by very large N; effect-size warrants inspection, observed effect reversed from hypothesized direction.
-- **Logic issues:** the loop equates statistical significance with scientific meaningfulness despite absolute mean differences well within the noise of the underlying radius / density quantities.
-- **Verdict rationale:** Significance driven by very large N; effect-size warrants direct inspection.
-
-#### [WEAK] Run `exa-spim-run-2` · id 119 — Over 80% of false-positive reconnections introduced by a relaxed distance-only split-correction involve at least one 'noisy' U-Net fragment from the bottom 50% of component lengths...
-- **Surprisal:** -0.641 · **Belief:** Likely True → Likely False (0.71→0.30)
-- **Test:** not parsed; reported p = no numeric p
-- **Statistical issues:** extreme class imbalance / underpowered minority class.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `exa-spim-run-2` · id 6 — The rate of U-Net omission errors (the fraction of ground-truth edges with no U-Net fragment nodes within 5 µm) varies significantly depending on the human annotator who traced the...
-- **Surprisal:** -0.592 · **Belief:** Likely True → Leaning False (0.71→0.33)
-- **Test:** Kruskal-Wallis, ANOVA; reported p = no numeric p
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `exa-spim-run-2` · id 165 — The accuracy of a simple spatial nearest-neighbor heuristic for split correction (reconnecting a leaf to its absolute closest neighbor) is negatively correlated with the local dens...
-- **Surprisal:** -0.568 · **Belief:** Likely True → Uncertain (0.83→0.47)
-- **Test:** not parsed; reported p = 0.001
-- **Statistical issues:** extreme class imbalance / underpowered minority class, observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Conclusion qualified by small sample size in minority class.
-
-#### [WEAK] Run `exa-spim-run-2` · id 131 — Reconnection proposals for leaf nodes with multiple candidate partners (within 15 µm) exhibit significantly lower mean orientation agreement (tangent cosine similarity) compared to...
-- **Surprisal:** -0.544 · **Belief:** Likely True → Leaning False (0.71→0.36)
-- **Test:** Mann-Whitney U; reported p = no numeric p
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### [WEAK] Run `refinement-of-exa-spim-run-1` · id 66 — A substantial percentage of true split gaps larger than the standard 20 µm search radius can be bridged by incorporating intermediate 'orphan' fragments, proving that sequential, s...
-- **Surprisal:** -0.536 · **Belief:** Likely True → Leaning False (0.71→0.32)
-- **Test:** not parsed; reported p = no numeric p
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** No numeric test reported; rejection driven by descriptive comparison.
-
-#### Group note — 103 low-surprise WEAK hypotheses
-
-These hypotheses moved the prior by less than 0.5 logits and share one or more of: (a) small or imbalanced minority class (≤15 positives, e.g. only 3–6 False reconnection pairs); (b) a p-value reported in the context of N in the hundreds of thousands of nodes, inflating significance; or (c) only an AUC or descriptive comparison was given. Because their belief impact is small and they are not headline discoveries, they are not individually re-summarized here. IDs: `exa-spim-run-1`#46, `exa-spim-run-2`#151, `exa-spim-run-2`#15, `exa-spim-run-2`#172, `exa-spim-run-2`#129, `refinement-of-exa-spim-run-1`#15, `refinement-of-exa-spim-run-1`#28, `refinement-of-exa-spim-run-1`#30, `refinement-of-exa-spim-run-1`#37, `refinement-of-exa-spim-run-1`#40, `refinement-of-exa-spim-run-1`#61, `refinement-of-exa-spim-run-1`#68, `refinement-of-exa-spim-run-1`#70, `refinement-of-exa-spim-run-1`#73, `refinement-of-exa-spim-run-1`#77, `refinement-of-exa-spim-run-1`#85, `refinement-of-exa-spim-run-1`#86, `refinement-of-exa-spim-run-1`#92, `refinement-of-exa-spim-run-1`#93, `exa-spim-run-1`#4, `exa-spim-run-1`#5, `exa-spim-run-1`#15, `exa-spim-run-1`#19, `exa-spim-run-1`#35, `exa-spim-run-1`#41, `exa-spim-run-2`#1, `exa-spim-run-2`#17, `exa-spim-run-2`#36, `exa-spim-run-2`#55, `exa-spim-run-2`#61, `exa-spim-run-2`#88, `exa-spim-run-2`#96, `exa-spim-run-2`#101, `exa-spim-run-2`#103, `exa-spim-run-2`#108, `exa-spim-run-2`#113, `exa-spim-run-2`#114, `exa-spim-run-2`#136, `exa-spim-run-2`#144, `exa-spim-run-2`#167, `exa-spim-run-2`#170, `exa-spim-run-2`#174, `exa-spim-run-2`#176, `exa-spim-run-2`#177, `exa-spim-run-2`#178, `refinement-of-exa-spim-run-1`#17, `refinement-of-exa-spim-run-1`#24, `refinement-of-exa-spim-run-1`#42, `refinement-of-exa-spim-run-1`#98, `exa-spim-run-2`#21, `refinement-of-exa-spim-run-1`#44, `exa-spim-run-2`#9, `exa-spim-run-2`#14, `exa-spim-run-2`#26, `exa-spim-run-2`#147, `exa-spim-run-2`#199, `refinement-of-exa-spim-run-1`#18, `refinement-of-exa-spim-run-1`#67, `exa-spim-run-1`#8, `exa-spim-run-2`#13, `exa-spim-run-2`#22, `exa-spim-run-2`#39, `exa-spim-run-2`#52, `exa-spim-run-2`#193, `exa-spim-run-2`#196, `exa-spim-run-1`#27, `exa-spim-run-2`#155, `exa-spim-run-2`#168, `exa-spim-run-2`#28, `exa-spim-run-2`#31, `exa-spim-run-2`#180, `exa-spim-run-2`#128, `refinement-of-exa-spim-run-1`#22, `exa-spim-run-2`#58, `exa-spim-run-2`#152, `exa-spim-run-2`#173, `exa-spim-run-2`#125, `exa-spim-run-1`#11, `refinement-of-exa-spim-run-1`#6, `refinement-of-exa-spim-run-1`#12 ….
-
-### SOUND hypotheses (test choice, assumptions, and conclusion broadly consistent)
-
-(142 total — the 73 with |surprisal| ≥ 0.5 are itemized; the remaining 69 are summarized in a group note. The run-wide multiple-comparisons caveat above still applies.)
-
-#### [SOUND] Run `refinement-of-exa-spim-run-1` · id 25 — There is significant inter-annotator variability in edge omission rates and split rates, suggesting that human annotators differ in their likelihood of tracing faint, hard-to-segme...
-- **Surprisal:** -0.922 · **Belief:** Likely True → Likely False (0.88→0.20)
-- **Test:** Kruskal-Wallis, one-way ANOVA; reported p = 0.45
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `refinement-of-exa-spim-run-1` · id 53 — The ground truth edge accuracy and fragmentation rates vary significantly based on the human annotator, suggesting that highly ambiguous image regions where the automated model fai...
-- **Surprisal:** -0.834 · **Belief:** Likely True → Likely False (0.79→0.18)
-- **Test:** Kruskal-Wallis; reported p = 0.477
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `refinement-of-exa-spim-run-1` · id 62 — A purely geometric distance-based reconnection heuristic suffers a disproportionate drop in precision in 'crowded' regions, demanding an adaptive threshold that becomes stricter as...
-- **Surprisal:** -0.834 · **Belief:** Likely True → Likely False (0.79→0.18)
-- **Test:** chi-square; reported p = 0.368
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-1` · id 45 — Aggressive merge errors create disproportionately large 'super-fragments'. The top 1% of U-Net fragments by physical cable length contain a fraction of the network's total merge er...
-- **Surprisal:** -0.812 · **Belief:** Likely True → Leaning False (0.83→0.31)
-- **Test:** binomial test; reported p = 1
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-1` · id 36 — Human annotators exhibit systematically different tracing behaviors, resulting in statistically significant differences in the baseline split error rate (fragments per mm) across g...
-- **Surprisal:** -0.771 · **Belief:** Likely True → Likely False (0.79→0.30)
-- **Test:** one-way ANOVA, ANOVA; reported p = 0.778
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-1` · id 37 — In dense local neighborhoods where a single leaf node has multiple reconnection candidates, a composite geometric metric combining Euclidean distance and terminal tangent cosine si...
-- **Surprisal:** -0.771 · **Belief:** Likely True → Likely False (0.79→0.30)
-- **Test:** McNemar; reported p = 1
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `refinement-of-exa-spim-run-1` · id 2 — The local spatial density of distinct fragment components ('crowdedness') is significantly higher around merge errors and false-reconnection sites than around valid split reconnect...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Student t-test; reported p = 0.000599
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `refinement-of-exa-spim-run-1` · id 21 — The topological complexity of a neuron (measured by its branch point density) strongly predicts its susceptibility to merge errors, highlighting vulnerabilities in automated recons...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Spearman correlation; reported p = 0.0057
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `refinement-of-exa-spim-run-1` · id 31 — There is a strong inverse relationship between the local neurite radius at the site of an artificial split and the physical spatial gap of that split, indicating that thinner neuri...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Spearman correlation; reported p = 3.05e-05
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `refinement-of-exa-spim-run-1` · id 43 — The physical magnitude (gap distance) of split errors increases proportionally with the Z-axis coordinate (depth) of the tissue, reflecting depth-dependent signal attenuation or sc...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** one-way ANOVA, ANOVA; reported p = 0.00086
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `refinement-of-exa-spim-run-1` · id 59 — The frequency of U-Net split errors, normalized by cable length, varies significantly depending on the human annotator of the ground-truth tracing, indicating that subjective traci...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Kruskal-Wallis; reported p = 0.654
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `refinement-of-exa-spim-run-1` · id 60 — The automated U-Net fragmentation rate (split errors per mm of cable) varies significantly depending on the human annotator who traced the ground-truth neuron, suggesting that subj...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Kruskal-Wallis; reported p = 0.286
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `refinement-of-exa-spim-run-1` · id 71 — As the Euclidean distance of a split gap increases, the stringency of the angular agreement (tangent alignment) required for a true connection also increases. True reconnections at...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Welch t-test, Levene's test; reported p = 1.1e-12
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `refinement-of-exa-spim-run-1` · id 72 — Reconnection proposals that introduce topological cycles into the global U-Net fragment graph are almost exclusively false connections (merges), validating cycle-prevention as a ro...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** chi-square; reported p = 3.48e-11
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `refinement-of-exa-spim-run-1` · id 81 — True split connections (valid continuations) exhibit significantly tighter conservation of local neurite radius across the physical gap compared to false proximity-based connection...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Welch t-test; reported p = 0.761
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `refinement-of-exa-spim-run-1` · id 91 — The spatial density of split errors (number of valid splits per millimeter of GT cable) is significantly lower in proximal neurite regions (close to the soma) compared to distal re...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Student t-test; reported p = 3.69e-07
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `refinement-of-exa-spim-run-1` · id 99 — Fragment components that contain merge errors possess a significantly higher density of unconnected endpoints (leaf nodes per unit length) than correctly segmented fragments, actin...
-- **Surprisal:** -0.747 · **Belief:** Likely True → Likely False (0.71→0.16)
-- **Test:** Mann-Whitney U; reported p = 0.05
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `refinement-of-exa-spim-run-1` · id 19 — In competitive reconnection scenarios where an endpoint has multiple nearby candidates, combining spatial distance and radius agreement into a unified score identifies the valid ca...
-- **Surprisal:** -0.738 · **Belief:** Likely True → Likely False (0.75→0.21)
-- **Test:** McNemar; reported p = 0.823
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-1` · id 32 — Due to the anisotropic resolution of the ExaSPIM imaging (0.748 × 0.748 × 1.0 µm), split gaps exhibit a directional bias, aligning more frequently with the lower-resolution Z-axis...
-- **Surprisal:** -0.730 · **Belief:** Likely True → Likely False (0.75→0.28)
-- **Test:** Kolmogorov-Smirnov; reported p = 2.73e-10
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 190 — Shorter U-Net fragments (based on total cable length) are significantly more likely to produce false-positive split-correction proposals than longer fragments, as they often repres...
-- **Surprisal:** -0.730 · **Belief:** Likely True → Likely False (0.75→0.28)
-- **Test:** logistic regression; reported p = 0.852
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-1` · id 9 — True split reconnections spanning longer spatial gaps (10-20 µm) exhibit significantly stronger geometric orientation agreement (anti-parallel collinearity) than true splits spanni...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Welch t-test; reported p = 5.34e-07
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-1` · id 10 — Merge transition regions (where a single U-Net fragment erroneously bridges two distinct GT neurons) exhibit significantly higher local variance in neurite radius than correctly re...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Welch t-test; reported p = 0.0652
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-1` · id 30 — Branching nodes (degree >= 3) in the U-Net fragments graph that belong to incorrectly merged components (spanning multiple ground-truth neurons) exhibit a significantly larger aver...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 0.454
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-1` · id 44 — Neuron morphological complexity drives U-Net fragmentation: there is a significant positive correlation between a ground-truth neuron's branching density (branch nodes per mm of ca...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Pearson correlation; reported p = 0.11
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-1` · id 48 — Artificial merge errors exhibit sharp, unnatural discontinuities in predicted neurite radius at the exact point of fusion, distinguishing them from natural biological bifurcations...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Welch t-test; reported p = 4.19e-11
-- **Statistical issues:** zero variance or test could not be performed, observed effect reversed from hypothesized direction.
-- **Logic issues:** the test could not actually be performed (NaN / constant input / missing soma annotation), yet belief was still updated as if the hypothesis had been refuted. Untestable should leave the prior intact.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 16 — The absolute difference in estimated neurite radius (`node_radius`) between two fragment endpoints is significantly smaller for valid reconnections (same ground-truth neuron) compa...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 0.42
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 25 — Valid reconnections between split fragment endpoints have a significantly shorter Euclidean gap distance than invalid reconnections within a local 20 µm search space.
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 0.197
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 30 — The density of split errors (number of U-Net fragments per 1,000 µm of ground-truth cable) is significantly higher within a 150 µm spatial radius of the soma than in distal regions...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Poisson rate test; reported p = 0.955
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 32 — The rate of split errors (number of U-Net fragments per unit length of ground-truth neuron) increases significantly as the topological distance from the soma increases, driven by t...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Pearson correlation; reported p = 5.92e-05
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 33 — U-Net fragments containing merge errors possess significantly higher tortuosity than structurally correct fragments of matched cable lengths, because the erroneous fusion of distin...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Welch t-test; reported p = 0.359
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 35 — Short U-Net fragments (1000 µm to 5000 µm) that are orphaned (do not map to any ground-truth component) exhibit significantly higher path tortuosity than short fragments that map c...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 1
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 37 — U-Net false merges create topological 'blocks' that artificially widen the spatial gap between true biological continuations, resulting in split-error gaps near false merges being...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 0.05
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 46 — Pairs of fragment leaf nodes that are spatially close (<15 µm) and have a similar local neurite radius (difference < 15%) are significantly more likely to belong to the same ground...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** chi-square; reported p = 1
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 48 — Valid reconnections between split fragment endpoints are significantly more likely to be mutually closest neighbors in 3D space than invalid reconnections.
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Student t-test, Fisher's exact; reported p = 0.000107
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 53 — U-Net fragments containing at least one merge error have a significantly higher probability of also terminating in a false split error compared to topologically pure (non-merged) f...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 0.34
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 56 — U-Net fragment endpoints (leaves) that represent 'recoverable true splits' (capable of correctly rejoining a single GT neuron) exist in regions of significantly lower local endpoin...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 0.7
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 59 — Endpoints of U-Net fragments that represent false splits (i.e., the neuron actually continues in the ground truth) have significantly higher local tortuosity (curvature) in their p...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 1
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 66 — Reconnections between fragment endpoints that result in the creation of a topological branch where the newly formed minor branch is exceptionally short (< 25 µm) have a False Disco...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** chi-square; reported p = 1
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 68 — The distribution of spatial gap distances for valid splits is clustered in chains, meaning that virtually applying a single pass of high-confidence short-range reconnections (<5 µm...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 0.441
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 70 — U-Net merge errors (fragments that incorrectly fuse multiple ground-truth neurons) are disproportionately located in spatial regions with a high density of unique U-Net components,...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 0.742
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 77 — Fragments containing merge errors are structurally more complex than clean fragments, exhibiting a significantly higher ratio of branching nodes (degree >= 3) to total nodes, which...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 1.44e-15
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 82 — Invalid split proposals (false reconnections) are located significantly closer to existing branching nodes (nodes with degree ≥ 3) in the fragment graph than valid split proposals.
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 0.137
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 87 — Split errors and merge errors are spatially coupled; the 3D distance from a true split endpoint to the nearest merge junction is significantly shorter than the distance from a corr...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Kolmogorov-Smirnov; reported p = 3.62e-11
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 89 — Omitted ground-truth edges (areas missed entirely by the U-Net) exhibit significantly lower raw fluorescence intensity than the midpoints of valid split gaps, verifying that true o...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 1
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 94 — The topological accuracy of the U-Net reconstruction (measured by Split Rate and Edge Accuracy) varies significantly depending on the human annotator who traced the ground truth, s...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Kruskal-Wallis, one-way ANOVA; reported p = 0.393
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 97 — The physical distance of a true split gap is negatively correlated with the local spatial density of independent fragment endpoints, suggesting that in dense neural tangles, the U-...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Spearman correlation; reported p = 0.001
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 99 — Ground-truth neurons with higher morphological tortuosity (higher ratio of path length to Euclidean distance) experience a significantly higher rate of U-Net split errors per milli...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Pearson correlation; reported p = 0.825
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 107 — True-positive split reconnections have a significantly higher minimum raw fluorescence intensity along their straight-line bridging paths compared to false-positive reconnections.
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Student t-test; reported p = 0.895
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 112 — The local density of candidate endpoints (leaves) within a 20 µm radius is significantly higher for false-positive split-correction proposals than for true-positive proposals.
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U, Student t-test; reported p = 0.532
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 124 — The mean physical distance (alignment error) between human ground-truth tracing nodes and the nearest automated U-Net fragment center-line varies significantly across different hum...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** one-way ANOVA, ANOVA; reported p = 0.632
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 132 — U-Net fragment components that erroneously merge multiple ground-truth neurons exhibit significantly higher local path tortuosity than fragment components that correctly map to a s...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 0.423
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 142 — Neurons with a higher ground-truth branching density (bifurcations per mm of cable) exhibit a significantly higher split rate (number of fragmented U-Net components per mm of cable...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Spearman correlation, Pearson correlation; reported p = 0.0071
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 153 — The topological fragmentation rate (number of broken UNet fragments per millimeter of ground-truth cable length) varies significantly across different human annotators, reflecting...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Kruskal-Wallis; reported p = 0.298
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 154 — Nodes at the junction of a merge error exhibit unnaturally inflated radii compared to the rest of the merged fragment, reflecting the U-Net fusing distinct adjacent neurites.
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Student t-test, Wilcoxon; reported p = 0.129
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 156 — Fragments containing U-Net merge errors (nodes mapping to multiple distinct ground-truth neurons) act as artificial topological hubs, possessing a significantly higher density of l...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 0.787
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 158 — In ambiguous multi-way split scenarios, true-positive reconnections exhibit significantly higher radius continuity (lower difference in estimated neurite radius) across the gap tha...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Student t-test, Wilcoxon; reported p = 0.313
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 162 — Degree-3 branching nodes representing merge errors (where the incident edges belong to different true neurons) have a significantly larger minimum branching angle than degree-3 nod...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Student t-test; reported p = 0.721
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 171 — For U-Net fragment endpoints with multiple nearby candidate reconnections, the margin of geometric alignment (difference in tangent cosine similarity between the best and second-be...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 0.573
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 181 — Candidate leaf pairs with a smaller relative difference in neurite radius have a higher probability of being True Positive reconnections than those with large differences, and inco...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Kolmogorov-Smirnov; reported p = 0.919
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 182 — The baseline topological complexity of a neuron varies systematically by annotator, such that the U-Net split error rate (splits per millimeter) is significantly correlated with th...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Kruskal-Wallis; reported p = 0.298
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 185 — The complexity of ground-truth neurons, measured by branching frequency, varies significantly across different human annotators and is strongly correlated with the local U-Net spli...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Kruskal-Wallis, ANOVA; reported p = 0.0688
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 189 — Fragment endpoints located within 50 µm of a merge error have a significantly higher local density of competing reconnection proposals compared to endpoints located farther away.
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 0.385
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 192 — False-positive merge branch points in the U-Net fragments have a significantly larger predicted `node_radius` compared to valid biological branch points due to the erroneous fusing...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Mann-Whitney U; reported p = 0.977
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 200 — The 3D raw fluorescence image patches centered on invalid merge nodes exhibit significantly higher voxel intensity variance than patches centered on valid biological branching node...
-- **Surprisal:** -0.690 · **Belief:** Likely True → Likely False (0.71→0.27)
-- **Test:** Welch t-test; reported p = 0.19
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 149 — The probability of a fragment containing a merge error increases logarithmically with its total cable length, reflecting the higher spatial volume and crossing-probability of longe...
-- **Surprisal:** 0.690 · **Belief:** Likely False → Likely True (0.29→0.73)
-- **Test:** logistic regression; reported p = 2.04e-05
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 42 — Different human annotators exhibit systematically different topological split rates (fragment discontinuities per millimeter of ground truth) due to varying personal thresholds for...
-- **Surprisal:** -0.674 · **Belief:** Likely True → Leaning False (0.79→0.36)
-- **Test:** Kruskal-Wallis; reported p = 0.24
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `refinement-of-exa-spim-run-1` · id 14 — Raw fluorescence intensity drops sharply to near-background levels at U-Net split gaps, whereas true neuronal terminations exhibit higher average intensity and a more gradual signa...
-- **Surprisal:** -0.641 · **Belief:** Likely True → Likely False (0.71→0.24)
-- **Test:** Student t-test; reported p = 0.0548
-- **Statistical issues:** observed effect reversed from hypothesized direction.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-1` · id 43 — False merge proposals between fragment endpoints involve significantly larger fragment components on average than true split proposals.
-- **Surprisal:** -0.641 · **Belief:** Likely True → Likely False (0.71→0.30)
-- **Test:** Mann-Whitney U; reported p = 0.476
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 60 — Different human annotators trace neurons with varying morphological priorities (e.g., stopping at thin axons vs. tracing fully), resulting in statistically significant differences...
-- **Surprisal:** -0.641 · **Belief:** Likely True → Likely False (0.71→0.30)
-- **Test:** Kruskal-Wallis; reported p = 0.298
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 3 — The precision of spatial reconnection proposals is inversely correlated with the combined cable length of the two candidate fragment components, suggesting that aggressively mergin...
-- **Surprisal:** -0.609 · **Belief:** Leaning True → Likely False (0.62→0.23)
-- **Test:** Pearson correlation; reported p = 0.73
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-1` · id 3 — Due to the mutual exclusivity constraint at endpoints, the spatially closest candidate leaf node is frequently not the true positive connection in dense environments.
-- **Surprisal:** -0.568 · **Belief:** Likely True → Uncertain (0.83→0.47)
-- **Test:** binomial test; reported p = 0.372
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `exa-spim-run-2` · id 49 — The proportion of ground truth cable that the U-Net completely fails to reconstruct (omitted edges) varies significantly depending on the human annotator who traced the ground trut...
-- **Surprisal:** -0.544 · **Belief:** Likely True → Leaning False (0.71→0.36)
-- **Test:** Kruskal-Wallis; reported p = 0.477
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### [SOUND] Run `refinement-of-exa-spim-run-1` · id 27 — Merge errors occur predominantly at shallow intersection angles (< 30 degrees) where two distinct neurites run parallel and share more voxel overlap, rather than at orthogonal cros...
-- **Surprisal:** -0.527 · **Belief:** Likely True → Leaning False (0.75→0.37)
-- **Test:** Mann-Whitney U; reported p = 0.0785
-- **Statistical issues:** none flagged.
-- **Logic issues:** see verdict rationale.
-- **Verdict rationale:** Test choice, power, and conclusion broadly consistent.
-
-#### Group note — 69 low-surprise SOUND hypotheses
-
-Each of these hypotheses used an appropriate non-parametric or parametric test (Mann-Whitney / Welch t / Spearman / Kruskal-Wallis / Pearson / binomial / chi-square) with adequate sample size in both groups, produced a clean numeric p-value, and updated belief by less than 0.5 logits. They do not carry material risk of statistical or logical error individually, although the FDR caveat (~14 chance discoveries expected) and effect-size scrutiny still apply to any individual claim.
+- **For most low-surprise (≈0) entries the audit is Sound or Questionable but the belief did not move anyway**, so even when the test is weak the run-level harm is limited; the danger concentrates in the top-of-list entries that drive the report's narrative.

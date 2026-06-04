@@ -86,10 +86,12 @@ STEPS: list[dict[str, str]] = [
             "experiment). Check test choice, assumptions, power, effect size, "
             "p-value interpretation, the 'failed-to-reject != null-is-true' "
             "fallacy, conclusion overreach, and a run-wide multiple-comparisons "
-            "(FDR) analysis. Read autodiscovery/all-runs.summary.md, preserve "
-            "the ranked discovery summary, and append or replace a section "
-            "named 'Statistical Verification and Logic Audit' in that same "
-            "file. Report the path and the most serious problems found."
+            "(FDR) analysis. Read autodiscovery/all-runs.summary.md and fold the "
+            "audit INTO each hypothesis's existing ranked entry (append Verdict / "
+            "Test / Statistical issues / Logic issues bullets in place, keeping "
+            "the summary bullets), plus one run-wide 'Statistical Verification — "
+            "Run-wide Summary' section at the end. Report the path and the most "
+            "serious problems found."
         ),
     },
     # --- Add later steps here, e.g.: ---
