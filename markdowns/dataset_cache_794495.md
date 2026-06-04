@@ -175,6 +175,51 @@ dist, nearest_gt_node = gt_graph.kdtree.query(fragments_graph.node_xyz[leaves[0]
   GT components are named `N0XX-794495-<initials>` where the trailing initials
   denote the human annotator.
 
+**Identifying errors from the two graphs.** Errors are defined by comparing the
+GT skeleton against the predicted **segment labels** — *not* against
+fragment/component identity. The unit of comparison is the raw U-Net
+**segment id** (`node_segment_id`): one segment can be skeletonized into several
+fragment components (the SWC id is `"<segment>.<copy>"`), so two GT nodes
+landing on different *components* of the *same* segment are **not** a split.
+Always classify by segment id, not by connected component.
+
+Canonically, each GT node's predicted label is read from the dense segmentation
+mask at that node's voxel. The cache does **not** include that mask, so with
+only the two graphs the available proxy is: label a GT node by the **segment id
+of its nearest fragment node**. The procedure:
+
+1. **Label each GT node.** For every node in `gt_graph`, query
+   `fragments_graph.kdtree.query(gt.node_xyz[node])` for the nearest fragment
+   node. If the distance is within a tolerance (the reference implementation
+   matches within ~a few µm), assign that GT node the fragment's **segment id**
+   (`fragments_graph.node_segment_id(nearest)`); otherwise the GT node is
+   *unlabeled* (label `0`). Every GT node now carries a predicted segment id —
+   or none.
+
+2. **Walk each GT edge** `(i, j)` and classify it from the two endpoint labels:
+   - **Omit edge** — *both* endpoints are unlabeled (`0`): the reconstruction
+     missed this stretch of neuron entirely.
+   - **Split edge** — both endpoints are labeled but the **segment ids** *differ*
+     (`label[i] != label[j]`, both nonzero): one true neuron is broken across
+     two segments at this edge.
+   - (Same nonzero segment id on both ends → correctly reconstructed.)
+
+3. **Count splits per neuron** as `(number of distinct segment ids touching that
+   GT neuron) − 1` — N segments covering one neuron implies N−1 splits.
+
+4. **Detect merges** the other direction: a *single* segment id that maps onto
+   *two or more distinct GT neurons* is a merge. Concretely, walk a fragment
+   outward from its endpoints; if part of it sits far (> ~50 µm) from the GT
+   neuron its segment was matched to and then re-approaches a *different* GT
+   neuron, that segment is fusing two neurons — flag the branch point as a merge
+   site. (Pass-throughs near very small GT components are ignored to avoid false
+   positives.)
+
+So the cache contains everything needed to score errors: the geometry
+(`node_xyz`) and segment ids (`node_segment_id`) of both graphs, plus the
+`kdtree` to match them. No image or external label mask is required — the
+nearest-fragment segment id stands in for the mask lookup.
+
 **Skeleton-metric glossary** (used when scoring a reconstruction against GT):
 
 - **Split** — a single true neuron fragmented into multiple segments (false
