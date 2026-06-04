@@ -62,8 +62,11 @@ ENV/
 *~
 .DS_Store
 
-# Claude Code (agents, local settings — kept out of version control)
-.claude/
+# Claude Code: track shared agents/settings, but keep machine-local files out.
+.claude/*
+!.claude/agents/
+!.claude/settings.json
+.claude/settings.local.json
 
 # Large data files
 *.tif
