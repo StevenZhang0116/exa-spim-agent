@@ -1,40 +1,24 @@
 """
 Run the AutoDiscovery summarization workflow via the Claude Agent SDK.
 
-This is an extensible, sequential workflow scaffold. It opens one persistent
-Claude session and runs an ordered list of STEPS through it, so later steps
-share the conversation/context of earlier ones. As shipped there is a single
-step — it delegates to the project's ``discovery-summarizer`` subagent (defined
-in ``.claude/agents/discovery-summarizer.md``) to rank every ``autodiscovery/``
-run export by surprise and write the collective ``all-runs.summary.md`` report.
+Opens one persistent Claude session and runs the ordered STEPS through it
+(summarize, then verify), so later steps share earlier context. Subagents
+live in ``.claude/agents/`` and are auto-discovered via ``setting_sources``.
+Both steps write into one combined Markdown deliverable:
+``autodiscovery/all-runs.summary.md``.
 
-To grow the workflow, append more entries to STEPS (e.g. "propose follow-up
-experiments from the top-ranked hypotheses", "critique the most surprising
-conclusions"). Each step is just a natural-language instruction sent to the
-same session in order.
-
-Prerequisites
--------------
-- The Claude Code CLI must be installed and on PATH (the SDK drives it):
-      claude --version
-- The Python SDK:
-      pip install claude-agent-sdk
-- Auth: an ``ANTHROPIC_API_KEY`` in the environment, or an already-authenticated
-  Claude Code CLI login.
-
-Usage (from the ``exa-spim-agent/`` project root)
--------------------------------------------------
+Usage (from the ``exa-spim-agent/`` project root):
     python agentic/run_discovery_workflow.py
-    python agentic/run_discovery_workflow.py --verbose   # stream every text block
-
-The subagent ranks deterministically via ``agentic/rank_by_surprise.py`` and
-writes ``autodiscovery/all-runs.summary.md``; that file is the deliverable.
+    python agentic/run_discovery_workflow.py --verbose   # stream assistant text
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
+import time
+from datetime import datetime
 from pathlib import Path
 
 from claude_agent_sdk import (
@@ -44,6 +28,34 @@ from claude_agent_sdk import (
     ResultMessage,
     TextBlock,
 )
+
+# ToolUseBlock is what gives us live progress (which tool/subagent is running).
+# Import defensively so a minor SDK version mismatch doesn't break the script.
+try:
+    from claude_agent_sdk import ToolUseBlock
+except ImportError:  # pragma: no cover - depends on installed SDK version
+    ToolUseBlock = ()  # type: ignore[assignment]
+
+
+def log(msg: str) -> None:
+    """Timestamped progress line to stderr (kept separate from step output)."""
+    print(f"[{datetime.now():%H:%M:%S}] {msg}", file=sys.stderr, flush=True)
+
+
+def describe_tool(block) -> str:
+    """One-line, human-readable summary of a tool-use block for progress logs."""
+    name = getattr(block, "name", "tool")
+    args = getattr(block, "input", {}) or {}
+    if name == "Task":
+        sub = args.get("subagent_type") or args.get("description") or "?"
+        return f"Task → subagent '{sub}'"
+    if name == "Bash":
+        cmd = " ".join(str(args.get("command", "")).split())
+        return f"Bash: {cmd[:100]}" + ("…" if len(cmd) > 100 else "")
+    if name in ("Write", "Edit", "Read", "Glob"):
+        target = args.get("file_path") or args.get("path") or args.get("pattern") or ""
+        return f"{name}: {target}"
+    return name
 
 # Project root = the directory that holds .claude/, agentic/, autodiscovery/.
 # agentic/run_discovery_workflow.py -> parent.parent is the project root.
@@ -62,6 +74,22 @@ STEPS: list[dict[str, str]] = [
             "surprise magnitude, then write the collective ranked report to "
             "autodiscovery/all-runs.summary.md. Report the path it wrote and a "
             "short executive summary of the most surprising conclusions."
+        ),
+    },
+    {
+        "name": "verify-statistics-and-logic",
+        "instruction": (
+            "Use the discovery-verifier subagent to audit whether each "
+            "hypothesis's statistical test and its inductive/deductive reasoning "
+            "are correct, judging ONLY from the recorded code, codeOutput, and "
+            "analysis in the autodiscovery/ JSON exports (do NOT re-run any "
+            "experiment). Check test choice, assumptions, power, effect size, "
+            "p-value interpretation, the 'failed-to-reject != null-is-true' "
+            "fallacy, conclusion overreach, and a run-wide multiple-comparisons "
+            "(FDR) analysis. Read autodiscovery/all-runs.summary.md, preserve "
+            "the ranked discovery summary, and append or replace a section "
+            "named 'Statistical Verification and Logic Audit' in that same "
+            "file. Report the path and the most serious problems found."
         ),
     },
     # --- Add later steps here, e.g.: ---
@@ -86,9 +114,9 @@ def build_options() -> ClaudeAgentOptions:
         cwd=str(PROJECT_ROOT),
         # Load .claude/agents/*.md (incl. discovery-summarizer) and project settings.
         setting_sources=["project"],
-        # The orchestrator delegates to the subagent (Task) and the subagent
-        # itself needs Bash/Read/Write/Glob; allow them so the run is non-interactive.
-        allowed_tools=["Task", "Bash", "Read", "Write", "Glob"],
+        # The orchestrator delegates to subagents (Task), which need filesystem
+        # tools to rank records and update the combined Markdown deliverable.
+        allowed_tools=["Task", "Bash", "Read", "Write", "Edit", "Glob"],
         # Non-interactive: don't prompt for permission on each tool call. Drop to
         # "acceptEdits" if you'd rather review/limit what runs.
         permission_mode="bypassPermissions",
@@ -98,12 +126,15 @@ def build_options() -> ClaudeAgentOptions:
 async def run_step(client: ClaudeSDKClient, step: dict[str, str], verbose: bool) -> str:
     """Send one workflow step to the session and return its final text.
 
-    Streams assistant text as it arrives (when ``verbose``) and returns the
-    concatenated assistant text for the step so a caller could chain on it.
+    Logs live progress (each tool call / subagent launch) to stderr so a
+    long-running step is observable, streams assistant text as it arrives (when
+    ``verbose``), and returns the concatenated assistant text for the step so a
+    caller could chain on it.
     """
     await client.query(step["instruction"])
 
     chunks: list[str] = []
+    n_tools = 0
     async for message in client.receive_response():
         if isinstance(message, AssistantMessage):
             for block in message.content:
@@ -111,22 +142,42 @@ async def run_step(client: ClaudeSDKClient, step: dict[str, str], verbose: bool)
                     chunks.append(block.text)
                     if verbose:
                         print(block.text, end="", flush=True)
+                elif ToolUseBlock and isinstance(block, ToolUseBlock):
+                    n_tools += 1
+                    log(f"  → {describe_tool(block)}")
         elif isinstance(message, ResultMessage):
-            # End of this turn. ResultMessage carries cost/usage if you want it.
+            # End of this turn. Surface timing / cost / token usage when present.
             if verbose:
                 print()  # newline after the streamed text
+            cost = getattr(message, "total_cost_usd", None)
+            dur_ms = getattr(message, "duration_ms", None)
+            parts = [f"{n_tools} tool call(s)"]
+            if dur_ms is not None:
+                parts.append(f"{dur_ms / 1000:.0f}s")
+            if cost is not None:
+                parts.append(f"${cost:.4f}")
+            log(f"  step turn finished — {', '.join(parts)}")
     return "".join(chunks)
 
 
 async def run_workflow(verbose: bool) -> None:
     options = build_options()
+    log(f"Starting workflow: {len(STEPS)} step(s), project root {PROJECT_ROOT}")
+    wf_start = time.monotonic()
     async with ClaudeSDKClient(options=options) as client:
+        log("SDK session opened.")
         for i, step in enumerate(STEPS, start=1):
             print(f"\n=== Step {i}/{len(STEPS)}: {step['name']} ===")
+            log(f"Step {i}/{len(STEPS)} '{step['name']}' started.")
+            step_start = time.monotonic()
             final_text = await run_step(client, step, verbose)
+            elapsed = time.monotonic() - step_start
+            log(f"Step {i}/{len(STEPS)} '{step['name']}' done in {elapsed:.0f}s.")
             if not verbose:
                 # In quiet mode, print only each step's final summary.
                 print(final_text.strip())
+    total = time.monotonic() - wf_start
+    log(f"All {len(STEPS)} step(s) complete in {total:.0f}s.")
     print("\n=== Workflow complete ===")
 
 
