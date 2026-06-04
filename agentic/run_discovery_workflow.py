@@ -7,6 +7,12 @@ live in ``.claude/agents/`` and are auto-discovered via ``setting_sources``.
 Both steps write into one combined Markdown deliverable:
 ``autodiscovery/all-runs.summary.md``.
 
+Two free parameters near the top control what the report contains:
+``RANK_BY`` (``"posterior-surprise"`` ranks by ``posterior * |surprisal|`` so
+findings that are both strongly believed and highly belief-shifting come first;
+``"surprise"`` ranks by ``|surprisal|`` alone) and ``TOP_K`` (keep only the K
+top-ranked hypotheses in the final Markdown; ``None`` keeps all).
+
 Usage (from the ``exa-spim-agent/`` project root):
     python agentic/run_discovery_workflow.py
     python agentic/run_discovery_workflow.py --verbose   # stream assistant text
@@ -61,6 +67,26 @@ def describe_tool(block) -> str:
 # agentic/run_discovery_workflow.py -> parent.parent is the project root.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+# --- Free parameters for the summarization step ------------------------------
+# TOP_K: how many top-ranked hypotheses to keep in the final Markdown report.
+#   Only these K entries are written out (and later verified). Set to None to
+#   keep every ranked hypothesis.
+# RANK_BY: which deterministic ordering rank_by_surprise.py uses.
+#   "posterior-surprise" ranks by posterior * |surprisal| so hypotheses that
+#   are BOTH strongly believed true AND highly belief-shifting come first;
+#   "surprise" ranks by |surprisal| alone.
+TOP_K: int | None = 20
+RANK_BY: str = "posterior-surprise"
+
+# The deterministic ranking command both steps refer to, built from the free
+# parameters above so the helper, the report, and the verifier stay in sync.
+_RANK_CMD = f"python agentic/rank_by_surprise.py --rank-by {RANK_BY}" + (
+    f" --top {TOP_K}" if TOP_K is not None else ""
+)
+_TOP_K_PHRASE = (
+    f"the top {TOP_K} hypotheses" if TOP_K is not None else "all ranked hypotheses"
+)
+
 # The ordered workflow. Each step is an instruction sent to the same persistent
 # session, so step N can build on the results of step N-1. Step 1 kicks off the
 # discovery-summarizer subagent; add further steps below as the workflow grows.
@@ -70,10 +96,16 @@ STEPS: list[dict[str, str]] = [
         "instruction": (
             "Use the discovery-summarizer subagent to digest every AutoDiscovery "
             "run export under the autodiscovery/ folder. It must run "
-            "agentic/rank_by_surprise.py to pool and rank all hypotheses by "
-            "surprise magnitude, then write the collective ranked report to "
-            "autodiscovery/all-runs.summary.md. Report the path it wrote and a "
-            "short executive summary of the most surprising conclusions."
+            f"`{_RANK_CMD}` to pool and rank all hypotheses by the combined "
+            "posterior-and-surprise priority (posterior * |surprisal|), keeping "
+            f"only {_TOP_K_PHRASE}. The report MUST contain ONLY those top "
+            f"{TOP_K if TOP_K is not None else 'N'} records (do NOT add entries "
+            "beyond what the helper returns). Write the collective ranked report "
+            "to autodiscovery/all-runs.summary.md, ordered by the helper's "
+            "ranking (highest priority first), and display each entry's "
+            "priority_score alongside its surprise magnitude. Report the path it "
+            "wrote and a short executive summary of the highest-priority "
+            "conclusions (high posterior and high surprise)."
         ),
     },
     {

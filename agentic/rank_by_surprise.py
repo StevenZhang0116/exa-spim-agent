@@ -15,11 +15,18 @@ tested-hypothesis objects with (at least) the fields ``id``, ``status``,
 ``steps``, ``deliverables``).
 
 This script gathers the hypotheses from ALL given JSON files (or, with no
-paths, every ``autodiscovery/*.json`` next to it), ranks them by surprise
-MAGNITUDE (``abs(surprisal)``) descending — the most belief-shifting results,
-regardless of whether belief moved up or down, come first — and prints the
-ordered records as JSON to stdout for the agent to turn into a single combined,
-cross-run scientific summary.
+paths, every ``autodiscovery/*.json`` next to it) and prints the ordered
+records as JSON to stdout for the agent to turn into a single combined,
+cross-run scientific summary. Two ranking modes are supported (``--rank-by``):
+
+* ``surprise`` (default) — rank by surprise MAGNITUDE (``abs(surprisal)``)
+  descending: the most belief-shifting results, regardless of which way belief
+  moved, come first.
+* ``posterior-surprise`` — rank by a combined priority score
+  ``posterior * abs(surprisal)`` descending: results that are BOTH strongly
+  believed true after the experiment (high ``posterior``) AND highly
+  belief-shifting (high surprise) come first. This surfaces well-established
+  surprising findings rather than surprising-but-now-disbelieved ones.
 
 It is intentionally deterministic: it does NOT summarize or call any model. It
 only parses, validates, sorts, and reshapes the run exports so the agent's job
@@ -32,6 +39,7 @@ Usage (paths shown relative to the ``exa-spim-agent/`` project root)
     python agentic/rank_by_surprise.py autodiscovery/RUN.json       # a single run
     python agentic/rank_by_surprise.py autodiscovery/*.json         # several explicit runs
     python agentic/rank_by_surprise.py --top 20                     # most surprising N overall
+    python agentic/rank_by_surprise.py --rank-by posterior-surprise # high posterior AND high surprise
     python agentic/rank_by_surprise.py --out ranked.json            # also write a file
 """
 
@@ -123,11 +131,32 @@ def load_records(json_path: Path) -> list[dict]:
     return data
 
 
-def rank_records(records: list[dict]) -> tuple[list[dict], list[dict]]:
+def priority_score(r: dict) -> float:
+    """Combined ``posterior * abs(surprisal)`` priority for a ranked record.
+
+    Rewards hypotheses that are BOTH strongly believed true after the
+    experiment (high ``posterior``) AND highly belief-shifting (high surprise
+    magnitude). A missing/unparseable posterior is treated as 0 so such records
+    sink rather than crash the sort.
+    """
+    posterior = r.get("posterior")
+    p = float(posterior) if isinstance(posterior, (int, float)) else 0.0
+    return p * abs(r["_surprisal"])
+
+
+def rank_records(
+    records: list[dict], rank_by: str = "surprise"
+) -> tuple[list[dict], list[dict]]:
     """Split into (ranked-with-surprisal, dropped-missing-surprisal).
 
-    Ranked records are sorted by surprise MAGNITUDE (|surprisal|) descending;
-    ties broken by run then ID so the ordering is stable and reproducible.
+    ``rank_by`` selects the ordering key, both descending:
+
+    * ``"surprise"`` — surprise MAGNITUDE (|surprisal|).
+    * ``"posterior-surprise"`` — combined ``posterior * |surprisal|`` priority,
+      so confidently-held surprising findings rank above surprising-but-now-
+      disbelieved ones.
+
+    Ties are broken by run then ID so the ordering is stable and reproducible.
     """
     ranked, dropped = [], []
     for r in records:
@@ -136,6 +165,7 @@ def rank_records(records: list[dict]) -> tuple[list[dict], list[dict]]:
             dropped.append(r)
         else:
             r["_surprisal"] = s
+            r["_priority"] = priority_score(r)
             ranked.append(r)
 
     def id_key(r: dict):
@@ -145,7 +175,12 @@ def rank_records(records: list[dict]) -> tuple[list[dict], list[dict]]:
         except (ValueError, TypeError):
             return (1, 0, str(raw))
 
-    ranked.sort(key=lambda r: (-abs(r["_surprisal"]), r.get("_run", ""), id_key(r)))
+    if rank_by == "posterior-surprise":
+        primary = lambda r: -r["_priority"]
+    else:
+        primary = lambda r: -abs(r["_surprisal"])
+
+    ranked.sort(key=lambda r: (primary(r), r.get("_run", ""), id_key(r)))
     return ranked, dropped
 
 
@@ -166,6 +201,7 @@ def to_records(ranked: list[dict]) -> list[dict]:
                 "status": r.get("status", ""),
                 "surprisal": round(s, 4),
                 "surprise_magnitude": round(abs(s), 4),
+                "priority_score": round(r.get("_priority", 0.0), 4),
                 "is_surprising": bool(r.get("isSurprising", abs(s) >= 0.3)),
                 "prior": round(prior, 4) if isinstance(prior, (int, float)) else None,
                 "posterior": round(posterior, 4)
@@ -226,7 +262,17 @@ def main(argv: list[str] | None = None) -> int:
         "--top",
         type=int,
         default=None,
-        help="Keep only the N most surprising hypotheses overall.",
+        help="Keep only the N top-ranked hypotheses overall.",
+    )
+    parser.add_argument(
+        "--rank-by",
+        choices=["surprise", "posterior-surprise"],
+        default="surprise",
+        help=(
+            "Ranking key: 'surprise' = |surprisal| only (default); "
+            "'posterior-surprise' = posterior * |surprisal| (high posterior AND "
+            "high surprise first)."
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -241,7 +287,7 @@ def main(argv: list[str] | None = None) -> int:
         per_file.append({"file": f.name, "n": len(recs)})
         all_records.extend(recs)
 
-    ranked, dropped = rank_records(all_records)
+    ranked, dropped = rank_records(all_records, rank_by=args.rank_by)
     records = to_records(ranked)
     if args.top is not None:
         records = records[: args.top]
@@ -249,8 +295,10 @@ def main(argv: list[str] | None = None) -> int:
     payload = {
         "source_files": [str(f) for f in files],
         "per_file_counts": per_file,
+        "rank_by": args.rank_by,
         "n_total": len(all_records),
         "n_ranked": len(ranked),
+        "n_returned": len(records),
         "n_dropped_missing_surprisal": len(dropped),
         "dropped": [
             {"run": r.get("_run", ""), "id": r.get("id")} for r in dropped
@@ -261,6 +309,7 @@ def main(argv: list[str] | None = None) -> int:
         "surprise_magnitude_min": round(abs(ranked[-1]["_surprisal"]), 4)
         if ranked
         else None,
+        "priority_score_max": records[0]["priority_score"] if records else None,
         "records": records,
     }
     json_text = json.dumps(payload, indent=2, ensure_ascii=False)
