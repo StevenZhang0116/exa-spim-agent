@@ -150,7 +150,13 @@ node  = next(iter(gt_graph.nodes))
 xyz   = gt_graph.node_xyz[node]           # (x, y, z) in microns
 voxel = gt_graph.node_voxel(node)         # (z, y, x) voxel index (xyz / anisotropy, reversed)
 swc   = gt_graph.node_swc_id(node)        # e.g. "N001-794495-JT.0"
-seg   = gt_graph.node_segment_id(node)    # raw UNet segment label (swc id w/o ".copy" suffix)
+seg   = gt_graph.node_segment_id(node)    # the node's OWN component id, swc minus ".copy" suffix:
+                                          #   on gt_graph -> the GT neuron name "N001-794495-JT"
+                                          #   on fragments_graph -> the raw U-Net segment label
+# NOTE: gt_graph.node_segment_id is the GT neuron's own id, NOT a predicted label.
+# A GT node carries no predicted label until you match it against fragments_graph (see below).
+pred  = fragments_graph.node_segment_id(  # the predicted segment for this GT node:
+    fragments_graph.closest_node(xyz))    #   nearest fragment node's U-Net segment id
 
 # Endpoints (leaf nodes) are where split-correction proposals originate
 leaves = fragments_graph.leaf_nodes()         # degree-1 nodes
@@ -170,10 +176,17 @@ dist, nearest_gt_node = gt_graph.kdtree.query(fragments_graph.node_xyz[leaves[0]
   component is a complete traced neuron; in `fragments_graph` a component is a
   single UNet fragment — and a true neuron is typically broken across *many*
   components, which is precisely a **split** error.
-- **SWC ID vs segment ID.** `node_swc_id(i)` returns `"<segment>.<copy>"`;
-  `node_segment_id(i)` strips the suffix to give the raw U-Net segment label.
-  GT components are named `N0XX-794495-<initials>` where the trailing initials
-  denote the human annotator.
+- **SWC ID vs segment ID, and the GT/predicted namespace split.**
+  `node_swc_id(i)` returns `"<segment>.<copy>"`; `node_segment_id(i)` strips the
+  suffix. Both methods exist on *both* graphs (same class), but they return ids
+  from **different namespaces** and must never be compared directly:
+  - On `fragments_graph`, `node_segment_id` is the **raw U-Net segment label** —
+    the *predicted* identity used for scoring.
+  - On `gt_graph`, it is the **GT neuron's own name** `N0XX-794495-<initials>`
+    (trailing initials = human annotator) — a *ground-truth* identity, **not** a
+    prediction.
+  A GT node has **no predicted label stored anywhere**; the prediction for a GT
+  node is obtained only by matching it against `fragments_graph` (next section).
 
 **Identifying errors from the two graphs.** Errors are defined by comparing the
 GT skeleton against the predicted **segment labels** — *not* against
