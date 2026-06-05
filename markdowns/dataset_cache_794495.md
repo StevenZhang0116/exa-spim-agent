@@ -97,16 +97,34 @@ The pickle is a single dict whose relevant keys are:
 | `fragments_graph` | `SkeletonGraph` | Automated UNet reconstruction (~10k components). |
 | `gt_graph` | `SkeletonGraph` | Human ground-truth reconstruction (18 neurons). |
 
-Loading requires the `agentic_neuron_proofreader` package on the path (the
-pickle stores `SkeletonGraph` instances).
+Loading requires the `agentic_neuron_proofreader` package to be importable (the
+pickle stores `SkeletonGraph` instances, so `pickle.load` must import their
+class to reconstruct them).
+
+### Install the package (one-time setup)
+
+Clone and install
+[`agentic-neuron-proofreader`](https://github.com/AllenInstitute/agentic-neuron-proofreader)
+into your environment:
+
+```bash
+git clone https://github.com/AllenInstitute/agentic-neuron-proofreader.git
+cd agentic-neuron-proofreader
+pip install -e .
+```
+
+This makes `import agentic_neuron_proofreader` work from anywhere, so the
+`pickle.load` below can reconstruct the `SkeletonGraph` objects. (Editable mode
+`-e` is optional but convenient.)
 
 ### Loading the cache (sample code)
 
 ```python
 import pickle
+# Requires the agentic_neuron_proofreader package to be installed (see above).
 
 with open("dataset_cache_794495.pkl", "rb") as f:
-    payload = pickle.load(f)   # requires agentic_neuron_proofreader importable
+    payload = pickle.load(f)   # reconstructs SkeletonGraph instances
 
 gt_graph        = payload["gt_graph"]         # SkeletonGraph: 18 human-traced neurons
 fragments_graph = payload["fragments_graph"]  # SkeletonGraph: ~10k UNet fragments
