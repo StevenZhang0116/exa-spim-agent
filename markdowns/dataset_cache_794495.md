@@ -184,9 +184,9 @@ print(fragments_graph.summary(prefix="Fragments"))
 
 You do **not** need to regenerate the cache to use it — this subsection only
 documents its provenance so the stored parameters above are interpretable. The
-cache was produced by [`notebooks/load_skeletons.ipynb`], which:
+cache was produced by a two-step build:
 
-1. Builds a `BrainDataset` by reading the source SWCs directly from cloud
+1. Build a `BrainDataset` by reading the source SWCs directly from cloud
    storage (`gt_path`, `fragments_path`) and attaching the lazy ExaSPIM image
    reader (`img_path`):
 
@@ -206,7 +206,7 @@ cache was produced by [`notebooks/load_skeletons.ipynb`], which:
    Reading the ~10k source SWC archives from GCS is the slow step (~15 min) and
    needs valid Google credentials (`GOOGLE_APPLICATION_CREDENTIALS`).
 
-2. Serializes the two reconstructed graphs plus the paths/parameters with
+2. Serialize the two reconstructed graphs plus the paths/parameters with
    `dataset.save(cache_path)`, where the filename encodes the threshold:
 
    ```python
@@ -217,11 +217,7 @@ cache was produced by [`notebooks/load_skeletons.ipynb`], which:
 
 The lazy `TensorStoreImage` (`img_path`) is **not** pickled — it re-instantiates
 instantly — which is why the cache loads from skeletons alone with no image
-access, exactly the constraint this document relies on. To reload from the
-cache without re-reading the SWCs, see
-`notebooks/load_skeletons_from_cache.ipynb`.
-
-[`notebooks/load_skeletons.ipynb`]: ../notebooks/load_skeletons.ipynb
+access, exactly the constraint this document relies on.
 
 ### `SkeletonGraph` structure
 
@@ -346,14 +342,13 @@ of its nearest fragment node**. The procedure:
    positives.)
 
 **Sample code** — the four steps end-to-end, using only `gt_graph` and
-`fragments_graph` from the cache (lifted from
-`notebooks/test_markdown_instructions.ipynb`):
+`fragments_graph` from the cache:
 
 ```python
 import numpy as np
 from collections import defaultdict
 
-MATCH_TOL_UM = 2.0   # the free tolerance from step 1; report whatever you pick
+MATCH_TOL_UM = 5.0   # the free tolerance from step 1; report whatever you pick
 
 # --- Step 1: label each GT node by its nearest fragment's SEGMENT id ----------
 # One vectorized KD-tree query over all GT nodes; both graphs share (x,y,z) µm.
@@ -430,11 +425,11 @@ nearest-fragment segment id stands in for the mask lookup.
   geometric merge-site walk (§ step 4, the ">~50 µm then re-approach" rule)
   needs per-voxel mask labels to localize the merge point precisely.
 
-These were confirmed by executing every instruction in this document against the
-cache alone (see `notebooks/test_markdown_instructions.ipynb`): all structural
-claims — keys, types, namespace split, the 4-step error procedure — run and pass
-from cache-only data; the caveats above are the places where a number depends on
-a choice (the tolerance) or on data the cache does not contain (the mask).
+Every instruction in this document has been verified to run against the cache
+alone: all structural claims — keys, types, namespace split, the 4-step error
+procedure — execute from cache-only data. The caveats above are the places where
+a number depends on a choice (the tolerance) or on data the cache does not
+contain (the mask).
 
 **Skeleton-metric glossary** (used when scoring a reconstruction against GT):
 
