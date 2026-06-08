@@ -135,7 +135,7 @@ that `pickle.load` reconstructs. Its runtime dependencies are the usual
 scientific stack — **`numpy`, `networkx`, `scipy`** (KD-tree), plus `tqdm`;
 installing the package pulls these in.
 
-**Option A — install it (recommended).** Clone
+Clone
 [`agentic-neuron-proofreader`](https://github.com/AllenInstitute/agentic-neuron-proofreader)
 and `pip install` it into your environment:
 
@@ -146,14 +146,6 @@ pip install -e .          # editable; drop -e for a normal install
 ```
 
 This makes `import agentic_neuron_proofreader` work from anywhere.
-
-**Option B — point at the source tree without installing.** If you only have a
-checkout, prepend its `src/` directory to `sys.path` before unpickling:
-
-```python
-import sys
-sys.path.insert(0, "/path/to/agentic-neuron-proofreader/src")
-```
 
 > **Environment gotcha.** `SkeletonGraph` imports `scipy.spatial.KDTree`, so
 > `numpy` and `scipy` must be **binary-compatible** in the interpreter you use.
@@ -352,6 +344,68 @@ of its nearest fragment node**. The procedure:
    neuron, that segment is fusing two neurons — flag the branch point as a merge
    site. (Pass-throughs near very small GT components are ignored to avoid false
    positives.)
+
+**Sample code** — the four steps end-to-end, using only `gt_graph` and
+`fragments_graph` from the cache (lifted from
+`notebooks/test_markdown_instructions.ipynb`):
+
+```python
+import numpy as np
+from collections import defaultdict
+
+MATCH_TOL_UM = 2.0   # the free tolerance from step 1; report whatever you pick
+
+# --- Step 1: label each GT node by its nearest fragment's SEGMENT id ----------
+# One vectorized KD-tree query over all GT nodes; both graphs share (x,y,z) µm.
+dists, nn_frag = fragments_graph.kdtree.query(gt_graph.node_xyz)   # (N_gt,), (N_gt,)
+
+gt_pred_label = {}
+for gt_n in gt_graph.nodes:
+    if float(dists[gt_n]) <= MATCH_TOL_UM:
+        # NOTE: segment id, NOT component id — one segment = many components.
+        gt_pred_label[gt_n] = fragments_graph.node_segment_id(int(nn_frag[gt_n]))
+    else:
+        gt_pred_label[gt_n] = "0"          # unlabeled -> contributes to omits
+
+# --- Step 2: classify every GT edge from its two endpoint labels --------------
+n_omit = n_split = n_correct = 0
+for i, j in gt_graph.edges:
+    li, lj = gt_pred_label[i], gt_pred_label[j]
+    if li == "0" and lj == "0":
+        n_omit += 1                        # both ends missed
+    elif li != "0" and lj != "0" and li != lj:
+        n_split += 1                       # both labeled, different segments
+    elif li != "0" and lj != "0" and li == lj:
+        n_correct += 1                     # same segment -> correctly joined
+    # exactly one end labeled -> boundary edge, counted as neither
+E = gt_graph.number_of_edges()
+print(f"split={n_split} ({100*n_split/E:.2f}%)  omit={n_omit} ({100*n_omit/E:.2f}%)")
+
+# --- Step 3: splits per neuron = (#distinct predicted segments on it) - 1 ------
+neuron_to_segs = defaultdict(set)
+for gt_n in gt_graph.nodes:
+    lab = gt_pred_label[gt_n]
+    if lab != "0":
+        neuron_to_segs[gt_graph.node_segment_id(gt_n)].add(lab)   # GT name -> {seg ids}
+splits_per_neuron = {n: max(len(s) - 1, 0) for n, s in neuron_to_segs.items()}
+print("Total Splits:", sum(splits_per_neuron.values()))
+
+# --- Step 4 (core definition): one segment touching >=2 GT neurons = merge ----
+seg_to_neurons = defaultdict(set)
+for gt_n in gt_graph.nodes:
+    lab = gt_pred_label[gt_n]
+    if lab != "0":
+        seg_to_neurons[lab].add(gt_graph.node_segment_id(gt_n))   # seg id -> {GT names}
+merged = {lab: ns for lab, ns in seg_to_neurons.items() if len(ns) >= 2}
+print("Merge segments:", len(merged),
+      " Total Merges:", sum(len(ns) - 1 for ns in merged.values()))
+```
+
+The two dicts are duals of the same matching: `neuron_to_segs` (GT neuron → the
+segments covering it) exposes **splits**, and `seg_to_neurons` (segment → the GT
+neurons it touches) exposes **merges**. Everything keys off `node_segment_id`,
+never connected-component identity — that is the one mistake the namespace
+discussion above warns against.
 
 So the cache contains everything needed to score errors: the geometry
 (`node_xyz`) and segment ids (`node_segment_id`) of both graphs, plus the
