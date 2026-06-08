@@ -1,7 +1,7 @@
 # `dataset_cache_794495` — Dataset Description
 
-`dataset_cache_794495.pkl` is a Python pickle holding a cached `BrainDataset`
-for **ExaSPIM brain 794495**. It bundles two neuron-skeleton graphs — a human
+`dataset_cache_794495_mcl10.pkl` is a Python pickle holding a cached
+`BrainDataset` for **ExaSPIM brain 794495**. It bundles two neuron-skeleton graphs — a human
 ground-truth reconstruction and an automated U-Net reconstruction of the same
 brain. It is the evaluation target for a project on **agentic, post-hoc
 proofreading of whole-brain neuron reconstructions**: correcting the systematic
@@ -28,10 +28,12 @@ products for this brain:
    brain; each predicted fragment was skeletonized into an SWC tree (3D
    coordinates, radius, connectivity) and loaded into a graph. This is the
    *machine* reconstruction containing the errors to be fixed — roughly
-   **10,000 fragments** for this brain.
+   **478,600 fragment components** for this brain at the `min_cable_length = 10`
+   µm filtering threshold this cache was built with (see *How this cache was
+   generated* below).
 
 2. **Ground-truth tracings** (`gt_graph`) — human-traced neuron skeletons for
-   **18 neurons**. These are the gold-standard morphologies used to train and
+   **19 neurons**. These are the gold-standard morphologies used to train and
    evaluate the automated reconstruction.
 
 **The errors that motivate the project.** Deep-learning segmentation introduces
@@ -42,7 +44,7 @@ two systematic *topological* errors:
 - **Merge errors** — two distinct neurons are erroneously joined, typically
   where neurites run close together.
 
-Scoring the automated reconstruction against the 18 human tracings gives this
+Scoring the automated reconstruction against the 19 human tracings gives this
 baseline (skeleton-based topology metrics):
 
 | Metric | Value |
@@ -64,18 +66,30 @@ mislabeling — are what corrupt downstream connectivity, which is why
 skeleton-based metrics (splits/neuron, edge accuracy, normalized ERL) are the
 appropriate evaluation targets.
 
+> These baseline numbers come from the canonical scoring pipeline (predicted
+> labels read from the dense segmentation mask). The cache itself contains no
+> mask, so re-deriving these metrics from `mcl10.pkl` alone uses the
+> nearest-fragment proxy described in § *Identifying errors* and will not
+> reproduce them exactly — treat the table as the reference target, not a
+> cache-only result.
+
 **How the data was gathered / known gaps.**
 
-- **Ground truth is sparse and skeleton-only.** Only 18 neurons were traced
+- **Ground truth is sparse and skeleton-only.** Only 19 neurons were traced
   (named like `N001-794495-JT`, `N002-794495-PP`, … — the suffix is the human
-  annotator's initials). There is **no dense ground-truth voxel volume**: GT
+  annotator's initials; note the IDs are not contiguous, e.g. there is no
+  `N010`/`N012`, and the largest is `N023`). There is **no dense ground-truth
+  voxel volume**: GT
   exists only as center-line skeletons in `gt_graph`. A region with no traced
   neuron is simply unlabeled, not labeled "background."
 - **Fragments are filtered.** When the cache was built, UNet fragments shorter
-  than `min_cable_length = 1000` µm of total path length were dropped, removing
-  short/noisy false-positive fragments. Skeletons were also resampled to a
-  target inter-node spacing of `node_spacing = 5` µm, so node geometry is
-  decimated relative to the original SWCs.
+  than `min_cable_length = 10` µm of total path length were dropped, removing
+  only the very shortest noise fragments. This is a *permissive* threshold —
+  hence ~478,600 fragment components survive — chosen to keep almost all of the
+  automated reconstruction; other builds use stricter thresholds (see *How this
+  cache was generated*). Skeletons were also resampled to a target inter-node
+  spacing of `node_spacing = 5` µm, so node geometry is decimated relative to
+  the original SWCs.
 - **Anisotropic voxels.** ExaSPIM samples X/Y more finely than Z, so voxels are
   not cubic. The cache stores `anisotropy = (0.748, 0.748, 1.0)` (µm per voxel
   in x, y, z) and uses it to convert between SWC physical coordinates (µm) and
@@ -87,35 +101,66 @@ appropriate evaluation targets.
 
 ### On-disk layout
 
-The pickle is a single dict whose relevant keys are:
+The pickle is a single dict. Its full key set is below; the last five are the
+ones you will actually use — the three `*_path` strings just record where the
+source data was read from when the cache was built.
 
 | Key | Type | Meaning |
 |---|---|---|
+| `fragments_path` | `str` | Provenance only — GCS path of the source UNet SWCs. Not needed to use the cache. |
+| `gt_path` | `str` | Provenance only — GCS path of the source GT tracings. Not needed to use the cache. |
+| `img_path` | `str` | Provenance only — S3 path of the fused ExaSPIM image. **Not** loaded; the cache is self-contained without it. |
 | `anisotropy` | `tuple` | `(0.748, 0.748, 1.0)` — µm/voxel in **(x, y, z)** order. |
-| `min_cable_length` | `int` | `1000` — µm threshold; shorter fragments were discarded. |
+| `min_cable_length` | `int` | `10` — µm threshold; shorter fragments were discarded. |
 | `node_spacing` | `int` | `5` — target µm spacing between adjacent skeleton nodes. |
-| `fragments_graph` | `SkeletonGraph` | Automated UNet reconstruction (~10k components). |
-| `gt_graph` | `SkeletonGraph` | Human ground-truth reconstruction (18 neurons). |
+| `fragments_graph` | `SkeletonGraph` | Automated UNet reconstruction (~478,600 components, ~25.5 M nodes). |
+| `gt_graph` | `SkeletonGraph` | Human ground-truth reconstruction (19 neurons, ~1.36 M nodes). |
+
+> **Note.** `min_cable_length` is `10` **for this cache file**
+> (`dataset_cache_794495_mcl10.pkl`); other builds of the same brain use a
+> stricter threshold (e.g. `_mcl100.pkl` at 100 µm, `_mcl1000.pkl` at 1000 µm)
+> and therefore contain far fewer, longer fragments. The filename suffix `mclN`
+> encodes the threshold `N`. Always read the actual value from
+> `payload["min_cable_length"]` rather than assuming it.
 
 Loading requires the `agentic_neuron_proofreader` package to be importable (the
 pickle stores `SkeletonGraph` instances, so `pickle.load` must import their
-class to reconstruct them).
+class to reconstruct them). Install it first — see the next subsection.
 
 ### Install the package (one-time setup)
 
-Clone and install
+Loading the cache needs exactly one thing on the Python path: the
+`agentic_neuron_proofreader` package, which defines the `SkeletonGraph` class
+that `pickle.load` reconstructs. Its runtime dependencies are the usual
+scientific stack — **`numpy`, `networkx`, `scipy`** (KD-tree), plus `tqdm`;
+installing the package pulls these in.
+
+**Option A — install it (recommended).** Clone
 [`agentic-neuron-proofreader`](https://github.com/AllenInstitute/agentic-neuron-proofreader)
-into your environment:
+and `pip install` it into your environment:
 
 ```bash
 git clone https://github.com/AllenInstitute/agentic-neuron-proofreader.git
 cd agentic-neuron-proofreader
-pip install -e .
+pip install -e .          # editable; drop -e for a normal install
 ```
 
-This makes `import agentic_neuron_proofreader` work from anywhere, so the
-`pickle.load` below can reconstruct the `SkeletonGraph` objects. (Editable mode
-`-e` is optional but convenient.)
+This makes `import agentic_neuron_proofreader` work from anywhere.
+
+**Option B — point at the source tree without installing.** If you only have a
+checkout, prepend its `src/` directory to `sys.path` before unpickling:
+
+```python
+import sys
+sys.path.insert(0, "/path/to/agentic-neuron-proofreader/src")
+```
+
+> **Environment gotcha.** `SkeletonGraph` imports `scipy.spatial.KDTree`, so
+> `numpy` and `scipy` must be **binary-compatible** in the interpreter you use.
+> A mismatch raises `ValueError: numpy.dtype size changed, may indicate binary
+> incompatibility` on import — fix it by loading the cache in an environment
+> where numpy and scipy were installed together (this cache was validated under
+> the `panda` conda environment), not by editing the data.
 
 ### Loading the cache (sample code)
 
@@ -123,17 +168,68 @@ This makes `import agentic_neuron_proofreader` work from anywhere, so the
 import pickle
 # Requires the agentic_neuron_proofreader package to be installed (see above).
 
-with open("dataset_cache_794495.pkl", "rb") as f:
+with open("dataset_cache_794495_mcl10.pkl", "rb") as f:
     payload = pickle.load(f)   # reconstructs SkeletonGraph instances
 
-gt_graph        = payload["gt_graph"]         # SkeletonGraph: 18 human-traced neurons
-fragments_graph = payload["fragments_graph"]  # SkeletonGraph: ~10k UNet fragments
+gt_graph        = payload["gt_graph"]         # SkeletonGraph: 19 human-traced neurons
+fragments_graph = payload["fragments_graph"]  # SkeletonGraph: ~478,600 UNet fragments
 anisotropy      = payload["anisotropy"]       # (0.748, 0.748, 1.0)
 
 print(gt_graph.summary(prefix="GroundTruth"))
 print(fragments_graph.summary(prefix="Fragments"))
 # -> # Connected Components / # Nodes / # Edges / Memory Consumption
+# GroundTruth: 19 components, ~1,363,808 nodes
+# Fragments:   ~478,611 components, ~25,527,200 nodes
 ```
+
+> **Memory.** This cache is ~3 GB on disk, but reconstructing the two
+> `SkeletonGraph` objects (NetworkX adjacency + KD-tree + node arrays) needs
+> substantially more RAM than the file size — budget well over 20 GB of free
+> memory, or the `pickle.load` may be killed by the OOM reaper. The stricter
+> builds (`_mcl100.pkl`, `_mcl1000.pkl`) are smaller and lighter to load.
+
+### How this cache was generated
+
+You do **not** need to regenerate the cache to use it — this subsection only
+documents its provenance so the stored parameters above are interpretable. The
+cache was produced by [`notebooks/load_skeletons.ipynb`], which:
+
+1. Builds a `BrainDataset` by reading the source SWCs directly from cloud
+   storage (`gt_path`, `fragments_path`) and attaching the lazy ExaSPIM image
+   reader (`img_path`):
+
+   ```python
+   from agentic_neuron_proofreader.data_modules.datasets import BrainDataset
+
+   dataset = BrainDataset(
+       fragments_path,                 # gs://allen-nd-goog/.../swcs
+       gt_path,                        # gs://allen-nd-goog/.../voxel
+       img_path,                       # s3://aind-open-data/.../fused.zarr/0
+       anisotropy=(0.748, 0.748, 1.0),
+       min_cable_length=10,            # <-- the mclN threshold; 10 for this file
+       node_spacing=5,
+   )
+   ```
+
+   Reading the ~10k source SWC archives from GCS is the slow step (~15 min) and
+   needs valid Google credentials (`GOOGLE_APPLICATION_CREDENTIALS`).
+
+2. Serializes the two reconstructed graphs plus the paths/parameters with
+   `dataset.save(cache_path)`, where the filename encodes the threshold:
+
+   ```python
+   cache_path = f"../dataset_cache_{brain_id}_mcl{min_cable_length}.pkl"
+   # min_cable_length=10  -> dataset_cache_794495_mcl10.pkl   (this file)
+   # min_cable_length=100 -> dataset_cache_794495_mcl100.pkl
+   ```
+
+The lazy `TensorStoreImage` (`img_path`) is **not** pickled — it re-instantiates
+instantly — which is why the cache loads from skeletons alone with no image
+access, exactly the constraint this document relies on. To reload from the
+cache without re-reading the SWCs, see
+`notebooks/load_skeletons_from_cache.ipynb`.
+
+[`notebooks/load_skeletons.ipynb`]: ../notebooks/load_skeletons.ipynb
 
 ### `SkeletonGraph` structure
 
@@ -160,8 +256,8 @@ import networkx as nx
 # A connected component = one reconstructed object
 #   gt    -> a complete traced neuron
 #   frags -> a single UNet fragment (a real neuron is split across MANY of these)
-print("GT components:   ", nx.number_connected_components(gt_graph))        # ~18
-print("Frag components: ", nx.number_connected_components(fragments_graph)) # ~10k
+print("GT components:   ", nx.number_connected_components(gt_graph))        # 19
+print("Frag components: ", nx.number_connected_components(fragments_graph)) # ~478,611
 
 # Node-level access
 node  = next(iter(gt_graph.nodes))
@@ -221,11 +317,22 @@ of its nearest fragment node**. The procedure:
 
 1. **Label each GT node.** For every node in `gt_graph`, query
    `fragments_graph.kdtree.query(gt.node_xyz[node])` for the nearest fragment
-   node. If the distance is within a tolerance (the reference implementation
-   matches within ~a few µm), assign that GT node the fragment's **segment id**
+   node (both graphs' `node_xyz` live in the same (x, y, z) µm space, so the
+   query is a plain Euclidean distance). If the distance is within a **match
+   tolerance**, assign that GT node the fragment's **segment id**
    (`fragments_graph.node_segment_id(nearest)`); otherwise the GT node is
    *unlabeled* (label `0`). Every GT node now carries a predicted segment id —
    or none.
+
+   > **The tolerance is a free parameter, not a stored constant.** The cache
+   > does not record it. A value of **~2 µm** is a reasonable default (it is on
+   > the order of `node_spacing = 5` µm). The choice materially changes the
+   > results — especially the **omit** count, since a looser tolerance labels
+   > more GT nodes — so pick a value explicitly and report it. For reference,
+   > the median GT→fragment nearest distance in this cache is ~1.6 µm, so a 2 µm
+   > tolerance labels the majority of GT nodes and leaves the rest as omits.
+   > You can vectorize the whole step in one call:
+   > `dists, nn = fragments_graph.kdtree.query(gt_graph.node_xyz)`.
 
 2. **Walk each GT edge** `(i, j)` and classify it from the two endpoint labels:
    - **Omit edge** — *both* endpoints are unlabeled (`0`): the reconstruction
@@ -250,6 +357,30 @@ So the cache contains everything needed to score errors: the geometry
 (`node_xyz`) and segment ids (`node_segment_id`) of both graphs, plus the
 `kdtree` to match them. No image or external label mask is required — the
 nearest-fragment segment id stands in for the mask lookup.
+
+**Caveats of the cache-only proxy** (know these before trusting the numbers):
+
+- **It is a proxy for the mask lookup.** Canonical scoring reads the predicted
+  label from the dense segmentation mask at each GT voxel; here we substitute
+  the nearest fragment node's segment id. The two agree only where a fragment
+  node lies close to the GT center-line.
+- **Omits are inflated by fragment filtering.** Fragments shorter than
+  `min_cable_length` were dropped when the cache was built, so GT stretches that
+  *were* reconstructed by a short fragment now have no nearby fragment node and
+  get counted as **omit**. The omit rate measured from the cache is therefore an
+  upper bound, not the true miss rate. This cache uses a permissive
+  `min_cable_length = 10` µm, so the inflation is smaller here than in the
+  stricter `_mcl100`/`_mcl1000` builds — but it is not zero.
+- **Merge detection is partial.** The cache-only test verifies the core merge
+  definition (one segment id touching ≥2 distinct GT neurons); the full
+  geometric merge-site walk (§ step 4, the ">~50 µm then re-approach" rule)
+  needs per-voxel mask labels to localize the merge point precisely.
+
+These were confirmed by executing every instruction in this document against the
+cache alone (see `notebooks/test_markdown_instructions.ipynb`): all structural
+claims — keys, types, namespace split, the 4-step error procedure — run and pass
+from cache-only data; the caveats above are the places where a number depends on
+a choice (the tolerance) or on data the cache does not contain (the mask).
 
 **Skeleton-metric glossary** (used when scoring a reconstruction against GT):
 
