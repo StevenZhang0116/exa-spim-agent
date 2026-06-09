@@ -1,40 +1,49 @@
-# `dataset_cache_794495` — Dataset Description
+# `dataset_cache` — Dataset Description
 
-`dataset_cache_794495_mcl10.pkl` is a Python pickle holding a cached
-`BrainDataset` for **ExaSPIM brain 794495**. It bundles two neuron-skeleton graphs — a human
-ground-truth reconstruction and an automated U-Net reconstruction of the same
-brain. It is the evaluation target for a project on **agentic, post-hoc
-proofreading of whole-brain neuron reconstructions**: correcting the systematic
-split/merge errors in the automated reconstruction so the extracted wiring
-diagram becomes trustworthy for downstream connectivity analysis.
+A `dataset_cache_<brain_id>_mcl<N>.pkl` file is a Python pickle holding a cached
+`BrainDataset` for **one ExaSPIM brain**. It bundles two neuron-skeleton graphs —
+a human ground-truth reconstruction and an automated U-Net reconstruction of the
+same brain. These caches are the evaluation targets for a project on **agentic,
+post-hoc proofreading of whole-brain neuron reconstructions**: correcting the
+systematic split/merge errors in the automated reconstruction so the extracted
+wiring diagram becomes trustworthy for downstream connectivity analysis.
+
+The format is **brain-agnostic** — the same schema and tooling accept any
+ExaSPIM brain (709221, 794491, 794495, …; one cache per brain). **For this trial
+we provide `dataset_cache_794495_mcl10.pkl`** (specimen **794495**,
+`min_cable_length = 10` µm), and the concrete counts below describe that file;
+swapping in another brain's cache changes only the numbers, not the structure or
+the procedures.
 
 ---
 
 ## 1) Dataset context
 
-**Origin.** The data comes from a single mouse brain (specimen ID **794495**)
-imaged with **ExaSPIM**, a light-sheet platform that combines tissue expansion
-with selective-plane illumination microscopy to achieve sub-micron, whole-brain
-fluorescence imaging of sparsely labeled neurons (voxel size
-**0.748 × 0.748 × 1.0 µm**). At this resolution individual axons can be traced
-across an entire brain, but each brain is tens of terabytes, so fully manual
-reconstruction is infeasible and automated segmentation is required.
+**Origin.** Each cache comes from a single mouse brain imaged with **ExaSPIM**, a
+light-sheet platform that combines tissue expansion with selective-plane
+illumination microscopy to achieve sub-micron, whole-brain fluorescence imaging
+of sparsely labeled neurons (voxel size **0.748 × 0.748 × 1.0 µm**). At this
+resolution individual axons can be traced across an entire brain, but each brain
+is tens of terabytes, so fully manual reconstruction is infeasible and automated
+segmentation is required. *The provided cache is specimen **794495**; the
+description below is written against that instance.*
 
 **What the cache captures.** The cache stores two aligned, graph-based data
-products for this brain:
+products for its brain:
 
 1. **UNet fragment skeletons** (`fragments_graph`) — the automated
    reconstruction. A 3D U-Net predicted an instance-level voxel labeling of the
    brain; each predicted fragment was skeletonized into an SWC tree (3D
    coordinates, radius, connectivity) and loaded into a graph. This is the
-   *machine* reconstruction containing the errors to be fixed — roughly
-   **478,600 fragment components** for this brain at the `min_cable_length = 10`
-   µm filtering threshold this cache was built with (see *How this cache was
-   generated* below).
+   *machine* reconstruction containing the errors to be fixed — for the provided
+   794495 cache, roughly **478,600 fragment components** at the
+   `min_cable_length = 10` µm filtering threshold it was built with (see *How
+   this cache was generated* below).
 
-2. **Ground-truth tracings** (`gt_graph`) — human-traced neuron skeletons for
-   **19 neurons**. These are the gold-standard morphologies used to train and
-   evaluate the automated reconstruction.
+2. **Ground-truth tracings** (`gt_graph`) — human-traced neuron skeletons (the
+   gold-standard morphologies used to train and evaluate the automated
+   reconstruction). The provided 794495 cache contains **19 neurons**; the count
+   varies by brain.
 
 **The errors that motivate the project.** Deep-learning segmentation introduces
 two systematic *topological* errors:
@@ -44,8 +53,8 @@ two systematic *topological* errors:
 - **Merge errors** — two distinct neurons are erroneously joined, typically
   where neurites run close together.
 
-Scoring the automated reconstruction against the 19 human tracings gives this
-baseline (skeleton-based topology metrics):
+Scoring the automated reconstruction against the human tracings gives a baseline
+(skeleton-based topology metrics); for the provided 794495 cache it is:
 
 | Metric | Value |
 |---|---|
@@ -67,21 +76,21 @@ skeleton-based metrics (splits/neuron, edge accuracy, normalized ERL) are the
 appropriate evaluation targets.
 
 > These baseline numbers come from the canonical scoring pipeline (predicted
-> labels read from the dense segmentation mask). The cache itself contains no
-> mask, so re-deriving these metrics from `mcl10.pkl` alone uses the
-> nearest-fragment proxy described in § *Identifying errors* and will not
-> reproduce them exactly — treat the table as the reference target, not a
-> cache-only result.
+> labels read from the dense segmentation mask) for the 794495 cache. The cache
+> itself contains no mask, so re-deriving these metrics from the pickle alone
+> uses the nearest-fragment proxy described in § *Identifying errors* and will
+> not reproduce them exactly — treat the table as the reference target, not a
+> cache-only result. Another brain's cache yields its own baseline.
 
 **How the data was gathered / known gaps.**
 
-- **Ground truth is sparse and skeleton-only.** Only 19 neurons were traced
-  (named like `N001-794495-JT`, `N002-794495-PP`, … — the suffix is the human
-  annotator's initials; note the IDs are not contiguous, e.g. there is no
-  `N010`/`N012`, and the largest is `N023`). There is **no dense ground-truth
-  voxel volume**: GT
-  exists only as center-line skeletons in `gt_graph`. A region with no traced
-  neuron is simply unlabeled, not labeled "background."
+- **Ground truth is sparse and skeleton-only.** Only a handful of neurons are
+  traced per brain (named like `N001-<brain_id>-JT`, `N002-<brain_id>-PP`, … —
+  the trailing suffix is the human annotator's initials). In the provided 794495
+  cache there are 19 such neurons, and the IDs are not contiguous (e.g. no
+  `N010`/`N012`, largest is `N023`). There is **no dense ground-truth voxel
+  volume**: GT exists only as center-line skeletons in `gt_graph`. A region with
+  no traced neuron is simply unlabeled, not labeled "background."
 - **Fragments are filtered.** When the cache was built, UNet fragments shorter
   than `min_cable_length = 10` µm of total path length were dropped, removing
   only the very shortest noise fragments. This is a *permissive* threshold —
@@ -101,9 +110,10 @@ appropriate evaluation targets.
 
 ### On-disk layout
 
-The pickle is a single dict. Its full key set is below; the last five are the
-ones you will actually use — the three `*_path` strings just record where the
-source data was read from when the cache was built.
+Every cache, regardless of brain, is a single dict with the same keys. The full
+key set is below; the last five are the ones you will actually use — the three
+`*_path` strings just record where the source data was read from when the cache
+was built. (Values shown are for the provided 794495 cache.)
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -116,12 +126,12 @@ source data was read from when the cache was built.
 | `fragments_graph` | `SkeletonGraph` | Automated UNet reconstruction (~478,600 components, ~25.5 M nodes). |
 | `gt_graph` | `SkeletonGraph` | Human ground-truth reconstruction (19 neurons, ~1.36 M nodes). |
 
-> **Note.** `min_cable_length` is `10` **for this cache file**
-> (`dataset_cache_794495_mcl10.pkl`); other builds of the same brain use a
-> stricter threshold (e.g. `_mcl100.pkl` at 100 µm, `_mcl1000.pkl` at 1000 µm)
-> and therefore contain far fewer, longer fragments. The filename suffix `mclN`
-> encodes the threshold `N`. Always read the actual value from
-> `payload["min_cable_length"]` rather than assuming it.
+> **Note.** `min_cable_length` is `10` **for the provided cache file**
+> (`dataset_cache_794495_mcl10.pkl`); other builds use a stricter threshold
+> (e.g. `_mcl100.pkl` at 100 µm, `_mcl1000.pkl` at 1000 µm) and therefore contain
+> far fewer, longer fragments. The filename pattern is
+> `dataset_cache_<brain_id>_mcl<N>.pkl`, where `N` is the threshold. Always read
+> the actual value from `payload["min_cable_length"]` rather than assuming it.
 
 Loading requires the `agentic_neuron_proofreader` package to be importable (the
 pickle stores `SkeletonGraph` instances, so `pickle.load` must import their
@@ -160,16 +170,18 @@ This makes `import agentic_neuron_proofreader` work from anywhere.
 import pickle
 # Requires the agentic_neuron_proofreader package to be installed (see above).
 
+# Any dataset_cache_<brain_id>_mcl<N>.pkl works; this trial provides the 794495 one.
 with open("dataset_cache_794495_mcl10.pkl", "rb") as f:
     payload = pickle.load(f)   # reconstructs SkeletonGraph instances
 
-gt_graph        = payload["gt_graph"]         # SkeletonGraph: 19 human-traced neurons
-fragments_graph = payload["fragments_graph"]  # SkeletonGraph: ~478,600 UNet fragments
+gt_graph        = payload["gt_graph"]         # SkeletonGraph: human-traced neurons
+fragments_graph = payload["fragments_graph"]  # SkeletonGraph: UNet fragments
 anisotropy      = payload["anisotropy"]       # (0.748, 0.748, 1.0)
 
 print(gt_graph.summary(prefix="GroundTruth"))
 print(fragments_graph.summary(prefix="Fragments"))
 # -> # Connected Components / # Nodes / # Edges / Memory Consumption
+# For the provided 794495 cache:
 # GroundTruth: 19 components, ~1,363,808 nodes
 # Fragments:   ~478,611 components, ~25,527,200 nodes
 ```
@@ -449,8 +461,9 @@ contain (the mask).
 ## 3) Intent
 
 The high-level goal is to **build a better proofreading tool** — an *agentic,
-post-hoc* corrector of whole-brain neuron reconstructions — using brain-794495
-as its development-and-evaluation target. The tool takes the error-prone U-Net
+post-hoc* corrector of whole-brain neuron reconstructions that works for **any
+ExaSPIM brain**, with the provided 794495 cache as its
+development-and-evaluation target. The tool takes the error-prone U-Net
 reconstruction (`fragments_graph`) and **edits it to correct the three
 topological error types** scored against the human ground truth (`gt_graph`):
 
@@ -459,9 +472,9 @@ topological error types** scored against the human ground truth (`gt_graph`):
 - recover **omits** — extend/reconnect reconstruction into stretches of neuron
   the U-Net missed entirely.
 
-The deliverable is the **corrector itself** (a reusable method), not just a
-hand-fixed copy of this one brain; brain-794495 is the benchmark on which it is
-measured. This is complementary to topology-aware *segmentation* losses, which
+The deliverable is the **corrector itself** (a reusable, brain-agnostic method),
+not just a hand-fixed copy of one brain; the provided 794495 cache is the
+benchmark on which it is measured in this trial. This is complementary to topology-aware *segmentation* losses, which
 reduce errors at training time; here the aim is to repair the residual
 split/merge/omit errors that survive in the existing SWC fragments.
 
@@ -473,7 +486,8 @@ proposals in a progressive confidence-threshold sweep that forbids cycles. A
 separate detector flags merge sites. Success is measured by re-computing the
 skeleton metrics **before vs. after** correction: a better tool delivers a
 **larger reduction in splits/merges/omits and larger ERL and edge-accuracy
-gains than this single-pass baseline** on the same 19 ground-truth neurons.
+gains than this single-pass baseline** on the same ground-truth neurons (the 19
+in the provided 794495 cache, or whatever a given brain's cache contains).
 
 An **agentic** framework over this dataset aims to overcome the single-pass
 pipeline's structural limits. These are the areas the system can use to loosely
