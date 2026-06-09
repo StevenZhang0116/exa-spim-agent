@@ -6,6 +6,9 @@
 *.npz
 *.zarr
 dataset_cache_*.pkl
+cache/
+# Dataset listing (kept local, not pushed to remote)
+configs/segmentation_datasets.rtf
 
 # Output directories
 figs/

@@ -16,8 +16,8 @@ Requirements:
     (also requires the agentic_neuron_proofreader package installed locally)
 
 Notes:
-    - Loads the cached BrainDataset from dataset_cache_794495.pkl
-    - Requires GCS credentials (zihan_gcs_token.json) for reading images
+    - Loads the cached BrainDataset from cache/dataset_cache_794495_mcl1000.pkl
+    - Requires GCS credentials (configs/zihan_gcs_token.json) for reading images
     - Close the window to exit
 """
 
@@ -27,7 +27,7 @@ import sys
 
 import numpy as np
 
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "../zihan_gcs_token.json"
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "../configs/zihan_gcs_token.json"
 os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
 
 from agentic_neuron_proofreader.data_modules.datasets import BrainDataset
@@ -35,7 +35,7 @@ from agentic_neuron_proofreader.utils import img_util, util
 
 
 def load_dataset(brain_id="794495"):
-    cache_path = f"../dataset_cache_{brain_id}.pkl"
+    cache_path = f"../cache/dataset_cache_{brain_id}_mcl1000.pkl"
     if not os.path.exists(cache_path):
         print(f"Cache not found: {cache_path}")
         print("Run load_skeletons.ipynb first to generate the cache.")

@@ -15,16 +15,17 @@ exa-spim-agent/
 ├── scripts/                       # Standalone Python scripts
 │   └── visualize_napari.py        # Interactive 3D viewer with Napari
 ├── configs/                       # Configuration files
-│   └── exaspim_image_prefixes.json
+│   ├── exaspim_image_prefixes.json
+│   └── zihan_gcs_token.json       # GCS credentials (gitignored)
 ├── figs/                          # Generated figures (gitignored)
 ├── metrics_out/                   # Evaluation outputs (gitignored)
-├── dataset_cache_*.pkl            # Cached BrainDataset (gitignored)
-└── zihan_gcs_token.json           # GCS credentials (gitignored)
+└── cache/                         # Cached BrainDataset .pkl files (gitignored)
+    └── dataset_cache_*.pkl        # one per min_cable_length (mclN)
 ```
 
 ## Notebooks (run in order)
 
-1. **`notebooks/load_skeletons.ipynb`** — Reads GT and UNet fragment SWC files from GCS, builds graph structures, and saves a `dataset_cache_*.pkl` for fast reloading. Run this first (~15 min).
+1. **`notebooks/load_skeletons.ipynb`** — Reads GT and UNet fragment SWC files from GCS, builds graph structures, and saves a `cache/dataset_cache_*.pkl` for fast reloading. Run this first (~15 min).
 
 2. **`notebooks/evaluate_skeleton_metrics.ipynb`** — Runs the full `segmentation-skeleton-metrics` evaluation pipeline on the whole brain. Outputs `metrics_out/` with per-skeleton CSV results. Run after step 1.
 

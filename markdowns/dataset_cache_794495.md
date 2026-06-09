@@ -448,23 +448,32 @@ contain (the mask).
 
 ## 3) Intent
 
-The high-level goal is **agentic, post-hoc proofreading of the brain-794495
-neuron reconstruction**: take the error-prone U-Net reconstruction
-(`fragments_graph`) and correct it toward the human ground truth (`gt_graph`),
-with the largest gains coming from fixing **splits** (re-joining fragments of
-the same neuron) and resolving **merges** (separating wrongly fused neurons).
-This is complementary to topology-aware *segmentation* losses, which reduce
-errors at training time; here the aim is to repair the residual split/merge
-errors that survive in the existing SWC fragments.
+The high-level goal is to **build a better proofreading tool** — an *agentic,
+post-hoc* corrector of whole-brain neuron reconstructions — using brain-794495
+as its development-and-evaluation target. The tool takes the error-prone U-Net
+reconstruction (`fragments_graph`) and **edits it to correct the three
+topological error types** scored against the human ground truth (`gt_graph`):
 
-A conventional split-correction pipeline does this in a single forward pass:
-generate reconnection proposals between nearby fragment endpoints (KD-tree
-search within ~20 µm, aligned to branch tangents), extract skeleton features,
-classify each proposal, and accept proposals in a progressive
-confidence-threshold sweep that forbids cycles. A separate detector flags merge
-sites. Success is measured by re-computing the skeleton metrics **before vs.
-after** correction and reporting the reduction in splits/merges and the gain in
-ERL and edge accuracy.
+- fix **splits** — re-join fragments that belong to the same neuron;
+- resolve **merges** — cut apart segments that wrongly fuse two neurons;
+- recover **omits** — extend/reconnect reconstruction into stretches of neuron
+  the U-Net missed entirely.
+
+The deliverable is the **corrector itself** (a reusable method), not just a
+hand-fixed copy of this one brain; brain-794495 is the benchmark on which it is
+measured. This is complementary to topology-aware *segmentation* losses, which
+reduce errors at training time; here the aim is to repair the residual
+split/merge/omit errors that survive in the existing SWC fragments.
+
+The bar for "better" is set by a conventional split-correction pipeline that
+does this in a single forward pass: generate reconnection proposals between
+nearby fragment endpoints (KD-tree search within ~20 µm, aligned to branch
+tangents), extract skeleton features, classify each proposal, and accept
+proposals in a progressive confidence-threshold sweep that forbids cycles. A
+separate detector flags merge sites. Success is measured by re-computing the
+skeleton metrics **before vs. after** correction: a better tool delivers a
+**larger reduction in splits/merges/omits and larger ERL and edge-accuracy
+gains than this single-pass baseline** on the same 19 ground-truth neurons.
 
 An **agentic** framework over this dataset aims to overcome the single-pass
 pipeline's structural limits. These are the areas the system can use to loosely
