@@ -120,30 +120,53 @@ def build_options(model: str = DEFAULT_MODEL) -> ClaudeAgentOptions:
     )
 
 
-def snapshot(gen_dir: Path) -> None:
-    """Save the current artifacts so a rejected revision can be reverted."""
+def make_working_artifacts(run_dir: Path) -> tuple[Path, Path]:
+    """Copy the pristine artifacts into this run's timestamped dir and return the
+    copies' paths. The run reads/revises ONLY these copies; the originals under
+    ``artifacts/`` are never touched, so the run is reproducible and the
+    before/after files are trivially identifiable (original = ``artifacts/``,
+    this run = ``runs/<brain>_<timestamp>/artifacts/``).
+    """
+    work_dir = run_dir / "artifacts"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    work_heuristics = work_dir / "heuristics.py"
+    work_rules = work_dir / "rules.md"
+    shutil.copy2(HEURISTICS, work_heuristics)
+    shutil.copy2(RULES, work_rules)
+    return work_heuristics, work_rules
+
+
+def snapshot(gen_dir: Path, heuristics: Path, rules: Path) -> None:
+    """Save the current working artifacts so a rejected revision can be reverted."""
     gen_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(HEURISTICS, gen_dir / "heuristics.py")
-    shutil.copy2(RULES, gen_dir / "rules.md")
+    shutil.copy2(heuristics, gen_dir / "heuristics.py")
+    shutil.copy2(rules, gen_dir / "rules.md")
 
 
-def revert(gen_dir: Path) -> None:
-    """Restore artifacts from a snapshot (used when a revision fails the gate)."""
-    shutil.copy2(gen_dir / "heuristics.py", HEURISTICS)
-    shutil.copy2(gen_dir / "rules.md", RULES)
+def revert(gen_dir: Path, heuristics: Path, rules: Path) -> None:
+    """Restore working artifacts from a snapshot (when a revision fails the gate)."""
+    shutil.copy2(gen_dir / "heuristics.py", heuristics)
+    shutil.copy2(gen_dir / "rules.md", rules)
 
 
-async def ask_reviser(client: ClaudeSDKClient, report_path: str, verbose: bool):
+async def ask_reviser(
+    client: ClaudeSDKClient, report_path: str,
+    heuristics_path: str, rules_path: str, verbose: bool,
+):
     """Run the proofreader-reviser subagent on the failure report. Returns
-    (text, input_tokens, output_tokens, cost_usd)."""
+    (text, input_tokens, output_tokens, cost_usd).
+
+    The agent is told to edit THIS RUN's working copies (under runs/<id>/artifacts),
+    not the pristine originals under proofreader_evolve/artifacts.
+    """
     instruction = (
         "Use the proofreader-reviser subagent to improve the evolved proofreading "
-        "program. The current policy lives in "
-        "proofreader_evolve/artifacts/heuristics.py and its theory in "
-        "proofreader_evolve/artifacts/rules.md. The failure report for the latest "
-        f"candidate is at {report_path}. Diagnose why the policy lost accuracy, "
-        "make ONE concrete improvement to propose_edits (keeping its signature), "
-        "update rules.md and its change log, and confirm the module imports."
+        f"program. The current policy lives in {heuristics_path} and its theory in "
+        f"{rules_path}. Edit THOSE files in place (do not touch any other files). "
+        f"The failure report for the latest candidate is at {report_path}. "
+        "Diagnose why the policy lost accuracy, make ONE concrete improvement to "
+        "propose_edits (keeping its call signature), update the rules file and its "
+        "change log, and confirm the module imports."
     )
     await client.query(instruction)
     chunks, in_tok, out_tok, cost = [], 0, 0, 0.0
@@ -183,7 +206,14 @@ async def run_evolution(
     run_dir = HERE / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     ledger = Ledger(str(run_dir / "ledger.jsonl"))
-    log(f"Run {run_id}; artifacts evolve in place under {ARTIFACTS}")
+
+    # Work on TIMESTAMPED COPIES of the artifacts, never the originals. The agent
+    # reads/revises only these; artifacts/ stays pristine, so the original vs.
+    # evolved files are easy to tell apart afterward.
+    work_heuristics, work_rules = make_working_artifacts(run_dir)
+    log(f"Run {run_id}")
+    log(f"  originals (untouched): {HEURISTICS}")
+    log(f"  working copies (revised this run): {work_heuristics}")
 
     # --- One-time setup: prepared brain (expensive, cached), split, baseline --
     paths = scoring.BrainPaths(brain)
@@ -223,13 +253,13 @@ async def run_evolution(
             print(f"\n=== Generation {gen}/{generations} ===")
             gen_wall0 = time.monotonic()
             gen_dir = run_dir / f"gen{gen:02d}"
-            snapshot(gen_dir)  # so we can revert if held-out doesn't improve
+            snapshot(gen_dir, work_heuristics, work_rules)  # revert source if rejected
 
             # (1-3) Run CURRENT policy on TRAIN; build the failure report.
             log("Step 1-3: run current policy on train, build failure report...")
             train_run = cand.run_candidate(
                 prepared, fragments_graph, train_names, "train",
-                str(HEURISTICS), verbose=verbose,
+                str(work_heuristics), verbose=verbose,
             )
             report_path = str(gen_dir / "failure_report.md")
             cand.write_failure_report(
@@ -243,15 +273,17 @@ async def run_evolution(
             log(f"   train Edge Accuracy={train_run.score.primary:.4f} "
                 f"({train_run.n_edits} edits); report -> {report_path}")
 
-            # (4-5) Ask the agent to explain and revise the artifacts in place.
+            # (4-5) Ask the agent to explain and revise the WORKING-COPY artifacts.
             log("Step 4-5: proofreader-reviser diagnoses and revises artifacts...")
-            _, in_tok, out_tok, cost = await ask_reviser(client, report_path, verbose)
+            _, in_tok, out_tok, cost = await ask_reviser(
+                client, report_path, str(work_heuristics), str(work_rules), verbose
+            )
 
             # (6) Re-run the REVISED policy on HELD-OUT and score.
             log("Step 6: score revised policy on held-out...")
             heldout_run = cand.run_candidate(
                 prepared, fragments_graph, heldout_names, "heldout",
-                str(HEURISTICS), verbose=verbose,
+                str(work_heuristics), verbose=verbose,
             )
             heldout_acc = heldout_run.score.primary
             eval_seconds = train_run.score.seconds + heldout_run.score.seconds
@@ -267,11 +299,11 @@ async def run_evolution(
 
             if keep:
                 best_heldout = max(best_heldout, heldout_acc)
-                shutil.copy2(HEURISTICS, gen_dir / "heuristics.accepted.py")
-                shutil.copy2(RULES, gen_dir / "rules.accepted.md")
+                shutil.copy2(work_heuristics, gen_dir / "heuristics.accepted.py")
+                shutil.copy2(work_rules, gen_dir / "rules.accepted.md")
                 note = "accepted"
             else:
-                revert(gen_dir)  # restore the pre-revision artifacts
+                revert(gen_dir, work_heuristics, work_rules)  # restore pre-revision
                 note = "reverted (no held-out improvement)"
             log(f"Step 7: held-out Edge Accuracy={heldout_acc:.4f} "
                 f"(best={best_heldout:.4f}) -> {note}")
@@ -293,8 +325,9 @@ async def run_evolution(
 
     print("\n=== Evolution complete ===")
     print(ledger.summarize())
-    print(f"Artifacts (latest accepted) -> {ARTIFACTS}")
-    print(f"Run log + ledger -> {run_dir}")
+    print(f"Originals (unchanged)        -> {ARTIFACTS}")
+    print(f"Evolved artifacts (this run) -> {work_heuristics.parent}")
+    print(f"Run log + ledger             -> {run_dir}")
 
 
 def main() -> int:

@@ -15,16 +15,24 @@ The evolution loop works by:
      companion ``rules.md``) to do better,
   5. keeping the rewrite ONLY if held-out Edge Accuracy improves.
 
-Contract (keep this stable so the harness can always call it):
-    propose_edits(sites, ctx) -> list[tuple[str, str]]
+Contract (keep the CALL signature stable so the harness can always call it):
+    propose_edits(sites, ctx) -> list[edit]
 
   sites : list[SplitSite]   # from dataset.candidate_split_sites
   ctx   : dict              # free-form context the harness provides, e.g.
                             #   ctx["max_gap_um"], ctx["fragments_graph"]
-  return: list of (label_a, label_b) fragment-label pairs to unify.
+  return: list of edits. Each edit is EITHER a legacy 2-tuple
+          ``(label_a, label_b)`` (treated as a merge) OR a typed dict:
+            {"kind": "merge_labels", "label_a": str, "label_b": str}      # repair split
+            {"kind": "split_label",  "label": str,                        # repair merge
+             "seed_a_xyz": (x,y,z), "seed_b_xyz": (x,y,z)}
+            {"kind": "flag_review", "reason": str} / {"kind": "reject_candidate"}
+          The harness normalizes tuples and dicts uniformly (see
+          harness.edit_handler.normalize_edits), so they may be mixed.
 
-This seed version is deliberately simple — a single distance threshold — so the
-first generation has obvious, measurable failure modes for the agent to improve.
+This seed version is deliberately simple — a single distance threshold, returning
+merge tuples — so the first generation has obvious, measurable failure modes for
+the agent to improve.
 """
 
 from __future__ import annotations

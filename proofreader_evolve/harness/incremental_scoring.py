@@ -176,25 +176,40 @@ class PreparedBrain:
         return sorted(self.gt_graphs.keys())
 
     # --- per-candidate reset ---
-    def _apply_handler(self, label_handler):
+    def _apply_handler(self, handler, coordinate_aware: bool = False):
         """Reset every graph from its raw snapshot and apply the candidate handler.
 
         Mirrors the real pipeline order exactly: derive class labels from raw via
         the handler, then fix_label_misalignments() on the class labels.
+
+        ``handler`` may be a metric-package ``LabelHandler`` (``get(raw)``) or our
+        ``EditHandler`` (``get(raw, xyz)``). When ``coordinate_aware`` is True the
+        GT-node lookup passes the node's physical coordinate, so a coordinate-
+        dependent ``split_label`` edit can map one raw segment id to different
+        pseudo-labels by location. Fragment labels are always looked up by id only
+        (no per-node coordinate); virtual splits act on the GT-node labels that
+        the cross-skeleton merge metric reads, which is what lets a merged segment
+        register as split without materializing a new dense volume.
         """
         for name, g in self.gt_graphs.items():
             raw = self._gt_raw[name]
-            # relabel from raw -> class (same as LabeledGraph.relabel_nodes body)
-            g.node_label = np.array(
-                [label_handler.get(raw[i]) for i in range(len(raw))], dtype=object
-            )
+            if coordinate_aware:
+                g.node_label = np.array(
+                    [handler.get(raw[i], g.node_xyz(i)) for i in range(len(raw))],
+                    dtype=object,
+                )
+            else:
+                # relabel from raw -> class (same as LabeledGraph.relabel_nodes body)
+                g.node_label = np.array(
+                    [handler.get(raw[i]) for i in range(len(raw))], dtype=object
+                )
             g.fix_label_misalignments()
             # reset per-run accumulators the metric classes mutate
             g.labels_with_merge = set()
             g.labeled_run_length = 0
             g.set_kdtree()
         for key, g in self.fragment_graphs.items():
-            g.label = label_handler.get(self._frag_raw_label[key])
+            g.label = handler.get(self._frag_raw_label[key])
 
 
 def build_prepared_brain(
@@ -267,9 +282,10 @@ def score_incremental(
     prepared: PreparedBrain,
     label_pairs=None,
     gt_swc_names=None,
+    edits=None,
     verbose: bool = False,
 ) -> scoring.ScoreResult:
-    """Score a candidate (set of label-pair edits) in seconds.
+    """Score a candidate (set of edits) in seconds.
 
     Reuses the real metric classes on relabeled graphs, so results equal
     evaluate()'s. Returns a scoring.ScoreResult (same shape as scoring.score),
@@ -279,14 +295,28 @@ def score_incremental(
     ----------
     prepared : PreparedBrain
     label_pairs : sequence of (label, label), optional
-        Candidate split-correction edits. None/empty == baseline.
+        Legacy split-correction edits (merge-only). None/empty == baseline. Routed
+        through the metric package's LabelHandler exactly as before, so existing
+        callers get byte-identical results.
     gt_swc_names : iterable of str, optional
         Restrict scoring to this GT subset (train or held-out).
+    edits : list of typed edits, optional
+        Typed proofreading edits (see harness.edit_handler): ``merge_labels``,
+        ``split_label``, ``flag_review``, ``reject_candidate``. When provided
+        (and non-empty), scoring uses the coordinate-aware EditHandler so a
+        ``split_label`` can virtually partition a merged segment by location.
+        Mutually exclusive with ``label_pairs``; if both are given, ``edits``
+        wins (and a pure-merge ``edits`` list is equivalent to ``label_pairs``).
     """
     t0 = time.monotonic()
-    pairs = [(str(a), str(b)) for a, b in (label_pairs or [])]
-    handler = LabelHandler(labels=set(prepared.all_fragment_labels), label_pairs=pairs)
-    prepared._apply_handler(handler)
+    if edits:
+        from proofreader_evolve.harness.edit_handler import EditHandler
+        handler = EditHandler(edits, all_labels=prepared.all_fragment_labels)
+        prepared._apply_handler(handler, coordinate_aware=True)
+    else:
+        pairs = [(str(a), str(b)) for a, b in (label_pairs or [])]
+        handler = LabelHandler(labels=set(prepared.all_fragment_labels), label_pairs=pairs)
+        prepared._apply_handler(handler)
 
     # IMPORTANT: score on the FULL GT set, then filter rows to the requested
     # subset. Some metrics are cross-skeleton — MergedEdgePercentMetric calls
@@ -372,6 +402,100 @@ def _attribute_merge_sites(merge_metric, handler):
     return sites
 
 
+def probe_split_oracle(prepared: PreparedBrain, min_nodes: int = 50, verbose: bool = False):
+    """Diagnostic: the *ceiling* gain from a perfect ``split_label`` correction.
+
+    DE-RISK MEASUREMENT (uses ground-truth knowledge — NOT a deployable policy).
+    Before building a candidate generator and policy for merge repair, this
+    answers: "if we could split every merge-causing segment perfectly, how much
+    would the metrics actually improve?" If even the perfect split barely moves
+    %Merged Edges / Edge Accuracy, the whole split_label track is not worth it.
+
+    Method:
+      1. Score the baseline (no edits).
+      2. Find each raw segment label that lands (>= ``min_nodes`` nodes) on two or
+         more *distinct* GT skeletons — i.e. a label causing a cross-skeleton
+         merge (same rule as MergedEdgePercentMetric.detect_label_intersections).
+      3. Oracle relabel: every GT node carrying such a label ``L`` gets
+         ``L#<gt_skeleton_name>`` — a perfect split that removes the cross-skeleton
+         intersection entirely. (A real seed-based split can only approximate this.)
+      4. Re-score and report the deltas.
+
+    Returns
+    -------
+    dict with ``baseline`` and ``oracle`` ScoreResults, the ``merged_labels``
+    found, and a ``delta`` dict of tracked-metric changes (oracle - baseline).
+    """
+    # 1) Baseline.
+    base = score_incremental(prepared, label_pairs=None, verbose=verbose)
+
+    # 2) Which raw labels touch >=2 GT skeletons with >= min_nodes each?
+    #    Build {raw_label -> {gt_name -> count}} from the raw snapshots.
+    label_to_gt_counts: dict[str, dict[str, int]] = {}
+    for name, raw in prepared._gt_raw.items():
+        for lab in raw:
+            lab = str(lab)
+            if lab == "0":
+                continue
+            label_to_gt_counts.setdefault(lab, {}).setdefault(name, 0)
+            label_to_gt_counts[lab][name] += 1
+    merged_labels = {
+        lab
+        for lab, counts in label_to_gt_counts.items()
+        if sum(1 for c in counts.values() if c >= min_nodes) >= 2
+    }
+    if verbose:
+        print(f"[oracle] {len(merged_labels)} merge-causing labels "
+              f"(>= {min_nodes} nodes on >=2 GT skeletons)")
+
+    # 3) Oracle relabel directly on GT node labels: L -> L#<gt_name> for merged L.
+    #    (Reset fragment labels from raw too, for a clean baseline comparison.)
+    for name, g in prepared.gt_graphs.items():
+        raw = prepared._gt_raw[name]
+        g.node_label = np.array(
+            [f"{raw[i]}#{name}" if str(raw[i]) in merged_labels else raw[i]
+             for i in range(len(raw))],
+            dtype=object,
+        )
+        g.fix_label_misalignments()
+        g.labels_with_merge = set()
+        g.labeled_run_length = 0
+        g.set_kdtree()
+    for key, g in prepared.fragment_graphs.items():
+        g.label = prepared._frag_raw_label[key]
+
+    # 4) Re-score with the oracle labels in place (mirror score_incremental's body
+    #    WITHOUT re-applying a handler, since we set node_label directly above).
+    gt_full = prepared.gt_graphs
+    metrics = _core_metrics(verbose)
+    derived = _derived_metrics(verbose)
+    cols = ["SWC Run Length"] + list(metrics) + list(derived)
+    results = pd.DataFrame(np.nan, index=sorted(gt_full), columns=cols)
+    for key, g in gt_full.items():
+        results.loc[key, "SWC Run Length"] = g.run_length
+    for nm, metric in metrics.items():
+        if nm == "# Merges":
+            results[nm] = metric(gt_full, prepared.fragment_graphs)
+        else:
+            results.update(metric(gt_full))
+    for nm, metric in derived.items():
+        results[nm] = metric(gt_full, results)
+    tracked = {m: scoring._weighted_avg(results, m) for m in scoring.TRACKED_METRICS}
+    oracle = scoring.ScoreResult(
+        primary=tracked[scoring.PRIMARY_METRIC],
+        metrics=tracked, per_swc=results, output_dir="", seconds=0.0,
+    )
+
+    delta = {m: oracle.metrics.get(m, float("nan")) - base.metrics.get(m, float("nan"))
+             for m in scoring.TRACKED_METRICS}
+    return {
+        "baseline": base,
+        "oracle": oracle,
+        "merged_labels": sorted(merged_labels),
+        "delta": delta,
+    }
+
+
 def get_or_build(
     paths: scoring.BrainPaths, cache_path: str, verbose=True, max_workers: int = 2
 ) -> PreparedBrain:
@@ -387,3 +511,31 @@ def get_or_build(
     if verbose:
         print(f"Saved prepared brain -> {cache_path}")
     return prepared
+
+
+if __name__ == "__main__":
+    # De-risk probe runner: measures the ceiling gain from perfect merge-splitting.
+    #   python proofreader_evolve/harness/incremental_scoring.py --brain 789202
+    import argparse
+    from pathlib import Path
+
+    p = argparse.ArgumentParser(description="Oracle split_label de-risk probe.")
+    p.add_argument("--brain", default="789202")
+    p.add_argument("--min-nodes", type=int, default=50)
+    args = p.parse_args()
+
+    _paths = scoring.BrainPaths(args.brain)
+    _cache = str(Path(__file__).resolve().parent.parent / "runs" / f"prepared_{args.brain}.pkl")
+    _prepared = get_or_build(_paths, _cache, verbose=True)
+    out = probe_split_oracle(_prepared, min_nodes=args.min_nodes, verbose=True)
+
+    print(f"\n=== Oracle split_label ceiling (brain {args.brain}) ===")
+    print(f"merge-causing labels: {len(out['merged_labels'])}")
+    b, o = out["baseline"].metrics, out["oracle"].metrics
+    for m in scoring.TRACKED_METRICS:
+        print(f"  {m:<16} {b.get(m, float('nan')):>10.4f} -> {o.get(m, float('nan')):>10.4f}"
+              f"   (Δ {out['delta'][m]:+.4f})")
+    print("\nIf %Merged Edges / Edge Accuracy barely move, the split_label track")
+    print("is not worth building; if they move a lot, proceed to a candidate")
+    print("generator + policy. (#Merges may not move: it keys on fragment labels,")
+    print("not GT-node labels — see the diagnosis.)")

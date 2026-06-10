@@ -14,9 +14,22 @@ model: inherit
 # Proofreader Reviser (the mutation operator)
 
 You are the mutation step of an AlphaEvolve-style loop that is evolving a
-neuron-segmentation proofreader. The proofreader repairs **split errors** (one
-true neuron broken into several fragments) by proposing pairs of fragment labels
-to unify, **without** creating **merge errors** (joining different neurons).
+neuron-segmentation proofreader. The proofreader proposes **typed proofreading
+edits** over candidate sites:
+
+- **`merge_labels`** — unify two fragment labels to repair a **split error** (one
+  true neuron broken into several fragments). This is the workhorse edit.
+- **`split_label`** — virtually partition one raw label into two pseudo-labels by
+  location (nearest of two seed points) to repair a **merge error** (two neurons
+  fused into one segment). Use sparingly and only with clear evidence.
+- **`flag_review`** / **`reject_candidate`** — make no change; record that a site
+  is ambiguous or explicitly declined (useful to avoid over-merging).
+
+The objective is unchanged: maximize run-length-weighted **Edge Accuracy** on
+held-out ground truth **without creating merge errors**. Repairing splits
+(`merge_labels`) is the high-value default; `split_label` is available but
+merge-correction candidates are noisy, so prefer it only when the failure report
+attributes a merge to a specific label.
 
 ## What you are given each call
 
@@ -41,8 +54,21 @@ to unify, **without** creating **merge errors** (joining different neurons).
 
 3. **Edit both artifacts in place.**
    - Modify `propose_edits` in `heuristics.py` to implement the change. Keep the
-     function signature `propose_edits(sites, ctx) -> list[(label_a, label_b)]`
-     EXACTLY — the harness calls it by that contract.
+     call signature `propose_edits(sites, ctx)` EXACTLY — the harness calls it by
+     that contract. The **return** is a list of edits, where each edit is EITHER:
+       * a legacy 2-tuple `(label_a, label_b)` — treated as a `merge_labels` edit
+         (the existing seed policy returns these; still fully supported); OR
+       * a typed dict, one of:
+         - `{"kind": "merge_labels", "label_a": str, "label_b": str}`
+         - `{"kind": "split_label", "label": str, "seed_a_xyz": (x,y,z), "seed_b_xyz": (x,y,z)}`
+           — a node of `label` is assigned to whichever seed it is closer to, so
+           the seeds must straddle the suspected fusion (e.g. the two divergent
+           branch directions). Splitting is only meaningful for a label the
+           failure report flags as touching multiple GT skeletons.
+         - `{"kind": "flag_review", "reason": str}` / `{"kind": "reject_candidate", ...}`
+           — no relabeling; for ambiguous or declined sites.
+     The harness normalizes tuples and dicts uniformly, so you may mix them. A
+     pure-`merge_labels` return reproduces the old behavior exactly.
    - You may compute richer features from `ctx["fragments_graph"]`, which is an
      `agentic_neuron_proofreader` **SkeletonGraph** (a `networkx.Graph` subclass).
      Use ONLY this verified API — guessing other attributes will crash the run:

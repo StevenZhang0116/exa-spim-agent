@@ -94,15 +94,28 @@ def run_candidate(
     # failure-report helper.
     from proofreader_evolve.harness import incremental_scoring as inc
 
+    from proofreader_evolve.harness.edit_handler import normalize_edits
+
     propose_edits = _load_policy(heuristics_path)
 
     sites = ds.candidate_split_sites(fragments_graph, max_gap_um=max_gap_um)
     ctx = {"max_gap_um": max_gap_um, "fragments_graph": fragments_graph}
-    edits = [tuple(map(str, e)) for e in propose_edits(sites, ctx)]
 
+    # The policy may return legacy (label_a, label_b) tuples OR typed edit dicts
+    # ({"kind": "merge_labels"|"split_label"|...}). normalize_edits promotes both
+    # to the typed form, so the loop accepts either without the old, lossy
+    # tuple(map(str, e)) coercion (which silently corrupted dict edits into a
+    # 4-tuple of their keys).
+    raw_edits = propose_edits(sites, ctx)
+    edits = normalize_edits(raw_edits)
+
+    # Always route through the typed path so split_label edits actually take
+    # effect. A pure-merge edit list reproduces the legacy label-pair result
+    # exactly (EditHandler's merge union-find == LabelHandler's equivalence
+    # classes), so split-only policies are unaffected.
     result = inc.score_incremental(
         prepared,
-        label_pairs=edits,
+        edits=edits,
         gt_swc_names=gt_swc_names,
         verbose=verbose,
     )
@@ -153,13 +166,26 @@ def write_failure_report(
     lines.append(", ".join(worse) if worse else "_none — every skeleton improved or held._")
 
     # The concrete edits the policy proposed, so the reviser can reason about
-    # *which* reconnection to change — not just that some skeleton regressed.
-    lines.append("\n\n## Edits proposed (label pairs joined)\n")
+    # *which* edit to change — not just that some skeleton regressed. Edits are
+    # typed dicts ({"kind": "merge_labels"|"split_label"|...}); render by kind.
+    lines.append("\n\n## Edits proposed\n")
     edits = train_run.edits or []
     if edits:
-        lines.append(f"{len(edits)} edits; each `(a, b)` fused fragment label a into b:\n")
+        from collections import Counter
+        kinds = Counter(e.get("kind", "?") for e in edits)
+        lines.append(f"{len(edits)} edits: "
+                     + ", ".join(f"{n}× {k}" for k, n in kinds.items()) + "\n")
+
+        def render(e):
+            k = e.get("kind")
+            if k == "merge_labels":
+                return f"merge({e.get('label_a')}, {e.get('label_b')})"
+            if k == "split_label":
+                return f"split({e.get('label')} @ {e.get('seed_a_xyz')}|{e.get('seed_b_xyz')})"
+            return f"{k}({ {x: e[x] for x in e if x != 'kind'} })"
+
         shown = edits[:40]
-        lines.append(", ".join(f"({a}, {b})" for a, b in shown))
+        lines.append(", ".join(render(e) for e in shown))
         if len(edits) > len(shown):
             lines.append(f"\n…and {len(edits) - len(shown)} more.")
     else:
