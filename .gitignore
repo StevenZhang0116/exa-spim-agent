@@ -17,6 +17,7 @@ outputs/
 results/
 checkpoints/
 logs/
+proofreader_evolve/runs/
 
 # Credentials and tokens
 *.json
