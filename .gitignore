@@ -17,7 +17,12 @@ outputs/
 results/
 checkpoints/
 logs/
-proofreader_evolve/runs/
+
+# Evolution runs: TRACK the small artifacts (ledger, per-gen heuristics/rules,
+# failure reports, attempts.md, SUMMARY.md) but NOT the huge prepared-brain
+# pickle (~2 GB each). (Also covered by the global *.pkl above; listed here too
+# for clarity since runs/ is otherwise tracked.)
+proofreader_evolve/runs/**/prepared_*.pkl
 
 # Credentials and tokens
 *.json

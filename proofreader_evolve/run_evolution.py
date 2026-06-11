@@ -125,6 +125,28 @@ def build_options(model: str = DEFAULT_MODEL) -> ClaudeAgentOptions:
     )
 
 
+def _find_existing_prepared(brain: str, exclude: Path | None = None) -> Path | None:
+    """Find a reusable prepared-brain pickle for ``brain`` from a prior run.
+
+    The prepared brain is candidate-invariant and identical across runs of the
+    same brain, so the ~30 min / 1.6 GB build is paid once and copied forward.
+    Searches this run-tree for ``prepared_<brain>.pkl`` — both the per-run
+    location (``runs/<id>/prepared_<brain>.pkl``) and the legacy flat location
+    (``runs/prepared_<brain>.pkl``) — and returns the newest match, or None.
+    """
+    runs_root = HERE / "runs"
+    name = f"prepared_{brain}.pkl"
+    candidates = []
+    legacy = runs_root / name                      # legacy flat location
+    if legacy.exists():
+        candidates.append(legacy)
+    candidates += [p for p in runs_root.glob(f"*/{name}")
+                   if exclude is None or exclude not in p.parents]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
 def make_working_artifacts(run_dir: Path) -> tuple[Path, Path]:
     """Copy the pristine artifacts into this run's timestamped dir and return the
     copies' paths. The run reads/revises ONLY these copies; the originals under
@@ -233,22 +255,43 @@ async def ask_reviser(
            if attempts else "")
     )
     await client.query(instruction)
-    chunks, in_tok, out_tok, cost = [], 0, 0, 0.0
+    # Capture the SUBAGENT's text, not the orchestrator's. The reviser runs inside
+    # a Task tool-use; its AssistantMessages carry a non-None ``parent_tool_use_id``
+    # (the Task's id), whereas the orchestrator's own narration ("I'll delegate
+    # this to the … subagent") has ``parent_tool_use_id is None``. Collecting only
+    # the parented text gives us the actual diagnosis/reasoning; the orchestrator
+    # text is kept separately as a fallback in case no subagent text is surfaced.
+    sub_chunks, orch_chunks = [], []
+    in_tok = out_tok = 0
+    cost = 0.0
     async for message in client.receive_response():
         if isinstance(message, AssistantMessage):
+            is_sub = getattr(message, "parent_tool_use_id", None) is not None
             for block in message.content:
                 if isinstance(block, TextBlock):
-                    chunks.append(block.text)
+                    (sub_chunks if is_sub else orch_chunks).append(block.text)
                     if verbose:
                         print(block.text, end="", flush=True)
                 elif ToolUseBlock and isinstance(block, ToolUseBlock):
-                    log(f"    → {getattr(block, 'name', 'tool')}")
-        elif isinstance(message, ResultMessage):
+                    log(f"    → {getattr(block, 'name', 'tool')}"
+                        f"{' [subagent]' if is_sub else ''}")
+            # Sum token usage across ALL assistant messages (orchestrator +
+            # subagent), so the ledger reflects the subagent's real consumption,
+            # not just the parent's final ResultMessage.
             usage = getattr(message, "usage", None) or {}
-            in_tok = usage.get("input_tokens", 0)
-            out_tok = usage.get("output_tokens", 0)
+            in_tok += usage.get("input_tokens", 0) or 0
+            out_tok += usage.get("output_tokens", 0) or 0
+        elif isinstance(message, ResultMessage):
             cost = getattr(message, "total_cost_usd", 0.0) or 0.0
-    return "".join(chunks), in_tok, out_tok, cost
+            # Fall back to the result usage only if no per-message usage was seen.
+            if in_tok == 0 and out_tok == 0:
+                ru = getattr(message, "usage", None) or {}
+                in_tok = ru.get("input_tokens", 0) or 0
+                out_tok = ru.get("output_tokens", 0) or 0
+    # Prefer the subagent's diagnosis; fall back to orchestrator text if the SDK
+    # surfaced none (older SDKs / different routing).
+    text = "".join(sub_chunks) or "".join(orch_chunks)
+    return text, in_tok, out_tok, cost
 
 
 def human_gate(gen: int, train_acc: float, heldout_acc: float, parent_acc: float) -> bool:
@@ -288,9 +331,16 @@ async def run_evolution(
     log(f"Loading cached fragment graph (site geometry): {cache_path}")
     fragments_graph, _gt_graph, _ = ds.load_cached_graphs(cache_path)
 
-    # PreparedBrain drives SCORING. Built once (~30 min), then pickled and reused
-    # across all generations and future runs — this is the incremental scorer.
-    prepared_cache = str(HERE / "runs" / f"prepared_{brain}.pkl")
+    # PreparedBrain drives SCORING. Built once (~30 min, ~1.6 GB), then pickled.
+    # It lives in THIS run's folder, but the ~30 min build is candidate-invariant
+    # and identical across runs of the same brain, so we REUSE an existing pickle
+    # from any prior run folder (or the legacy runs/ location) rather than rebuild.
+    prepared_cache = str(run_dir / f"prepared_{brain}.pkl")
+    if not os.path.exists(prepared_cache):
+        reuse = _find_existing_prepared(brain, exclude=run_dir)
+        if reuse:
+            log(f"Reusing prepared brain from a prior run: {reuse}")
+            shutil.copy2(reuse, prepared_cache)
     log(f"Preparing brain for incremental scoring (cache: {prepared_cache})")
     prepared = inc.get_or_build(paths, prepared_cache, verbose=verbose)
 
