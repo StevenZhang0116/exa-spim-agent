@@ -133,6 +133,75 @@ def _cap_graph_loading_workers(max_workers: int) -> None:
         _gl.ThreadPoolExecutor = capped_te
 
 
+def _install_periodic_progress_log(every_seconds: float = 15.0) -> None:
+    """Emit a flushed, newline-terminated progress line every ``every_seconds``.
+
+    tqdm draws its bar by rewriting one line with a carriage return on stderr.
+    That animates in a real TTY but is invisible when the output is captured to a
+    file / piped / run non-interactively — the bar appears "stuck at 0%" even
+    though the read is progressing. This wraps tqdm in the loader modules so that,
+    in ADDITION to the normal bar, it prints a plain line like
+
+        [progress] Read SWCs: 1234/9983 (12.4%) 0.07s/it eta ~10.3m
+
+    at a fixed interval. Plain `print(flush=True)` survives log capture, so the
+    one-time SWC read is observably alive. Idempotent; bar behavior is unchanged.
+    """
+    import time as _time
+    from tqdm import tqdm as _base_tqdm
+    from segmentation_skeleton_metrics.data_handling import (
+        swc_loading as _swc, graph_loading as _gl,
+    )
+
+    if getattr(_swc.tqdm, "_periodic_log", False):
+        return
+
+    class _LoggingTqdm(_base_tqdm):
+        _periodic_log = True
+
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self._last_log = _time.monotonic()
+            self._emitted_n = -1  # last n we logged, to avoid duplicate lines
+
+        def _emit(self, final=False):
+            if self.n == self._emitted_n and not final:
+                return
+            # Use tqdm's own format_dict for elapsed/rate — it tracks them on the
+            # SAME clock tqdm uses internally (computing elapsed ourselves against
+            # monotonic() would mix clocks and report a bogus s/it).
+            fd = self.format_dict
+            rate = fd.get("rate") or 0.0
+            pct = (100.0 * self.n / self.total) if self.total else 0.0
+            secs_it = (1.0 / rate) if rate else float("nan")
+            eta = ((self.total - self.n) / rate / 60.0) if (self.total and rate) else float("nan")
+            print(f"[progress] {self.desc or 'work'}: {self.n}/{self.total or '?'} "
+                  f"({pct:.1f}%) {secs_it:.3f}s/it eta ~{eta:.1f}m"
+                  f"{' [done]' if final else ''}", flush=True)
+            self._last_log = _time.monotonic()
+            self._emitted_n = self.n
+
+        def update(self, n=1):
+            ret = super().update(n)
+            if _time.monotonic() - self._last_log >= every_seconds:
+                self._emit()
+            return ret
+
+        def close(self):
+            if getattr(self, "_closed_log", False):
+                return super().close()
+            self._closed_log = True
+            try:
+                if self.n > 0:           # skip a useless 0/N line on empty bars
+                    self._emit(final=True)
+            finally:
+                return super().close()
+
+    # Rebind the module-level name both loaders call as ``tqdm(...)``.
+    _swc.tqdm = _LoggingTqdm
+    _gl.tqdm = _LoggingTqdm
+
+
 class PreparedBrain:
     """The once-loaded, candidate-invariant state for one brain.
 
@@ -224,6 +293,7 @@ def build_prepared_brain(
     cgroup. Default 2 is safe for a ~9 GB session; raise it if you have more RAM.
     """
     _cap_graph_loading_workers(max_workers)
+    _install_periodic_progress_log()  # capture-safe progress lines for the SWC read
     segmentation = TensorStoreImage(paths.segmentation_path, swap_axes=True)
     identity = LabelHandler()  # LazyMapping: get(raw) -> raw segment id
 
@@ -283,6 +353,7 @@ def score_incremental(
     label_pairs=None,
     gt_swc_names=None,
     edits=None,
+    max_class_size=None,
     verbose: bool = False,
 ) -> scoring.ScoreResult:
     """Score a candidate (set of edits) in seconds.
@@ -311,7 +382,10 @@ def score_incremental(
     t0 = time.monotonic()
     if edits:
         from proofreader_evolve.harness.edit_handler import EditHandler
-        handler = EditHandler(edits, all_labels=prepared.all_fragment_labels)
+        handler = EditHandler(
+            edits, all_labels=prepared.all_fragment_labels,
+            max_class_size=max_class_size,
+        )
         prepared._apply_handler(handler, coordinate_aware=True)
     else:
         pairs = [(str(a), str(b)) for a, b in (label_pairs or [])]

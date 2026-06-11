@@ -96,11 +96,22 @@ class EditHandler:
         The fragment-label universe (so merge equivalence classes are stable and
         match the metric package's LabelHandler). Labels not in any merge map to
         themselves.
+    max_class_size : int, optional
+        Hard guardrail: refuse any merge that would grow an equivalence class
+        beyond this many distinct labels. The aggressive "merge everything nearby"
+        failure mode chains thousands of pairs into a single brain-spanning class
+        (observed: 68 fragments fused), which manufactures merge errors and can
+        flukily score well. Capping class size makes that catastrophic merge
+        impossible regardless of how bad a proposed policy is. ``None`` = no cap.
+        Rejected unions are dropped (the labels stay in separate classes); the
+        count of dropped unions is exposed as ``dropped_unions``.
     """
 
-    def __init__(self, edits, all_labels=None):
+    def __init__(self, edits, all_labels=None, max_class_size=None):
         self.edits = normalize_edits(edits)
         self._all_labels = set(map(str, all_labels)) if all_labels is not None else None
+        self.max_class_size = max_class_size
+        self.dropped_unions = 0  # # of merges refused by the size guard
 
         # --- split specs: raw_label -> {"seeds": (xyz_a, xyz_b)} -----------------
         # A node of this raw label is assigned to its nearest seed -> pseudo-label
@@ -123,6 +134,8 @@ class EditHandler:
             if e["kind"] == MERGE
         ]
         self._parent: dict[str, str] = {}
+        self._size: dict[str, int] = {}   # root -> # labels in its class
+        self._built = False
 
     # --- union-find for merges ---
     def _find(self, x: str) -> str:
@@ -139,12 +152,24 @@ class EditHandler:
 
     def _union(self, a: str, b: str) -> None:
         ra, rb = self._find(a), self._find(b)
-        if ra != rb:
-            self._parent[rb] = ra
+        if ra == rb:
+            return
+        # Size guard: refuse the merge if the combined class would exceed the cap.
+        if self.max_class_size is not None:
+            if self._size.get(ra, 1) + self._size.get(rb, 1) > self.max_class_size:
+                self.dropped_unions += 1
+                return
+        self._parent[rb] = ra
+        self._size[ra] = self._size.get(ra, 1) + self._size.get(rb, 1)
 
     def _ensure_merge_built(self) -> None:
-        if self._parent:
+        if self._built:
             return
+        self._built = True
+        # Seed each endpoint label as a singleton (size 1) before unioning.
+        for a, b in self._merge_pairs:
+            self._size.setdefault(a, 1)
+            self._size.setdefault(b, 1)
         for a, b in self._merge_pairs:
             self._union(a, b)
 

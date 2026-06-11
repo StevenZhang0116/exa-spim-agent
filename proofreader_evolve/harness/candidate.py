@@ -65,6 +65,7 @@ def run_candidate(
     split_name: str,
     heuristics_path: str,
     max_gap_um: float = 15.0,
+    max_class_size=None,
     verbose: bool = False,
 ) -> CandidateRun:
     """Execute the evolved policy and score its edits on the given GT subset.
@@ -117,6 +118,7 @@ def run_candidate(
         prepared,
         edits=edits,
         gt_swc_names=gt_swc_names,
+        max_class_size=max_class_size,
         verbose=verbose,
     )
     return CandidateRun(

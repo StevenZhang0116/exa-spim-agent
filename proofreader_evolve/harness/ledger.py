@@ -30,8 +30,13 @@ class GenerationCost:
     human_interventions: int = 0         # # of human approvals/edits this gen
     train_primary: float = float("nan")  # train Edge Accuracy after revision
     heldout_primary: float = float("nan")# held-out Edge Accuracy (the gate)
+    parent_heldout: float = float("nan") # held-out of the parent this gen tried to beat
     accepted: bool = False               # was the revision kept?
     note: str = ""
+    # --- traceability (A): what the reviser actually did this generation --------
+    candidate_path: str = ""             # gen<NN>/heuristics.candidate.py (always saved)
+    heuristics_diffstat: str = ""        # "+A -B" lines changed vs the parent policy
+    diagnosis: str = ""                  # the reviser's explanation text (truncated)
 
     def to_json(self) -> dict:
         return asdict(self)
