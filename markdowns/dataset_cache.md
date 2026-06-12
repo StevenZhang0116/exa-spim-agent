@@ -1,19 +1,37 @@
 # `dataset_cache` — Dataset Description
 
 A `dataset_cache_<brain_id>_mcl<N>.pkl` file is a Python pickle holding a cached
-`BrainDataset` for **one ExaSPIM brain**. It bundles two neuron-skeleton graphs —
-a human ground-truth reconstruction and an automated U-Net reconstruction of the
-same brain. These caches are the evaluation targets for a project on **agentic,
-post-hoc proofreading of whole-brain neuron reconstructions**: correcting the
-systematic split/merge errors in the automated reconstruction so the extracted
-wiring diagram becomes trustworthy for downstream connectivity analysis.
+`BrainDataset` for **one ExaSPIM brain**. Each bundles two neuron-skeleton
+graphs — a human ground-truth reconstruction and an automated U-Net
+reconstruction of the same brain. These caches are the evaluation targets for a
+project on **agentic, post-hoc proofreading of whole-brain neuron
+reconstructions**: correcting the systematic split/merge errors in the automated
+reconstruction so the extracted wiring diagram becomes trustworthy for
+downstream connectivity analysis.
 
-The format is **brain-agnostic** — the same schema and tooling accept any
-ExaSPIM brain (709221, 794491, 794495, …; one cache per brain). **For this trial
-we provide `dataset_cache_794495_mcl10.pkl`** (specimen **794495**,
-`min_cable_length = 10` µm), and the concrete counts below describe that file;
-swapping in another brain's cache changes only the numbers, not the structure or
-the procedures.
+**This trial provides a *collection* of these caches — one per brain — together
+in the `cache/` folder.** Do not assume which or how many brains are present:
+the collection is simply *every* `dataset_cache_<brain_id>_mcl<N>.pkl` file in
+`cache/`, and a given run may provide any subset of brains. They share an
+identical schema (same keys, same `SkeletonGraph` class, same build parameters)
+and differ only in which brain they describe; the filename's `<brain_id>` is the
+specimen and `<N>` is the `min_cable_length` threshold the cache was built with.
+
+> **Read the collection as ONE dataset, not as N separate brains.** The format
+> is **brain-agnostic** by design: every cache exposes the same fields and is
+> processed by the same procedures. The intent of this document is that you
+> **discover all caches in `cache/`, load each, and pool the neurons and features
+> from all of them into a single combined sample set**, then form hypotheses over
+> that pooled population — *not* over any single brain. Treat each traced neuron
+> (and each fragment/feature derived from it) as one sample in the combined set,
+> **tagged with the `brain_id` it came from**. Any per-file number quoted in this
+> document (counts, baseline metrics) is illustrative of *one* brain's
+> contribution; the quantities that matter for hypotheses are the **aggregates
+> across the whole collection**. Carry `brain_id` alongside every pooled record
+> so it is available as a **covariate / grouping factor** — used to check whether
+> an effect holds across brains or is driven by a single one (see § *Pooling
+> across the collection* in §2). Dropping or adding a brain changes only the size
+> of the pool, never the schema or the procedures.
 
 ---
 
@@ -25,25 +43,29 @@ illumination microscopy to achieve sub-micron, whole-brain fluorescence imaging
 of sparsely labeled neurons (voxel size **0.748 × 0.748 × 1.0 µm**). At this
 resolution individual axons can be traced across an entire brain, but each brain
 is tens of terabytes, so fully manual reconstruction is infeasible and automated
-segmentation is required. *The provided cache is specimen **794495**; the
-description below is written against that instance.*
+segmentation is required. *The collection provides several such brains, one cache
+each; the concrete counts below come from one example brain (specimen **794495**)
+to make the description tangible — every other brain's cache has the same
+structure with its own numbers.*
 
-**What the cache captures.** The cache stores two aligned, graph-based data
+**What each cache captures.** Every cache stores two aligned, graph-based data
 products for its brain:
 
 1. **UNet fragment skeletons** (`fragments_graph`) — the automated
    reconstruction. A 3D U-Net predicted an instance-level voxel labeling of the
    brain; each predicted fragment was skeletonized into an SWC tree (3D
    coordinates, radius, connectivity) and loaded into a graph. This is the
-   *machine* reconstruction containing the errors to be fixed — for the provided
-   794495 cache, roughly **478,600 fragment components** at the
-   `min_cable_length = 10` µm filtering threshold it was built with (see *How
-   this cache was generated* below).
+   *machine* reconstruction containing the errors to be fixed — for the example
+   794495 cache, roughly **366,900 fragment components** at the
+   `min_cable_length = 100` µm filtering threshold it was built with (see *How
+   each cache was generated* below). Other brains have their own counts.
 
 2. **Ground-truth tracings** (`gt_graph`) — human-traced neuron skeletons (the
    gold-standard morphologies used to train and evaluate the automated
-   reconstruction). The provided 794495 cache contains **19 neurons**; the count
-   varies by brain.
+   reconstruction). The example 794495 cache contains **19 neurons**; the count
+   varies by brain. **Across the collection these traced neurons are the core
+   samples to pool** — your combined population is the union of every brain's GT
+   neurons, each tagged with its `brain_id`.
 
 **The errors that motivate the project.** Deep-learning segmentation introduces
 two systematic *topological* errors:
@@ -54,7 +76,9 @@ two systematic *topological* errors:
   where neurites run close together.
 
 Scoring the automated reconstruction against the human tracings gives a baseline
-(skeleton-based topology metrics); for the provided 794495 cache it is:
+(skeleton-based topology metrics); for the example 794495 cache it is (every
+brain in the collection has its own such baseline, and the pooled error profile
+is the aggregate over all of them):
 
 | Metric | Value |
 |---|---|
@@ -80,29 +104,40 @@ appropriate evaluation targets.
 > itself contains no mask, so re-deriving these metrics from the pickle alone
 > uses the nearest-fragment proxy described in § *Identifying errors* and will
 > not reproduce them exactly — treat the table as the reference target, not a
-> cache-only result. Another brain's cache yields its own baseline.
+> cache-only result. Each brain's cache yields its own baseline; when pooling,
+> compute the proxy metrics per brain with the *same* tolerance and then combine,
+> so the brains are scored comparably.
 
 **How the data was gathered / known gaps.**
 
 - **Ground truth is sparse and skeleton-only.** Only a handful of neurons are
   traced per brain (named like `N001-<brain_id>-JT`, `N002-<brain_id>-PP`, … —
-  the trailing suffix is the human annotator's initials). In the provided 794495
-  cache there are 19 such neurons, and the IDs are not contiguous (e.g. no
-  `N010`/`N012`, largest is `N023`). There is **no dense ground-truth voxel
-  volume**: GT exists only as center-line skeletons in `gt_graph`. A region with
-  no traced neuron is simply unlabeled, not labeled "background."
-- **Fragments are filtered.** When the cache was built, UNet fragments shorter
-  than `min_cable_length = 10` µm of total path length were dropped, removing
-  only the very shortest noise fragments. This is a *permissive* threshold —
-  hence ~478,600 fragment components survive — chosen to keep almost all of the
-  automated reconstruction; other builds use stricter thresholds (see *How this
-  cache was generated*). Skeletons were also resampled to a target inter-node
-  spacing of `node_spacing = 5` µm, so node geometry is decimated relative to
-  the original SWCs.
+  the trailing suffix is the human annotator's initials, and the embedded
+  `<brain_id>` already identifies the source brain). In the example 794495 cache
+  there are 19 such neurons, and the IDs are not contiguous (e.g. no
+  `N010`/`N012`, largest is `N023`); other brains have their own counts and ID
+  sets. Because neuron names are only unique *within* a brain, when you pool
+  across the collection you must **namespace each neuron by its `brain_id`** (the
+  name already contains it, but track `brain_id` as an explicit column too) so
+  that `N001` from two different brains are never conflated. There is **no dense
+  ground-truth voxel volume**: GT exists only as center-line skeletons in
+  `gt_graph`. A region with no traced neuron is simply unlabeled, not labeled
+  "background."
+- **Fragments are filtered.** When each cache was built, UNet fragments shorter
+  than `min_cable_length` µm of total path length were dropped, removing the
+  shortest noise fragments; the caches in this collection use
+  `min_cable_length = 100` µm. Skeletons were also resampled to a target
+  inter-node spacing of `node_spacing = 5` µm, so node geometry is decimated
+  relative to the original SWCs. All caches in the collection share these build
+  parameters, so fragments are comparable across brains — but always read the
+  actual value from `payload["min_cable_length"]` per file rather than assuming
+  it, and if a run ever mixes thresholds, account for that before pooling.
 - **Anisotropic voxels.** ExaSPIM samples X/Y more finely than Z, so voxels are
-  not cubic. The cache stores `anisotropy = (0.748, 0.748, 1.0)` (µm per voxel
+  not cubic. Each cache stores `anisotropy = (0.748, 0.748, 1.0)` (µm per voxel
   in x, y, z) and uses it to convert between SWC physical coordinates (µm) and
-  image voxel indices.
+  image voxel indices. This is shared across the collection, so physical
+  coordinates and lengths (µm) are directly comparable across brains — pool on
+  physical units, never raw voxel indices.
 
 ---
 
@@ -110,10 +145,12 @@ appropriate evaluation targets.
 
 ### On-disk layout
 
-Every cache, regardless of brain, is a single dict with the same keys. The full
-key set is below; the last five are the ones you will actually use — the three
-`*_path` strings just record where the source data was read from when the cache
-was built. (Values shown are for the provided 794495 cache.)
+Every cache, regardless of brain, is a single dict with the **same keys** — this
+identical schema is exactly what makes the collection poolable. The full key set
+is below; the last five are the ones you will actually use — the three `*_path`
+strings just record where the source data was read from when the cache was built.
+(Values shown are for the example 794495 cache; other brains differ only in the
+graph contents and counts.)
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -121,17 +158,18 @@ was built. (Values shown are for the provided 794495 cache.)
 | `gt_path` | `str` | Provenance only — GCS path of the source GT tracings. Not needed to use the cache. |
 | `img_path` | `str` | Provenance only — S3 path of the fused ExaSPIM image. **Not** loaded; the cache is self-contained without it. |
 | `anisotropy` | `tuple` | `(0.748, 0.748, 1.0)` — µm/voxel in **(x, y, z)** order. |
-| `min_cable_length` | `int` | `10` — µm threshold; shorter fragments were discarded. |
+| `min_cable_length` | `int` | `100` — µm threshold; shorter fragments were discarded (shared across the collection). |
 | `node_spacing` | `int` | `5` — target µm spacing between adjacent skeleton nodes. |
-| `fragments_graph` | `SkeletonGraph` | Automated UNet reconstruction (~478,600 components, ~25.5 M nodes). |
-| `gt_graph` | `SkeletonGraph` | Human ground-truth reconstruction (19 neurons, ~1.36 M nodes). |
+| `fragments_graph` | `SkeletonGraph` | Automated UNet reconstruction (example 794495: ~366,900 components, ~20.9 M nodes). |
+| `gt_graph` | `SkeletonGraph` | Human ground-truth reconstruction (example 794495: 19 neurons, ~1.36 M nodes). |
 
-> **Note.** `min_cable_length` is `10` **for the provided cache file**
-> (`dataset_cache_794495_mcl10.pkl`); other builds use a stricter threshold
-> (e.g. `_mcl100.pkl` at 100 µm, `_mcl1000.pkl` at 1000 µm) and therefore contain
-> far fewer, longer fragments. The filename pattern is
-> `dataset_cache_<brain_id>_mcl<N>.pkl`, where `N` is the threshold. Always read
-> the actual value from `payload["min_cable_length"]` rather than assuming it.
+> **Note.** The filename pattern is `dataset_cache_<brain_id>_mcl<N>.pkl`, where
+> `<brain_id>` is the specimen and `N` is the `min_cable_length` threshold (the
+> caches provided here are all `mcl100`, i.e. 100 µm; stricter builds such as
+> `_mcl1000.pkl` would contain far fewer, longer fragments). Always read the
+> actual value from `payload["min_cable_length"]` per file rather than assuming
+> it, and read `<brain_id>` from the filename (or `gt_path`) so every pooled
+> record can be tagged with its source brain.
 
 Loading requires the `agentic_neuron_proofreader` package to be importable (the
 pickle stores `SkeletonGraph` instances, so `pickle.load` must import their
@@ -164,14 +202,14 @@ This makes `import agentic_neuron_proofreader` work from anywhere.
 > where numpy and scipy were installed together (this cache was validated under
 > the `panda` conda environment), not by editing the data.
 
-### Loading the cache (sample code)
+### Loading one cache (sample code)
 
 ```python
 import pickle
 # Requires the agentic_neuron_proofreader package to be installed (see above).
 
-# Any dataset_cache_<brain_id>_mcl<N>.pkl works; this trial provides the 794495 one.
-with open("dataset_cache_794495_mcl10.pkl", "rb") as f:
+# Any dataset_cache_<brain_id>_mcl<N>.pkl in cache/ works the same way.
+with open("cache/dataset_cache_794495_mcl100.pkl", "rb") as f:
     payload = pickle.load(f)   # reconstructs SkeletonGraph instances
 
 gt_graph        = payload["gt_graph"]         # SkeletonGraph: human-traced neurons
@@ -181,22 +219,103 @@ anisotropy      = payload["anisotropy"]       # (0.748, 0.748, 1.0)
 print(gt_graph.summary(prefix="GroundTruth"))
 print(fragments_graph.summary(prefix="Fragments"))
 # -> # Connected Components / # Nodes / # Edges / Memory Consumption
-# For the provided 794495 cache:
+# For the example 794495 cache:
 # GroundTruth: 19 components, ~1,363,808 nodes
-# Fragments:   ~478,611 components, ~25,527,200 nodes
+# Fragments:   ~366,900 components, ~20,900,000 nodes
 ```
 
-> **Memory.** This cache is ~3 GB on disk, but reconstructing the two
-> `SkeletonGraph` objects (NetworkX adjacency + KD-tree + node arrays) needs
-> substantially more RAM than the file size — budget well over 20 GB of free
-> memory, or the `pickle.load` may be killed by the OOM reaper. The stricter
-> builds (`_mcl100.pkl`, `_mcl1000.pkl`) are smaller and lighter to load.
+### Loading the whole collection (sample code)
 
-### How this cache was generated
+The collection is **every** `dataset_cache_*.pkl` in `cache/`. Discover them by
+glob (do not hard-code brain ids — a run may provide any subset), load each, and
+keep the `brain_id` parsed from the filename next to each loaded cache so every
+downstream record can be tagged with its source brain.
 
-You do **not** need to regenerate the cache to use it — this subsection only
-documents its provenance so the stored parameters above are interpretable. The
-cache was produced by a two-step build:
+```python
+import glob, os, pickle, re
+
+CACHE_DIR = "cache"   # adjust to wherever the collection lives
+
+def brain_id_from_path(path):
+    # dataset_cache_<brain_id>_mcl<N>.pkl  ->  "<brain_id>"
+    m = re.search(r"dataset_cache_(\d+)_mcl(\d+)\.pkl$", os.path.basename(path))
+    return m.group(1) if m else os.path.basename(path)
+
+# One entry per brain. Load lazily / one at a time if memory is tight (see below).
+caches = {}
+for path in sorted(glob.glob(os.path.join(CACHE_DIR, "dataset_cache_*.pkl"))):
+    brain_id = brain_id_from_path(path)
+    with open(path, "rb") as f:
+        caches[brain_id] = pickle.load(f)
+    print(f"loaded brain {brain_id} from {os.path.basename(path)}")
+
+print(f"\nCollection: {len(caches)} brains -> {sorted(caches)}")
+# Each caches[brain_id] is the same dict described above (gt_graph,
+# fragments_graph, anisotropy, min_cable_length, ...). The brains are now ONE
+# pooled population, keyed by brain_id.
+```
+
+> **Memory.** Each cache reconstructs two `SkeletonGraph` objects (NetworkX
+> adjacency + KD-tree + node arrays) needing substantially more RAM than the
+> on-disk file size — budget well over 20 GB of free memory **per cache**.
+> Holding the entire collection in memory at once multiplies that, so unless you
+> have ample RAM, **do not keep all caches resident simultaneously**: loop one
+> brain at a time, reduce it to the small per-neuron / per-feature records you
+> actually pool (a few floats per neuron — see *Pooling across the collection*),
+> append those to a combined table, and let the heavy graph objects be garbage
+> collected before loading the next brain. The pooled *table* is tiny even though
+> the graphs are not.
+
+### Pooling across the collection
+
+The deliverable of the loading step is **one combined, tidy table** whose rows
+are samples drawn from *all* brains and whose first column is `brain_id`. The
+natural sample unit is **one GT neuron**; per-neuron features (cable length,
+branch count, split/merge/omit counts and rates, ERL, edge accuracy, soma
+proximity, annotator initials, …) are computed per brain with the *same*
+parameters and then concatenated:
+
+```python
+import pandas as pd
+
+rows = []
+for brain_id, payload in caches.items():            # or stream one brain at a time
+    gt = payload["gt_graph"]
+    for comp_id, neuron_name in gt.component_id_to_swc_id.items():  # one row per traced neuron
+        # neuron_name e.g. "N001-794495-JT"
+        rows.append({
+            "brain_id":   brain_id,                  # <-- the covariate / grouping key
+            "neuron":     f"{brain_id}:{neuron_name}",     # globally-unique id
+            "annotator":  neuron_name.split("-")[-1],      # GT initials suffix
+            # ... per-neuron features / error metrics computed for THIS neuron ...
+        })
+
+pooled = pd.DataFrame(rows)   # rows from every brain, stacked into one population
+```
+
+**How to use `brain_id` when forming and testing hypotheses:**
+
+- **Form hypotheses on the pooled population**, not on any single brain — the
+  sample size is the union across brains, which is the whole point of providing a
+  collection.
+- **Always keep `brain_id` as a covariate / grouping factor.** Before trusting a
+  pooled effect, check it is not driven by one brain: stratify or facet by
+  `brain_id`, add it as a fixed/random effect, or confirm the effect's sign is
+  consistent across brains. An effect that only appears when one brain is pooled
+  in is a brain artifact, not a finding about reconstruction error.
+- **Watch for between-brain confounds** — unequal neuron counts (weight or model
+  accordingly), annotator differences that correlate with brain, and brain-level
+  shifts in baseline error rate. Pool on **physical units (µm)** and
+  scale-normalized metrics (percentages, normalized ERL), which are comparable
+  across brains; raw counts scale with neuron size and brain and are not directly
+  comparable.
+
+### How each cache was generated
+
+You do **not** need to regenerate any cache to use it — this subsection only
+documents provenance so the stored parameters above are interpretable. Every
+cache in the collection was produced the same way, by a two-step build (only the
+`brain_id` and the source paths change between brains):
 
 1. Build a `BrainDataset` by reading the source SWCs directly from cloud
    storage (`gt_path`, `fragments_path`) and attaching the lazy ExaSPIM image
@@ -210,7 +329,7 @@ cache was produced by a two-step build:
        gt_path,                        # gs://allen-nd-goog/.../voxel
        img_path,                       # s3://aind-open-data/.../fused.zarr/0
        anisotropy=(0.748, 0.748, 1.0),
-       min_cable_length=10,            # <-- the mclN threshold; 10 for this file
+       min_cable_length=100,           # <-- the mclN threshold; 100 for this collection
        node_spacing=5,
    )
    ```
@@ -222,13 +341,16 @@ cache was produced by a two-step build:
    `dataset.save(cache_path)`, where the filename encodes the threshold:
 
    ```python
-   cache_path = f"../dataset_cache_{brain_id}_mcl{min_cable_length}.pkl"
-   # min_cable_length=10  -> dataset_cache_794495_mcl10.pkl   (this file)
-   # min_cable_length=100 -> dataset_cache_794495_mcl100.pkl
+   cache_path = f"../cache/dataset_cache_{brain_id}_mcl{min_cable_length}.pkl"
+   # brain_id=794495, min_cable_length=100 -> dataset_cache_794495_mcl100.pkl
    ```
 
+   Running this once per brain is exactly how the collection in `cache/` was
+   assembled — same parameters, different `brain_id` — which is what guarantees
+   the caches are mutually comparable and safe to pool.
+
 The lazy `TensorStoreImage` (`img_path`) is **not** pickled — it re-instantiates
-instantly — which is why the cache loads from skeletons alone with no image
+instantly — which is why each cache loads from skeletons alone with no image
 access, exactly the constraint this document relies on.
 
 ### `SkeletonGraph` structure
@@ -256,8 +378,8 @@ import networkx as nx
 # A connected component = one reconstructed object
 #   gt    -> a complete traced neuron
 #   frags -> a single UNet fragment (a real neuron is split across MANY of these)
-print("GT components:   ", nx.number_connected_components(gt_graph))        # 19
-print("Frag components: ", nx.number_connected_components(fragments_graph)) # ~478,611
+print("GT components:   ", nx.number_connected_components(gt_graph))        # e.g. 19 (794495)
+print("Frag components: ", nx.number_connected_components(fragments_graph)) # e.g. ~366,900 (794495)
 
 # Node-level access
 node  = next(iter(gt_graph.nodes))
@@ -329,10 +451,11 @@ of its nearest fragment node**. The procedure:
    > the order of `node_spacing = 5` µm). The choice materially changes the
    > results — especially the **omit** count, since a looser tolerance labels
    > more GT nodes — so pick a value explicitly and report it. For reference,
-   > the median GT→fragment nearest distance in this cache is ~1.6 µm, so a 2 µm
-   > tolerance labels the majority of GT nodes and leaves the rest as omits.
-   > You can vectorize the whole step in one call:
-   > `dists, nn = fragments_graph.kdtree.query(gt_graph.node_xyz)`.
+   > the median GT→fragment nearest distance in the example 794495 cache is
+   > ~1.6 µm, so a 2 µm tolerance labels the majority of GT nodes and leaves the
+   > rest as omits. **Use the same tolerance for every brain** so the per-brain
+   > error metrics are comparable when pooled. You can vectorize the whole step in
+   > one call: `dists, nn = fragments_graph.kdtree.query(gt_graph.node_xyz)`.
 
 2. **Walk each GT edge** `(i, j)` and classify it from the two endpoint labels:
    - **Omit edge** — *both* endpoints are unlabeled (`0`): the reconstruction
@@ -354,7 +477,11 @@ of its nearest fragment node**. The procedure:
    positives.)
 
 **Sample code** — the four steps end-to-end, using only `gt_graph` and
-`fragments_graph` from the cache:
+`fragments_graph` from **one** cache. To pool across the collection, run this
+block once per brain (looping over the loaded caches), tag each resulting
+per-neuron record with its `brain_id`, and concatenate — exactly the table built
+in § *Pooling across the collection*. Keep `MATCH_TOL_UM` identical across brains
+so the scores are comparable:
 
 ```python
 import numpy as np
@@ -426,12 +553,12 @@ nearest-fragment segment id stands in for the mask lookup.
   the nearest fragment node's segment id. The two agree only where a fragment
   node lies close to the GT center-line.
 - **Omits are inflated by fragment filtering.** Fragments shorter than
-  `min_cable_length` were dropped when the cache was built, so GT stretches that
+  `min_cable_length` were dropped when each cache was built, so GT stretches that
   *were* reconstructed by a short fragment now have no nearby fragment node and
   get counted as **omit**. The omit rate measured from the cache is therefore an
-  upper bound, not the true miss rate. This cache uses a permissive
-  `min_cable_length = 10` µm, so the inflation is smaller here than in the
-  stricter `_mcl100`/`_mcl1000` builds — but it is not zero.
+  upper bound, not the true miss rate. All caches in this collection share the
+  same `min_cable_length = 100` µm, so this inflation is consistent across brains
+  and does not bias one brain relative to another when pooling.
 - **Merge detection is partial.** The cache-only test verifies the core merge
   definition (one segment id touching ≥2 distinct GT neurons); the full
   geometric merge-site walk (§ step 4, the ">~50 µm then re-approach" rule)
@@ -462,10 +589,12 @@ contain (the mask).
 
 The high-level goal is to **build a better proofreading tool** — an *agentic,
 post-hoc* corrector of whole-brain neuron reconstructions that works for **any
-ExaSPIM brain**, with the provided 794495 cache as its
-development-and-evaluation target. The tool takes the error-prone U-Net
-reconstruction (`fragments_graph`) and **edits it to correct the three
-topological error types** scored against the human ground truth (`gt_graph`):
+ExaSPIM brain**, with the **collection of caches in `cache/`** as its
+development-and-evaluation target. Because the brains are pooled, the tool is
+developed and judged against the *combined* population of neurons rather than any
+single brain. The tool takes the error-prone U-Net reconstruction
+(`fragments_graph`) and **edits it to correct the three topological error types**
+scored against the human ground truth (`gt_graph`):
 
 - fix **splits** — re-join fragments that belong to the same neuron;
 - resolve **merges** — cut apart segments that wrongly fuse two neurons;
@@ -473,7 +602,7 @@ topological error types** scored against the human ground truth (`gt_graph`):
   the U-Net missed entirely.
 
 The deliverable is the **corrector itself** (a reusable, brain-agnostic method),
-not just a hand-fixed copy of one brain; the provided 794495 cache is the
+not just a hand-fixed copy of one brain; the pooled collection in `cache/` is the
 benchmark on which it is measured in this trial. This is complementary to topology-aware *segmentation* losses, which
 reduce errors at training time; here the aim is to repair the residual
 split/merge/omit errors that survive in the existing SWC fragments.
@@ -486,8 +615,9 @@ proposals in a progressive confidence-threshold sweep that forbids cycles. A
 separate detector flags merge sites. Success is measured by re-computing the
 skeleton metrics **before vs. after** correction: a better tool delivers a
 **larger reduction in splits/merges/omits and larger ERL and edge-accuracy
-gains than this single-pass baseline** on the same ground-truth neurons (the 19
-in the provided 794495 cache, or whatever a given brain's cache contains).
+gains than this single-pass baseline**, aggregated over the pooled ground-truth
+neurons from every brain in the collection (and ideally consistent across
+brains, not carried by a single one).
 
 An **agentic** framework over this dataset aims to overcome the single-pass
 pipeline's structural limits. These are the areas the system can use to loosely
@@ -507,12 +637,17 @@ steer exploration (not prescriptive hypotheses):
   reconnections and let split correction avoid introducing new merges, via
   shared state and feedback.
 
-Empirically useful relationships the data exposes for this exploration:
-whether error rates vary by **neuron morphology** (cable length, branching,
-soma proximity) or by **annotator** (the GT initials suffix); geometric
-signatures of recoverable splits (endpoint distance, orientation agreement,
-radius continuity); and the trade-off between aggressive merging (raising ERL)
-and false merges (the costlier error). Evaluation centers on topological
-accuracy (split/merge reduction, ERL and edge-accuracy gains), proposal
-precision/recall, computational efficiency, and robustness to noise and
-fragment density.
+Empirically useful relationships the **pooled** data exposes for this
+exploration: whether error rates vary by **neuron morphology** (cable length,
+branching, soma proximity), by **annotator** (the GT initials suffix), or by
+**brain** (`brain_id`) — and, crucially, whether a morphology/annotator effect
+*survives* once `brain_id` is held constant or added as a covariate, versus being
+an artifact of between-brain differences; geometric signatures of recoverable
+splits (endpoint distance, orientation agreement, radius continuity); and the
+trade-off between aggressive merging (raising ERL) and false merges (the costlier
+error). Pooling across brains is what gives these relationships the statistical
+power to be trusted — a per-brain handful of neurons rarely does. Evaluation
+centers on topological accuracy (split/merge reduction, ERL and edge-accuracy
+gains) aggregated over the pooled neurons, proposal precision/recall,
+computational efficiency, robustness to noise and fragment density, and
+**consistency of the effect across brains**.
