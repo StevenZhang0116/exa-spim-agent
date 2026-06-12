@@ -66,6 +66,7 @@ def run_candidate(
     heuristics_path: str,
     max_gap_um: float = 15.0,
     max_class_size=None,
+    image_reader=None,
     verbose: bool = False,
 ) -> CandidateRun:
     """Execute the evolved policy and score its edits on the given GT subset.
@@ -99,8 +100,38 @@ def run_candidate(
 
     propose_edits = _load_policy(heuristics_path)
 
-    sites = ds.candidate_split_sites(fragments_graph, max_gap_um=max_gap_um)
-    ctx = {"max_gap_um": max_gap_um, "fragments_graph": fragments_graph}
+    # The policy reasons over a UNIFIED candidate stream of two site kinds:
+    #   - SplitSite (kind="split"): two nearby fragments with DIFFERENT labels;
+    #     valid action = merge_labels (repairs a split error).
+    #   - MergeSite (kind="merge"): ONE label fused across two neurites at a branch;
+    #     valid action = split_label (repairs a merge error).
+    # Both are GT-free (fragment geometry only), so the same stream is used on
+    # train and held-out. The policy dispatches on ``site.kind``.
+    split_sites = ds.candidate_split_sites(fragments_graph, max_gap_um=max_gap_um)
+    merge_sites = ds.candidate_merge_sites(fragments_graph)
+    sites = list(split_sites) + list(merge_sites)
+    ctx = {
+        "max_gap_um": max_gap_um,
+        "fragments_graph": fragments_graph,
+        # Candidate-stream composition, so the policy can tell how many of each
+        # kind it was handed without re-scanning (sites carry a ``kind`` tag too).
+        "n_split_sites": len(split_sites),
+        "n_merge_sites": len(merge_sites),
+        # (1) Cheap, in-memory signal the policy was missing: per-node neurite
+        # radius (float16 array indexed by node id). Lets the policy reason about
+        # fragment thickness — e.g. refuse to fuse two thick (likely-real) neurites
+        # — with NO cloud read. Present on the agentic SkeletonGraph already.
+        "node_radius": getattr(fragments_graph, "node_radius", None),
+        # (2) Optional, lazy, cached raw-image patch reader (the fluorescence
+        # signal at the gap). None unless an image reader was provided — the policy
+        # MUST handle ctx["read_image_patch"] is None. When present it is a
+        # LazyImagePatchReader; call .read_patch(node_id[, shape]),
+        # .gap_connectivity(node_a, node_b) (split evidence: signal on both sides of
+        # a gap?), or .merge_cut_evidence(seed_a_node, seed_b_node) (merge evidence:
+        # an intensity valley between two fused arms?) — each is a cloud read, so
+        # gate it behind cheap geometric filters.
+        "read_image_patch": image_reader,
+    }
 
     # The policy may return legacy (label_a, label_b) tuples OR typed edit dicts
     # ({"kind": "merge_labels"|"split_label"|...}). normalize_edits promotes both
@@ -134,12 +165,23 @@ def write_failure_report(
     train_run: CandidateRun,
     baseline: scoring.ScoreResult,
     path: str,
+    merge_labels: dict | None = None,
 ) -> str:
     """Write the 'where you were wrong' report the agent reads to revise.
 
     Compares the candidate's train metrics to the no-edit baseline so the agent
     sees, per skeleton, whether its edits helped or hurt (splits repaired vs
     merges introduced). This is the feedback half of the self-improvement loop.
+
+    Parameters
+    ----------
+    merge_labels : dict, optional
+        Output of ``incremental_scoring.collect_merge_labels(prepared)`` — the
+        BASELINE (pre-existing) merge errors by raw segment label. When given, a
+        "Baseline merge errors" section lists which raw labels span multiple GT
+        neurons (the ``split_label`` repair targets). DIAGNOSIS-ONLY: it is GT-
+        derived, so the caller must pass only the TRAIN-split merges; it tells the
+        reviser what to fix, it is never a held-out policy input.
     """
     cand = train_run.score.per_swc
     base = baseline.per_swc.reindex(cand.index)
@@ -147,25 +189,76 @@ def write_failure_report(
     lines.append(
         f"- Proposed **{train_run.n_edits} edits** from "
         f"{train_run.n_sites} candidate sites.\n"
-        f"- Train Edge Accuracy: baseline "
+        f"- Train Edge Accuracy (the fitness, = 100 - %Split - %Omit - %Merged; "
+        f"higher is better): baseline "
         f"{scoring._weighted_avg(base, 'Edge Accuracy'):.4f} -> candidate "
         f"{train_run.score.primary:.4f}.\n"
+        f"- Merge-error component (the repair target): %Merged Edges baseline "
+        f"{scoring._weighted_avg(base, '% Merged Edges'):.4f} -> candidate "
+        f"{scoring._weighted_avg(cand, '% Merged Edges'):.4f}; "
+        f"# Merges baseline {scoring._weighted_avg(base, '# Merges'):.2f} -> "
+        f"candidate {scoring._weighted_avg(cand, '# Merges'):.2f}.\n"
+        f"- Over-split watchdog: %Split Edges baseline "
+        f"{scoring._weighted_avg(base, '% Split Edges'):.4f} -> candidate "
+        f"{scoring._weighted_avg(cand, '% Split Edges'):.4f} "
+        f"(a merge repair that drives this UP is over-splitting a real neuron).\n"
     )
     lines.append("\n## Per-skeleton delta (candidate - baseline)\n")
-    lines.append("| GT skeleton | dEdgeAcc | dERL | d#Splits | d#Merges |")
-    lines.append("|---|---|---|---|---|")
+    # % Omit Edges is shown because an edit that relabels a label<->background
+    # boundary node moves omit (an edge is an omit edge when EITHER endpoint is
+    # background), so Edge Accuracy can shift via the omit term, not only via
+    # split/merge — the column lets the reviser attribute an EdgeAcc change.
+    lines.append(
+        "| GT skeleton | dEdgeAcc | d%MergedEdges | d#Merges | d%SplitEdges | "
+        "d#Splits | d%OmitEdges |"
+    )
+    lines.append("|---|---|---|---|---|---|---|")
     for name in cand.index:
         def d(col):
             return cand.loc[name, col] - base.loc[name, col]
         lines.append(
-            f"| {name} | {d('Edge Accuracy'):+.3f} | {d('ERL'):+.1f} | "
-            f"{d('# Splits'):+.0f} | {d('# Merges'):+.0f} |"
+            f"| {name} | {d('Edge Accuracy'):+.3f} | {d('% Merged Edges'):+.3f} | "
+            f"{d('# Merges'):+.0f} | {d('% Split Edges'):+.3f} | {d('# Splits'):+.0f} | "
+            f"{d('% Omit Edges'):+.3f} |"
         )
     # Flag the rows where the candidate made things worse — the agent's homework.
+    # "Worse" is measured on the fitness (Edge Accuracy), the thing the gate uses.
     worse = [n for n in cand.index
              if cand.loc[n, "Edge Accuracy"] < base.loc[n, "Edge Accuracy"]]
     lines.append("\n## Skeletons the candidate made WORSE\n")
     lines.append(", ".join(worse) if worse else "_none — every skeleton improved or held._")
+
+    # Baseline merge errors: which raw labels span >=2 GT neurons in the unedited
+    # segmentation — the concrete repair targets for split_label. GT-derived, so
+    # train-split only (diagnosis, not a held-out signal). Restricting to skeletons
+    # in this report's `cand.index` keeps a train report from naming held-out GT.
+    if merge_labels:
+        report_gt = set(cand.index)
+        rows = []
+        for label, info in merge_labels.items():
+            involved = [n for n in info["gt_skeletons"] if n in report_gt]
+            if len(involved) < 2:
+                continue  # the merge's partners are outside this split — not actionable here
+            counts = "; ".join(f"{n}:{info['node_counts'][n]}" for n in involved)
+            locs = " | ".join(
+                f"({s['World'][0]:.1f},{s['World'][1]:.1f},{s['World'][2]:.1f})"
+                for s in info["merge_sites"] if s["GroundTruth_ID"] in report_gt
+            )
+            rows.append((sum(info["node_counts"][n] for n in involved), label, involved, counts, locs))
+        rows.sort(reverse=True)  # biggest (most nodes) merges first — best repair payoff
+        lines.append("\n\n## Baseline merge errors (split_label repair targets)\n")
+        if rows:
+            lines.append(
+                f"{len(rows)} raw label(s) span >=2 GT neurons in this split — each "
+                f"is a merge a `split_label` edit should break apart (reduces "
+                f"%Merged Edges / #Merges). Locations are GT-frame centroids (µm).\n"
+            )
+            lines.append("| raw label | # GT neurons | nodes per GT | per-GT centroid (x,y,z) |")
+            lines.append("|---|---|---|---|")
+            for _, label, involved, counts, locs in rows:
+                lines.append(f"| {label} | {len(involved)} | {counts} | {locs} |")
+        else:
+            lines.append("_none — no raw label spans >=2 GT neurons in this split._")
 
     # The concrete edits the policy proposed, so the reviser can reason about
     # *which* edit to change — not just that some skeleton regressed. Edits are

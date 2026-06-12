@@ -44,6 +44,7 @@ import pickle
 import time
 from dataclasses import dataclass
 
+import networkx as nx
 import numpy as np
 import pandas as pd
 
@@ -51,6 +52,7 @@ from segmentation_skeleton_metrics.data_handling.graph_loading import (
     GraphLoader,
     LabelHandler,
 )
+from segmentation_skeleton_metrics.data_handling.graph_classes import FragmentGraph
 from segmentation_skeleton_metrics.utils.img_util import TensorStoreImage
 from segmentation_skeleton_metrics.skeleton_metrics import (
     SplitCountMetric,
@@ -348,6 +350,83 @@ def _derived_metrics(verbose):
     }
 
 
+def _edited_fragment_graphs(prepared: "PreparedBrain", handler):
+    """Apply the candidate handler to the fragment graphs the # Merges count reads.
+
+    ``MergeCountMetric`` (segmentation_skeleton_metrics.skeleton_metrics) counts a
+    merge by iterating fragment graphs and matching ``fragment_graph.label in
+    gt_graph.node_labels()``, then walking the fragment's own geometry. Two
+    consequences drive this function:
+
+      * a ``merge_labels`` edit changes a fragment's ``.label`` (the class id), so
+        we must relabel every fragment via ``handler`` — exactly as the metric
+        package's ``LabeledGraph``/``FragmentGraph`` relabel does;
+      * a ``split_label`` edit must PHYSICALLY split the fused fragment, because
+        the GT side now carries pseudo-labels ``L#a``/``L#b`` while the fragment
+        still says ``L`` — and ``"L" not in {"L#a","L#b"}`` makes the fragment
+        invisible to the join, dropping ``# Merges`` by a key-miss artifact rather
+        than by a real geometric re-evaluation. A real segmentation split yields
+        two segments → two fragment graphs, each scored on its own leaves; we
+        reproduce that by partitioning the fused fragment's nodes with the SAME
+        per-node, coordinate-aware assignment the GT side uses (``handler.get(raw,
+        node_xyz)``), keeping only edges whose endpoints land on the same side,
+        and emitting one ``FragmentGraph`` per resulting connected component.
+
+    FIDELITY GUARANTEE: when ``handler`` has no ``split_label`` (the merge-only and
+    baseline cases), every fragment is returned with the same nodes/edges/voxels
+    and only its ``.label`` mapped through ``handler`` — byte-identical to the old
+    ``g.label = handler.get(raw_label)`` path, so existing verify.py parity holds.
+
+    Returns a fresh ``{key: FragmentGraph}`` dict (the prepared graphs are never
+    mutated, so the snapshot stays reusable across candidates).
+    """
+    split_labels = getattr(handler, "split_labels", set())
+    edited: dict = {}
+    for key, g in prepared.fragment_graphs.items():
+        raw = str(prepared._frag_raw_label[key])
+
+        # Fast path: this fragment is not being split — clone-relabel only. We
+        # reuse the existing graph object's structure and just set the mapped
+        # label (matching FragmentGraph.update_label's single-attribute write).
+        if raw not in split_labels:
+            g.label = handler.get(raw)
+            edited[key] = g
+            continue
+
+        # Split path: assign each node to its pseudo-label by the SAME coordinate
+        # rule the GT side uses, drop cross-side edges, and split into components.
+        node_pseudo = {
+            n: handler.get(raw, g.node_xyz(n)) for n in g.nodes
+        }
+        kept_edges = [
+            (u, v) for u, v in g.edges if node_pseudo[u] == node_pseudo[v]
+        ]
+        sub = nx.Graph()
+        sub.add_nodes_from(g.nodes)
+        sub.add_edges_from(kept_edges)
+        for comp_idx, comp in enumerate(nx.connected_components(sub)):
+            comp_nodes = sorted(comp)
+            pseudo = node_pseudo[comp_nodes[0]]  # all nodes in a comp share a side
+            # Reindex the component's nodes to a dense 0..k range so node ids
+            # index node_voxel exactly as the FragmentGraph contract requires
+            # (node id == row index into node_voxel).
+            remap = {old: new for new, old in enumerate(comp_nodes)}
+            fg = FragmentGraph(
+                anisotropy=g.anisotropy,
+                name=f"{g.name}#{comp_idx}" if g.name else None,
+                label=handler.apply_merge(pseudo),  # pseudo may also be merged
+                segment_id=getattr(g, "segment_id", raw),
+            )
+            fg.add_nodes_from(range(len(comp_nodes)))
+            fg.add_edges_from(
+                (remap[u], remap[v]) for u, v in g.edges
+                if u in remap and v in remap and node_pseudo[u] == node_pseudo[v]
+            )
+            fg.set_voxels(np.asarray(g.node_voxel)[comp_nodes])
+            edited[f"{key}#{comp_idx}"] = fg
+    return edited
+
+
 def score_incremental(
     prepared: PreparedBrain,
     label_pairs=None,
@@ -386,6 +465,13 @@ def score_incremental(
             edits, all_labels=prepared.all_fragment_labels,
             max_class_size=max_class_size,
         )
+        # Build graph-aware split partitions (multi-source Dijkstra on each split
+        # label's fragment subgraph) BEFORE labeling, so BOTH surfaces use one
+        # consistent side assignment: the GT-node labels read by % Merged Edges
+        # (_apply_handler below) and the fragment-graph partition read by # Merges
+        # (_edited_fragment_graphs). No split_label edits -> no-op, Euclidean path.
+        if handler.split_labels:
+            handler.build_graph_partitions(prepared.fragment_graphs)
         prepared._apply_handler(handler, coordinate_aware=True)
     else:
         pairs = [(str(a), str(b)) for a, b in (label_pairs or [])]
@@ -404,6 +490,13 @@ def score_incremental(
     # are independent, so filtering afterward changes nothing for them.
     gt_full = prepared.gt_graphs
 
+    # The fragment graphs the # Merges count reads, AFTER the candidate's edits.
+    # For merge-only / baseline this is the relabeled-in-place prepared set (same
+    # object, byte-identical numbers); for a split_label edit it contains the
+    # physically partitioned fragment graphs so the metric's leaf-walk re-counts
+    # the merge against the split geometry — see _edited_fragment_graphs.
+    frag_for_merges = _edited_fragment_graphs(prepared, handler)
+
     metrics = _core_metrics(verbose)
     derived = _derived_metrics(verbose)
 
@@ -416,7 +509,7 @@ def score_incremental(
     # Core metrics (mirror Evaluator.__call__).
     for name, metric in metrics.items():
         if name == "# Merges":
-            results[name] = metric(gt_full, prepared.fragment_graphs)
+            results[name] = metric(gt_full, frag_for_merges)
         else:
             results.update(metric(gt_full))
     # Derived metrics.
@@ -440,6 +533,7 @@ def score_incremental(
             merge_sites = merge_sites[merge_sites["GroundTruth_ID"].isin(names)]
 
     elapsed = time.monotonic() - t0
+    results = scoring._ensure_derived(results)  # add Split Accuracy = 100 - % Split Edges
     tracked = {m: scoring._weighted_avg(results, m) for m in scoring.TRACKED_METRICS}
     return scoring.ScoreResult(
         primary=tracked[scoring.PRIMARY_METRIC],
@@ -474,6 +568,101 @@ def _attribute_merge_sites(merge_metric, handler):
     sites["Fused_Labels"] = fused
     sites["Caused_By_Edit"] = [len(f) >= 2 for f in fused]
     return sites
+
+
+# Minimum nodes a label must place on a GT skeleton to count as a *meaningful*
+# intersection — must match MergedEdgePercentMetric.detect_label_intersections,
+# which uses ``> 50`` on BOTH skeletons. Keep these in lockstep: the whole point
+# of this attribution is to explain the same % Merged Edges the metric reports.
+_MERGE_MIN_NODES = 50
+
+
+def collect_merge_labels(prepared: "PreparedBrain", min_nodes: int = _MERGE_MIN_NODES,
+                         max_sites_per_label: int = 5) -> dict:
+    """Identify the BASELINE (pre-existing) merge errors, by raw segment label.
+
+    A merge error is a single raw segment label ``L`` that the segmentation laid
+    down across two or more DISTINCT ground-truth neurons. This reproduces, on the
+    candidate-invariant raw snapshots, exactly the rule the metric package uses to
+    score ``% Merged Edges`` (``detect_label_intersections``: a label counts as a
+    meaningful intersection only when it has ``> min_nodes`` nodes on each of ``>=2``
+    GT skeletons). So the labels returned here are precisely the ones driving the
+    baseline ``% Merged Edges`` — the repair targets a ``split_label`` edit must
+    break apart.
+
+    DIAGNOSIS-ONLY, NOT a deployable signal. It reads ground-truth node labels, so
+    it may only be used to tell the reviser *which raw labels are merges* on the
+    TRAIN split (evaluator feedback). It must never feed a held-out/test policy —
+    that would be peeking at GT. The deployable merge-candidate generator (PR 3)
+    derives sites from fragment geometry / image alone, not from this.
+
+    Parameters
+    ----------
+    prepared : PreparedBrain
+        Source of the raw GT node labels (``_gt_raw``) and graphs (for locations).
+    min_nodes : int
+        Per-skeleton node-count floor for a meaningful intersection. Defaults to
+        the metric's threshold; do not lower it without lowering the metric's too,
+        or this will report "merges" the metric does not score.
+    max_sites_per_label : int
+        Cap on representative merge locations stored per label (one per involved
+        GT skeleton, in descending node-count order). Keeps the report compact.
+
+    Returns
+    -------
+    dict
+        ``{raw_label: {"gt_skeletons": [name, ...],            # >=2, sorted
+                       "node_counts": {name: int, ...},        # nodes of L per GT
+                       "merge_sites": [{"GroundTruth_ID": name,
+                                        "World": (x, y, z),     # microns
+                                        "n_nodes": int}, ...]}}``
+        Only labels meeting the >=2-skeleton rule are included; empty dict if the
+        segmentation has no detectable cross-skeleton merges.
+    """
+    # 1) Per raw label, count nodes on each GT skeleton (skip background "0").
+    label_to_gt_counts: dict[str, dict[str, int]] = {}
+    for name, raw in prepared._gt_raw.items():
+        # np.unique with counts is far cheaper than a Python loop over every node.
+        labels, counts = np.unique(raw, return_counts=True)
+        for lab, cnt in zip(labels, counts):
+            lab = str(lab)
+            if lab == "0":
+                continue
+            label_to_gt_counts.setdefault(lab, {})[name] = int(cnt)
+
+    # 2) Keep only labels meaningfully present on >=2 distinct GT skeletons.
+    result: dict = {}
+    for lab, counts in label_to_gt_counts.items():
+        involved = sorted(
+            (name for name, c in counts.items() if c > min_nodes),
+            key=lambda n: counts[n], reverse=True,
+        )
+        if len(involved) < 2:
+            continue
+
+        # 3) One representative location per involved skeleton: the centroid of
+        #    that skeleton's nodes carrying L (a stable, GT-frame microns coord the
+        #    reviser can sanity-check against seed_xyz later). Cheap: mean of xyz.
+        sites = []
+        for name in involved[:max_sites_per_label]:
+            g = prepared.gt_graphs[name]
+            raw = prepared._gt_raw[name]
+            idx = np.where(raw.astype(str) == lab)[0]
+            if len(idx) == 0:
+                continue
+            xyz = np.mean([g.node_xyz(int(i)) for i in idx], axis=0)
+            sites.append({
+                "GroundTruth_ID": name,
+                "World": tuple(float(round(t, 2)) for t in xyz),
+                "n_nodes": int(len(idx)),
+            })
+
+        result[lab] = {
+            "gt_skeletons": involved,
+            "node_counts": {n: counts[n] for n in involved},
+            "merge_sites": sites,
+        }
+    return result
 
 
 def probe_split_oracle(prepared: PreparedBrain, min_nodes: int = 50, verbose: bool = False):
@@ -554,6 +743,7 @@ def probe_split_oracle(prepared: PreparedBrain, min_nodes: int = 50, verbose: bo
             results.update(metric(gt_full))
     for nm, metric in derived.items():
         results[nm] = metric(gt_full, results)
+    results = scoring._ensure_derived(results)  # add Split Accuracy = 100 - % Split Edges
     tracked = {m: scoring._weighted_avg(results, m) for m in scoring.TRACKED_METRICS}
     oracle = scoring.ScoreResult(
         primary=tracked[scoring.PRIMARY_METRIC],

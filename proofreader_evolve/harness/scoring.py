@@ -70,9 +70,21 @@ _CONFIG_RTF = os.path.abspath(
 
 # The headline metrics we track each generation. Edge Accuracy is the primary
 # fitness (higher is better); the rest are reported for diagnosis.
+#
+# Edge Accuracy = 100 - (% Split Edges + % Omit Edges + % Merged Edges), so it is
+# the ONLY single number that charges split, omit, AND merge errors together. The
+# project targets merge correction (a split_label edit must reduce % Merged Edges
+# / # Merges without manufacturing splits), and a merge-only fitness like Split
+# Accuracy would be blind to exactly the error class we are repairing — so Edge
+# Accuracy is the correct primary. ``Split Accuracy`` (= 100 - % Split Edges, the
+# run-length-weighted split-coverage measure) is retained as an AUXILIARY tracked
+# metric: it isolates the split-error component so the report/gate can watch that
+# a merge repair does not over-split. It is materialized per skeleton by
+# ``_ensure_derived`` so every existing ``_weighted_avg`` / subset path works.
 PRIMARY_METRIC = "Edge Accuracy"
 TRACKED_METRICS = [
     "Edge Accuracy",
+    "Split Accuracy",      # auxiliary: 100 - % Split Edges (over-split watchdog)
     "ERL",
     "Normalized ERL",
     "# Splits",
@@ -81,6 +93,22 @@ TRACKED_METRICS = [
     "% Omit Edges",
     "% Merged Edges",
 ]
+
+
+def _ensure_derived(per_swc: pd.DataFrame) -> pd.DataFrame:
+    """Materialize the auxiliary ``Split Accuracy`` column (100 - % Split Edges).
+
+    ``evaluate()`` and the incremental scorer both emit ``% Split Edges`` per
+    skeleton but not ``Split Accuracy`` (our split-coverage restatement). Adding
+    it here lets the standard ``_weighted_avg(per_swc, "Split Accuracy")`` path
+    yield the run-length-weighted value with no special-casing downstream.
+    Idempotent; a no-op if the column already exists or ``% Split Edges`` is
+    missing.
+    """
+    if "% Split Edges" in per_swc.columns and "Split Accuracy" not in per_swc.columns:
+        per_swc = per_swc.copy()
+        per_swc["Split Accuracy"] = 100.0 - per_swc["% Split Edges"]
+    return per_swc
 
 
 @dataclass
@@ -150,6 +178,7 @@ def _weighted_avg(results: pd.DataFrame, column: str) -> float:
 def _parse_results(output_dir: str, elapsed: float, prefix: str = "") -> ScoreResult:
     csv_path = os.path.join(output_dir, f"{prefix}results.csv")
     per_swc = pd.read_csv(csv_path, index_col=0)
+    per_swc = _ensure_derived(per_swc)  # add Split Accuracy = 100 - % Split Edges
     metrics = {m: _weighted_avg(per_swc, m) for m in TRACKED_METRICS}
     return ScoreResult(
         primary=metrics[PRIMARY_METRIC],
