@@ -44,9 +44,8 @@ of sparsely labeled neurons (voxel size **0.748 × 0.748 × 1.0 µm**). At this
 resolution individual axons can be traced across an entire brain, but each brain
 is tens of terabytes, so fully manual reconstruction is infeasible and automated
 segmentation is required. *The collection provides several such brains, one cache
-each; the concrete counts below come from one example brain (specimen **794495**)
-to make the description tangible — every other brain's cache has the same
-structure with its own numbers.*
+each; every cache has the same structure, and each brain contributes its own
+counts and error statistics to the pool.*
 
 **What each cache captures.** Every cache stores two aligned, graph-based data
 products for its brain:
@@ -55,17 +54,17 @@ products for its brain:
    reconstruction. A 3D U-Net predicted an instance-level voxel labeling of the
    brain; each predicted fragment was skeletonized into an SWC tree (3D
    coordinates, radius, connectivity) and loaded into a graph. This is the
-   *machine* reconstruction containing the errors to be fixed — for the example
-   794495 cache, roughly **366,900 fragment components** at the
-   `min_cable_length = 100` µm filtering threshold it was built with (see *How
-   each cache was generated* below). Other brains have their own counts.
+   *machine* reconstruction containing the errors to be fixed — typically
+   hundreds of thousands of fragment components per brain at the
+   `min_cable_length = 100` µm filtering threshold the caches were built with
+   (see *How each cache was generated* below). Each brain has its own counts.
 
 2. **Ground-truth tracings** (`gt_graph`) — human-traced neuron skeletons (the
    gold-standard morphologies used to train and evaluate the automated
-   reconstruction). The example 794495 cache contains **19 neurons**; the count
-   varies by brain. **Across the collection these traced neurons are the core
-   samples to pool** — your combined population is the union of every brain's GT
-   neurons, each tagged with its `brain_id`.
+   reconstruction). Only a handful of neurons are traced per brain (order tens),
+   and the count varies by brain. **Across the collection these traced neurons
+   are the core samples to pool** — your combined population is the union of every
+   brain's GT neurons, each tagged with its `brain_id`.
 
 **The errors that motivate the project.** Deep-learning segmentation introduces
 two systematic *topological* errors:
@@ -76,34 +75,31 @@ two systematic *topological* errors:
   where neurites run close together.
 
 Scoring the automated reconstruction against the human tracings gives a baseline
-(skeleton-based topology metrics); for the example 794495 cache it is (every
-brain in the collection has its own such baseline, and the pooled error profile
-is the aggregate over all of them):
+of **skeleton-based topology metrics**, computed per brain and then pooled. The
+metrics that characterize each brain's (and the combined population's) error
+profile are:
 
-| Metric | Value |
+| Metric | Meaning |
 |---|---|
-| Total Splits | 10,031 |
-| Total Merges | 124 |
-| Avg. Splits per Neuron | 571.4 |
-| Avg. Merges per Neuron | 6.9 |
-| Edge Accuracy | 73.78 % |
-| % Split Edges | 0.32 % |
-| % Omit Edges | 1.36 % |
-| % Merged Edges | 24.55 % |
-| ERL (Expected Run Length) | 5,090.6 µm |
-| Normalized ERL | 0.0095 |
+| Total Splits / Merges | Count of split / merge errors. |
+| Avg. Splits / Merges per Neuron | Per-neuron error counts. |
+| Edge Accuracy | Fraction of GT edges correctly reconstructed. |
+| % Split / Omit / Merged Edges | Fraction of GT edges in each error class. |
+| ERL (Expected Run Length) | Average error-free path length along a neuron; higher is better. |
+| Normalized ERL | ERL divided by total run length. |
 
-Splits dominate (a true neuron broken into hundreds of pieces); merges are
-rarer but individually costly. These *topological* errors — not voxel-level
-mislabeling — are what corrupt downstream connectivity, which is why
+Empirically, **splits dominate** (a true neuron broken into many pieces) while
+merges are rarer but individually costly. These *topological* errors — not
+voxel-level mislabeling — are what corrupt downstream connectivity, which is why
 skeleton-based metrics (splits/neuron, edge accuracy, normalized ERL) are the
-appropriate evaluation targets.
+appropriate evaluation targets. Compute the numbers yourself from the caches
+provided rather than relying on any quoted figures.
 
-> These baseline numbers come from the canonical scoring pipeline (predicted
-> labels read from the dense segmentation mask) for the 794495 cache. The cache
-> itself contains no mask, so re-deriving these metrics from the pickle alone
-> uses the nearest-fragment proxy described in § *Identifying errors* and will
-> not reproduce them exactly — treat the table as the reference target, not a
+> Canonical baseline numbers come from a scoring pipeline that reads predicted
+> labels from the dense segmentation mask. The cache itself contains no mask, so
+> re-deriving these metrics from the pickle alone uses the nearest-fragment proxy
+> described in § *Identifying errors* and will not reproduce the canonical
+> figures exactly — treat such metrics as a relative target, not an exact
 > cache-only result. Each brain's cache yields its own baseline; when pooling,
 > compute the proxy metrics per brain with the *same* tolerance and then combine,
 > so the brains are scored comparably.
@@ -113,16 +109,15 @@ appropriate evaluation targets.
 - **Ground truth is sparse and skeleton-only.** Only a handful of neurons are
   traced per brain (named like `N001-<brain_id>-JT`, `N002-<brain_id>-PP`, … —
   the trailing suffix is the human annotator's initials, and the embedded
-  `<brain_id>` already identifies the source brain). In the example 794495 cache
-  there are 19 such neurons, and the IDs are not contiguous (e.g. no
-  `N010`/`N012`, largest is `N023`); other brains have their own counts and ID
-  sets. Because neuron names are only unique *within* a brain, when you pool
-  across the collection you must **namespace each neuron by its `brain_id`** (the
-  name already contains it, but track `brain_id` as an explicit column too) so
-  that `N001` from two different brains are never conflated. There is **no dense
-  ground-truth voxel volume**: GT exists only as center-line skeletons in
-  `gt_graph`. A region with no traced neuron is simply unlabeled, not labeled
-  "background."
+  `<brain_id>` already identifies the source brain). The IDs are not necessarily
+  contiguous (gaps are normal); each brain has its own count and ID set, which
+  you should read off the cache rather than assume. Because neuron names are only
+  unique *within* a brain, when you pool across the collection you must
+  **namespace each neuron by its `brain_id`** (the name already contains it, but
+  track `brain_id` as an explicit column too) so that `N001` from two different
+  brains are never conflated. There is **no dense ground-truth voxel volume**: GT
+  exists only as center-line skeletons in `gt_graph`. A region with no traced
+  neuron is simply unlabeled, not labeled "background."
 - **Fragments are filtered.** When each cache was built, UNet fragments shorter
   than `min_cable_length` µm of total path length were dropped, removing the
   shortest noise fragments; the caches in this collection use
@@ -149,8 +144,7 @@ Every cache, regardless of brain, is a single dict with the **same keys** — th
 identical schema is exactly what makes the collection poolable. The full key set
 is below; the last five are the ones you will actually use — the three `*_path`
 strings just record where the source data was read from when the cache was built.
-(Values shown are for the example 794495 cache; other brains differ only in the
-graph contents and counts.)
+(The graph contents and counts differ per brain; the keys and types do not.)
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -160,8 +154,8 @@ graph contents and counts.)
 | `anisotropy` | `tuple` | `(0.748, 0.748, 1.0)` — µm/voxel in **(x, y, z)** order. |
 | `min_cable_length` | `int` | `100` — µm threshold; shorter fragments were discarded (shared across the collection). |
 | `node_spacing` | `int` | `5` — target µm spacing between adjacent skeleton nodes. |
-| `fragments_graph` | `SkeletonGraph` | Automated UNet reconstruction (example 794495: ~366,900 components, ~20.9 M nodes). |
-| `gt_graph` | `SkeletonGraph` | Human ground-truth reconstruction (example 794495: 19 neurons, ~1.36 M nodes). |
+| `fragments_graph` | `SkeletonGraph` | Automated UNet reconstruction (hundreds of thousands of fragment components; tens of millions of nodes). |
+| `gt_graph` | `SkeletonGraph` | Human ground-truth reconstruction (order tens of neurons; ~10⁶ nodes). |
 
 > **Note.** The filename pattern is `dataset_cache_<brain_id>_mcl<N>.pkl`, where
 > `<brain_id>` is the specimen and `N` is the `min_cable_length` threshold (the
@@ -205,11 +199,13 @@ This makes `import agentic_neuron_proofreader` work from anywhere.
 ### Loading one cache (sample code)
 
 ```python
-import pickle
+import glob, pickle
 # Requires the agentic_neuron_proofreader package to be installed (see above).
 
-# Any dataset_cache_<brain_id>_mcl<N>.pkl in cache/ works the same way.
-with open("cache/dataset_cache_794495_mcl100.pkl", "rb") as f:
+# Pick any dataset_cache_<brain_id>_mcl<N>.pkl present in cache/ — they all
+# work the same way. (Glob the folder; see "Loading the whole collection" below.)
+some_cache = sorted(glob.glob("cache/dataset_cache_*.pkl"))[0]
+with open(some_cache, "rb") as f:
     payload = pickle.load(f)   # reconstructs SkeletonGraph instances
 
 gt_graph        = payload["gt_graph"]         # SkeletonGraph: human-traced neurons
@@ -219,9 +215,8 @@ anisotropy      = payload["anisotropy"]       # (0.748, 0.748, 1.0)
 print(gt_graph.summary(prefix="GroundTruth"))
 print(fragments_graph.summary(prefix="Fragments"))
 # -> # Connected Components / # Nodes / # Edges / Memory Consumption
-# For the example 794495 cache:
-# GroundTruth: 19 components, ~1,363,808 nodes
-# Fragments:   ~366,900 components, ~20,900,000 nodes
+#    (tens of GT neurons / ~10^6 GT nodes; hundreds of thousands of fragment
+#     components / tens of millions of fragment nodes — exact counts per brain)
 ```
 
 ### Loading the whole collection (sample code)
@@ -282,7 +277,7 @@ rows = []
 for brain_id, payload in caches.items():            # or stream one brain at a time
     gt = payload["gt_graph"]
     for comp_id, neuron_name in gt.component_id_to_swc_id.items():  # one row per traced neuron
-        # neuron_name e.g. "N001-794495-JT"
+        # neuron_name e.g. "N001-<brain_id>-JT"
         rows.append({
             "brain_id":   brain_id,                  # <-- the covariate / grouping key
             "neuron":     f"{brain_id}:{neuron_name}",     # globally-unique id
@@ -342,7 +337,8 @@ cache in the collection was produced the same way, by a two-step build (only the
 
    ```python
    cache_path = f"../cache/dataset_cache_{brain_id}_mcl{min_cable_length}.pkl"
-   # brain_id=794495, min_cable_length=100 -> dataset_cache_794495_mcl100.pkl
+   # e.g. brain_id="<brain_id>", min_cable_length=100
+   #      -> dataset_cache_<brain_id>_mcl100.pkl
    ```
 
    Running this once per brain is exactly how the collection in `cache/` was
@@ -378,16 +374,16 @@ import networkx as nx
 # A connected component = one reconstructed object
 #   gt    -> a complete traced neuron
 #   frags -> a single UNet fragment (a real neuron is split across MANY of these)
-print("GT components:   ", nx.number_connected_components(gt_graph))        # e.g. 19 (794495)
-print("Frag components: ", nx.number_connected_components(fragments_graph)) # e.g. ~366,900 (794495)
+print("GT components:   ", nx.number_connected_components(gt_graph))        # order tens
+print("Frag components: ", nx.number_connected_components(fragments_graph)) # hundreds of thousands
 
 # Node-level access
 node  = next(iter(gt_graph.nodes))
 xyz   = gt_graph.node_xyz[node]           # (x, y, z) in microns
 voxel = gt_graph.node_voxel(node)         # (z, y, x) voxel index (xyz / anisotropy, reversed)
-swc   = gt_graph.node_swc_id(node)        # e.g. "N001-794495-JT.0"
+swc   = gt_graph.node_swc_id(node)        # e.g. "N001-<brain_id>-JT.0"
 seg   = gt_graph.node_segment_id(node)    # the node's OWN component id, swc minus ".copy" suffix:
-                                          #   on gt_graph -> the GT neuron name "N001-794495-JT"
+                                          #   on gt_graph -> the GT neuron name "N001-<brain_id>-JT"
                                           #   on fragments_graph -> the raw U-Net segment label
 # NOTE: gt_graph.node_segment_id is the GT neuron's own id, NOT a predicted label.
 # A GT node carries no predicted label until you match it against fragments_graph (see below).
@@ -418,7 +414,7 @@ dist, nearest_gt_node = gt_graph.kdtree.query(fragments_graph.node_xyz[leaves[0]
   from **different namespaces** and must never be compared directly:
   - On `fragments_graph`, `node_segment_id` is the **raw U-Net segment label** —
     the *predicted* identity used for scoring.
-  - On `gt_graph`, it is the **GT neuron's own name** `N0XX-794495-<initials>`
+  - On `gt_graph`, it is the **GT neuron's own name** `N0XX-<brain_id>-<initials>`
     (trailing initials = human annotator) — a *ground-truth* identity, **not** a
     prediction.
   A GT node has **no predicted label stored anywhere**; the prediction for a GT
@@ -450,20 +446,27 @@ of its nearest fragment node**. The procedure:
    > does not record it. A value of **~2 µm** is a reasonable default (it is on
    > the order of `node_spacing = 5` µm). The choice materially changes the
    > results — especially the **omit** count, since a looser tolerance labels
-   > more GT nodes — so pick a value explicitly and report it. For reference,
-   > the median GT→fragment nearest distance in the example 794495 cache is
-   > ~1.6 µm, so a 2 µm tolerance labels the majority of GT nodes and leaves the
-   > rest as omits. **Use the same tolerance for every brain** so the per-brain
-   > error metrics are comparable when pooled. You can vectorize the whole step in
-   > one call: `dists, nn = fragments_graph.kdtree.query(gt_graph.node_xyz)`.
+   > more GT nodes — so pick a value explicitly and report it. The median
+   > GT→fragment nearest distance is typically on the order of a micron, so a
+   > ~2 µm tolerance labels the majority of GT nodes and leaves the rest as omits;
+   > inspect the distance distribution per brain (`dists` below) to confirm.
+   > **Use the same tolerance for every brain** so the per-brain error metrics are
+   > comparable when pooled. You can vectorize the whole step in one call:
+   > `dists, nn = fragments_graph.kdtree.query(gt_graph.node_xyz)`.
 
 2. **Walk each GT edge** `(i, j)` and classify it from the two endpoint labels:
-   - **Omit edge** — *both* endpoints are unlabeled (`0`): the reconstruction
-     missed this stretch of neuron entirely.
+   - **Omit edge** — *either* endpoint is unlabeled (`label[i] == "0"` **or**
+     `label[j] == "0"`): the reconstruction missed (at least) this end of the
+     neuron. This matches `OmitEdgePercentMetric.count_omit_edges`, whose
+     criterion is an **OR over the two endpoints** — an edge that touches even
+     one unlabeled node is an omit edge.
    - **Split edge** — both endpoints are labeled but the **segment ids** *differ*
      (`label[i] != label[j]`, both nonzero): one true neuron is broken across
      two segments at this edge.
    - (Same nonzero segment id on both ends → correctly reconstructed.)
+
+   Note there is **no separate "boundary" / one-end-labeled class**: an edge with
+   exactly one unlabeled endpoint is an omit edge under the OR rule.
 
 3. **Count splits per neuron** as `(number of distinct segment ids touching that
    GT neuron) − 1` — N segments covering one neuron implies N−1 splits.
@@ -505,13 +508,12 @@ for gt_n in gt_graph.nodes:
 n_omit = n_split = n_correct = 0
 for i, j in gt_graph.edges:
     li, lj = gt_pred_label[i], gt_pred_label[j]
-    if li == "0" and lj == "0":
-        n_omit += 1                        # both ends missed
-    elif li != "0" and lj != "0" and li != lj:
+    if li == "0" or lj == "0":
+        n_omit += 1                        # EITHER end unlabeled (count_omit_edges' OR rule)
+    elif li != lj:
         n_split += 1                       # both labeled, different segments
-    elif li != "0" and lj != "0" and li == lj:
+    else:
         n_correct += 1                     # same segment -> correctly joined
-    # exactly one end labeled -> boundary edge, counted as neither
 E = gt_graph.number_of_edges()
 print(f"split={n_split} ({100*n_split/E:.2f}%)  omit={n_omit} ({100*n_omit/E:.2f}%)")
 
@@ -577,7 +579,9 @@ contain (the mask).
   neighboring nodes carry different predicted labels.
 - **Merge** — two distinct neurons fused into one predicted segment (false
   connection); **% Merged Edges** quantifies these.
-- **% Omit Edges** — GT edges whose nodes have no predicted label (missed).
+- **% Omit Edges** — fraction of GT edges with at least one unlabeled endpoint
+  (either node has no predicted label, i.e. `node_label == "0"`); the
+  reconstruction missed that part of the neuron.
 - **ERL (Expected Run Length)** — average error-free path length along a neuron;
   higher is better. **Normalized ERL** divides by total run length.
 - **Edge Accuracy** — fraction of GT edges correctly reconstructed.
