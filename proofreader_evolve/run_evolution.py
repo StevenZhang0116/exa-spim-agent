@@ -626,13 +626,12 @@ async def run_evolution(
     if with_image:
         from proofreader_evolve.harness.image_features import LazyImagePatchReader
         import sys as _sys
-        _scripts = os.path.abspath(os.path.join(os.path.dirname(__file__),
-                                                "..", "..", "scripts"))
+        # configs/ and scripts/ live in PROJECT_ROOT (exa-spim-agent/), one level
+        # above proofreader_evolve/ -- not at the outer repo root.
+        _scripts = str(PROJECT_ROOT / "scripts")
         _sys.path.insert(0, _scripts)
         from dataset_config import get_img_path  # noqa: E402
-        _prefixes = os.path.abspath(os.path.join(os.path.dirname(__file__),
-                                                 "..", "..", "configs",
-                                                 "exaspim_image_prefixes.json"))
+        _prefixes = str(PROJECT_ROOT / "configs" / "exaspim_image_prefixes.json")
         img_path = get_img_path(brain, prefixes_path=_prefixes)
         image_reader = LazyImagePatchReader(img_path, fragments_graph)
         log(f"Image patch reader ENABLED (lazy): {img_path}")

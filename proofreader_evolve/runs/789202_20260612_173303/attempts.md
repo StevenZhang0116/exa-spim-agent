@@ -1,0 +1,5 @@
+- gen01 [vs parent 70.321]: held-out 70.321 (+0.000) -> reverted (did not beat parent); +103 -2 lines; The subagent made the edit but couldn't run a shell check (it only has Read/Write/Edit). Let me confirm the module impor
+- gen02 [vs parent 70.321]: held-out 70.813 (+0.492) -> reverted (did not beat parent); +149 -1 lines; Let me confirm the module imports cleanly, as required.Module imports cleanly and `propose_edits` is callable. Summary o
+- gen03 [vs parent 70.321]: held-out 70.321 (+0.000) -> reverted (did not beat parent); +229 -89 lines; Module imports cleanly and `propose_edits` is callable. Summary of this gen03 revision:
+- gen04 [vs parent 70.321]: held-out 70.321 (+0.000) -> reverted (did not beat parent); +125 -1 lines; Module imports cleanly and `propose_edits` is callable. Summary of the gen04 revision:
+- gen05 [vs parent 70.321]: held-out 68.718 (-1.604) -> reverted (did not beat parent); +95 -1 lines; Four rejections deep — let me read the gen05 report and current policy myself first, so I can give the subagent sharper 

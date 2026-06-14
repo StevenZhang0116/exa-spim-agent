@@ -1,0 +1,111 @@
+# Proofreading Criteria (the evolved natural-language program)
+
+> The evolution loop revises THIS file alongside `heuristics.py`. It is the
+> human-readable statement of *why* the policy makes the decisions it does.
+> Each criterion should correspond to logic in `heuristics.py::propose_edits`.
+> When the agent revises the policy, it must keep this file in sync so a
+> reviewer can read the current proofreading theory in plain language.
+
+## Objective
+
+Maximize run-length-weighted **Edge Accuracy** on held-out ground-truth
+skeletons (ERL is the tie-breaker), by repairing BOTH error classes the
+segmentation makes:
+
+- **Split errors** — one true neuron broken into several fragments. Repair by
+  **unifying** fragment label pairs (`merge_labels`), without joining fragments
+  that belong to different neurons.
+- **Merge errors** — two (or more) true neurons fused under one segment label.
+  Repair by **splitting** that label by location (`split_label`), without
+  over-splitting a single real neuron (which would raise % Split Edges).
+
+Edge Accuracy = 100 − (% Split Edges + % Omit Edges + % Merged Edges), so a good
+policy must lower split AND merge errors together while not trading one for the
+other. The failure report shows both components plus an over-split watchdog.
+
+## Current criteria (Generation 6 — conservative omit-recovery)
+
+The active policy targets the **omitted-edge** component (implied %Omit ≈ 5.30 on
+the gen05 report — the second-largest error and untouched by prior generations) via
+conservative `merge_labels` reattachment. It emits **no `split_label`** because the
+report states no raw label spans ≥2 GT neurons on this split, so any split would
+only over-split a real neuron and trip the watchdog.
+
+- **SplitSite → `merge_labels`** is emitted only when ALL of:
+  1. the gap is genuinely small (`gap_um ≤ SPLIT_GAP_MAX_UM = 3.0`) and finite — a
+     dropped connection, not a long reach across background;
+  2. the partner endpoint `node_b` is a **clean endpoint** (graph degree ≤ 2):
+     reattaching a tip into a high-degree branch is where unrelated neurites cross
+     (over-merge risk), so those are skipped. If the graph/degree is unavailable we
+     only trust the smallest half of the gap range, else skip;
+  3. a **per-label reattachment cap** (`SPLIT_MAX_PER_LABEL = 1`) prevents chaining
+     one fragment into many neighbors (no mega-labels).
+  Reattaching across such a small clean gap converts an omitted (background/dropped)
+  edge into a real connection, lowering %Omit without inflating %Merged.
+- **MergeSite → declined** (no edit). `split_label` has no GT-confirmable target on
+  this split; a speculative split only raises %Split.
+
+## Known failure modes to address (hypotheses for the loop)
+
+Split-repair (SplitSite → `merge_labels`):
+- **Over-merge at crossings.** Two unrelated neurites passing within a few µm get
+  wrongly unified, creating a merge error. Candidate fix: require the two tips'
+  local tangent directions to be roughly collinear (continuation, not crossing).
+- **Under-repair of real gaps.** True splits with a gap slightly above threshold
+  are missed. Candidate fix: allow larger gaps when direction agreement is high.
+
+Merge-repair (MergeSite → `split_label`):
+- **Over-split of one neuron.** Cutting at a genuine bifurcation of a SINGLE
+  neuron breaks a real cable, raising % Split Edges. Candidate fix: only split
+  when the branch looks like two distinct neurites — e.g. `angle_deg` far from
+  180° (not a straight pass-through), `radius_ratio` far from 1 (different
+  calibers), and both arms long (`cable_a_um`, `cable_b_um`).
+- **Missed merges.** A real fusion left uncut keeps % Merged Edges high. The
+  failure report lists the BASELINE merge labels (raw labels spanning ≥2 GT
+  neurons on train) as concrete repair targets to aim a `split_label` at.
+
+Both:
+- **No image evidence.** Geometry alone ignores fluorescence. Candidate fix: read
+  the image patch (`ctx["read_image_patch"]`, may be None) to test for a
+  connecting signal across a gap, or an intensity valley at a suspected cut.
+
+## Candidate space (what the policy gets to choose from)
+
+The policy receives a UNIFIED stream of two site kinds (branch on `site.kind`):
+
+- **SplitSite** (`kind == "split"`, from `dataset.candidate_split_sites`): for
+  every fragment **tip** (`node_a`, degree 1), the nearest **differently-labelled**
+  node within `max_gap_um` as `node_b` (tip, shaft, or branch — so tip-to-shaft
+  and branch-point reconnections are candidates). One per unordered label pair.
+- **MergeSite** (`kind == "merge"`, from `dataset.candidate_merge_sites`): a
+  branch node (degree ≥ 3) inside ONE label where the two longest arms are BOTH
+  long — the signature of two neurites fused at a touch/crossing. Carries the cut
+  node, a seed deep in each arm, and advisory features (`branch_degree`,
+  `angle_deg`, `radius_ratio`, `cable_a_um`, `cable_b_um`). All fields are derived
+  from fragment geometry alone, so MergeSites are leak-free on held-out.
+
+`ctx["n_split_sites"]` / `ctx["n_merge_sites"]` report the stream composition.
+
+## Change log
+
+- **Gen 0:** seed is a no-op (proposes nothing).
+- **Harness:** `candidate_split_sites` broadened from tip-to-tip to
+  tip-to-any-node (tip/shaft/branch) within `max_gap_um`; `SplitSite` carries
+  `node_a` (always a tip) and `node_b` (the partner, any degree).
+- **Harness (merge repair):** added `MergeSite` + `candidate_merge_sites`
+  (GT-free branch-based merge detection) and a unified split+merge candidate
+  stream; fitness is Edge Accuracy (charges merge errors); the failure report now
+  lists baseline merge targets and an over-split watchdog.
+- **Gen 6 (2026-06-13):** switched from the no-op seed to a conservative
+  `merge_labels` policy aimed at the **omitted-edge** lever (%Omit ≈ 5.30, never
+  addressed by gens 1–4). Rationale from the gen05 report: (a) every prior
+  SplitSite attempt fired **zero** edits because its gates (tangent-collinearity,
+  mutual-nearest, fluorescence gap-connectivity) were too strict — so this version
+  gates only on cheap, always-present fields (`gap_um` ≤ 3.0 µm + `node_b` degree
+  ≤ 2) and a per-label cap of 1, so it actually fires while staying conservative;
+  (b) `split_label` is deliberately omitted because "no raw label spans ≥2 GT
+  neurons in this split," so any speculative split only raises %Split and trips the
+  watchdog. Reattaching a dropped fragment across a small clean gap recovers an
+  omitted edge — a lever no prior generation touched. All graph/feature access is
+  wrapped in try/except with NaN/None guards; when the graph is missing the policy
+  still fires on the smallest gaps rather than swallowing every edit.
