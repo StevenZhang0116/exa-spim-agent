@@ -329,6 +329,32 @@ img_patch   = image.read(center_vox, patch_shape)   # numpy array, fetched from 
 img_util.plot_mips(img_patch)                # XY / XZ / YZ max-intensity projections
 ```
 
+**Centering the patch on a specific error** (to *see* what a split/merge/omit looks
+like in the raw image). Every error from *Recovering the errors* maps to a voxel:
+
+```python
+import numpy as np
+
+def xyz_to_voxel(xyz, anisotropy):
+    """(x, y, z) µm -> (z, y, x) integer voxel, matching gt.node_voxel."""
+    return tuple(int(c / a) for c, a in zip(xyz, anisotropy))[::-1]
+
+# A merge: read at the stored merge site (already a world coordinate in µm).
+site       = gt.merge_sites[0]                      # {segment_id, gt_neuron, xyz}
+center_vox = xyz_to_voxel(site["xyz"], gt.anisotropy)
+img_util.plot_mips(image.read(center_vox, patch_shape))
+
+# A split / omit edge: center on one of its endpoint nodes.
+i, j       = split_edges[0]                          # from "Recovering the errors"
+center_vox = gt.node_voxel(i)                        # already (z, y, x)
+img_util.plot_mips(image.read(center_vox, patch_shape))
+```
+
+So an agent can take any error it recovered from the labels, fetch the raw image
+around it, and inspect the fluorescence to understand *why* the reconstruction
+went wrong there — all from the `_add.pkl` (for the location) plus a public-S3 read
+(for the pixels).
+
 > **The dense segmentation is intentionally not accessible here.** It lives on a
 > *private* GCS bucket (`gs://allen-nd-goog`, recorded as `segmentation_path` for
 > provenance only) and would require a credential to read. You do not need it: the
