@@ -79,8 +79,8 @@ the ones you will actually use.
 | Key | Type | Meaning |
 |---|---|---|
 | `fragments_path`, `gt_path` | `str` | Provenance only — source GCS paths of the SWCs. Not read to use the cache. |
-| `img_path` | `str` | S3 path of the raw fused ExaSPIM image. Not needed for error recovery, but lets you fetch raw-image patches on demand — see *Optionally reading the raw image / segmentation*. |
-| `segmentation_path` | `str` | GCS path of the dense predicted segmentation the labels were read from. Not needed for error recovery, but available for on-demand patch reads (same section). |
+| `img_path` | `str` | **Public S3** path of the raw fused ExaSPIM image. Not needed for error recovery, but lets you fetch raw-image patches on demand with no credentials — see *Optionally reading the raw image*. |
+| `segmentation_path` | `str` | Provenance only — **private GCS** path of the dense segmentation the labels were read from. Not read at load time and not needed (its information is already in the stored labels). |
 | `anisotropy` | `tuple` | `(0.748, 0.748, 1.0)` — µm/voxel in (x, y, z). |
 | `min_cable_length` | `int` | `100` — µm threshold shorter fragments were dropped at. |
 | `node_spacing` | `int` | `5` — target µm spacing between skeleton nodes. |
@@ -247,44 +247,34 @@ The expensive scoring (segmentation read + geometric merge walk) ran once at
 build time; recovery here is pure lookup over `node_label` / `edge_error` /
 `merge_labels`, grouped by `node_segment_id`.
 
-### Optionally reading the raw image / segmentation (requires cloud access)
+### Optionally reading the raw image (public S3, no credentials)
 
-Everything above is **cache-only** — no network. The raw fluorescence image and
-the dense segmentation are **not** stored in the `_add.pkl`; only their paths are
-(`img_path`, `segmentation_path`). If you need the actual voxels — e.g. to render
-an image patch around a merge site, or to inspect the segmentation directly — you
-can fetch them on demand from those paths. **This is the only part of the workflow
-that needs cloud access and credentials; skip this section entirely if you only
-need the error labels.**
+Everything above is **cache-only** — no network. The raw fluorescence image is
+**not** stored in the `_add.pkl`; only its path is (`img_path`). If you want the
+actual voxels — e.g. to render an image patch around a merge site for visual
+context — you can fetch them on demand. **This is the only part of the workflow
+that touches the network; skip this section entirely if you only need the error
+labels.**
 
-What you need to provide for this step (and *only* this step):
+The image lives on the **public** AIND open-data S3 bucket
+(`s3://aind-open-data/...fused.zarr/...`), so **no credentials or token are
+required** — only outbound network access. What to provide for this step:
 
-- **Network access** to the storage buckets:
-  - `img_path` is an **S3** path (`s3://aind-open-data/...fused.zarr/...`).
-  - `segmentation_path` is a **GCS** path (`gs://allen-nd-goog/...`).
-- **Credentials**, set as environment variables before opening either reader:
-  - **GCS** (for the segmentation): a service-account JSON key, pointed to by
-    `GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json`. The bucket
-    `allen-nd-goog` is private, so a key with read access to it is required.
-  - **S3** (for the raw image): `aind-open-data` is public, so no secret key is
-    needed; set `AWS_EC2_METADATA_DISABLED=true` so the client does not stall
-    probing for instance metadata.
-- The **`tensorstore`** Python package (the reader backend) plus the cloud
-  extras. `agentic_neuron_proofreader` pulls in `tensorstore`; the cloud kvstore
-  drivers (`s3`, `gcs`) ship with it.
+- **Network access** to `s3://aind-open-data` (public, anonymous read).
+- One environment variable, set before opening the reader:
+  `AWS_EC2_METADATA_DISABLED=true` — so the S3 client does not stall probing for
+  instance metadata. (No AWS key, no secret.)
+- The **`tensorstore`** package (the reader backend) — pulled in by
+  `agentic_neuron_proofreader`; the `s3` kvstore driver ships with it.
 
 ```python
 import os
-import numpy as np
 from agentic_neuron_proofreader.utils import img_util
 
-# Set BEFORE opening any reader.
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/path/to/gcs_key.json"  # GCS read
-os.environ["AWS_EC2_METADATA_DISABLED"] = "true"                        # S3 (public)
+os.environ["AWS_EC2_METADATA_DISABLED"] = "true"   # public S3; no credentials
 
-# Paths come straight out of the cache payload — no hard-coding.
-image = img_util.TensorStoreImage(payload["img_path"])           # raw fused image (S3)
-seg   = img_util.TensorStoreImage(payload["segmentation_path"])  # segmentation (GCS)
+# Path comes straight out of the cache payload — no hard-coding.
+image = img_util.TensorStoreImage(payload["img_path"])   # raw fused image (public S3)
 
 # Read a patch CENTERED on a node's voxel. node_voxel(i) returns (z, y, x);
 # TensorStoreImage.read(center, shape) treats `center` as the patch center.
@@ -292,17 +282,23 @@ node        = next(iter(gt.nodes))
 center_vox  = gt.node_voxel(node)            # (z, y, x) integer voxel
 patch_shape = (128, 128, 128)                # (z, y, x)
 img_patch   = image.read(center_vox, patch_shape)   # numpy array, fetched from S3
-seg_patch   = seg.read(center_vox, patch_shape)     # numpy array, fetched from GCS
 
-img_util.plot_mips(img_patch)                # max-intensity projections of the patch
+img_util.plot_mips(img_patch)                # XY / XZ / YZ max-intensity projections
 ```
 
+> **The dense segmentation is intentionally not accessible here.** It lives on a
+> *private* GCS bucket (`gs://allen-nd-goog`, recorded as `segmentation_path` for
+> provenance only) and would require a credential to read. You do not need it: the
+> segmentation's information is already baked into the stored labels
+> (`gt_node_canonical_label`, `gt_edge_error`, `gt_merge_labels`). This workflow
+> reads the **public raw image only**.
+
 > **Loading the cache itself stays cloud-free** as long as you use plain
-> `pickle.load` (above). Note that the convenience loader
-> `BrainDataset.load_from_cache(path)` eagerly constructs a `TensorStoreImage`
-> from `img_path`, so it touches S3 at load time and will fail without the S3
-> setup above — prefer `pickle.load` when you only want the labels, and open the
-> image readers explicitly (as here) only when you actually need voxels.
+> `pickle.load` (above). The convenience loader `BrainDataset.load_from_cache(path)`
+> eagerly constructs a `TensorStoreImage` from `img_path`, so it touches S3 at load
+> time (and needs `AWS_EC2_METADATA_DISABLED=true`) — prefer `pickle.load` when you
+> only want the labels, and open the image reader explicitly (as here) only when
+> you actually need voxels.
 
 ### Validating against the canonical metrics
 
