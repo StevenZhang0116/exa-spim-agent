@@ -1,9 +1,9 @@
 # `dataset_cache` — Dataset Description
 
-A `dataset_cache_<brain_id>_mcl<N>.pkl` file is a Python pickle holding a cached
-`BrainDataset` for **one ExaSPIM brain**. Each bundles two neuron-skeleton
-graphs — a human ground-truth reconstruction and an automated U-Net
-reconstruction of the same brain. These caches are the evaluation targets for a
+A `dataset_cache_<brain_id>_mcl<N>.pkl` file is a Python pickle holding a single
+dict for **one ExaSPIM brain**. Each bundles two neuron-skeleton graphs — a human
+ground-truth reconstruction and an automated U-Net reconstruction of the same
+brain — alongside the build parameters used to create them. These caches are the evaluation targets for a
 project on **agentic, post-hoc proofreading of whole-brain neuron
 reconstructions**: correcting the systematic split/merge errors in the automated
 reconstruction so the extracted wiring diagram becomes trustworthy for
@@ -101,14 +101,14 @@ skeleton-based metrics (splits/neuron, edge accuracy, normalized ERL) are the
 appropriate evaluation targets. Compute the numbers yourself from the caches
 provided rather than relying on any quoted figures.
 
-> Canonical baseline numbers come from a scoring pipeline that reads predicted
-> labels from the dense segmentation mask. The cache itself contains no mask, so
-> re-deriving these metrics from the pickle alone uses the nearest-fragment proxy
-> described in § *Identifying errors* and will not reproduce the canonical
-> figures exactly — treat such metrics as a relative target, not an exact
-> cache-only result. Each brain's cache yields its own baseline; when more than
-> one brain is present, compute the proxy metrics per brain with the *same*
-> tolerance and then combine, so the brains are scored comparably.
+> These metrics are computed **directly from the cache** by the procedure in
+> § *Identifying errors* — matching each ground-truth node to the nearest UNet
+> fragment node and classifying GT edges from the resulting segment labels. The
+> result depends on the match tolerance you choose (see that section), so treat
+> the numbers as a self-consistent baseline to improve against rather than an
+> absolute reference. Each brain's cache yields its own baseline; when more than
+> one brain is present, compute the metrics per brain with the *same* tolerance
+> and then combine, so the brains are scored comparably.
 
 **How the data was gathered / known gaps.**
 
@@ -202,8 +202,7 @@ This makes `import agentic_neuron_proofreader` work from anywhere.
 > `numpy` and `scipy` must be **binary-compatible** in the interpreter you use.
 > A mismatch raises `ValueError: numpy.dtype size changed, may indicate binary
 > incompatibility` on import — fix it by loading the cache in an environment
-> where numpy and scipy were installed together (this cache was validated under
-> the `panda` conda environment), not by editing the data.
+> where numpy and scipy were installed together, not by editing the data.
 
 ### Loading one cache (sample code)
 
@@ -325,49 +324,26 @@ pooled = pd.DataFrame(rows)   # rows from every brain, stacked into one populati
   brain and are not directly comparable. Preferring physical and normalized units
   is good practice regardless of how many brains are present.
 
-### How each cache was generated
+### Interpreting the stored build parameters
 
-You do **not** need to regenerate any cache to use it — this subsection only
-documents provenance so the stored parameters above are interpretable. Every
-cache in the collection was produced the same way, by a two-step build (only the
-`brain_id` and the source paths change from one brain to the next):
+You do **not** need to regenerate any cache to use it. This subsection only
+explains the build-time parameters stored *inside* each cache so the values you
+read back are interpretable. They were fixed once when the cache was created and
+are identical across the collection (only `brain_id` changes from one file to the
+next), which is what guarantees any caches present are mutually comparable and
+safe to pool:
 
-1. Build a `BrainDataset` by reading the source SWCs directly from cloud
-   storage (`gt_path`, `fragments_path`) and attaching the lazy ExaSPIM image
-   reader (`img_path`):
+- `anisotropy = (0.748, 0.748, 1.0)` — µm/voxel in (x, y, z); used to convert
+  between physical coordinates and voxel indices.
+- `min_cable_length = 100` — µm; UNet fragments shorter than this were dropped at
+  build time (the `mclN` in the filename).
+- `node_spacing = 5` — µm; target spacing the skeletons were resampled to.
 
-   ```python
-   from agentic_neuron_proofreader.data_modules.datasets import BrainDataset
-
-   dataset = BrainDataset(
-       fragments_path,                 # gs://allen-nd-goog/.../swcs
-       gt_path,                        # gs://allen-nd-goog/.../voxel
-       img_path,                       # s3://aind-open-data/.../fused.zarr/0
-       anisotropy=(0.748, 0.748, 1.0),
-       min_cable_length=100,           # <-- the mclN threshold; 100 for this collection
-       node_spacing=5,
-   )
-   ```
-
-   Reading the ~10k source SWC archives from GCS is the slow step (~15 min) and
-   needs valid Google credentials (`GOOGLE_APPLICATION_CREDENTIALS`).
-
-2. Serialize the two reconstructed graphs plus the paths/parameters with
-   `dataset.save(cache_path)`, where the filename encodes the threshold:
-
-   ```python
-   cache_path = f"../cache/dataset_cache_{brain_id}_mcl{min_cable_length}.pkl"
-   # e.g. brain_id="<brain_id>", min_cable_length=100
-   #      -> dataset_cache_<brain_id>_mcl100.pkl
-   ```
-
-   Running this once per brain is exactly how the collection in `cache/` was
-   assembled — same parameters, different `brain_id` — which is what guarantees
-   that any caches present are mutually comparable and safe to pool.
-
-The lazy `TensorStoreImage` (`img_path`) is **not** pickled — it re-instantiates
-instantly — which is why each cache loads from skeletons alone with no image
-access, exactly the constraint this document relies on.
+No image is stored in the cache — only the two `SkeletonGraph` objects and these
+parameters are pickled — which is why each cache loads from skeletons alone with
+no image access, exactly the constraint this document relies on. (The three
+`*_path` strings are recorded only as provenance of where the source data came
+from; nothing in this document reads them.)
 
 ### `SkeletonGraph` structure
 
@@ -448,10 +424,9 @@ fragment components (the SWC id is `"<segment>.<copy>"`), so two GT nodes
 landing on different *components* of the *same* segment are **not** a split.
 Always classify by segment id, not by connected component.
 
-Canonically, each GT node's predicted label is read from the dense segmentation
-mask at that node's voxel. The cache does **not** include that mask, so with
-only the two graphs the available proxy is: label a GT node by the **segment id
-of its nearest fragment node**. The procedure:
+From the two graphs in the cache, each GT node's predicted label is assigned by
+the **segment id of its nearest fragment node**: the fragment skeletons stand in
+for a predicted labeling of the GT center-line. The procedure:
 
 1. **Label each GT node.** For every node in `gt_graph`, query
    `fragments_graph.kdtree.query(gt.node_xyz[node])` for the nearest fragment
@@ -567,32 +542,33 @@ discussion above warns against.
 
 So the cache contains everything needed to score errors: the geometry
 (`node_xyz`) and segment ids (`node_segment_id`) of both graphs, plus the
-`kdtree` to match them. No image or external label mask is required — the
-nearest-fragment segment id stands in for the mask lookup.
+`kdtree` to match them. The nearest-fragment segment id is the predicted label
+for each GT node; nothing outside the cache is needed.
 
-**Caveats of the cache-only proxy** (know these before trusting the numbers):
+**Caveats** (know these before trusting the numbers):
 
-- **It is a proxy for the mask lookup.** Canonical scoring reads the predicted
-  label from the dense segmentation mask at each GT voxel; here we substitute
-  the nearest fragment node's segment id. The two agree only where a fragment
-  node lies close to the GT center-line.
-- **Omits are inflated by fragment filtering.** Fragments shorter than
+- **Results depend on the match tolerance.** The labeling threshold from step 1
+  is a free parameter, not stored in the cache. A looser tolerance labels more GT
+  nodes and so lowers the **omit** count; a tighter one raises it. Pick a value
+  explicitly, report it, and use the same one for every brain.
+- **Omits are sensitive to fragment filtering.** Fragments shorter than
   `min_cable_length` were dropped when each cache was built, so GT stretches that
-  *were* reconstructed by a short fragment now have no nearby fragment node and
-  get counted as **omit**. The omit rate measured from the cache is therefore an
-  upper bound, not the true miss rate. All caches in this collection share the
-  same `min_cable_length = 100` µm, so this inflation is consistent across any
-  brains present and does not bias one brain relative to another when pooling.
-- **Merge detection is partial.** The cache-only test verifies the core merge
-  definition (one segment id touching ≥2 distinct GT neurons); the full
-  geometric merge-site walk (§ step 4, the ">~50 µm then re-approach" rule)
-  needs per-voxel mask labels to localize the merge point precisely.
+  were reconstructed only by a short fragment now have no nearby fragment node and
+  get counted as **omit**. Read the omit rate as an upper bound on the true miss
+  rate. All caches in this collection share the same `min_cable_length = 100` µm,
+  so this effect is consistent across any brains present and does not bias one
+  brain relative to another when pooling.
+- **Merge detection is partial.** The procedure verifies the core merge definition
+  (one segment id touching ≥2 distinct GT neurons); the full geometric merge-site
+  walk (§ step 4, the ">~50 µm then re-approach" rule) only *localizes* where
+  along the segment the fusion happens, which the skeleton geometry approximates
+  rather than pinpoints.
 
 Every instruction in this document has been verified to run against the cache
 alone: all structural claims — keys, types, namespace split, the 4-step error
 procedure — execute from cache-only data. The caveats above are the places where
-a number depends on a choice (the tolerance) or on data the cache does not
-contain (the mask).
+a number depends on a choice (the tolerance) or on which fragments survived the
+`min_cable_length` filter.
 
 **Skeleton-metric glossary** (used when scoring a reconstruction against GT):
 
