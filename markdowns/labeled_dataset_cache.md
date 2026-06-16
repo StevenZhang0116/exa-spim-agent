@@ -1,34 +1,3 @@
-# `labeled_dataset_cache` — Pre-scored Dataset Description
-
-A `dataset_cache_<brain_id>_mcl<N>_add.pkl` file is a Python pickle holding a
-single dict for **one ExaSPIM brain** — the same two neuron-skeleton graphs as a
-plain `dataset_cache_<brain_id>_mcl<N>.pkl` (human ground truth + automated U-Net
-reconstruction), **plus pre-computed canonical error labels baked in**. The `_add`
-suffix marks a cache that has been scored: every ground-truth node already carries
-the predicted segment id it falls on, every ground-truth edge already carries its
-split / merge / omit class, and the set of merge segments has already been found.
-
-**The point of the `_add` cache: scoring is already done.** A plain cache only
-contains skeletons, so identifying split/merge/omit errors after loading requires
-re-deriving them (matching nodes to fragments, picking a tolerance, walking
-fragments to find merges). The `_add` cache stores the *results* of that scoring —
-read from the dense segmentation **once** at build time — so after loading you
-read the error labels directly. **No segmentation, no cloud read, no tolerance to
-pick, no merge walk to run.**
-
-> **Read whatever `_add.pkl` files are in `cache/` as ONE pre-scored dataset.**
-> Like the plain caches, the format is **brain-agnostic**: every `_add.pkl`
-> exposes the same keys, the same label arrays, and the same `SkeletonGraph`
-> class, so the same code path handles one cache or many. Discover all
-> `dataset_cache_*_add.pkl` in `cache/`, load each, and pool the per-neuron error
-> records into a single combined sample set, **tagged with the `brain_id` it came
-> from** (parsed from the filename). A run may provide a single brain or several;
-> the procedures are identical either way. Any per-file number quoted here is
-> illustrative of *one* brain; the quantities that matter are the **aggregates
-> over whatever is present**.
-
----
-
 ## 1) Dataset context
 
 **Origin.** Each `_add.pkl` is built from the matching plain
@@ -109,8 +78,9 @@ the ones you will actually use.
 
 | Key | Type | Meaning |
 |---|---|---|
-| `fragments_path`, `gt_path`, `img_path` | `str` | Provenance only — source GCS/S3 paths. Not read to use the cache. |
-| `segmentation_path` | `str` | Provenance — the dense segmentation the labels were read from. Not read at load time. |
+| `fragments_path`, `gt_path` | `str` | Provenance only — source GCS paths of the SWCs. Not read to use the cache. |
+| `img_path` | `str` | S3 path of the raw fused ExaSPIM image. Not needed for error recovery, but lets you fetch raw-image patches on demand — see *Optionally reading the raw image / segmentation*. |
+| `segmentation_path` | `str` | GCS path of the dense predicted segmentation the labels were read from. Not needed for error recovery, but available for on-demand patch reads (same section). |
 | `anisotropy` | `tuple` | `(0.748, 0.748, 1.0)` — µm/voxel in (x, y, z). |
 | `min_cable_length` | `int` | `100` — µm threshold shorter fragments were dropped at. |
 | `node_spacing` | `int` | `5` — target µm spacing between skeleton nodes. |
@@ -163,21 +133,34 @@ credentials to *load* and *use* an `_add.pkl`.
 
 ### Loading (one cache)
 
+Load with plain `pickle.load`. This is **cloud-free** — it reconstructs the graphs
+and reads the label arrays without touching S3/GCS. (The `agentic_neuron_proofreader`
+package must be importable so `pickle` can rebuild the `SkeletonGraph` class — see
+*Install the package* above.)
+
 ```python
+import pickle
 import numpy as np
-# Requires the agentic_neuron_proofreader package installed (see above).
-from agentic_neuron_proofreader.data_modules.datasets import BrainDataset
+import agentic_neuron_proofreader  # noqa: F401 — registers SkeletonGraph for unpickling
 
-ds = BrainDataset.load_from_cache("cache/dataset_cache_794495_mcl100_add.pkl")
-gt = ds.gt_graph
+with open("cache/dataset_cache_794495_mcl100_add.pkl", "rb") as f:
+    payload = pickle.load(f)
 
-node_label   = np.asarray(gt.node_label)     # (N_gt,) predicted segment id, 0 = omit
-edge_error   = np.asarray(gt.edge_error)      # (E_gt,) 0=correct 1=split 2=omit 3=merged
-merge_labels = set(int(x) for x in gt.merge_labels)   # merging segment ids
-merge_sites  = gt.merge_sites                 # list of {segment_id, gt_neuron, xyz}
+gt           = payload["gt_graph"]                 # SkeletonGraph: GT neurons
+node_label   = np.asarray(payload["gt_node_canonical_label"])  # (N_gt,) seg id, 0 = omit
+edge_error   = np.asarray(payload["gt_edge_error"])            # (E_gt,) 0=corr 1=split 2=omit 3=merge
+merge_labels = set(int(x) for x in payload["gt_merge_labels"]) # merging segment ids
+merge_sites  = payload["gt_merge_sites"]           # list of {segment_id, gt_neuron, xyz}
 
-assert node_label is not None, "not an _add cache — run scripts/relabel_cache.py"
+assert node_label.size, "not an _add cache — labels missing (run scripts/relabel_cache.py)"
 ```
+
+> **Why not `BrainDataset.load_from_cache`?** That convenience loader works too,
+> but it eagerly opens the raw image (`TensorStoreImage(img_path)`) at load time,
+> which reaches S3 and needs the cloud setup in *Optionally reading the raw image*.
+> For label-only work, `pickle.load` avoids the network entirely. The labels are
+> stored as top-level payload keys (and also on `gt_graph` as `node_label`,
+> `edge_error`, `merge_labels`, `merge_sites`) so either access path works.
 
 > **Memory.** Budget well over 20 GB RAM per cache (the reconstructed graphs are
 > far larger than the on-disk file); when several are present, load one brain at a
@@ -187,8 +170,8 @@ assert node_label is not None, "not an _add cache — run scripts/relabel_cache.
 ### Loading the whole collection
 
 ```python
-import glob, os, re
-from agentic_neuron_proofreader.data_modules.datasets import BrainDataset
+import glob, os, re, pickle
+import agentic_neuron_proofreader  # noqa: F401 — registers SkeletonGraph
 
 def brain_id_from_path(path):
     m = re.search(r"dataset_cache_(\d+)_mcl(\d+)_add\.pkl$", os.path.basename(path))
@@ -196,8 +179,11 @@ def brain_id_from_path(path):
 
 for path in sorted(glob.glob("cache/dataset_cache_*_add.pkl")):   # _add only
     brain_id = brain_id_from_path(path)
-    ds = BrainDataset.load_from_cache(path)
-    # ... reduce ds.gt_graph labels to per-neuron records tagged with brain_id ...
+    with open(path, "rb") as f:
+        payload = pickle.load(f)
+    gt = payload["gt_graph"]
+    # ... reduce gt + payload label arrays to per-neuron records tagged brain_id,
+    #     then let `payload` be garbage-collected before the next brain ...
 ```
 
 ### `SkeletonGraph` structure and label conventions
@@ -221,15 +207,11 @@ All three error types come straight out of the stored arrays — no segmentation
 no recompute:
 
 ```python
-import numpy as np
 from collections import defaultdict
+# Reuses gt, node_label, edge_error, merge_labels from "Loading (one cache)" above.
 
 UNLABELED = 0
 EDGE_CORRECT, EDGE_SPLIT, EDGE_OMIT, EDGE_MERGED = 0, 1, 2, 3
-
-node_label   = np.asarray(gt.node_label)
-edge_error   = np.asarray(gt.edge_error)
-merge_labels = set(int(x) for x in gt.merge_labels)
 
 # --- Edge-class fractions (% split / omit / merged / correct) -----------------
 E = len(edge_error)
@@ -264,6 +246,63 @@ merge_sites = gt.merge_sites    # xyz of each detected merge, for localization
 The expensive scoring (segmentation read + geometric merge walk) ran once at
 build time; recovery here is pure lookup over `node_label` / `edge_error` /
 `merge_labels`, grouped by `node_segment_id`.
+
+### Optionally reading the raw image / segmentation (requires cloud access)
+
+Everything above is **cache-only** — no network. The raw fluorescence image and
+the dense segmentation are **not** stored in the `_add.pkl`; only their paths are
+(`img_path`, `segmentation_path`). If you need the actual voxels — e.g. to render
+an image patch around a merge site, or to inspect the segmentation directly — you
+can fetch them on demand from those paths. **This is the only part of the workflow
+that needs cloud access and credentials; skip this section entirely if you only
+need the error labels.**
+
+What you need to provide for this step (and *only* this step):
+
+- **Network access** to the storage buckets:
+  - `img_path` is an **S3** path (`s3://aind-open-data/...fused.zarr/...`).
+  - `segmentation_path` is a **GCS** path (`gs://allen-nd-goog/...`).
+- **Credentials**, set as environment variables before opening either reader:
+  - **GCS** (for the segmentation): a service-account JSON key, pointed to by
+    `GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json`. The bucket
+    `allen-nd-goog` is private, so a key with read access to it is required.
+  - **S3** (for the raw image): `aind-open-data` is public, so no secret key is
+    needed; set `AWS_EC2_METADATA_DISABLED=true` so the client does not stall
+    probing for instance metadata.
+- The **`tensorstore`** Python package (the reader backend) plus the cloud
+  extras. `agentic_neuron_proofreader` pulls in `tensorstore`; the cloud kvstore
+  drivers (`s3`, `gcs`) ship with it.
+
+```python
+import os
+import numpy as np
+from agentic_neuron_proofreader.utils import img_util
+
+# Set BEFORE opening any reader.
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/path/to/gcs_key.json"  # GCS read
+os.environ["AWS_EC2_METADATA_DISABLED"] = "true"                        # S3 (public)
+
+# Paths come straight out of the cache payload — no hard-coding.
+image = img_util.TensorStoreImage(payload["img_path"])           # raw fused image (S3)
+seg   = img_util.TensorStoreImage(payload["segmentation_path"])  # segmentation (GCS)
+
+# Read a patch CENTERED on a node's voxel. node_voxel(i) returns (z, y, x);
+# TensorStoreImage.read(center, shape) treats `center` as the patch center.
+node        = next(iter(gt.nodes))
+center_vox  = gt.node_voxel(node)            # (z, y, x) integer voxel
+patch_shape = (128, 128, 128)                # (z, y, x)
+img_patch   = image.read(center_vox, patch_shape)   # numpy array, fetched from S3
+seg_patch   = seg.read(center_vox, patch_shape)     # numpy array, fetched from GCS
+
+img_util.plot_mips(img_patch)                # max-intensity projections of the patch
+```
+
+> **Loading the cache itself stays cloud-free** as long as you use plain
+> `pickle.load` (above). Note that the convenience loader
+> `BrainDataset.load_from_cache(path)` eagerly constructs a `TensorStoreImage`
+> from `img_path`, so it touches S3 at load time and will fail without the S3
+> setup above — prefer `pickle.load` when you only want the labels, and open the
+> image readers explicitly (as here) only when you actually need voxels.
 
 ### Validating against the canonical metrics
 
