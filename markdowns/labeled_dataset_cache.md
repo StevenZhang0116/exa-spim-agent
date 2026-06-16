@@ -131,11 +131,41 @@ graph. Their combined size is tiny (~tens of MB) next to the multi-GB graphs.
 > attached, and you would fall back to deriving them. Prefer the `_add.pkl` when
 > present: the labels are exact and free.
 
+### Install the package (one-time setup)
+
+Loading an `_add.pkl` needs exactly one thing on the Python path: the
+`agentic_neuron_proofreader` package, which defines the `SkeletonGraph` class that
+`pickle.load` reconstructs. Without it the load fails immediately — the pickle
+stores `SkeletonGraph` instances, so the class must be importable to rebuild them.
+Its runtime dependencies are the usual scientific stack — **`numpy`, `networkx`,
+`scipy`** (KD-tree), plus `tqdm`; installing the package pulls these in.
+
+Clone
+[`agentic-neuron-proofreader`](https://github.com/AllenInstitute/agentic-neuron-proofreader)
+and `pip install` it into your environment:
+
+```bash
+git clone https://github.com/AllenInstitute/agentic-neuron-proofreader.git
+cd agentic-neuron-proofreader
+pip install -e .          # editable; drop -e for a normal install
+```
+
+This makes `import agentic_neuron_proofreader` work from anywhere. The label
+arrays (`gt_node_canonical_label`, etc.) are plain NumPy and need nothing beyond
+this — there is **no** dependency on a segmentation reader, cloud SDK, or
+credentials to *load* and *use* an `_add.pkl`.
+
+> **Environment gotcha.** `SkeletonGraph` imports `scipy.spatial.KDTree`, so
+> `numpy` and `scipy` must be **binary-compatible** in the interpreter you use.
+> A mismatch raises `ValueError: numpy.dtype size changed, may indicate binary
+> incompatibility` on import — fix it by loading the cache in an environment
+> where numpy and scipy were installed together, not by editing the data.
+
 ### Loading (one cache)
 
 ```python
 import numpy as np
-# Requires the agentic_neuron_proofreader package on the path.
+# Requires the agentic_neuron_proofreader package installed (see above).
 from agentic_neuron_proofreader.data_modules.datasets import BrainDataset
 
 ds = BrainDataset.load_from_cache("cache/dataset_cache_794495_mcl100_add.pkl")
@@ -149,11 +179,10 @@ merge_sites  = gt.merge_sites                 # list of {segment_id, gt_neuron, 
 assert node_label is not None, "not an _add cache — run scripts/relabel_cache.py"
 ```
 
-> **Environment.** Loading reconstructs `SkeletonGraph` instances, so the
-> `agentic_neuron_proofreader` package must be importable and `numpy`/`scipy` must
-> be binary-compatible (install them together). Budget well over 20 GB RAM per
-> cache; when several are present, load one brain at a time, reduce each to the
-> small per-neuron records you pool, and let the graph be garbage-collected.
+> **Memory.** Budget well over 20 GB RAM per cache (the reconstructed graphs are
+> far larger than the on-disk file); when several are present, load one brain at a
+> time, reduce each to the small per-neuron records you pool, and let the graph be
+> garbage-collected before loading the next.
 
 ### Loading the whole collection
 
