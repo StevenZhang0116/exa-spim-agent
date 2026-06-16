@@ -1,13 +1,13 @@
 ## 1) Dataset context
 
-**Origin.** Each `_add.pkl` is built from the matching plain
-`dataset_cache_<brain_id>_mcl<N>.pkl` by `scripts/relabel_cache.py`. That script
-reads the brain's dense predicted **segmentation** volume from cloud storage
-*once*, looks up the predicted segment id at every ground-truth node's voxel,
-classifies every ground-truth edge, runs the geometric merge-detection walk, and
-writes the results back into a new `_add.pkl`. The original cache is left
-untouched; the `_add` copy is additive. **All cloud access happens at build time —
-the `_add.pkl` itself loads with no segmentation and no credentials.**
+**Origin.** Each `_add.pkl` was built, ahead of time, from a plain
+`dataset_cache_<brain_id>_mcl<N>.pkl` (two skeleton graphs only) by a one-time
+labeling step: it read the brain's dense predicted **segmentation** volume from
+cloud storage *once*, looked up the predicted segment id at every ground-truth
+node's voxel, classified every ground-truth edge, ran the geometric
+merge-detection walk, and wrote the results into the `_add.pkl`. **You do not run
+any of this** — it is already done. **All cloud access happened at build time; the
+`_add.pkl` you were given loads with no segmentation and no credentials.**
 
 **What each `_add` cache captures (on top of the plain cache).** The plain cache's
 two graphs are unchanged:
@@ -52,7 +52,7 @@ systematic *topological* errors, both already identified in the `_add` cache:
 
 - **Labels are exact to the segmentation, but cache fragments are filtered.** The
   GT labels come from the dense segmentation, so split/merge/edge-accuracy track
-  the canonical `metrics_out/<brain>/<seg_id>/results.csv` closely. The **omit**
+  the canonical scoring pipeline closely. The **omit**
   rate, however, reads slightly **higher** than canonical, because the cache's
   fragments were filtered at `min_cable_length` (a GT stretch reconstructed only
   by a dropped short fragment shows as background → omit). Treat the cache omit
@@ -96,10 +96,10 @@ The four added arrays are also attached to `gt_graph` as
 `gt_graph.merge_sites`, so you can read them off either the payload dict or the
 graph. Their combined size is tiny (~tens of MB) next to the multi-GB graphs.
 
-> **`_add.pkl` vs plain `.pkl`.** A plain cache lacks the four label keys (or
-> stores `None`). The same loader reads both — a plain cache simply has no labels
-> attached, and you would fall back to deriving them. Prefer the `_add.pkl` when
-> present: the labels are exact and free.
+> **`_add.pkl` vs plain `.pkl`.** A plain `dataset_cache_*.pkl` lacks the four
+> label keys; an `_add.pkl` has them. This document is about the `_add.pkl` — the
+> one with labels already baked in. The `assert` in the loader below confirms you
+> were given an `_add` cache and not a plain one.
 
 ### Install the package (one-time setup)
 
@@ -152,7 +152,7 @@ edge_error   = np.asarray(payload["gt_edge_error"])            # (E_gt,) 0=corr 
 merge_labels = set(int(x) for x in payload["gt_merge_labels"]) # merging segment ids
 merge_sites  = payload["gt_merge_sites"]           # list of {segment_id, gt_neuron, xyz}
 
-assert node_label.size, "not an _add cache — labels missing (run scripts/relabel_cache.py)"
+assert node_label.size, "labels missing — this is a plain cache, not an _add cache"
 ```
 
 > **Why not `BrainDataset.load_from_cache`?** That convenience loader works too,
@@ -214,6 +214,10 @@ UNLABELED = 0
 EDGE_CORRECT, EDGE_SPLIT, EDGE_OMIT, EDGE_MERGED = 0, 1, 2, 3
 
 # --- Edge-class fractions (% split / omit / merged / correct) -----------------
+# This is the simple per-edge view: fraction of GT edges in each class. Good for
+# a quick error profile. (The canonical "% Merged Edges" metric is defined a bit
+# differently -- a node-count sum over merge segments -- so this merged fraction
+# is indicative, not identical to a canonical results.csv value.)
 E = len(edge_error)
 for code, name in [(EDGE_SPLIT,"split"), (EDGE_OMIT,"omit"),
                    (EDGE_MERGED,"merged"), (EDGE_CORRECT,"correct")]:
@@ -242,6 +246,45 @@ split_edges = [e for e, c in zip(gt.edges, edge_error) if c == EDGE_SPLIT]
 merge_edges = [e for e, c in zip(gt.edges, edge_error) if c == EDGE_MERGED]
 merge_sites = gt.merge_sites    # xyz of each detected merge, for localization
 ```
+
+**Per-neuron metrics that match the canonical pipeline.** To reproduce the
+canonical per-neuron numbers (`# Splits`, `% Split / Omit / Merged Edges`, `Edge
+Accuracy`), build one row per GT neuron. Note `% Merged Edges` is **not** the raw
+merged-edge fraction above — canonically it is a node-count sum over the merge
+segments touching the neuron:
+
+```python
+from agentic_neuron_proofreader.data_modules import canonical_labeling as cl
+
+edges = list(gt.edges)
+neuron_class = defaultdict(lambda: defaultdict(int))   # neuron -> {edge class: count}
+for k, (i, j) in enumerate(edges):
+    neuron_class[gt.node_segment_id(i)][int(edge_error[k])] += 1   # both ends share a neuron
+
+# % Merged Edges, canonical definition: per neuron, sum over merge labels on it of
+# (nodes_of_that_label_on_neuron - 1), divided by the neuron's edge count.
+seg_neuron_counts = cl.segment_neuron_node_counts(gt, node_label)   # seg -> {neuron: #nodes}
+neuron_merged = defaultdict(int)
+for lab in merge_labels:
+    for neuron, c in seg_neuron_counts.get(lab, {}).items():
+        neuron_merged[neuron] += max(c - 1, 0)
+
+for neuron, classes in neuron_class.items():
+    tot = sum(classes.values())
+    if not tot:
+        continue
+    print(f"{neuron}: "
+          f"#splits={max(len(neuron_segs[neuron]) - 1, 0)} "
+          f"%split={100*classes[EDGE_SPLIT]/tot:.2f} "
+          f"%omit={100*classes[EDGE_OMIT]/tot:.2f} "
+          f"%merged={100*neuron_merged[neuron]/tot:.2f} "
+          f"edge_acc={100*classes[EDGE_CORRECT]/tot:.2f}")
+```
+
+This per-neuron computation is exactly what `node_label` / `edge_error` /
+`merge_labels` were built to support, and matches the canonical
+`segmentation_skeleton_metrics` numbers (splits, edge accuracy, and merged % track
+closely; omit reads a touch higher — fragment filtering, above).
 
 The expensive scoring (segmentation read + geometric merge walk) ran once at
 build time; recovery here is pure lookup over `node_label` / `edge_error` /
@@ -300,14 +343,25 @@ img_util.plot_mips(img_patch)                # XY / XZ / YZ max-intensity projec
 > only want the labels, and open the image reader explicitly (as here) only when
 > you actually need voxels.
 
-### Validating against the canonical metrics
+### Sanity-checking the labels
 
-`notebooks/verify_add_cache_metrics.ipynb` loads an `_add.pkl`, rebuilds the
-per-neuron split / merge / omit statistics from the stored labels alone, and
-compares them to the canonical `metrics_out/<brain>/<seg_id>/results.csv`. Splits,
-edge accuracy, and merge percentages track canonical closely; omit reads a touch
-higher (fragment filtering, above). Use it to confirm a freshly relabeled cache
-is sound.
+You can confirm the labels are self-consistent from the cache alone — no external
+reference needed. Expected, for a healthy `_add.pkl`:
+
+- The label arrays line up with the graph: `len(node_label) == gt_graph.number_of_nodes()`
+  and `len(edge_error) == gt_graph.number_of_edges()`.
+- Most GT nodes are labeled: the unlabeled (omit) fraction is typically a few
+  percent — `node_label == 0` should be the small minority.
+- Every id in `merge_labels` actually appears in `node_label` on ≥2 distinct GT
+  neurons (that is what made it a merge).
+- The four edge classes partition the edges: `#correct + #split + #omit + #merged
+  == number_of_edges()`.
+
+These were produced to mirror the `segmentation_skeleton_metrics` canonical
+scoring; splits, edge accuracy, and merge percentages match that pipeline closely,
+while the omit rate reads a touch higher (fragment filtering, above). Reproducing
+the canonical numbers exactly would require the segmentation and is *not* needed to
+use the cache.
 
 ---
 
