@@ -34,10 +34,22 @@ systematic *topological* errors, both already identified in the `_add` cache:
 
 | Metric | Meaning | How it is recovered from the `_add` cache |
 |---|---|---|
-| Total / per-neuron Splits | distinct predicted segments on a neuron, minus 1 | group `gt_node_canonical_label` by GT neuron |
-| % Split / Omit / Merged Edges | fraction of GT edges in each class | count `gt_edge_error` values |
-| Merges | predicted segments fusing ≥2 neurons | read `gt_merge_labels` |
+| Total / per-neuron Splits | distinct predicted segments on a neuron, minus 1 | group `gt_node_canonical_label` by GT neuron (NOT from `gt_edge_error`) |
+| % Split / Omit Edges | fraction of GT edges in each class | count `gt_edge_error` values |
 | Edge Accuracy | fraction of correctly reconstructed GT edges | `% correct` from `gt_edge_error` |
+| % Merged Edges | merged *cable* on a neuron, as a fraction of its edges | node-count formula over `gt_merge_labels` — **NOT** a count of `gt_edge_error == merged` (see below) |
+| # Merges | merge *events* (a segment fusing `k` neurons → `k−1` merges) | `Σ max(k−1, 0)` over `gt_merge_labels`, `k` = neurons with >50 nodes |
+
+> **Two of these are NOT `gt_edge_error` counts.** `% Split / Omit Edges` and
+> `Edge Accuracy` are simple per-edge class fractions of `gt_edge_error`. But
+> **`% Merged Edges` and `# Merges` are not** — they are computed from
+> `gt_node_canonical_label` + `gt_merge_labels`, matching the canonical
+> `segmentation_skeleton_metrics` definitions. The `merged` class inside
+> `gt_edge_error` is a per-edge **visualization** view (an edge whose *both* ends
+> carry a merge label); it deliberately differs from the scoring metric and will
+> **not** reproduce the `results.csv` `% Merged Edges`. Use the node-count formula
+> for scoring; use `gt_edge_error == merged` only to color the skeleton. The
+> *Recovering the errors* code below does exactly this.
 
 > **How the labels were produced (provenance only).** Each GT node's label is the
 > segment id read from the dense segmentation at that node's voxel, then
@@ -213,17 +225,16 @@ from collections import defaultdict
 UNLABELED = 0
 EDGE_CORRECT, EDGE_SPLIT, EDGE_OMIT, EDGE_MERGED = 0, 1, 2, 3
 
-# --- Edge-class fractions (% split / omit / merged / correct) -----------------
-# This is the simple per-edge view: fraction of GT edges in each class. Good for
-# a quick error profile. (The canonical "% Merged Edges" metric is defined a bit
-# differently -- a node-count sum over merge segments -- so this merged fraction
-# is indicative, not identical to a canonical results.csv value.)
+# --- Per-edge class fractions: % split / omit / correct -----------------------
+# These three ARE simple counts of gt_edge_error -- the fraction of GT edges in
+# each class. They match the canonical % Split Edges / % Omit Edges / Edge
+# Accuracy. (% Merged Edges is NOT done this way -- see the next block.)
 E = len(edge_error)
-for code, name in [(EDGE_SPLIT,"split"), (EDGE_OMIT,"omit"),
-                   (EDGE_MERGED,"merged"), (EDGE_CORRECT,"correct")]:
+for code, name in [(EDGE_SPLIT,"split"), (EDGE_OMIT,"omit"), (EDGE_CORRECT,"correct")]:
     print(f"% {name:8s}: {100*np.count_nonzero(edge_error==code)/E:.2f}")
 
 # --- Splits per neuron = (distinct predicted segments on it) - 1 --------------
+# Derived from node_label, NOT from gt_edge_error.
 neuron_segs = defaultdict(set)
 for n in gt.nodes:
     lab = int(node_label[n])
@@ -231,7 +242,9 @@ for n in gt.nodes:
         neuron_segs[gt.node_segment_id(n)].add(lab)
 splits_per_neuron = {nm: max(len(s) - 1, 0) for nm, s in neuron_segs.items()}
 
-# --- Merges: which neurons each merging segment fuses -------------------------
+# --- Merges: which neurons each merging segment fuses, and # Merges -----------
+# # Merges is NOT len(merge_labels): a segment fusing k GT neurons (>50 nodes on
+# each) is (k - 1) merge events. Sum that over the merge labels.
 seg_to_neurons = defaultdict(set)
 for n in gt.nodes:
     lab = int(node_label[n])
@@ -240,12 +253,41 @@ for n in gt.nodes:
 for seg, neurons in seg_to_neurons.items():
     print(f"segment {seg} merges: {sorted(neurons)}")
 
+MERGE_MIN_NODES = 50  # canonical: a neuron counts toward a merge only with >50 nodes
+seg_neuron_counts = defaultdict(lambda: defaultdict(int))  # seg -> {neuron: #nodes}
+for n in gt.nodes:
+    lab = int(node_label[n])
+    if lab != UNLABELED:
+        seg_neuron_counts[lab][gt.node_segment_id(n)] += 1
+total_merges = sum(
+    max(len([nm for nm, c in seg_neuron_counts[lab].items() if c > MERGE_MIN_NODES]) - 1, 0)
+    for lab in merge_labels
+)
+print(f"# Merges: {total_merges}")
+
 # --- The pieces a corrector acts on -------------------------------------------
 omit_edges  = [e for e, c in zip(gt.edges, edge_error) if c == EDGE_OMIT]
 split_edges = [e for e, c in zip(gt.edges, edge_error) if c == EDGE_SPLIT]
-merge_edges = [e for e, c in zip(gt.edges, edge_error) if c == EDGE_MERGED]
+merge_edges = [e for e, c in zip(gt.edges, edge_error) if c == EDGE_MERGED]  # display only
 merge_sites = gt.merge_sites    # xyz of each detected merge, for localization
 ```
+
+> **Why `merge_edges` (the `EDGE_MERGED` list) is display-only.** An edge is
+> tagged `EDGE_MERGED` only when *both* its endpoints carry the same merge label.
+> Two structural effects make a count of these edges **undercount** the canonical
+> merged cable, so it will not match `results.csv`:
+> 1. **Non-contiguity** — a merge label's nodes are often broken into several runs
+>    along the neuron (interleaved with other labels / omit gaps). If a label's
+>    `n` nodes split into `c` runs, only `n − c` edges have both ends merged, not
+>    the `n − 1` the canonical metric credits.
+> 2. **Boundary edges reclassify** — an edge from a merged node to a non-merge
+>    neighbor has *different* endpoint labels, so it is tagged `SPLIT` (or `OMIT`),
+>    never merged. Every entry/exit of a merged region leaks out of the merged
+>    count.
+>
+> The canonical `% Merged Edges` instead measures the **total cable claimed by the
+> merge** via a node-count sum (next block), which is robust to both effects. Use
+> `merge_edges` to *color* the skeleton; use the node-count formula to *score*.
 
 **Per-neuron metrics that match the canonical pipeline.** To reproduce the
 canonical per-neuron numbers (`# Splits`, `% Split / Omit / Merged Edges`, `Edge
@@ -254,7 +296,9 @@ merged-edge fraction above — canonically it is a node-count sum over the merge
 segments touching the neuron:
 
 ```python
+import pandas as pd
 from agentic_neuron_proofreader.data_modules import canonical_labeling as cl
+# Reuses gt, node_label, edge_error, merge_labels, neuron_segs from above.
 
 edges = list(gt.edges)
 neuron_class = defaultdict(lambda: defaultdict(int))   # neuron -> {edge class: count}
@@ -262,33 +306,46 @@ for k, (i, j) in enumerate(edges):
     neuron_class[gt.node_segment_id(i)][int(edge_error[k])] += 1   # both ends share a neuron
 
 # % Merged Edges, canonical definition: per neuron, sum over merge labels on it of
-# (nodes_of_that_label_on_neuron - 1), divided by the neuron's edge count.
+# (nodes_of_that_label_on_neuron - 1), divided by the neuron's edge count. This is
+# the node-count formula -- NOT a count of EDGE_MERGED edges (see the box above).
 seg_neuron_counts = cl.segment_neuron_node_counts(gt, node_label)   # seg -> {neuron: #nodes}
 neuron_merged = defaultdict(int)
 for lab in merge_labels:
     for neuron, c in seg_neuron_counts.get(lab, {}).items():
         neuron_merged[neuron] += max(c - 1, 0)
 
+# One row per GT neuron, columns mirroring results.csv -- compare directly.
+rows = []
 for neuron, classes in neuron_class.items():
     tot = sum(classes.values())
     if not tot:
         continue
-    print(f"{neuron}: "
-          f"#splits={max(len(neuron_segs[neuron]) - 1, 0)} "
-          f"%split={100*classes[EDGE_SPLIT]/tot:.2f} "
-          f"%omit={100*classes[EDGE_OMIT]/tot:.2f} "
-          f"%merged={100*neuron_merged[neuron]/tot:.2f} "
-          f"edge_acc={100*classes[EDGE_CORRECT]/tot:.2f}")
+    rows.append({
+        "neuron": neuron,
+        "# Splits": max(len(neuron_segs[neuron]) - 1, 0),
+        "% Split Edges": 100 * classes[EDGE_SPLIT] / tot,
+        "% Omit Edges":  100 * classes[EDGE_OMIT] / tot,
+        "% Merged Edges": 100 * neuron_merged[neuron] / tot,
+        "Edge Accuracy": 100 * classes[EDGE_CORRECT] / tot,
+    })
+cache_df = pd.DataFrame(rows).set_index("neuron").sort_index()
+print(cache_df)
 ```
 
-This per-neuron computation is exactly what `node_label` / `edge_error` /
-`merge_labels` were built to support, and matches the canonical
-`segmentation_skeleton_metrics` numbers (splits, edge accuracy, and merged % track
-closely; omit reads a touch higher — fragment filtering, above).
+`cache_df` lines up column-for-column with the canonical `results.csv`
+(`metrics_out/<brain>/<seg_id>/results.csv`), which is exactly the comparison
+`notebooks/verify_add_cache_metrics.ipynb` runs. Expected agreement (per that
+notebook): `# Splits`, `% Split Edges`, and `Edge Accuracy` correlate strongly
+(r > 0.7) with no large systematic bias; `% Merged Edges` correlates strongly
+with a small residual (canonical snaps merge sites to branch nodes and dedups in
+a specific order); `% Omit Edges` reads a touch **higher** cache-side (fragment
+filtering, above). A `# Merges` total — distinct from `len(merge_labels)` —
+is the `Σ max(k−1, 0)` sum shown in *Recovering the errors*.
 
 The expensive scoring (segmentation read + geometric merge walk) ran once at
 build time; recovery here is pure lookup over `node_label` / `edge_error` /
-`merge_labels`, grouped by `node_segment_id`.
+`merge_labels`, grouped by `node_segment_id` — exactly what these three arrays
+were built to support.
 
 ### Optionally reading the raw image (public S3, no credentials)
 
