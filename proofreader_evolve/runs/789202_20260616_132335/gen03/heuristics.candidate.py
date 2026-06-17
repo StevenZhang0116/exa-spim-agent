@@ -86,27 +86,20 @@ GAP_THRESHOLD_UM = 4.0      # max tip→partner distance (µm) to even consider 
 MIN_COLINEAR_COS = 0.94     # require ~>20° alignment: cos(angle) >= this (1.0 = perfectly straight)
 TANGENT_WALK_UM = 6.0       # how far to walk into each fragment to estimate its tip tangent
 
-# --- Evolvable enumeration priors (optional) --------------------------------
-# ENUM_PARAMS controls WHAT THE POLICY EVEN SEES — the candidate stream the harness
-# enumerates — as opposed to the thresholds above, which decide what to ACCEPT among
-# what it sees. These were once hardcoded in the harness (a HARD prior the policy
-# could not move); defining them here makes them SOFT and evolvable. The harness
-# validates + CLAMPS every value to a safety rail (see dataset.ENUM_PARAM_SPEC) and
-# ignores unknown keys, so editing this can never crash the run. Any key omitted
-# falls back to the framework default — so the dict below is the identity (no change
-# from the historical behavior); the agent may widen/narrow it to surface different
-# candidates (e.g. raise max_gap_um to reach longer true gaps, lower
-# min_arm_cable_um to surface shorter merges, set tip_to_shaft=False for tip-to-tip
-# only). The resolved values in effect are visible at runtime in ctx["enum_params"].
-ENUM_PARAMS = {
-    "max_gap_um": 15.0,        # tip->partner search radius for split candidates (µm) [1..40]
-    "tip_to_shaft": True,      # split partners may be shaft/branch nodes, not just tips
-    "min_arm_cable_um": 10.0,  # both arms of a merge candidate must reach this (µm) [2..50]
-    "seed_depth_um": 8.0,      # how deep to place each split seed into its arm (µm) [2..30]
-    "max_per_label": 8,        # cap on merge candidates emitted per raw label [1..100]
-    # "split_max_sites": 5000, # global cap on split candidates [100..50000]
-    # "merge_max_sites": 5000, # global cap on merge candidates [100..50000]
-}
+# --- Merge-repair (split_label) gating ---------------------------------------
+# These bound when we are willing to CUT one label into two neurons. A wrong split
+# raises %Split Edges (the over-split watchdog), so the bar is intentionally high:
+# both arms must be genuinely long cables AND the topology must look like two
+# distinct neurites meeting rather than one neuron passing through. The gate then
+# rejects any generation that raises %Split/#Merges, so we only emit a split when
+# multiple independent geometric signals agree (and, when available, image valley
+# evidence CONFIRMS a true touch rather than rejecting candidates).
+SPLIT_MIN_CABLE_UM = 15.0   # each arm must carry at least this much cable to be a real neuron
+SPLIT_MAX_ANGLE_DEG = 130.0 # arms sharper than this (far from 180°=straight pass-through) look fused
+SPLIT_MIN_RADIUS_RATIO = 1.6  # calibers this different suggest two distinct cables fused
+SPLIT_VALLEY_RATIO_MAX = 0.6  # image: chord intensity must DIP to <=60% of arm endpoints to confirm a touch
+SPLIT_VALLEY_POS_LO = 0.3   # the valley must sit near the middle of the chord (a real seam),
+SPLIT_VALLEY_POS_HI = 0.7   # not at an endpoint (which would just be a dim arm)
 
 
 def _walk_tangent(g, start, max_um):
@@ -184,6 +177,87 @@ def _is_colinear_split(g, s, min_cos):
     return best is not None and best >= min_cos
 
 
+def _merge_site_is_two_neurons(s):
+    """Cheap, image-free verdict on a MergeSite: do the GEOMETRY signals agree
+    that ONE label has fused TWO distinct neurites (so a ``split_label`` is
+    warranted)? Returns (accept_geom, needs_image_confirm).
+
+    The bar is deliberately high because a wrong split raises %Split Edges and the
+    gate reverts any generation that does so. We require, for every detector:
+      * BOTH arms to be genuinely long cables (not a short spur), and
+      * an explicit "two neurites" topology signal whose form depends on the
+        detector that found the site:
+          - "branch"    : a sharp arm angle (far from 180° straight pass-through)
+                          OR a clear caliber mismatch between the two arms.
+          - "bridge"    : a sharp kink angle AND a caliber pinch (radius mismatch).
+          - "component" : the label is physically DISCONNECTED into >=2 long pieces
+                          (angle is NaN here) — the disconnection itself is the signal.
+      * the two arms must NOT re-converge downstream (``arms_reconverge`` True means
+        one neuron's own branches / a loop — never cut those).
+
+    ``needs_image_confirm`` is True for the geometrically-borderline acceptances so
+    the caller can require image valley evidence before committing the cut.
+    """
+    if getattr(s, "arms_reconverge", None) is True:
+        return False, False  # one neuron's own loop/branches — never split
+
+    cable_a = getattr(s, "cable_a_um", None)
+    cable_b = getattr(s, "cable_b_um", None)
+    if cable_a is None or cable_b is None:
+        return False, False
+    if min(cable_a, cable_b) < SPLIT_MIN_CABLE_UM:
+        return False, False  # at least one arm is a short spur, not a second neuron
+
+    detector = getattr(s, "detector", "branch")
+    angle = getattr(s, "angle_deg", float("nan"))
+    rratio = getattr(s, "radius_ratio", None)
+    sharp_angle = (angle == angle) and (angle <= SPLIT_MAX_ANGLE_DEG)  # NaN-safe
+    caliber_gap = (rratio is not None) and (rratio >= SPLIT_MIN_RADIUS_RATIO)
+
+    if detector == "component":
+        # Two long, DISCONNECTED pieces under one label — the strongest, safest
+        # merge signal; the seeds already straddle the contact. Accept on geometry.
+        return True, False
+    if detector == "bridge":
+        # A thin neck: demand BOTH a sharp kink AND a caliber pinch (high bar).
+        if sharp_angle and caliber_gap:
+            return True, True
+        return False, False
+    # "branch" (or unknown): a degree>=3 meeting of two long arms.
+    if sharp_angle and caliber_gap:
+        return True, False   # two strong, independent signals — accept on geometry
+    if sharp_angle or caliber_gap:
+        return True, True    # one signal — let image evidence confirm before cutting
+    return False, False
+
+
+def _image_confirms_cut(s, ctx):
+    """Use the raw fluorescence chord between the two arm seeds to CONFIRM (not
+    reject) that this label is a touch of two neurons. A low valley_ratio near the
+    middle of the chord means the signal DIPS at the seam ⇒ two structures only
+    touch ⇒ split is warranted. Returns True only on clear valley evidence; returns
+    False when the image is unavailable (so geometry-only acceptances must already
+    be confident on their own)."""
+    reader = ctx.get("read_image_patch")
+    if reader is None:
+        return False
+    na = getattr(s, "seed_a_node", None)
+    nb = getattr(s, "seed_b_node", None)
+    if na is None or nb is None:
+        return False
+    try:
+        ev = reader.merge_cut_evidence(na, nb)
+    except Exception:
+        return False
+    if not ev:
+        return False
+    vr = ev.get("valley_ratio")
+    vp = ev.get("valley_pos")
+    if vr is None or vp is None:
+        return False
+    return (vr <= SPLIT_VALLEY_RATIO_MAX) and (SPLIT_VALLEY_POS_LO <= vp <= SPLIT_VALLEY_POS_HI)
+
+
 def propose_edits(sites, ctx) -> list:
     """Decide which candidate sites to repair, returning a list of edits.
 
@@ -192,8 +266,11 @@ def propose_edits(sites, ctx) -> list:
       (1) the gap is small  (s.gap_um <= GAP_THRESHOLD_UM), and
       (2) the two fragments are COLINEAR across the gap (a straight-line
           continuation — see ``_is_colinear_split``).
-    MergeSites are left alone (no ``split_label``) — splitting is the riskier edit
-    and is left for the evolution loop to add once it can measure the trade-off.
+    Gen 3 ALSO repairs merge errors: for each MergeSite, emit a ``split_label``
+    edit when ``_merge_site_is_two_neurons`` says the geometry signals agree it is
+    two fused neurites, optionally confirmed by image valley evidence on the
+    borderline (single-signal) cases. This targets the dominant remaining error
+    component (%Merged Edges) that the merge_labels-only path never touched.
 
     This proposes a small, high-precision set of merges, so the score moves OFF the
     flat no-edit baseline (giving the loop a gradient) without the union-find
@@ -211,14 +288,30 @@ def propose_edits(sites, ctx) -> list:
     edits = []
     for s in sites:
         kind = getattr(s, "kind", "split")
-        if kind != "split":
-            continue  # seed repairs splits only; leave merges for evolution
-        if s.gap_um > GAP_THRESHOLD_UM:
-            continue
-        try:
-            if _is_colinear_split(g, s, MIN_COLINEAR_COS):
-                edits.append(s.as_edit())   # (label_a, label_b) merge tuple
-        except Exception:
-            # Geometry is advisory; never let one odd site crash the whole policy.
-            continue
+        if kind == "split":
+            # --- Split-repair (merge_labels): unchanged high-precision colinear path.
+            if s.gap_um > GAP_THRESHOLD_UM:
+                continue
+            try:
+                if _is_colinear_split(g, s, MIN_COLINEAR_COS):
+                    edits.append(s.as_edit())   # (label_a, label_b) merge tuple
+            except Exception:
+                # Geometry is advisory; never let one odd site crash the policy.
+                continue
+        elif kind == "merge":
+            # --- Merge-repair (split_label): NEW in Gen 3. The dominant remaining
+            # error component is %Merged Edges (~17%), and the policy emitted ZERO
+            # split_label edits, leaving documented two-neuron labels uncut. Cut a
+            # label ONLY when multiple geometry signals agree it is two neurons;
+            # for the borderline (single-signal) cases, require image valley
+            # evidence to CONFIRM before committing (recall lever, not a filter).
+            try:
+                accept_geom, needs_image = _merge_site_is_two_neurons(s)
+                if not accept_geom:
+                    continue
+                if needs_image and not _image_confirms_cut(s, ctx):
+                    continue
+                edits.append(s.as_edit())   # split_label dict (uses the arm seeds)
+            except Exception:
+                continue
     return edits

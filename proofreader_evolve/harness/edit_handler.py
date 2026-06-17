@@ -260,12 +260,35 @@ class EditHandler:
                 continue
             lbl = str(e["label"])
             bucket = self._split.setdefault(lbl, [])
-            for suffix, xyz in _iter_split_seeds(e):
-                # Keep suffixes unique within a label; if the edit reuses one,
-                # fall through to an auto suffix so no seed is silently dropped.
-                used = {s for s, _ in bucket}
-                if suffix is None or suffix in used:
-                    suffix = _next_suffix(used)
+            # Two kinds of suffix repeat must be told apart:
+            #   * WITHIN one edit, repeating a suffix is INTENTIONAL — it groups
+            #     several arms into ONE side (e.g. the two through-arms of an
+            #     X-crossing both -> "a"). Multi-source Dijkstra shares a suffix
+            #     across its sources natively, so we keep these as-is.
+            #   * ACROSS edits, a repeat is a COLLISION — two independent split_label
+            #     edits that happened to pick the same letter would otherwise fuse
+            #     their sides. Those get a fresh auto suffix so neither is dropped.
+            # So we dedup only against suffixes contributed by PRIOR edits, and remap
+            # this edit's whole suffix set consistently (a->a', b->b', ...) when one
+            # of its letters collides, preserving the edit's internal grouping.
+            prior = {s for s, _ in bucket}
+            this_edit = list(_iter_split_seeds(e))
+            local_suffixes = {s for s, _ in this_edit if s is not None}
+            remap: dict[str, str] = {}
+            taken = set(prior)
+            for s in sorted(local_suffixes):
+                if s in prior:
+                    ns = _next_suffix(taken)
+                    remap[s] = ns
+                    taken.add(ns)
+                else:
+                    taken.add(s)
+            for suffix, xyz in this_edit:
+                if suffix is None:
+                    suffix = _next_suffix(taken)
+                    taken.add(suffix)
+                elif suffix in remap:
+                    suffix = remap[suffix]
                 bucket.append((suffix, np.asarray(xyz, dtype=float)))
 
         # Graph-aware partitions, populated lazily by build_graph_partitions(). Maps

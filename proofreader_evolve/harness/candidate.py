@@ -17,14 +17,18 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 from proofreader_evolve.harness import dataset as ds
 from proofreader_evolve.harness import scoring
 
 
 def _load_policy(heuristics_path: str):
-    """Import artifacts/heuristics.py fresh from disk and return propose_edits."""
+    """Import artifacts/heuristics.py fresh from disk; return (propose_edits, module).
+
+    The module is returned too so the caller can read an optional ``ENUM_PARAMS``
+    dict (the policy's evolvable enumeration priors) off it.
+    """
     spec = importlib.util.spec_from_file_location(
         f"_evolved_heuristics_{abs(hash(heuristics_path))}", heuristics_path
     )
@@ -34,7 +38,49 @@ def _load_policy(heuristics_path: str):
         raise AttributeError(
             f"{heuristics_path} must define propose_edits(sites, ctx)."
         )
-    return module.propose_edits
+    return module.propose_edits, module
+
+
+# Candidate sites depend only on the fragment graph (+ max_gap_um), which is fixed
+# for a whole run, but run_candidate is called (2 * generations + 1) times. The
+# enumeration is a whole-brain geometric scan, so memoize it keyed by the graph's
+# object identity and the gap. Keyed by id() because SkeletonGraph is unhashable
+# and the loop reuses one graph instance throughout; a small dict avoids leaks.
+_SITES_CACHE: dict = {}
+
+
+def _enumerate_sites_cached(fragments_graph, params: dict):
+    """Return (split_sites, merge_sites), computing once per (graph, params).
+
+    ``params`` is a resolved (validated + clamped) ENUM_PARAMS dict. The cache key
+    includes EVERY enumeration param, not just the gap — otherwise a policy that
+    changed an enumeration prior (e.g. min_arm_cable_um) would silently reuse sites
+    enumerated under the old prior. Same params -> the whole-brain scan is paid once
+    and reused across all (2*generations + 1) run_candidate calls; a new param tuple
+    pays a fresh scan (and that is the intended cost of evolving the prior).
+    """
+    key = (id(fragments_graph),
+           params["max_gap_um"], params["split_max_sites"], params["tip_to_shaft"],
+           params["min_arm_cable_um"], params["seed_depth_um"],
+           params["merge_max_sites"], params["max_per_label"])
+    cached = _SITES_CACHE.get(key)
+    if cached is None:
+        split_sites = ds.candidate_split_sites(
+            fragments_graph,
+            max_gap_um=params["max_gap_um"],
+            max_sites=params["split_max_sites"],
+            tip_to_shaft=params["tip_to_shaft"],
+        )
+        merge_sites = ds.candidate_merge_sites(
+            fragments_graph,
+            min_arm_cable_um=params["min_arm_cable_um"],
+            seed_depth_um=params["seed_depth_um"],
+            max_sites=params["merge_max_sites"],
+            max_per_label=params["max_per_label"],
+        )
+        cached = (split_sites, merge_sites)
+        _SITES_CACHE[key] = cached
+    return cached
 
 
 @dataclass
@@ -46,6 +92,8 @@ class CandidateRun:
     n_edits: int               # edits the policy proposed
     score: scoring.ScoreResult
     edits: list                # the (a, b) pairs proposed (for the failure report)
+    merge_sites: list = field(default_factory=list)  # enumerated MergeSites (for the
+                               # failure report's per-site feature table); GT-free.
 
     def to_json(self) -> dict:
         return {
@@ -98,7 +146,21 @@ def run_candidate(
 
     from proofreader_evolve.harness.edit_handler import normalize_edits
 
-    propose_edits = _load_policy(heuristics_path)
+    propose_edits, policy_module = _load_policy(heuristics_path)
+
+    # Evolvable enumeration priors: the policy MAY define a module-level ENUM_PARAMS
+    # dict to widen/narrow the candidate stream (what counts as a candidate). It is
+    # validated + clamped to a safe schema; missing keys fall back to the framework
+    # defaults, so a policy that defines nothing behaves exactly as before. The
+    # max_gap_um function arg is the default prior; ENUM_PARAMS["max_gap_um"], when
+    # given, overrides it.
+    raw_enum = getattr(policy_module, "ENUM_PARAMS", None)
+    if isinstance(raw_enum, dict):
+        raw_enum = {**raw_enum}
+        raw_enum.setdefault("max_gap_um", max_gap_um)
+    else:
+        raw_enum = {"max_gap_um": max_gap_um}
+    enum_params = ds.resolve_enum_params(raw_enum)
 
     # The policy reasons over a UNIFIED candidate stream of two site kinds:
     #   - SplitSite (kind="split"): two nearby fragments with DIFFERENT labels;
@@ -107,11 +169,22 @@ def run_candidate(
     #     valid action = split_label (repairs a merge error).
     # Both are GT-free (fragment geometry only), so the same stream is used on
     # train and held-out. The policy dispatches on ``site.kind``.
-    split_sites = ds.candidate_split_sites(fragments_graph, max_gap_um=max_gap_um)
-    merge_sites = ds.candidate_merge_sites(fragments_graph)
+    #
+    # Candidate-INVARIANT: the sites depend only on ``fragments_graph`` (and
+    # max_gap_um), which never changes within a run, while run_candidate is called
+    # (2 * generations + 1) times. Enumerating is a whole-brain geometric scan, so
+    # we cache per (graph identity, max_gap_um) and reuse across every call. This is
+    # the difference between paying the scan once vs. once per candidate.
+    split_sites, merge_sites = _enumerate_sites_cached(fragments_graph, enum_params)
     sites = list(split_sites) + list(merge_sites)
     ctx = {
-        "max_gap_um": max_gap_um,
+        "max_gap_um": enum_params["max_gap_um"],
+        # The resolved (validated + clamped) enumeration priors actually in effect
+        # this run — so the policy / failure report can see what candidate stream it
+        # was handed (e.g. distinguish "no site here" from "my widened gap took
+        # effect"). The values may differ from a policy's raw ENUM_PARAMS if a knob
+        # was clamped to its safety rail.
+        "enum_params": dict(enum_params),
         "fragments_graph": fragments_graph,
         # Candidate-stream composition, so the policy can tell how many of each
         # kind it was handed without re-scanning (sites carry a ``kind`` tag too).
@@ -158,6 +231,7 @@ def run_candidate(
         n_edits=len(edits),
         score=result,
         edits=edits,
+        merge_sites=list(merge_sites),
     )
 
 
@@ -259,6 +333,102 @@ def write_failure_report(
                 lines.append(f"| {label} | {len(involved)} | {counts} | {locs} |")
         else:
             lines.append("_none — no raw label spans >=2 GT neurons in this split._")
+
+    # MergeSite feature patterns, LABELLED by ground truth (train-only diagnosis).
+    # The "Baseline merge errors" table above names WHICH raw labels are merges; this
+    # one shows the GT-free GEOMETRY of the candidate MergeSites at those labels, side
+    # by side with the geometry of MergeSites that are NOT merges. The reviser may
+    # only key its policy on the FEATURE columns (detector/angle/radius/cable/...),
+    # never the raw label — so a labelled positive/negative feature table is the
+    # signal it needs to learn a GENERALIZABLE split_label threshold instead of
+    # guessing. GT is used ONLY to assign the true/false column and is restricted to
+    # this report's skeletons (train split), so it never reaches a held-out policy.
+    if merge_labels is not None:
+        merge_target_labels = {str(l) for l in (merge_labels or {}).keys()}
+        sites = list(getattr(train_run, "merge_sites", None) or [])
+
+        def _f(v, nd=2):
+            try:
+                if v is None:
+                    return "—"
+                fv = float(v)
+                return "NaN" if fv != fv else f"{fv:.{nd}f}"
+            except (TypeError, ValueError):
+                return str(v)
+
+        def _site_row(s):
+            lab = str(getattr(s, "label", ""))
+            rec = getattr(s, "arms_reconverge", None)
+            rec_s = "—" if rec is None else ("yes" if rec else "no")
+            return (
+                f"| {getattr(s, 'detector', '?')} | {_f(getattr(s, 'angle_deg', None))} | "
+                f"{_f(getattr(s, 'radius_ratio', None))} | "
+                f"{_f(getattr(s, 'cable_a_um', None),1)} | {_f(getattr(s, 'cable_b_um', None),1)} | "
+                f"{getattr(s, 'branch_degree', '?')} | {rec_s} |"
+            )
+
+        pos = [s for s in sites if str(getattr(s, "label", "")) in merge_target_labels]
+        neg = [s for s in sites if str(getattr(s, "label", "")) not in merge_target_labels]
+        header = ("| detector | angle_deg | radius_ratio | cable_a | cable_b | "
+                  "branch_degree | arms_reconverge |")
+        sep = "|---|---|---|---|---|---|---|"
+
+        lines.append("\n\n## MergeSite features at TRUE merges (split_label targets)\n")
+        lines.append(
+            "Each row is a candidate MergeSite whose label IS a baseline merge (a real "
+            "fusion of >=2 GT neurons). These are the geometry patterns a `split_label` "
+            "SHOULD fire on. Key your policy on these columns, never the raw label.\n"
+        )
+        if pos:
+            lines.append(header); lines.append(sep)
+            for s in pos[:60]:
+                lines.append(_site_row(s))
+            if len(pos) > 60:
+                lines.append(f"\n…and {len(pos) - 60} more true-merge sites.")
+        else:
+            lines.append("_no enumerated MergeSite lands on a baseline merge label "
+                         "(see the recall-gap note below)._")
+
+        lines.append("\n\n## MergeSite features at NON-merges (cutting here over-splits)\n")
+        lines.append(
+            "Same geometry for MergeSites whose label is NOT a baseline merge — a "
+            "`split_label` here would cut a single real neuron (raises %Split Edges). "
+            "Use these as the negative class: pick thresholds that separate the table "
+            "above from this one.\n"
+        )
+        if neg:
+            lines.append(header); lines.append(sep)
+            for s in neg[:60]:
+                lines.append(_site_row(s))
+            if len(neg) > 60:
+                lines.append(f"\n…and {len(neg) - 60} more non-merge sites.")
+        else:
+            lines.append("_no non-merge MergeSites enumerated._")
+
+        # Recall gap: merge targets the enumerator produced NO MergeSite for. No policy
+        # change can repair these — they need a better detector — so surface them
+        # explicitly rather than letting them read as "already handled".
+        if merge_labels:
+            report_gt = set(cand.index)
+            actionable = {
+                str(label) for label, info in merge_labels.items()
+                if sum(1 for n in info["gt_skeletons"] if n in report_gt) >= 2
+            }
+            site_labels = {str(getattr(s, "label", "")) for s in sites}
+            missing = sorted(actionable - site_labels)
+            lines.append("\n\n## Merge targets with NO candidate MergeSite (detector recall gap)\n")
+            if missing:
+                lines.append(
+                    f"{len(missing)} baseline merge label(s) have no enumerated MergeSite, "
+                    f"so `propose_edits` can never reach them — a `candidate_merge_sites` "
+                    f"detector limitation, not a policy bug: "
+                    + ", ".join(missing[:20])
+                    + (f" …(+{len(missing) - 20} more)" if len(missing) > 20 else "")
+                    + "\n"
+                )
+            else:
+                lines.append("_none — every actionable merge target has at least one "
+                             "candidate MergeSite._")
 
     # The concrete edits the policy proposed, so the reviser can reason about
     # *which* edit to change — not just that some skeleton regressed. Edits are

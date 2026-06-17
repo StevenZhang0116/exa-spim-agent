@@ -34,6 +34,63 @@ import numpy as np
 from scipy.spatial import KDTree
 
 
+# --- Evolvable enumeration priors -------------------------------------------
+# These knobs decide WHAT COUNTS AS A CANDIDATE (the framework's prior on "what a
+# split/merge error looks like"), as opposed to which candidates the policy then
+# accepts. They used to be hardcoded defaults — a HARD prior the evolved policy
+# could not move. Exposing them turns that into a SOFT, evolvable prior: the policy
+# artifact may define a module-level ``ENUM_PARAMS`` dict to widen/narrow the
+# candidate stream (e.g. raise ``max_gap_um`` to reach longer true gaps, lower
+# ``min_arm_cable_um`` to surface shorter merges, flip ``tip_to_shaft``).
+#
+# Each entry is (default, lo, hi). Values are CLAMPED to [lo, hi] — the bounds are a
+# safety rail: the enumeration is a whole-brain geometric scan whose cost grows with
+# the gap radius and candidate count, so an unbounded ``max_gap_um`` could make the
+# scan explode (the same reason ``max_class_size`` caps merges). Out-of-range or
+# unknown keys are clamped/ignored, never crash the run.
+ENUM_PARAM_SPEC = {
+    # candidate_split_sites
+    "max_gap_um":       (15.0,  1.0,  40.0),   # tip->partner search radius (µm)
+    "split_max_sites":  (5000,  100,  50000),  # cap on split candidates
+    "tip_to_shaft":     (True,  None, None),   # bool: partners may be shaft/branch
+    # candidate_merge_sites
+    "min_arm_cable_um": (10.0,  2.0,  50.0),   # both arms must reach this (µm)
+    "seed_depth_um":    (8.0,   2.0,  30.0),   # seed placement depth into each arm
+    "merge_max_sites":  (5000,  100,  50000),  # global cap on merge candidates
+    "max_per_label":    (8,     1,    100),    # cap on merge sites per raw label
+}
+
+
+def resolve_enum_params(raw: dict | None) -> dict:
+    """Validate + clamp a policy-supplied ``ENUM_PARAMS`` dict to the safe schema.
+
+    Returns a full param dict (every key present) with each value clamped to its
+    ``[lo, hi]`` rail; missing keys take the default; unknown keys are dropped.
+    Booleans pass through by ``bool()``. Non-numeric / unparseable values fall back
+    to the default rather than raising — a bad policy must never crash enumeration.
+    """
+    raw = raw or {}
+    out = {}
+    for key, (default, lo, hi) in ENUM_PARAM_SPEC.items():
+        if key not in raw:
+            out[key] = default
+            continue
+        v = raw[key]
+        if lo is None:  # boolean knob
+            try:
+                out[key] = bool(v)
+            except Exception:
+                out[key] = default
+            continue
+        try:
+            v = type(default)(v)  # coerce to int/float like the default
+        except (TypeError, ValueError):
+            out[key] = default
+            continue
+        out[key] = max(lo, min(hi, v))  # clamp to the safety rail
+    return out
+
+
 def default_cache_path(brain_id: str, min_cable_length: int = 100) -> str:
     """Path to the BrainDataset cache for a brain, relative to the project root."""
     here = os.path.dirname(__file__)
@@ -293,6 +350,19 @@ class MergeSite:
                         each substantial (a label fused across unconnected neurites).
                         ``cut_node`` is the nearest-pair midpoint; ``angle_deg`` is
                         NaN (no shared vertex to take a tangent at).
+    arms_reconverge : bool | None
+        Whether the two arms re-join downstream within the same label. True is a
+        STRONG non-merge signal — two truly separate neurons never reconnect, but
+        one neuron's own branches (a real bifurcation) or a loop do. None when not
+        computed (the "component" detector, or no usable fragment topology). A
+        precise policy should be far more reluctant to cut when this is True.
+    extra_seeds : list[dict]
+        Third+ arm seeds for a high-degree fusion (``branch_degree >= 4``, e.g. an
+        X-crossing that must be cut into 3+ pieces). Each dict is
+        ``{"suffix": str, "xyz": (x,y,z), "node": int, "cable_um": float}``. Empty
+        for an ordinary bifurcation (``seed_a``/``seed_b`` already cover both
+        sides). ``as_edit()`` folds these into the multi-seed ``seeds`` list so the
+        handler partitions the label into one side per arm.
     """
 
     kind: str = field(default="merge", init=False)  # site-type tag for the policy
@@ -311,6 +381,32 @@ class MergeSite:
     cable_b_um: float
     detector: str = "branch"
 
+    # --- Stronger discriminative signals (added; default-safe for all detectors) ---
+    # arms_reconverge: do the two arms re-join downstream within the same label?
+    # A True here is a strong NON-merge signal: a real merge fuses two SEPARATE
+    # neurons whose arms never reconnect, whereas one neuron's own branches (a true
+    # bifurcation, or a loop) come back together. None = not computed (component
+    # detector / no fragment topology). The policy should be far more reluctant to
+    # cut when this is True.
+    arms_reconverge: bool | None = None
+    # extra_seeds: third+ arm seeds for a high-degree fusion (branch_degree >= 4,
+    # e.g. an X-crossing that must be cut into 3+ pieces). Each is
+    # {"suffix": str, "xyz": (x,y,z), "node": int, "cable_um": float}. Empty for the
+    # common bifurcation case (seed_a/seed_b already cover it). as_edit() folds these
+    # into the multi-seed `seeds` list so EditHandler partitions into >2 sides.
+    extra_seeds: list = field(default_factory=list)
+    # seed_groups: an explicit arm->neurite GROUPING for branch/crossing fusions.
+    # A degree-4 X is two neurites passing through, NOT four separate sides: the two
+    # collinear (opposite-tangent) arms belong to ONE neuron. When the branch
+    # detector can pair arms by tangent it fills this with one entry per arm, each
+    # {"suffix": str, "xyz": (x,y,z), "node": int}, where arms of the SAME neurite
+    # SHARE a suffix (e.g. opposite arms both "a", the crossing pair both "b"). When
+    # non-empty, as_edit() emits exactly these seeds (so EditHandler's multi-source
+    # Dijkstra cuts the label into one side PER NEURITE, not per arm). Empty =>
+    # fall back to the seed_a/seed_b/extra_seeds path (bridge/component, or when no
+    # confident pairing exists). Advisory: the policy still decides whether to cut.
+    seed_groups: list = field(default_factory=list)
+
     def as_edit(self) -> dict:
         """The ``split_label`` edit this site proposes if accepted.
 
@@ -320,20 +416,101 @@ class MergeSite:
         Euclidean nearest-seed otherwise). Multiple ``MergeSite``s on the same raw
         label are COMPOSED into one multi-seed partition by the handler — no
         last-one-wins — so several branch cuts on one fused segment cooperate.
-        The legacy ``seed_a_xyz`` / ``seed_b_xyz`` keys are kept alongside for
-        backward compatibility with any consumer that reads them directly.
+
+        When ``extra_seeds`` is non-empty (a high-degree fusion), those arm seeds are
+        appended so the handler partitions the label into >2 sides — one per arm of
+        the crossing. The legacy ``seed_a_xyz`` / ``seed_b_xyz`` keys are kept
+        alongside for backward compatibility with any consumer that reads them.
         """
+        # Preferred: an explicit arm->neurite grouping (shared suffix => same
+        # neurite). EditHandler shares a suffix across Dijkstra sources, so this cuts
+        # the label into one side per NEURITE rather than per arm.
+        if self.seed_groups:
+            seeds = [
+                {"suffix": spec["suffix"], "xyz": spec["xyz"], "node": spec.get("node")}
+                for spec in self.seed_groups
+            ]
+            return {
+                "kind": "split_label",
+                "label": self.label,
+                "seeds": seeds,
+                "seed_a_xyz": self.seed_a_xyz,
+                "seed_b_xyz": self.seed_b_xyz,
+            }
+        seeds = [
+            {"suffix": "a", "xyz": self.seed_a_xyz, "node": self.seed_a_node},
+            {"suffix": "b", "xyz": self.seed_b_xyz, "node": self.seed_b_node},
+        ]
+        for k, spec in enumerate(self.extra_seeds):
+            seeds.append({
+                "suffix": spec.get("suffix") or chr(ord("c") + k),
+                "xyz": spec["xyz"],
+                "node": spec.get("node"),
+            })
         return {
             "kind": "split_label",
             "label": self.label,
-            "seeds": [
-                {"suffix": "a", "xyz": self.seed_a_xyz, "node": self.seed_a_node},
-                {"suffix": "b", "xyz": self.seed_b_xyz, "node": self.seed_b_node},
-            ],
+            "seeds": seeds,
             # Legacy two-seed keys (still accepted by EditHandler).
             "seed_a_xyz": self.seed_a_xyz,
             "seed_b_xyz": self.seed_b_xyz,
         }
+
+
+def _pair_arms_into_neurites(g, long_arms, tangent, seed_in_arm,
+                             min_pair_cos: float = 0.7):
+    """Group a branch's long arms into neurites by tangent, return grouped seeds.
+
+    An X-crossing (degree 4) is two neurites passing through: the two arms whose
+    tangents are most anti-parallel (continue straight across the node) are ONE
+    neuron. Greedily pair arms by most-opposite tangent; each confident pair shares
+    a suffix (so EditHandler cuts the label into one side per NEURITE, not per arm).
+
+    Returns a ``seed_groups`` list (``[{"suffix", "xyz", "node"}, ...]``) when a
+    confident, complete pairing exists (an even number of long arms, every pair
+    anti-parallel enough: ``-dot >= min_pair_cos``). Returns ``[]`` otherwise — an
+    odd arm count, a degree-3 bifurcation (no through-pairing to infer), or any pair
+    too perpendicular to call — so the caller falls back to per-arm seeds.
+    """
+    # Need tangents for every long arm; a degree-3 (3 long arms) has no clean
+    # through-pairing, and an odd count can't pair fully — bail to per-arm seeds.
+    if len(long_arms) < 4 or len(long_arms) % 2 != 0:
+        return []
+    tans = []
+    for cable, arm in long_arms:
+        t = tangent(arm)
+        if t is None:
+            return []
+        tans.append((t, arm))
+
+    remaining = list(range(len(tans)))
+    pairs = []
+    while remaining:
+        i = remaining.pop(0)
+        ti = tans[i][0]
+        # Best partner = most anti-parallel tangent (a straight pass-through).
+        best_j, best_score = None, -2.0
+        for j in remaining:
+            score = -float(np.dot(ti, tans[j][0]))  # 1.0 = perfectly opposite
+            if score > best_score:
+                best_score, best_j = score, j
+        if best_j is None or best_score < min_pair_cos:
+            return []  # no confident through-partner -> don't guess a grouping
+        remaining.remove(best_j)
+        pairs.append((i, best_j))
+
+    seed_groups = []
+    for p, (i, j) in enumerate(pairs):
+        suffix = chr(ord("a") + p)
+        for idx in (i, j):
+            _, arm = tans[idx]
+            sk = seed_in_arm(arm)
+            seed_groups.append({
+                "suffix": suffix,
+                "xyz": tuple(map(float, g.node_xyz[sk])),
+                "node": int(sk),
+            })
+    return seed_groups
 
 
 def _arm_from_branch(g, branch, neighbor, max_depth_um):
@@ -359,12 +536,53 @@ def _arm_from_branch(g, branch, neighbor, max_depth_um):
     return arm, float(cable)
 
 
+def _arms_reconverge(g, branch, first_a, first_b, max_explore_um, max_steps=400):
+    """Do two arms of ``branch`` re-join downstream within the SAME label?
+
+    Returns True if, with ``branch`` REMOVED, the arm that starts at ``first_a``
+    (the branch's first step into arm A) can still reach ``first_b`` (the first step
+    into arm B) along same-label edges. Reaching it means the two arms reconnect
+    somewhere downstream — a loop, or two branches of ONE neuron — which is a strong
+    NON-merge signal (two separate fused neurons never reconnect).
+
+    PERFORMANCE: this runs once per branch node over a whole-brain fragment graph
+    (hundreds of thousands of fragments), and a genuine merge does NOT reconverge,
+    so the common case must FAIL FAST. The search is therefore tightly bounded:
+    ``max_steps`` node-visits AND ``max_explore_um`` cable. A reconvergence that
+    exists is almost always LOCAL (a small loop / a nearby re-branch), so a tight
+    bound keeps near-100% of true re-joins while turning the dominant "no re-join"
+    case into a cheap bounded probe instead of a brain-wide flood. A re-join farther
+    than the bound is reported False (missed) — an acceptable, conservative miss:
+    it only means the policy loses one advisory hint, never a correctness error.
+    """
+    label = g.node_segment_id(branch)
+    seen = {branch, first_a}
+    frontier = [(first_a, 0.0)]
+    steps = 0
+    while frontier and steps < max_steps:
+        cur, dist = frontier.pop()
+        steps += 1
+        if cur == first_b:
+            return True
+        if dist > max_explore_um:
+            continue
+        for nbr in g.neighbors(cur):
+            if nbr in seen or nbr == branch:
+                continue  # never route back through the cut node
+            if g.node_segment_id(nbr) != label:
+                continue  # stay within the same fused label
+            seen.add(nbr)
+            frontier.append((nbr, dist + g.dist(cur, nbr)))
+    return False
+
+
 def candidate_merge_sites(
     fragments_graph,
     min_arm_cable_um: float = 10.0,
     seed_depth_um: float = 8.0,
     max_sites: int = 5000,
     max_per_label: int = 8,
+    check_reconvergence: bool = False,
 ) -> list[MergeSite]:
     """Enumerate candidate merge-repair sites from fragment geometry alone.
 
@@ -398,6 +616,12 @@ def candidate_merge_sites(
     max_per_label : int
         Cap on candidates emitted per label, so one tangled segment can't flood the
         candidate set. Strongest (by min-arm cable) kept.
+    check_reconvergence : bool
+        Compute ``MergeSite.arms_reconverge`` (a per-branch bounded BFS). OFF by
+        default: on a whole-brain graph it dominates enumeration time (a genuine
+        merge never re-joins, so every check runs to its bound), while the signal is
+        only advisory. Leave it off for the evolution loop; turn it on only for
+        small-scope analysis. When off, ``arms_reconverge`` is None on every site.
 
     Returns
     -------
@@ -471,6 +695,50 @@ def candidate_merge_sites(
             radius_ratio = None
 
         sa, sb = seed_in_arm(arm_a), seed_in_arm(arm_b)
+
+        # Reconvergence check: do the two arms re-join downstream (one neuron's
+        # branches / a loop) rather than belong to two fused neurons? This is a
+        # bounded BFS PER BRANCH NODE; on a whole-brain fragment graph (millions of
+        # nodes, many branch nodes) it dominates enumeration time even when bounded,
+        # because a genuine merge never re-joins and so always runs to the bound.
+        # OFF by default for that reason — the signal is advisory, never required for
+        # correctness. A policy that wants it can re-enumerate with
+        # check_reconvergence=True on a smaller scope, or compute it itself from
+        # ctx["fragments_graph"] for just the few sites it is actually weighing.
+        if check_reconvergence:
+            arms_reconverge = _arms_reconverge(
+                g, node, arm_a[1], arm_b[1], max_explore_um=seed_depth_um * 8
+            )
+        else:
+            arms_reconverge = None
+
+        # High-degree fusion (X-crossing, deg>=4): a single cut into two sides is
+        # not enough — emit a seed for each ADDITIONAL long arm so EditHandler can
+        # partition the label into one side per arm. Only arms clearing the cable
+        # floor count (short spurs are not separate neurites).
+        extra_seeds = []
+        for k, (cable_k, arm_k) in enumerate(arms[2:]):
+            if cable_k < min_arm_cable_um:
+                break  # arms are cable-sorted desc; the rest are shorter spurs
+            sk = seed_in_arm(arm_k)
+            extra_seeds.append({
+                "suffix": chr(ord("c") + k),
+                "xyz": tuple(map(float, g.node_xyz[sk])),
+                "node": int(sk),
+                "cable_um": float(cable_k),
+            })
+
+        # An X-crossing (degree 4) is two neurites passing THROUGH the node, not four
+        # separate sides: the two arms that continue roughly straight across (tangents
+        # closest to anti-parallel) belong to ONE neuron. Pair the long arms by
+        # tangent so a confident grouping cuts the label into one side per NEURITE.
+        # Only attempted for an even count of long arms with usable tangents; left
+        # empty otherwise (falls back to per-arm seeds, the prior behavior).
+        seed_groups = _pair_arms_into_neurites(
+            g, [(cable, arm) for cable, arm in arms if cable >= min_arm_cable_um],
+            tangent, seed_in_arm,
+        )
+
         site = MergeSite(
             label=label,
             cut_node=int(node),
@@ -485,6 +753,9 @@ def candidate_merge_sites(
             cable_a_um=float(cable_a),
             cable_b_um=float(cable_b),
             detector="branch",
+            arms_reconverge=arms_reconverge,
+            extra_seeds=extra_seeds,
+            seed_groups=seed_groups,
         )
         per_label.setdefault(label, []).append(site)
 

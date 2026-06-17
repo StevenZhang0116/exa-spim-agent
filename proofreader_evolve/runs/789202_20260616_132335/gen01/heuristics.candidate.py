@@ -86,27 +86,16 @@ GAP_THRESHOLD_UM = 4.0      # max tip→partner distance (µm) to even consider 
 MIN_COLINEAR_COS = 0.94     # require ~>20° alignment: cos(angle) >= this (1.0 = perfectly straight)
 TANGENT_WALK_UM = 6.0       # how far to walk into each fragment to estimate its tip tangent
 
-# --- Evolvable enumeration priors (optional) --------------------------------
-# ENUM_PARAMS controls WHAT THE POLICY EVEN SEES — the candidate stream the harness
-# enumerates — as opposed to the thresholds above, which decide what to ACCEPT among
-# what it sees. These were once hardcoded in the harness (a HARD prior the policy
-# could not move); defining them here makes them SOFT and evolvable. The harness
-# validates + CLAMPS every value to a safety rail (see dataset.ENUM_PARAM_SPEC) and
-# ignores unknown keys, so editing this can never crash the run. Any key omitted
-# falls back to the framework default — so the dict below is the identity (no change
-# from the historical behavior); the agent may widen/narrow it to surface different
-# candidates (e.g. raise max_gap_um to reach longer true gaps, lower
-# min_arm_cable_um to surface shorter merges, set tip_to_shaft=False for tip-to-tip
-# only). The resolved values in effect are visible at runtime in ctx["enum_params"].
-ENUM_PARAMS = {
-    "max_gap_um": 15.0,        # tip->partner search radius for split candidates (µm) [1..40]
-    "tip_to_shaft": True,      # split partners may be shaft/branch nodes, not just tips
-    "min_arm_cable_um": 10.0,  # both arms of a merge candidate must reach this (µm) [2..50]
-    "seed_depth_um": 8.0,      # how deep to place each split seed into its arm (µm) [2..30]
-    "max_per_label": 8,        # cap on merge candidates emitted per raw label [1..100]
-    # "split_max_sites": 5000, # global cap on split candidates [100..50000]
-    # "merge_max_sites": 5000, # global cap on merge candidates [100..50000]
-}
+# When the partner endpoint node_b is NOT a fragment tip (it is a shaft/branch),
+# the merge reconnects into the MIDDLE of another cable — the topology that most
+# often fuses two distinct neurons at a crossing (see gen01: both attributed
+# merges joined into non-tip nodes). Demand a tighter straight-line continuation
+# there.
+MIN_COLINEAR_COS_BRANCH = 0.985   # ~>10° alignment required for tip-to-shaft/branch joins
+# Reject merges across a sharp radius discontinuity: a true single neuron broken
+# into pieces has roughly the same caliber on both sides of the gap; two unrelated
+# cables that merely pass close usually differ. Allow up to this ratio.
+MAX_RADIUS_RATIO = 2.5
 
 
 def _walk_tangent(g, start, max_um):
@@ -184,6 +173,28 @@ def _is_colinear_split(g, s, min_cos):
     return best is not None and best >= min_cos
 
 
+def _radius_continuous(ctx, s, max_ratio):
+    """True if the two fragment endpoints have a compatible neurite radius.
+
+    A single real neuron broken into pieces keeps roughly the same caliber across
+    the gap; two unrelated cables that merely pass close by often differ sharply.
+    Returns True when the radius signal is missing (advisory only) so the policy is
+    never *more* restrictive just because radii are unavailable.
+    """
+    nr = ctx.get("node_radius")
+    if nr is None:
+        return True
+    try:
+        ra = float(nr[s.node_a])
+        rb = float(nr[s.node_b])
+    except (IndexError, TypeError, ValueError):
+        return True
+    if ra <= 0 or rb <= 0 or not np.isfinite(ra) or not np.isfinite(rb):
+        return True
+    ratio = max(ra, rb) / min(ra, rb)
+    return ratio <= max_ratio
+
+
 def propose_edits(sites, ctx) -> list:
     """Decide which candidate sites to repair, returning a list of edits.
 
@@ -216,8 +227,20 @@ def propose_edits(sites, ctx) -> list:
         if s.gap_um > GAP_THRESHOLD_UM:
             continue
         try:
-            if _is_colinear_split(g, s, MIN_COLINEAR_COS):
-                edits.append(s.as_edit())   # (label_a, label_b) merge tuple
+            # node_a is always a tip; node_b may be a tip, shaft, or branch. A join
+            # into the MIDDLE of another cable (non-tip node_b) is the topology that
+            # most often fuses two distinct neurons at a crossing, so demand a
+            # stricter straight-line continuation there.
+            try:
+                b_is_tip = (g.degree[s.node_b] <= 1)
+            except Exception:
+                b_is_tip = True
+            min_cos = MIN_COLINEAR_COS if b_is_tip else MIN_COLINEAR_COS_BRANCH
+            if not _is_colinear_split(g, s, min_cos):
+                continue
+            if not _radius_continuous(ctx, s, MAX_RADIUS_RATIO):
+                continue
+            edits.append(s.as_edit())   # (label_a, label_b) merge tuple
         except Exception:
             # Geometry is advisory; never let one odd site crash the whole policy.
             continue

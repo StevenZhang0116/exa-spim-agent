@@ -34,6 +34,7 @@ import json
 import os
 import shutil
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -70,6 +71,45 @@ RULES = ARTIFACTS / "rules.md"
 
 def log(msg: str) -> None:
     print(f"[{datetime.now():%H:%M:%S}] {msg}", file=sys.stderr, flush=True)
+
+
+class Heartbeat:
+    """A background thread that logs ``... still <phase> (N.Ns elapsed)`` on an
+    interval, so long silent stretches (per-candidate scoring, the reviser LLM
+    call) visibly stay alive when output is captured to a file or piped.
+
+    Why a thread and not an asyncio task: the scoring path (``run_candidate`` /
+    ``score_incremental``) is synchronous and CPU-bound — it blocks the event
+    loop, so an async heartbeat would be starved exactly when a pulse matters
+    most. A daemon thread ticks regardless of what the main thread is doing.
+
+    Use as a context manager around any long step::
+
+        with Heartbeat("scoring held-out"):
+            heldout_run = cand.run_candidate(...)
+    """
+
+    def __init__(self, phase: str, every_seconds: float = 30.0) -> None:
+        self._phase = phase
+        self._every = every_seconds
+        self._stop = threading.Event()
+        self._t0 = time.monotonic()
+        self._thread: threading.Thread | None = None
+
+    def _run(self) -> None:
+        # Wait in small slices so stop is responsive, but only LOG every _every.
+        while not self._stop.wait(self._every):
+            log(f"   ... still {self._phase} ({time.monotonic() - self._t0:.0f}s elapsed)")
+
+    def __enter__(self) -> "Heartbeat":
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
 
 
 # Default model for the evolution loop (and the inherit-ing reviser subagent).
@@ -512,26 +552,43 @@ def evaluate_gate(
     has_split_edit: bool,
     gate_eps: float,
     split_tol: float = 0.05,
+    merge_tol: float = 0.0,
 ) -> tuple[bool, str]:
     """Decide acceptance from the FULL metric vector, not Edge Accuracy alone.
 
-    Edge Accuracy (= 100 - %Split - %Omit - %Merged) is the primary fitness, and a
-    pure merge-only generation is gated on it exactly as before: it must beat the
-    parent by ``gate_eps``. We do NOT add component guards to the merge-only path —
-    a legitimate ``merge_labels`` repair can raise BOTH #Splits and Edge Accuracy
-    together (fix_label_misalignments fills background gaps, adding distinct labels
-    and coverage at once; see verify.py handler-parity notes), so a blanket
-    %Split/#Merges guard would wrongly reject good merge repairs.
+    Edge Accuracy (= 100 - %Split - %Omit - %Merged) is the primary fitness: every
+    generation must first beat the parent by ``gate_eps``.
 
-    The extra guards apply ONLY when the candidate emits at least one ``split_label``
-    edit — the action that can trade a merge penalty for a split penalty and still
-    look net-positive on Edge Accuracy while over-splitting a real neuron on a small
-    held-out set. For such a generation we additionally require:
-      * the merge component actually improved (% Merged Edges did not get worse, and
-        # Merges did not increase) — i.e. the split repaired what it claimed to, and
-      * the over-split watchdog: % Split Edges did not rise by more than ``split_tol``
-        above the parent (a small tolerance absorbs the benign misalignment-fill
-        effect; a real over-split blows past it).
+    NO-NEW-MERGE guard (EVERY generation). The reviser's stated objective is
+    "maximize Edge Accuracy WITHOUT creating merge errors", but Edge Accuracy alone
+    does not enforce the second clause: a candidate that repairs many splits while
+    introducing a few merges can still raise net Edge Accuracy and slip through. And
+    ``merge_labels`` — the merge-only path's only edit — is precisely the action that
+    creates merge errors (it fuses two labels; if they belong to different GT
+    neurons that fusion IS a merge error). So we require, on EVERY generation:
+      * # Merges did not increase (beyond ``merge_tol``), and
+      * % Merged Edges did not increase (beyond ``merge_tol``).
+    This is safe — it can never reject a CORRECT merge repair, because unifying two
+    fragments of the SAME neuron never raises # Merges or % Merged Edges; only a
+    wrong fusion does. Both components are checked, not just # Merges: folding a
+    clean label into an ALREADY-merged one leaves # Merges flat while % Merged Edges
+    climbs (the bad label now spans more edges), so # Merges alone would miss it.
+    (This replaces the old design, which guarded merge components only on the
+    split_label path and left merge-only generations gated on Edge Accuracy alone —
+    the exact hole this closes. The old rationale conflated the %Split guard, which
+    CAN wrongly reject good merge repairs that benignly raise #Splits via
+    fix_label_misalignments, with the #Merges/%Merged guard, which cannot.)
+
+    The over-split watchdog applies ONLY when the candidate emits at least one
+    ``split_label`` edit — the action that can trade a merge penalty for a split
+    penalty and over-split a real neuron while still looking net-positive on Edge
+    Accuracy on a small held-out set: % Split Edges must not rise by more than
+    ``split_tol`` above the parent (a small tolerance absorbs the benign
+    misalignment-fill effect; a real over-split blows past it). It is NOT applied to
+    merge-only generations, where a legitimate ``merge_labels`` repair can raise
+    BOTH #Splits and Edge Accuracy together (fix_label_misalignments fills
+    background gaps, adding distinct labels and coverage at once; see verify.py
+    handler-parity notes), so a blanket %Split guard would wrongly reject it.
 
     Returns ``(keep, reason)``; ``reason`` is a short human-readable string for the
     log / attempts archive, naming the specific guard that fired.
@@ -548,33 +605,35 @@ def evaluate_gate(
         return False, (f"Edge Accuracy {cand_acc:.3f} did not beat parent "
                        f"{parent_acc:.3f} by eps {gate_eps:.3f}")
 
-    if not has_split_edit:
-        return True, (f"Edge Accuracy {cand_acc:.3f} > parent {parent_acc:.3f} "
-                      f"+ {gate_eps:.3f} (merge-only path)")
-
-    # --- split_label generation: enforce the merge-repair + over-split guards ---
+    # No-new-merge guard (EVERY generation). A correct repair never trips this; only
+    # a candidate that introduces / grows a merge error does. The 1e-9 absorbs
+    # float noise when merge_tol is 0.
     cand_merged = m(cand_metrics, "% Merged Edges")
     parent_merged = m(parent_metrics, "% Merged Edges")
     cand_nmerge = m(cand_metrics, "# Merges")
     parent_nmerge = m(parent_metrics, "# Merges")
+    if cand_nmerge > parent_nmerge + merge_tol + 1e-9:
+        return False, (f"created merge error: # Merges {parent_nmerge:.2f} -> "
+                       f"{cand_nmerge:.2f} (exceeds parent + tol {merge_tol:.3f})")
+    if cand_merged > parent_merged + merge_tol + 1e-9:
+        return False, (f"created merge error: % Merged Edges {parent_merged:.3f} -> "
+                       f"{cand_merged:.3f} (exceeds parent + tol {merge_tol:.3f})")
+
+    if not has_split_edit:
+        return True, (f"Edge Accuracy {cand_acc:.3f} > parent {parent_acc:.3f} "
+                      f"+ {gate_eps:.3f}; no new merge (#Merges {parent_nmerge:.2f}->"
+                      f"{cand_nmerge:.2f}, %Merged {parent_merged:.3f}->"
+                      f"{cand_merged:.3f}) (merge-only path)")
+
+    # --- split_label generation: additionally enforce the over-split watchdog ---
     cand_split = m(cand_metrics, "% Split Edges")
     parent_split = m(parent_metrics, "% Split Edges")
-
-    # The split must not WORSEN the merge component it exists to repair.
-    if cand_merged > parent_merged + 1e-9:
-        return False, (f"split_label raised % Merged Edges "
-                       f"{parent_merged:.3f} -> {cand_merged:.3f} (a merge repair "
-                       f"must not increase merge error)")
-    if cand_nmerge > parent_nmerge + 1e-9:
-        return False, (f"split_label raised # Merges {parent_nmerge:.2f} -> "
-                       f"{cand_nmerge:.2f}")
-    # Over-split watchdog: % Split Edges must not climb beyond tolerance.
     if cand_split > parent_split + split_tol:
         return False, (f"split_label over-split: % Split Edges {parent_split:.3f} "
                        f"-> {cand_split:.3f} exceeds parent + tol {split_tol:.3f}")
 
     return True, (f"Edge Accuracy {cand_acc:.3f} > parent {parent_acc:.3f}; "
-                  f"merge repaired (%Merged {parent_merged:.3f}->{cand_merged:.3f}, "
+                  f"merge not worsened (%Merged {parent_merged:.3f}->{cand_merged:.3f}, "
                   f"#Merges {parent_nmerge:.2f}->{cand_nmerge:.2f}) without "
                   f"over-splitting (%Split {parent_split:.3f}->{cand_split:.3f})")
 
@@ -595,7 +654,7 @@ async def run_evolution(
     human: bool, verbose: bool, model: str = DEFAULT_MODEL,
     gate_eps: float = 0.05, max_class_size=None, seed_from: str | None = None,
     split_seed: int | None = None, with_image: bool = True,
-    split_tol: float = 0.05,
+    split_tol: float = 0.05, merge_tol: float = 0.0,
 ) -> None:
     run_id = f"{brain}_{datetime.now():%Y%m%d_%H%M%S}"
     run_dir = HERE / "runs" / run_id
@@ -647,10 +706,12 @@ async def run_evolution(
             log(f"Reusing prepared brain from a prior run: {reuse}")
             shutil.copy2(reuse, prepared_cache)
     log(f"Preparing brain for incremental scoring (cache: {prepared_cache})")
-    prepared = inc.get_or_build(paths, prepared_cache, verbose=verbose)
+    with Heartbeat("preparing brain (load/build — can be ~30 min on a cold cache)"):
+        prepared = inc.get_or_build(paths, prepared_cache, verbose=verbose)
 
     log("Scoring BASELINE (no edits) incrementally — sets the bar and GT split...")
-    baseline_full = inc.score_incremental(prepared, label_pairs=None, verbose=verbose)
+    with Heartbeat("scoring baseline"):
+        baseline_full = inc.score_incremental(prepared, label_pairs=None, verbose=verbose)
     all_gt_names = list(baseline_full.per_swc.index)
     # Split seed: RANDOM by default (different train/held-out partition each run,
     # so the gate isn't perpetually optimizing one fixed split). We draw a concrete
@@ -692,13 +753,16 @@ async def run_evolution(
     # PARENT-RELATIVE gate: each generation must beat the CURRENT policy (its
     # parent), not the global no-edit baseline. The parent is the last accepted
     # policy (initially the seed in the working copy). Score the seed once to set
-    # the bar — with a no-op seed this equals the baseline, but scoring it makes
-    # the gate correct for ANY seed and lets sub-baseline lineages still climb.
-    seed_heldout_run = cand.run_candidate(
-        prepared, fragments_graph, heldout_names, "heldout",
-        str(work_heuristics), max_class_size=max_class_size,
-                image_reader=image_reader, verbose=verbose,
-    )
+    # the bar — the seed is a conservative colinear-merge policy (not a no-op), so
+    # this bar sits at or above the no-edit baseline; scoring it makes the gate
+    # correct for ANY seed and lets sub-baseline lineages still climb.
+    log("Scoring SEED policy on held-out — sets the bar generation 1 must beat...")
+    with Heartbeat("scoring seed policy on held-out"):
+        seed_heldout_run = cand.run_candidate(
+            prepared, fragments_graph, heldout_names, "heldout",
+            str(work_heuristics), max_class_size=max_class_size,
+                    image_reader=image_reader, verbose=verbose,
+        )
     parent_heldout = seed_heldout_run.score.primary
     # Full held-out metric vector of the current parent, so the gate can enforce
     # component guards (% Merged Edges / # Merges / % Split Edges) for split_label
@@ -726,11 +790,12 @@ async def run_evolution(
 
             # (1-3) Run CURRENT policy on TRAIN; build the failure report.
             log("Step 1-3: run current policy on train, build failure report...")
-            train_run = cand.run_candidate(
-                prepared, fragments_graph, train_names, "train",
-                str(work_heuristics), max_class_size=max_class_size,
-                image_reader=image_reader, verbose=verbose,
-            )
+            with Heartbeat(f"gen {gen}: running policy on train"):
+                train_run = cand.run_candidate(
+                    prepared, fragments_graph, train_names, "train",
+                    str(work_heuristics), max_class_size=max_class_size,
+                    image_reader=image_reader, verbose=verbose,
+                )
             report_path = str(gen_dir / "failure_report.md")
             cand.write_failure_report(
                 train_run,
@@ -746,10 +811,11 @@ async def run_evolution(
 
             # (4-5) Ask the agent to explain and revise the WORKING-COPY artifacts.
             log("Step 4-5: proofreader-reviser diagnoses and revises artifacts...")
-            diagnosis, in_tok, out_tok, cost = await ask_reviser(
-                client, report_path, str(work_heuristics), str(work_rules), verbose,
-                attempts=attempts_vs_parent,
-            )
+            with Heartbeat(f"gen {gen}: waiting on reviser (LLM)"):
+                diagnosis, in_tok, out_tok, cost = await ask_reviser(
+                    client, report_path, str(work_heuristics), str(work_rules), verbose,
+                    attempts=attempts_vs_parent,
+                )
 
             # (A) Persist what the reviser wrote THIS generation — before scoring or
             # any revert — so even rejected candidates are inspectable afterward.
@@ -795,11 +861,12 @@ async def run_evolution(
             else:
                 # (6) Re-run the REVISED policy on HELD-OUT and score.
                 log("Step 6: score revised policy on held-out...")
-                heldout_run = cand.run_candidate(
-                    prepared, fragments_graph, heldout_names, "heldout",
-                    str(work_heuristics), max_class_size=max_class_size,
-                    image_reader=image_reader, verbose=verbose,
-                )
+                with Heartbeat(f"gen {gen}: scoring revised policy on held-out"):
+                    heldout_run = cand.run_candidate(
+                        prepared, fragments_graph, heldout_names, "heldout",
+                        str(work_heuristics), max_class_size=max_class_size,
+                        image_reader=image_reader, verbose=verbose,
+                    )
                 heldout_acc = heldout_run.score.primary
                 eval_seconds = train_run.score.seconds + heldout_run.score.seconds
 
@@ -817,7 +884,7 @@ async def run_evolution(
                 improved, gate_reason = evaluate_gate(
                     heldout_run.score.metrics, parent_metrics,
                     has_split_edit=has_split_edit, gate_eps=gate_eps,
-                    split_tol=split_tol,
+                    split_tol=split_tol, merge_tol=merge_tol,
                 )
                 log(f"   gate: {gate_reason}")
                 human_touches = 0
@@ -922,8 +989,16 @@ def main() -> int:
     p.add_argument("--split-tol", type=float, default=0.05,
                    help="for generations that emit split_label edits: max amount "
                         "% Split Edges may rise above the parent before the gate "
-                        "rejects it as over-splitting (also requires % Merged Edges "
-                        "/ # Merges not to worsen). Merge-only gens are unaffected.")
+                        "rejects it as over-splitting. Merge-only gens are "
+                        "unaffected by this over-split watchdog.")
+    p.add_argument("--merge-tol", type=float, default=0.0,
+                   help="no-new-merge guard (EVERY generation): max amount # Merges "
+                        "and % Merged Edges may rise above the parent before the "
+                        "gate rejects the candidate as creating a merge error. "
+                        "Default 0.0 (strict — accept only if merge error does not "
+                        "grow); raise to allow a split-for-merge trade, set very "
+                        "high to disable and recover the old Edge-Accuracy-only "
+                        "behavior on the merge-only path.")
     p.add_argument("--seed-from", default=None,
                    help="CONTINUE from a prior run's latest accepted policy "
                         "(run-id folder name, or brain id for its newest run) "
@@ -947,6 +1022,7 @@ def main() -> int:
         gate_eps=args.gate_eps, max_class_size=args.max_class_size,
         seed_from=args.seed_from, split_seed=args.split_seed,
         with_image=args.with_image, split_tol=args.split_tol,
+        merge_tol=args.merge_tol,
     ))
     return 0
 

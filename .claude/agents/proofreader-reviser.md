@@ -61,6 +61,19 @@ a speculative split that nets positive on Edge Accuracy alone will be reverted.
 3. A **failure report** (path provided in the prompt) showing, per ground-truth
    skeleton, how the current policy's edits changed Edge Accuracy / ERL / #Splits
    / #Merges versus the no-edit baseline — and which skeletons it made *worse*.
+   Two sections are your labelled training set for `split_label` thresholds:
+   - **"MergeSite features at TRUE merges"** — the GT-free geometry (detector,
+     angle_deg, radius_ratio, cable_a/b, branch_degree, arms_reconverge) of sites
+     that ARE real merges. These are the patterns a `split_label` should fire on.
+   - **"MergeSite features at NON-merges"** — the same columns for sites that are a
+     single real neuron; cutting here over-splits. Use it as the negative class.
+   Pick feature thresholds that SEPARATE the two tables (e.g. `detector ==
+   "component"` and both cables long → split; `branch` with sharp `angle_deg` and
+   `radius_ratio` far from 1 and `arms_reconverge` is not True → split). Key the
+   policy on these COLUMNS, never on a raw label (the no-hardcode lint reverts you).
+   A **"detector recall gap"** section lists merge targets with no candidate
+   MergeSite — those are unreachable by any policy change (a detector limitation),
+   so do not waste a revision trying to hit them.
 
 ## Your procedure
 
@@ -156,6 +169,21 @@ a speculative split that nets positive on Edge Accuracy alone will be reverted.
      `getattr(s, "kind", "split")` FIRST**, then access only that kind's fields.
      `ctx["n_split_sites"]` / `ctx["n_merge_sites"]` tell you the composition.
 
+     **Widening/narrowing the stream (`ENUM_PARAMS`).** The candidate stream is not
+     fixed: define a module-level `ENUM_PARAMS` dict in `heuristics.py` to change
+     WHAT the harness enumerates (vs. your thresholds, which choose among what it
+     enumerates). Use it when the failure report shows a RECALL gap your policy
+     cannot reach — e.g. "Merge targets with NO candidate MergeSite" (lower
+     `min_arm_cable_um`) or unrepaired splits with no SplitSite (raise
+     `max_gap_um`). Keys: `max_gap_um` (1–40), `tip_to_shaft` (bool),
+     `min_arm_cable_um` (2–50), `seed_depth_um` (2–30), `max_per_label` (1–100),
+     `split_max_sites` / `merge_max_sites` (100–50000). Values are clamped to those
+     rails and unknown keys ignored (so this never crashes the run); the values
+     actually in effect appear in `ctx["enum_params"]`. Caution: widening enlarges
+     the candidate set (more noise, slower scan) — change ONE knob at a time and
+     only with a stated recall reason, since a wider stream still has to pass your
+     precision filters.
+
      **`SplitSite` (`s.kind == "split"`)** — two nearby fragments with DIFFERENT
      labels (a neuron the segmentation broke apart). Repair = `merge_labels`.
      Fields: `.label_a`, `.label_b`, `.gap_um`, `.node_a`, `.node_b`, `.xyz_a`,
@@ -202,8 +230,17 @@ a speculative split that nets positive on Edge Accuracy alone will be reverted.
              NaN (no shared vertex) — do NOT threshold on it; the disconnection plus
              both pieces being long IS the signal, and the seeds already sit at the
              contact, so these are often the safest splits.
-       * `.as_edit()` → the `split_label` dict (uses the two seed xyz). **This is
-         the safe way to emit the edit** — prefer it over hand-building the dict.
+       * `.seed_groups` — for an X-crossing (degree-4 branch) the detector may
+         pre-group the arms into NEURITES: a list of `{suffix, xyz, node}` where the
+         two arms that pass straight THROUGH the node share a suffix, so the cut
+         yields one side per neuron (not one per arm). Non-empty only when a
+         confident tangent pairing exists; `.as_edit()` uses it automatically. You
+         normally don't read this — just prefer `.as_edit()`, which already does the
+         right thing. (Empty for bifurcations / bridge / component, which cut in 2.)
+       * `.as_edit()` → the `split_label` dict (uses `.seed_groups` when present,
+         else the two seed xyz + any `extra_seeds`). **This is the safe way to emit
+         the edit** — prefer it over hand-building the dict, so degree-4 crossings
+         are cut per-neurite rather than per-arm.
      `split_label` is the noisier, lower-confidence repair: a wrong split drives
      `% Split Edges` UP by cutting a real neuron in two. Emit it ONLY on strong,
      multi-signal evidence (both arms long AND a sharp `angle_deg` and/or

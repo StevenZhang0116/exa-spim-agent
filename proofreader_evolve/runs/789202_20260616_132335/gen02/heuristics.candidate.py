@@ -85,28 +85,9 @@ import numpy as np
 GAP_THRESHOLD_UM = 4.0      # max tip→partner distance (µm) to even consider a merge
 MIN_COLINEAR_COS = 0.94     # require ~>20° alignment: cos(angle) >= this (1.0 = perfectly straight)
 TANGENT_WALK_UM = 6.0       # how far to walk into each fragment to estimate its tip tangent
-
-# --- Evolvable enumeration priors (optional) --------------------------------
-# ENUM_PARAMS controls WHAT THE POLICY EVEN SEES — the candidate stream the harness
-# enumerates — as opposed to the thresholds above, which decide what to ACCEPT among
-# what it sees. These were once hardcoded in the harness (a HARD prior the policy
-# could not move); defining them here makes them SOFT and evolvable. The harness
-# validates + CLAMPS every value to a safety rail (see dataset.ENUM_PARAM_SPEC) and
-# ignores unknown keys, so editing this can never crash the run. Any key omitted
-# falls back to the framework default — so the dict below is the identity (no change
-# from the historical behavior); the agent may widen/narrow it to surface different
-# candidates (e.g. raise max_gap_um to reach longer true gaps, lower
-# min_arm_cable_um to surface shorter merges, set tip_to_shaft=False for tip-to-tip
-# only). The resolved values in effect are visible at runtime in ctx["enum_params"].
-ENUM_PARAMS = {
-    "max_gap_um": 15.0,        # tip->partner search radius for split candidates (µm) [1..40]
-    "tip_to_shaft": True,      # split partners may be shaft/branch nodes, not just tips
-    "min_arm_cable_um": 10.0,  # both arms of a merge candidate must reach this (µm) [2..50]
-    "seed_depth_um": 8.0,      # how deep to place each split seed into its arm (µm) [2..30]
-    "max_per_label": 8,        # cap on merge candidates emitted per raw label [1..100]
-    # "split_max_sites": 5000, # global cap on split candidates [100..50000]
-    # "merge_max_sites": 5000, # global cap on merge candidates [100..50000]
-}
+RECIP_SLACK_UM = 0.75       # mutual-nearest tolerance: a pair is accepted only if its
+                            # gap is within this of the smallest gap seen for BOTH of
+                            # its endpoint nodes (rejects "one tip, two suitors" crossings)
 
 
 def _walk_tangent(g, start, max_um):
@@ -187,19 +168,30 @@ def _is_colinear_split(g, s, min_cos):
 def propose_edits(sites, ctx) -> list:
     """Decide which candidate sites to repair, returning a list of edits.
 
-    SEED POLICY (conservative split-repair): for each SplitSite, emit a
-    ``merge_labels`` edit only when BOTH:
+    SPLIT-REPAIR policy: for each SplitSite, emit a ``merge_labels`` edit only when
       (1) the gap is small  (s.gap_um <= GAP_THRESHOLD_UM), and
       (2) the two fragments are COLINEAR across the gap (a straight-line
-          continuation — see ``_is_colinear_split``).
-    MergeSites are left alone (no ``split_label``) — splitting is the riskier edit
-    and is left for the evolution loop to add once it can measure the trade-off.
+          continuation — see ``_is_colinear_split``), and
+      (3) the merge is RECIPROCAL / mutual-nearest — i.e. neither endpoint has a
+          STRICTLY closer competing partner of a different label among the
+          candidate sites. See the Gen 2 note below.
 
-    This proposes a small, high-precision set of merges, so the score moves OFF the
-    flat no-edit baseline (giving the loop a gradient) without the union-find
-    mega-label blowup a naive "merge everything nearby" seed causes. The agent's
-    job is to improve on it: tune the thresholds, add tangent/radius/continuity
-    features, gate with the image reader, or add merge-repair.
+    GEN 2 LEVER — mutual-nearest-neighbor (reciprocity) gating.
+    -----------------------------------------------------------
+    The Gen 1 candidate gained accuracy almost entirely by repairing OMIT edges
+    (d%OmitEdges strongly negative on every skeleton), but a few of its 51 merges
+    fused DISTINCT neurons: a fragment tip latched onto a nearby PASSING cable that
+    happened to look colinear across a tiny gap, even though that tip (or that
+    partner node) had a *better*, closer same-direction partner elsewhere. The
+    failure report attributes 2 created merges to exactly this. Tightening the
+    colinearity cosine + a radius-continuity guard was already tried in Gen 1 and
+    scored +0.000 — a dead end — so this revision uses a DIFFERENT mechanism:
+    require the pairing to be MUTUAL. We keep, per endpoint node, the smallest gap
+    at which it appears in any candidate merge; a SplitSite is accepted only if its
+    own gap is within ``RECIP_SLACK_UM`` of the best gap seen for BOTH of its
+    endpoints. This rejects the "one tip, two suitors" crossing geometry that the
+    pure colinearity test admits, without touching the colinearity threshold or
+    adding a radius guard.
 
     Returns a list of edits — legacy (label_a, label_b) tuples or typed dicts; see
     the module docstring. An empty list means "make no changes".
@@ -208,14 +200,40 @@ def propose_edits(sites, ctx) -> list:
     if g is None:
         return []
 
+    # --- Pass 1: build the best (smallest) gap each node participates in. --------
+    # A node's "best partner" is the differently-labelled candidate it is closest
+    # to. We use this to enforce mutual-nearest-neighbor reciprocity in pass 2.
+    best_gap = {}
+    for s in sites:
+        if getattr(s, "kind", "split") != "split":
+            continue
+        try:
+            gap = float(s.gap_um)
+            na, nb = s.node_a, s.node_b
+        except Exception:
+            continue
+        if na not in best_gap or gap < best_gap[na]:
+            best_gap[na] = gap
+        if nb not in best_gap or gap < best_gap[nb]:
+            best_gap[nb] = gap
+
+    # --- Pass 2: accept colinear, close, AND mutually-nearest merges. -----------
     edits = []
     for s in sites:
         kind = getattr(s, "kind", "split")
         if kind != "split":
-            continue  # seed repairs splits only; leave merges for evolution
+            continue  # repairs splits only; leave merges for evolution
         if s.gap_um > GAP_THRESHOLD_UM:
             continue
         try:
+            gap = float(s.gap_um)
+            # Reciprocity: this pairing must be (near-)best for BOTH endpoints.
+            # If either endpoint has a strictly closer competing partner (beyond a
+            # small slack), this is a "passing cable" crossing — skip it.
+            ga = best_gap.get(s.node_a, gap)
+            gb = best_gap.get(s.node_b, gap)
+            if gap > ga + RECIP_SLACK_UM or gap > gb + RECIP_SLACK_UM:
+                continue
             if _is_colinear_split(g, s, MIN_COLINEAR_COS):
                 edits.append(s.as_edit())   # (label_a, label_b) merge tuple
         except Exception:

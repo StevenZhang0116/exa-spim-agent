@@ -23,30 +23,24 @@ Edge Accuracy = 100 − (% Split Edges + % Omit Edges + % Merged Edges), so a go
 policy must lower split AND merge errors together while not trading one for the
 other. The failure report shows both components plus an over-split watchdog.
 
-**Acceptance gate (HARD — a generation is reverted if it fails any):**
-- Edge Accuracy must beat the parent by `gate_eps`.
-- **No new merge error (EVERY generation):** neither `# Merges` nor
-  `% Merged Edges` may rise above the parent (beyond `merge_tol`, default 0). This
-  enforces the "without creating merge errors" clause directly — raising net Edge
-  Accuracy by repairing splits while introducing a few merges is NOT accepted. A
-  correct `merge_labels` (fusing fragments of the SAME neuron) never trips this;
-  only a wrong fusion does.
-- **Over-split watchdog (only when the policy emits `split_label`):** `% Split
-  Edges` may not rise more than `split_tol` above the parent.
+## Current criteria (Generation 2)
 
-## Current criteria (Generation 0 — seed)
+Split-repair only (no `split_label` yet). A SplitSite is unified with
+`merge_labels` when ALL of:
 
-The seed is a conservative **colinear split-repair** policy (NOT a no-op). For
-each SplitSite it emits a `merge_labels` edit only when BOTH:
-  1. the gap is small — `s.gap_um <= GAP_THRESHOLD_UM` (4.0 µm), and
-  2. the two fragments are colinear across the gap — a straight-line continuation
-     (`cos(angle) >= MIN_COLINEAR_COS`, 0.94 ≈ ≤20° bend).
-MergeSites are left alone (no `split_label`) — splitting is the riskier edit, left
-for the loop to add once it can measure the trade-off. This proposes a small,
-high-precision set of merges, so the score moves OFF the flat no-edit baseline
-(giving the loop a gradient) without the union-find mega-label blowup a naive
-"merge everything nearby" seed would cause. The gate is parent-relative, so each
-generation must beat THIS seed (or the last accepted policy), not the no-edit floor.
+1. **Small gap** — `s.gap_um <= GAP_THRESHOLD_UM` (4.0 µm).
+2. **Colinear continuation** — the arriving tip tangent, the gap bridge, and the
+   best continuing branch on the partner are near-parallel
+   (`cos >= MIN_COLINEAR_COS`, 0.94). This rejects tips that point *across* a gap
+   rather than *along* it.
+3. **Mutual nearest (reciprocity)** — the pairing must be (near-)best for BOTH
+   endpoints. In a first pass we record, for every candidate endpoint node, the
+   smallest gap it appears in across all SplitSites. A pair is accepted only if its
+   own gap is within `RECIP_SLACK_UM` (0.75 µm) of that best-gap for BOTH `node_a`
+   and `node_b`. If either endpoint has a strictly closer competing partner, this
+   is a "passing cable" crossing (one tip with two suitors) and is skipped.
+
+MergeSites are still left alone.
 
 ## Known failure modes to address (hypotheses for the loop)
 
@@ -87,32 +81,27 @@ The policy receives a UNIFIED stream of two site kinds (branch on `site.kind`):
   `angle_deg`, `radius_ratio`, `cable_a_um`, `cable_b_um`). All fields are derived
   from fragment geometry alone, so MergeSites are leak-free on held-out.
 
-### Tuning the candidate stream itself (`ENUM_PARAMS`)
-
-The thresholds above decide what to ACCEPT; the candidate stream decides what you
-even SEE. `heuristics.py` may define a module-level `ENUM_PARAMS` dict to widen or
-narrow that stream — turning the framework's prior on "what an error looks like"
-from a fixed rail into an evolvable knob:
-- `max_gap_um` (1–40) — split search radius; raise to reach longer true gaps a
-  tight radius misses, lower to cut noise.
-- `tip_to_shaft` — if False, split partners must be tips (legacy tip-to-tip).
-- `min_arm_cable_um` (2–50) — lower to surface SHORTER merges the 10 µm floor hides
-  (a detector-recall lever for the "missed merges" mode above).
-- `seed_depth_um`, `max_per_label`, `split_max_sites`, `merge_max_sites` — see
-  `dataset.ENUM_PARAM_SPEC`.
-Values are clamped to a safe rail and unknown keys ignored, so this can't crash the
-run; `ctx["enum_params"]` reports the values actually in effect (post-clamp). Widen
-the stream when the failure report shows a recall gap (merge targets with no
-MergeSite, or unrepaired splits with no SplitSite); narrow it when the candidate
-set is noisy and precision is the bottleneck.
-
 `ctx["n_split_sites"]` / `ctx["n_merge_sites"]` report the stream composition.
 
 ## Change log
 
-- **Gen 0:** seed is a conservative colinear split-repair policy — `merge_labels`
-  for SplitSites with `gap_um <= GAP_THRESHOLD_UM` (4.0 µm) AND colinear
-  continuation (`cos >= MIN_COLINEAR_COS`, 0.94); no `split_label`.
+- **Gen 0:** seed is a no-op (proposes nothing).
+- **Gen 1 (DEAD END):** endpoint-adaptive colinearity threshold (tighter ~0.985
+  cosine on tip-to-shaft/branch joins) plus a `MAX_RADIUS_RATIO` radius-continuity
+  guard using `ctx["node_radius"]`. Scored **+0.000** on held-out vs parent —
+  REJECTED. Do not revisit the colinearity-cosine threshold or a radius-continuity
+  guard; that lever is exhausted.
+- **Gen 2:** **mutual-nearest-neighbor (reciprocity) gating** — a genuinely
+  different mechanism. Diagnosis from the Gen 1 train report: the gain came almost
+  entirely from repairing OMIT edges (d%OmitEdges strongly negative on every
+  skeleton) while `%MergedEdges` barely moved and `%SplitEdges` rose; 2 of the 51
+  merges fused DISTINCT neurons (a tip latching onto a nearby *passing* cable that
+  looked colinear across a tiny gap even though a better partner existed). Fix:
+  in a first pass record the smallest candidate gap each endpoint node participates
+  in, then accept a merge only if its gap is within `RECIP_SLACK_UM` of that best
+  for BOTH endpoints. This removes the "one tip, two suitors" crossing over-merges
+  without retuning colinearity or adding a radius guard. Geometry-only, so it is
+  leak-free and applies on held-out.
 - **Harness:** `candidate_split_sites` broadened from tip-to-tip to
   tip-to-any-node (tip/shaft/branch) within `max_gap_um`; `SplitSite` carries
   `node_a` (always a tip) and `node_b` (the partner, any degree).

@@ -23,30 +23,28 @@ Edge Accuracy = 100 − (% Split Edges + % Omit Edges + % Merged Edges), so a go
 policy must lower split AND merge errors together while not trading one for the
 other. The failure report shows both components plus an over-split watchdog.
 
-**Acceptance gate (HARD — a generation is reverted if it fails any):**
-- Edge Accuracy must beat the parent by `gate_eps`.
-- **No new merge error (EVERY generation):** neither `# Merges` nor
-  `% Merged Edges` may rise above the parent (beyond `merge_tol`, default 0). This
-  enforces the "without creating merge errors" clause directly — raising net Edge
-  Accuracy by repairing splits while introducing a few merges is NOT accepted. A
-  correct `merge_labels` (fusing fragments of the SAME neuron) never trips this;
-  only a wrong fusion does.
-- **Over-split watchdog (only when the policy emits `split_label`):** `% Split
-  Edges` may not rise more than `split_tol` above the parent.
+## Current criteria (Generation 1 — colinear merge with crossing/radius guards)
 
-## Current criteria (Generation 0 — seed)
+Split-repair only (no `split_label` yet). For each `SplitSite`, emit a
+`merge_labels` edit when ALL of:
 
-The seed is a conservative **colinear split-repair** policy (NOT a no-op). For
-each SplitSite it emits a `merge_labels` edit only when BOTH:
-  1. the gap is small — `s.gap_um <= GAP_THRESHOLD_UM` (4.0 µm), and
-  2. the two fragments are colinear across the gap — a straight-line continuation
-     (`cos(angle) >= MIN_COLINEAR_COS`, 0.94 ≈ ≤20° bend).
-MergeSites are left alone (no `split_label`) — splitting is the riskier edit, left
-for the loop to add once it can measure the trade-off. This proposes a small,
-high-precision set of merges, so the score moves OFF the flat no-edit baseline
-(giving the loop a gradient) without the union-find mega-label blowup a naive
-"merge everything nearby" seed would cause. The gate is parent-relative, so each
-generation must beat THIS seed (or the last accepted policy), not the no-edit floor.
+1. **Gap is small** — `s.gap_um <= GAP_THRESHOLD_UM` (4.0 µm).
+2. **Colinear continuation** — the imagined repaired cable
+   `A_interior -> node_a -> node_b -> B_interior` is near-straight at both joints
+   (`_is_colinear_split`). The colinearity bar is **adaptive to the partner
+   endpoint type**:
+   - `node_b` is a **tip** (degree ≤ 1): require `cos >= MIN_COLINEAR_COS` (0.94).
+   - `node_b` is a **shaft/branch** (degree ≥ 2): require the tighter
+     `cos >= MIN_COLINEAR_COS_BRANCH` (0.985). Reconnecting into the *middle* of
+     another cable is the topology that most often fuses two distinct neurons at a
+     crossing, so it must be almost perfectly straight to be accepted.
+3. **Radius continuity** — the two endpoints' neurite radii agree within
+   `MAX_RADIUS_RATIO` (2.5×) when `ctx["node_radius"]` is available; a sharp
+   caliber jump across the gap signals two unrelated cables. Advisory: if radii are
+   missing the check passes (never *more* restrictive for lack of signal).
+
+MergeSites are still left alone (`split_label` deferred until a clearer over-merge
+gradient exists).
 
 ## Known failure modes to address (hypotheses for the loop)
 
@@ -87,32 +85,11 @@ The policy receives a UNIFIED stream of two site kinds (branch on `site.kind`):
   `angle_deg`, `radius_ratio`, `cable_a_um`, `cable_b_um`). All fields are derived
   from fragment geometry alone, so MergeSites are leak-free on held-out.
 
-### Tuning the candidate stream itself (`ENUM_PARAMS`)
-
-The thresholds above decide what to ACCEPT; the candidate stream decides what you
-even SEE. `heuristics.py` may define a module-level `ENUM_PARAMS` dict to widen or
-narrow that stream — turning the framework's prior on "what an error looks like"
-from a fixed rail into an evolvable knob:
-- `max_gap_um` (1–40) — split search radius; raise to reach longer true gaps a
-  tight radius misses, lower to cut noise.
-- `tip_to_shaft` — if False, split partners must be tips (legacy tip-to-tip).
-- `min_arm_cable_um` (2–50) — lower to surface SHORTER merges the 10 µm floor hides
-  (a detector-recall lever for the "missed merges" mode above).
-- `seed_depth_um`, `max_per_label`, `split_max_sites`, `merge_max_sites` — see
-  `dataset.ENUM_PARAM_SPEC`.
-Values are clamped to a safe rail and unknown keys ignored, so this can't crash the
-run; `ctx["enum_params"]` reports the values actually in effect (post-clamp). Widen
-the stream when the failure report shows a recall gap (merge targets with no
-MergeSite, or unrepaired splits with no SplitSite); narrow it when the candidate
-set is noisy and precision is the bottleneck.
-
 `ctx["n_split_sites"]` / `ctx["n_merge_sites"]` report the stream composition.
 
 ## Change log
 
-- **Gen 0:** seed is a conservative colinear split-repair policy — `merge_labels`
-  for SplitSites with `gap_um <= GAP_THRESHOLD_UM` (4.0 µm) AND colinear
-  continuation (`cos >= MIN_COLINEAR_COS`, 0.94); no `split_label`.
+- **Gen 0:** seed is a no-op (proposes nothing).
 - **Harness:** `candidate_split_sites` broadened from tip-to-tip to
   tip-to-any-node (tip/shaft/branch) within `max_gap_um`; `SplitSite` carries
   `node_a` (always a tip) and `node_b` (the partner, any degree).
@@ -120,3 +97,16 @@ set is noisy and precision is the bottleneck.
   (GT-free branch-based merge detection) and a unified split+merge candidate
   stream; fitness is Edge Accuracy (charges merge errors); the failure report now
   lists baseline merge targets and an over-split watchdog.
+- **Gen 1 (2026-06-16):** first real policy = colinear split-repair. Diagnosis of
+  the prior colinear-merge candidate: overall Edge Accuracy rose (79.98→80.68) but
+  almost ALL the gain came from lower %Omit Edges (relabeling background-adjacent
+  nodes), while the merge edits drove the over-split watchdog UP nearly 3× (%Split
+  Edges 0.117→0.304, +hundreds of split edges per skeleton) and CREATED 2 merges —
+  both joining into NON-tip (shaft/branch) partner nodes, i.e. fusing distinct
+  neurons at crossings. Change: (a) make the colinearity threshold adaptive —
+  tip-to-tip joins keep the 0.94 bar, but tip-to-shaft/branch joins now require a
+  much tighter 0.985 (near-perfectly-straight) continuation; (b) add a
+  radius-continuity guard (`MAX_RADIUS_RATIO=2.5`) that rejects merges across a
+  sharp caliber discontinuity, using the free `ctx["node_radius"]` signal. Goal:
+  cut the over-split / over-merge created at crossings without giving back the
+  legitimate colinear tip-to-tip repairs.
