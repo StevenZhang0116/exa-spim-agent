@@ -1,11 +1,20 @@
 """
 Run the AutoDiscovery summarization workflow via the Claude Agent SDK.
 
-Opens one persistent Claude session and runs the ordered STEPS through it
-(summarize, then verify), so later steps share earlier context. Subagents
-live in ``.claude/agents/`` and are auto-discovered via ``setting_sources``.
-Both steps write into one combined Markdown deliverable:
-``autodiscovery/all-runs.summary.md``.
+Processes ONE AutoDiscovery run export (a single JSON file) together with the
+dataset ``.pkl`` its experiments were run against. A persistent Claude session
+is opened and the ordered STEPS run through it (summarize → rerun → verify) so
+later steps share earlier context. Subagents live in ``.claude/agents/`` and are
+auto-discovered via ``setting_sources``. The file produces a Markdown
+deliverable next to the input: ``<stem>.summary.md``.
+
+The three steps:
+  1. summarize — rank the file's hypotheses and write the top-K report.
+  2. rerun     — re-execute each reported hypothesis's recorded code against the
+                 provided ``--pkl`` and fold a REPRODUCED/DIVERGED/FAILED verdict
+                 into each entry.
+  3. verify    — audit the statistics/logic using both the recorded and the
+                 freshly reproduced results.
 
 Two free parameters near the top control what the report contains:
 ``RANK_BY`` (``"posterior-surprise"`` ranks by ``posterior * |surprisal|`` so
@@ -14,14 +23,15 @@ findings that are both strongly believed and highly belief-shifting come first;
 top-ranked hypotheses in the final Markdown; ``None`` keeps all).
 
 Usage (from the ``exa-spim-agent/`` project root):
-    python agentic/run_discovery_workflow.py
-    python agentic/run_discovery_workflow.py --verbose   # stream assistant text
+    python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl ../data/RUN.pkl
+    python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl DATA.pkl --verbose
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 import time
 from datetime import datetime
@@ -78,63 +88,126 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 TOP_K: int | None = 20
 RANK_BY: str = "posterior-surprise"
 
-# The deterministic ranking command both steps refer to, built from the free
-# parameters above so the helper, the report, and the verifier stay in sync.
-_RANK_CMD = f"python agentic/rank_by_surprise.py --rank-by {RANK_BY}" + (
-    f" --top {TOP_K}" if TOP_K is not None else ""
-)
 _TOP_K_PHRASE = (
     f"the top {TOP_K} hypotheses" if TOP_K is not None else "all ranked hypotheses"
 )
 
-# The ordered workflow. Each step is an instruction sent to the same persistent
-# session, so step N can build on the results of step N-1. Step 1 kicks off the
-# discovery-summarizer subagent; add further steps below as the workflow grows.
-STEPS: list[dict[str, str]] = [
-    {
-        "name": "summarize-discoveries",
-        "instruction": (
-            "Use the discovery-summarizer subagent to digest every AutoDiscovery "
-            "run export under the autodiscovery/ folder. It must run "
-            f"`{_RANK_CMD}` to pool and rank all hypotheses by the combined "
-            "posterior-and-surprise priority (posterior * |surprisal|), keeping "
-            f"only {_TOP_K_PHRASE}. The report MUST contain ONLY those top "
-            f"{TOP_K if TOP_K is not None else 'N'} records (do NOT add entries "
-            "beyond what the helper returns). Write the collective ranked report "
-            "to autodiscovery/all-runs.summary.md, ordered by the helper's "
-            "ranking (highest priority first), and display each entry's "
-            "priority_score alongside its surprise magnitude. Report the path it "
-            "wrote and a short executive summary of the highest-priority "
-            "conclusions (high posterior and high surprise)."
-        ),
-    },
-    {
-        "name": "verify-statistics-and-logic",
-        "instruction": (
-            "Use the discovery-verifier subagent to audit whether each "
-            "hypothesis's statistical test and its inductive/deductive reasoning "
-            "are correct, judging ONLY from the recorded code, codeOutput, and "
-            "analysis in the autodiscovery/ JSON exports (do NOT re-run any "
-            "experiment). Check test choice, assumptions, power, effect size, "
-            "p-value interpretation, the 'failed-to-reject != null-is-true' "
-            "fallacy, conclusion overreach, and a run-wide multiple-comparisons "
-            "(FDR) analysis. Read autodiscovery/all-runs.summary.md and fold the "
-            "audit INTO each hypothesis's existing ranked entry (append Verdict / "
-            "Test / Statistical issues / Logic issues bullets in place, keeping "
-            "the summary bullets), plus one run-wide 'Statistical Verification — "
-            "Run-wide Summary' section at the end. Report the path and the most "
-            "serious problems found."
-        ),
-    },
-    # --- Add later steps here, e.g.: ---
-    # {
-    #     "name": "propose-followups",
-    #     "instruction": (
-    #         "From all-runs.summary.md, take the 5 most surprising belief flips "
-    #         "and draft a concrete follow-up experiment plan for each."
-    #     ),
-    # },
-]
+
+def _top_flags() -> str:
+    """The shared ``--rank-by``/``--top`` flags both helpers must agree on."""
+    return f"--rank-by {RANK_BY}" + (f" --top {TOP_K}" if TOP_K is not None else "")
+
+
+def rank_cmd(json_rel: str) -> str:
+    """Deterministic ranking command for ONE run export.
+
+    Built from the free parameters above so the helper, the report, and the
+    verifier stay in sync. ``json_rel`` is the run file path relative to the
+    project root, so the helper ranks only that single file.
+    """
+    return f"python agentic/rank_by_surprise.py {json_rel} {_top_flags()}"
+
+
+def rerun_cmd(json_rel: str, pkl_rel: str) -> str:
+    """Deterministic re-execution command for ONE run export + its dataset pkl.
+
+    Uses the SAME ``--rank-by``/``--top`` flags as ``rank_cmd`` so the rerun set
+    is exactly the set of records the summarizer put in the report.
+    """
+    return (
+        f"python agentic/rerun_experiments.py {json_rel} "
+        f"--pkl {pkl_rel} {_top_flags()}"
+    )
+
+
+def build_steps(
+    json_rel: str, pkl_rel: str, summary_rel: str
+) -> list[dict[str, str]]:
+    """Build the ordered workflow steps for a SINGLE run export + dataset pkl.
+
+    Each step is an instruction sent to the same persistent session, so step N
+    can build on the results of step N-1. ``json_rel`` is the run JSON to digest,
+    ``pkl_rel`` is the dataset the experiments re-execute against, and
+    ``summary_rel`` is the per-file Markdown deliverable — all relative to the
+    project root. Order: summarize → rerun (reproduce against the pkl) → verify
+    (audits using both the recorded and the freshly-reproduced results).
+    """
+    return [
+        {
+            "name": "summarize-discoveries",
+            "instruction": (
+                "Use the discovery-summarizer subagent to digest the single "
+                f"AutoDiscovery run export at {json_rel}. It must run "
+                f"`{rank_cmd(json_rel)}` to rank that file's hypotheses by the "
+                "combined posterior-and-surprise priority (posterior * "
+                f"|surprisal|), keeping only {_TOP_K_PHRASE}. The report MUST "
+                f"contain ONLY those top {TOP_K if TOP_K is not None else 'N'} "
+                "records (do NOT add entries beyond what the helper returns). "
+                f"Write the ranked report to {summary_rel}, ordered by the "
+                "helper's ranking (highest priority first), and display each "
+                "entry's priority_score alongside its surprise magnitude. Report "
+                "the path it wrote and a short executive summary of the "
+                "highest-priority conclusions (high posterior and high surprise)."
+            ),
+        },
+        {
+            "name": "rerun-experiments",
+            "instruction": (
+                "Use the discovery-reproducer subagent to RE-EXECUTE the "
+                "experiment code of the reported hypotheses against the provided "
+                f"dataset {pkl_rel} and check whether each finding reproduces. "
+                f"First run `{rerun_cmd(json_rel, pkl_rel)}` (same --rank-by/--top "
+                "as the summarizer, so the rerun set matches the report) to run "
+                "each top-ranked record's recorded `code` on the pkl and print the "
+                "fresh output next to the recorded codeOutput. Then, for any "
+                "result that FAILED or TIMED OUT for a DATA-LOADING / ENVIRONMENT "
+                "reason (e.g. a NumPy-2-written pkl the host can't unpickle, a "
+                "'dataset not found' gate, or a pip-install retry loop), export "
+                f"the editable scripts with `--export-dir {json_rel}.rerun`, "
+                "revise ONLY the loading/bootstrap of those scripts (load the pkl "
+                "directly from $RERUN_PKL, fix the NumPy version, drop pip-retry "
+                "loops) while keeping the analysis identical, and rerun with "
+                f"`--code-dir {json_rel}.rerun`. Compare the fresh key numbers "
+                "(test statistic, p-value, effect size, n) to the recorded ones "
+                "and assign a REPRODUCED / DIVERGED / FAILED verdict (note whether "
+                f"the code was recorded or revised-loading). Read {summary_rel} "
+                "and fold the reproduction result INTO each hypothesis's existing "
+                "ranked entry (append Reproduction / Rerun result bullets in "
+                "place, keeping prior bullets), plus one 'Reproduction — Summary' "
+                "section. Report the path and which findings did NOT reproduce."
+            ),
+        },
+        {
+            "name": "verify-statistics-and-logic",
+            "instruction": (
+                "Use the discovery-verifier subagent to audit whether each "
+                "hypothesis's statistical test and its inductive/deductive "
+                "reasoning are correct, judging from the recorded code, "
+                f"codeOutput, and analysis in {json_rel} AND the freshly "
+                "reproduced results the previous rerun step folded into "
+                f"{summary_rel} (do NOT re-run experiments yourself; use the "
+                "rerun output already in the report). Check test choice, "
+                "assumptions, power, effect size, p-value interpretation, the "
+                "'failed-to-reject != null-is-true' fallacy, conclusion "
+                "overreach, whether a finding that FAILED or DIVERGED on rerun "
+                "should be downgraded, and a file-wide multiple-comparisons (FDR) "
+                f"analysis. Read {summary_rel} and fold the audit INTO each "
+                "hypothesis's existing ranked entry (append Verdict / Test / "
+                "Statistical issues / Logic issues bullets in place, keeping the "
+                "summary and reproduction bullets), plus one file-wide "
+                "'Statistical Verification — Summary' section at the end. Report "
+                "the path and the most serious problems found."
+            ),
+        },
+        # --- Add later steps here, e.g.: ---
+        # {
+        #     "name": "propose-followups",
+        #     "instruction": (
+        #         f"From {summary_rel}, take the 5 most surprising belief flips "
+        #         "and draft a concrete follow-up experiment plan for each."
+        #     ),
+        # },
+    ]
 
 
 def build_options() -> ClaudeAgentOptions:
@@ -154,6 +227,10 @@ def build_options() -> ClaudeAgentOptions:
         # Non-interactive: don't prompt for permission on each tool call. Drop to
         # "acceptEdits" if you'd rather review/limit what runs.
         permission_mode="bypassPermissions",
+        # Run Opus 4.8 at maximum reasoning effort for the summarize/rerun/verify
+        # work. Levels: low|medium|high|xhigh|max; Opus 4.8 thinks adaptively and
+        # at xhigh almost always reasons deeply. Applies to the session + subagents.
+        env={**os.environ, "CLAUDE_EFFORT": "xhigh"},
     )
 
 
@@ -194,36 +271,76 @@ async def run_step(client: ClaudeSDKClient, step: dict[str, str], verbose: bool)
     return "".join(chunks)
 
 
-async def run_workflow(verbose: bool) -> None:
+def _rel_to_root(path: Path) -> str:
+    """Path relative to PROJECT_ROOT (the session cwd), tolerating ``..``.
+
+    The dataset pkl often lives outside the project (e.g. ``../data/``), so a
+    plain ``relative_to`` would raise — ``os.path.relpath`` handles parent dirs.
+    """
+    return Path(os.path.relpath(path, PROJECT_ROOT)).as_posix()
+
+
+async def run_workflow(json_path: Path, pkl_path: Path, verbose: bool) -> None:
     options = build_options()
-    log(f"Starting workflow: {len(STEPS)} step(s), project root {PROJECT_ROOT}")
+    # Paths handed to the agent are relative to PROJECT_ROOT (the session cwd).
+    json_rel = _rel_to_root(json_path)
+    pkl_rel = _rel_to_root(pkl_path)
+    summary_rel = _rel_to_root(json_path.with_suffix(".summary.md"))
+    steps = build_steps(json_rel, pkl_rel, summary_rel)
+
+    log(f"Starting workflow on {json_rel} (pkl {pkl_rel}): {len(steps)} step(s).")
     wf_start = time.monotonic()
     async with ClaudeSDKClient(options=options) as client:
         log("SDK session opened.")
-        for i, step in enumerate(STEPS, start=1):
-            print(f"\n=== Step {i}/{len(STEPS)}: {step['name']} ===")
-            log(f"Step {i}/{len(STEPS)} '{step['name']}' started.")
+        for i, step in enumerate(steps, start=1):
+            print(f"\n=== Step {i}/{len(steps)}: {step['name']} ===")
+            log(f"Step {i}/{len(steps)} '{step['name']}' started.")
             step_start = time.monotonic()
             final_text = await run_step(client, step, verbose)
-            elapsed = time.monotonic() - step_start
-            log(f"Step {i}/{len(STEPS)} '{step['name']}' done in {elapsed:.0f}s.")
+            log(
+                f"Step {i}/{len(steps)} '{step['name']}' done in "
+                f"{time.monotonic() - step_start:.0f}s."
+            )
             if not verbose:
                 # In quiet mode, print only each step's final summary.
                 print(final_text.strip())
-    total = time.monotonic() - wf_start
-    log(f"All {len(STEPS)} step(s) complete in {total:.0f}s.")
+    log(f"Workflow complete in {time.monotonic() - wf_start:.0f}s.")
     print("\n=== Workflow complete ===")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "path",
+        type=Path,
+        help="The run JSON file to process (relative to the project root or absolute).",
+    )
+    parser.add_argument(
+        "--pkl",
+        type=Path,
+        required=True,
+        help=(
+            "The dataset .pkl this run's experiments load, used to re-execute "
+            "and reproduce the findings (relative to the project root or absolute)."
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Stream every assistant text block as it arrives.",
     )
     args = parser.parse_args()
-    asyncio.run(run_workflow(args.verbose))
+    json_path = args.path
+    if not json_path.is_absolute():
+        json_path = (PROJECT_ROOT / json_path).resolve()
+    if not json_path.is_file():
+        parser.error(f"No such run JSON file: {json_path}")
+    pkl_path = args.pkl
+    if not pkl_path.is_absolute():
+        pkl_path = (PROJECT_ROOT / pkl_path).resolve()
+    if not pkl_path.is_file():
+        parser.error(f"No such dataset pkl: {pkl_path}")
+    asyncio.run(run_workflow(json_path, pkl_path, args.verbose))
     return 0
 
 
