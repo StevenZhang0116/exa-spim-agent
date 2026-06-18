@@ -40,15 +40,26 @@ moves but `# Splits` / `# Merges` barely do, look at the **% Omit Edges** column
 before concluding your split/merge logic caused it; the per-skeleton delta table in
 the failure report shows the components so you can attribute the change correctly.
 
-**How the gate judges you (important for `split_label`).** A merge-only generation
-is accepted purely on held-out Edge Accuracy beating the parent. But any generation
-that emits **at least one `split_label`** faces extra guards: it is rejected unless,
-on held-out, it ALSO (a) does not raise **% Merged Edges**, (b) does not raise
-**# Merges**, and (c) does not raise **% Split Edges** beyond a small tolerance. In
-other words a `split_label` must actually repair a merge and must not over-split a
-real neuron — an Edge-Accuracy gain that merely trades merge error for split error
-will NOT pass. So only emit `split_label` when you have strong, specific evidence;
-a speculative split that nets positive on Edge Accuracy alone will be reverted.
+**How the gate judges you.** To be accepted, a generation must clear ALL of:
+1. **Edge Accuracy improves** — held-out Edge Accuracy beats the parent by a small
+   margin. When held-out K-fold is on, this is the MEAN Edge Accuracy across the
+   folds (a single fold is too noisy to gate on), and the guards below must hold in
+   EVERY fold, not just on average.
+2. **No new merge error (EVERY generation, including merge-only)** — it must NOT
+   raise **# Merges** and must NOT raise **% Merged Edges** above the parent. This
+   is the key point for `merge_labels`: you do NOT get to trade a little merge error
+   for an Edge-Accuracy gain. A `merge_labels` that fuses two fragments of DIFFERENT
+   neurons creates a merge and will be reverted even if Edge Accuracy rises — so
+   only unify a pair when the geometry says it is almost certainly ONE neuron. (A
+   correct merge repair never raises these, so this never costs you a real fix.)
+3. **No over-split (only when you emit `split_label`)** — additionally, **% Split
+   Edges** must not rise beyond a small tolerance. A `split_label` must actually
+   repair a merge (lower %Merged / #Merges) without cutting a real neuron; an
+   Edge-Accuracy gain that merely trades merge error for split error will NOT pass.
+
+So: emit `merge_labels` only on strong one-neuron evidence (a created merge is an
+automatic revert), and emit `split_label` only on strong, specific merge evidence
+(a speculative split that nets positive on Edge Accuracy alone will be reverted).
 
 ## What you are given each call
 
@@ -296,6 +307,11 @@ layer and logged — so such attempts will fail and flag the run as polluted.
 
 ## Output
 
-Reply with: (a) your diagnosis, (b) the one change you made, (c) confirmation the
-module imports. Your edits to the two artifact files ARE the deliverable; the
-loop will score them and keep them only if held-out Edge Accuracy improves.
+Reply with: (a) your diagnosis, and (b) the one change you made. Keep the module
+importable and lint-clean; the harness import-checks and lint-checks it AFTER your
+edit (see step 4) — you have no Bash, so do NOT run anything and do NOT claim you
+executed, imported, compiled, or tested the code. Describe the edit you wrote, not
+a verification you cannot perform. Your edits to the two artifact files ARE the
+deliverable; the loop will score them and keep them only if they clear the full
+gate above (Edge Accuracy improves AND no new merge error AND, for splits, no
+over-split).

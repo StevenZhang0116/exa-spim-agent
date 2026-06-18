@@ -8,13 +8,17 @@ later steps share earlier context. Subagents live in ``.claude/agents/`` and are
 auto-discovered via ``setting_sources``. The file produces a Markdown
 deliverable next to the input: ``<stem>.summary.md``.
 
-The three steps:
-  1. summarize — rank the file's hypotheses and write the top-K report.
-  2. rerun     — re-execute each reported hypothesis's recorded code against the
-                 provided ``--pkl`` and fold a REPRODUCED/DIVERGED/FAILED verdict
-                 into each entry.
-  3. verify    — audit the statistics/logic using both the recorded and the
-                 freshly reproduced results.
+The steps:
+  1. summarize   — rank the file's hypotheses and write the top-K report.
+  2. rerun       — re-execute each reported hypothesis's recorded code against
+                   the provided ``--pkl`` and fold a REPRODUCED/DIVERGED/FAILED
+                   verdict into each entry.
+  3. extrapolate — (only when ``--extra-pkl`` is given) re-run the reproduced
+                   code on each OTHER dataset to test whether the conclusions
+                   generalize; fold a GENERALIZES/PARTIAL/DOES-NOT/INCONCLUSIVE
+                   verdict into each entry.
+  4. verify      — audit the statistics/logic using the recorded and freshly
+                   reproduced results.
 
 Two free parameters near the top control what the report contains:
 ``RANK_BY`` (``"posterior-surprise"`` ranks by ``posterior * |surprisal|`` so
@@ -25,6 +29,9 @@ top-ranked hypotheses in the final Markdown; ``None`` keeps all).
 Usage (from the ``exa-spim-agent/`` project root):
     python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl ../data/RUN.pkl
     python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl DATA.pkl --verbose
+    # Also test generalization onto other datasets:
+    python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl ORIGIN.pkl \
+        --extra-pkl OTHER1.pkl --extra-pkl OTHER2.pkl
 """
 
 from __future__ import annotations
@@ -120,8 +127,27 @@ def rerun_cmd(json_rel: str, pkl_rel: str) -> str:
     )
 
 
+def extrapolate_cmd(
+    json_rel: str, pkl_rel: str, rerun_dir_rel: str, extra_pkls_rel: list[str]
+) -> str:
+    """Deterministic extrapolation command: rerun the reproduced code on others.
+
+    Same ``--rank-by``/``--top`` as the rerun, reuses the reproducer's revised
+    ``--code-dir`` so the working code runs, and adds one ``--extra-pkl`` per
+    other dataset to test generalization.
+    """
+    extra = " ".join(f"--extra-pkl {p}" for p in extra_pkls_rel)
+    return (
+        f"python agentic/rerun_experiments.py {json_rel} --pkl {pkl_rel} "
+        f"{_top_flags()} --code-dir {rerun_dir_rel} {extra}"
+    )
+
+
 def build_steps(
-    json_rel: str, pkl_rel: str, summary_rel: str
+    json_rel: str,
+    pkl_rel: str,
+    summary_rel: str,
+    extra_pkls_rel: list[str] | None = None,
 ) -> list[dict[str, str]]:
     """Build the ordered workflow steps for a SINGLE run export + dataset pkl.
 
@@ -129,10 +155,13 @@ def build_steps(
     can build on the results of step N-1. ``json_rel`` is the run JSON to digest,
     ``pkl_rel`` is the dataset the experiments re-execute against, and
     ``summary_rel`` is the per-file Markdown deliverable — all relative to the
-    project root. Order: summarize → rerun (reproduce against the pkl) → verify
-    (audits using both the recorded and the freshly-reproduced results).
+    project root. Order: summarize → rerun (reproduce against the pkl) →
+    [extrapolate onto other datasets, only when ``extra_pkls_rel`` is given] →
+    verify (audits using the recorded and freshly-reproduced results).
     """
-    return [
+    extra_pkls_rel = extra_pkls_rel or []
+    rerun_dir_rel = f"{json_rel}.rerun"
+    steps: list[dict[str, str]] = [
         {
             "name": "summarize-discoveries",
             "instruction": (
@@ -177,6 +206,43 @@ def build_steps(
                 "section. Report the path and which findings did NOT reproduce."
             ),
         },
+    ]
+
+    # Optional extrapolation step: only when other datasets were provided. Runs
+    # the reproduced code (the reviser's --code-dir) on each extra pkl to test
+    # whether the conclusions generalize beyond the origin dataset.
+    if extra_pkls_rel:
+        extra_list = ", ".join(extra_pkls_rel)
+        steps.append(
+            {
+                "name": "extrapolate-generalization",
+                "instruction": (
+                    "Use the discovery-extrapolator subagent to test whether each "
+                    "reported finding GENERALIZES to other datasets that the "
+                    "hypotheses were NOT generated on: "
+                    f"{extra_list}. Run "
+                    f"`{extrapolate_cmd(json_rel, pkl_rel, rerun_dir_rel, extra_pkls_rel)}` "
+                    "(same --rank-by/--top as the summarizer, reusing the "
+                    f"reproducer's revised --code-dir {rerun_dir_rel} so the "
+                    "working code runs). The helper runs each record's code on the "
+                    "origin pkl and, with the load redirected, on each extra pkl; "
+                    "each result carries an `extrapolations` list with the fresh "
+                    "output per extra dataset. For each hypothesis, compare the "
+                    "origin numbers to each extra dataset's numbers (direction, "
+                    "significance, effect size) and assign GENERALIZES / PARTIAL / "
+                    "DOES-NOT-GENERALIZE / INCONCLUSIVE. If a revised script still "
+                    "fails to LOAD an extra pkl, apply the same loading-only fix to "
+                    f"its hypo_<id>.py in {rerun_dir_rel} and re-run. Read "
+                    f"{summary_rel} and fold the generalization result INTO each "
+                    "hypothesis's existing ranked entry (append Generalization / "
+                    "Across datasets bullets in place, keeping prior bullets), plus "
+                    "one 'Generalization — Summary' section. Report the path and "
+                    "which findings do NOT generalize."
+                ),
+            }
+        )
+
+    steps.append(
         {
             "name": "verify-statistics-and-logic",
             "instruction": (
@@ -198,16 +264,9 @@ def build_steps(
                 "'Statistical Verification — Summary' section at the end. Report "
                 "the path and the most serious problems found."
             ),
-        },
-        # --- Add later steps here, e.g.: ---
-        # {
-        #     "name": "propose-followups",
-        #     "instruction": (
-        #         f"From {summary_rel}, take the 5 most surprising belief flips "
-        #         "and draft a concrete follow-up experiment plan for each."
-        #     ),
-        # },
-    ]
+        }
+    )
+    return steps
 
 
 def build_options() -> ClaudeAgentOptions:
@@ -280,15 +339,25 @@ def _rel_to_root(path: Path) -> str:
     return Path(os.path.relpath(path, PROJECT_ROOT)).as_posix()
 
 
-async def run_workflow(json_path: Path, pkl_path: Path, verbose: bool) -> None:
+async def run_workflow(
+    json_path: Path,
+    pkl_path: Path,
+    extra_pkl_paths: list[Path],
+    verbose: bool,
+) -> None:
     options = build_options()
     # Paths handed to the agent are relative to PROJECT_ROOT (the session cwd).
     json_rel = _rel_to_root(json_path)
     pkl_rel = _rel_to_root(pkl_path)
+    extra_pkls_rel = [_rel_to_root(p) for p in extra_pkl_paths]
     summary_rel = _rel_to_root(json_path.with_suffix(".summary.md"))
-    steps = build_steps(json_rel, pkl_rel, summary_rel)
+    steps = build_steps(json_rel, pkl_rel, summary_rel, extra_pkls_rel)
 
-    log(f"Starting workflow on {json_rel} (pkl {pkl_rel}): {len(steps)} step(s).")
+    extra_note = f", extrapolate onto {len(extra_pkls_rel)} dataset(s)" if extra_pkls_rel else ""
+    log(
+        f"Starting workflow on {json_rel} (pkl {pkl_rel}{extra_note}): "
+        f"{len(steps)} step(s)."
+    )
     wf_start = time.monotonic()
     async with ClaudeSDKClient(options=options) as client:
         log("SDK session opened.")
@@ -320,8 +389,24 @@ def main() -> int:
         type=Path,
         required=True,
         help=(
-            "The dataset .pkl this run's experiments load, used to re-execute "
-            "and reproduce the findings (relative to the project root or absolute)."
+            "The ORIGIN dataset .pkl this run's experiments load, used to "
+            "re-execute and reproduce the findings (relative to the project root "
+            "or absolute)."
+        ),
+    )
+    parser.add_argument(
+        "--extra-pkl",
+        type=Path,
+        action="extend",
+        nargs="+",
+        default=[],
+        metavar="PKL",
+        help=(
+            "Other dataset .pkl(s) to EXTRAPOLATE the findings onto. Accepts "
+            "several paths after one flag and/or the flag repeated. When given, "
+            "an extra step re-runs the reproduced code on each to test whether "
+            "the conclusions generalize. Assumes the same payload structure as "
+            "--pkl."
         ),
     )
     parser.add_argument(
@@ -330,17 +415,19 @@ def main() -> int:
         help="Stream every assistant text block as it arrives.",
     )
     args = parser.parse_args()
-    json_path = args.path
-    if not json_path.is_absolute():
-        json_path = (PROJECT_ROOT / json_path).resolve()
-    if not json_path.is_file():
-        parser.error(f"No such run JSON file: {json_path}")
-    pkl_path = args.pkl
-    if not pkl_path.is_absolute():
-        pkl_path = (PROJECT_ROOT / pkl_path).resolve()
-    if not pkl_path.is_file():
-        parser.error(f"No such dataset pkl: {pkl_path}")
-    asyncio.run(run_workflow(json_path, pkl_path, args.verbose))
+
+    def _resolve_existing(p: Path, what: str) -> Path:
+        rp = p if p.is_absolute() else (PROJECT_ROOT / p).resolve()
+        if not rp.is_file():
+            parser.error(f"No such {what}: {rp}")
+        return rp
+
+    json_path = _resolve_existing(args.path, "run JSON file")
+    pkl_path = _resolve_existing(args.pkl, "dataset pkl")
+    extra_pkl_paths = [
+        _resolve_existing(p, "extra dataset pkl") for p in args.extra_pkl
+    ]
+    asyncio.run(run_workflow(json_path, pkl_path, extra_pkl_paths, args.verbose))
     return 0
 
 

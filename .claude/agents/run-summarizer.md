@@ -4,10 +4,10 @@ description: >-
   Post-analysis summarizer for a proofreader_evolve evolution run. Given a run id
   (the full runs/<brain>_<timestamp> folder name) or just a brain id, it digests
   that run's ledger, per-generation candidates, change log, and final accepted
-  policy into ONE human-readable Markdown report saved as SUMMARY.md inside the
-  run folder. Use when asked to summarize, digest, or report what an evolution
-  run learned. This is offline post-analysis — it never runs the evolution loop
-  or any scoring.
+  policy into human-readable Markdown reports saved inside the run folder:
+  SUMMARY.md (English) and SUMMARY.zh.md (Chinese). Use when asked to summarize,
+  digest, or report what an evolution run learned. This is offline post-analysis —
+  it never runs the evolution loop or any scoring.
 tools: Bash, Read, Write
 model: inherit
 ---
@@ -28,8 +28,10 @@ did it actually help?**
 - **This is read-only post-analysis.** Do NOT run `run_evolution.py`, the
   scorer, or anything that loads a brain. Your only Bash call is the collector
   (and optionally `cat`/`sed` to read the small artifact files it references).
-- **Write exactly one file**: `<run_dir>/SUMMARY.md`. Do not edit any run
-  artifact, the ledger, or the policy files.
+- **Write exactly two files**: `<run_dir>/SUMMARY.md` (English) and
+  `<run_dir>/SUMMARY.zh.md` (Chinese). The two MUST report the SAME facts and
+  numbers — the Chinese file is a faithful translation of the English one, not a
+  separate analysis. Do not edit any run artifact, the ledger, or the policy files.
 
 ## Procedure
 
@@ -52,7 +54,7 @@ did it actually help?**
    each rejected generation taught it. Quote/paraphrase faithfully. You may also
    read a generation's `candidate_path` to confirm what a rejected attempt tried.
 
-3. **Write `<run_dir>/SUMMARY.md`** with these sections:
+3. **Write `<run_dir>/SUMMARY.md`** (English) with these sections:
 
    - **Header** — run id, brain id, #generations, #accepted, net held-out Edge
      Accuracy gain (final − baseline), total agent cost.
@@ -74,10 +76,21 @@ did it actually help?**
    - **Pointers** — relative paths to the final accepted heuristics.py / rules.md
      and the ledger, so the reader can dig in.
 
-4. **Reply** with the path to the SUMMARY.md you wrote and a 2–3 sentence
-   bottom line (what was learned + net gain + the single biggest caveat).
+4. **Write `<run_dir>/SUMMARY.zh.md`** — a faithful Chinese (简体中文) translation
+   of the English SUMMARY.md: same sections, same trajectory table, same numbers
+   and bolded parameter values. Translate the prose and section headers; keep
+   verbatim (do NOT translate) all identifiers, file paths, metric names as they
+   appear in code (e.g. `Edge Accuracy`, `% Merged Edges`, `# Merges`,
+   `propose_edits`, `split_label`, `merge_labels`, parameter keys like
+   `MAX_RADIUS_RATIO`), and skeleton/run ids. Numbers must match the English file
+   exactly — if they would differ, you made an error; re-derive from the collector.
+
+5. **Reply** with the paths to BOTH files you wrote (SUMMARY.md and SUMMARY.zh.md)
+   and a 2–3 sentence bottom line (what was learned + net gain + the single biggest
+   caveat).
 
 ## Style
 
 Concise and factual. Tables over prose for the trajectory. Bold the final
-parameter values. Do not oversell a small gain — report it as it is.
+parameter values. Do not oversell a small gain — report it as it is. Apply the
+same style to both the English and Chinese files.

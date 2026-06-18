@@ -47,6 +47,21 @@ Usage (paths relative to the ``exa-spim-agent/`` project root)
     #   (agent edits autodiscovery/RUN.rerun/hypo_<id>.py loading sections)
     python agentic/rerun_experiments.py autodiscovery/RUN.json --pkl DATA.pkl \
         --top 20 --code-dir autodiscovery/RUN.rerun
+    # Extrapolate: run the reproduced code on OTHER datasets to test generalization
+    python agentic/rerun_experiments.py autodiscovery/RUN.json --pkl DATA.pkl \
+        --code-dir autodiscovery/RUN.rerun \
+        --extra-pkl OTHER1.pkl --extra-pkl OTHER2.pkl
+
+Extrapolation (generalization to other datasets)
+------------------------------------------------
+The dataset a hypothesis was generated on is the ORIGIN pkl (``--pkl``). Pass
+one or more OTHER datasets via ``--extra-pkl`` (repeatable) to test whether each
+finding GENERALIZES: the SAME code that ran on the origin (the revised code from
+``--code-dir`` when present, else the recorded code) is executed again with the
+load redirected to each extra pkl. All pkls are assumed to share the same
+payload structure (same keys). Each result then carries an ``extrapolations``
+list — one entry per extra pkl with its own fresh output — so the agent can
+compare the conclusion across datasets and judge generalization.
 """
 
 from __future__ import annotations
@@ -307,7 +322,21 @@ def main(argv: list[str] | None = None) -> int:
         "--pkl",
         type=Path,
         required=True,
-        help="The dataset .pkl this run's experiments load.",
+        help="The ORIGIN dataset .pkl this run's experiments load.",
+    )
+    parser.add_argument(
+        "--extra-pkl",
+        type=Path,
+        action="extend",
+        nargs="+",
+        default=[],
+        metavar="PKL",
+        help=(
+            "Other dataset .pkl(s) to EXTRAPOLATE onto. Accepts several paths "
+            "after one flag and/or the flag repeated. The same code is re-run "
+            "with its load redirected to each, to test generalization. Assumes "
+            "the same payload structure as --pkl."
+        ),
     )
     parser.add_argument(
         "--rank-by",
@@ -361,7 +390,14 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"No such dataset pkl: {args.pkl}")
     if args.export_dir is not None and args.code_dir is not None:
         parser.error("--export-dir and --code-dir are mutually exclusive.")
+    if args.export_dir is not None and args.extra_pkl:
+        parser.error("--extra-pkl has no effect with --export-dir (export only).")
     pkl = args.pkl.resolve()
+    extra_pkls = []
+    for ep in args.extra_pkl:
+        if not ep.is_file():
+            parser.error(f"No such extra dataset pkl: {ep}")
+        extra_pkls.append(ep.resolve())
 
     records = load_records(args.json_file)
     ranked, _ = rank_records(records, rank_by=args.rank_by)
@@ -425,6 +461,37 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
 
+        # Extrapolation: run the SAME code on each other dataset to test whether
+        # the finding generalizes. Skip when the code didn't even run on origin
+        # (no point — there's no analysis to carry over).
+        extrapolations = []
+        if extra_pkls and code.strip():
+            for ei, ep in enumerate(extra_pkls, start=1):
+                xrun = rerun_one(code, ep, args.timeout)
+                xoutcome = (
+                    "TIMEOUT"
+                    if xrun["timed_out"]
+                    else ("OK" if xrun["exitcode"] == 0 else f"FAILED(exit={xrun['exitcode']})")
+                )
+                print(
+                    f"[rerun {rank}/{len(ranked)}] id={rid} extrapolate "
+                    f"{ei}/{len(extra_pkls)} {ep.name} {xoutcome} "
+                    f"in {xrun['runtime_ms'] / 1000:.0f}s",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                extrapolations.append(
+                    {
+                        "pkl": str(ep),
+                        "pkl_name": ep.name,
+                        "exitcode": xrun["exitcode"],
+                        "timed_out": xrun["timed_out"],
+                        "runtime_ms": xrun["runtime_ms"],
+                        "stdout": truncate(xrun["stdout"], args.max_output_chars),
+                        "stderr": truncate(xrun["stderr"], args.max_output_chars),
+                    }
+                )
+
         results.append(
             {
                 "rank": rank,
@@ -443,12 +510,14 @@ def main(argv: list[str] | None = None) -> int:
                 "rerun_runtime_ms": run["runtime_ms"],
                 "rerun_stdout": truncate(run["stdout"], args.max_output_chars),
                 "rerun_stderr": truncate(run["stderr"], args.max_output_chars),
+                "extrapolations": extrapolations,
             }
         )
 
     payload = {
         "json_file": str(args.json_file),
         "pkl": str(pkl),
+        "extra_pkls": [str(p) for p in extra_pkls],
         "rank_by": args.rank_by,
         "top": args.top,
         "timeout_s": args.timeout,

@@ -1,9 +1,94 @@
+# === RERUN_LOADING_BOOTSTRAP v2 ===
+import os as _os, sys as _sys, subprocess as _sp_boot
+# Ensure NumPy >= 2 (the pkl was written with NumPy 2.x). Do this BEFORE any
+# import that brings in numpy transitively. Quiet, single-shot.
+try:
+    import numpy as _np_boot
+    _ver = tuple(int(x) for x in _np_boot.__version__.split(".")[:2])
+    if _ver < (2, 0):
+        raise ImportError("need numpy>=2")
+except Exception:
+    _sp_boot.check_call([_sys.executable, "-m", "pip", "install", "-q", "--user", "numpy>=2,<2.3"])
+    # invalidate caches so a fresh numpy 2.x is loaded
+    import importlib as _il_boot
+    if "numpy" in _sys.modules:
+        del _sys.modules["numpy"]
+import numpy as _np_chk
+print("Loading dataset from:", _os.environ.get("RERUN_PKL", "<unset>"), "| numpy", _np_chk.__version__)
+
+# Make any dataset-search return RERUN_PKL (the runner's open() patch then
+# redirects the actual file open). Cover os.walk, Path.rglob, subprocess.getoutput.
+import os as _os2, glob as _glob_mod, subprocess as _sp
+from pathlib import Path as _Path_boot
+_RERUN_PKL = _os.environ.get("RERUN_PKL", "")
+_RERUN_DIR = _os.path.dirname(_RERUN_PKL) or "."
+_RERUN_NAME = _os.path.basename(_RERUN_PKL)
+def _os_walk_patched(top, *a, **k):
+    yield (_RERUN_DIR, [], [_RERUN_NAME])
+_os2.walk = _os_walk_patched
+_orig_rglob = _Path_boot.rglob
+def _rglob_patched(self, pat):
+    if isinstance(pat, str) and "pkl" in pat:
+        yield _Path_boot(_RERUN_PKL)
+        return
+    yield from _orig_rglob(self, pat)
+_Path_boot.rglob = _rglob_patched
+_orig_getoutput = _sp.getoutput
+def _getoutput_patched(cmd, *a, **k):
+    s = str(cmd)
+    if "find" in s and "pkl" in s:
+        return _RERUN_PKL
+    return _orig_getoutput(cmd, *a, **k)
+_sp.getoutput = _getoutput_patched
+# Short-circuit ALL in-script pip installs. The host environment already has
+# numpy>=2, pandas, scipy, matplotlib, statsmodels, networkx, agentic_neuron_proofreader,
+# etc. Re-running pip-install inside the subprocess only downgrades numpy and
+# breaks the install, so we no-op every pip install here.
+_orig_check_call = _sp.check_call
+def _check_call_patched(args, *a, **k):
+    if isinstance(args, list) and len(args) > 3 and args[1:4] == ["-m", "pip", "install"]:
+        return 0
+    return _orig_check_call(args, *a, **k)
+_sp.check_call = _check_call_patched
+_orig_run = _sp.run
+def _run_patched(args, *a, **k):
+    if isinstance(args, list) and len(args) > 3 and args[1:4] == ["-m", "pip", "install"]:
+        class _R: returncode = 0; stdout = b""; stderr = b""
+        return _R()
+    return _orig_run(args, *a, **k)
+_sp.run = _run_patched
+# === END RERUN_LOADING_BOOTSTRAP ===
+
 import os
 import sys
+import urllib.request
+import zipfile
+import subprocess
 
-# Revised loader: skip the /tmp/lib pip-install bootstrap entirely (a stale
-# Python-3.12 numpy build in /tmp/lib was shadowing the host's numpy 2 in the
-# rerun env). Rely on the rerun env, which already has the required packages.
+# 1. Download and install to a writable target directory
+zip_url = "https://github.com/AllenInstitute/agentic-neuron-proofreader/archive/refs/heads/main.zip"
+zip_path = "/tmp/agentic.zip"
+extract_path = "/tmp/agentic-neuron-proofreader-main"
+lib_path = "/tmp/lib"
+
+if not os.path.exists(lib_path):
+    print("Downloading agentic-neuron-proofreader to /tmp/...", flush=True)
+    urllib.request.urlretrieve(zip_url, zip_path)
+    
+    print("Extracting...", flush=True)
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall("/tmp/")
+        
+    print("Installing to /tmp/lib...", flush=True)
+    subprocess.check_call([
+        sys.executable, "-m", "pip", "install", 
+        "--quiet", "--target", lib_path, "--no-cache-dir", 
+        extract_path, "psutil", "tensorstore"
+    ])
+
+if lib_path not in sys.path:
+    sys.path.insert(0, lib_path)
+
 import agentic_neuron_proofreader
 import pickle
 import numpy as np
@@ -11,8 +96,13 @@ from scipy.spatial import KDTree
 from scipy.stats import mannwhitneyu, gaussian_kde
 import matplotlib.pyplot as plt
 
-# 2. Load dataset directly from $RERUN_PKL
-path = os.environ["RERUN_PKL"]
+# 2. Load dataset
+path = "../dataset_cache_789202_mcl100_add.pkl"
+if not os.path.exists(path):
+    path = "dataset_cache_789202_mcl100_add.pkl"
+    if not os.path.exists(path):
+        raise FileNotFoundError("Dataset not found in expected locations.")
+
 print(f"Loading dataset from: {path}", flush=True)
 with open(path, "rb") as f:
     payload = pickle.load(f)
