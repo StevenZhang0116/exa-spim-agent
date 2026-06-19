@@ -341,10 +341,33 @@ def write_failure_report(
     # only key its policy on the FEATURE columns (detector/angle/radius/cable/...),
     # never the raw label — so a labelled positive/negative feature table is the
     # signal it needs to learn a GENERALIZABLE split_label threshold instead of
-    # guessing. GT is used ONLY to assign the true/false column and is restricted to
-    # this report's skeletons (train split), so it never reaches a held-out policy.
+    # guessing.
+    #
+    # ISOLATION (critical): the TRUE/NON-merge label of each row must be derivable
+    # from the TRAIN skeletons alone, or held-out GT leaks to the mutation operator
+    # through this classification. ``merge_labels`` is computed over the FULL brain
+    # (train + held-out), so we cannot use its keys directly. Three cases, by how
+    # many of a label's GT neurons fall in THIS report's skeletons (``report_gt`` ==
+    # train):
+    #   * >=2 train neurons        -> TRUE merge (train-derivable)        -> positive
+    #   * in merge_labels but <2   -> a merge only VISIBLE via held-out   -> DROP
+    #     train neurons               (or a train<->held-out cross); train cannot
+    #                                 call it, and it IS a merge so it is not a safe
+    #                                 negative either — exclude from BOTH tables.
+    #   * not a merge anywhere     -> a single real neuron                -> negative
+    # Dropping the middle case uses held-out info only to REMOVE rows (reveals
+    # nothing to the reviser); the shown labels are all train-derivable.
     if merge_labels is not None:
-        merge_target_labels = {str(l) for l in (merge_labels or {}).keys()}
+        report_gt = set(cand.index)
+        train_merge_labels = {
+            str(label) for label, info in merge_labels.items()
+            if sum(1 for n in info.get("gt_skeletons", []) if n in report_gt) >= 2
+        }
+        # Merges we can only see via held-out (or train<->held-out crossings): in the
+        # full-brain merge set but not a train merge. Their sites are excluded.
+        heldout_only_merge_labels = {
+            str(label) for label in merge_labels.keys()
+        } - train_merge_labels
         sites = list(getattr(train_run, "merge_sites", None) or [])
 
         def _f(v, nd=2):
@@ -367,8 +390,14 @@ def write_failure_report(
                 f"{getattr(s, 'branch_degree', '?')} | {rec_s} |"
             )
 
-        pos = [s for s in sites if str(getattr(s, "label", "")) in merge_target_labels]
-        neg = [s for s in sites if str(getattr(s, "label", "")) not in merge_target_labels]
+        # Three-way: positive (train merge), dropped (held-out-only merge), negative
+        # (not a merge anywhere). The dropped class never reaches either table.
+        pos = [s for s in sites
+               if str(getattr(s, "label", "")) in train_merge_labels]
+        neg = [s for s in sites
+               if str(getattr(s, "label", "")) not in train_merge_labels
+               and str(getattr(s, "label", "")) not in heldout_only_merge_labels]
+        n_dropped = len(sites) - len(pos) - len(neg)
         header = ("| detector | angle_deg | radius_ratio | cable_a | cable_b | "
                   "branch_degree | arms_reconverge |")
         sep = "|---|---|---|---|---|---|---|"
@@ -404,6 +433,13 @@ def write_failure_report(
                 lines.append(f"\n…and {len(neg) - 60} more non-merge sites.")
         else:
             lines.append("_no non-merge MergeSites enumerated._")
+        if n_dropped:
+            lines.append(
+                f"\n_({n_dropped} MergeSite(s) omitted from BOTH tables: their label "
+                f"is a merge only visible via held-out GT, so it is neither a train-"
+                f"derivable positive nor a safe negative — excluded to keep the "
+                f"reviser's signal leak-free.)_"
+            )
 
         # Recall gap: merge targets the enumerator produced NO MergeSite for. No policy
         # change can repair these — they need a better detector — so surface them

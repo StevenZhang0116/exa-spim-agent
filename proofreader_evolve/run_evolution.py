@@ -139,6 +139,10 @@ def _anthropic_api_env() -> dict[str, str]:
         # otherwise take precedence and ignore the API key / model id.
         "CLAUDE_CODE_USE_BEDROCK": "0",
         "CLAUDE_CODE_USE_VERTEX": "0",
+        # Run Opus 4.8 at maximum reasoning effort for the evolution/reviser work.
+        # Levels: low|medium|high|xhigh|max; Opus 4.8 thinks adaptively and at
+        # xhigh almost always reasons deeply. Applies to the session + subagents.
+        "CLAUDE_EFFORT": "xhigh",
     }
 
 
@@ -638,6 +642,78 @@ def evaluate_gate(
                   f"over-splitting (%Split {parent_split:.3f}->{cand_split:.3f})")
 
 
+_FOLD_METRIC_COLS = ("Edge Accuracy", "% Merged Edges", "# Merges", "% Split Edges")
+
+
+def fold_metrics(per_swc, fold_names: list[str]) -> dict:
+    """Run-length-weighted metric vector over just one fold's held-out skeletons.
+
+    ``per_swc`` is a ScoreResult.per_swc frame (one row per GT skeleton, scored on
+    the FULL held-out set in a single pass); ``fold_names`` selects this fold's rows.
+    Returns the same metric keys ``evaluate_gate`` consumes, so a fold is gated
+    exactly like the old single held-out set.
+    """
+    rows = per_swc.loc[per_swc.index.isin(fold_names)]
+    return {m: scoring._weighted_avg(rows, m) for m in _FOLD_METRIC_COLS}
+
+
+def evaluate_gate_kfold(
+    cand_folds: list[dict], parent_folds: list[dict], has_split_edit: bool,
+    gate_eps: float, split_tol: float = 0.05, merge_tol: float = 0.0,
+) -> tuple[bool, str, dict]:
+    """Aggregate the per-fold gate into one accept/reject across K folds.
+
+    A candidate is kept only when BOTH hold:
+      * AGGREGATE improvement: mean held-out Edge Accuracy across folds beats the
+        parent's mean by ``gate_eps`` (the stable signal K-fold exists to provide —
+        a single fold is too noisy to gate on), AND
+      * NO PER-FOLD REGRESSION on the hard guards: ``evaluate_gate`` must pass on
+        EVERY fold (no fold may gain Edge Accuracy by creating a merge there, and a
+        split_label generation must not over-split in any fold). Per-fold for the
+        guards is deliberately strict — a merge error created in one fold is a real
+        regression even if the mean still rises.
+
+    Returns ``(keep, reason, summary)`` where ``summary`` carries the per-fold and
+    mean Edge Accuracy for the log / ledger.
+    """
+    import statistics
+    cand_accs = [f["Edge Accuracy"] for f in cand_folds]
+    parent_accs = [f["Edge Accuracy"] for f in parent_folds]
+    cand_mean = statistics.fmean(cand_accs)
+    parent_mean = statistics.fmean(parent_accs)
+    stdev = statistics.pstdev(cand_accs) if len(cand_accs) > 1 else 0.0
+    summary = {
+        "cand_fold_acc": cand_accs, "parent_fold_acc": parent_accs,
+        "cand_mean": cand_mean, "parent_mean": parent_mean, "cand_stdev": stdev,
+    }
+
+    # Aggregate gate: mean must beat parent mean by eps.
+    if not (cand_mean > parent_mean + gate_eps):
+        return (False,
+                f"mean Edge Accuracy {cand_mean:.3f} did not beat parent "
+                f"{parent_mean:.3f} by eps {gate_eps:.3f} "
+                f"(folds {[round(a,2) for a in cand_accs]})",
+                summary)
+
+    # Per-fold hard guards: every fold must individually pass evaluate_gate. Use
+    # gate_eps=-inf there so the per-fold Edge-Accuracy beat is NOT re-imposed (the
+    # mean already enforces improvement); we only want the no-new-merge / over-split
+    # guards to fire per fold.
+    for i, (cf, pf) in enumerate(zip(cand_folds, parent_folds)):
+        ok, why = evaluate_gate(
+            cf, pf, has_split_edit=has_split_edit, gate_eps=float("-inf"),
+            split_tol=split_tol, merge_tol=merge_tol,
+        )
+        if not ok:
+            return (False, f"fold {i} guard failed: {why}", summary)
+
+    return (True,
+            f"mean Edge Accuracy {cand_mean:.3f} > parent {parent_mean:.3f} "
+            f"+ {gate_eps:.3f} (folds {[round(a,2) for a in cand_accs]}, "
+            f"±{stdev:.3f}); no per-fold merge/over-split regression",
+            summary)
+
+
 def human_gate(gen: int, train_acc: float, heldout_acc: float, parent_acc: float) -> bool:
     """Optional human checkpoint before committing a revision (reviewer's
     'how much human feedback was required' — each call is one intervention)."""
@@ -654,7 +730,7 @@ async def run_evolution(
     human: bool, verbose: bool, model: str = DEFAULT_MODEL,
     gate_eps: float = 0.05, max_class_size=None, seed_from: str | None = None,
     split_seed: int | None = None, with_image: bool = True,
-    split_tol: float = 0.05, merge_tol: float = 0.0,
+    split_tol: float = 0.05, merge_tol: float = 0.0, k_folds: int = 1,
 ) -> None:
     run_id = f"{brain}_{datetime.now():%Y%m%d_%H%M%S}"
     run_dir = HERE / "runs" / run_id
@@ -725,12 +801,33 @@ async def run_evolution(
     log(f"GT skeletons: {len(all_gt_names)} total -> "
         f"{len(train_names)} train, {len(heldout_names)} held-out "
         f"(split_seed={split_seed})")
+
+    # K-fold the HELD-OUT set for gating (the train report is unchanged). With few
+    # held-out neurons a single weighted mean is near-quantized and dominated by
+    # which neurons landed in held-out; rotating K disjoint folds and gating on the
+    # AGGREGATE turns that one noisy point into a stable mean (+ per-fold variance),
+    # so a small true improvement becomes detectable. k_folds=1 => one fold == the
+    # whole held-out set, i.e. byte-identical to the legacy single-split gate.
+    k_eff = max(1, min(k_folds, len(heldout_names)))
+    if k_eff != k_folds:
+        log(f"k_folds {k_folds} clamped to {k_eff} (only {len(heldout_names)} "
+            f"held-out neurons)")
+    if k_eff <= 1:
+        heldout_folds = [{"fold": 0, "heldout": list(heldout_names),
+                          "train": list(train_names)}]
+    else:
+        heldout_folds = ds.kfold_split(heldout_names, k=k_eff, seed=split_seed)
+    log(f"Held-out K-fold: {k_eff} fold(s), sizes "
+        f"{[len(f['heldout']) for f in heldout_folds]}")
+
     # Persist the seed + the exact partition so the run can be reproduced/audited.
     (run_dir / "split.json").write_text(json.dumps({
         "split_seed": split_seed,
         "heldout_fraction": heldout_fraction,
         "train": train_names,
         "heldout": heldout_names,
+        "k_folds": k_eff,
+        "heldout_folds": [f["heldout"] for f in heldout_folds],
     }, indent=2))
 
     # Baseline (no-edit) restricted to each split — the reference floor and the
@@ -768,7 +865,16 @@ async def run_evolution(
     # component guards (% Merged Edges / # Merges / % Split Edges) for split_label
     # generations — not just the Edge Accuracy scalar. Advances on every accept.
     parent_metrics = dict(seed_heldout_run.score.metrics)
+    # Per-fold parent metric vectors — the bar each fold must hold against. Sliced
+    # from the SAME single scoring pass (no extra cost). Advances on every accept.
+    parent_fold_metrics = [
+        fold_metrics(seed_heldout_run.score.per_swc, f["heldout"])
+        for f in heldout_folds
+    ]
+    import statistics as _st
+    parent_mean_acc = _st.fmean(m["Edge Accuracy"] for m in parent_fold_metrics)
     log(f"Seed policy held-out Edge Accuracy = {parent_heldout:.4f} "
+        f"(full); K-fold mean = {parent_mean_acc:.4f} over {k_eff} fold(s) "
         f"(the bar generation 1 must beat)")
 
     options, guard_state = build_options(model=model, run_dir=run_dir)
@@ -850,11 +956,13 @@ async def run_evolution(
                         f"reverting this gen")
                     revert(gen_dir, work_heuristics, work_rules)
 
-            parent_bar = parent_heldout  # the bar this gen tried to beat (pre-update)
+            # The bar this gen tried to beat (pre-update): the K-fold MEAN, which is
+            # the gate's decision variable (== full-set primary when k_folds=1).
+            parent_bar = parent_mean_acc
             if not import_ok:
                 # Revision was already reverted to the parent above; don't waste a
                 # held-out scoring pass on it. Record as a non-improving gen.
-                heldout_acc = parent_heldout
+                heldout_acc = parent_mean_acc
                 eval_seconds = train_run.score.seconds
                 keep = False
                 human_touches = 0
@@ -870,22 +978,30 @@ async def run_evolution(
                 heldout_acc = heldout_run.score.primary
                 eval_seconds = train_run.score.seconds + heldout_run.score.seconds
 
-                # (7) Gate: held-out Edge Accuracy must beat the PARENT by a margin
-                # (gate_eps; few held-out skeletons -> strict '>' would lock in
-                # noise-level wins). For a generation that emits split_label, ALSO
-                # require the merge component to improve and the over-split watchdog
-                # to hold — Edge Accuracy alone can mask a merge-for-split trade on a
-                # small held-out set. Merge-only generations are gated on Edge
-                # Accuracy exactly as before (no component guards). See evaluate_gate.
+                # Per-fold candidate metrics, sliced from this one scoring pass.
+                cand_fold_metrics = [
+                    fold_metrics(heldout_run.score.per_swc, f["heldout"])
+                    for f in heldout_folds
+                ]
+
+                # (7) Gate: AGGREGATE mean Edge Accuracy across K folds must beat the
+                # parent by gate_eps, AND no fold may regress on the no-new-merge /
+                # over-split guards (per-fold strict). With K=1 this reduces exactly
+                # to the legacy single-held-out evaluate_gate. For split_label gens
+                # the per-fold guards additionally enforce the merge-repair + over-
+                # split watchdog. See evaluate_gate_kfold.
                 has_split_edit = any(
                     isinstance(e, dict) and e.get("kind") == "split_label"
                     for e in (heldout_run.edits or [])
                 )
-                improved, gate_reason = evaluate_gate(
-                    heldout_run.score.metrics, parent_metrics,
+                improved, gate_reason, fold_summary = evaluate_gate_kfold(
+                    cand_fold_metrics, parent_fold_metrics,
                     has_split_edit=has_split_edit, gate_eps=gate_eps,
                     split_tol=split_tol, merge_tol=merge_tol,
                 )
+                # Report the K-fold MEAN as the headline held-out number (the gate's
+                # actual decision variable); keep the full-set primary for the log.
+                heldout_acc = fold_summary["cand_mean"]
                 log(f"   gate: {gate_reason}")
                 human_touches = 0
                 if human:
@@ -899,16 +1015,21 @@ async def run_evolution(
                 f"{diffstat} lines; " + (diagnosis or "").strip().split("\n", 1)[0][:120]
             ) or "(no diagnosis text)"
             if keep:
-                parent_heldout = heldout_acc  # this child becomes the new parent
-                # Advance the full metric vector too, so the next generation's gate
-                # (esp. the split_label component guards) measures against THIS
-                # accepted child, not a stale baseline. Only set when we actually
+                parent_heldout = heldout_run.score.primary  # full-set primary
+                parent_mean_acc = heldout_acc                # K-fold mean (the bar)
+                # Advance the full + per-fold metric vectors so the next generation's
+                # gate (the aggregate mean AND the per-fold guards) measures against
+                # THIS accepted child, not a stale baseline. Only set when we actually
                 # scored held-out (import-failed gens keep the prior parent).
                 if import_ok:
                     parent_metrics = dict(heldout_run.score.metrics)
+                    parent_fold_metrics = cand_fold_metrics
                 shutil.copy2(work_heuristics, gen_dir / "heuristics.accepted.py")
                 shutil.copy2(work_rules, gen_dir / "rules.accepted.md")
                 note = "accepted (new parent)"
+                if k_eff > 1 and import_ok:
+                    note += (f" [folds {[round(a,2) for a in fold_summary['cand_fold_acc']]}"
+                             f" ±{fold_summary['cand_stdev']:.3f}]")
                 # Parent advanced: prior rejections were against the OLD parent and
                 # no longer apply, so clear the in-prompt memory.
                 attempts_vs_parent = []
@@ -975,7 +1096,20 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--brain", default="789202", help="brain_id (must have a cache pkl)")
     p.add_argument("--generations", type=int, default=5)
-    p.add_argument("--heldout-fraction", type=float, default=0.33)
+    p.add_argument("--heldout-fraction", type=float, default=0.5,
+                   help="fraction of GT skeletons reserved for held-out gating "
+                        "(the rest are train, used for the failure report). "
+                        "Default 0.5 (even train/held-out split).")
+    p.add_argument("--k-folds", type=int, default=1,
+                   help="K-fold cross-validation WITHIN the held-out set for gating. "
+                        "The candidate must beat the parent on the MEAN held-out "
+                        "Edge Accuracy across K disjoint folds AND not regress on the "
+                        "no-new-merge / over-split guards in ANY fold. Default 1 "
+                        "(single held-out set == legacy behavior). With few held-out "
+                        "neurons, K>1 (e.g. 4) turns a noisy single split into a "
+                        "stable mean so small true improvements become detectable. "
+                        "Clamped to the held-out neuron count. Scoring cost is "
+                        "unchanged — folds are row-slices of one scoring pass.")
     p.add_argument("--human-gate", action="store_true",
                    help="ask a human before keeping each revision")
     p.add_argument("--model", default=DEFAULT_MODEL,
@@ -988,12 +1122,12 @@ def main() -> int:
                         "against brain-spanning mega-merges); default: no cap")
     p.add_argument("--split-tol", type=float, default=0.05,
                    help="for generations that emit split_label edits: max amount "
-                        "% Split Edges may rise above the parent before the gate "
+                        "%% Split Edges may rise above the parent before the gate "
                         "rejects it as over-splitting. Merge-only gens are "
                         "unaffected by this over-split watchdog.")
     p.add_argument("--merge-tol", type=float, default=0.0,
                    help="no-new-merge guard (EVERY generation): max amount # Merges "
-                        "and % Merged Edges may rise above the parent before the "
+                        "and %% Merged Edges may rise above the parent before the "
                         "gate rejects the candidate as creating a merge error. "
                         "Default 0.0 (strict — accept only if merge error does not "
                         "grow); raise to allow a split-for-merge trade, set very "
@@ -1022,7 +1156,7 @@ def main() -> int:
         gate_eps=args.gate_eps, max_class_size=args.max_class_size,
         seed_from=args.seed_from, split_seed=args.split_seed,
         with_image=args.with_image, split_tol=args.split_tol,
-        merge_tol=args.merge_tol,
+        merge_tol=args.merge_tol, k_folds=args.k_folds,
     ))
     return 0
 

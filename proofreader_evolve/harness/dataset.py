@@ -142,6 +142,46 @@ def train_heldout_split(
     return train, heldout
 
 
+def kfold_split(gt_swc_names: list[str], k: int = 4, seed: int = 0) -> list[dict]:
+    """Partition GT skeleton names into ``k`` leak-free cross-validation folds.
+
+    Each fold is ``{"fold": i, "heldout": [...], "train": [...]}`` where ``heldout``
+    is one of ``k`` disjoint, near-equal-size groups and ``train`` is everything
+    else. Splitting by WHOLE skeleton (never an edge) keeps each fold's held-out
+    metric an honest generalization signal — no skeleton is in both its own train
+    and held-out.
+
+    Why K-fold instead of one random split: with few GT neurons (here ~12) a single
+    4-neuron held-out gives a near-quantized fitness whose value is dominated by
+    WHICH 4 were drawn, so a real policy improvement is invisible against split
+    noise. Scoring on ``k`` rotating held-out groups and gating on the AGGREGATE
+    turns ``k`` noisy points into a stable mean (and exposes per-fold variance), so
+    a small true improvement becomes detectable. Scoring cost does not grow: the
+    scorer already returns every skeleton's row in one pass, so the folds are just
+    row slices of that one result.
+
+    ``k`` is clamped to ``[1, len(names)]``; ``k == 1`` degenerates to a single fold
+    whose held-out is the WHOLE set (used by callers that want the legacy single
+    train/held-out split via ``train_heldout_split`` instead — see run_evolution).
+    """
+    names = sorted(gt_swc_names)
+    n = len(names)
+    if n == 0:
+        return []
+    k = max(1, min(int(k), n))
+    rng = np.random.default_rng(seed)
+    order = rng.permutation(n).tolist()
+    # Near-equal contiguous chunks of the shuffled order (sizes differ by <=1).
+    folds = []
+    for i in range(k):
+        held_pos = order[i::k]  # stride partition -> balanced, deterministic
+        held = sorted(names[p] for p in held_pos)
+        held_set = set(held)
+        train = [nm for nm in names if nm not in held_set]
+        folds.append({"fold": i, "heldout": held, "train": train})
+    return folds
+
+
 @dataclass
 class SplitSite:
     """A candidate split-error: two nearby fragment tips with different labels.
