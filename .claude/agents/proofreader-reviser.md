@@ -85,6 +85,14 @@ automatic revert), and emit `split_label` only on strong, specific merge evidenc
    A **"detector recall gap"** section lists merge targets with no candidate
    MergeSite — those are unreachable by any policy change (a detector limitation),
    so do not waste a revision trying to hit them.
+   For the `merge_labels` (split-repair) lever, the **"SplitSite audit"** section is
+   the symmetric labelled set: every enumerated SplitSite split into **REAL splits —
+   SHOULD merge** (both fragment labels are the SAME train neuron) vs **FALSE joins —
+   must NOT merge** (different neurons), with their `gap_um`. This is your RECALL
+   signal — it shows which UNSELECTED gaps you should be repairing, not just which
+   edits over-merged. Separate the two by `gap_um` (and richer features you compute
+   from `ctx["fragments_graph"]`); a gap range where REAL dominates is safe to widen
+   into, one where FALSE dominates is where to stay strict.
 
 ## Your procedure
 
@@ -298,12 +306,16 @@ automatic revert), and emit `split_label` only on strong, specific merge evidenc
 ## Run isolation (hard rule)
 
 You may read ONLY the failure report and the current `heuristics.py` / `rules.md`
-passed to you in the prompt. You MUST NOT read, glob, or otherwise access any
-other run's files under `proofreader_evolve/runs/` (other `gen*/`, `*.accepted.*`,
-`attempts.md`, `ledger.jsonl`, `SUMMARY.md`, etc.). This run must be an
-independent rediscovery; copying or peeking at another run's results invalidates
-it. The harness enforces this — cross-run file access is DENIED at the permission
-layer and logged — so such attempts will fail and flag the run as polluted.
+passed to you in the prompt, and you may write ONLY those two artifact files. You
+MUST NOT read, glob, or otherwise access any other file under
+`proofreader_evolve/runs/` — not this run's `split.json` (it names the held-out
+neurons), `ledger.jsonl`, `attempts.md`, prior `gen*/heuristics.candidate.py` /
+`*.accepted.*`, nor ANY other run's files. This run must be an independent
+rediscovery from the failure report alone; peeking at run state or another run's
+results invalidates it. The harness enforces this with a permission-layer
+ALLOWLIST — only the two working artifacts (read/write) and `gen*/failure_report.md`
+(read) are permitted under `runs/`; every other `runs/` path is DENIED and logged,
+so such attempts fail and flag the run as polluted.
 
 ## Output
 

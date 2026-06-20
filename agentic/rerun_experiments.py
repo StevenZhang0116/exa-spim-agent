@@ -36,6 +36,14 @@ analysis identical. ``--code-dir`` then executes those revised scripts (falling
 back to the recorded ``code`` for any record without a revised file) and reports
 which source each result used.
 
+Corrected statistical test (fix a wrong test, then re-measure): when the
+verifier flags a hypothesis whose STATISTICAL TEST is wrong (wrong test for the
+data, violated assumptions, p-value misread, huge-n significance of a trivial
+effect), ``--corrected-dir`` runs ``hypo_<id>.py`` scripts whose ANALYSIS has
+been rewritten to the correct test (built on the loading-fixed script, keeping
+the data and quantities the same). It takes precedence over ``--code-dir`` per
+record, so the corrected result is real measured numbers, not a paper proposal.
+
 Usage (paths relative to the ``exa-spim-agent/`` project root)
 --------------------------------------------------------------
     python agentic/rerun_experiments.py autodiscovery/RUN.json --pkl ../data/RUN.pkl
@@ -51,6 +59,9 @@ Usage (paths relative to the ``exa-spim-agent/`` project root)
     python agentic/rerun_experiments.py autodiscovery/RUN.json --pkl DATA.pkl \
         --code-dir autodiscovery/RUN.rerun \
         --extra-pkl OTHER1.pkl --extra-pkl OTHER2.pkl
+    # Corrected tests: re-measure the flagged hypotheses with the right test
+    python agentic/rerun_experiments.py autodiscovery/RUN.json --pkl DATA.pkl \
+        --code-dir autodiscovery/RUN.rerun --corrected-dir autodiscovery/RUN.fixed
 
 Extrapolation (generalization to other datasets)
 ------------------------------------------------
@@ -180,21 +191,26 @@ def export_scripts(ranked: list[dict], pkl: Path, export_dir: Path) -> dict:
     }
 
 
-def resolve_code(r: dict, code_dir: Path | None) -> tuple[str, str]:
-    """Return ``(code, source)`` for a record.
+def resolve_code(
+    r: dict, code_dir: Path | None, corrected_dir: Path | None = None
+) -> tuple[str, str]:
+    """Return ``(code, source)`` for a record, by precedence.
 
-    With ``--code-dir``, prefer the agent's revised ``hypo_<id>.py`` when present
-    (``source='revised'``); otherwise fall back to the recorded JSON ``code``
-    (``source='recorded'``). Without ``--code-dir`` always use the recorded code.
+    ``corrected_dir`` (the test-fixer's rewritten-analysis scripts) wins when it
+    has a ``hypo_<id>.py`` (``source='corrected'``); else ``code_dir`` (the
+    loading-revised scripts) is used (``source='revised'``); else the recorded
+    JSON ``code`` (``source='recorded'``). This lets a corrected statistical test
+    supersede the loading-only revision, which supersedes the raw recorded code.
     """
-    recorded = r.get("code") or ""
-    if code_dir is not None:
-        revised = code_dir / hypo_filename(r.get("id"))
-        if revised.is_file():
-            text = revised.read_text(encoding="utf-8")
-            if text.strip():
-                return text, "revised"
-    return recorded, "recorded"
+    rid = r.get("id")
+    for d, src in ((corrected_dir, "corrected"), (code_dir, "revised")):
+        if d is not None:
+            f = d / hypo_filename(rid)
+            if f.is_file():
+                text = f.read_text(encoding="utf-8")
+                if text.strip():
+                    return text, src
+    return r.get("code") or "", "recorded"
 
 
 # The recorded scripts locate the dataset through a wide variety of hardcoded
@@ -371,6 +387,17 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--corrected-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Dir of hypo_<id>.py with a CORRECTED statistical test (the "
+            "test-fixer's output). Takes precedence over --code-dir per record, "
+            "so a fixed test supersedes the loading-only revision. Records with "
+            "no corrected file fall back to --code-dir then the recorded code."
+        ),
+    )
+    parser.add_argument(
         "--timeout",
         type=int,
         default=1800,
@@ -388,8 +415,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"No such run JSON: {args.json_file}")
     if not args.pkl.is_file():
         parser.error(f"No such dataset pkl: {args.pkl}")
-    if args.export_dir is not None and args.code_dir is not None:
-        parser.error("--export-dir and --code-dir are mutually exclusive.")
+    if args.export_dir is not None and (
+        args.code_dir is not None or args.corrected_dir is not None
+    ):
+        parser.error("--export-dir cannot combine with --code-dir/--corrected-dir.")
     if args.export_dir is not None and args.extra_pkl:
         parser.error("--extra-pkl has no effect with --export-dir (export only).")
     pkl = args.pkl.resolve()
@@ -418,11 +447,13 @@ def main(argv: list[str] | None = None) -> int:
 
     results = []
     n_ok = n_failed = n_timeout = 0
-    n_revised = 0
+    n_revised = n_corrected = 0
     for rank, r in enumerate(ranked, start=1):
-        code, source = resolve_code(r, args.code_dir)
+        code, source = resolve_code(r, args.code_dir, args.corrected_dir)
         if source == "revised":
             n_revised += 1
+        elif source == "corrected":
+            n_corrected += 1
         rid = r.get("id")
         print(
             f"[rerun {rank}/{len(ranked)}] id={rid} ({source}) …",
@@ -522,9 +553,13 @@ def main(argv: list[str] | None = None) -> int:
         "top": args.top,
         "timeout_s": args.timeout,
         "code_dir": str(args.code_dir) if args.code_dir is not None else None,
+        "corrected_dir": str(args.corrected_dir)
+        if args.corrected_dir is not None
+        else None,
         "n_rerun": len(results),
         "n_revised": n_revised,
-        "n_recorded": len(results) - n_revised,
+        "n_corrected": n_corrected,
+        "n_recorded": len(results) - n_revised - n_corrected,
         "n_ok": n_ok,
         "n_failed": n_failed,
         "n_timeout": n_timeout,

@@ -18,7 +18,14 @@ The steps:
                    generalize; fold a GENERALIZES/PARTIAL/DOES-NOT/INCONCLUSIVE
                    verdict into each entry.
   4. verify      — audit the statistics/logic using the recorded and freshly
-                   reproduced results.
+                   reproduced results; assign OK/MINOR/MAJOR/CRITICAL verdicts.
+  5. fix-tests   — for hypotheses the verifier flagged with a WRONG statistical
+                   test, rewrite ONLY the test, re-measure on the real data, and
+                   fold an UPHELD/WEAKENED/OVERTURNED corrected verdict in.
+  6. translate   — faithfully translate the finished ``<stem>.summary.md`` report
+                   into 简体中文, writing ``<stem>.summary.zh.md``. This is a pure
+                   localization pass (no re-analysis), so it ALWAYS runs last,
+                   after every analytical step, however many are added.
 
 Two free parameters near the top control what the report contains:
 ``RANK_BY`` (``"posterior-surprise"`` ranks by ``posterior * |surprisal|`` so
@@ -32,6 +39,12 @@ Usage (from the ``exa-spim-agent/`` project root):
     # Also test generalization onto other datasets:
     python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl ORIGIN.pkl \
         --extra-pkl OTHER1.pkl --extra-pkl OTHER2.pkl
+    # Resume / run a subset, reusing prior steps' on-disk artifacts
+    # (<RUN>.summary.md, <RUN>.json.rerun) — e.g. only the corrective step:
+    python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl ORIGIN.pkl \
+        --steps fix-tests
+    python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl ORIGIN.pkl \
+        --from verify          # rerun verify and everything after it
 """
 
 from __future__ import annotations
@@ -143,6 +156,41 @@ def extrapolate_cmd(
     )
 
 
+def fix_tests_cmd(
+    json_rel: str,
+    pkl_rel: str,
+    rerun_dir_rel: str,
+    fixed_dir_rel: str,
+    extra_pkls_rel: list[str] | None = None,
+) -> str:
+    """Deterministic re-measurement command for corrected statistical tests.
+
+    Reuses the reproducer's loading-fix ``--code-dir`` and adds
+    ``--corrected-dir`` (the test-fixer's rewritten-analysis scripts), which take
+    precedence per record so flagged hypotheses run the corrected test. When
+    extra datasets are given, the SAME corrected test is also run on each (via
+    ``--extra-pkl``), so generalization is judged with the right test rather than
+    the original flawed one.
+    """
+    extra = " ".join(f"--extra-pkl {p}" for p in (extra_pkls_rel or []))
+    return (
+        f"python agentic/rerun_experiments.py {json_rel} --pkl {pkl_rel} "
+        f"{_top_flags()} --code-dir {rerun_dir_rel} --corrected-dir {fixed_dir_rel}"
+        + (f" {extra}" if extra else "")
+    )
+
+
+def zh_path_for(summary_rel: str) -> str:
+    """The 简体中文 sibling path for a report: insert ``.zh`` before ``.md``.
+
+    ``foo.summary.md`` -> ``foo.summary.zh.md``. Used by the final translate
+    step so its output sits next to the English report.
+    """
+    if summary_rel.endswith(".md"):
+        return summary_rel[: -len(".md")] + ".zh.md"
+    return summary_rel + ".zh.md"
+
+
 def build_steps(
     json_rel: str,
     pkl_rel: str,
@@ -157,10 +205,15 @@ def build_steps(
     ``summary_rel`` is the per-file Markdown deliverable — all relative to the
     project root. Order: summarize → rerun (reproduce against the pkl) →
     [extrapolate onto other datasets, only when ``extra_pkls_rel`` is given] →
-    verify (audits using the recorded and freshly-reproduced results).
+    verify (audits using the recorded and freshly-reproduced results) →
+    fix-tests (re-measure hypotheses the verifier flagged with a wrong test) →
+    translate (faithful 简体中文 localization of the finished report). The
+    translate step is purely cosmetic — it depends on nothing analytical — so it
+    is ALWAYS appended last, after any step added above it.
     """
     extra_pkls_rel = extra_pkls_rel or []
     rerun_dir_rel = f"{json_rel}.rerun"
+    fixed_dir_rel = f"{json_rel}.fixed"
     steps: list[dict[str, str]] = [
         {
             "name": "summarize-discoveries",
@@ -266,6 +319,127 @@ def build_steps(
             ),
         }
     )
+
+    # Corrective step: re-test the hypotheses the verifier flagged with a WRONG
+    # statistical test. Runs after verify because it needs the verdicts.
+    steps.append(
+        {
+            "name": "fix-statistical-tests",
+            "instruction": (
+                "Use the discovery-test-fixer subagent to CORRECT and re-measure "
+                "the hypotheses whose statistical TEST the verifier flagged as "
+                f"wrong/unsound. Read {summary_rel} and select the entries with a "
+                "MAJOR/CRITICAL verdict or a 'Statistical issues' bullet naming a "
+                "concrete test fault (wrong test for the data, violated "
+                "independence/normality assumptions, huge-n significance of a "
+                "trivial effect, p-value misuse, double-counting). For each, start "
+                f"from the loading-fixed script in {rerun_dir_rel}/hypo_<id>.py and "
+                f"write a corrected hypo_<id>.py into {fixed_dir_rel} that changes "
+                "ONLY the statistical test (and prints an effect size with a CI, "
+                "and a cluster/permutation p-value where independence is "
+                "violated), keeping the same data and quantities. Re-measure by "
+                f"running `{fix_tests_cmd(json_rel, pkl_rel, rerun_dir_rel, fixed_dir_rel, extra_pkls_rel)}` "
+                "and read the `code_source: corrected` results"
+                + (
+                    " (each carries an `extrapolations` list — the SAME corrected "
+                    "test run on each extra dataset, so you can re-judge "
+                    "generalization with the CORRECT test). "
+                    if extra_pkls_rel
+                    else ". "
+                )
+                + "For each fixed hypothesis assign UPHELD / WEAKENED / OVERTURNED "
+                "by comparing the corrected numbers to the original"
+                + (
+                    ", and a corrected-test generalization note (does the finding "
+                    "still hold across the extra datasets under the right test?). "
+                    if extra_pkls_rel
+                    else ". "
+                )
+                + "Fold Corrected test / "
+                "Corrected result / Post-correction verdict bullets INTO each "
+                "fixed entry in place (keep all prior bullets), plus one "
+                "'Statistical Test Corrections — Summary' section at the very end. "
+                "Report the path and which findings changed under the correct test."
+            ),
+        }
+    )
+
+    # Final, purely-cosmetic step: translate the finished report into 简体中文.
+    # It reads only the completed Markdown deliverable and writes a sibling
+    # .zh.md, so it has NO analytical dependency and must always run LAST — after
+    # every step above has folded its verdicts into the report. If more
+    # analytical steps are added, append them BEFORE this block so translate
+    # stays the final step.
+    summary_zh_rel = zh_path_for(summary_rel)
+    steps.append(
+        {
+            "name": "translate-report",
+            "instruction": (
+                "Use the discovery-translator subagent to produce a faithful "
+                f"简体中文 translation of the finished report at {summary_rel}, "
+                f"writing it to {summary_zh_rel}. This is a pure localization pass: "
+                "translate the prose and section/field labels but keep the EXACT "
+                "same structure, ordering, facts and verdicts, and copy ALL numbers "
+                "(p-values, coefficients, counts, ratios, CIs, scores, belief "
+                "probabilities) verbatim. Keep verbatim (do NOT translate) every "
+                "identifier, hypothesis id, run/dataset id, file path, code span, "
+                "metric/test name, unit, and verdict token (REPRODUCED, DIVERGED, "
+                "GENERALIZES, DOES-NOT-GENERALIZE, PARTIAL, OK, MINOR, MAJOR, "
+                "CRITICAL, UPHELD, WEAKENED, OVERTURNED). Do NOT re-run or re-judge "
+                "anything. Write exactly that one file and report its path."
+            ),
+        }
+    )
+    return steps
+
+
+# Short aliases for the step names, for --steps / --from selection on the CLI.
+# Each maps to the canonical step ``name`` build_steps() produces.
+STEP_ALIASES: dict[str, str] = {
+    "summarize": "summarize-discoveries",
+    "rerun": "rerun-experiments",
+    "extrapolate": "extrapolate-generalization",
+    "verify": "verify-statistics-and-logic",
+    "fix-tests": "fix-statistical-tests",
+    "translate": "translate-report",
+}
+
+
+def _canonical_step(token: str, available: list[str]) -> str:
+    """Resolve a user token (alias or full name) to a canonical step name."""
+    if token in STEP_ALIASES:
+        return STEP_ALIASES[token]
+    if token in available:
+        return token
+    raise SystemExit(
+        f"Unknown step '{token}'. Choose from: "
+        + ", ".join(STEP_ALIASES) + " (or full names: " + ", ".join(available) + ")."
+    )
+
+
+def select_steps(
+    steps: list[dict[str, str]],
+    only: list[str] | None,
+    from_step: str | None,
+) -> list[dict[str, str]]:
+    """Filter the built steps by ``--steps`` (explicit set) or ``--from`` (suffix).
+
+    Resuming relies on prior steps' artifacts already being on disk: the
+    ``<RUN>.summary.md`` report (and its folded-in verdicts) and the
+    ``<RUN>.json.rerun`` loading-fixed scripts. ``--steps`` keeps exactly the
+    named steps (in pipeline order); ``--from`` keeps that step and everything
+    after it. They are mutually exclusive; with neither, all steps run.
+    """
+    available = [s["name"] for s in steps]
+    if only and from_step:
+        raise SystemExit("--steps and --from are mutually exclusive.")
+    if only:
+        wanted = {_canonical_step(t, available) for t in only}
+        return [s for s in steps if s["name"] in wanted]
+    if from_step:
+        start = _canonical_step(from_step, available)
+        idx = available.index(start)
+        return steps[idx:]
     return steps
 
 
@@ -344,6 +518,8 @@ async def run_workflow(
     pkl_path: Path,
     extra_pkl_paths: list[Path],
     verbose: bool,
+    only_steps: list[str] | None = None,
+    from_step: str | None = None,
 ) -> None:
     options = build_options()
     # Paths handed to the agent are relative to PROJECT_ROOT (the session cwd).
@@ -353,10 +529,24 @@ async def run_workflow(
     summary_rel = _rel_to_root(json_path.with_suffix(".summary.md"))
     steps = build_steps(json_rel, pkl_rel, summary_rel, extra_pkls_rel)
 
+    all_names = [s["name"] for s in steps]
+    steps = select_steps(steps, only_steps, from_step)
+    if not steps:
+        log("No steps selected to run.")
+        return
+    # Resuming a later step relies on earlier steps' artifacts already on disk.
+    if steps[0]["name"] != all_names[0]:
+        summary_path = json_path.with_suffix(".summary.md")
+        if not summary_path.is_file():
+            log(
+                f"WARNING: resuming at '{steps[0]['name']}' but {summary_rel} does "
+                "not exist yet — the earlier steps that write it were skipped."
+            )
+
     extra_note = f", extrapolate onto {len(extra_pkls_rel)} dataset(s)" if extra_pkls_rel else ""
     log(
         f"Starting workflow on {json_rel} (pkl {pkl_rel}{extra_note}): "
-        f"{len(steps)} step(s)."
+        f"{len(steps)} step(s) [{', '.join(s['name'] for s in steps)}]."
     )
     wf_start = time.monotonic()
     async with ClaudeSDKClient(options=options) as client:
@@ -410,6 +600,28 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--steps",
+        nargs="+",
+        default=None,
+        metavar="STEP",
+        help=(
+            "Run ONLY these steps (aliases: summarize, rerun, extrapolate, "
+            "verify, fix-tests, translate), reusing prior steps' on-disk artifacts "
+            "(<RUN>.summary.md, <RUN>.json.rerun). E.g. --steps translate to only "
+            "(re)generate the 简体中文 <RUN>.summary.zh.md from an existing report."
+        ),
+    )
+    parser.add_argument(
+        "--from",
+        dest="from_step",
+        default=None,
+        metavar="STEP",
+        help=(
+            "Resume from this step and run everything after it, reusing prior "
+            "artifacts. E.g. --from verify. Mutually exclusive with --steps."
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Stream every assistant text block as it arrives.",
@@ -427,7 +639,16 @@ def main() -> int:
     extra_pkl_paths = [
         _resolve_existing(p, "extra dataset pkl") for p in args.extra_pkl
     ]
-    asyncio.run(run_workflow(json_path, pkl_path, extra_pkl_paths, args.verbose))
+    asyncio.run(
+        run_workflow(
+            json_path,
+            pkl_path,
+            extra_pkl_paths,
+            args.verbose,
+            only_steps=args.steps,
+            from_step=args.from_step,
+        )
+    )
     return 0
 
 

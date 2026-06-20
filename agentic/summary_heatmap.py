@@ -2,21 +2,25 @@
 Render a 0–1 quality heatmap from a workflow summary Markdown report.
 
 Reads one ``<RUN>.summary.md`` (the deliverable the summarize → rerun →
-extrapolate → verify workflow writes) and turns three per-hypothesis verdicts
-into a heatmap: one ROW per hypothesis (y-axis = the hypothesis's actual record
-``ID``, e.g. 47, 3, 10 …) and three COLUMNS across the top — Reproduction,
-Generalization, Statistics — scored 0 (worst: not reproduced / not generalized /
-major statistical issue) to 1 (best).
+extrapolate → verify → fix-tests workflow writes) and turns the per-hypothesis
+verdicts into a heatmap: one ROW per hypothesis (y-axis = the hypothesis's actual
+record ``ID``, e.g. 47, 3, 10 …) and one COLUMN per metric across the top, each
+scored 0 (worst) to 1 (best).
 
 The report is parsed deterministically (no model): each ``### N.`` entry block is
-scanned for the bullets the agents fold in:
+scanned for the bullets the agents fold in (the verdict must be the LEADING word
+after the label):
 
 * ``- **Reproduction:** REPRODUCED | DIVERGED | FAILED``
 * ``- **Generalization:** GENERALIZES | PARTIAL | DOES-NOT-GENERALIZE | INCONCLUSIVE``
-* ``- **Verdict:** OK | MINOR | MAJOR``  (or SOUND | WEAK | FLAWED)
+* ``- **Verdict:** OK | MINOR | MAJOR``  (or SOUND | WEAK | FLAWED)  → "Statistics"
+* ``- **Post-correction verdict:** UPHELD | WEAKENED | OVERTURNED`` (fix-tests)
+* ``- **Corrected generalization:** GENERALIZES | PARTIAL | DOES-NOT-GENERALIZE``
+  (fix-tests, only when extra datasets were run)
 
 Missing/unrecognized verdicts render as a distinct "n/a" cell (NaN), not 0, so
-"absent" is never confused with "bad".
+"absent" is never confused with "bad". The last two columns are typically n/a
+for hypotheses the verifier did not flag for a test fix.
 
 Usage (from the ``exa-spim-agent/`` project root)
 -------------------------------------------------
@@ -58,11 +62,19 @@ STATISTICS = {
     "major": 0.33,
     "flawed": 0.0,
 }
+# fix-tests outcome for hypotheses whose statistical test was corrected and
+# re-measured. Records that were NOT fixed have no bullet -> NaN ("n/a").
+POST_CORRECTION = {"upheld": 1.0, "weakened": 0.5, "overturned": 0.0}
+# Generalization re-judged with the CORRECTED test (same vocabulary as the
+# original Generalization row). Only present on fixed records run with extras.
+CORRECTED_GENERALIZATION = GENERALIZATION
 
 ROWS = [
     ("Reproduction", "Reproduction", REPRODUCTION),
     ("Generalization", "Generalization", GENERALIZATION),
     ("Statistics", "Verdict", STATISTICS),
+    ("Post-correction", "Post-correction verdict", POST_CORRECTION),
+    ("Corrected gen.", "Corrected generalization", CORRECTED_GENERALIZATION),
 ]
 
 # ``### 12. (Priority …) Title`` -> capture the leading rank number.
@@ -71,14 +83,29 @@ _HEADER = re.compile(r"^###\s+(\d+)\.\s", re.MULTILINE)
 _ID = re.compile(r"\*\*ID:\*\*\s*([0-9A-Za-z_-]+)")
 
 
-def _bullet_value(block: str, label: str) -> str | None:
-    """First ALL-CAPS-ish token after ``- **<label>:**`` in an entry block."""
-    m = re.search(
-        rf"^\s*-\s*\*\*{re.escape(label)}:\*\*\s*([A-Za-z][A-Za-z-]*)",
-        block,
-        re.MULTILINE,
-    )
-    return m.group(1) if m else None
+def _metric_value(block: str, label: str, mapping: dict) -> str | None:
+    """Resolve a metric's verdict word for ``label`` within an entry block.
+
+    The verdict MUST be the first recognized word immediately after the label
+    (``- **<label>:** VERDICT …`` or the inline ``<label>: VERDICT …`` form),
+    optionally preceded by short filler like "the"/"is". We deliberately do NOT
+    scan deep into free text for a keyword: a sentence like "the qualitative
+    claim GENERALIZES but the magnitude does NOT" must be written with a leading
+    verdict word (PARTIAL) to be scored, otherwise it stays n/a rather than being
+    mis-scored on the first keyword that happens to appear.
+    """
+    m = re.search(rf"\*\*\s*{re.escape(label)}\s*:?\s*\*\*\s*", block)
+    if not m:
+        m = re.search(rf"{re.escape(label)}\s*:\s*", block)  # inline sub-sentence
+        if not m:
+            return None
+    # Only look at the first few words right after the label.
+    tail = re.split(r"\*\*", block[m.end() : m.end() + 80], maxsplit=1)[0]
+    words = re.findall(r"[A-Za-z][A-Za-z-]*", tail)
+    for word in words[:3]:  # leading verdict, allowing brief filler
+        if word.lower() in mapping:
+            return word
+    return None
 
 
 def parse_entries(text: str) -> list[dict]:
@@ -100,7 +127,7 @@ def parse_entries(text: str) -> list[dict]:
 
         scores, labels = {}, {}
         for key, bullet_label, mapping in ROWS:
-            raw = _bullet_value(block, bullet_label)
+            raw = _metric_value(block, bullet_label, mapping)
             labels[key] = raw
             scores[key] = mapping.get(raw.lower(), float("nan")) if raw else float("nan")
         entries.append(
@@ -125,77 +152,90 @@ def render(mat, row_names, ids, out_path: Path, title: str) -> None:
     """Draw the heatmap (green=1 best … red=0 worst, grey=n/a) and save it.
 
     Vertical layout: one ROW per hypothesis (y-axis = actual record ID) and one
-    COLUMN per metric (Reproduction / Generalization / Statistics) across the
-    top. ``mat`` is (metrics × hypotheses); we transpose it to (hypotheses ×
-    metrics) for this orientation.
+    COLUMN per metric (Reproduction / Generalization / Statistics /
+    Post-correction / Corrected gen.) across the top. ``mat`` is
+    (metrics × hypotheses); we transpose it to (hypotheses × metrics).
     """
     cmap = plt.get_cmap("RdYlGn").copy()
-    cmap.set_bad(color="#d9d9d9")  # NaN ("n/a") cells render grey
+    cmap.set_bad(color="#eceff1")  # NaN ("n/a") cells render a soft neutral grey
 
     matT = mat.T  # (hypotheses × metrics)
-    fig_h = max(3.0, 0.40 * len(ids) + 1.5)
-    fig, ax = plt.subplots(figsize=(5.0, fig_h))
-    im = ax.imshow(
-        np.ma.masked_invalid(matT), cmap=cmap, vmin=0.0, vmax=1.0, aspect="auto"
-    )
+    fig_h = max(3.0, 0.42 * len(ids) + 1.8)
+    fig_w = max(5.0, 1.05 * len(row_names) + 1.5)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    masked = np.ma.masked_invalid(matT)
+    im = ax.imshow(masked, cmap=cmap, vmin=0.0, vmax=1.0, aspect="auto")
 
-    # Metrics across the top.
+    # Thin white gridlines between cells for a cleaner, tile-like look.
+    ax.set_xticks(np.arange(-0.5, len(row_names), 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, len(ids), 1), minor=True)
+    ax.grid(which="minor", color="white", linewidth=2.0)
+    ax.tick_params(which="minor", length=0)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    # Metrics across the top (rotated so longer labels don't overlap).
     ax.set_xticks(range(len(row_names)))
-    ax.set_xticklabels(row_names, fontsize=9)
+    ax.set_xticklabels(row_names, fontsize=8.5, rotation=30, ha="left")
     ax.xaxis.set_label_position("top")
     ax.xaxis.tick_top()
+    ax.tick_params(axis="x", length=0)
     # Hypothesis IDs down the side.
     ax.set_yticks(range(len(ids)))
     ax.set_yticklabels([str(i) for i in ids], fontsize=8)
-    ax.set_ylabel("Hypothesis ID")
+    ax.set_ylabel("Hypothesis ID", fontsize=10)
+    ax.tick_params(axis="y", length=0)
 
-    # Annotate each cell with its score (or "n/a") for legibility.
+    # Annotate each cell with its score (or "n/a"); white text on dark cells,
+    # dark text on light cells, faint grey on n/a — for legibility on any hue.
     for i in range(matT.shape[0]):
         for j in range(matT.shape[1]):
             v = matT[i, j]
-            label = "n/a" if np.isnan(v) else f"{v:.2f}"
-            ax.text(j, i, label, ha="center", va="center", fontsize=7, color="black")
+            if np.isnan(v):
+                ax.text(j, i, "n/a", ha="center", va="center", fontsize=6.5,
+                        color="#90a4ae", style="italic")
+                continue
+            txt_color = "white" if (v <= 0.18 or v >= 0.82) else "#222222"
+            ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=7.5,
+                    color=txt_color, fontweight="medium")
 
-    ax.set_title(title, pad=24)
+    ax.set_title(title, pad=26, fontsize=11, fontweight="bold")
     cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label("0 = worst   →   1 = best")
+    cbar.set_label("0 = worst   →   1 = best", fontsize=9)
+    cbar.outline.set_visible(False)
+    cbar.ax.tick_params(length=0)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
 
+def _csv_key(name: str) -> str:
+    """A CSV-safe column prefix from a metric name, e.g. 'Corrected gen.' -> 'corrected_gen'."""
+    return re.sub(r"[^0-9a-z]+", "_", name.lower()).strip("_")
+
+
 def write_csv(entries: list[dict], csv_path: Path) -> None:
-    """Dump the scores + raw verdict labels to CSV alongside the image."""
+    """Dump the scores + raw verdict labels to CSV alongside the image.
+
+    Generic over ROWS so new metrics (Post-correction, Corrected gen.) appear
+    automatically as ``<key>_score`` / ``<key>_label`` column pairs.
+    """
+    metric_names = [name for name, _, _ in ROWS]
+    header = ["hypothesis_id", "rank"]
+    for name in metric_names:
+        k = _csv_key(name)
+        header += [f"{k}_score", f"{k}_label"]
+    header.append("title")
+
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(
-            [
-                "hypothesis_id",
-                "rank",
-                "reproduction_score",
-                "reproduction_label",
-                "generalization_score",
-                "generalization_label",
-                "statistics_score",
-                "statistics_label",
-                "title",
-            ]
-        )
+        w.writerow(header)
         for e in entries:
-            s, lab = e["scores"], e["labels"]
-            w.writerow(
-                [
-                    e["id"],
-                    e["num"],
-                    s["Reproduction"],
-                    lab["Reproduction"] or "",
-                    s["Generalization"],
-                    lab["Generalization"] or "",
-                    s["Statistics"],
-                    lab["Statistics"] or "",
-                    e["title"],
-                ]
-            )
+            row = [e["id"], e["num"]]
+            for name in metric_names:
+                row += [e["scores"][name], e["labels"][name] or ""]
+            row.append(e["title"])
+            w.writerow(row)
 
 
 def main(argv: list[str] | None = None) -> int:
