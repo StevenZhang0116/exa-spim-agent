@@ -93,7 +93,7 @@ the ones you will actually use.
 | `fragments_path`, `gt_path` | `str` | Provenance only — source GCS paths of the SWCs. Not read to use the cache. |
 | `img_path` | `str` | **Public S3** path of the raw fused ExaSPIM image. Not needed for error recovery, but lets you fetch raw-image patches on demand with no credentials — see *Optionally reading the raw image*. |
 | `segmentation_path` | `str` | Provenance only — **private GCS** path of the dense segmentation the labels were read from. Not read at load time and not needed (its information is already in the stored labels). |
-| `anisotropy` | `tuple` | `(0.748, 0.748, 1.0)` — µm/voxel in (x, y, z). |
+| `anisotropy` | `tuple` | µm/voxel in (x, y, z) — `(0.748, 0.748, 1.0)` for this batch of caches. **Not a fixed constant:** it is stored per dataset as-passed at build time, so always read it from the payload (`payload["anisotropy"]`) rather than hard-coding this value. |
 | `min_cable_length` | `int` | `100` — µm threshold shorter fragments were dropped at. |
 | `node_spacing` | `int` | `5` — target µm spacing between skeleton nodes. |
 | `fragments_graph` | `SkeletonGraph` | Automated UNet reconstruction (unchanged from the plain cache). |
@@ -114,6 +114,12 @@ graph. Their combined size is tiny (~tens of MB) next to the multi-GB graphs.
 > were given an `_add` cache and not a plain one.
 
 ### Install the package (one-time setup)
+
+> **Already installed on this machine?** Inside this repo's environment the
+> `agentic_neuron_proofreader` package is typically already importable (e.g. under
+> `~/.local/...`); check with `python -c "import agentic_neuron_proofreader"` and
+> skip the clone/install below if it succeeds. The steps here are for a fresh
+> environment or an external user who only received the `_add.pkl`.
 
 Loading an `_add.pkl` needs exactly one thing on the Python path: the
 `agentic_neuron_proofreader` package, which defines the `SkeletonGraph` class that
