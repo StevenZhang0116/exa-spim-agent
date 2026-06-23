@@ -78,6 +78,11 @@ class LazyImagePatchReader:
         signal filling both patches; a spurious join across background has a dim
         side. The policy decides how to threshold; this just surfaces the numbers
         without forcing an interpretation. Returns NaNs if a read fails.
+
+        LIMITATION: this only measures the two ENDPOINTS, never the region BETWEEN
+        them, so two parallel-but-unconnected neurites both read bright and look
+        mergeable. For an actual across-the-gap continuity test use
+        ``gap_bridge_evidence``, which samples the interior of the gap.
         """
         out = {}
         for tag, n in (("a", node_a), ("b", node_b)):
@@ -90,12 +95,127 @@ class LazyImagePatchReader:
                 out[f"mean_{tag}"] = out[f"max_{tag}"] = out[f"p90_{tag}"] = float("nan")
         return out
 
+    def _gap_um(self, node_a, node_b) -> float:
+        """Physical straight-line distance (microns) between two graph nodes.
+
+        Used to size the chord sampling to the gap. Prefers ``graph.node_xyz``
+        (already microns); falls back to voxel distance scaled by ``anisotropy``
+        (node_voxel is (z,y,x); anisotropy is (x,y,z), so it is reversed to align);
+        returns NaN if neither is available so callers can pick a safe default.
+        """
+        g = self._graph
+        xyz = getattr(g, "node_xyz", None)
+        if xyz is not None:
+            try:
+                a = np.asarray(xyz[int(node_a)], dtype=float)
+                b = np.asarray(xyz[int(node_b)], dtype=float)
+                return float(np.linalg.norm(a - b))
+            except Exception:
+                pass
+        try:
+            va = np.asarray(g.node_voxel(int(node_a)), dtype=float)
+            vb = np.asarray(g.node_voxel(int(node_b)), dtype=float)
+            aniso = getattr(g, "anisotropy", None)
+            if aniso is not None:
+                aniso_zyx = np.asarray(aniso, dtype=float)[::-1]   # (x,y,z)->(z,y,x)
+                return float(np.linalg.norm((va - vb) * aniso_zyx))
+            return float(np.linalg.norm(va - vb))
+        except Exception:
+            return float("nan")
+
+    @staticmethod
+    def _auto_n_samples(gap_um, lo=5, hi=25, per_um=0.5, default=9) -> int:
+        """Pick a chord sample count from the gap length (~one sample per 2 µm).
+
+        A short gap needs few samples; a long gap needs many so the interior is
+        actually traversed (the fixed-9 sampling could step right over the dark
+        middle of a long gap). Clamped to ``[lo, hi]``; ``default`` on NaN gap.
+        """
+        if gap_um != gap_um or gap_um <= 0:   # NaN / nonpositive guard
+            return default
+        return int(min(hi, max(lo, round(gap_um * per_um) + 2)))
+
+    def _chord_profile(self, node_a, node_b, n_samples, shape) -> list:
+        """Sample p90 intensity at ``n_samples`` points along the chord a→b.
+
+        Shared by ``merge_cut_evidence`` and ``gap_bridge_evidence`` — both walk the
+        straight line in VOXEL space between two seed nodes and summarize each small
+        patch by its 90th percentile (robust to a few hot voxels). Costs
+        ``n_samples`` cloud reads (counted in ``n_reads``); not memoized (the chord
+        points are unique per call), matching the original merge-cut behavior.
+        """
+        self._ensure_open()
+        va = np.asarray(self._graph.node_voxel(int(node_a)), dtype=float)
+        vb = np.asarray(self._graph.node_voxel(int(node_b)), dtype=float)
+        shape = tuple(shape)
+        profile = []
+        for t in np.linspace(0.0, 1.0, n_samples):
+            voxel = tuple(int(round(c)) for c in (va + t * (vb - va)))
+            patch = np.asarray(self._img.read(voxel, shape)).astype(np.float32)
+            profile.append(float(np.percentile(patch, 90)))
+            self.n_reads += 1
+        return profile
+
+    def gap_bridge_evidence(
+        self, node_a, node_b, n_samples=None, shape=(16, 16, 16)
+    ) -> dict:
+        """Fluorescence BRIDGE check across a candidate split gap (merge_labels).
+
+        SPLIT-repair evidence — the symmetric counterpart to ``merge_cut_evidence``
+        and the across-the-gap test ``gap_connectivity`` cannot do. A ``merge_labels``
+        should fire only where the two fragments are ONE neuron the segmentation
+        broke, i.e. there is a CONTINUOUS bright bridge of signal spanning the gap.
+        This samples the intensity profile along the straight chord between the two
+        tips and reports how dim the DIMMEST interior point is relative to the bright
+        endpoints:
+
+          * ``bridge_min``    — minimum interior intensity (the weakest link in the
+            bridge; excludes the endpoints).
+          * ``bridge_ratio``  — ``bridge_min / endpoint_mean``: HIGH (≈1) ⇒ signal
+            stays bright all the way across ⇒ a real continuation ⇒ SAFE to merge;
+            LOW (≪1) ⇒ the gap goes dark in the middle ⇒ two separate structures ⇒
+            do NOT merge (a join here would create a merge error).
+          * ``bridge_pos``    — fractional position (0..1) of the dimmest point.
+          * ``endpoint_mean`` / ``profile`` — the bright reference and the raw samples.
+
+        Note this is the same chord profile ``merge_cut_evidence`` computes; only the
+        decision flips — there a LOW interior valley means "split", here a HIGH
+        interior bridge means "merge". ``n_samples`` defaults to ADAPTIVE: it scales
+        with the physical gap length (``_auto_n_samples``) so a long gap is actually
+        traversed rather than stepped over. Costs ``n_samples`` cloud reads (cached
+        machinery shared with merge_cut), so gate it behind cheap geometric filters
+        exactly like the others. NaNs on read failure.
+        """
+        try:
+            if n_samples is None:
+                n_samples = self._auto_n_samples(self._gap_um(node_a, node_b))
+            profile = self._chord_profile(node_a, node_b, n_samples, shape)
+            endpoint_mean = float(np.mean([profile[0], profile[-1]]))
+            interior = profile[1:-1] if n_samples > 2 else profile
+            bridge_min = float(np.min(interior))
+            bridge_idx = int(np.argmin(profile))
+            return {
+                "profile": profile,
+                "endpoint_mean": endpoint_mean,
+                "bridge_min": bridge_min,
+                "bridge_ratio": (bridge_min / endpoint_mean
+                                 if endpoint_mean > 0 else float("nan")),
+                "bridge_pos": bridge_idx / (n_samples - 1) if n_samples > 1 else 0.0,
+                "n_samples": n_samples,
+            }
+        except Exception:
+            return {
+                "profile": [], "endpoint_mean": float("nan"),
+                "bridge_min": float("nan"), "bridge_ratio": float("nan"),
+                "bridge_pos": float("nan"), "n_samples": 0,
+            }
+
     def merge_cut_evidence(
-        self, seed_a_node, seed_b_node, n_samples=9, shape=(16, 16, 16)
+        self, seed_a_node, seed_b_node, n_samples=None, shape=(16, 16, 16)
     ) -> dict:
         """Fluorescence VALLEY check across a candidate merge cut (split_label).
 
-        MERGE-repair evidence — the opposite question to ``gap_connectivity``. A
+        MERGE-repair evidence — the opposite question to ``gap_bridge_evidence``. A
         ``split_label`` should fire only where ONE label actually covers TWO
         neurites. The image tell is whether the signal between the two arm seeds
         DIPS through a valley near the cut (two adjacent bright structures that only
@@ -119,20 +239,18 @@ class LazyImagePatchReader:
             ⇒ merge-like; ≈1 ⇒ continuous signal ⇒ likely one neuron (do NOT split).
           * ``valley_pos``    — fractional position (0..1) of the minimum along the
             chord (≈0.5 ⇒ a valley right between the arms, the cleanest merge tell).
-        Costs ``n_samples`` cloud reads (cached), so gate it behind cheap geometric
-        filters exactly like ``gap_connectivity``. NaNs on read failure.
+          * ``n_samples``     — points actually sampled (useful when adaptive).
+        ``n_samples`` defaults to ADAPTIVE (scales with the seed-to-seed distance via
+        ``_auto_n_samples``) so a long arm span is actually traversed; pass an int to
+        force a fixed count (the old default was 9). Costs ``n_samples`` cloud reads,
+        so gate it behind cheap geometric filters exactly like the others. NaNs on
+        read failure.
         """
         try:
-            self._ensure_open()
-            va = np.asarray(self._graph.node_voxel(int(seed_a_node)), dtype=float)
-            vb = np.asarray(self._graph.node_voxel(int(seed_b_node)), dtype=float)
-            shape = tuple(shape)
-            profile = []
-            for t in np.linspace(0.0, 1.0, n_samples):
-                voxel = tuple(int(round(c)) for c in (va + t * (vb - va)))
-                patch = np.asarray(self._img.read(voxel, shape)).astype(np.float32)
-                profile.append(float(np.percentile(patch, 90)))
-                self.n_reads += 1
+            if n_samples is None:
+                n_samples = self._auto_n_samples(
+                    self._gap_um(seed_a_node, seed_b_node))
+            profile = self._chord_profile(seed_a_node, seed_b_node, n_samples, shape)
             endpoint_mean = float(np.mean([profile[0], profile[-1]]))
             interior = profile[1:-1] if n_samples > 2 else profile
             valley = float(np.min(interior))
@@ -144,10 +262,122 @@ class LazyImagePatchReader:
                 "valley_ratio": (valley / endpoint_mean
                                  if endpoint_mean > 0 else float("nan")),
                 "valley_pos": valley_idx / (n_samples - 1) if n_samples > 1 else 0.0,
+                "n_samples": n_samples,
             }
         except Exception:
             return {
                 "profile": [], "endpoint_mean": float("nan"),
                 "valley": float("nan"), "valley_ratio": float("nan"),
-                "valley_pos": float("nan"),
+                "valley_pos": float("nan"), "n_samples": 0,
             }
+
+
+class RecordingImageReader:
+    """Transparent wrapper that LOGS every image-evidence call the policy makes.
+
+    The policy already pays cloud reads via ``read_patch`` / ``gap_connectivity`` /
+    ``gap_bridge_evidence`` / ``merge_cut_evidence`` for the few candidates it gates
+    through its cheap geometric filters. This wrapper observes those calls — it adds
+    NO reads of its own — and records ``(method, node ids, returned summary)`` for
+    each, INCLUDING raw ``read_patch`` cubes (summarized into generic intensity
+    scalars) so a policy that invents its own image feature still leaves a labelled
+    trace. The harness then labels each record TRUE/NON by ground truth (train split
+    only) and surfaces it in the failure report, turning the image evidence the
+    policy ALREADY fetched into a labelled learning signal for the reviser (which
+    image thresholds separate real merges/splits from false ones) — without any
+    extra cost and without ever reading held-out image data the policy didn't
+    already touch.
+
+    Delegates remaining attributes (``n_reads``, ``default_shape``, …) to the wrapped
+    reader, so it is a drop-in for ``ctx["read_image_patch"]``. ``read_patch`` is
+    overridden (not delegated) so its cubes are recorded.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.records: list = []   # [{"method","node_a","node_b","result"}]
+
+    @staticmethod
+    def _patch_summary(patch) -> dict:
+        """CPU-side scalar summary of a raw cube — NO extra cloud read.
+
+        When the policy invents its OWN image feature via ``read_patch`` (e.g. a
+        self-made MIP, signal-occupancy, variance), the harness has no idea what it
+        computed. We can't record an arbitrary derived feature, but we CAN record a
+        fixed, generic summary of the cube the policy looked at, so the failure
+        report can show whether THOSE cubes separate real splits from false joins by
+        train GT. These are the cheapest universally-meaningful intensity stats:
+          * ``mean`` / ``max`` / ``p90`` — overall brightness.
+          * ``occupancy`` — fraction of voxels above half the patch max (a
+            threshold-free 'how much of this cube is signal vs background' proxy;
+            a thin neurite fills few voxels, a blob fills many).
+          * ``std`` — intensity spread (flat background vs structured signal).
+        All float; NaNs if the patch is empty / unreadable.
+        """
+        try:
+            p = np.asarray(patch, dtype=np.float32).ravel()
+            if p.size == 0:
+                raise ValueError("empty patch")
+            pmax = float(p.max())
+            occ = float((p > 0.5 * pmax).mean()) if pmax > 0 else 0.0
+            return {
+                "mean": float(p.mean()), "max": pmax,
+                "p90": float(np.percentile(p, 90)),
+                "occupancy": occ, "std": float(p.std()),
+            }
+        except Exception:
+            return {"mean": float("nan"), "max": float("nan"),
+                    "p90": float("nan"), "occupancy": float("nan"),
+                    "std": float("nan")}
+
+    def read_patch(self, node_id, shape=None):
+        """Record a generic summary of every raw cube the policy reads itself.
+
+        Forwards to the inner reader (the real cloud read + cache) and logs a
+        fixed scalar summary keyed on the single ``node_id`` — so a policy that
+        builds a custom intensity feature still leaves a labelled trace in the
+        failure report. Adds no cloud read of its own (it summarizes the cube the
+        inner read already returned). Overridden explicitly because ``__getattr__``
+        would otherwise transparently forward and bypass recording.
+        """
+        patch = self._inner.read_patch(node_id, shape=shape)
+        self.records.append({
+            "method": "read_patch",
+            "node_a": int(node_id), "node_b": None,
+            "result": self._patch_summary(patch),
+        })
+        return patch
+
+    def gap_connectivity(self, node_a, node_b, shape=None) -> dict:
+        out = self._inner.gap_connectivity(node_a, node_b, shape=shape)
+        self.records.append({
+            "method": "gap_connectivity",
+            "node_a": int(node_a), "node_b": int(node_b),
+            "result": dict(out),
+        })
+        return out
+
+    def merge_cut_evidence(self, seed_a_node, seed_b_node, **kw) -> dict:
+        out = self._inner.merge_cut_evidence(seed_a_node, seed_b_node, **kw)
+        # Drop the (long) per-sample profile from the record; keep the scalars.
+        rec = {k: v for k, v in out.items() if k != "profile"}
+        self.records.append({
+            "method": "merge_cut_evidence",
+            "node_a": int(seed_a_node), "node_b": int(seed_b_node),
+            "result": rec,
+        })
+        return out
+
+    def gap_bridge_evidence(self, node_a, node_b, **kw) -> dict:
+        out = self._inner.gap_bridge_evidence(node_a, node_b, **kw)
+        rec = {k: v for k, v in out.items() if k != "profile"}
+        self.records.append({
+            "method": "gap_bridge_evidence",
+            "node_a": int(node_a), "node_b": int(node_b),
+            "result": rec,
+        })
+        return out
+
+    def __getattr__(self, name):
+        # read_patch, n_reads, _ensure_open, default_shape, etc. -> the real reader.
+        return getattr(self._inner, name)

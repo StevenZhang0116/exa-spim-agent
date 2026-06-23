@@ -36,6 +36,7 @@ import shutil
 import sys
 import threading
 import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -67,6 +68,12 @@ HERE = Path(__file__).resolve().parent
 ARTIFACTS = HERE / "artifacts"
 HEURISTICS = ARTIFACTS / "heuristics.py"
 RULES = ARTIFACTS / "rules.md"
+# Validated, cross-run error-regularity knowledge base produced by the
+# AutoDiscovery workflow (agentic/run_discovery_workflow.py). When present, the
+# reviser is pointed at it as a PRIOR — but told to trust ONLY the findings that
+# GENERALIZE across brains and were UPHELD after statistical correction, and to
+# distrust DOES-NOT-GENERALIZE / OVERTURNED ones. Optional: missing file => no-op.
+DISCOVERY_PRIORS = PROJECT_ROOT / "autodiscovery" / "all-runs.combined.md"
 
 
 def log(msg: str) -> None:
@@ -147,16 +154,23 @@ def _anthropic_api_env() -> dict[str, str]:
 
 
 def _make_isolation_guard(run_dir: Path, audit_path: Path):
-    """Build a ``can_use_tool`` callback that ENFORCES run isolation.
+    """Build a ``can_use_tool`` callback that ENFORCES run isolation via an ALLOWLIST.
 
-    Cross-run pollution channel: the reviser runs with file tools inside the
-    ``runs/`` tree, and nothing structurally stops it from READING a sibling run's
-    accepted policy / ledger / SUMMARY and copying the answer (destroying the
-    "independent rediscovery" claim and any honest cross-run variance estimate).
-    The prompt only restricts writes. This callback closes the channel at the
-    permission layer: any tool call whose arguments reference a path under
-    ``runs/`` OTHER than the current run is DENIED, and every denial is recorded
-    so a tainted generation is detectable.
+    Two leak channels exist for a file-tool reviser living in the ``runs/`` tree:
+      (1) cross-run: reading a SIBLING run's accepted policy / ledger and copying
+          the answer (destroys "independent rediscovery"); and
+      (2) intra-run: reading THIS run's own ``split.json`` (reveals which neurons
+          are held-out), ``ledger.jsonl`` / ``attempts.md`` (run state), or prior
+          ``gen*/heuristics.candidate.py`` — none of which the prompt permits.
+    The prompt only restricts writes, so we close BOTH at the permission layer with
+    an explicit allowlist: under ``runs/`` the reviser may touch ONLY this run's
+    working artifacts and the per-generation failure reports; every other ``runs/``
+    path (sibling OR intra-run) is DENIED and recorded. Paths OUTSIDE ``runs/`` (the
+    harness modules it imports, etc.) are unaffected.
+
+    Allowed under ``runs/`` (this run only):
+      * Read/Write/Edit:  <run>/artifacts/heuristics.py, <run>/artifacts/rules.md
+      * Read:             <run>/gen*/failure_report.md   (train-only, leak-free)
 
     Returns ``(callback, state)`` where ``state['violations']`` accumulates the
     denied attempts (also appended to ``audit_path``).
@@ -165,8 +179,12 @@ def _make_isolation_guard(run_dir: Path, audit_path: Path):
 
     runs_root = (HERE / "runs").resolve()
     this_run = run_dir.resolve()
+    work_dir = (this_run / "artifacts").resolve()
+    allowed_rw = {(work_dir / "heuristics.py"), (work_dir / "rules.md")}
     state = {"violations": []}
 
+    # Which tools WRITE (so reading a report is fine but writing it is not).
+    WRITE_TOOLS = {"Write", "Edit", "NotebookEdit"}
     # Tool-input fields that carry file paths / shell text, by tool name.
     PATH_FIELDS = {
         "Read": ("file_path",), "Write": ("file_path",), "Edit": ("file_path",),
@@ -174,38 +192,53 @@ def _make_isolation_guard(run_dir: Path, audit_path: Path):
         "Grep": ("path",),
     }
 
+    def _path_allowed(tool_name: str, rp: Path) -> bool:
+        """Allowlist test for a single resolved path that lies under ``runs/``."""
+        # The two working artifacts: read or write.
+        if rp in allowed_rw:
+            return True
+        # Failure reports of THIS run: read-only (never writable by the reviser).
+        if (tool_name not in WRITE_TOOLS
+                and this_run in rp.parents
+                and rp.name == "failure_report.md"
+                and rp.parent.parent == this_run
+                and rp.parent.name.startswith("gen")):
+            return True
+        return False
+
     def _offending_paths(tool_name: str, ti: dict) -> list[str]:
-        """Return path-like strings in this tool call that point at a SIBLING run."""
+        """Return runs/-tree paths in this call that are NOT on the allowlist."""
         candidates = []
         for f in PATH_FIELDS.get(tool_name, ()):
             v = ti.get(f)
             if isinstance(v, str):
                 candidates.append(v)
         if tool_name == "Bash":
-            # Can't parse shell reliably; flag any mention of the runs/ tree.
+            # Can't parse shell reliably; scan any runs/ mention in the command.
             candidates.append(ti.get("command", ""))
         bad = []
         for c in candidates:
             if not c:
                 continue
-            # Bash: substring check on the runs root (path may be embedded in a cmd).
             if tool_name == "Bash":
+                # Bash bypasses the allowlist entirely (it isn't even granted to the
+                # reviser); flag any runs/ mention so a misconfig is loud, not silent.
                 if "runs/" in c or str(runs_root) in c:
-                    # allow only if every runs/ mention is this run
                     import re
                     for m in re.findall(r"\S*runs/\S*", c):
                         try:
                             rp = Path(m).resolve()
                         except Exception:
                             rp = Path(m)
-                        if runs_root in rp.parents and this_run not in (rp, *rp.parents):
+                        if runs_root in rp.parents or rp == runs_root:
                             bad.append(m)
                 continue
             try:
                 rp = Path(c).resolve()
             except Exception:
                 continue
-            if runs_root in rp.parents and this_run != rp and this_run not in rp.parents:
+            # Only police the runs/ tree; paths elsewhere (harness imports) are free.
+            if runs_root in rp.parents and not _path_allowed(tool_name, rp):
                 bad.append(c)
         return bad
 
@@ -221,8 +254,9 @@ def _make_isolation_guard(run_dir: Path, audit_path: Path):
                 pass
             return PermissionResultDeny(
                 behavior="deny",
-                message=(f"Run isolation: {tool_name} may not access another run's "
-                         f"files ({bad}). Only the current run dir is permitted."),
+                message=(f"Run isolation: {tool_name} may only touch this run's "
+                         f"working heuristics.py / rules.md (read/write) or a "
+                         f"gen*/failure_report.md (read). Denied: {bad}."),
                 interrupt=False,
             )
         return PermissionResultAllow(behavior="allow")
@@ -240,11 +274,13 @@ def build_options(model: str = DEFAULT_MODEL, run_dir: Path | None = None,
     model. Pass a different ``model`` to override.
 
     Run isolation (durable integrity): when ``run_dir`` is given we attach a
-    ``can_use_tool`` callback that DENIES any file/shell tool call referencing a
-    SIBLING run's files, and switch the permission mode off ``bypassPermissions``
-    (which would skip the callback) to ``acceptEdits`` (non-interactive, but the
-    callback still fires). The tool set is also trimmed to what the reviser needs.
-    Returns ``(options, guard_state)``; ``guard_state`` is None when no run_dir.
+    ``can_use_tool`` callback that ALLOWLISTS only this run's working
+    heuristics.py / rules.md (read/write) and its gen*/failure_report.md (read),
+    DENYING every other ``runs/``-tree path — sibling runs AND this run's own
+    split.json / ledger / attempts / prior candidates. The permission mode is
+    ``acceptEdits`` (not ``bypassPermissions``, which would skip the callback) so
+    it still fires non-interactively. The tool set is also trimmed to what the
+    reviser needs. Returns ``(options, guard_state)``; None guard when no run_dir.
     """
     guard = state = None
     if run_dir is not None:
@@ -409,10 +445,59 @@ def _format_attempts(attempts: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _format_priors(priors_path: str | None) -> str:
+    """Prompt fragment pointing the reviser at the validated discovery priors.
+
+    Returns "" when no priors file is configured/exists (so the prompt is
+    unchanged). When present, the reviser is told to READ the file and use it as a
+    prior, with an ASYMMETRIC discipline that is deliberate:
+
+      * The TRUST rule is stated abstractly (GENERALIZES + UPHELD) WITHOUT naming
+        specific findings or quoting their thresholds. Naming a favoured few would
+        anchor the agent onto them (and let it copy the numbers without ever
+        reading the file), starving the other qualifying findings and collapsing
+        the multi-lever exploration diversity that makes the search work. So the
+        agent must survey ALL qualifying findings itself and pick by relevance.
+      * The DISTRUST list IS explicit, because naming what to avoid is a guardrail
+        that blocks a known failure (baking in a single-brain artifact) WITHOUT
+        narrowing the useful search space — the opposite effect of an anchor.
+    """
+    if not priors_path:
+        return ""
+    return (
+        f"\n\nA validated, cross-run knowledge base of U-Net error regularities is "
+        f"available at {priors_path} (produced by the AutoDiscovery workflow: each "
+        f"finding carries Reproduction / Generalization / Verdict / Post-correction "
+        f"tokens). READ it and use it as a PRIOR to ground your improvement in "
+        f"already-verified geometry/topology — do not re-derive from scratch what it "
+        f"already establishes. DISCIPLINE on which findings to trust:\n"
+        f"  • Survey ALL the findings and USE only those whose Generalization is "
+        f"GENERALIZES AND whose post-correction Verdict is UPHELD or OK (robust "
+        f"across every brain AND after cluster-robust statistical correction). Do "
+        f"not privilege any particular finding — read the file, judge each by its "
+        f"verdict tokens, and pick the one(s) most relevant to THIS generation's "
+        f"failure report.\n"
+        f"  • DISTRUST and do NOT bake in any finding marked DOES-NOT-GENERALIZE, "
+        f"PARTIAL, WEAKENED, or OVERTURNED (e.g. Z-axis anisotropy, centrifugal "
+        f"branch-order, omit/split-near-merge co-location) — those held only on one "
+        f"brain or collapsed under correction, so a policy built on them would "
+        f"overfit a single brain.\n"
+        f"  • Prefer a lever that you and prior generations (see the attempts list) "
+        f"have NOT tried yet — breadth across the qualifying findings beats "
+        f"re-tuning the same one.\n"
+        f"  • The priors are GT-derived population statistics about error geometry, "
+        f"NOT this run's labels — using their thresholds/discriminators is fair game "
+        f"and does NOT violate the no-hardcoded-label rule; never copy a raw "
+        f"segment-id literal.\n"
+        f"Cite the finding number(s) you relied on in your rules.md change log."
+    )
+
+
 async def ask_reviser(
     client: ClaudeSDKClient, report_path: str,
     heuristics_path: str, rules_path: str, verbose: bool,
     attempts: list[dict] | None = None,
+    priors_path: str | None = None,
 ):
     """Run the proofreader-reviser subagent on the failure report. Returns
     (text, input_tokens, output_tokens, cost_usd).
@@ -420,7 +505,9 @@ async def ask_reviser(
     The agent is told to edit THIS RUN's working copies (under runs/<id>/artifacts),
     not the pristine originals under proofreader_evolve/artifacts. ``attempts`` is
     the memory of revisions already tried against the current parent (B), woven
-    into the prompt so the agent proposes something NEW.
+    into the prompt so the agent proposes something NEW. ``priors_path``, when
+    given, points the agent at the validated discovery knowledge base (see
+    ``_format_priors`` for the trust discipline applied to it).
     """
     instruction = (
         "Use the proofreader-reviser subagent to improve the evolved proofreading "
@@ -428,8 +515,11 @@ async def ask_reviser(
         f"{rules_path}. Edit THOSE files in place (do not touch any other files). "
         f"The failure report for the latest candidate is at {report_path}. "
         "Diagnose why the policy lost accuracy, make ONE concrete improvement to "
-        "propose_edits (keeping its call signature), update the rules file and its "
-        "change log, and confirm the module imports."
+        "propose_edits (keeping its call signature), and update the rules file and "
+        "its change log. Do NOT claim you ran, imported, or tested anything — you "
+        "have no Bash; the harness import-checks and lint-checks your edit after "
+        "you finish."
+        + _format_priors(priors_path)
         + _format_attempts(attempts or [])
         + ("\nPropose a DIFFERENT improvement from any listed above."
            if attempts else "")
@@ -539,8 +629,19 @@ def collect_report_labels(merge_labels: dict, train_run) -> set:
     (``merge_labels`` keys) plus the labels named in the candidate's own edits
     (merge endpoints / split labels). The lint forbids the policy SOURCE from
     containing any of these as a literal.
+
+    Mirrors the failure report's TRAIN-only isolation: the report only ever names
+    a merge label when >=2 of its GT neurons fall in this run's TRAIN skeletons
+    (see ``candidate._failure_report_body``). We restrict the merge-target ids to
+    that same set so the lint key-set is a pure function of train GT — never the
+    full-brain ``merge_labels`` keys, which would leak held-out label membership.
     """
-    labels: set = set(map(str, (merge_labels or {}).keys()))
+    per_swc = getattr(getattr(train_run, "score", None), "per_swc", None)
+    report_gt = set(per_swc.index) if per_swc is not None else set()
+    labels: set = {
+        str(label) for label, info in (merge_labels or {}).items()
+        if sum(1 for n in info.get("gt_skeletons", []) if n in report_gt) >= 2
+    }
     for e in (getattr(train_run, "edits", None) or []):
         if not isinstance(e, dict):
             continue
@@ -642,6 +743,31 @@ def evaluate_gate(
                   f"over-splitting (%Split {parent_split:.3f}->{cand_split:.3f})")
 
 
+def no_per_skeleton_merge_regression(cand_per_swc, parent_per_swc, merge_tol: float = 0.0):
+    """Per-skeleton hard guard: no held-out skeleton may GAIN a merge error.
+
+    The pooled / per-fold merge guard in ``evaluate_gate`` compares run-length-
+    weighted AVERAGES, so a candidate that creates a merge on one skeleton while
+    removing one on another can net to flat (or even improve) and slip through —
+    yet a merge error WAS created. This guard is strictly stronger: it requires
+    that NO individual held-out skeleton regress on either merge component
+    (``# Merges`` or ``% Merged Edges``).
+
+    Correct repairs never trip it: unifying two fragments of the SAME neuron never
+    raises that neuron's ``# Merges`` or ``% Merged Edges`` (only a wrong fusion
+    does), so the per-skeleton check inherits the same can't-reject-a-good-repair
+    invariant the pooled guard relies on — just enforced row by row. The ``1e-9``
+    absorbs float noise when ``merge_tol`` is 0; skeletons missing from the parent
+    (NaN after reindex) compare False and are never flagged.
+
+    Returns the sub-frame of ``cand_per_swc`` rows that regressed (empty == pass).
+    """
+    parent = parent_per_swc.reindex(cand_per_swc.index)
+    bad_nmerge = cand_per_swc["# Merges"] > parent["# Merges"] + merge_tol + 1e-9
+    bad_pct = cand_per_swc["% Merged Edges"] > parent["% Merged Edges"] + merge_tol + 1e-9
+    return cand_per_swc[bad_nmerge | bad_pct]
+
+
 _FOLD_METRIC_COLS = ("Edge Accuracy", "% Merged Edges", "# Merges", "% Split Edges")
 
 
@@ -725,14 +851,170 @@ def human_gate(gen: int, train_acc: float, heldout_acc: float, parent_acc: float
     return ans == "y"
 
 
+@dataclass
+class BrainContext:
+    """Everything needed to score one brain, kept separate per brain.
+
+    Brains are NEVER pooled at the data level: a raw segment-id label is not
+    comparable across brains, and each brain has its own ~1.6 GB prepared state,
+    fragment graph, and image reader. We score each brain independently and pool
+    only the per-skeleton RESULTS (the per_swc rows, whose index — e.g.
+    ``N005-789202-SP`` — already carries the brain id, so pooled rows never collide).
+    """
+    brain: str
+    fragments_graph: object
+    image_reader: object
+    prepared: object
+    baseline_full: object                 # ScoreResult on the whole brain (no edits)
+    train_names: list                     # this brain's train skeletons
+    heldout_names: list                   # this brain's held-out skeletons
+    merge_labels: dict                     # this brain's baseline merge targets
+    base_train: object = None              # per_swc baseline rows for train
+    base_heldout: object = None            # per_swc baseline rows for held-out
+    label_gt_map: dict = None              # TRAIN-only {label: {gt_neuron: count}}
+                                           # for the leak-free SplitSite audit
+    heldout_label_gt_map: dict = None      # HELD-OUT {label: {gt_neuron: count}} —
+                                           # GATE-ONLY split-repair scoring. LEAK
+                                           # BOUNDARY: never goes into the failure
+                                           # report / reviser; only the gate reads it.
+
+
+def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
+                 split_seed: int, with_image: bool, verbose: bool) -> BrainContext:
+    """Load + prepare ONE brain and compute its train/held-out split + baseline.
+
+    Mirrors the original single-brain setup, factored out so a run can hold several
+    brains at once. The prepared-brain pickle (expensive) is reused from any prior
+    run if present, exactly as before.
+    """
+    paths = scoring.BrainPaths(brain)
+    cache_path = ds.default_cache_path(brain)
+    log(f"[{brain}] Loading cached fragment graph: {cache_path}")
+    fragments_graph, _gt_graph, _ = ds.load_cached_graphs(cache_path)
+
+    image_reader = None
+    if with_image:
+        from proofreader_evolve.harness.image_features import LazyImagePatchReader
+        import sys as _sys
+        _scripts = str(PROJECT_ROOT / "scripts")
+        _sys.path.insert(0, _scripts)
+        from dataset_config import get_img_path  # noqa: E402
+        _prefixes = str(PROJECT_ROOT / "configs" / "exaspim_image_prefixes.json")
+        img_path = get_img_path(brain, prefixes_path=_prefixes)
+        image_reader = LazyImagePatchReader(img_path, fragments_graph)
+        log(f"[{brain}] Image patch reader ENABLED (lazy): {img_path}")
+
+    prepared_cache = str(run_dir / f"prepared_{brain}.pkl")
+    if not os.path.exists(prepared_cache):
+        reuse = _find_existing_prepared(brain, exclude=run_dir)
+        if reuse:
+            log(f"[{brain}] Reusing prepared brain from a prior run: {reuse}")
+            shutil.copy2(reuse, prepared_cache)
+    log(f"[{brain}] Preparing brain for incremental scoring (cache: {prepared_cache})")
+    with Heartbeat(f"[{brain}] preparing brain (load/build — can be ~30 min cold)"):
+        prepared = inc.get_or_build(paths, prepared_cache, verbose=verbose)
+
+    with Heartbeat(f"[{brain}] scoring baseline"):
+        baseline_full = inc.score_incremental(prepared, label_pairs=None, verbose=verbose)
+    all_gt_names = list(baseline_full.per_swc.index)
+    # Per-brain 70/30 (or as configured) split, seeded so it is reproducible. Each
+    # brain splits its OWN skeletons, so no brain lands wholly in train or held-out.
+    train_names, heldout_names = ds.train_heldout_split(
+        all_gt_names, heldout_fraction=heldout_fraction, seed=split_seed
+    )
+    merge_labels = inc.collect_merge_labels(prepared)
+    # TRAIN-ONLY label->{gt_neuron: count} map for the SplitSite audit. Restricting
+    # to train_names keeps the SplitSite TRUE/NON verdict leak-free (held-out
+    # membership is never revealed).
+    label_gt_map = inc.label_gt_counts(prepared, gt_names=train_names)
+    # HELD-OUT label->neuron map: GATE-ONLY (the dense split-repair gate signal).
+    # Kept strictly separate from the train-only map above — only the gate reads it,
+    # never the failure report / reviser, so held-out membership is never leaked.
+    heldout_label_gt_map = inc.label_gt_counts(prepared, gt_names=heldout_names)
+    log(f"[{brain}] {len(all_gt_names)} GT -> {len(train_names)} train / "
+        f"{len(heldout_names)} held-out; {len(merge_labels)} baseline merge target(s)")
+
+    base_train = baseline_full.per_swc.loc[
+        baseline_full.per_swc.index.isin(train_names)]
+    base_heldout = baseline_full.per_swc.loc[
+        baseline_full.per_swc.index.isin(heldout_names)]
+    return BrainContext(
+        brain=brain, fragments_graph=fragments_graph, image_reader=image_reader,
+        prepared=prepared, baseline_full=baseline_full,
+        train_names=train_names, heldout_names=heldout_names,
+        merge_labels=merge_labels, base_train=base_train, base_heldout=base_heldout,
+        label_gt_map=label_gt_map, heldout_label_gt_map=heldout_label_gt_map,
+    )
+
+
+def _score_pooled(brains: list, names_attr: str, work_heuristics: str,
+                  split_name: str, max_class_size, verbose: bool):
+    """Run the policy on every brain's own (train|heldout) skeletons and POOL results.
+
+    Each brain is scored with ITS OWN prepared state + fragment graph + image reader
+    (data is never crossed). Returns ``(pooled_per_swc, per_brain_runs)`` where
+    ``pooled_per_swc`` concatenates each brain's per-skeleton rows (indices carry the
+    brain id; ``verify_integrity`` enforces no collision) and ``per_brain_runs`` is the list of each
+    brain's CandidateRun (kept for the per-brain failure report). The pooled frame is
+    what the run-length-weighted gate metrics are computed over, so a brain with more
+    cable carries proportionally more weight — the same weighting the metric uses
+    within a brain, applied across the pool.
+    """
+    import pandas as pd
+    per_brain_runs = []
+    frames = []
+    for bc in brains:
+        names = getattr(bc, names_attr)
+        run = cand.run_candidate(
+            bc.prepared, bc.fragments_graph, names, split_name,
+            work_heuristics, max_class_size=max_class_size,
+            image_reader=bc.image_reader, verbose=verbose,
+        )
+        per_brain_runs.append(run)
+        frames.append(run.score.per_swc)
+    # verify_integrity: pooling weights metrics by name, so a cross-brain name
+    # collision would double-count silently — fail fast at the concat instead.
+    pooled = pd.concat(frames, verify_integrity=True) if frames else None
+    return pooled, per_brain_runs
+
+
+def _pooled_split_repair(brains: list, per_brain_runs: list) -> dict:
+    """Pool the dense split-repair gate signal across brains.
+
+    For each brain, classify that brain's held-out edits against ITS OWN held-out
+    label→neuron map (raw labels are not comparable across brains, so each brain is
+    classified with its own map and only the COUNTS are pooled). Returns
+    ``{"correct": int, "false": int, "unscored": int, "score": int}`` where
+    ``score = correct - false`` is the primary fitness (dense: every repaired split
+    counts, unlike Edge Accuracy which only moves on a bridged split edge).
+
+    GATE-ONLY: reads each brain's ``heldout_label_gt_map``; never exposed to the
+    reviser.
+    """
+    tot = {"correct": 0, "false": 0, "unscored": 0}
+    for bc, run in zip(brains, per_brain_runs):
+        c = inc.classify_merge_edits(run.edits, bc.heldout_label_gt_map)
+        tot["correct"] += c["correct"]
+        tot["false"] += c["false"]
+        tot["unscored"] += c["unscored"]
+    tot["score"] = tot["correct"] - tot["false"]
+    return tot
+
+
 async def run_evolution(
     brain: str, generations: int, heldout_fraction: float,
     human: bool, verbose: bool, model: str = DEFAULT_MODEL,
     gate_eps: float = 0.05, max_class_size=None, seed_from: str | None = None,
     split_seed: int | None = None, with_image: bool = True,
     split_tol: float = 0.05, merge_tol: float = 0.0, k_folds: int = 1,
+    brains: list | None = None,
 ) -> None:
-    run_id = f"{brain}_{datetime.now():%Y%m%d_%H%M%S}"
+    # Brain set: --brains (list) takes precedence; else the single --brain. The run
+    # id uses the first brain + a tag of the count so multi-brain runs are obvious.
+    brain_list = [str(b) for b in (brains or [brain])]
+    primary_brain = brain_list[0]
+    run_tag = primary_brain if len(brain_list) == 1 else f"{primary_brain}+{len(brain_list)-1}"
+    run_id = f"{run_tag}_{datetime.now():%Y%m%d_%H%M%S}"
     run_dir = HERE / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     ledger = Ledger(str(run_dir / "ledger.jsonl"))
@@ -746,134 +1028,100 @@ async def run_evolution(
     log(f"  originals (untouched): {HEURISTICS}")
     log(f"  working copies (revised this run): {work_heuristics}")
 
-    # --- One-time setup: prepared brain (expensive, cached), split, baseline --
-    paths = scoring.BrainPaths(brain)
-
-    # Cached fragment graph drives candidate-site GEOMETRY (fast, no GCS).
-    cache_path = ds.default_cache_path(brain)
-    log(f"Loading cached fragment graph (site geometry): {cache_path}")
-    fragments_graph, _gt_graph, _ = ds.load_cached_graphs(cache_path)
-
-    # Optional lazy image-patch reader for the policy (off unless --with-image).
-    # Built once and shared across generations; opens the cloud client only on the
-    # first read, so enabling it is free until the policy actually queries it.
-    image_reader = None
-    if with_image:
-        from proofreader_evolve.harness.image_features import LazyImagePatchReader
-        import sys as _sys
-        # configs/ and scripts/ live in PROJECT_ROOT (exa-spim-agent/), one level
-        # above proofreader_evolve/ -- not at the outer repo root.
-        _scripts = str(PROJECT_ROOT / "scripts")
-        _sys.path.insert(0, _scripts)
-        from dataset_config import get_img_path  # noqa: E402
-        _prefixes = str(PROJECT_ROOT / "configs" / "exaspim_image_prefixes.json")
-        img_path = get_img_path(brain, prefixes_path=_prefixes)
-        image_reader = LazyImagePatchReader(img_path, fragments_graph)
-        log(f"Image patch reader ENABLED (lazy): {img_path}")
-
-    # PreparedBrain drives SCORING. Built once (~30 min, ~1.6 GB), then pickled.
-    # It lives in THIS run's folder, but the ~30 min build is candidate-invariant
-    # and identical across runs of the same brain, so we REUSE an existing pickle
-    # from any prior run folder (or the legacy runs/ location) rather than rebuild.
-    prepared_cache = str(run_dir / f"prepared_{brain}.pkl")
-    if not os.path.exists(prepared_cache):
-        reuse = _find_existing_prepared(brain, exclude=run_dir)
-        if reuse:
-            log(f"Reusing prepared brain from a prior run: {reuse}")
-            shutil.copy2(reuse, prepared_cache)
-    log(f"Preparing brain for incremental scoring (cache: {prepared_cache})")
-    with Heartbeat("preparing brain (load/build — can be ~30 min on a cold cache)"):
-        prepared = inc.get_or_build(paths, prepared_cache, verbose=verbose)
-
-    log("Scoring BASELINE (no edits) incrementally — sets the bar and GT split...")
-    with Heartbeat("scoring baseline"):
-        baseline_full = inc.score_incremental(prepared, label_pairs=None, verbose=verbose)
-    all_gt_names = list(baseline_full.per_swc.index)
-    # Split seed: RANDOM by default (different train/held-out partition each run,
-    # so the gate isn't perpetually optimizing one fixed split). We draw a concrete
-    # seed and RECORD it, so the run is still reproducible after the fact; pass
-    # --split-seed to pin it.
+    # --- One-time setup: load+prepare EVERY brain (expensive, cached) -----------
+    # Split seed: RANDOM by default; drawn once and shared across brains so every
+    # brain's 70/30 split is reproducible from this one recorded seed.
     if split_seed is None:
         split_seed = int.from_bytes(os.urandom(4), "little")
-    train_names, heldout_names = ds.train_heldout_split(
-        all_gt_names, heldout_fraction=heldout_fraction, seed=split_seed
-    )
-    log(f"GT skeletons: {len(all_gt_names)} total -> "
-        f"{len(train_names)} train, {len(heldout_names)} held-out "
-        f"(split_seed={split_seed})")
+    log(f"Brains: {brain_list} (split_seed={split_seed}, "
+        f"heldout_fraction={heldout_fraction})")
+    brain_ctxs = [
+        _setup_brain(b, run_dir, heldout_fraction, split_seed, with_image, verbose)
+        for b in brain_list
+    ]
 
-    # K-fold the HELD-OUT set for gating (the train report is unchanged). With few
-    # held-out neurons a single weighted mean is near-quantized and dominated by
-    # which neurons landed in held-out; rotating K disjoint folds and gating on the
-    # AGGREGATE turns that one noisy point into a stable mean (+ per-fold variance),
-    # so a small true improvement becomes detectable. k_folds=1 => one fold == the
-    # whole held-out set, i.e. byte-identical to the legacy single-split gate.
-    k_eff = max(1, min(k_folds, len(heldout_names)))
+    # Pooled held-out names across brains. Pooling indexes skeletons BY NAME (concat
+    # / isin / loc / fold slicing), which silently corrupts — duplicate rows, double-
+    # counted weights — if two brains share a skeleton name. The name is expected to
+    # embed the brain id (e.g. N005-789202-SP), but the harness never enforces that,
+    # and passing the same brain twice (--brains 789202,789202) would collide too. So
+    # fail FAST here, at the pool boundary, turning a silent miscount into a clear
+    # startup error before any scoring runs.
+    import pandas as _pd
+    pooled_heldout = [n for bc in brain_ctxs for n in bc.heldout_names]
+    _dupes = sorted({n for n in pooled_heldout if pooled_heldout.count(n) > 1})
+    assert not _dupes, (
+        f"pooled held-out skeleton names collide across brains: "
+        f"{_dupes[:5]}{' …' if len(_dupes) > 5 else ''} "
+        f"({len(_dupes)} total). Pooling indexes by name, so names must be globally "
+        f"unique — check that each brain's skeletons embed its brain id and that no "
+        f"brain was passed twice."
+    )
+    # verify_integrity re-checks the same invariant at the frame level (the rows that
+    # actually get weighted), so a future name-source change can't reintroduce it.
+    pooled_base_heldout = _pd.concat(
+        [bc.base_heldout for bc in brain_ctxs], verify_integrity=True)
+    baseline_heldout = scoring._weighted_avg(pooled_base_heldout, "Edge Accuracy")
+    log(f"Pooled held-out: {len(pooled_heldout)} neurons across {len(brain_ctxs)} "
+        f"brain(s); baseline (no-edit) Edge Accuracy = {baseline_heldout:.4f}")
+
+    # K-fold the POOLED held-out set for gating (per-brain train reports unchanged).
+    # k_folds=1 => one fold == the whole pooled held-out, i.e. the single-split gate
+    # over the pool. The folds are name lists; scoring slices the pooled per_swc.
+    k_eff = max(1, min(k_folds, len(pooled_heldout)))
     if k_eff != k_folds:
-        log(f"k_folds {k_folds} clamped to {k_eff} (only {len(heldout_names)} "
-            f"held-out neurons)")
+        log(f"k_folds {k_folds} clamped to {k_eff} (only {len(pooled_heldout)} "
+            f"pooled held-out neurons)")
     if k_eff <= 1:
-        heldout_folds = [{"fold": 0, "heldout": list(heldout_names),
-                          "train": list(train_names)}]
+        heldout_folds = [{"fold": 0, "heldout": list(pooled_heldout)}]
     else:
-        heldout_folds = ds.kfold_split(heldout_names, k=k_eff, seed=split_seed)
+        heldout_folds = ds.kfold_split(pooled_heldout, k=k_eff, seed=split_seed)
     log(f"Held-out K-fold: {k_eff} fold(s), sizes "
         f"{[len(f['heldout']) for f in heldout_folds]}")
 
-    # Persist the seed + the exact partition so the run can be reproduced/audited.
+    # Persist the seed + the exact per-brain partition so the run is reproducible.
     (run_dir / "split.json").write_text(json.dumps({
         "split_seed": split_seed,
         "heldout_fraction": heldout_fraction,
-        "train": train_names,
-        "heldout": heldout_names,
+        "brains": brain_list,
+        "per_brain": {bc.brain: {"train": bc.train_names,
+                                 "heldout": bc.heldout_names} for bc in brain_ctxs},
         "k_folds": k_eff,
         "heldout_folds": [f["heldout"] for f in heldout_folds],
     }, indent=2))
 
-    # Baseline (no-edit) restricted to each split — the reference floor and the
-    # comparison shown in the failure report.
-    base_train = baseline_full.per_swc.loc[
-        baseline_full.per_swc.index.isin(train_names)]
-    base_heldout = baseline_full.per_swc.loc[
-        baseline_full.per_swc.index.isin(heldout_names)]
-    baseline_heldout = scoring._weighted_avg(base_heldout, "Edge Accuracy")
-    log(f"Baseline (no-edit) held-out Edge Accuracy = {baseline_heldout:.4f}")
-
-    # Baseline (pre-existing) merge errors by raw label — the split_label repair
-    # targets surfaced in the failure report. Candidate-invariant (GT-derived), so
-    # compute ONCE here. DIAGNOSIS-ONLY: passed to the report, which restricts it to
-    # the TRAIN skeletons; it never reaches a held-out policy.
-    merge_labels = inc.collect_merge_labels(prepared)
-    log(f"Baseline merge errors: {len(merge_labels)} raw label(s) span >=2 GT "
-        f"neurons (the split_label repair targets)")
-
     # PARENT-RELATIVE gate: each generation must beat the CURRENT policy (its
-    # parent), not the global no-edit baseline. The parent is the last accepted
-    # policy (initially the seed in the working copy). Score the seed once to set
-    # the bar — the seed is a conservative colinear-merge policy (not a no-op), so
-    # this bar sits at or above the no-edit baseline; scoring it makes the gate
-    # correct for ANY seed and lets sub-baseline lineages still climb.
-    log("Scoring SEED policy on held-out — sets the bar generation 1 must beat...")
-    with Heartbeat("scoring seed policy on held-out"):
-        seed_heldout_run = cand.run_candidate(
-            prepared, fragments_graph, heldout_names, "heldout",
-            str(work_heuristics), max_class_size=max_class_size,
-                    image_reader=image_reader, verbose=verbose,
+    # parent). Score the SEED on the pooled held-out once to set the bar.
+    log("Scoring SEED policy on pooled held-out — sets the bar gen 1 must beat...")
+    with Heartbeat("scoring seed policy on pooled held-out"):
+        seed_pooled, seed_runs = _score_pooled(
+            brain_ctxs, "heldout_names", str(work_heuristics), "heldout",
+            max_class_size, verbose,
         )
-    parent_heldout = seed_heldout_run.score.primary
-    # Full held-out metric vector of the current parent, so the gate can enforce
-    # component guards (% Merged Edges / # Merges / % Split Edges) for split_label
-    # generations — not just the Edge Accuracy scalar. Advances on every accept.
-    parent_metrics = dict(seed_heldout_run.score.metrics)
-    # Per-fold parent metric vectors — the bar each fold must hold against. Sliced
-    # from the SAME single scoring pass (no extra cost). Advances on every accept.
+    # Dense split-repair fitness of the SEED (the PRIMARY gate signal): correct
+    # held-out merges minus false ones. Edge Accuracy stays computed/recorded but is
+    # no longer the bar — it reads +0.000 for most real repairs (only a bridged
+    # split EDGE moves it), which is why evolution flat-lined. See classify_merge_edits.
+    parent_repair = _pooled_split_repair(brain_ctxs, seed_runs)
+    log(f"Seed split-repair: correct={parent_repair['correct']} "
+        f"false={parent_repair['false']} score={parent_repair['score']} "
+        f"(unscored={parent_repair['unscored']}) — the bar gen 1 must beat")
+    # Full pooled held-out metric vector of the parent (run-length-weighted over the
+    # pool). Advances on every accept.
+    parent_metrics = {m: scoring._weighted_avg(seed_pooled, m)
+                      for m in _FOLD_METRIC_COLS}
+    parent_heldout = parent_metrics["Edge Accuracy"]
+    # Per-skeleton parent rows (the SAME pooled pass), kept so the per-skeleton merge
+    # guard can compare each held-out skeleton against the accepted parent. Advances
+    # on every accept, in lockstep with parent_metrics / parent_fold_metrics.
+    parent_pooled = seed_pooled
+    # Per-fold parent metric vectors — sliced from the SAME pooled scoring pass.
     parent_fold_metrics = [
-        fold_metrics(seed_heldout_run.score.per_swc, f["heldout"])
-        for f in heldout_folds
+        fold_metrics(seed_pooled, f["heldout"]) for f in heldout_folds
     ]
     import statistics as _st
     parent_mean_acc = _st.fmean(m["Edge Accuracy"] for m in parent_fold_metrics)
-    log(f"Seed policy held-out Edge Accuracy = {parent_heldout:.4f} "
+    log(f"Seed policy pooled held-out Edge Accuracy = {parent_heldout:.4f} "
         f"(full); K-fold mean = {parent_mean_acc:.4f} over {k_eff} fold(s) "
         f"(the bar generation 1 must beat)")
 
@@ -881,6 +1129,15 @@ async def run_evolution(
     log(f"Reviser model: {model} (Anthropic API)")
     log("Run isolation: reviser tools = Read/Write/Edit/Task; cross-run file "
         "access DENIED via can_use_tool (audit -> tool_audit.jsonl)")
+    # Validated discovery priors: pass the ABSOLUTE path (the reviser's cwd is the
+    # run dir, and the file lives outside runs/, so the isolation guard allows
+    # reading it). None when the knowledge base is absent => prompt unchanged.
+    priors_path = str(DISCOVERY_PRIORS.resolve()) if DISCOVERY_PRIORS.is_file() else None
+    if priors_path:
+        log(f"Discovery priors: reviser will read {priors_path} "
+            f"(trusting GENERALIZES+UPHELD findings only)")
+    else:
+        log(f"Discovery priors: none found at {DISCOVERY_PRIORS} (reviser runs without)")
     # B: memory of revisions tried against the CURRENT parent; cleared when the
     # parent advances (an accept), since past rejections no longer apply.
     attempts_vs_parent: list[dict] = []
@@ -894,33 +1151,42 @@ async def run_evolution(
             gen_dir = run_dir / f"gen{gen:02d}"
             snapshot(gen_dir, work_heuristics, work_rules)  # revert source if rejected
 
-            # (1-3) Run CURRENT policy on TRAIN; build the failure report.
+            # (1-3) Run CURRENT policy on each brain's TRAIN; build the failure
+            # report. Per brain so raw labels / merge targets stay brain-local.
             log("Step 1-3: run current policy on train, build failure report...")
             with Heartbeat(f"gen {gen}: running policy on train"):
-                train_run = cand.run_candidate(
-                    prepared, fragments_graph, train_names, "train",
-                    str(work_heuristics), max_class_size=max_class_size,
-                    image_reader=image_reader, verbose=verbose,
+                _, train_runs = _score_pooled(
+                    brain_ctxs, "train_names", str(work_heuristics), "train",
+                    max_class_size, verbose,
                 )
             report_path = str(gen_dir / "failure_report.md")
-            cand.write_failure_report(
-                train_run,
-                scoring.ScoreResult(  # baseline on train, wrapped for the report
-                    primary=scoring._weighted_avg(base_train, "Edge Accuracy"),
-                    metrics={}, per_swc=base_train, output_dir="", seconds=0.0,
-                ),
-                report_path,
-                merge_labels=merge_labels,  # baseline merge targets (train-restricted in-report)
-            )
-            log(f"   train Edge Accuracy={train_run.score.primary:.4f} "
-                f"({train_run.n_edits} edits); report -> {report_path}")
+            per_brain_report = [
+                (bc.brain, tr,
+                 scoring.ScoreResult(  # baseline on this brain's train, for the report
+                     primary=scoring._weighted_avg(bc.base_train, "Edge Accuracy"),
+                     metrics={}, per_swc=bc.base_train, output_dir="", seconds=0.0),
+                 bc.merge_labels, bc.label_gt_map)
+                for bc, tr in zip(brain_ctxs, train_runs)
+            ]
+            if len(per_brain_report) == 1:
+                _, tr, base_sr, ml, lgm = per_brain_report[0]
+                cand.write_failure_report(tr, base_sr, report_path,
+                                          merge_labels=ml, label_gt_map=lgm)
+            else:
+                cand.write_multibrain_failure_report(per_brain_report, report_path)
+            train_acc = scoring._weighted_avg(
+                _pd.concat([tr.score.per_swc for tr in train_runs]), "Edge Accuracy")
+            n_edits_total = sum(tr.n_edits for tr in train_runs)
+            log(f"   train Edge Accuracy={train_acc:.4f} "
+                f"({n_edits_total} edits across {len(train_runs)} brain(s)); "
+                f"report -> {report_path}")
 
             # (4-5) Ask the agent to explain and revise the WORKING-COPY artifacts.
             log("Step 4-5: proofreader-reviser diagnoses and revises artifacts...")
             with Heartbeat(f"gen {gen}: waiting on reviser (LLM)"):
                 diagnosis, in_tok, out_tok, cost = await ask_reviser(
                     client, report_path, str(work_heuristics), str(work_rules), verbose,
-                    attempts=attempts_vs_parent,
+                    attempts=attempts_vs_parent, priors_path=priors_path,
                 )
 
             # (A) Persist what the reviser wrote THIS generation — before scoring or
@@ -946,7 +1212,9 @@ async def run_evolution(
             # rejected exactly like a failed import. Uses THIS generation's report
             # labels (baseline merge targets + the candidate's own edited labels).
             if import_ok:
-                report_labels = collect_report_labels(merge_labels, train_run)
+                report_labels = set()
+                for bc, tr in zip(brain_ctxs, train_runs):
+                    report_labels |= collect_report_labels(bc.merge_labels, tr)
                 lint_ok, lint_reason = lint_no_hardcoded_labels(
                     str(work_heuristics), report_labels
                 )
@@ -956,57 +1224,86 @@ async def run_evolution(
                         f"reverting this gen")
                     revert(gen_dir, work_heuristics, work_rules)
 
-            # The bar this gen tried to beat (pre-update): the K-fold MEAN, which is
-            # the gate's decision variable (== full-set primary when k_folds=1).
-            parent_bar = parent_mean_acc
+            # The bar this gen tried to beat (pre-update): the split-repair score,
+            # which is now the gate's decision variable.
+            parent_bar = parent_repair["score"]
+            train_seconds = sum(tr.score.seconds for tr in train_runs)
             if not import_ok:
                 # Revision was already reverted to the parent above; don't waste a
                 # held-out scoring pass on it. Record as a non-improving gen.
                 heldout_acc = parent_mean_acc
-                eval_seconds = train_run.score.seconds
+                cand_repair = dict(parent_repair)  # no change: candidate == parent
+                heldout_n_edits = 0                # nothing scored on held-out
+                eval_seconds = train_seconds
                 keep = False
                 human_touches = 0
             else:
-                # (6) Re-run the REVISED policy on HELD-OUT and score.
-                log("Step 6: score revised policy on held-out...")
-                with Heartbeat(f"gen {gen}: scoring revised policy on held-out"):
-                    heldout_run = cand.run_candidate(
-                        prepared, fragments_graph, heldout_names, "heldout",
-                        str(work_heuristics), max_class_size=max_class_size,
-                        image_reader=image_reader, verbose=verbose,
+                # (6) Re-run the REVISED policy on each brain's HELD-OUT, pool results.
+                log("Step 6: score revised policy on pooled held-out...")
+                with Heartbeat(f"gen {gen}: scoring revised policy on pooled held-out"):
+                    heldout_pooled, heldout_runs = _score_pooled(
+                        brain_ctxs, "heldout_names", str(work_heuristics), "heldout",
+                        max_class_size, verbose,
                     )
-                heldout_acc = heldout_run.score.primary
-                eval_seconds = train_run.score.seconds + heldout_run.score.seconds
+                heldout_acc = scoring._weighted_avg(heldout_pooled, "Edge Accuracy")
+                eval_seconds = train_seconds + sum(
+                    hr.score.seconds for hr in heldout_runs)
 
-                # Per-fold candidate metrics, sliced from this one scoring pass.
+                # Per-fold candidate metrics, sliced from the pooled scoring pass —
+                # still computed + recorded (Edge Accuracy is informative), but no
+                # longer the bar. They feed the ledger / log, not the keep decision.
                 cand_fold_metrics = [
-                    fold_metrics(heldout_run.score.per_swc, f["heldout"])
+                    fold_metrics(heldout_pooled, f["heldout"])
                     for f in heldout_folds
                 ]
+                cand_pooled_metrics = {m: scoring._weighted_avg(heldout_pooled, m)
+                                       for m in _FOLD_METRIC_COLS}
 
-                # (7) Gate: AGGREGATE mean Edge Accuracy across K folds must beat the
-                # parent by gate_eps, AND no fold may regress on the no-new-merge /
-                # over-split guards (per-fold strict). With K=1 this reduces exactly
-                # to the legacy single-held-out evaluate_gate. For split_label gens
-                # the per-fold guards additionally enforce the merge-repair + over-
-                # split watchdog. See evaluate_gate_kfold.
+                # (7) PRIMARY GATE = dense split-repair score on pooled held-out.
+                # Edge Accuracy only moves when a merge bridges a true split EDGE, so
+                # most correct repairs read +0.000 and evolution flat-lined. The
+                # split-repair score counts EVERY correctly-repaired held-out split
+                # (correct) and penalizes every wrong fusion (false), giving a
+                # gradient that responds to each policy change. A candidate is kept
+                # iff it makes MORE net correct repairs than the parent AND creates
+                # ZERO false merges on held-out (the no-new-merge guard, now exact:
+                # a false merge is a fusion of two different held-out neurons).
+                cand_repair = _pooled_split_repair(brain_ctxs, heldout_runs)
+                heldout_n_edits = sum(hr.n_edits for hr in heldout_runs)
                 has_split_edit = any(
                     isinstance(e, dict) and e.get("kind") == "split_label"
-                    for e in (heldout_run.edits or [])
+                    for hr in heldout_runs for e in (hr.edits or [])
                 )
-                improved, gate_reason, fold_summary = evaluate_gate_kfold(
-                    cand_fold_metrics, parent_fold_metrics,
-                    has_split_edit=has_split_edit, gate_eps=gate_eps,
-                    split_tol=split_tol, merge_tol=merge_tol,
-                )
-                # Report the K-fold MEAN as the headline held-out number (the gate's
-                # actual decision variable); keep the full-set primary for the log.
-                heldout_acc = fold_summary["cand_mean"]
+                if cand_repair["false"] > 0:
+                    improved = False
+                    gate_reason = (
+                        f"created {cand_repair['false']} false merge(s) on held-out "
+                        f"(fused different neurons) — rejected regardless of repairs "
+                        f"(correct={cand_repair['correct']})")
+                elif cand_repair["score"] > parent_repair["score"]:
+                    improved = True
+                    gate_reason = (
+                        f"split-repair score {parent_repair['score']} -> "
+                        f"{cand_repair['score']} (correct {parent_repair['correct']}"
+                        f"->{cand_repair['correct']}, false 0); no false merges")
+                else:
+                    improved = False
+                    gate_reason = (
+                        f"split-repair score {cand_repair['score']} did not beat "
+                        f"parent {parent_repair['score']} "
+                        f"(correct={cand_repair['correct']}, false=0)")
+                heldout_acc = fold_summary_mean = cand_pooled_metrics["Edge Accuracy"]
+                fold_summary = {"cand_mean": heldout_acc,
+                                "cand_fold_acc": [m["Edge Accuracy"] for m in cand_fold_metrics],
+                                "cand_stdev": 0.0}
                 log(f"   gate: {gate_reason}")
+                log(f"   (recorded: Edge Accuracy {heldout_acc:.4f}, "
+                    f"%Merged {cand_pooled_metrics['% Merged Edges']:.4f}, "
+                    f"#Merges {cand_pooled_metrics['# Merges']:.2f})")
                 human_touches = 0
                 if human:
                     human_touches = 1
-                    keep = human_gate(gen, train_run.score.primary, heldout_acc, parent_heldout)
+                    keep = human_gate(gen, train_acc, heldout_acc, parent_heldout)
                 else:
                     keep = improved
 
@@ -1015,15 +1312,17 @@ async def run_evolution(
                 f"{diffstat} lines; " + (diagnosis or "").strip().split("\n", 1)[0][:120]
             ) or "(no diagnosis text)"
             if keep:
-                parent_heldout = heldout_run.score.primary  # full-set primary
-                parent_mean_acc = heldout_acc                # K-fold mean (the bar)
-                # Advance the full + per-fold metric vectors so the next generation's
-                # gate (the aggregate mean AND the per-fold guards) measures against
-                # THIS accepted child, not a stale baseline. Only set when we actually
-                # scored held-out (import-failed gens keep the prior parent).
+                parent_heldout = cand_pooled_metrics["Edge Accuracy"]  # pooled primary
+                parent_mean_acc = heldout_acc                # recorded Edge Accuracy
+                # Advance the metric vectors AND the split-repair bar so the next
+                # generation's gate measures against THIS accepted child, not a stale
+                # baseline. Only set when we actually scored held-out (import-failed
+                # gens keep the prior parent).
                 if import_ok:
-                    parent_metrics = dict(heldout_run.score.metrics)
+                    parent_metrics = dict(cand_pooled_metrics)
                     parent_fold_metrics = cand_fold_metrics
+                    parent_pooled = heldout_pooled
+                    parent_repair = cand_repair       # advance the primary gate bar
                 shutil.copy2(work_heuristics, gen_dir / "heuristics.accepted.py")
                 shutil.copy2(work_rules, gen_dir / "rules.accepted.md")
                 note = "accepted (new parent)"
@@ -1040,18 +1339,21 @@ async def run_evolution(
                 attempts_vs_parent.append({
                     "gen": gen,
                     "summary": attempt_summary,
-                    "heldout": heldout_acc - parent_bar,
+                    "heldout": cand_repair["score"] - parent_bar,
                     "accepted": False,
                 })
             # B (durable): append every generation to a file that survives crashes
-            # and restarts. Tagged with the parent bar it was tried against, so a
-            # later reader can tell which attempts are still relevant (same parent).
+            # and restarts. Tagged with the split-repair bar it was tried against, so
+            # a later reader can tell which attempts are still relevant (same parent).
             with open(attempts_log, "a") as f:
-                f.write(f"- gen{gen:02d} [vs parent {parent_bar:.3f}]: "
-                        f"held-out {heldout_acc:.3f} ({heldout_acc - parent_bar:+.3f}) "
+                f.write(f"- gen{gen:02d} [vs parent split-repair {parent_bar}]: "
+                        f"score {cand_repair['score']} "
+                        f"({cand_repair['score'] - parent_bar:+d}; "
+                        f"correct={cand_repair['correct']}, false={cand_repair['false']}) "
                         f"-> {note}; {attempt_summary}\n")
-            log(f"Step 7: held-out Edge Accuracy={heldout_acc:.4f} "
-                f"(parent={parent_heldout:.4f}, baseline={baseline_heldout:.4f}) -> {note}")
+            log(f"Step 7: split-repair score={cand_repair['score']} "
+                f"(correct={cand_repair['correct']}, false={cand_repair['false']}; "
+                f"parent={parent_bar}); Edge Accuracy={heldout_acc:.4f} -> {note}")
 
             ledger.record(GenerationCost(
                 generation=gen,
@@ -1062,11 +1364,15 @@ async def run_evolution(
                 cost_usd=cost,
                 n_evaluations=2,
                 human_interventions=human_touches,
-                train_primary=train_run.score.primary,
+                train_primary=train_acc,
                 heldout_primary=heldout_acc,
                 parent_heldout=parent_bar,
                 accepted=keep,
                 note=note,
+                heldout_n_edits=heldout_n_edits,
+                heldout_correct_merges=cand_repair["correct"],
+                heldout_false_merges=cand_repair["false"],
+                heldout_split_repair_score=cand_repair["score"],
                 candidate_path=candidate_path,
                 heuristics_diffstat=diffstat,
                 diagnosis=(diagnosis or "")[:2000],  # truncate; full text is in stdout
@@ -1095,11 +1401,19 @@ async def run_evolution(
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--brain", default="789202", help="brain_id (must have a cache pkl)")
+    p.add_argument("--brains", default=None,
+                   help="comma-separated brain_ids to POOL (e.g. "
+                        "'789202,794491,794492'). Each brain is loaded + prepared + "
+                        "split 70/30 separately; the gate scores the policy on every "
+                        "brain's own train/held-out and pools the per-skeleton "
+                        "results (data is never crossed — raw labels are not "
+                        "comparable across brains). Overrides --brain. NOTE: each "
+                        "brain holds ~1.6 GB prepared state in memory simultaneously.")
     p.add_argument("--generations", type=int, default=5)
     p.add_argument("--heldout-fraction", type=float, default=0.5,
-                   help="fraction of GT skeletons reserved for held-out gating "
-                        "(the rest are train, used for the failure report). "
-                        "Default 0.5 (even train/held-out split).")
+                   help="fraction of EACH brain's GT skeletons reserved for held-out "
+                        "gating (the rest are train). Default 0.5; pass 0.3 for the "
+                        "70/30 train/test split.")
     p.add_argument("--k-folds", type=int, default=1,
                    help="K-fold cross-validation WITHIN the held-out set for gating. "
                         "The candidate must beat the parent on the MEAN held-out "
@@ -1150,13 +1464,16 @@ def main() -> int:
                         "reads).")
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
+    brains = None
+    if args.brains:
+        brains = [b.strip() for b in args.brains.split(",") if b.strip()]
     asyncio.run(run_evolution(
         args.brain, args.generations, args.heldout_fraction,
         args.human_gate, args.verbose, args.model,
         gate_eps=args.gate_eps, max_class_size=args.max_class_size,
         seed_from=args.seed_from, split_seed=args.split_seed,
         with_image=args.with_image, split_tol=args.split_tol,
-        merge_tol=args.merge_tol, k_folds=args.k_folds,
+        merge_tol=args.merge_tol, k_folds=args.k_folds, brains=brains,
     ))
     return 0
 

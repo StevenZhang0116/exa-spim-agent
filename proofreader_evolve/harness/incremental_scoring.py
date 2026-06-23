@@ -665,6 +665,92 @@ def collect_merge_labels(prepared: "PreparedBrain", min_nodes: int = _MERGE_MIN_
     return result
 
 
+def label_gt_counts(prepared: "PreparedBrain", gt_names=None) -> dict:
+    """Map each raw segment label -> {GT skeleton: node count}, optionally restricted.
+
+    DIAGNOSIS-ONLY (reads GT node labels). When ``gt_names`` is given, only those GT
+    skeletons are counted — so a caller can build a TRAIN-ONLY label→neuron mapping
+    and never reveal held-out membership. Used to label a SplitSite TRUE/NON: a
+    merge_labels repair that unifies two fragment labels is CORRECT iff both labels'
+    dominant GT neuron is the SAME (one real neuron the segmentation broke apart) and
+    WRONG if they belong to different neurons. Mirrors collect_merge_labels' step 1.
+    """
+    keep = set(gt_names) if gt_names is not None else None
+    out: dict[str, dict[str, int]] = {}
+    for name, raw in prepared._gt_raw.items():
+        if keep is not None and name not in keep:
+            continue
+        labels, counts = np.unique(raw, return_counts=True)
+        for lab, cnt in zip(labels, counts):
+            lab = str(lab)
+            if lab == "0":
+                continue
+            out.setdefault(lab, {})[name] = int(cnt)
+    return out
+
+
+def _dominant_neuron(label_gt_map: dict, label) -> str | None:
+    """The GT neuron a fragment label MOSTLY lands on (by node count), or None.
+
+    None means the label never lands on any neuron in ``label_gt_map``'s scope
+    (e.g. a held-out-scoped map returns None for a purely-train fragment).
+    """
+    counts = label_gt_map.get(str(label))
+    if not counts:
+        return None
+    return max(counts, key=counts.get)
+
+
+def classify_merge_edits(edits, label_gt_map: dict) -> dict:
+    """Classify each ``merge_labels`` edit against a {label: {neuron: count}} map.
+
+    This is the DENSE gate signal that ``Edge Accuracy`` lacks: a merge edit only
+    moves Edge Accuracy when it happens to bridge a true split EDGE, so most correct
+    repairs read as +0.000 — but EVERY repair is visible here. For each merge edit,
+    look up both endpoints' dominant neuron in ``label_gt_map``:
+
+      * SAME neuron  -> ``correct`` (a real split this merge repairs),
+      * DIFFERENT     -> ``false``   (a fusion of two neurons = a merge ERROR),
+      * either endpoint absent from the map -> ``unscored`` (touches no neuron in
+        this map's scope; not counted either way).
+
+    ``label_gt_map`` MUST be built over the SAME GT subset the gate scores on
+    (e.g. ``label_gt_counts(prepared, gt_names=heldout_names)`` for the held-out
+    gate). LEAK BOUNDARY: this is GT-derived; pass the HELD-OUT map only into the
+    gate, never into the failure report / reviser (which use the train-only map).
+
+    Returns ``{"correct": int, "false": int, "unscored": int,
+               "correct_pairs": [...], "false_pairs": [...]}``. ``split_label`` /
+    other edit kinds are ignored (they are scored by the merge metrics, not here).
+    """
+    correct = []
+    false = []
+    n_unscored = 0
+    for e in (edits or []):
+        # Pull the two endpoint labels out of either edit form.
+        if isinstance(e, dict):
+            if e.get("kind", "merge_labels") != "merge_labels":
+                continue  # split_label / flag / reject: not a merge to classify
+            a, b = e.get("label_a"), e.get("label_b")
+        elif isinstance(e, (tuple, list)) and len(e) >= 2:
+            a, b = e[0], e[1]
+        else:
+            continue
+        da = _dominant_neuron(label_gt_map, a)
+        db = _dominant_neuron(label_gt_map, b)
+        if da is None or db is None:
+            n_unscored += 1
+            continue
+        (correct if da == db else false).append((str(a), str(b), da, db))
+    return {
+        "correct": len(correct),
+        "false": len(false),
+        "unscored": n_unscored,
+        "correct_pairs": correct,
+        "false_pairs": false,
+    }
+
+
 def probe_split_oracle(prepared: PreparedBrain, min_nodes: int = 50, verbose: bool = False):
     """Diagnostic: the *ceiling* gain from a perfect ``split_label`` correction.
 

@@ -33,6 +33,11 @@ class GenerationCost:
     parent_heldout: float = float("nan") # held-out of the parent this gen tried to beat
     accepted: bool = False               # was the revision kept?
     note: str = ""
+    # --- held-out edit activity (what the policy actually did on the gated set) --
+    heldout_n_edits: int = 0             # total edits the policy emitted on held-out
+    heldout_correct_merges: int = 0      # merges joining the SAME held-out neuron
+    heldout_false_merges: int = 0        # merges fusing DIFFERENT held-out neurons
+    heldout_split_repair_score: int = 0  # correct - false (the gate's primary signal)
     # --- traceability (A): what the reviser actually did this generation --------
     candidate_path: str = ""             # gen<NN>/heuristics.candidate.py (always saved)
     heuristics_diffstat: str = ""        # "+A -B" lines changed vs the parent policy

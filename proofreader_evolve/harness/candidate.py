@@ -94,6 +94,10 @@ class CandidateRun:
     edits: list                # the (a, b) pairs proposed (for the failure report)
     merge_sites: list = field(default_factory=list)  # enumerated MergeSites (for the
                                # failure report's per-site feature table); GT-free.
+    split_sites: list = field(default_factory=list)  # enumerated SplitSites (for the
+                               # report's SplitSite feature audit); GT-free.
+    image_reads: list = field(default_factory=list)  # image-evidence calls the policy
+                               # made this run (passively recorded; zero extra reads).
 
     def to_json(self) -> dict:
         return {
@@ -177,6 +181,16 @@ def run_candidate(
     # the difference between paying the scan once vs. once per candidate.
     split_sites, merge_sites = _enumerate_sites_cached(fragments_graph, enum_params)
     sites = list(split_sites) + list(merge_sites)
+
+    # Passively record the image-evidence calls the policy makes (gap_connectivity /
+    # merge_cut_evidence), so the failure report can turn the reads the policy ALREADY
+    # paid for into a labelled learning signal. Adds NO extra cloud reads. Only wraps
+    # when an image reader is actually present.
+    if image_reader is not None:
+        from proofreader_evolve.harness.image_features import RecordingImageReader
+        rec_reader = RecordingImageReader(image_reader)
+    else:
+        rec_reader = None
     ctx = {
         "max_gap_um": enum_params["max_gap_um"],
         # The resolved (validated + clamped) enumeration priors actually in effect
@@ -199,11 +213,13 @@ def run_candidate(
         # signal at the gap). None unless an image reader was provided — the policy
         # MUST handle ctx["read_image_patch"] is None. When present it is a
         # LazyImagePatchReader; call .read_patch(node_id[, shape]),
-        # .gap_connectivity(node_a, node_b) (split evidence: signal on both sides of
-        # a gap?), or .merge_cut_evidence(seed_a_node, seed_b_node) (merge evidence:
-        # an intensity valley between two fused arms?) — each is a cloud read, so
-        # gate it behind cheap geometric filters.
-        "read_image_patch": image_reader,
+        # .gap_connectivity(node_a, node_b) (cheap split evidence: signal at each
+        # endpoint — does NOT test the gap interior), .gap_bridge_evidence(node_a,
+        # node_b) (split evidence: is there a CONTINUOUS bright bridge across the gap?
+        # high bridge_ratio ⇒ safe to merge), or .merge_cut_evidence(seed_a_node,
+        # seed_b_node) (merge evidence: an intensity valley between two fused arms?)
+        # — each is a cloud read, so gate it behind cheap geometric filters.
+        "read_image_patch": rec_reader,
     }
 
     # The policy may return legacy (label_a, label_b) tuples OR typed edit dicts
@@ -232,6 +248,8 @@ def run_candidate(
         score=result,
         edits=edits,
         merge_sites=list(merge_sites),
+        split_sites=list(split_sites),
+        image_reads=list(rec_reader.records) if rec_reader is not None else [],
     )
 
 
@@ -240,6 +258,7 @@ def write_failure_report(
     baseline: scoring.ScoreResult,
     path: str,
     merge_labels: dict | None = None,
+    label_gt_map: dict | None = None,
 ) -> str:
     """Write the 'where you were wrong' report the agent reads to revise.
 
@@ -257,9 +276,58 @@ def write_failure_report(
         derived, so the caller must pass only the TRAIN-split merges; it tells the
         reviser what to fix, it is never a held-out policy input.
     """
+    lines = ["# Candidate failure report (train split)\n"]
+    lines.extend(_failure_report_body(train_run, baseline, merge_labels, label_gt_map))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write("\n".join(lines))
+    return path
+
+
+def write_multibrain_failure_report(per_brain: list, path: str) -> str:
+    """Write ONE failure report aggregating several brains, each in its own section.
+
+    ``per_brain`` is a list of ``(brain_id, train_run, baseline, merge_labels,
+    label_gt_map)`` tuples — one per brain, each already scored on THAT brain's train
+    split with THAT brain's merge_labels / train label→GT map. We never pool across
+    brains here: raw segment-id labels are NOT unique across brains, so a brain's
+    MergeSite / SplitSite TRUE/NON classification must use only its own maps. Each
+    brain gets a ``# Brain <id>`` block built by the same per-brain body as the
+    single-brain report; a short pooled header notes the brain set.
+    """
+    brain_ids = [str(b) for b, *_ in per_brain]
+    lines = [
+        f"# Candidate failure report (multi-brain, train split)\n",
+        f"Brains in this report: {', '.join(brain_ids)}. Each brain is scored and "
+        f"diagnosed SEPARATELY below (raw segment ids are not comparable across "
+        f"brains). Look for FEATURE patterns that hold ACROSS brains — those "
+        f"generalize; a rule that only helps one brain likely will not.\n",
+    ]
+    for brain_id, train_run, baseline, merge_labels, label_gt_map in per_brain:
+        lines.append(f"\n\n{'='*60}")
+        lines.append(f"# Brain {brain_id}\n")
+        lines.extend(_failure_report_body(train_run, baseline, merge_labels, label_gt_map))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write("\n".join(lines))
+    return path
+
+
+def _failure_report_body(
+    train_run: CandidateRun,
+    baseline: scoring.ScoreResult,
+    merge_labels: dict | None = None,
+    label_gt_map: dict | None = None,
+) -> list:
+    """The body (all sections below the top header) of one brain's failure report.
+
+    Returned as a list of markdown lines so both the single-brain and multi-brain
+    writers can reuse it. All GT/merge-label use is restricted to this train split
+    (``train_run.score.per_swc.index``), exactly as before.
+    """
     cand = train_run.score.per_swc
     base = baseline.per_swc.reindex(cand.index)
-    lines = ["# Candidate failure report (train split)\n"]
+    lines = []
     lines.append(
         f"- Proposed **{train_run.n_edits} edits** from "
         f"{train_run.n_sites} candidate sites.\n"
@@ -346,28 +414,23 @@ def write_failure_report(
     # ISOLATION (critical): the TRUE/NON-merge label of each row must be derivable
     # from the TRAIN skeletons alone, or held-out GT leaks to the mutation operator
     # through this classification. ``merge_labels`` is computed over the FULL brain
-    # (train + held-out), so we cannot use its keys directly. Three cases, by how
-    # many of a label's GT neurons fall in THIS report's skeletons (``report_gt`` ==
-    # train):
-    #   * >=2 train neurons        -> TRUE merge (train-derivable)        -> positive
-    #   * in merge_labels but <2   -> a merge only VISIBLE via held-out   -> DROP
-    #     train neurons               (or a train<->held-out cross); train cannot
-    #                                 call it, and it IS a merge so it is not a safe
-    #                                 negative either — exclude from BOTH tables.
-    #   * not a merge anywhere     -> a single real neuron                -> negative
-    # Dropping the middle case uses held-out info only to REMOVE rows (reveals
-    # nothing to the reviser); the shown labels are all train-derivable.
+    # (train + held-out), so we MUST NOT key the negative class on its membership —
+    # doing so would let held-out GT shape the negative distribution the reviser
+    # learns its threshold against (a leak, even if the dropped rows are never
+    # shown). We therefore classify strictly by the TRAIN skeletons (``report_gt``):
+    #   * >=2 train neurons carry the label -> TRUE merge (train-derivable) -> positive
+    #   * otherwise                         -> negative
+    # A merge only visible via held-out (or a train<->held-out crossing) thus lands
+    # in the negative class. That injects symmetric label NOISE into the negatives
+    # (some are really merges), but no held-out signal — the negative boundary the
+    # reviser sees is a pure function of train. This is the deliberate purity/noise
+    # trade-off: we accept noisier negatives to keep the report strictly leak-free.
     if merge_labels is not None:
         report_gt = set(cand.index)
         train_merge_labels = {
             str(label) for label, info in merge_labels.items()
             if sum(1 for n in info.get("gt_skeletons", []) if n in report_gt) >= 2
         }
-        # Merges we can only see via held-out (or train<->held-out crossings): in the
-        # full-brain merge set but not a train merge. Their sites are excluded.
-        heldout_only_merge_labels = {
-            str(label) for label in merge_labels.keys()
-        } - train_merge_labels
         sites = list(getattr(train_run, "merge_sites", None) or [])
 
         def _f(v, nd=2):
@@ -390,14 +453,12 @@ def write_failure_report(
                 f"{getattr(s, 'branch_degree', '?')} | {rec_s} |"
             )
 
-        # Three-way: positive (train merge), dropped (held-out-only merge), negative
-        # (not a merge anywhere). The dropped class never reaches either table.
+        # Two-way, train-derivable only: positive (label is a train merge) vs
+        # negative (everything else). No held-out membership is consulted.
         pos = [s for s in sites
                if str(getattr(s, "label", "")) in train_merge_labels]
         neg = [s for s in sites
-               if str(getattr(s, "label", "")) not in train_merge_labels
-               and str(getattr(s, "label", "")) not in heldout_only_merge_labels]
-        n_dropped = len(sites) - len(pos) - len(neg)
+               if str(getattr(s, "label", "")) not in train_merge_labels]
         header = ("| detector | angle_deg | radius_ratio | cable_a | cable_b | "
                   "branch_degree | arms_reconverge |")
         sep = "|---|---|---|---|---|---|---|"
@@ -418,12 +479,15 @@ def write_failure_report(
             lines.append("_no enumerated MergeSite lands on a baseline merge label "
                          "(see the recall-gap note below)._")
 
-        lines.append("\n\n## MergeSite features at NON-merges (cutting here over-splits)\n")
+        lines.append("\n\n## MergeSite features at NON-(train)-merges (cutting here usually over-splits)\n")
         lines.append(
-            "Same geometry for MergeSites whose label is NOT a baseline merge — a "
-            "`split_label` here would cut a single real neuron (raises %Split Edges). "
-            "Use these as the negative class: pick thresholds that separate the table "
-            "above from this one.\n"
+            "Same geometry for MergeSites whose label is NOT a train-visible merge — a "
+            "`split_label` here would *usually* cut a single real neuron (raises "
+            "%Split Edges). Use these as the negative class: pick thresholds that "
+            "separate the table above from this one. (A few rows here may secretly be "
+            "merges only visible on the held-out skeletons — that is intentional label "
+            "noise so the table stays a pure function of TRAIN GT; do not try to "
+            "second-guess individual rows.)\n"
         )
         if neg:
             lines.append(header); lines.append(sep)
@@ -433,13 +497,6 @@ def write_failure_report(
                 lines.append(f"\n…and {len(neg) - 60} more non-merge sites.")
         else:
             lines.append("_no non-merge MergeSites enumerated._")
-        if n_dropped:
-            lines.append(
-                f"\n_({n_dropped} MergeSite(s) omitted from BOTH tables: their label "
-                f"is a merge only visible via held-out GT, so it is neither a train-"
-                f"derivable positive nor a safe negative — excluded to keep the "
-                f"reviser's signal leak-free.)_"
-            )
 
         # Recall gap: merge targets the enumerator produced NO MergeSite for. No policy
         # change can repair these — they need a better detector — so surface them
@@ -465,6 +522,274 @@ def write_failure_report(
             else:
                 lines.append("_none — every actionable merge target has at least one "
                              "candidate MergeSite._")
+
+    # SplitSite feature audit, LABELLED by GT (train-only). Symmetric to the
+    # MergeSite tables, but for the merge_labels (split-repair) lever. Without this
+    # the reviser only learns precision from created-merge attribution ("stop
+    # over-merging"); it has no signal for RECALL — which UNSELECTED SplitSites are
+    # actually one neuron the segmentation broke and SHOULD be merged. We classify
+    # each enumerated SplitSite by whether its two fragment labels map to the SAME
+    # TRAIN GT neuron (a real split to repair) or DIFFERENT neurons (a join that
+    # would over-merge). label_gt_map is the train-only {label: {gt_neuron: count}}
+    # map (incremental_scoring.label_gt_counts), so the verdict is leak-free; a
+    # label whose dominant neuron is held-out simply has no train entry and the site
+    # is dropped (revealed to neither class). Features shown are the cheap, GT-free
+    # ones carried on the site (gap_um + partner degree); richer geometric features
+    # (colinearity/tangent) are the policy's to compute.
+    split_sites = list(getattr(train_run, "split_sites", None) or [])
+    if split_sites and label_gt_map:
+        def _dominant(lbl):
+            counts = label_gt_map.get(str(lbl))
+            if not counts:
+                return None
+            return max(counts, key=counts.get)
+
+        sp_pos, sp_neg, sp_drop = [], [], 0
+        for s in split_sites:
+            la, lb = str(getattr(s, "label_a", "")), str(getattr(s, "label_b", ""))
+            da, db = _dominant(la), _dominant(lb)
+            gap = getattr(s, "gap_um", None)
+            try:
+                gap_s = f"{float(gap):.2f}"
+            except (TypeError, ValueError):
+                gap_s = "—"
+            row = f"| {gap_s} |"
+            if da is None or db is None:
+                sp_drop += 1            # at least one label not train-visible -> drop
+            elif da == db:
+                sp_pos.append(row)      # same train neuron -> a real split to repair
+            else:
+                sp_neg.append(row)      # different neurons -> joining would over-merge
+
+        lines.append("\n\n## SplitSite audit: which gaps are REAL splits (merge_labels targets)\n")
+        lines.append(
+            "Each enumerated SplitSite, classified by whether its two fragment labels "
+            "belong to the SAME train GT neuron (a real split your `merge_labels` "
+            "SHOULD repair — the RECALL signal) or DIFFERENT neurons (a join that "
+            "would CREATE a merge — the precision signal). Use the `gap_um` "
+            "distribution to separate them; richer features (colinearity, tangent "
+            "agreement) you compute yourself from `ctx['fragments_graph']`. Labels "
+            "whose dominant neuron is held-out are omitted (leak-free).\n"
+        )
+        lines.append(f"**REAL splits — SHOULD merge** ({len(sp_pos)} sites): "
+                     f"gap_um distribution below.")
+        if sp_pos:
+            lines.append("| gap_um |"); lines.append("|---|")
+            lines.extend(sp_pos[:60])
+            if len(sp_pos) > 60:
+                lines.append(f"\n…and {len(sp_pos) - 60} more real-split sites.")
+        else:
+            lines.append("_none enumerated on a same-neuron label pair._")
+        lines.append(f"\n**FALSE joins — must NOT merge** ({len(sp_neg)} sites):")
+        if sp_neg:
+            lines.append("| gap_um |"); lines.append("|---|")
+            lines.extend(sp_neg[:60])
+            if len(sp_neg) > 60:
+                lines.append(f"\n…and {len(sp_neg) - 60} more cross-neuron sites.")
+        else:
+            lines.append("_none enumerated on a cross-neuron label pair._")
+        if sp_drop:
+            lines.append(f"\n_({sp_drop} SplitSite(s) omitted: a label's dominant "
+                         f"neuron is held-out, so no train-derivable verdict — "
+                         f"excluded to keep the signal leak-free.)_")
+
+    # Image evidence the policy ALREADY fetched, labelled by GT (train-only). The
+    # policy pays cloud reads for gap_connectivity / gap_bridge_evidence /
+    # merge_cut_evidence on the few candidates it gates through; we recorded those
+    # (zero extra reads) and split them TRUE/NON so the reviser can SEE which image
+    # thresholds separate real merges/splits from false ones — the missing learning
+    # signal for image-driven rules. Two readers get a leak-free TRUE/NON verdict:
+    #   * merge_cut_evidence — its seed nodes belong to a MergeSite whose label we
+    #     classify against the TRAIN merge set (split_label evidence).
+    #   * gap_bridge_evidence — its nodes belong to a SplitSite whose label pair we
+    #     classify by dominant TRAIN neuron via label_gt_map (merge_labels evidence).
+    # gap_connectivity (endpoint-only) has no interior verdict, so its reads are just
+    # counted.
+    img_reads = list(getattr(train_run, "image_reads", None) or [])
+    if img_reads and merge_labels is not None:
+        # Recompute the train merge label set locally (same leak-free rule as the
+        # MergeSite tables) so this block is self-contained. The classification must
+        # be a pure function of TRAIN GT: positive = label is a train merge,
+        # negative = everything else. A held-out-only merge therefore lands in the
+        # negative class as intentional label NOISE — exactly like the geometry
+        # tables above — rather than being excluded via the full-brain merge set,
+        # which would let held-out GT shape the negative distribution the reviser
+        # calibrates its image threshold against (a leak, even if dropped rows are
+        # never shown).
+        _report_gt = set(cand.index)
+        train_merge_labels = {
+            str(label) for label, info in merge_labels.items()
+            if sum(1 for n in info.get("gt_skeletons", []) if n in _report_gt) >= 2
+        }
+        # Map a MergeSite seed node -> its label, to classify merge_cut_evidence.
+        seed_to_label = {}
+        for s in (getattr(train_run, "merge_sites", None) or []):
+            lab = str(getattr(s, "label", ""))
+            for nd in (getattr(s, "seed_a_node", None), getattr(s, "seed_b_node", None)):
+                if nd is not None:
+                    seed_to_label[int(nd)] = lab
+        # Map a SplitSite tip node -> its (label_a, label_b) pair, to classify
+        # gap_bridge_evidence by the SAME train-only dominant-neuron rule as the
+        # SplitSite audit (leak-free): REAL split (both labels' dominant TRAIN neuron
+        # is the same) ⇒ a high bridge_ratio is the correct merge signal; FALSE join
+        # (different dominant neurons) ⇒ a high bridge_ratio would be a false-merge
+        # trap. A label with no train entry yields no verdict and the read is dropped.
+        node_to_label_pair = {}
+        for s in (getattr(train_run, "split_sites", None) or []):
+            pair = (str(getattr(s, "label_a", "")), str(getattr(s, "label_b", "")))
+            for nd in (getattr(s, "node_a", None), getattr(s, "node_b", None)):
+                if nd is not None:
+                    node_to_label_pair[int(nd)] = pair
+
+        def _dom(lbl):
+            counts = (label_gt_map or {}).get(str(lbl))
+            return max(counts, key=counts.get) if counts else None
+
+        def _g(d, k, nd=2):
+            v = d.get(k)
+            try:
+                fv = float(v)
+                return "NaN" if fv != fv else f"{fv:.{nd}f}"
+            except (TypeError, ValueError):
+                return "—"
+
+        cut_pos, cut_neg = [], []
+        for r in img_reads:
+            if r.get("method") != "merge_cut_evidence":
+                continue
+            lab = seed_to_label.get(r.get("node_a")) or seed_to_label.get(r.get("node_b"))
+            res = r.get("result", {})
+            row = (f"| {_g(res,'valley_ratio')} | {_g(res,'valley')} | "
+                   f"{_g(res,'endpoint_mean',1)} | {_g(res,'valley_pos')} |")
+            if lab is not None and lab in train_merge_labels:
+                cut_pos.append(row)
+            elif lab is not None and lab not in train_merge_labels:
+                cut_neg.append(row)
+
+        # gap_bridge_evidence: classify by dominant TRAIN neuron of the SplitSite's
+        # two labels (leak-free, same rule as the SplitSite audit). REAL split (same
+        # dominant neuron) -> a high bridge_ratio confirms a merge SHOULD happen;
+        # FALSE join (different) -> a high bridge_ratio here is the false-merge trap.
+        bridge_pos, bridge_neg = [], []
+        for r in img_reads:
+            if r.get("method") != "gap_bridge_evidence":
+                continue
+            pair = (node_to_label_pair.get(r.get("node_a"))
+                    or node_to_label_pair.get(r.get("node_b")))
+            if not pair:
+                continue
+            da, db = _dom(pair[0]), _dom(pair[1])
+            if da is None or db is None:
+                continue                      # not train-visible -> no verdict
+            res = r.get("result", {})
+            row = (f"| {_g(res,'bridge_ratio')} | {_g(res,'bridge_min')} | "
+                   f"{_g(res,'endpoint_mean',1)} | {_g(res,'bridge_pos')} |")
+            (bridge_pos if da == db else bridge_neg).append(row)
+
+        # read_patch: the policy read a raw cube to compute its OWN intensity feature.
+        # We can't know what it computed, but we recorded a generic summary of each
+        # cube; classify the cube's node by the site it belongs to (leak-free, reusing
+        # the two maps above) so the reviser can SEE whether those cubes separate
+        # repair targets from non-targets by train GT — the feedback that makes a
+        # self-invented image feature evolvable instead of a blind guess. A node is a
+        # TARGET if it is a REAL-split tip (both labels' dominant train neuron match)
+        # or a TRUE-merge seed; a NON-target if it is a false-join tip or non-merge
+        # seed. Nodes with no train-derivable verdict (held-out, or not on any site)
+        # are dropped.
+        patch_pos, patch_neg = [], []
+        for r in img_reads:
+            if r.get("method") != "read_patch":
+                continue
+            nd = r.get("node_a")
+            verdict = None
+            if nd in node_to_label_pair:               # SplitSite tip
+                la, lb = node_to_label_pair[nd]
+                da, db = _dom(la), _dom(lb)
+                if da is not None and db is not None:
+                    verdict = (da == db)
+            elif nd in seed_to_label:                  # MergeSite seed
+                lab = seed_to_label[nd]
+                verdict = lab in train_merge_labels
+            if verdict is None:
+                continue
+            res = r.get("result", {})
+            row = (f"| {_g(res,'mean',1)} | {_g(res,'max',1)} | {_g(res,'p90',1)} | "
+                   f"{_g(res,'occupancy',3)} | {_g(res,'std',1)} |")
+            (patch_pos if verdict else patch_neg).append(row)
+
+        gap_reads = [r for r in img_reads if r.get("method") == "gap_connectivity"]
+
+        lines.append("\n\n## Image evidence the policy read (merge_cut_evidence), by GT class\n")
+        if cut_pos or cut_neg:
+            lines.append(
+                "Valley statistics from `merge_cut_evidence` calls the policy ALREADY "
+                "made, split by whether the cut's label is a TRUE (train) merge. A LOW "
+                "`valley_ratio` (signal dips between the arms) is the merge tell; "
+                "pick a `split_label` image threshold that separates these groups.\n"
+            )
+            ih = "| valley_ratio | valley | endpoint_mean | valley_pos |"
+            isep = "|---|---|---|---|"
+            lines.append(f"**TRUE merges** ({len(cut_pos)} read):")
+            if cut_pos:
+                lines.append(ih); lines.append(isep); lines.extend(cut_pos[:40])
+            else:
+                lines.append("_none read on a true-merge label this generation._")
+            lines.append(f"\n**NON-merges** ({len(cut_neg)} read):")
+            if cut_neg:
+                lines.append(ih); lines.append(isep); lines.extend(cut_neg[:40])
+            else:
+                lines.append("_none read on a non-merge label this generation._")
+        else:
+            lines.append("_the policy made no merge_cut_evidence reads this generation "
+                         "(or none mapped to a classifiable MergeSite)._")
+        if bridge_pos or bridge_neg:
+            lines.append("\n\n## Image evidence the policy read (gap_bridge_evidence), by GT class\n")
+            lines.append(
+                "Bridge statistics from `gap_bridge_evidence` calls the policy ALREADY "
+                "made, split by whether the SplitSite's two labels are the SAME train "
+                "neuron. A HIGH `bridge_ratio` (signal stays bright across the gap) is "
+                "the merge tell; pick a `merge_labels` image threshold that ACCEPTS the "
+                "REAL splits below and REJECTS the false joins.\n"
+            )
+            bh = "| bridge_ratio | bridge_min | endpoint_mean | bridge_pos |"
+            bsep = "|---|---|---|---|"
+            lines.append(f"**REAL splits — SHOULD merge** ({len(bridge_pos)} read):")
+            if bridge_pos:
+                lines.append(bh); lines.append(bsep); lines.extend(bridge_pos[:40])
+            else:
+                lines.append("_none read on a same-neuron SplitSite this generation._")
+            lines.append(f"\n**FALSE joins — must NOT merge** ({len(bridge_neg)} read):")
+            if bridge_neg:
+                lines.append(bh); lines.append(bsep); lines.extend(bridge_neg[:40])
+            else:
+                lines.append("_none read on a cross-neuron SplitSite this generation._")
+        if patch_pos or patch_neg:
+            lines.append("\n\n## Image evidence the policy read (raw read_patch cubes), by GT class\n")
+            lines.append(
+                "Generic intensity summary of the raw cubes the policy read with "
+                "`read_patch` (to compute its OWN image feature), split by whether the "
+                "cube's node is a repair TARGET (a real split to merge / a true merge "
+                "to split) or a NON-target by train GT. If a column separates the two "
+                "groups, a feature built on it will generalize; if none do, the cube "
+                "alone is not enough and you need the chord-based readers above. "
+                "`occupancy` = fraction of voxels brighter than half the cube max.\n"
+            )
+            ph = "| mean | max | p90 | occupancy | std |"
+            psep = "|---|---|---|---|---|"
+            lines.append(f"**Repair TARGETS** ({len(patch_pos)} read):")
+            if patch_pos:
+                lines.append(ph); lines.append(psep); lines.extend(patch_pos[:40])
+            else:
+                lines.append("_none read on a repair-target node this generation._")
+            lines.append(f"\n**NON-targets** ({len(patch_neg)} read):")
+            if patch_neg:
+                lines.append(ph); lines.append(psep); lines.extend(patch_neg[:40])
+            else:
+                lines.append("_none read on a non-target node this generation._")
+        if gap_reads:
+            lines.append(f"\n_({len(gap_reads)} gap_connectivity read(s) also made "
+                         f"(endpoint-only split evidence — does not test the gap "
+                         f"interior; prefer gap_bridge_evidence); not tabulated here.)_")
 
     # The concrete edits the policy proposed, so the reviser can reason about
     # *which* edit to change — not just that some skeleton regressed. Edits are
@@ -517,8 +842,4 @@ def write_failure_report(
     else:
         lines.append("_merge attribution unavailable for this run._")
     lines.append("\n")
-
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        f.write("\n".join(lines))
-    return path
+    return lines
