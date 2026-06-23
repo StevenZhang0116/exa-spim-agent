@@ -38,6 +38,12 @@ class GenerationCost:
     heldout_correct_merges: int = 0      # merges joining the SAME held-out neuron
     heldout_false_merges: int = 0        # merges fusing DIFFERENT held-out neurons
     heldout_split_repair_score: int = 0  # correct - false (the gate's primary signal)
+    # --- run mode (split-error-only fast mode) ----------------------------------
+    splits_only: bool = False            # True => merge-error repair disabled this
+                                         # run (no MergeSite enumerated; split_label
+                                         # edits dropped before scoring)
+    heldout_split_label_dropped: int = 0 # split_label edits the policy emitted that
+                                         # were discarded by splits_only (should be 0)
     # --- traceability (A): what the reviser actually did this generation --------
     candidate_path: str = ""             # gen<NN>/heuristics.candidate.py (always saved)
     heuristics_diffstat: str = ""        # "+A -B" lines changed vs the parent policy

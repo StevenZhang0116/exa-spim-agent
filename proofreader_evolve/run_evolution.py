@@ -498,9 +498,12 @@ async def ask_reviser(
     heuristics_path: str, rules_path: str, verbose: bool,
     attempts: list[dict] | None = None,
     priors_path: str | None = None,
+    splits_only: bool = False,
 ):
     """Run the proofreader-reviser subagent on the failure report. Returns
-    (text, input_tokens, output_tokens, cost_usd).
+    (text, input_tokens, output_tokens, cost_usd, read_priors). ``read_priors`` is
+    True/False when a priors file was configured (did the reviser actually Read it
+    this generation?), or None when no priors were configured.
 
     The agent is told to edit THIS RUN's working copies (under runs/<id>/artifacts),
     not the pristine originals under proofreader_evolve/artifacts. ``attempts`` is
@@ -519,6 +522,13 @@ async def ask_reviser(
         "its change log. Do NOT claim you ran, imported, or tested anything — you "
         "have no Bash; the harness import-checks and lint-checks your edit after "
         "you finish."
+        + ("\n\nIMPORTANT — THIS RUN: merge-error repair is DISABLED. The candidate "
+           "stream contains SplitSites only (no MergeSite is enumerated), and any "
+           "`split_label` edit you emit is dropped before scoring. Do NOT write or "
+           "tune `split_label` logic; focus entirely on the `merge_labels` "
+           "(split-error) policy. The failure report's merge sections are omitted "
+           "accordingly."
+           if splits_only else "")
         + _format_priors(priors_path)
         + _format_attempts(attempts or [])
         + ("\nPropose a DIFFERENT improvement from any listed above."
@@ -534,6 +544,11 @@ async def ask_reviser(
     sub_chunks, orch_chunks = [], []
     in_tok = out_tok = 0
     cost = 0.0
+    # Did the reviser actually READ the discovery priors this generation? We can
+    # grant the tool + allow the path, but only the tool-call stream tells us it was
+    # used — so verify, don't assume. None when no priors were configured.
+    priors_name = os.path.basename(priors_path) if priors_path else None
+    read_priors = False if priors_name else None
     async for message in client.receive_response():
         if isinstance(message, AssistantMessage):
             is_sub = getattr(message, "parent_tool_use_id", None) is not None
@@ -543,8 +558,14 @@ async def ask_reviser(
                     if verbose:
                         print(block.text, end="", flush=True)
                 elif ToolUseBlock and isinstance(block, ToolUseBlock):
-                    log(f"    → {getattr(block, 'name', 'tool')}"
-                        f"{' [subagent]' if is_sub else ''}")
+                    tname = getattr(block, "name", "tool")
+                    log(f"    → {tname}{' [subagent]' if is_sub else ''}")
+                    # Flag a Read whose target is the priors file (any field that
+                    # carries a path), so we can confirm the prior was consulted.
+                    if priors_name and tname == "Read":
+                        ti = getattr(block, "input", {}) or {}
+                        if any(priors_name in str(v) for v in ti.values()):
+                            read_priors = True
             # Sum token usage across ALL assistant messages (orchestrator +
             # subagent), so the ledger reflects the subagent's real consumption,
             # not just the parent's final ResultMessage.
@@ -561,7 +582,7 @@ async def ask_reviser(
     # Prefer the subagent's diagnosis; fall back to orchestrator text if the SDK
     # surfaced none (older SDKs / different routing).
     text = "".join(sub_chunks) or "".join(orch_chunks)
-    return text, in_tok, out_tok, cost
+    return text, in_tok, out_tok, cost, read_priors
 
 
 def lint_no_hardcoded_labels(
@@ -948,7 +969,8 @@ def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
 
 
 def _score_pooled(brains: list, names_attr: str, work_heuristics: str,
-                  split_name: str, max_class_size, verbose: bool):
+                  split_name: str, max_class_size, verbose: bool,
+                  splits_only: bool = False):
     """Run the policy on every brain's own (train|heldout) skeletons and POOL results.
 
     Each brain is scored with ITS OWN prepared state + fragment graph + image reader
@@ -969,6 +991,7 @@ def _score_pooled(brains: list, names_attr: str, work_heuristics: str,
             bc.prepared, bc.fragments_graph, names, split_name,
             work_heuristics, max_class_size=max_class_size,
             image_reader=bc.image_reader, verbose=verbose,
+            splits_only=splits_only,
         )
         per_brain_runs.append(run)
         frames.append(run.score.per_swc)
@@ -1007,7 +1030,7 @@ async def run_evolution(
     gate_eps: float = 0.05, max_class_size=None, seed_from: str | None = None,
     split_seed: int | None = None, with_image: bool = True,
     split_tol: float = 0.05, merge_tol: float = 0.0, k_folds: int = 1,
-    brains: list | None = None,
+    brains: list | None = None, splits_only: bool = False,
 ) -> None:
     # Brain set: --brains (list) takes precedence; else the single --brain. The run
     # id uses the first brain + a tag of the count so multi-brain runs are obvious.
@@ -1027,6 +1050,10 @@ async def run_evolution(
     log(f"  start policy: {'continuing run ' + seed_from if seed_from else 'from-scratch seed'}")
     log(f"  originals (untouched): {HEURISTICS}")
     log(f"  working copies (revised this run): {work_heuristics}")
+    if splits_only:
+        log("  SPLIT-ERROR-ONLY mode: split_label (merge-error) edits are dropped "
+            "before scoring — faster, and the gate metric is unchanged (it scores "
+            "only merge_labels). Merge-error repair is deferred.")
 
     # --- One-time setup: load+prepare EVERY brain (expensive, cached) -----------
     # Split seed: RANDOM by default; drawn once and shared across brains so every
@@ -1096,7 +1123,7 @@ async def run_evolution(
     with Heartbeat("scoring seed policy on pooled held-out"):
         seed_pooled, seed_runs = _score_pooled(
             brain_ctxs, "heldout_names", str(work_heuristics), "heldout",
-            max_class_size, verbose,
+            max_class_size, verbose, splits_only=splits_only,
         )
     # Dense split-repair fitness of the SEED (the PRIMARY gate signal): correct
     # held-out merges minus false ones. Edge Accuracy stays computed/recorded but is
@@ -1157,21 +1184,29 @@ async def run_evolution(
             with Heartbeat(f"gen {gen}: running policy on train"):
                 _, train_runs = _score_pooled(
                     brain_ctxs, "train_names", str(work_heuristics), "train",
-                    max_class_size, verbose,
+                    max_class_size, verbose, splits_only=splits_only,
                 )
             report_path = str(gen_dir / "failure_report.md")
+            # SPLIT-ERROR-ONLY: withhold merge_labels from the report so every
+            # merge-diagnosis section (Baseline merge errors, MergeSite feature
+            # tables, detector recall gap) is suppressed — otherwise the report would
+            # keep coaching the reviser toward split_label repairs this run drops. The
+            # train label→GT map is still passed: it drives the SplitSite audit, which
+            # is exactly the split-error signal we DO want.
+            report_merge_labels = (lambda bc: None if splits_only else bc.merge_labels)
             per_brain_report = [
                 (bc.brain, tr,
                  scoring.ScoreResult(  # baseline on this brain's train, for the report
                      primary=scoring._weighted_avg(bc.base_train, "Edge Accuracy"),
                      metrics={}, per_swc=bc.base_train, output_dir="", seconds=0.0),
-                 bc.merge_labels, bc.label_gt_map)
+                 report_merge_labels(bc), bc.label_gt_map, bc.fragments_graph)
                 for bc, tr in zip(brain_ctxs, train_runs)
             ]
             if len(per_brain_report) == 1:
-                _, tr, base_sr, ml, lgm = per_brain_report[0]
+                _, tr, base_sr, ml, lgm, fg = per_brain_report[0]
                 cand.write_failure_report(tr, base_sr, report_path,
-                                          merge_labels=ml, label_gt_map=lgm)
+                                          merge_labels=ml, label_gt_map=lgm,
+                                          fragments_graph=fg)
             else:
                 cand.write_multibrain_failure_report(per_brain_report, report_path)
             train_acc = scoring._weighted_avg(
@@ -1180,14 +1215,29 @@ async def run_evolution(
             log(f"   train Edge Accuracy={train_acc:.4f} "
                 f"({n_edits_total} edits across {len(train_runs)} brain(s)); "
                 f"report -> {report_path}")
+            # SPLIT-ERROR-ONLY visibility: with no MergeSite enumerated the policy
+            # should emit no split_label, but if it hardcoded one we dropped it — say
+            # so loudly rather than letting the discard be silent.
+            n_dropped = sum(getattr(tr, "n_split_label_dropped", 0) for tr in train_runs)
+            if n_dropped:
+                log(f"   [WARN] splits-only: dropped {n_dropped} split_label edit(s) "
+                    f"the policy emitted — merge repairs are disabled this run")
 
             # (4-5) Ask the agent to explain and revise the WORKING-COPY artifacts.
             log("Step 4-5: proofreader-reviser diagnoses and revises artifacts...")
             with Heartbeat(f"gen {gen}: waiting on reviser (LLM)"):
-                diagnosis, in_tok, out_tok, cost = await ask_reviser(
+                diagnosis, in_tok, out_tok, cost, read_priors = await ask_reviser(
                     client, report_path, str(work_heuristics), str(work_rules), verbose,
                     attempts=attempts_vs_parent, priors_path=priors_path,
+                    splits_only=splits_only,
                 )
+            # Verify the prior was actually consulted (we grant the tool + allow the
+            # path, but only the tool stream proves it was used). Loud if not.
+            if read_priors is True:
+                log("   reviser READ the discovery priors this generation")
+            elif read_priors is False:
+                log("   [WARN] discovery priors were available but the reviser did "
+                    "NOT read them this generation — improvement is un-grounded")
 
             # (A) Persist what the reviser wrote THIS generation — before scoring or
             # any revert — so even rejected candidates are inspectable afterward.
@@ -1234,6 +1284,7 @@ async def run_evolution(
                 heldout_acc = parent_mean_acc
                 cand_repair = dict(parent_repair)  # no change: candidate == parent
                 heldout_n_edits = 0                # nothing scored on held-out
+                heldout_dropped = 0                # nothing scored -> nothing dropped
                 eval_seconds = train_seconds
                 keep = False
                 human_touches = 0
@@ -1243,7 +1294,7 @@ async def run_evolution(
                 with Heartbeat(f"gen {gen}: scoring revised policy on pooled held-out"):
                     heldout_pooled, heldout_runs = _score_pooled(
                         brain_ctxs, "heldout_names", str(work_heuristics), "heldout",
-                        max_class_size, verbose,
+                        max_class_size, verbose, splits_only=splits_only,
                     )
                 heldout_acc = scoring._weighted_avg(heldout_pooled, "Edge Accuracy")
                 eval_seconds = train_seconds + sum(
@@ -1270,6 +1321,8 @@ async def run_evolution(
                 # a false merge is a fusion of two different held-out neurons).
                 cand_repair = _pooled_split_repair(brain_ctxs, heldout_runs)
                 heldout_n_edits = sum(hr.n_edits for hr in heldout_runs)
+                heldout_dropped = sum(
+                    getattr(hr, "n_split_label_dropped", 0) for hr in heldout_runs)
                 has_split_edit = any(
                     isinstance(e, dict) and e.get("kind") == "split_label"
                     for hr in heldout_runs for e in (hr.edits or [])
@@ -1373,6 +1426,8 @@ async def run_evolution(
                 heldout_correct_merges=cand_repair["correct"],
                 heldout_false_merges=cand_repair["false"],
                 heldout_split_repair_score=cand_repair["score"],
+                splits_only=splits_only,
+                heldout_split_label_dropped=heldout_dropped,
                 candidate_path=candidate_path,
                 heuristics_diffstat=diffstat,
                 diagnosis=(diagnosis or "")[:2000],  # truncate; full text is in stdout
@@ -1462,6 +1517,14 @@ def main() -> int:
                         "policy must gate reads behind cheap filters. Default ON; "
                         "pass --no-with-image to disable (skeleton-only, no cloud "
                         "reads).")
+    p.add_argument("--splits-only", action="store_true",
+                   help="SPLIT-ERROR-ONLY fast mode: drop every split_label "
+                        "(merge-error) edit before scoring, so only merge_labels "
+                        "(split-error repairs) are scored. Skips the expensive "
+                        "coordinate-aware split path (Dijkstra + fragment rebuild). "
+                        "The gate is UNCHANGED — its split-repair metric already "
+                        "scores only merge_labels — so this is a faster, "
+                        "metric-consistent test; merge-error repair is deferred.")
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
     brains = None
@@ -1474,6 +1537,7 @@ def main() -> int:
         seed_from=args.seed_from, split_seed=args.split_seed,
         with_image=args.with_image, split_tol=args.split_tol,
         merge_tol=args.merge_tol, k_folds=args.k_folds, brains=brains,
+        splits_only=args.splits_only,
     ))
     return 0
 
