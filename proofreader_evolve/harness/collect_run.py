@@ -76,13 +76,25 @@ def collect(run_dir: Path) -> dict:
     ledger = _read_ledger(run_dir)
     final = _final_accepted(run_dir)
 
+    # Backward-compatible field reads: current ledgers use train_edge_accuracy /
+    # heldout_edge_accuracy / parent_split_repair_score; older ones used
+    # train_primary / heldout_primary / parent_heldout (the last MISLABELLED — it
+    # always held the split-repair score, never an Edge Accuracy).
+    def _train_ea(row):
+        return row.get("train_edge_accuracy", row.get("train_primary"))
+    def _heldout_ea(row):
+        return row.get("heldout_edge_accuracy", row.get("heldout_primary"))
+    def _parent_sr(row):
+        return row.get("parent_split_repair_score", row.get("parent_heldout"))
+
     gens = []
     for row in ledger:
         gens.append({
             "generation": row.get("generation"),
-            "train_primary": row.get("train_primary"),
-            "heldout_primary": row.get("heldout_primary"),
-            "parent_heldout": row.get("parent_heldout"),
+            "train_edge_accuracy": _train_ea(row),
+            "heldout_edge_accuracy": _heldout_ea(row),
+            "parent_split_repair_score": _parent_sr(row),
+            "heldout_split_repair_score": row.get("heldout_split_repair_score"),
             "accepted": row.get("accepted"),
             "diffstat": row.get("heuristics_diffstat", ""),
             "note": row.get("note", ""),
@@ -93,10 +105,22 @@ def collect(run_dir: Path) -> dict:
             "diagnosis": (row.get("diagnosis") or "")[:600],
         })
 
-    heldouts = [g["heldout_primary"] for g in gens if g["heldout_primary"] is not None]
     accepted_gens = [g["generation"] for g in gens if g["accepted"]]
-    baseline = gens[0]["parent_heldout"] if gens else None  # seed bar = no-op baseline
-    final_heldout = max(heldouts) if heldouts else None
+
+    # Edge Accuracy is a DIAGNOSTIC (not the gate); report its baseline->final as
+    # such, comparing like with like (gen-1 baseline EA vs best EA over the run).
+    heldout_eas = [g["heldout_edge_accuracy"] for g in gens
+                   if g["heldout_edge_accuracy"] is not None]
+    baseline_ea = gens[0]["heldout_edge_accuracy"] if gens else None
+    final_ea = max(heldout_eas) if heldout_eas else None
+
+    # The GATE's real progress = split-repair score. baseline = the bar gen 1 faced
+    # (the seed's score, recorded as gen 1's parent_split_repair_score); final = the
+    # best accepted score over the run.
+    accepted_sr = [g["heldout_split_repair_score"] for g in gens
+                   if g["accepted"] and g["heldout_split_repair_score"] is not None]
+    baseline_sr = gens[0]["parent_split_repair_score"] if gens else None
+    final_sr = max(accepted_sr) if accepted_sr else None
 
     return {
         "run_id": run_dir.name,
@@ -105,11 +129,19 @@ def collect(run_dir: Path) -> dict:
         "n_generations": len(gens),
         "n_accepted": len(accepted_gens),
         "accepted_generations": accepted_gens,
-        "baseline_heldout": baseline,
-        "final_heldout": final_heldout,
-        "net_heldout_gain": (final_heldout - baseline)
-                            if (final_heldout is not None and baseline is not None) else None,
-        "total_cost_usd": round(sum(g["cost_usd"] or 0 for g in gens), 4),
+        # Gate metric (split-repair score) — the number the run actually optimized.
+        "baseline_split_repair_score": baseline_sr,
+        "final_split_repair_score": final_sr,
+        "net_split_repair_gain": (final_sr - baseline_sr)
+                                 if (final_sr is not None and baseline_sr is not None) else None,
+        # Edge Accuracy — diagnostic only (NOT the gate); like-with-like baseline->final.
+        "baseline_heldout_edge_accuracy": baseline_ea,
+        "final_heldout_edge_accuracy": final_ea,
+        "net_heldout_edge_accuracy_gain": (final_ea - baseline_ea)
+                            if (final_ea is not None and baseline_ea is not None) else None,
+        # cost_usd is the running SESSION total (cumulative), so the run total is the
+        # MAX value, NOT a sum over generations.
+        "total_cost_usd": round(max((g["cost_usd"] or 0 for g in gens), default=0), 4),
         "generations": gens,
         "final_policy": final,
         "rules_changelog": _rules_changelog(run_dir, final),

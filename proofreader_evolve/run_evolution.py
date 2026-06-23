@@ -302,28 +302,6 @@ def build_options(model: str = DEFAULT_MODEL, run_dir: Path | None = None,
     return opts, state
 
 
-def _find_existing_prepared(brain: str, exclude: Path | None = None) -> Path | None:
-    """Find a reusable prepared-brain pickle for ``brain`` from a prior run.
-
-    The prepared brain is candidate-invariant and identical across runs of the
-    same brain, so the ~30 min / 1.6 GB build is paid once and copied forward.
-    Searches this run-tree for ``prepared_<brain>.pkl`` — both the per-run
-    location (``runs/<id>/prepared_<brain>.pkl``) and the legacy flat location
-    (``runs/prepared_<brain>.pkl``) — and returns the newest match, or None.
-    """
-    runs_root = HERE / "runs"
-    name = f"prepared_{brain}.pkl"
-    candidates = []
-    legacy = runs_root / name                      # legacy flat location
-    if legacy.exists():
-        candidates.append(legacy)
-    candidates += [p for p in runs_root.glob(f"*/{name}")
-                   if exclude is None or exclude not in p.parents]
-    if not candidates:
-        return None
-    return max(candidates, key=lambda p: p.stat().st_mtime)
-
-
 def _resolve_seed_source(seed_from: str) -> tuple[Path, Path]:
     """Resolve ``--seed-from`` to a prior run's latest ACCEPTED (heuristics, rules).
 
@@ -529,6 +507,25 @@ async def ask_reviser(
            "(split-error) policy. The failure report's merge sections are omitted "
            "accordingly."
            if splits_only else "")
+        + (
+           "\n\nIMAGE CURRICULUM — couple reading image to PASSING THE GATE in ONE "
+           "revision. The gate keeps a candidate only if it makes MORE net correct "
+           "`merge_labels` repairs than the parent with ZERO false merges. A revision "
+           "that merely STARTS calling `gap_bridge_evidence` without changing which "
+           "labels you merge ties the parent's split-repair score and is REVERTED — "
+           "so its reads (and any image signal) are thrown away and never reach a "
+           "future report. Therefore, if you decide image is worth using, you MUST "
+           "spend it to RAISE RECALL in the SAME revision: take SplitSites in the "
+           "report's 'MISSED real splits (rejected REAL)' bucket — real splits your "
+           "current geometry is too conservative to accept — and ACCEPT the ones a "
+           "high `gap_bridge_evidence.bridge_ratio` confirms are a continuous bright "
+           "bridge across the gap. Gate the (cloud) read behind your cheap geometric "
+           "filters so you only read the handful of ambiguous candidates. Consult the "
+           "report's 'Image warm-start probe' section FIRST: it already measured "
+           "whether `bridge_ratio` separates REAL from FALSE on this brain (an AUC), "
+           "so you know BEFORE writing the rule whether image is worth gating on and "
+           "roughly where the threshold sits. If the AUC is weak, do not over-invest "
+           "in image — improve the geometric `merge_labels` policy instead.")
         + _format_priors(priors_path)
         + _format_attempts(attempts or [])
         + ("\nPropose a DIFFERENT improvement from any listed above."
@@ -898,10 +895,14 @@ class BrainContext:
                                            # GATE-ONLY split-repair scoring. LEAK
                                            # BOUNDARY: never goes into the failure
                                            # report / reviser; only the gate reads it.
+    image_probe_section: list = None       # pre-rendered image warm-start probe
+                                           # markdown (run-cached, train-only, leak-
+                                           # free); None if no image reader. Appended
+                                           # to every generation's failure report.
 
 
 def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
-                 split_seed: int, with_image: bool, verbose: bool) -> BrainContext:
+                 split_seed: int, verbose: bool) -> BrainContext:
     """Load + prepare ONE brain and compute its train/held-out split + baseline.
 
     Mirrors the original single-brain setup, factored out so a run can hold several
@@ -913,24 +914,25 @@ def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
     log(f"[{brain}] Loading cached fragment graph: {cache_path}")
     fragments_graph, _gt_graph, _ = ds.load_cached_graphs(cache_path)
 
-    image_reader = None
-    if with_image:
-        from proofreader_evolve.harness.image_features import LazyImagePatchReader
-        import sys as _sys
-        _scripts = str(PROJECT_ROOT / "scripts")
-        _sys.path.insert(0, _scripts)
-        from dataset_config import get_img_path  # noqa: E402
-        _prefixes = str(PROJECT_ROOT / "configs" / "exaspim_image_prefixes.json")
-        img_path = get_img_path(brain, prefixes_path=_prefixes)
-        image_reader = LazyImagePatchReader(img_path, fragments_graph)
-        log(f"[{brain}] Image patch reader ENABLED (lazy): {img_path}")
+    # The policy always gets a LAZY raw-image patch reader in ctx (each read is a
+    # cloud fetch, so the policy gates reads behind cheap filters). Lazy: no cloud
+    # access happens until a read is actually requested.
+    from proofreader_evolve.harness.image_features import LazyImagePatchReader
+    import sys as _sys
+    _scripts = str(PROJECT_ROOT / "scripts")
+    _sys.path.insert(0, _scripts)
+    from dataset_config import get_img_path  # noqa: E402
+    _prefixes = str(PROJECT_ROOT / "configs" / "exaspim_image_prefixes.json")
+    img_path = get_img_path(brain, prefixes_path=_prefixes)
+    image_reader = LazyImagePatchReader(img_path, fragments_graph)
+    log(f"[{brain}] Image patch reader ENABLED (lazy): {img_path}")
 
+    # RUN ISOLATION: every run is fully self-contained — it never reads anything from
+    # a sibling run under runs/. The prepared-brain pickle is built fresh in THIS
+    # run's own directory (or reused only if THIS run already wrote it, e.g. a resume
+    # of the same run_dir). We deliberately do NOT copy a prior run's
+    # prepared_<brain>.pkl, so no cross-run state leaks in.
     prepared_cache = str(run_dir / f"prepared_{brain}.pkl")
-    if not os.path.exists(prepared_cache):
-        reuse = _find_existing_prepared(brain, exclude=run_dir)
-        if reuse:
-            log(f"[{brain}] Reusing prepared brain from a prior run: {reuse}")
-            shutil.copy2(reuse, prepared_cache)
     log(f"[{brain}] Preparing brain for incremental scoring (cache: {prepared_cache})")
     with Heartbeat(f"[{brain}] preparing brain (load/build — can be ~30 min cold)"):
         prepared = inc.get_or_build(paths, prepared_cache, verbose=verbose)
@@ -959,12 +961,36 @@ def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
         baseline_full.per_swc.index.isin(train_names)]
     base_heldout = baseline_full.per_swc.loc[
         baseline_full.per_swc.index.isin(heldout_names)]
+
+    # Image WARM-START probe (one-time, run-cached): break the image-signal cold
+    # start by having the HARNESS read gap_bridge_evidence on a small, balanced,
+    # leak-free (train-only) sample of REAL vs FALSE SplitSites in the ambiguous
+    # gap-overlap band, and report whether bridge_ratio separates them (AUC). It is a
+    # MEASUREMENT, never a policy/gate input. Only runs when an image reader exists;
+    # the cloud reads are paid ONCE per brain here and reused in every generation's
+    # report. See candidate.image_warmstart_probe.
+    image_probe_section = None
+    if image_reader is not None:
+        with Heartbeat(f"[{brain}] image warm-start probe (one-time)"):
+            probe_splits = ds.candidate_split_sites(fragments_graph)
+            probe = cand.image_warmstart_probe(
+                probe_splits, label_gt_map, image_reader, train_names)
+        if probe is not None:
+            image_probe_section = probe["section"]
+            log(f"[{brain}] image warm-start probe: bridge_ratio AUC="
+                f"{probe['auc'] if probe['auc'] is not None else float('nan'):.2f} "
+                f"(REAL {probe['n_real']} / FALSE {probe['n_false']} probed)")
+        else:
+            log(f"[{brain}] image warm-start probe: nothing to probe "
+                f"(no train-classifiable SplitSite pair)")
+
     return BrainContext(
         brain=brain, fragments_graph=fragments_graph, image_reader=image_reader,
         prepared=prepared, baseline_full=baseline_full,
         train_names=train_names, heldout_names=heldout_names,
         merge_labels=merge_labels, base_train=base_train, base_heldout=base_heldout,
         label_gt_map=label_gt_map, heldout_label_gt_map=heldout_label_gt_map,
+        image_probe_section=image_probe_section,
     )
 
 
@@ -1028,7 +1054,7 @@ async def run_evolution(
     brain: str, generations: int, heldout_fraction: float,
     human: bool, verbose: bool, model: str = DEFAULT_MODEL,
     gate_eps: float = 0.05, max_class_size=None, seed_from: str | None = None,
-    split_seed: int | None = None, with_image: bool = True,
+    split_seed: int | None = None,
     split_tol: float = 0.05, merge_tol: float = 0.0, k_folds: int = 1,
     brains: list | None = None, splits_only: bool = False,
 ) -> None:
@@ -1063,7 +1089,7 @@ async def run_evolution(
     log(f"Brains: {brain_list} (split_seed={split_seed}, "
         f"heldout_fraction={heldout_fraction})")
     brain_ctxs = [
-        _setup_brain(b, run_dir, heldout_fraction, split_seed, with_image, verbose)
+        _setup_brain(b, run_dir, heldout_fraction, split_seed, verbose)
         for b in brain_list
     ]
 
@@ -1137,7 +1163,9 @@ async def run_evolution(
     # pool). Advances on every accept.
     parent_metrics = {m: scoring._weighted_avg(seed_pooled, m)
                       for m in _FOLD_METRIC_COLS}
-    parent_heldout = parent_metrics["Edge Accuracy"]
+    # Parent's held-out Edge Accuracy — a DIAGNOSTIC shown at the human gate, NOT the
+    # accept/reject bar (that bar is parent_repair["score"], the split-repair score).
+    parent_edge_accuracy = parent_metrics["Edge Accuracy"]
     # Per-skeleton parent rows (the SAME pooled pass), kept so the per-skeleton merge
     # guard can compare each held-out skeleton against the accepted parent. Advances
     # on every accept, in lockstep with parent_metrics / parent_fold_metrics.
@@ -1148,9 +1176,9 @@ async def run_evolution(
     ]
     import statistics as _st
     parent_mean_acc = _st.fmean(m["Edge Accuracy"] for m in parent_fold_metrics)
-    log(f"Seed policy pooled held-out Edge Accuracy = {parent_heldout:.4f} "
+    log(f"Seed policy pooled held-out Edge Accuracy = {parent_edge_accuracy:.4f} "
         f"(full); K-fold mean = {parent_mean_acc:.4f} over {k_eff} fold(s) "
-        f"(the bar generation 1 must beat)")
+        f"(diagnostic; the actual bar gen 1 must beat is the split-repair score above)")
 
     options, guard_state = build_options(model=model, run_dir=run_dir)
     log(f"Reviser model: {model} (Anthropic API)")
@@ -1199,14 +1227,15 @@ async def run_evolution(
                  scoring.ScoreResult(  # baseline on this brain's train, for the report
                      primary=scoring._weighted_avg(bc.base_train, "Edge Accuracy"),
                      metrics={}, per_swc=bc.base_train, output_dir="", seconds=0.0),
-                 report_merge_labels(bc), bc.label_gt_map, bc.fragments_graph)
+                 report_merge_labels(bc), bc.label_gt_map, bc.fragments_graph,
+                 bc.image_probe_section)
                 for bc, tr in zip(brain_ctxs, train_runs)
             ]
             if len(per_brain_report) == 1:
-                _, tr, base_sr, ml, lgm, fg = per_brain_report[0]
+                _, tr, base_sr, ml, lgm, fg, probe = per_brain_report[0]
                 cand.write_failure_report(tr, base_sr, report_path,
                                           merge_labels=ml, label_gt_map=lgm,
-                                          fragments_graph=fg)
+                                          fragments_graph=fg, extra_sections=probe)
             else:
                 cand.write_multibrain_failure_report(per_brain_report, report_path)
             train_acc = scoring._weighted_avg(
@@ -1356,7 +1385,7 @@ async def run_evolution(
                 human_touches = 0
                 if human:
                     human_touches = 1
-                    keep = human_gate(gen, train_acc, heldout_acc, parent_heldout)
+                    keep = human_gate(gen, train_acc, heldout_acc, parent_edge_accuracy)
                 else:
                     keep = improved
 
@@ -1365,7 +1394,7 @@ async def run_evolution(
                 f"{diffstat} lines; " + (diagnosis or "").strip().split("\n", 1)[0][:120]
             ) or "(no diagnosis text)"
             if keep:
-                parent_heldout = cand_pooled_metrics["Edge Accuracy"]  # pooled primary
+                parent_edge_accuracy = cand_pooled_metrics["Edge Accuracy"]  # diagnostic
                 parent_mean_acc = heldout_acc                # recorded Edge Accuracy
                 # Advance the metric vectors AND the split-repair bar so the next
                 # generation's gate measures against THIS accepted child, not a stale
@@ -1417,9 +1446,9 @@ async def run_evolution(
                 cost_usd=cost,
                 n_evaluations=2,
                 human_interventions=human_touches,
-                train_primary=train_acc,
-                heldout_primary=heldout_acc,
-                parent_heldout=parent_bar,
+                train_edge_accuracy=train_acc,
+                heldout_edge_accuracy=heldout_acc,
+                parent_split_repair_score=parent_bar,
                 accepted=keep,
                 note=note,
                 heldout_n_edits=heldout_n_edits,
@@ -1510,13 +1539,6 @@ def main() -> int:
                    help="RNG seed for the train/held-out split. Default: random "
                         "per run (recorded in the run's split.json). Pass an int "
                         "to pin a reproducible split.")
-    p.add_argument("--with-image", action=argparse.BooleanOptionalAction, default=True,
-                   help="give the policy a LAZY raw-image patch reader in ctx "
-                        "(ctx['read_image_patch']) so it can test fluorescence "
-                        "continuity at a gap; each read is a cloud fetch, so the "
-                        "policy must gate reads behind cheap filters. Default ON; "
-                        "pass --no-with-image to disable (skeleton-only, no cloud "
-                        "reads).")
     p.add_argument("--splits-only", action="store_true",
                    help="SPLIT-ERROR-ONLY fast mode: drop every split_label "
                         "(merge-error) edit before scoring, so only merge_labels "
@@ -1535,7 +1557,7 @@ def main() -> int:
         args.human_gate, args.verbose, args.model,
         gate_eps=args.gate_eps, max_class_size=args.max_class_size,
         seed_from=args.seed_from, split_seed=args.split_seed,
-        with_image=args.with_image, split_tol=args.split_tol,
+        split_tol=args.split_tol,
         merge_tol=args.merge_tol, k_folds=args.k_folds, brains=brains,
         splits_only=args.splits_only,
     ))

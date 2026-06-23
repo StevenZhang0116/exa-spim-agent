@@ -28,9 +28,18 @@ class GenerationCost:
     cost_usd: float = 0.0                # agent $ (from ResultMessage if present)
     n_evaluations: int = 0               # how many evaluate() calls this gen
     human_interventions: int = 0         # # of human approvals/edits this gen
-    train_primary: float = float("nan")  # train Edge Accuracy after revision
-    heldout_primary: float = float("nan")# held-out Edge Accuracy (the gate)
-    parent_heldout: float = float("nan") # held-out of the parent this gen tried to beat
+    # NOTE on naming: Edge Accuracy is a DIAGNOSTIC here, NOT the gate. The gate is
+    # the split-repair score (see ``heldout_split_repair_score`` below and
+    # ``parent_split_repair_score``). These two Edge-Accuracy fields are recorded for
+    # observation only — they do not decide accept/reject.
+    train_edge_accuracy: float = float("nan")    # train Edge Accuracy after revision
+                                         # (diagnostic; can DROP as recall rises)
+    heldout_edge_accuracy: float = float("nan")  # held-out Edge Accuracy (diagnostic;
+                                         # NOT the gate, despite the legacy "primary")
+    # The gate threshold this generation had to BEAT: the parent policy's held-out
+    # split-repair score (correct - false), an INTEGER — NOT an Edge Accuracy. A
+    # candidate is kept iff its heldout_split_repair_score > this AND false == 0.
+    parent_split_repair_score: float = float("nan")
     accepted: bool = False               # was the revision kept?
     note: str = ""
     # --- held-out edit activity (what the policy actually did on the gated set) --
@@ -77,10 +86,15 @@ class Ledger:
         accepted = [r for r in rows if r["accepted"]]
         total_s = sum(r["wall_seconds"] for r in rows)
         total_out = sum(r["output_tokens"] for r in rows)
-        total_cost = sum(r["cost_usd"] for r in rows)
+        # cost_usd is the running SESSION total (cumulative), so the run total is the
+        # LAST/MAX value, NOT a sum over generations.
+        total_cost = max((r.get("cost_usd", 0.0) for r in rows), default=0.0)
         total_human = sum(r["human_interventions"] for r in rows)
-        best = max((r["heldout_primary"] for r in rows
-                    if r["heldout_primary"] == r["heldout_primary"]), default=float("nan"))
+        # Read the current key; fall back to the legacy "heldout_primary" so old
+        # ledgers still summarize.
+        def _hea(r):
+            return r.get("heldout_edge_accuracy", r.get("heldout_primary", float("nan")))
+        best = max((_hea(r) for r in rows if _hea(r) == _hea(r)), default=float("nan"))
         return (
             f"{len(rows)} generations, {len(accepted)} accepted. "
             f"best held-out Edge Accuracy={best:.4f}. "

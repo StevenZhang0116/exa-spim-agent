@@ -409,6 +409,171 @@ def run_candidate(
     )
 
 
+def _auc(pos: list, neg: list) -> float | None:
+    """Mann–Whitney AUC: P(a random REAL bridge_ratio > a random FALSE one).
+
+    Rank-based (ties counted as 0.5), so it needs no threshold and is robust to the
+    bridge_ratio scale. None when either class is empty. 0.5 == no separation; >0.5
+    means REAL splits tend to have the HIGHER bridge_ratio (the expected direction:
+    a real continuation stays bright across the gap).
+    """
+    pos = [v for v in pos if v == v]  # drop NaN
+    neg = [v for v in neg if v == v]
+    if not pos or not neg:
+        return None
+    wins = 0.0
+    for a in pos:
+        for b in neg:
+            wins += 1.0 if a > b else (0.5 if a == b else 0.0)
+    return wins / (len(pos) * len(neg))
+
+
+def image_warmstart_probe(
+    split_sites: list,
+    label_gt_map: dict,
+    image_reader,
+    train_gt_names,
+    max_sites: int = 24,
+    overlap_only: bool = True,
+) -> dict | None:
+    """HARNESS-side, one-time DE-RISK probe of image separability for split repair.
+
+    Breaks the image-signal cold start: the per-generation failure report can only
+    REPLAY ``gap_bridge_evidence`` reads the POLICY already made, but a policy that
+    has not yet learned to read image cannot produce any — and a revision that only
+    "starts reading" without changing its merge decisions ties the split-repair gate
+    and is reverted, discarding its reads. So the harness itself reads a small,
+    budget-capped, balanced sample of REAL vs FALSE SplitSites ONCE and reports
+    whether ``bridge_ratio`` separates them. This is a MEASUREMENT (à la
+    ``incremental_scoring.probe_split_oracle``), not a policy and not a gate input:
+    it never selects edits and never reaches held-out.
+
+    Leak-free: REAL/FALSE is decided ONLY by the train ``label_gt_map`` dominant-
+    neuron rule (same as the SplitSite audit); a label with no train entry is
+    dropped. Budget: at most ``max_sites`` sites get a (cloud) ``gap_bridge_evidence``
+    read; the caller caches the result for the whole run and skips this entirely when
+    no image reader is present.
+
+    ``overlap_only`` focuses the sample on the ``gap_um`` band where REAL and FALSE
+    OVERLAP — the geometrically ambiguous sites where image has the most decision
+    value (away from that band, gap alone already separates them).
+
+    Returns ``{"section": <markdown lines list>, "auc": float|None, "n_real": int,
+    "n_false": int}`` or None when there is nothing to probe (no image reader / no
+    label map / no train-classifiable sites).
+    """
+    if image_reader is None or not label_gt_map or not split_sites:
+        return None
+
+    def _dominant(lbl):
+        counts = label_gt_map.get(str(lbl))
+        return max(counts, key=counts.get) if counts else None
+
+    # Classify every train-visible SplitSite REAL (same dominant train neuron) vs
+    # FALSE (different), carrying its gap. Drop labels with no train entry (leak-free).
+    real, false = [], []  # each: (gap_um, node_a, node_b)
+    for s in split_sites:
+        da, db = _dominant(getattr(s, "label_a", "")), _dominant(getattr(s, "label_b", ""))
+        if da is None or db is None:
+            continue
+        gap = getattr(s, "gap_um", None)
+        na, nb = getattr(s, "node_a", None), getattr(s, "node_b", None)
+        if na is None or nb is None:
+            continue
+        try:
+            gap = float(gap)
+        except (TypeError, ValueError):
+            continue
+        (real if da == db else false).append((gap, na, nb))
+    if not real or not false:
+        return None
+
+    # Focus on the gap band where the two classes OVERLAP — the ambiguous region
+    # where image is worth reading. The overlap is [max(min), min(max)] of the two
+    # gap ranges; if they don't overlap, fall back to the full set (image still
+    # informative, just less decisive).
+    def _band(sites):
+        gaps = [g for g, _, _ in sites]
+        return min(gaps), max(gaps)
+    if overlap_only:
+        rlo, rhi = _band(real); flo, fhi = _band(false)
+        lo, hi = max(rlo, flo), min(rhi, fhi)
+        if lo <= hi:
+            real_b = [t for t in real if lo <= t[0] <= hi] or real
+            false_b = [t for t in false if lo <= t[0] <= hi] or false
+        else:
+            real_b, false_b = real, false
+    else:
+        real_b, false_b = real, false
+
+    # Balanced budget: split max_sites evenly, take the sites CLOSEST to the shared
+    # median gap first (most ambiguous), deterministically (no RNG — sort by |gap-med|).
+    allg = sorted(t[0] for t in real_b + false_b)
+    med = allg[len(allg) // 2]
+    half = max(1, max_sites // 2)
+    real_pick = sorted(real_b, key=lambda t: abs(t[0] - med))[:half]
+    false_pick = sorted(false_b, key=lambda t: abs(t[0] - med))[:half]
+
+    def _probe(sites):
+        rows, vals = [], []
+        for gap, na, nb in sites:
+            res = image_reader.gap_bridge_evidence(na, nb) or {}
+            br = res.get("bridge_ratio", float("nan"))
+            try:
+                brf = float(br)
+            except (TypeError, ValueError):
+                brf = float("nan")
+            vals.append(brf)
+            br_s = "NaN" if brf != brf else f"{brf:.2f}"
+            bm = res.get("bridge_min"); em = res.get("endpoint_mean")
+            def _n(v, nd=2):
+                try:
+                    fv = float(v); return "NaN" if fv != fv else f"{fv:.{nd}f}"
+                except (TypeError, ValueError):
+                    return "—"
+            rows.append(f"| {gap:.2f} | {br_s} | {_n(bm)} | {_n(em,1)} |")
+        return rows, vals
+
+    real_rows, real_vals = _probe(real_pick)
+    false_rows, false_vals = _probe(false_pick)
+    auc = _auc(real_vals, false_vals)
+
+    lines = ["\n\n## Image warm-start probe: does bridge_ratio separate REAL from FALSE splits?\n"]
+    lines.append(
+        "HARNESS-measured (NOT your policy, NOT scored, never held-out): the harness "
+        "read `gap_bridge_evidence` on a balanced, budget-capped sample of train "
+        "SplitSites in the `gap_um` band where REAL and FALSE OVERLAP — i.e. where "
+        "geometry alone CANNOT separate them, so image has the most decision value. "
+        "Use this to decide, BEFORE writing any image rule, whether `bridge_ratio` is "
+        "worth gating on, and roughly where the threshold sits. A high `bridge_ratio` "
+        "(signal stays bright across the gap) should mark REAL splits you SHOULD "
+        "merge.\n"
+    )
+    if auc is not None:
+        verdict = ("strong — image is worth using" if auc >= 0.8 or auc <= 0.2 else
+                   "moderate" if auc >= 0.65 or auc <= 0.35 else
+                   "weak — bridge_ratio alone may not separate; do not over-invest")
+        lines.append(
+            f"**Separability: bridge_ratio AUC = {auc:.2f}** (1.0 = REAL always "
+            f"brighter than FALSE; 0.5 = no separation). Read: {verdict}.\n")
+    else:
+        lines.append("_Separability AUC unavailable (a class had no valid read)._\n")
+    bh = "| gap_um | bridge_ratio | bridge_min | endpoint_mean |"
+    bsep = "|---|---|---|---|"
+    lines.append(f"**REAL splits — SHOULD merge** ({len(real_rows)} probed):")
+    if real_rows:
+        lines.append(bh); lines.append(bsep); lines.extend(real_rows)
+    else:
+        lines.append("_none probed._")
+    lines.append(f"\n**FALSE joins — must NOT merge** ({len(false_rows)} probed):")
+    if false_rows:
+        lines.append(bh); lines.append(bsep); lines.extend(false_rows)
+    else:
+        lines.append("_none probed._")
+    return {"section": lines, "auc": auc,
+            "n_real": len(real_rows), "n_false": len(false_rows)}
+
+
 def write_failure_report(
     train_run: CandidateRun,
     baseline: scoring.ScoreResult,
@@ -416,6 +581,7 @@ def write_failure_report(
     merge_labels: dict | None = None,
     label_gt_map: dict | None = None,
     fragments_graph=None,
+    extra_sections: list | None = None,
 ) -> str:
     """Write the 'where you were wrong' report the agent reads to revise.
 
@@ -437,10 +603,15 @@ def write_failure_report(
         GT-free geometry per site (cross-gap colinearity, endpoint degrees, radii,
         radius ratio) so the reviser can pick a generalizable accept/reject feature
         threshold instead of gap alone. Geometry is fragment-only (leak-free).
+    extra_sections : list of str, optional
+        Pre-rendered markdown lines appended verbatim AFTER the body (e.g. the
+        run-cached image warm-start probe from ``image_warmstart_probe``). Computed
+        once per run by the caller and reused every generation, so it is independent
+        of the per-generation policy/gate.
     """
     lines = ["# Candidate failure report (train split)\n"]
     lines.extend(_failure_report_body(train_run, baseline, merge_labels, label_gt_map,
-                                      fragments_graph))
+                                      fragments_graph, extra_sections))
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write("\n".join(lines))
@@ -451,13 +622,14 @@ def write_multibrain_failure_report(per_brain: list, path: str) -> str:
     """Write ONE failure report aggregating several brains, each in its own section.
 
     ``per_brain`` is a list of ``(brain_id, train_run, baseline, merge_labels,
-    label_gt_map[, fragments_graph])`` tuples — one per brain, each already scored on
-    THAT brain's train split with THAT brain's merge_labels / train label→GT map (and
-    optionally THAT brain's fragment graph for the SplitSite geometry). We never pool
-    across brains here: raw segment-id labels are NOT unique across brains, so a
-    brain's MergeSite / SplitSite TRUE/NON classification must use only its own maps.
-    Each brain gets a ``# Brain <id>`` block built by the same per-brain body as the
-    single-brain report; a short pooled header notes the brain set.
+    label_gt_map[, fragments_graph[, extra_sections]])`` tuples — one per brain, each
+    already scored on THAT brain's train split with THAT brain's merge_labels / train
+    label→GT map (and optionally THAT brain's fragment graph for the SplitSite
+    geometry, and pre-rendered extra sections such as its image warm-start probe). We
+    never pool across brains here: raw segment-id labels are NOT unique across brains,
+    so a brain's MergeSite / SplitSite TRUE/NON classification must use only its own
+    maps. Each brain gets a ``# Brain <id>`` block built by the same per-brain body as
+    the single-brain report; a short pooled header notes the brain set.
     """
     brain_ids = [str(b) for b, *_ in per_brain]
     lines = [
@@ -468,11 +640,12 @@ def write_multibrain_failure_report(per_brain: list, path: str) -> str:
         f"generalize; a rule that only helps one brain likely will not.\n",
     ]
     for brain_id, train_run, baseline, merge_labels, label_gt_map, *rest in per_brain:
-        fragments_graph = rest[0] if rest else None  # optional 6th tuple element
+        fragments_graph = rest[0] if len(rest) >= 1 else None  # optional 6th element
+        extra_sections = rest[1] if len(rest) >= 2 else None   # optional 7th element
         lines.append(f"\n\n{'='*60}")
         lines.append(f"# Brain {brain_id}\n")
         lines.extend(_failure_report_body(train_run, baseline, merge_labels, label_gt_map,
-                                          fragments_graph))
+                                          fragments_graph, extra_sections))
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write("\n".join(lines))
@@ -485,6 +658,7 @@ def _failure_report_body(
     merge_labels: dict | None = None,
     label_gt_map: dict | None = None,
     fragments_graph=None,
+    extra_sections: list | None = None,
 ) -> list:
     """The body (all sections below the top header) of one brain's failure report.
 
@@ -494,7 +668,8 @@ def _failure_report_body(
 
     ``fragments_graph`` (optional) enriches the SplitSite audit with cheap, GT-free
     geometry per site (cross-gap colinearity, endpoint degrees, radii); None falls
-    back to the gap-only audit.
+    back to the gap-only audit. ``extra_sections`` (optional) is appended verbatim at
+    the end (e.g. the run-cached image warm-start probe).
     """
     cand = train_run.score.per_swc
     base = baseline.per_swc.reindex(cand.index)
@@ -1225,4 +1400,10 @@ def _failure_report_body(
     else:
         lines.append("_merge attribution unavailable for this run._")
     lines.append("\n")
+
+    # Pre-rendered, run-cached sections (e.g. the image warm-start probe) appended
+    # verbatim. Independent of this generation's policy/gate, so they give the
+    # reviser a stable signal even from gen 1.
+    if extra_sections:
+        lines.extend(extra_sections)
     return lines
