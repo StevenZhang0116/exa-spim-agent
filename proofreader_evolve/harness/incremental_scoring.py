@@ -475,7 +475,21 @@ def score_incremental(
         prepared._apply_handler(handler, coordinate_aware=True)
     else:
         pairs = [(str(a), str(b)) for a, b in (label_pairs or [])]
-        handler = LabelHandler(labels=set(prepared.all_fragment_labels), label_pairs=pairs)
+        if pairs:
+            # Candidate (real edits): the equivalence-class collapse needs the
+            # full fragment-label universe, exactly as scoring.score passes it.
+            handler = LabelHandler(labels=set(prepared.all_fragment_labels), label_pairs=pairs)
+        else:
+            # Baseline (no edits): MUST match evaluate(label_handler=None), which
+            # DataLoader fills with an empty-labels LabelHandler() -> LazyMapping
+            # identity (raw -> segment id). Passing labels=all_fragment_labels here
+            # instead routes through set_segment_mapping()'s restrictive branch,
+            # which maps every GT segment id NOT in the fragment universe to "0"
+            # (background). That zeroes the GT-only / length-filtered segments and
+            # diverges from evaluate() on # Splits / % Omit Edges (the LabelHandler
+            # refactor in segmentation_skeleton_metrics #215/#216 made the
+            # empty-vs-nonempty labels branches behave differently).
+            handler = LabelHandler()
         prepared._apply_handler(handler)
 
     # IMPORTANT: score on the FULL GT set, then filter rows to the requested

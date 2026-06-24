@@ -47,12 +47,31 @@ class GenerationCost:
     heldout_correct_merges: int = 0      # merges joining the SAME held-out neuron
     heldout_false_merges: int = 0        # merges fusing DIFFERENT held-out neurons
     heldout_split_repair_score: int = 0  # correct - false (the gate's primary signal)
+    # --- BLIND SPOT: merges the gate could NOT verify ---------------------------
+    # A merge is "unscored" when neither endpoint's dominant neuron is in the
+    # held-out GT, so the gate neither rewards nor penalizes it. High unscored ⇒ most
+    # edits land in regions with no GT coverage and carry NO correctness guarantee
+    # (deployable, but unverified). This is a coverage diagnostic, never a gate input.
+    heldout_unscored_merges: int = 0     # merges with no held-out-GT verdict
+    heldout_unscored_fraction: float = float("nan")  # unscored / total held-out edits
+    # --- TRAIN-SIDE over-merge alert (diagnostic, NOT a gate input) --------------
+    # Merges that fused two DIFFERENT neurons on a TRAIN skeleton. The gate judges
+    # false merges on HELD-OUT only (kept isolated for an honest generalization
+    # signal), so these never reject a candidate — but they are real over-merges the
+    # gate is blind to (partners in train / no-GT regions). Recorded so train-side
+    # precision regressions are visible per generation.
+    train_false_merges: int = 0
     # --- run mode (split-error-only fast mode) ----------------------------------
     splits_only: bool = False            # True => merge-error repair disabled this
                                          # run (no MergeSite enumerated; split_label
                                          # edits dropped before scoring)
     heldout_split_label_dropped: int = 0 # split_label edits the policy emitted that
                                          # were discarded by splits_only (should be 0)
+    # Did the reviser actually READ the discovery priors (all-runs.combined.md) this
+    # generation? Verified from the tool-call stream (a Read of the priors file), not
+    # assumed. True = read it; False = priors were available but not read; None = no
+    # priors file was configured for this run.
+    read_priors: "bool | None" = None
     # --- traceability (A): what the reviser actually did this generation --------
     candidate_path: str = ""             # gen<NN>/heuristics.candidate.py (always saved)
     heuristics_diffstat: str = ""        # "+A -B" lines changed vs the parent policy

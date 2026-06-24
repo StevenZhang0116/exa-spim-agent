@@ -34,6 +34,50 @@ import numpy as np
 from scipy.spatial import KDTree
 
 
+# --- Coordinate-frame bridge: agentic SkeletonGraph -> metrics LabeledGraph --
+# The agentic cache and the metrics package read the SAME ground-truth SWC voxel
+# files with the SAME anisotropy (verified: cache anisotropy == BrainPaths
+# anisotropy == (0.748, 0.748, 1.0)), but store the resulting physical coordinate
+# in DIFFERENT axis orders:
+#
+#   * agentic SkeletonGraph.node_xyz  = anisotropy * swc_columns          (no reversal)
+#         (utils/swc_util.Reader.read_coordinate: a * (s + offset), in file order)
+#   * metrics  LabeledGraph.node_xyz(i) = node_voxel[i][::-1] * anisotropy (REVERSED)
+#         (data_handling/graph_classes.py: voxels stored in file order, then reversed)
+#
+# So for one physical point with SWC columns (c0, c1, c2) and anisotropy a:
+#       agentic = (c0*a0, c1*a1, c2*a2)
+#       metrics = (c2*a0, c1*a1, c0*a2)
+# i.e. axes 0 and 2 are swapped (and each keeps the anisotropy factor of its NEW
+# position). A split_label seed is read from the agentic graph (g.node_xyz[node])
+# but consumed by the scorer in the metrics frame (EditHandler snaps it against the
+# metrics fragment graphs' node_xyz), so it MUST be converted at that boundary or it
+# lands tens of thousands of microns away (verify.py's split-contract check (a)).
+#
+# The conversion is anisotropy-exact (no hardcoded 0.748): recover the voxel
+# (divide by a), reverse the axes, re-apply a. With matching anisotropy this is a
+# pure (x,y,z) -> (z*a0/a2, y, x*a2/a0) remap.
+_METRICS_ANISOTROPY = (0.748, 0.748, 1.0)
+
+
+def agentic_xyz_to_metrics_frame(xyz, anisotropy=_METRICS_ANISOTROPY):
+    """Convert an agentic-graph physical coordinate into the metrics-graph frame.
+
+    See the module note above for the derivation. ``xyz`` is an agentic
+    ``node_xyz`` (microns, file-axis order); the return is the same physical point
+    expressed the way ``segmentation_skeleton_metrics`` ``LabeledGraph.node_xyz(i)``
+    would, so a ``split_label`` seed snaps to the correct fragment node.
+
+    Identity when ``anisotropy`` is isotropic AND the caller's frames already agree;
+    the reversal is always applied (it is the axis-order half of the mismatch, which
+    is present regardless of anisotropy).
+    """
+    a = np.asarray(anisotropy, dtype=float)
+    p = np.asarray(xyz, dtype=float)
+    voxel = p / a                 # back to (file-order) voxel coordinates
+    return tuple((voxel[::-1] * a).tolist())   # reverse axes, re-apply anisotropy
+
+
 # --- Evolvable enumeration priors -------------------------------------------
 # These knobs decide WHAT COUNTS AS A CANDIDATE (the framework's prior on "what a
 # split/merge error looks like"), as opposed to which candidates the policy then
@@ -462,29 +506,36 @@ class MergeSite:
         the crossing. The legacy ``seed_a_xyz`` / ``seed_b_xyz`` keys are kept
         alongside for backward compatibility with any consumer that reads them.
         """
+        # Seed coordinates are stored in the AGENTIC graph frame but the scorer
+        # (EditHandler) snaps them against the METRICS fragment graphs, so every
+        # seed xyz must cross into the metrics frame here — the one boundary where
+        # agentic-frame data enters the scorer. See agentic_xyz_to_metrics_frame.
+        to_metrics = agentic_xyz_to_metrics_frame
+
         # Preferred: an explicit arm->neurite grouping (shared suffix => same
         # neurite). EditHandler shares a suffix across Dijkstra sources, so this cuts
         # the label into one side per NEURITE rather than per arm.
         if self.seed_groups:
             seeds = [
-                {"suffix": spec["suffix"], "xyz": spec["xyz"], "node": spec.get("node")}
+                {"suffix": spec["suffix"], "xyz": to_metrics(spec["xyz"]),
+                 "node": spec.get("node")}
                 for spec in self.seed_groups
             ]
             return {
                 "kind": "split_label",
                 "label": self.label,
                 "seeds": seeds,
-                "seed_a_xyz": self.seed_a_xyz,
-                "seed_b_xyz": self.seed_b_xyz,
+                "seed_a_xyz": to_metrics(self.seed_a_xyz),
+                "seed_b_xyz": to_metrics(self.seed_b_xyz),
             }
         seeds = [
-            {"suffix": "a", "xyz": self.seed_a_xyz, "node": self.seed_a_node},
-            {"suffix": "b", "xyz": self.seed_b_xyz, "node": self.seed_b_node},
+            {"suffix": "a", "xyz": to_metrics(self.seed_a_xyz), "node": self.seed_a_node},
+            {"suffix": "b", "xyz": to_metrics(self.seed_b_xyz), "node": self.seed_b_node},
         ]
         for k, spec in enumerate(self.extra_seeds):
             seeds.append({
                 "suffix": spec.get("suffix") or chr(ord("c") + k),
-                "xyz": spec["xyz"],
+                "xyz": to_metrics(spec["xyz"]),
                 "node": spec.get("node"),
             })
         return {
@@ -492,8 +543,8 @@ class MergeSite:
             "label": self.label,
             "seeds": seeds,
             # Legacy two-seed keys (still accepted by EditHandler).
-            "seed_a_xyz": self.seed_a_xyz,
-            "seed_b_xyz": self.seed_b_xyz,
+            "seed_a_xyz": to_metrics(self.seed_a_xyz),
+            "seed_b_xyz": to_metrics(self.seed_b_xyz),
         }
 
 

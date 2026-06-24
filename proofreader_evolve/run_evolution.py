@@ -1251,6 +1251,15 @@ async def run_evolution(
             if n_dropped:
                 log(f"   [WARN] splits-only: dropped {n_dropped} split_label edit(s) "
                     f"the policy emitted — merge repairs are disabled this run")
+            # TRAIN-SIDE over-merge alert (diagnostic; the gate judges false merges on
+            # HELD-OUT, so these never reject — but they are real over-merges the gate
+            # is blind to). Pool each brain's train edits against ITS OWN train map.
+            train_false = sum(
+                inc.classify_merge_edits(tr.edits, bc.label_gt_map)["false"]
+                for bc, tr in zip(brain_ctxs, train_runs))
+            if train_false:
+                log(f"   [ALERT] {train_false} train-side false merge(s) — over-merges "
+                    f"the held-out gate does NOT see (see failure report)")
 
             # (4-5) Ask the agent to explain and revise the WORKING-COPY artifacts.
             log("Step 4-5: proofreader-reviser diagnoses and revises artifacts...")
@@ -1382,6 +1391,13 @@ async def run_evolution(
                 log(f"   (recorded: Edge Accuracy {heldout_acc:.4f}, "
                     f"%Merged {cand_pooled_metrics['% Merged Edges']:.4f}, "
                     f"#Merges {cand_pooled_metrics['# Merges']:.2f})")
+                # BLIND SPOT: how many held-out merges the gate could not verify (no
+                # GT coverage at either endpoint) — these carry NO correctness check.
+                _unsc = cand_repair["unscored"]
+                _frac = (_unsc / heldout_n_edits) if heldout_n_edits else float("nan")
+                log(f"   blind spot: {_unsc}/{heldout_n_edits} held-out merges "
+                    f"UNSCORED ({_frac:.0%}) — outside held-out GT coverage, neither "
+                    f"rewarded nor penalized by the gate")
                 human_touches = 0
                 if human:
                     human_touches = 1
@@ -1455,8 +1471,14 @@ async def run_evolution(
                 heldout_correct_merges=cand_repair["correct"],
                 heldout_false_merges=cand_repair["false"],
                 heldout_split_repair_score=cand_repair["score"],
+                heldout_unscored_merges=cand_repair["unscored"],
+                heldout_unscored_fraction=(
+                    cand_repair["unscored"] / heldout_n_edits
+                    if heldout_n_edits else float("nan")),
                 splits_only=splits_only,
                 heldout_split_label_dropped=heldout_dropped,
+                read_priors=read_priors,
+                train_false_merges=train_false,
                 candidate_path=candidate_path,
                 heuristics_diffstat=diffstat,
                 diagnosis=(diagnosis or "")[:2000],  # truncate; full text is in stdout
@@ -1474,12 +1496,44 @@ async def run_evolution(
         (run_dir / "POLLUTION_ATTEMPTED").write_text(
             json.dumps(guard_state["violations"], indent=2))
 
+    # Auto-generate the per-generation performance figure from the ledger we just
+    # wrote, so it appears next to the run with no separate step. Best-effort: a
+    # plotting failure (e.g. headless matplotlib quirk) must never fail a finished run.
+    perf_png = run_dir / "performance.png"
+    try:
+        from proofreader_evolve import plot_run_performance as _prp
+        _rows = _prp.load_ledger(run_dir)
+        if _rows:
+            _prp.make_figure(_rows, run_dir.name, perf_png)
+            log(f"Performance figure -> {perf_png}")
+    except Exception as _e:
+        log(f"[WARN] could not auto-generate performance figure ({_e}); "
+            f"run `python proofreader_evolve/plot_run_performance.py {run_dir.name}` manually")
+
+    # Auto-generate the policy-evolution summary figure (what lever each accepted
+    # generation added, in plain English via the LLM). Best-effort, same as above.
+    policy_png = run_dir / "policy_evolution.png"
+    try:
+        from proofreader_evolve import plot_policy_evolution as _ppe
+        _summary = _ppe.collect(run_dir)
+        if _summary["rows"]:
+            _ppe.summarize_with_llm(_summary)        # plain-English summaries
+            _ppe.make_figure(_summary, policy_png)
+            log(f"Policy-evolution figure -> {policy_png}")
+    except Exception as _e:
+        log(f"[WARN] could not auto-generate policy-evolution figure ({_e}); "
+            f"run `python proofreader_evolve/plot_policy_evolution.py {run_dir.name}` manually")
+
     print("\n=== Evolution complete ===")
     print(ledger.summarize())
     print(f"Cross-run access attempts (denied): {n_viol}")
     print(f"Originals (unchanged)        -> {ARTIFACTS}")
     print(f"Evolved artifacts (this run) -> {work_heuristics.parent}")
     print(f"Run log + ledger             -> {run_dir}")
+    if perf_png.exists():
+        print(f"Performance figure           -> {perf_png}")
+    if policy_png.exists():
+        print(f"Policy-evolution figure      -> {policy_png}")
 
 
 def main() -> int:

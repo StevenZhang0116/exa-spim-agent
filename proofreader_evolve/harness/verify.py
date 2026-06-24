@@ -72,6 +72,7 @@ def _compare(label, inc_res, ref_res) -> bool:
     b = ref_res.per_swc.sort_index()
     common = a.index.intersection(b.index)
     ok = True
+    worst_rows = {}  # metric -> (skeleton, inc_value, ref_value) at the max |Δ|
     for metric, tol in TOL.items():
         if metric not in a.columns or metric not in b.columns:
             continue
@@ -80,7 +81,28 @@ def _compare(label, inc_res, ref_res) -> bool:
         status = "OK " if worst <= tol else "FAIL"
         if worst > tol:
             ok = False
+            # Record WHICH skeleton drove the failure and both sides' values, so a
+            # divergence is a precise data point (skeleton + inc vs ref), not a
+            # single aggregate number that hides where it broke.
+            sk = diff.idxmax()
+            worst_rows[metric] = (sk, a.loc[sk, metric], b.loc[sk, metric])
         print(f"  [{status}] {metric:<16} max|Δ|={worst:.4g} (tol {tol})")
+    if worst_rows:
+        print("  worst-skeleton breakdown (failing metrics only):")
+        for metric, (sk, av, bv) in worst_rows.items():
+            print(f"    {metric:<16} @ {sk}: incremental={av:.4g}  evaluate()={bv:.4g}")
+        # Show the FULL per-skeleton table for the single most-divergent skeleton,
+        # so we can see whether one skeleton is entirely zeroed (every metric off)
+        # vs a single metric drifting (a localized cause). Pick the skeleton that
+        # appears most often as the worst driver across the failing metrics.
+        from collections import Counter
+        sk_counts = Counter(sk for sk, _, _ in worst_rows.values())
+        focus = sk_counts.most_common(1)[0][0]
+        cols = [m for m in TOL if m in a.columns and m in b.columns]
+        print(f"  full row for most-divergent skeleton '{focus}':")
+        print(f"    {'metric':<16} {'incremental':>14} {'evaluate()':>14}")
+        for m in cols:
+            print(f"    {m:<16} {a.loc[focus, m]:>14.4g} {b.loc[focus, m]:>14.4g}")
     print(f"  incremental: {inc_res.seconds:.2f}s   evaluate(): {ref_res.seconds:.1f}s")
     return ok
 
@@ -163,16 +185,21 @@ def _verify_split_contract(prepared, agentic_gt, tol_um: float = 1.0) -> bool:
     or the bisecting plane silently shifts. We check three things, all from data
     already in memory (no extra cloud read):
 
-      (a) FRAME MATCH: for shared GT skeletons, the metrics-graph node coordinates
-          are a permutation-free match to the agentic-graph coordinates (same
-          point cloud, same axis order, same anisotropy). Catches swap_axes /
-          anisotropy / use_anisotropy misconfig.
+      (a) FRAME CONVERSION: for shared GT skeletons, the agentic-graph node
+          coordinates AFTER ``dataset.agentic_xyz_to_metrics_frame`` are a
+          permutation-free match to the metrics-graph coordinates. The two frames
+          are NOT identical — agentic node_xyz keeps SWC axis order while metrics
+          node_xyz(i) reverses it (node_voxel[::-1] * anisotropy) — so a seed read
+          from the agentic graph must be converted before the scorer snaps it in
+          the metrics frame. This checks that conversion is exact (catches a
+          regression in the bridge, a swapped axis, or an anisotropy mismatch).
       (b) NEAREST-SEED: EditHandler.apply_split assigns a node to '#a' iff it is
           closer to seed_a than seed_b in the metrics frame.
       (c) NO-OP SPLIT: coincident seeds => every node maps to one pseudo-label
           (a split that partitions nothing must not change which nodes share L).
     """
     from proofreader_evolve.harness.edit_handler import EditHandler, PSEUDO_SEP
+    from proofreader_evolve.harness.dataset import agentic_xyz_to_metrics_frame
 
     print("\n--- SPLIT coordinate contract ---")
     ok = True
@@ -189,22 +216,26 @@ def _verify_split_contract(prepared, agentic_gt, tol_um: float = 1.0) -> bool:
         return True
     name = shared[0]
 
-    # (a) FRAME MATCH — compare the two coordinate clouds for this skeleton.
+    # (a) FRAME CONVERSION — the agentic cloud, mapped through the bridge, must
+    # land on the metrics cloud. (Raw clouds do NOT match: the frames differ by an
+    # axis reversal; the bridge is exactly what reconciles them.)
     mg = prepared.gt_graphs[name]
     metrics_xyz = np.array([mg.node_xyz(i) for i in mg.nodes])
     agentic_idx = [n for n in agentic_gt.nodes if agentic_gt.node_segment_id(n) == name]
     agentic_xyz = np.asarray(agentic_gt.node_xyz)[agentic_idx]
+    agentic_in_metrics = np.array([agentic_xyz_to_metrics_frame(p) for p in agentic_xyz])
     # Match without assuming node-id alignment: nearest-neighbour each metrics
-    # point to the agentic cloud; the frames agree iff every match is ~0 µm.
+    # point to the CONVERTED agentic cloud; they agree iff every match is ~0 µm.
     from scipy.spatial import cKDTree
-    tree = cKDTree(agentic_xyz)
+    tree = cKDTree(agentic_in_metrics)
     d, _ = tree.query(metrics_xyz, k=1)
     worst = float(np.max(d)) if len(d) else float("nan")
     frame_ok = worst <= tol_um
     ok = ok and frame_ok
-    print(f"  [{'OK ' if frame_ok else 'FAIL'}] (a) frame match on {name}: "
+    print(f"  [{'OK ' if frame_ok else 'FAIL'}] (a) frame conversion on {name}: "
           f"max nearest-point gap = {worst:.4g} µm (tol {tol_um}); "
-          f"agentic axes/anisotropy == metrics' — split seeds land in the right place")
+          f"agentic_xyz_to_metrics_frame reconciles the two frames — converted "
+          f"split seeds land in the right place")
 
     # (b) NEAREST-SEED — seeds straddling the skeleton's x-extent.
     xs = metrics_xyz[:, 0]
@@ -453,7 +484,15 @@ def main() -> int:
     inc_cand = inc.score_incremental(prepared, label_pairs=edits, verbose=args.verbose)
     ref_cand = scoring.score(
         paths, str(RUNS / f"_verify_candidate_{args.brain}"),
-        label_pairs=edits, all_fragment_labels=ds.list_fragment_labels(frags),
+        # MUST be the SAME label universe the fast path uses
+        # (prepared.all_fragment_labels = the unfiltered metrics load, 63343), NOT
+        # the mcl-filtered candidate cache (ds.list_fragment_labels(frags), 59186).
+        # With non-empty label_pairs, LabelHandler maps every label OUTSIDE this set
+        # to "0" (background). Handing the reference the smaller candidate universe
+        # zeroes the ~4157 scoring-only labels (the check-#8 recall gap) on the
+        # reference side only, so the GT nodes on those segments read as omitted —
+        # a test-rig artifact (% Omit / Edge Accuracy explode), not a scorer bug.
+        label_pairs=edits, all_fragment_labels=prepared.all_fragment_labels,
         verbose=args.verbose,
     )
     ok2 = _compare("CANDIDATE (with edits)", inc_cand, ref_cand)

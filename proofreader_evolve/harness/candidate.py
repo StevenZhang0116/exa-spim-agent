@@ -731,8 +731,28 @@ def _failure_report_body(
             f"{scoring._weighted_avg(cand, '% Split Edges'):.4f} "
             f"(a merge repair that drives this UP is over-splitting a real neuron).\n"
         )
-    # ENUM_PARAMS rail sensitivity: the policy MAY define a module-level ENUM_PARAMS
-    # dict to widen/narrow the candidate stream, but every knob is CLAMPED to a safety
+    # MEGA-MERGE WATCHDOG (top-level, GT-free): the split-repair score is leak-blind
+    # to fused classes whose neurons are held-out, so a union-find chain that fuses
+    # dozens of fragments into ONE brain-spanning class can read "0 false / raise
+    # recall" while wrecking %Merged Edges (the gen03/gen20 failure). Surface the
+    # largest fused class HERE, at the top, so it is the first thing the reviser sees
+    # instead of being buried in the per-merge table below. Sizes come from the SAME
+    # Fused_Labels column that table uses (raw labels unified into one class id).
+    ms = train_run.score.merge_sites
+    if ms is not None and len(ms) and "Fused_Labels" in ms.columns:
+        sizes = [len(f) for f in ms["Fused_Labels"] if isinstance(f, (list, tuple))]
+        sizes = [s for s in sizes if s >= 2]  # only edit-created classes (>=2 raws)
+        if sizes:
+            biggest = max(sizes)
+            n_big = sum(1 for s in sizes if s > 5)
+            verdict = (
+                "OK (no chaining)" if biggest <= 5 else
+                f"**MEGA-MERGE: a single class fused {biggest} fragments** — almost "
+                f"certainly an over-merge chaining distinct neurons, not one repair. "
+                f"Cap it (ENUM_PARAMS/policy) before raising recall.")
+            lines.append(
+                f"- Largest fused class = **{biggest} raw labels** "
+                f"({n_big} class(es) fuse >5 labels). {verdict}\n")
     # rail (ds.ENUM_PARAM_SPEC). A reviser that asked for, say, max_gap_um=80 but is
     # silently capped at 40 would otherwise never learn its request had no effect —
     # this table makes the requested→in-effect→rail mapping explicit and flags any
@@ -807,25 +827,46 @@ def _failure_report_body(
             f"{d('# Merges'):+.0f} | {d('% Split Edges'):+.3f} | {d('# Splits'):+.0f} | "
             f"{d('% Omit Edges'):+.3f} |"
         )
-    # What made the candidate WORSE in the GATE's currency: any FALSE merge (fusing
-    # two different neurons) is an automatic reject, so list those edits explicitly —
-    # they are the agent's first homework. (The per-skeleton Edge-Accuracy dips below
-    # are a secondary diagnostic; a dip there does NOT by itself fail the gate.)
-    lines.append("\n## What FAILED the gate (split-repair currency)\n")
+    # Reading aid (verified by experiment): a RISING d#Splits alongside a FALLING
+    # d%OmitEdges is NOT you over-splitting. It is a side effect of your merges: a
+    # merge heals omit (background) nodes into labels, so a GT skeleton ends up
+    # crossing MORE distinct fragment labels — # Splits = (distinct non-zero labels
+    # on the skeleton) - 1, so it rises. d#Splits is a GT-side DIAGNOSTIC; it does
+    # NOT enter the gate (the gate is the split-repair score below). Likewise dEdgeAcc
+    # is a secondary diagnostic, not the bar.
+    lines.append(
+        "\n_Note: a positive `d#Splits` paired with a negative `d%OmitEdges` is the "
+        "footprint of your MERGES healing background (omit) nodes into labels (the "
+        "skeleton then crosses more distinct labels) — not over-splitting by you. "
+        "`# Splits` / Edge Accuracy are GT-side diagnostics, NOT the gate._\n"
+    )
+    # TRAIN-SIDE FALSE MERGES (diagnostic alert, NOT a gate failure). The gate judges
+    # accept/reject on the HELD-OUT split only (kept separate so it is an honest
+    # generalization signal); these false merges are scored on the TRAIN skeletons the
+    # reviser can see. They do NOT by themselves reject the candidate — but each is a
+    # REAL over-merge (your edit fused two DIFFERENT neurons on a train skeleton), so
+    # they are precision bugs to fix even though the held-out gate did not catch them.
+    # Surfacing them keeps train-side over-merges from staying invisible (the gate's
+    # blind spot: it never penalizes a fusion whose partners are train / no-GT region).
+    lines.append("\n## Train-side FALSE merges (precision alert — NOT a gate reject)\n")
     if repair is not None:
         if repair["false"]:
             lines.append(
-                f"**{repair['false']} FALSE merge(s) — each fuses two DIFFERENT "
-                f"neurons and rejects the candidate outright. Stop emitting these:**")
+                f"**{repair['false']} merge(s) fused two DIFFERENT neurons on a TRAIN "
+                f"skeleton.** These are real over-merges your policy should stop "
+                f"emitting (add a precision guard on these label pairs / their "
+                f"geometry). NOTE: the gate scores false merges on HELD-OUT, not here, "
+                f"so these did NOT reject the candidate — but they ARE genuine "
+                f"over-merges (the gate's blind spot on train / no-GT regions):")
             lines.append("| label_a | label_b | neuron_a | neuron_b |")
             lines.append("|---|---|---|---|")
             for a, b, na, nb in repair["false_pairs"][:30]:
                 lines.append(f"| {a} | {b} | {na} | {nb} |")
             if len(repair["false_pairs"]) > 30:
-                lines.append(f"\n…and {len(repair['false_pairs']) - 30} more false merges.")
+                lines.append(f"\n…and {len(repair['false_pairs']) - 30} more train-side false merges.")
         else:
-            lines.append("_no false merges — the no-new-merge guard is satisfied; "
-                         "improve by RAISING correct repairs (recall)._")
+            lines.append("_no train-side false merges — your merges did not fuse two "
+                         "different neurons on any train skeleton._")
     # Secondary: per-skeleton Edge-Accuracy dips (diagnostic, not a gate failure).
     worse = [n for n in cand.index
              if cand.loc[n, "Edge Accuracy"] < base.loc[n, "Edge Accuracy"]]

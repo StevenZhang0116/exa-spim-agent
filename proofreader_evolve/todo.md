@@ -4,21 +4,22 @@ A running memo for pending work and ideas. Move finished items to "Done" with a 
 
 ## TODO
 
-- [ ] **Export the "repaired" artifact (the result of applying the final policy).**
-  A finished run currently produces only the *policy*
-  (`runs/<run>/artifacts/heuristics.py`'s `propose_edits`), not the *repaired
-  result* of applying it. Each generation's `merge_labels` edits are applied only
-  transiently to a graph copy inside `incremental_scoring.score_incremental` for
-  scoring, then discarded — never written to disk. The only pkl in a run dir is
-  `prepared_<brain>.pkl`, which is the *input cache* (the candidate-invariant
-  PreparedBrain), **not** a repaired graph.
-  - Need a new script: take `run_name` + `brain` → load that run's final
-    `artifacts/heuristics.py` → run `propose_edits` on the brain to get all edits →
-    **persist** the edits applied and export the result.
-  - Output format TBD: edit-list JSON (lightweight, auditable) / a saved repaired
-    graph pkl (directly usable downstream) / both. Decide, then implement.
-  - Relevant code: `harness/candidate.run_candidate` (run policy → edits),
-    `harness/edit_handler.EditHandler` (apply edits),
-    `harness/incremental_scoring` (graph-copy application logic to reuse).
+- [ ] **Materialize a repaired GRAPH/volume artifact (heavier export).**
+  `notebooks/compare_proofreader_policy.ipynb` now exports the edit-list JSON
+  (the lightweight, auditable artifact) and visualizes before/after, but it still
+  does NOT write a repaired graph pkl or relabeled volume usable directly
+  downstream. If a downstream consumer needs the applied result as data (not just
+  the edit list), add an export that applies the EditHandler relabel and saves the
+  resulting graph(s). Relevant code: `harness/edit_handler.EditHandler` (apply),
+  `harness/incremental_scoring._edited_fragment_graphs` (graph-copy relabel logic).
 
 ## Done
+
+- [x] **Apply the final policy to the whole brain & compare before/after**
+  (2026-06-23). `notebooks/compare_proofreader_policy.ipynb`: loads the run's
+  `gen<NN>/heuristics.accepted.py`, runs `propose_edits` on all 12 GT skeletons of
+  789202, scores baseline vs edited (incremental scorer), shows a per-skeleton
+  metric comparison table + plot, picks one repaired SplitSite and visualizes its
+  receptive field (raw-image MIP + fragment nodes coloured baseline-labels vs
+  edited-merged-class), and exports the edit-list JSON. Parameterized by
+  RUN_NAME / GEN / BRAIN_ID / PATCH / SEED.
