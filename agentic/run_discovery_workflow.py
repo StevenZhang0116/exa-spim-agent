@@ -460,6 +460,9 @@ def build_options() -> ClaudeAgentOptions:
         # Non-interactive: don't prompt for permission on each tool call. Drop to
         # "acceptEdits" if you'd rather review/limit what runs.
         permission_mode="bypassPermissions",
+        # Pin Opus 4.8 explicitly so the model is not left to the ambient session
+        # default. Subagents are `model: inherit`, so they follow this too.
+        model="claude-opus-4-8",
         # Run Opus 4.8 at maximum reasoning effort for the summarize/rerun/verify
         # work. Levels: low|medium|high|xhigh|max; Opus 4.8 thinks adaptively and
         # at xhigh almost always reasons deeply. Applies to the session + subagents.

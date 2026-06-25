@@ -13,7 +13,7 @@ after the label):
 
 * ``- **Reproduction:** REPRODUCED | DIVERGED | FAILED``
 * ``- **Generalization:** GENERALIZES | PARTIAL | DOES-NOT-GENERALIZE | INCONCLUSIVE``
-* ``- **Verdict:** OK | MINOR | MAJOR``  (or SOUND | WEAK | FLAWED)  → "Statistics"
+* ``- **Verdict:** OK | MINOR | MAJOR | CRITICAL``  (or SOUND | WEAK | FLAWED)  → "Statistics"
 * ``- **Post-correction verdict:** UPHELD | WEAKENED | OVERTURNED`` (fix-tests)
 * ``- **Corrected generalization:** GENERALIZES | PARTIAL | DOES-NOT-GENERALIZE``
   (fix-tests, only when extra datasets were run)
@@ -53,13 +53,17 @@ GENERALIZATION = {
     "inconclusive": float("nan"),
 }
 # Statistics quality comes from the verifier's Verdict bullet. Two vocabularies
-# appear in practice: OK/MINOR/MAJOR (severity of issues) and SOUND/WEAK/FLAWED.
+# appear in practice: OK/MINOR/MAJOR/CRITICAL (severity of issues) and
+# SOUND/WEAK/FLAWED. CRITICAL is the most severe issue tier (worse than MAJOR),
+# so it maps to 0.0 — without it CRITICAL entries would render as a neutral "n/a"
+# cell, hiding the worst findings rather than flagging them.
 STATISTICS = {
     "ok": 1.0,
     "sound": 1.0,
     "minor": 0.66,
     "weak": 0.5,
     "major": 0.33,
+    "critical": 0.0,
     "flawed": 0.0,
 }
 # fix-tests outcome for hypotheses whose statistical test was corrected and
