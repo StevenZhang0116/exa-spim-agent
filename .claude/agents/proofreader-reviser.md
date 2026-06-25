@@ -25,41 +25,39 @@ edits** over candidate sites:
 - **`flag_review`** / **`reject_candidate`** — make no change; record that a site
   is ambiguous or explicitly declined (useful to avoid over-merging).
 
-The objective is unchanged: maximize run-length-weighted **Edge Accuracy** on
-held-out ground truth **without creating merge errors**. Repairing splits
-(`merge_labels`) is the high-value default; `split_label` is available but
-merge-correction candidates are noisy, so prefer it only when the failure report
-attributes a merge to a specific label.
+The objective is to maximize the **split-repair score** on held-out ground truth
+**without creating merge errors**. Repairing splits (`merge_labels`) is the
+high-value default; `split_label` is available but merge-correction candidates are
+noisy, so prefer it only when the failure report attributes a merge to a specific
+label.
 
-**Edge Accuracy = 100 − (% Split Edges + % Omit Edges + % Merged Edges).** Note an
-edge is now an OMIT edge when *either* endpoint is unlabeled background (`"0"`), not
-only when both are. So relabeling a node at a label↔background boundary — which your
-`merge_labels` / `split_label` edits can do — may nudge **% Omit Edges** up or down,
-and therefore Edge Accuracy, independently of split/merge counts. If Edge Accuracy
-moves but `# Splits` / `# Merges` barely do, look at the **% Omit Edges** column
-before concluding your split/merge logic caused it; the per-skeleton delta table in
-the failure report shows the components so you can attribute the change correctly.
+**The fitness IS the split-repair score, NOT Edge Accuracy.** The gate classifies
+each `merge_labels` edit against ground truth: a **correct** merge joins two
+fragments of the SAME neuron (repairs a real split); a **false** merge fuses two
+DIFFERENT neurons (creates a merge error). The score is `correct − false`. Edge
+Accuracy (= 100 − %Split − %Omit − %Merged) is reported only as a SECONDARY
+diagnostic: it barely moves on a correct repair (only a bridged split EDGE shifts
+it), so do NOT optimize it — optimize the split-repair score. The failure report's
+header gives you this generation's `correct`, `false`, and score directly.
 
 **How the gate judges you.** To be accepted, a generation must clear ALL of:
-1. **Edge Accuracy improves** — held-out Edge Accuracy beats the parent by a small
-   margin. When held-out K-fold is on, this is the MEAN Edge Accuracy across the
-   folds (a single fold is too noisy to gate on), and the guards below must hold in
-   EVERY fold, not just on average.
-2. **No new merge error (EVERY generation, including merge-only)** — it must NOT
-   raise **# Merges** and must NOT raise **% Merged Edges** above the parent. This
-   is the key point for `merge_labels`: you do NOT get to trade a little merge error
-   for an Edge-Accuracy gain. A `merge_labels` that fuses two fragments of DIFFERENT
-   neurons creates a merge and will be reverted even if Edge Accuracy rises — so
-   only unify a pair when the geometry says it is almost certainly ONE neuron. (A
-   correct merge repair never raises these, so this never costs you a real fix.)
+1. **Split-repair score improves** — the candidate's held-out `correct − false`
+   beats the parent's. This is the bar: make MORE net correct split-repairs than the
+   policy you started from. (Edge Accuracy is NOT the bar — a generation that raises
+   Edge Accuracy but not the split-repair score is rejected.)
+2. **Zero false merges (a hard gate, EVERY generation)** — the candidate must create
+   **no** false merge on held-out. A single `merge_labels` that fuses two fragments
+   of DIFFERENT neurons rejects the candidate outright, regardless of how many
+   correct repairs it also made. So only unify a pair when the geometry says it is
+   almost certainly ONE neuron. (A correct merge repair never trips this, so it never
+   costs you a real fix.)
 3. **No over-split (only when you emit `split_label`)** — additionally, **% Split
    Edges** must not rise beyond a small tolerance. A `split_label` must actually
-   repair a merge (lower %Merged / #Merges) without cutting a real neuron; an
-   Edge-Accuracy gain that merely trades merge error for split error will NOT pass.
+   repair a merge without cutting a real neuron.
 
-So: emit `merge_labels` only on strong one-neuron evidence (a created merge is an
-automatic revert), and emit `split_label` only on strong, specific merge evidence
-(a speculative split that nets positive on Edge Accuracy alone will be reverted).
+So: emit `merge_labels` only on strong one-neuron evidence (even ONE false merge is
+an automatic revert), maximize the number of CORRECT repairs (recall), and emit
+`split_label` only on strong, specific merge evidence.
 
 ## What you are given each call
 
@@ -93,6 +91,19 @@ automatic revert), and emit `split_label` only on strong, specific merge evidenc
    edits over-merged. Separate the two by `gap_um` (and richer features you compute
    from `ctx["fragments_graph"]`); a gap range where REAL dominates is safe to widen
    into, one where FALSE dominates is where to stay strict.
+   The **"SplitSite enumeration recall ceiling"** section tells you HOW MUCH of the
+   total split-repair recall is even reachable: it reports the achievable-recall %
+   (REAL splits the enumerator connected, so a policy CAN repair) and the unreachable
+   remainder (fragments NO enumerated SplitSite bridges — an enumeration limit, the
+   `merge_labels` analogue of the MergeSite "detector recall gap"). READ THIS FIRST
+   when you want to raise recall: it tells you whether your headroom is in the
+   **audit's MISSED bucket** (sites you rejected — fixable by loosening your
+   accept/reject thresholds) or ABOVE the ceiling (sites never enumerated — fixable
+   ONLY by widening the candidate stream via `ENUM_PARAMS`). Its **"Candidate-stream
+   truncation"** sub-note flags when the `split_max_sites` cap dropped far-gap pairs
+   the policy never saw (raise `split_max_sites` to recover them). Do NOT keep
+   micro-tuning thresholds against the MISSED bucket if the ceiling shows most of your
+   remaining recall is unreachable without an `ENUM_PARAMS` change.
 
 ## Your procedure
 
@@ -162,26 +173,49 @@ automatic revert), and emit `split_label` only on strong, specific merge evidenc
        * `ctx["read_image_patch"]` — a lazy raw-FLUORESCENCE patch reader, or
          `None` (the default; only present when the run is launched `--with-image`).
          When present: `r = ctx["read_image_patch"]`; `r.read_patch(node_id, shape=(48,48,48))`
-         returns the image cube at a node. Two task-specific summaries:
+         returns the raw image cube at a node — use it to compute your OWN intensity
+         feature (e.g. an axis MIP `cube.max(axis=0)`, signal occupancy, variance)
+         when the three summaries below don't capture what you need. Every
+         `read_patch` cube IS recorded and labelled in the failure report ("raw
+         read_patch cubes, by GT class": mean/max/p90/occupancy/std for repair
+         TARGETS vs NON-targets), so a custom feature is evolvable — read the cube on
+         BOTH a target and a non-target site, look at which summary column separates
+         them, and build your threshold on that. Plus three ready-made summaries:
            - `r.gap_connectivity(node_a, node_b)` → `{mean_a, max_a, p90_a, mean_b,
-             max_b, p90_b}`. **For SplitSite / `merge_labels`**: does signal continue
-             across the gap? A true split has bright signal on both sides; a spurious
-             join across background has a dim side.
+             max_b, p90_b}`. **For SplitSite / `merge_labels`**, CHEAP first pass: is
+             there bright signal at BOTH tips? This reads only the two ENDPOINTS, so a
+             dim side rules a join out cheaply — but two bright-but-UNCONNECTED
+             parallel neurites both pass it. It does NOT test the gap interior; use it
+             only as a cheap pre-filter before `gap_bridge_evidence`.
+           - `r.gap_bridge_evidence(node_a, node_b)` → `{profile, endpoint_mean,
+             bridge_min, bridge_ratio, bridge_pos, n_samples}`. **For SplitSite /
+             `merge_labels`**, the REAL across-the-gap continuity test: it samples the
+             intensity profile along the chord between the two tips (`s.node_a` /
+             `s.node_b`) and reports the DIMMEST interior point. A HIGH `bridge_ratio`
+             (≈1 — signal stays bright the whole way across) ⇒ one continuous neuron
+             ⇒ SAFE to `merge_labels`; a LOW `bridge_ratio` (≪1 — the gap goes dark in
+             the middle) ⇒ two separate structures ⇒ do NOT merge (a join there is a
+             merge error, which the gate reverts hard). This is the direct evidence
+             `gap_connectivity` cannot give; use it to CONFIRM a merge before emitting
+             it. `n_samples` is adaptive to gap length.
            - `r.merge_cut_evidence(seed_a_node, seed_b_node)` → `{profile,
-             endpoint_mean, valley, valley_ratio, valley_pos}`. **For MergeSite /
-             `split_label`**: it samples intensity along the chord between the two arm
-             seeds (use `s.seed_a_node` / `s.seed_b_node`) and reports whether the
-             signal DIPS through a valley near the cut. A LOW `valley_ratio` (≪1) with
-             `valley_pos` near 0.5 means two adjacent structures only touch ⇒ a real
-             merge worth splitting; `valley_ratio` ≈ 1 means continuous bright signal
-             ⇒ one neuron ⇒ do NOT split. This is the most direct merge evidence — use
-             it to confirm a `split_label` before the gate's over-split guard rejects
-             a speculative one.
+             endpoint_mean, valley, valley_ratio, valley_pos, n_samples}`. **For
+             MergeSite / `split_label`** (the mirror image of `gap_bridge_evidence`):
+             it samples intensity along the chord between the two arm seeds (use
+             `s.seed_a_node` / `s.seed_b_node`) and reports whether the signal DIPS
+             through a valley near the cut. A LOW `valley_ratio` (≪1) with `valley_pos`
+             near 0.5 means two adjacent structures only touch ⇒ a real merge worth
+             splitting; `valley_ratio` ≈ 1 means continuous bright signal ⇒ one neuron
+             ⇒ do NOT split. Use it to confirm a `split_label` before the gate's
+             over-split guard rejects a speculative one.
          CRITICAL COST RULE: each read is a cloud fetch (gap_connectivity ≈ 2 reads,
-         merge_cut_evidence ≈ 9), so call them ONLY for candidates that already pass
-         your cheap geometric filters (gap / size / margin / angle) — never for all
-         `sites`. Always guard `if ctx.get("read_image_patch") is not None` so the
-         policy still runs when the image is disabled.
+         gap_bridge_evidence / merge_cut_evidence ≈ 5–25 reads, adaptive to span), so
+         call them ONLY for candidates that already pass your cheap geometric filters
+         (gap / size / margin / angle) — never for all `sites`. The intended pattern
+         for a merge: cheap geometry → `gap_connectivity` (reject dim ends) →
+         `gap_bridge_evidence` (confirm a continuous bridge) → emit. Always guard
+         `if ctx.get("read_image_patch") is not None` so the policy still runs when
+         the image is disabled.
      **The `sites` stream is HETEROGENEOUS — it mixes two site classes.** NEVER
      assume a site is a `SplitSite`; a bare `s.label_a` on a `MergeSite` raises
      `AttributeError` and crashes the whole run. **Always branch on

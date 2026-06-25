@@ -25,8 +25,9 @@ gs://allen-nd-goog/... . Run in the `panda` env.
 
 Usage
 -----
-    conda run -n panda python test_canonical_labeling.py                 # 794495
+    conda run -n panda python test_canonical_labeling.py                 # 794495, mcl100
     conda run -n panda python test_canonical_labeling.py --brain 789202
+    conda run -n panda python test_canonical_labeling.py --brain 789202 --mcl 10
     conda run -n panda python test_canonical_labeling.py --patch-only    # skip full scan
 """
 
@@ -110,11 +111,19 @@ def main():
     ap.add_argument("--brain", default="794495")
     ap.add_argument("--cache-dir", default=os.path.join(REPO, "exa-spim-agent/cache"))
     ap.add_argument("--results-dir", default=os.path.join(REPO, "exa-spim-agent/metrics_out"))
+    ap.add_argument("--mcl", type=int, default=100,
+                    help="min_cable_length of the cache to load (selects "
+                         "dataset_cache_<brain>_mcl<MCL>.pkl). Default 100. A smaller "
+                         "value (e.g. 10) filters fewer short fragments, so the "
+                         "cache-only omit rate runs closer to the canonical pipeline.")
     ap.add_argument("--patch-only", action="store_true",
                     help="Only run the fast patch cross-check (still labels all nodes).")
     args = ap.parse_args()
 
-    cache_path = os.path.join(args.cache_dir, f"dataset_cache_{args.brain}_mcl100.pkl")
+    cache_path = os.path.join(args.cache_dir, f"dataset_cache_{args.brain}_mcl{args.mcl}.pkl")
+    if not os.path.exists(cache_path):
+        ap.error(f"cache not found: {cache_path}\n"
+                 f"  (check --brain / --mcl; build it via load_skeletons.ipynb if missing)")
     seg_path = segmentation_path_for(args.brain)
     print(f"brain {args.brain}")
     print(f"  cache:        {cache_path}")

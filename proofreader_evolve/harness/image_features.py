@@ -25,6 +25,20 @@ from __future__ import annotations
 import numpy as np
 
 
+# Safety rail on the per-read patch size (voxels per axis). The patch ``shape`` is a
+# caller-tunable receptive field — a bigger patch sees more context but every read is
+# a cloud fetch, so an unbounded shape would blow up latency and memory with no guard.
+# We clamp each axis to this cap (the analogue of ENUM_PARAM_SPEC's rails for the
+# enumeration knobs). 512 voxels ~ 383 µm in x/y / 512 µm in z — a generous upper
+# bound that still rules out pathological whole-volume reads.
+_MAX_PATCH_DIM = 512
+
+
+def _clamp_shape(shape) -> tuple:
+    """Clamp a requested patch shape to (1, _MAX_PATCH_DIM] per axis (>=1, int)."""
+    return tuple(max(1, min(_MAX_PATCH_DIM, int(s))) for s in shape)
+
+
 class LazyImagePatchReader:
     """Reads a cubic image patch centered on a fragment-graph node, on demand.
 
@@ -35,7 +49,9 @@ class LazyImagePatchReader:
     graph : SkeletonGraph
         The fragment graph whose ``node_voxel(i)`` gives a node's voxel centre.
     default_shape : tuple[int, int, int]
-        Patch size in voxels (z, y, x) when the caller does not specify one.
+        Patch size in voxels (z, y, x) when the caller does not specify one. A
+        caller may pass a larger ``shape`` to any read method for a bigger receptive
+        field, but every axis is clamped to ``_MAX_PATCH_DIM`` (a cloud-cost rail).
     """
 
     def __init__(self, img_path, graph, default_shape=(48, 48, 48)):
@@ -58,7 +74,7 @@ class LazyImagePatchReader:
         Memoized per (node, shape); only the first call for a given key hits the
         cloud. ``shape`` defaults to ``default_shape``.
         """
-        shape = tuple(shape) if shape is not None else self._default_shape
+        shape = _clamp_shape(shape) if shape is not None else self._default_shape
         key = (int(node_id), shape)
         if key in self._cache:
             return self._cache[key]
@@ -147,7 +163,7 @@ class LazyImagePatchReader:
         self._ensure_open()
         va = np.asarray(self._graph.node_voxel(int(node_a)), dtype=float)
         vb = np.asarray(self._graph.node_voxel(int(node_b)), dtype=float)
-        shape = tuple(shape)
+        shape = _clamp_shape(shape)
         profile = []
         for t in np.linspace(0.0, 1.0, n_samples):
             voxel = tuple(int(round(c)) for c in (va + t * (vb - va)))

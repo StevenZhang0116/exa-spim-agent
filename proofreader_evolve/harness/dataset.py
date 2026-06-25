@@ -97,6 +97,8 @@ ENUM_PARAM_SPEC = {
     "max_gap_um":       (15.0,  1.0,  40.0),   # tip->partner search radius (µm)
     "split_max_sites":  (5000,  100,  50000),  # cap on split candidates
     "tip_to_shaft":     (True,  None, None),   # bool: partners may be shaft/branch
+    "split_alt_per_pair": (1,    1,    10),    # gaps kept per label pair (>1 attaches
+                                               # extra evidence gaps as SplitSite.alt_gaps)
     # candidate_merge_sites
     "min_arm_cable_um": (10.0,  2.0,  50.0),   # both arms must reach this (µm)
     "seed_depth_um":    (8.0,   2.0,  30.0),   # seed placement depth into each arm
@@ -245,6 +247,19 @@ class SplitSite:
     xyz_a, xyz_b : tuple[float, float, float]
         Physical coordinates of the two tips (for image-patch lookups / display).
         These equal ``g.node_xyz[node_a]`` / ``g.node_xyz[node_b]``.
+    alt_gaps : list[dict]
+        OTHER nearby gaps between the SAME label pair (when ``alt_per_pair > 1`` was
+        requested). The site itself carries the CLOSEST gap (``node_a``/``node_b``/
+        ``gap_um``); ``alt_gaps`` holds up to ``alt_per_pair - 1`` additional gaps,
+        each ``{"gap_um", "node_a", "node_b", "xyz_a", "xyz_b"}`` sorted by gap. Two
+        fragments can be near each other in MORE than one place (e.g. parallel-running
+        neurites), and the closest gap is not always the most decisive — its geometry
+        may be a sideways graze while another gap is a clean colinear continuation. A
+        policy can inspect ``alt_gaps`` to find the most convincing evidence point
+        before deciding. It does NOT change the action: ``as_edit()`` still emits the
+        single ``merge_labels(label_a, label_b)`` (one merge unifies the pair across
+        ALL their gaps via union-find), so edit count / scoring are unchanged. Empty
+        in the default (``alt_per_pair == 1``) behavior.
     """
 
     kind: str = field(default="split", init=False)  # site-type tag for the policy
@@ -256,9 +271,14 @@ class SplitSite:
     node_b: int
     xyz_a: tuple
     xyz_b: tuple
+    alt_gaps: list = field(default_factory=list)
 
     def as_edit(self) -> tuple:
-        """The label pair this site would unify if accepted."""
+        """The label pair this site would unify if accepted.
+
+        Independent of ``alt_gaps``: a single ``merge_labels`` unifies the pair
+        across every gap between them, so multiple evidence gaps still yield ONE edit.
+        """
         return (self.label_a, self.label_b)
 
 
@@ -267,7 +287,9 @@ def candidate_split_sites(
     max_gap_um: float = 15.0,
     max_sites: int = 5000,
     tip_to_shaft: bool = True,
-) -> list[SplitSite]:
+    alt_per_pair: int = 1,
+    return_stats: bool = False,
+):
     """Enumerate candidate split-repair sites: a fragment tip near a *differently
     labelled* node.
 
@@ -300,11 +322,38 @@ def candidate_split_sites(
     tip_to_shaft : bool
         If True, the partner node may be any node (tip/shaft/branch). If False,
         partners are restricted to other tips (legacy tip-to-tip enumeration).
+    alt_per_pair : int
+        How many gaps to retain PER unordered label pair (default 1 = legacy: keep
+        only the single closest gap). With ``alt_per_pair > 1``, the closest gap
+        still defines the site (``node_a``/``node_b``/``gap_um``) and the next
+        ``alt_per_pair - 1`` closest gaps between the SAME pair are attached as
+        ``SplitSite.alt_gaps`` (additional evidence points the policy can inspect).
+        The returned site COUNT is unchanged (still one per label pair) — this only
+        enriches each site, so edit count and scoring are unaffected. Clamped to >= 1.
+
+    return_stats : bool
+        When True, return ``(sites, stats)`` instead of just ``sites``. ``stats`` is
+        a dict describing the ENUMERATION CEILING — what the geometric scan dropped
+        BEFORE the policy ever saw it, so the failure report can tell the reviser when
+        its recall is bounded by enumeration (fixable only via ENUM_PARAMS) rather
+        than by its own accept/reject thresholds. Keys:
+          * ``n_pairs_enumerated`` — distinct unordered label pairs found within
+            ``max_gap_um`` (== number of sites BEFORE the ``max_sites`` cap);
+          * ``n_returned`` — sites actually returned (after the cap);
+          * ``n_truncated`` — pairs DROPPED by the ``max_sites`` cap (0 if uncapped);
+          * ``truncated_at_gap_um`` — the gap of the closest dropped pair (the cap
+            keeps the closest gaps, so everything at/after this gap was discarded);
+            ``None`` when nothing was truncated;
+          * ``max_truncated_gap_um`` — the farthest dropped pair's gap (``None`` if
+            none), so the reviser sees the gap RANGE it is losing to truncation;
+          * ``max_gap_um`` / ``max_sites`` / ``tip_to_shaft`` — the params in effect.
+        This is GT-FREE (pure geometry), so it is leak-free and safe to surface.
 
     Returns
     -------
     list[SplitSite] sorted by ascending gap, deduplicated per unordered
-    label pair (closest gap kept).
+    label pair (closest gap kept). If ``return_stats`` is True, returns
+    ``(list[SplitSite], stats_dict)`` instead (see ``return_stats`` above).
     """
     g = fragments_graph
     all_nodes = list(g.nodes)
@@ -334,8 +383,13 @@ def candidate_split_sites(
     # For each tip, all partner nodes within max_gap_um.
     neighbor_lists = partner_tree.query_ball_point(node_coords[tip_idx], r=max_gap_um)
 
-    # Keep the closest valid candidate per unordered label pair.
-    best: dict[frozenset, tuple] = {}  # {label_pair: (gap, node_a, node_b, xyz_a, xyz_b)}
+    alt_per_pair = max(1, int(alt_per_pair))
+
+    # Collect candidate gaps per unordered label pair. When alt_per_pair == 1 we keep
+    # only the single closest gap (legacy behavior); otherwise we accumulate all gaps
+    # for a pair and keep the closest ``alt_per_pair`` at the end. Each gap entry is
+    # (gap, node_a, node_b, xyz_a, xyz_b); node_a is always the tip.
+    gaps_by_pair: dict[frozenset, list] = {}
     for ti, neighbors in zip(tip_idx, neighbor_lists):
         la = node_labels[ti]
         if la == "0":
@@ -350,20 +404,33 @@ def candidate_split_sites(
             if lb == "0" or lb == la:
                 continue  # unlabelled or same fragment — not a split-repair candidate
             gap = float(np.linalg.norm(a_xyz - node_coords[gi]))
+            entry = (
+                gap,
+                ai,                                 # node_a: always the tip
+                int(node_arr[gi]),                  # node_b: tip/shaft/branch partner
+                tuple(map(float, a_xyz)),
+                tuple(map(float, node_coords[gi])),
+            )
             key = frozenset((la, lb))
-            prev = best.get(key)
-            if prev is None or gap < prev[0]:
-                best[key] = (
-                    gap,
-                    ai,                                 # node_a: always the tip
-                    int(node_arr[gi]),                  # node_b: tip/shaft/branch partner
-                    tuple(map(float, a_xyz)),
-                    tuple(map(float, node_coords[gi])),
-                )
+            bucket = gaps_by_pair.get(key)
+            if bucket is None:
+                gaps_by_pair[key] = [entry]
+            elif alt_per_pair == 1:
+                # Legacy: keep only the closest gap for this pair (no list growth).
+                if gap < bucket[0][0]:
+                    bucket[0] = entry
+            else:
+                bucket.append(entry)
 
     sites: list[SplitSite] = []
-    for v in best.values():
-        gap, ai, bi, axyz, bxyz = v
+    for bucket in gaps_by_pair.values():
+        # Closest gap defines the site; the next-closest become alt_gaps evidence.
+        bucket.sort(key=lambda t: t[0])
+        gap, ai, bi, axyz, bxyz = bucket[0]
+        alt_gaps = [
+            {"gap_um": g_, "node_a": a_, "node_b": b_, "xyz_a": xa_, "xyz_b": xb_}
+            for (g_, a_, b_, xa_, xb_) in bucket[1:alt_per_pair]
+        ]
         sites.append(
             SplitSite(
                 label_a=str(g.node_segment_id(ai)),
@@ -373,10 +440,33 @@ def candidate_split_sites(
                 node_b=bi,                              # tip / shaft / branch partner
                 xyz_a=axyz,
                 xyz_b=bxyz,
+                alt_gaps=alt_gaps,
             )
         )
     sites.sort(key=lambda s: s.gap_um)
-    return sites[:max_sites]
+
+    # Enumeration-ceiling stats (GT-free): the cap keeps the CLOSEST gaps, so any
+    # pair beyond index ``max_sites`` is silently dropped before the policy sees it.
+    # Surface what was lost so the failure report can distinguish a recall miss the
+    # policy CAN fix (a site it rejected) from one only ENUM_PARAMS can (a site that
+    # was never enumerated / was truncated away). Computed before the slice.
+    n_pairs = len(sites)
+    n_returned = min(n_pairs, max_sites)
+    truncated = sites[max_sites:] if n_pairs > max_sites else []
+    stats = {
+        "n_pairs_enumerated": n_pairs,
+        "n_returned": n_returned,
+        "n_truncated": len(truncated),
+        "truncated_at_gap_um": float(truncated[0].gap_um) if truncated else None,
+        "max_truncated_gap_um": float(truncated[-1].gap_um) if truncated else None,
+        "max_gap_um": float(max_gap_um),
+        "max_sites": int(max_sites),
+        "tip_to_shaft": bool(tip_to_shaft),
+    }
+    sites = sites[:max_sites]
+    if return_stats:
+        return sites, stats
+    return sites
 
 
 @dataclass

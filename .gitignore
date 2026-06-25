@@ -17,6 +17,7 @@ outputs/
 results/
 checkpoints/
 logs/
+notebooks/verify_stats/
 
 # Evolution runs: TRACK the small artifacts (ledger, per-gen heuristics/rules,
 # failure reports, attempts.md, SUMMARY.md) but NOT the huge prepared-brain

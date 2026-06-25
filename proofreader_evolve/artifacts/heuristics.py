@@ -10,7 +10,15 @@ The candidate stream has TWO kinds of site (dispatch on ``site.kind``):
   - SplitSite  (kind == "split"): two nearby fragments with DIFFERENT labels — a
     neuron that the segmentation broke into pieces. Valid repair = ``merge_labels``
     (unify the two labels). Fields: ``label_a``, ``label_b``, ``gap_um``,
-    ``node_a``/``node_b`` (fragment-graph node ids), ``xyz_a``/``xyz_b``.
+    ``node_a``/``node_b`` (fragment-graph node ids), ``xyz_a``/``xyz_b``, and
+    ``alt_gaps`` (list — OTHER gaps between the SAME label pair; empty unless
+    ``ENUM_PARAMS["split_alt_per_pair"] > 1``). The site carries the CLOSEST gap;
+    ``alt_gaps`` holds the next-closest as dicts ``{gap_um, node_a, node_b, xyz_a,
+    xyz_b}``. Two fragments can touch in more than one place and the closest gap is
+    not always the most decisive (it may be a sideways graze while another gap is a
+    clean colinear continuation) — inspect ``alt_gaps`` to judge on the BEST evidence
+    point. It does NOT change the action: ``as_edit()`` still emits ONE
+    ``merge_labels(label_a, label_b)`` (one merge unifies the pair across all gaps).
     From ``dataset.candidate_split_sites``.
 
   - MergeSite  (kind == "merge"): ONE label fused across two neurites —
@@ -48,7 +56,13 @@ Contract (keep the CALL signature stable so the harness can always call it):
   ctx   : dict   # free-form context the harness provides, e.g.
                  #   ctx["max_gap_um"], ctx["fragments_graph"],
                  #   ctx["node_radius"], ctx["read_image_patch"] (may be None),
-                 #   ctx["n_split_sites"], ctx["n_merge_sites"]
+                 #   ctx["n_split_sites"], ctx["n_merge_sites"],
+                 #   ctx["image_patch_shape"] — the IMAGE RECEPTIVE FIELD (z,y,x voxels)
+                 #     you may pass to any reader method's shape= arg, e.g.
+                 #     reader.gap_bridge_evidence(a, b, shape=ctx["image_patch_shape"]).
+                 #     Bigger = more context but a larger (slower/costlier) cloud read;
+                 #     each axis is clamped to 512. Tune per tier (tight for a clean
+                 #     micro-gap, wider to confirm a long faint bridge).
   return: list of edits. Each edit is EITHER a legacy 2-tuple
           ``(label_a, label_b)`` (treated as a merge) OR a typed dict:
             {"kind": "merge_labels", "label_a": str, "label_b": str}      # repair split
@@ -106,6 +120,12 @@ ENUM_PARAMS = {
     "max_per_label": 8,        # cap on merge candidates emitted per raw label [1..100]
     # "split_max_sites": 5000, # global cap on split candidates [100..50000]
     # "merge_max_sites": 5000, # global cap on merge candidates [100..50000]
+    # "split_alt_per_pair": 1, # gaps kept per SplitSite label pair [1..10]. >1 attaches
+    #                          # the next-closest gaps as site.alt_gaps (extra evidence
+    #                          # points) WITHOUT adding sites or edits — useful when the
+    #                          # closest gap's geometry is poor but another gap between
+    #                          # the same pair is a clean colinear continuation. To use
+    #                          # it, also read site.alt_gaps in propose_edits.
 }
 
 

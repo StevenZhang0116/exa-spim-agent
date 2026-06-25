@@ -24,6 +24,8 @@ either keeps or reverts. Every generation's cost is recorded.
 Run from the project root (exa-spim-agent/):
     python proofreader_evolve/run_evolution.py --brain 789202 --generations 5
     python proofreader_evolve/run_evolution.py --brain 789202 --generations 5 --human-gate
+    # split-error-only, mega-merge guard on, wider candidate stream (mcl10), no priors:
+    python proofreader_evolve/run_evolution.py --brain 789202 --generations 40 --no-priors --splits-only --max-class-size 6 --mcl 10
 """
 
 from __future__ import annotations
@@ -146,10 +148,11 @@ def _anthropic_api_env() -> dict[str, str]:
         # otherwise take precedence and ignore the API key / model id.
         "CLAUDE_CODE_USE_BEDROCK": "0",
         "CLAUDE_CODE_USE_VERTEX": "0",
-        # Run Opus 4.8 at maximum reasoning effort for the evolution/reviser work.
-        # Levels: low|medium|high|xhigh|max; Opus 4.8 thinks adaptively and at
-        # xhigh almost always reasons deeply. Applies to the session + subagents.
-        "CLAUDE_EFFORT": "xhigh",
+        # Reasoning effort for the evolution/reviser work. Levels:
+        # low|medium|high|xhigh|max; Opus 4.8 thinks adaptively. ``high`` keeps strong
+        # diagnostic reasoning at lower latency/cost than ``xhigh``. Applies to the
+        # session + subagents.
+        "CLAUDE_EFFORT": "high",
     }
 
 
@@ -414,13 +417,50 @@ def _format_attempts(attempts: list[dict]) -> str:
     if not attempts:
         return ""
     lines = ["\nAttempts already tried against the CURRENT policy "
-             "(do NOT repeat these — they did not beat it):"]
+             "(do NOT repeat these — they did not beat it). The number is the "
+             "held-out SPLIT-REPAIR score delta vs the parent (correct - false; the "
+             "gate's actual fitness, an integer count — NOT Edge Accuracy):"]
     for a in attempts:
         lines.append(
-            f"  - gen{a['gen']}: {a['summary']} -> held-out "
-            f"{a['heldout']:+.3f} vs parent ({'kept' if a['accepted'] else 'rejected'})"
+            f"  - gen{a['gen']}: {a['summary']} -> held-out split-repair "
+            f"{a['heldout']:+d} vs parent ({'kept' if a['accepted'] else 'rejected'})"
         )
     return "\n".join(lines) + "\n"
+
+
+def _format_gen_gap(gen_gap: list[dict], window: int = 5) -> str:
+    """Render the train→held-out generalization-gap meta-signal for the prompt.
+
+    ``gen_gap`` holds one ``{"gen", "train", "heldout"}`` per ACCEPTED generation —
+    the candidate's TRAIN and HELD-OUT split-repair scores. We show only the
+    AGGREGATE over the last ``window`` accepts (mean train score, mean held-out
+    score, and the gap), so the reviser can SEE whether its accepted changes
+    generalize — without ever revealing which neurons are held-out. A train score
+    persistently far above held-out = overfitting the train split; the reviser
+    should then favor changes grounded in generalizable geometry over ones that
+    only chase train-specific sites. Empty until there are >=2 accepted generations
+    (a gap needs history).
+    """
+    if len(gen_gap) < 2:
+        return ""
+    recent = gen_gap[-window:]
+    mt = sum(r["train"] for r in recent) / len(recent)
+    mh = sum(r["heldout"] for r in recent) / len(recent)
+    gap = mt - mh
+    trend = ("widening (train pulling ahead of held-out)" if gap > 0
+             else "held-out keeping pace" if abs(gap) < 1e-9
+             else "held-out ahead (unusual; not overfitting)")
+    return (
+        f"\n\nGENERALIZATION CHECK (aggregate over the last {len(recent)} ACCEPTED "
+        f"generations; no neuron identities, just scores): mean TRAIN split-repair "
+        f"score = {mt:.1f}, mean HELD-OUT split-repair score = {mh:.1f}, "
+        f"gap (train - held-out) = {gap:+.1f} — {trend}. The gate scores you on "
+        f"HELD-OUT, so a large positive gap means your recent accepted changes "
+        f"repair train splits that DON'T carry over. If the gap is widening, prefer "
+        f"improvements grounded in GENERALIZABLE geometry/topology (tangent "
+        f"continuity, caliber match, endpoint degree) over ones that chase "
+        f"train-specific recall.\n"
+    )
 
 
 def _format_priors(priors_path: str | None) -> str:
@@ -477,6 +517,7 @@ async def ask_reviser(
     attempts: list[dict] | None = None,
     priors_path: str | None = None,
     splits_only: bool = False,
+    gen_gap: list[dict] | None = None,
 ):
     """Run the proofreader-reviser subagent on the failure report. Returns
     (text, input_tokens, output_tokens, cost_usd, read_priors). ``read_priors`` is
@@ -527,6 +568,7 @@ async def ask_reviser(
            "roughly where the threshold sits. If the AUC is weak, do not over-invest "
            "in image — improve the geometric `merge_labels` policy instead.")
         + _format_priors(priors_path)
+        + _format_gen_gap(gen_gap or [])
         + _format_attempts(attempts or [])
         + ("\nPropose a DIFFERENT improvement from any listed above."
            if attempts else "")
@@ -669,123 +711,6 @@ def collect_report_labels(merge_labels: dict, train_run) -> set:
     return labels
 
 
-def evaluate_gate(
-    cand_metrics: dict,
-    parent_metrics: dict,
-    has_split_edit: bool,
-    gate_eps: float,
-    split_tol: float = 0.05,
-    merge_tol: float = 0.0,
-) -> tuple[bool, str]:
-    """Decide acceptance from the FULL metric vector, not Edge Accuracy alone.
-
-    Edge Accuracy (= 100 - %Split - %Omit - %Merged) is the primary fitness: every
-    generation must first beat the parent by ``gate_eps``.
-
-    NO-NEW-MERGE guard (EVERY generation). The reviser's stated objective is
-    "maximize Edge Accuracy WITHOUT creating merge errors", but Edge Accuracy alone
-    does not enforce the second clause: a candidate that repairs many splits while
-    introducing a few merges can still raise net Edge Accuracy and slip through. And
-    ``merge_labels`` — the merge-only path's only edit — is precisely the action that
-    creates merge errors (it fuses two labels; if they belong to different GT
-    neurons that fusion IS a merge error). So we require, on EVERY generation:
-      * # Merges did not increase (beyond ``merge_tol``), and
-      * % Merged Edges did not increase (beyond ``merge_tol``).
-    This is safe — it can never reject a CORRECT merge repair, because unifying two
-    fragments of the SAME neuron never raises # Merges or % Merged Edges; only a
-    wrong fusion does. Both components are checked, not just # Merges: folding a
-    clean label into an ALREADY-merged one leaves # Merges flat while % Merged Edges
-    climbs (the bad label now spans more edges), so # Merges alone would miss it.
-    (This replaces the old design, which guarded merge components only on the
-    split_label path and left merge-only generations gated on Edge Accuracy alone —
-    the exact hole this closes. The old rationale conflated the %Split guard, which
-    CAN wrongly reject good merge repairs that benignly raise #Splits via
-    fix_label_misalignments, with the #Merges/%Merged guard, which cannot.)
-
-    The over-split watchdog applies ONLY when the candidate emits at least one
-    ``split_label`` edit — the action that can trade a merge penalty for a split
-    penalty and over-split a real neuron while still looking net-positive on Edge
-    Accuracy on a small held-out set: % Split Edges must not rise by more than
-    ``split_tol`` above the parent (a small tolerance absorbs the benign
-    misalignment-fill effect; a real over-split blows past it). It is NOT applied to
-    merge-only generations, where a legitimate ``merge_labels`` repair can raise
-    BOTH #Splits and Edge Accuracy together (fix_label_misalignments fills
-    background gaps, adding distinct labels and coverage at once; see verify.py
-    handler-parity notes), so a blanket %Split guard would wrongly reject it.
-
-    Returns ``(keep, reason)``; ``reason`` is a short human-readable string for the
-    log / attempts archive, naming the specific guard that fired.
-    """
-    def m(d, k):
-        v = d.get(k, float("nan"))
-        return v
-
-    cand_acc = m(cand_metrics, "Edge Accuracy")
-    parent_acc = m(parent_metrics, "Edge Accuracy")
-
-    # Primary gate (applies to every generation).
-    if not (cand_acc > parent_acc + gate_eps):
-        return False, (f"Edge Accuracy {cand_acc:.3f} did not beat parent "
-                       f"{parent_acc:.3f} by eps {gate_eps:.3f}")
-
-    # No-new-merge guard (EVERY generation). A correct repair never trips this; only
-    # a candidate that introduces / grows a merge error does. The 1e-9 absorbs
-    # float noise when merge_tol is 0.
-    cand_merged = m(cand_metrics, "% Merged Edges")
-    parent_merged = m(parent_metrics, "% Merged Edges")
-    cand_nmerge = m(cand_metrics, "# Merges")
-    parent_nmerge = m(parent_metrics, "# Merges")
-    if cand_nmerge > parent_nmerge + merge_tol + 1e-9:
-        return False, (f"created merge error: # Merges {parent_nmerge:.2f} -> "
-                       f"{cand_nmerge:.2f} (exceeds parent + tol {merge_tol:.3f})")
-    if cand_merged > parent_merged + merge_tol + 1e-9:
-        return False, (f"created merge error: % Merged Edges {parent_merged:.3f} -> "
-                       f"{cand_merged:.3f} (exceeds parent + tol {merge_tol:.3f})")
-
-    if not has_split_edit:
-        return True, (f"Edge Accuracy {cand_acc:.3f} > parent {parent_acc:.3f} "
-                      f"+ {gate_eps:.3f}; no new merge (#Merges {parent_nmerge:.2f}->"
-                      f"{cand_nmerge:.2f}, %Merged {parent_merged:.3f}->"
-                      f"{cand_merged:.3f}) (merge-only path)")
-
-    # --- split_label generation: additionally enforce the over-split watchdog ---
-    cand_split = m(cand_metrics, "% Split Edges")
-    parent_split = m(parent_metrics, "% Split Edges")
-    if cand_split > parent_split + split_tol:
-        return False, (f"split_label over-split: % Split Edges {parent_split:.3f} "
-                       f"-> {cand_split:.3f} exceeds parent + tol {split_tol:.3f}")
-
-    return True, (f"Edge Accuracy {cand_acc:.3f} > parent {parent_acc:.3f}; "
-                  f"merge not worsened (%Merged {parent_merged:.3f}->{cand_merged:.3f}, "
-                  f"#Merges {parent_nmerge:.2f}->{cand_nmerge:.2f}) without "
-                  f"over-splitting (%Split {parent_split:.3f}->{cand_split:.3f})")
-
-
-def no_per_skeleton_merge_regression(cand_per_swc, parent_per_swc, merge_tol: float = 0.0):
-    """Per-skeleton hard guard: no held-out skeleton may GAIN a merge error.
-
-    The pooled / per-fold merge guard in ``evaluate_gate`` compares run-length-
-    weighted AVERAGES, so a candidate that creates a merge on one skeleton while
-    removing one on another can net to flat (or even improve) and slip through —
-    yet a merge error WAS created. This guard is strictly stronger: it requires
-    that NO individual held-out skeleton regress on either merge component
-    (``# Merges`` or ``% Merged Edges``).
-
-    Correct repairs never trip it: unifying two fragments of the SAME neuron never
-    raises that neuron's ``# Merges`` or ``% Merged Edges`` (only a wrong fusion
-    does), so the per-skeleton check inherits the same can't-reject-a-good-repair
-    invariant the pooled guard relies on — just enforced row by row. The ``1e-9``
-    absorbs float noise when ``merge_tol`` is 0; skeletons missing from the parent
-    (NaN after reindex) compare False and are never flagged.
-
-    Returns the sub-frame of ``cand_per_swc`` rows that regressed (empty == pass).
-    """
-    parent = parent_per_swc.reindex(cand_per_swc.index)
-    bad_nmerge = cand_per_swc["# Merges"] > parent["# Merges"] + merge_tol + 1e-9
-    bad_pct = cand_per_swc["% Merged Edges"] > parent["% Merged Edges"] + merge_tol + 1e-9
-    return cand_per_swc[bad_nmerge | bad_pct]
-
-
 _FOLD_METRIC_COLS = ("Edge Accuracy", "% Merged Edges", "# Merges", "% Split Edges")
 
 
@@ -794,68 +719,13 @@ def fold_metrics(per_swc, fold_names: list[str]) -> dict:
 
     ``per_swc`` is a ScoreResult.per_swc frame (one row per GT skeleton, scored on
     the FULL held-out set in a single pass); ``fold_names`` selects this fold's rows.
-    Returns the same metric keys ``evaluate_gate`` consumes, so a fold is gated
-    exactly like the old single held-out set.
+    DIAGNOSTIC ONLY: the per-fold Edge-Accuracy vectors this produces are logged and
+    written to split.json so a generation's stability across folds is visible; they
+    do NOT feed the accept/reject decision (that is the pooled split-repair score —
+    see the gate at step 7).
     """
     rows = per_swc.loc[per_swc.index.isin(fold_names)]
     return {m: scoring._weighted_avg(rows, m) for m in _FOLD_METRIC_COLS}
-
-
-def evaluate_gate_kfold(
-    cand_folds: list[dict], parent_folds: list[dict], has_split_edit: bool,
-    gate_eps: float, split_tol: float = 0.05, merge_tol: float = 0.0,
-) -> tuple[bool, str, dict]:
-    """Aggregate the per-fold gate into one accept/reject across K folds.
-
-    A candidate is kept only when BOTH hold:
-      * AGGREGATE improvement: mean held-out Edge Accuracy across folds beats the
-        parent's mean by ``gate_eps`` (the stable signal K-fold exists to provide —
-        a single fold is too noisy to gate on), AND
-      * NO PER-FOLD REGRESSION on the hard guards: ``evaluate_gate`` must pass on
-        EVERY fold (no fold may gain Edge Accuracy by creating a merge there, and a
-        split_label generation must not over-split in any fold). Per-fold for the
-        guards is deliberately strict — a merge error created in one fold is a real
-        regression even if the mean still rises.
-
-    Returns ``(keep, reason, summary)`` where ``summary`` carries the per-fold and
-    mean Edge Accuracy for the log / ledger.
-    """
-    import statistics
-    cand_accs = [f["Edge Accuracy"] for f in cand_folds]
-    parent_accs = [f["Edge Accuracy"] for f in parent_folds]
-    cand_mean = statistics.fmean(cand_accs)
-    parent_mean = statistics.fmean(parent_accs)
-    stdev = statistics.pstdev(cand_accs) if len(cand_accs) > 1 else 0.0
-    summary = {
-        "cand_fold_acc": cand_accs, "parent_fold_acc": parent_accs,
-        "cand_mean": cand_mean, "parent_mean": parent_mean, "cand_stdev": stdev,
-    }
-
-    # Aggregate gate: mean must beat parent mean by eps.
-    if not (cand_mean > parent_mean + gate_eps):
-        return (False,
-                f"mean Edge Accuracy {cand_mean:.3f} did not beat parent "
-                f"{parent_mean:.3f} by eps {gate_eps:.3f} "
-                f"(folds {[round(a,2) for a in cand_accs]})",
-                summary)
-
-    # Per-fold hard guards: every fold must individually pass evaluate_gate. Use
-    # gate_eps=-inf there so the per-fold Edge-Accuracy beat is NOT re-imposed (the
-    # mean already enforces improvement); we only want the no-new-merge / over-split
-    # guards to fire per fold.
-    for i, (cf, pf) in enumerate(zip(cand_folds, parent_folds)):
-        ok, why = evaluate_gate(
-            cf, pf, has_split_edit=has_split_edit, gate_eps=float("-inf"),
-            split_tol=split_tol, merge_tol=merge_tol,
-        )
-        if not ok:
-            return (False, f"fold {i} guard failed: {why}", summary)
-
-    return (True,
-            f"mean Edge Accuracy {cand_mean:.3f} > parent {parent_mean:.3f} "
-            f"+ {gate_eps:.3f} (folds {[round(a,2) for a in cand_accs]}, "
-            f"±{stdev:.3f}); no per-fold merge/over-split regression",
-            summary)
 
 
 def human_gate(gen: int, train_acc: float, heldout_acc: float, parent_acc: float) -> bool:
@@ -902,16 +772,22 @@ class BrainContext:
 
 
 def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
-                 split_seed: int, verbose: bool) -> BrainContext:
+                 split_seed: int, verbose: bool, mcl: int = 100) -> BrainContext:
     """Load + prepare ONE brain and compute its train/held-out split + baseline.
 
     Mirrors the original single-brain setup, factored out so a run can hold several
     brains at once. The prepared-brain pickle (expensive) is reused from any prior
-    run if present, exactly as before.
+    run if present, exactly as before. ``mcl`` selects which fragment cache to load
+    (``dataset_cache_<brain>_mcl<mcl>.pkl``); default 100.
     """
     paths = scoring.BrainPaths(brain)
-    cache_path = ds.default_cache_path(brain)
-    log(f"[{brain}] Loading cached fragment graph: {cache_path}")
+    cache_path = ds.default_cache_path(brain, min_cable_length=mcl)
+    if not os.path.exists(cache_path):
+        raise SystemExit(
+            f"[{brain}] fragment cache not found: {cache_path}\n"
+            f"  (check --brain / --mcl; build it via notebooks/load_skeletons.ipynb "
+            f"with min_cable_length={mcl} if missing)")
+    log(f"[{brain}] Loading cached fragment graph (mcl={mcl}): {cache_path}")
     fragments_graph, _gt_graph, _ = ds.load_cached_graphs(cache_path)
 
     # The policy always gets a LAZY raw-image patch reader in ctx (each read is a
@@ -1027,22 +903,28 @@ def _score_pooled(brains: list, names_attr: str, work_heuristics: str,
     return pooled, per_brain_runs
 
 
-def _pooled_split_repair(brains: list, per_brain_runs: list) -> dict:
-    """Pool the dense split-repair gate signal across brains.
+def _pooled_split_repair(brains: list, per_brain_runs: list,
+                         map_attr: str = "heldout_label_gt_map") -> dict:
+    """Pool the dense split-repair signal across brains.
 
-    For each brain, classify that brain's held-out edits against ITS OWN held-out
-    label→neuron map (raw labels are not comparable across brains, so each brain is
-    classified with its own map and only the COUNTS are pooled). Returns
+    For each brain, classify that brain's edits against ITS OWN label→neuron map
+    (raw labels are not comparable across brains, so each brain is classified with
+    its own map and only the COUNTS are pooled). Returns
     ``{"correct": int, "false": int, "unscored": int, "score": int}`` where
     ``score = correct - false`` is the primary fitness (dense: every repaired split
     counts, unlike Edge Accuracy which only moves on a bridged split edge).
 
-    GATE-ONLY: reads each brain's ``heldout_label_gt_map``; never exposed to the
-    reviser.
+    ``map_attr`` selects which per-brain map to classify against:
+      * ``"heldout_label_gt_map"`` (default) — the GATE signal; GATE-ONLY, never
+        exposed to the reviser.
+      * ``"label_gt_map"`` — the TRAIN signal; used only to compute the AGGREGATE
+        train→held-out generalization gap (a scalar trend), which IS shown to the
+        reviser. Pass the TRAIN per-brain runs with this so train edits are scored
+        on the train map.
     """
     tot = {"correct": 0, "false": 0, "unscored": 0}
     for bc, run in zip(brains, per_brain_runs):
-        c = inc.classify_merge_edits(run.edits, bc.heldout_label_gt_map)
+        c = inc.classify_merge_edits(run.edits, getattr(bc, map_attr))
         tot["correct"] += c["correct"]
         tot["false"] += c["false"]
         tot["unscored"] += c["unscored"]
@@ -1053,11 +935,12 @@ def _pooled_split_repair(brains: list, per_brain_runs: list) -> dict:
 async def run_evolution(
     brain: str, generations: int, heldout_fraction: float,
     human: bool, verbose: bool, model: str = DEFAULT_MODEL,
-    gate_eps: float = 0.05, max_class_size=None, seed_from: str | None = None,
+    score_margin: int = 1, max_class_size=None, seed_from: str | None = None,
     split_seed: int | None = None,
-    split_tol: float = 0.05, merge_tol: float = 0.0, k_folds: int = 1,
+    k_folds: int = 1,
     brains: list | None = None, splits_only: bool = False,
-    use_priors: bool = True,
+    use_priors: bool = True, mcl: int = 100,
+    converge_patience: int = 0, converge_eps: int = 1,
 ) -> None:
     # Brain set: --brains (list) takes precedence; else the single --brain. The run
     # id uses the first brain + a tag of the count so multi-brain runs are obvious.
@@ -1090,7 +973,7 @@ async def run_evolution(
     log(f"Brains: {brain_list} (split_seed={split_seed}, "
         f"heldout_fraction={heldout_fraction})")
     brain_ctxs = [
-        _setup_brain(b, run_dir, heldout_fraction, split_seed, verbose)
+        _setup_brain(b, run_dir, heldout_fraction, split_seed, verbose, mcl=mcl)
         for b in brain_list
     ]
 
@@ -1138,6 +1021,11 @@ async def run_evolution(
         "split_seed": split_seed,
         "heldout_fraction": heldout_fraction,
         "brains": brain_list,
+        # min_cable_length of the fragment cache this run enumerated candidates over.
+        # Recorded so downstream analysis (compare_proofreader_policy.ipynb) reloads
+        # the SAME cache — using mcl100 to replay an mcl10 run would enumerate a
+        # different candidate stream and the numbers would not match this run.
+        "mcl": mcl,
         "per_brain": {bc.brain: {"train": bc.train_names,
                                  "heldout": bc.heldout_names} for bc in brain_ctxs},
         "k_folds": k_eff,
@@ -1159,7 +1047,9 @@ async def run_evolution(
     parent_repair = _pooled_split_repair(brain_ctxs, seed_runs)
     log(f"Seed split-repair: correct={parent_repair['correct']} "
         f"false={parent_repair['false']} score={parent_repair['score']} "
-        f"(unscored={parent_repair['unscored']}) — the bar gen 1 must beat")
+        f"(unscored={parent_repair['unscored']}) — the bar gen 1 must beat by "
+        f"score_margin={score_margin} (keep iff gain >= {score_margin} and zero "
+        f"false merges)")
     # Full pooled held-out metric vector of the parent (run-length-weighted over the
     # pool). Advances on every accept.
     parent_metrics = {m: scoring._weighted_avg(seed_pooled, m)
@@ -1205,6 +1095,20 @@ async def run_evolution(
     # B: memory of revisions tried against the CURRENT parent; cleared when the
     # parent advances (an accept), since past rejections no longer apply.
     attempts_vs_parent: list[dict] = []
+    # Convergence / early-stop (opt-in via --converge-patience > 0): record the
+    # ACCEPTED parent split-repair score at the END of each generation. We stop when
+    # the parent has gained < converge_eps over the last converge_patience gens — a
+    # plateau where further reviser calls (one LLM + two scoring passes each) are
+    # unlikely to pay off. Disabled (0) reproduces the run-all-generations behavior.
+    parent_score_history: list[int] = [parent_repair["score"]]  # score before gen 1
+    # Generalization-gap meta-signal (shown to the reviser): for each ACCEPTED
+    # generation, the candidate's TRAIN split-repair score vs its HELD-OUT score.
+    # A persistently larger train gain than held-out gain = overfitting the train
+    # split. We expose ONLY the aggregate scalars (train_score, heldout_score per
+    # accepted gen) — never which neurons — so held-out identity stays hidden while
+    # "are my changes generalizing?" becomes visible feedback. Each entry:
+    # {"gen": int, "train": int, "heldout": int}.
+    gen_gap_history: list[dict] = []
     # Durable mirror of every attempt (survives crashes/restarts), tagged with the
     # parent bar each was tried against.
     attempts_log = run_dir / "attempts.md"
@@ -1269,6 +1173,12 @@ async def run_evolution(
             if train_false:
                 log(f"   [ALERT] {train_false} train-side false merge(s) — over-merges "
                     f"the held-out gate does NOT see (see failure report)")
+            # Train split-repair score of the CURRENT policy (this gen, on train),
+            # for the generalization-gap meta-signal. Same metric as the gate, but on
+            # the TRAIN map — so train_repair["score"] vs the held-out score below
+            # shows whether a change generalizes. Cheap (reuses train_runs' edits).
+            train_repair = _pooled_split_repair(brain_ctxs, train_runs,
+                                                map_attr="label_gt_map")
 
             # (4-5) Ask the agent to explain and revise the WORKING-COPY artifacts.
             log("Step 4-5: proofreader-reviser diagnoses and revises artifacts...")
@@ -1276,7 +1186,7 @@ async def run_evolution(
                 diagnosis, in_tok, out_tok, cost, read_priors = await ask_reviser(
                     client, report_path, str(work_heuristics), str(work_rules), verbose,
                     attempts=attempts_vs_parent, priors_path=priors_path,
-                    splits_only=splits_only,
+                    splits_only=splits_only, gen_gap=gen_gap_history,
                 )
             # Verify the prior was actually consulted (we grant the tool + allow the
             # path, but only the tool stream proves it was used). Loud if not.
@@ -1363,9 +1273,18 @@ async def run_evolution(
                 # split-repair score counts EVERY correctly-repaired held-out split
                 # (correct) and penalizes every wrong fusion (false), giving a
                 # gradient that responds to each policy change. A candidate is kept
-                # iff it makes MORE net correct repairs than the parent AND creates
-                # ZERO false merges on held-out (the no-new-merge guard, now exact:
-                # a false merge is a fusion of two different held-out neurons).
+                # iff it beats the parent's net repairs by at least ``score_margin``
+                # AND creates ZERO false merges on held-out (the no-new-merge guard,
+                # now exact: a false merge is a fusion of two different held-out
+                # neurons).
+                #
+                # MARGIN (score_margin, integer >= 1). The bar is
+                # ``score >= parent + score_margin``, NOT a strict ``>`` — a strict
+                # ``>`` accepts a +1 win, which on a small held-out set is within
+                # the noise of a single repaired split flipping correct<->unscored
+                # from one revision to the next. score_margin=1 reproduces the old
+                # accept-any-improvement behavior; 2-3 requires the gain to clear
+                # that single-repair noise floor before it is locked in as the parent.
                 cand_repair = _pooled_split_repair(brain_ctxs, heldout_runs)
                 heldout_n_edits = sum(hr.n_edits for hr in heldout_runs)
                 heldout_dropped = sum(
@@ -1374,24 +1293,26 @@ async def run_evolution(
                     isinstance(e, dict) and e.get("kind") == "split_label"
                     for hr in heldout_runs for e in (hr.edits or [])
                 )
+                _gain = cand_repair["score"] - parent_repair["score"]
                 if cand_repair["false"] > 0:
                     improved = False
                     gate_reason = (
                         f"created {cand_repair['false']} false merge(s) on held-out "
                         f"(fused different neurons) — rejected regardless of repairs "
                         f"(correct={cand_repair['correct']})")
-                elif cand_repair["score"] > parent_repair["score"]:
+                elif _gain >= score_margin:
                     improved = True
                     gate_reason = (
                         f"split-repair score {parent_repair['score']} -> "
-                        f"{cand_repair['score']} (correct {parent_repair['correct']}"
+                        f"{cand_repair['score']} ({_gain:+d} >= margin "
+                        f"{score_margin}; correct {parent_repair['correct']}"
                         f"->{cand_repair['correct']}, false 0); no false merges")
                 else:
                     improved = False
                     gate_reason = (
                         f"split-repair score {cand_repair['score']} did not beat "
-                        f"parent {parent_repair['score']} "
-                        f"(correct={cand_repair['correct']}, false=0)")
+                        f"parent {parent_repair['score']} by margin {score_margin} "
+                        f"({_gain:+d}; correct={cand_repair['correct']}, false=0)")
                 heldout_acc = fold_summary_mean = cand_pooled_metrics["Edge Accuracy"]
                 fold_summary = {"cand_mean": heldout_acc,
                                 "cand_fold_acc": [m["Edge Accuracy"] for m in cand_fold_metrics],
@@ -1430,6 +1351,13 @@ async def run_evolution(
                     parent_fold_metrics = cand_fold_metrics
                     parent_pooled = heldout_pooled
                     parent_repair = cand_repair       # advance the primary gate bar
+                    # Record this accepted policy's train vs held-out split-repair
+                    # scores for the generalization-gap meta-signal (next gen's prompt).
+                    gen_gap_history.append({
+                        "gen": gen,
+                        "train": train_repair["score"],
+                        "heldout": cand_repair["score"],
+                    })
                 shutil.copy2(work_heuristics, gen_dir / "heuristics.accepted.py")
                 shutil.copy2(work_rules, gen_dir / "rules.accepted.md")
                 note = "accepted (new parent)"
@@ -1493,6 +1421,19 @@ async def run_evolution(
                 diagnosis=(diagnosis or "")[:2000],  # truncate; full text is in stdout
             ))
 
+            # Convergence / early-stop (opt-in). parent_repair["score"] is the bar
+            # AFTER this gen's accept/revert, so the history tracks the accepted
+            # frontier. Stop once it has gained < converge_eps over the last
+            # converge_patience generations (a plateau).
+            parent_score_history.append(parent_repair["score"])
+            if converge_patience > 0 and len(parent_score_history) > converge_patience:
+                window_gain = parent_score_history[-1] - parent_score_history[-1 - converge_patience]
+                if window_gain < converge_eps:
+                    log(f"[converged] parent split-repair score gained {window_gain} "
+                        f"(< eps {converge_eps}) over the last {converge_patience} "
+                        f"generation(s) — stopping early at gen {gen}/{generations}.")
+                    break
+
     # Run-isolation audit: if the reviser ever attempted to touch a sibling run's
     # files, the guard denied it — but flag the run loudly so the result isn't
     # trusted as an independent sample.
@@ -1548,6 +1489,13 @@ async def run_evolution(
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--brain", default="789202", help="brain_id (must have a cache pkl)")
+    p.add_argument("--mcl", type=int, default=100,
+                   help="min_cable_length of the fragment cache to load "
+                        "(cache/dataset_cache_<brain>_mcl<MCL>.pkl). Default 100. A "
+                        "smaller value (e.g. 10) keeps shorter fragments, widening the "
+                        "candidate stream the policy can reach (raises the recall "
+                        "ceiling) at the cost of more, noisier candidates. Applies to "
+                        "every brain in --brains.")
     p.add_argument("--brains", default=None,
                    help="comma-separated brain_ids to POOL (e.g. "
                         "'789202,794491,794492'). Each brain is loaded + prepared + "
@@ -1562,38 +1510,38 @@ def main() -> int:
                         "gating (the rest are train). Default 0.5; pass 0.3 for the "
                         "70/30 train/test split.")
     p.add_argument("--k-folds", type=int, default=1,
-                   help="K-fold cross-validation WITHIN the held-out set for gating. "
-                        "The candidate must beat the parent on the MEAN held-out "
-                        "Edge Accuracy across K disjoint folds AND not regress on the "
-                        "no-new-merge / over-split guards in ANY fold. Default 1 "
-                        "(single held-out set == legacy behavior). With few held-out "
-                        "neurons, K>1 (e.g. 4) turns a noisy single split into a "
-                        "stable mean so small true improvements become detectable. "
-                        "Clamped to the held-out neuron count. Scoring cost is "
-                        "unchanged — folds are row-slices of one scoring pass.")
+                   help="K-fold slicing of the held-out set, DIAGNOSTIC ONLY. The "
+                        "accept/reject gate is the POOLED split-repair score (see "
+                        "--score-margin), not a per-fold vote; K>1 only adds per-fold "
+                        "Edge-Accuracy breakdown to the log / split.json so you can "
+                        "see how stable a generation's result is across folds. "
+                        "Default 1. Clamped to the held-out neuron count. Scoring "
+                        "cost is unchanged — folds are row-slices of one scoring pass.")
     p.add_argument("--human-gate", action="store_true",
                    help="ask a human before keeping each revision")
     p.add_argument("--model", default=DEFAULT_MODEL,
                    help=f"reviser model id (default: {DEFAULT_MODEL}, Anthropic API)")
-    p.add_argument("--gate-eps", type=float, default=0.05,
-                   help="held-out Edge Accuracy margin a generation must beat the "
-                        "parent by to be accepted (guards against noise-level wins)")
+    p.add_argument("--score-margin", type=int, default=1,
+                   help="minimum amount a generation's pooled held-out split-repair "
+                        "score (correct - false) must EXCEED the parent's by to be "
+                        "accepted: keep iff gain >= score-margin AND zero false "
+                        "merges. Default 1 (accept any net improvement, legacy "
+                        "behavior). Raise to 2-3 so a single-repair swing (within "
+                        "noise on a small held-out set) is not locked in as the new "
+                        "parent. Integer (the score is an integer count).")
     p.add_argument("--max-class-size", type=int, default=None,
                    help="hard cap on labels fused into one merge class (guardrail "
                         "against brain-spanning mega-merges); default: no cap")
-    p.add_argument("--split-tol", type=float, default=0.05,
-                   help="for generations that emit split_label edits: max amount "
-                        "%% Split Edges may rise above the parent before the gate "
-                        "rejects it as over-splitting. Merge-only gens are "
-                        "unaffected by this over-split watchdog.")
-    p.add_argument("--merge-tol", type=float, default=0.0,
-                   help="no-new-merge guard (EVERY generation): max amount # Merges "
-                        "and %% Merged Edges may rise above the parent before the "
-                        "gate rejects the candidate as creating a merge error. "
-                        "Default 0.0 (strict — accept only if merge error does not "
-                        "grow); raise to allow a split-for-merge trade, set very "
-                        "high to disable and recover the old Edge-Accuracy-only "
-                        "behavior on the merge-only path.")
+    p.add_argument("--converge-patience", type=int, default=0,
+                   help="early-stop: stop if the ACCEPTED parent split-repair score "
+                        "improves by < --converge-eps over this many CONSECUTIVE "
+                        "generations (a plateau). Default 0 = disabled (run all "
+                        "--generations). E.g. 4 stops once 4 gens in a row add < eps.")
+    p.add_argument("--converge-eps", type=int, default=1,
+                   help="minimum parent-score gain over a --converge-patience window "
+                        "that counts as 'still improving'. Default 1 (the score is an "
+                        "integer count of net repairs). Only used when "
+                        "--converge-patience > 0.")
     p.add_argument("--seed-from", default=None,
                    help="CONTINUE from a prior run's latest accepted policy "
                         "(run-id folder name, or brain id for its newest run) "
@@ -1623,11 +1571,12 @@ def main() -> int:
     asyncio.run(run_evolution(
         args.brain, args.generations, args.heldout_fraction,
         args.human_gate, args.verbose, args.model,
-        gate_eps=args.gate_eps, max_class_size=args.max_class_size,
+        score_margin=args.score_margin, max_class_size=args.max_class_size,
         seed_from=args.seed_from, split_seed=args.split_seed,
-        split_tol=args.split_tol,
-        merge_tol=args.merge_tol, k_folds=args.k_folds, brains=brains,
+        k_folds=args.k_folds, brains=brains,
         splits_only=args.splits_only, use_priors=args.use_priors,
+        mcl=args.mcl,
+        converge_patience=args.converge_patience, converge_eps=args.converge_eps,
     ))
     return 0
 

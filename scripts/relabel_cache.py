@@ -63,6 +63,12 @@ def brain_id_from_path(path):
     return m.group(1) if m else None
 
 
+def mcl_from_path(path):
+    """min_cable_length (int) parsed from dataset_cache_<brain>_mcl<N>.pkl, or None."""
+    m = re.search(r"dataset_cache_\d+_mcl(\d+)\.pkl$", os.path.basename(path))
+    return int(m.group(1)) if m else None
+
+
 def segmentation_path_for(brain_id):
     """brain_id -> dense segmentation volume path (standard GCS template)."""
     segmentation_id = get_segmentation_id(brain_id, rtf_path=_CONFIG_RTF)
@@ -87,6 +93,10 @@ def main():
                     help="Directory of dataset_cache_*.pkl files.")
     ap.add_argument("--brain", default=None,
                     help="Relabel only this brain_id (default: all in cache-dir).")
+    ap.add_argument("--mcl", type=int, default=None,
+                    help="Relabel only caches with this min_cable_length "
+                         "(e.g. 10 -> only dataset_cache_*_mcl10.pkl). Default: all "
+                         "mcl values found. (_add.pkl caches are never matched.)")
     ap.add_argument("--results-dir", default=None,
                     help="metrics_out/ root; if given, verify against results.csv.")
     ap.add_argument("--dry-run", action="store_true",
@@ -96,12 +106,16 @@ def main():
     args = ap.parse_args()
 
     pattern = os.path.join(args.cache_dir, "dataset_cache_*.pkl")
-    paths = sorted(glob.glob(pattern))
+    # brain_id_from_path's regex matches only mcl<N>.pkl, so _add.pkl is excluded here.
+    paths = sorted(p for p in glob.glob(pattern) if brain_id_from_path(p) is not None)
     if args.brain:
         paths = [p for p in paths if brain_id_from_path(p) == str(args.brain)]
+    if args.mcl is not None:
+        paths = [p for p in paths if mcl_from_path(p) == args.mcl]
     if not paths:
         raise SystemExit(f"No caches matched {pattern}"
-                         + (f" for brain {args.brain}" if args.brain else ""))
+                         + (f" for brain {args.brain}" if args.brain else "")
+                         + (f" with mcl{args.mcl}" if args.mcl is not None else ""))
 
     for path in paths:
         brain_id = brain_id_from_path(path)

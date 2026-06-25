@@ -144,6 +144,197 @@ def _split_site_geom(g, s):
     return out
 
 
+# --- Generic fitness-attribution over a candidate's feature space ------------
+# Attribute a per-edit verdict (correct / false / unscored) to the feature space of
+# the edits, with NOTHING domain-specific hardcoded:
+#   * DIMENSIONS are discovered by introspecting each edit's feature dict (so any
+#     numeric feature the harness exposes — present or future — is eligible);
+#   * BUCKET EDGES are data-driven (quantiles for continuous features, value sets for
+#     discrete ones), not hand-picked thresholds;
+#   * the verdict comes from a pluggable ``classify_fn`` (so SplitSite/merge and
+#     MergeSite/split, or any other action, reuse the same machinery);
+#   * only the MOST DISCRIMINATIVE features are reported (ranked by how well the
+#     feature separates correct from false), so the reviser sees the few axes that
+#     actually explain where its repairs vs. mistakes come from — not a wall of axes.
+_VERDICTS = ("correct", "false", "unscored")
+
+
+def _bucketize_continuous(values, n_bins=3):
+    """Quantile bin EDGES for a list of finite floats -> (n_bins-1) interior edges.
+
+    Data-driven (tertiles by default) so the buckets adapt to THIS generation's
+    distribution instead of a hand-picked threshold. Returns sorted unique interior
+    edges; an empty list (constant feature) means 'do not bin'.
+    """
+    xs = sorted(v for v in values if v is not None and v == v and abs(v) != float("inf"))
+    if len(xs) < n_bins:
+        return []
+    edges = []
+    for k in range(1, n_bins):
+        q = xs[min(len(xs) - 1, int(k * len(xs) / n_bins))]
+        if not edges or q > edges[-1]:
+            edges.append(q)
+    return edges
+
+
+def _bucket_label(v, edges, name):
+    """Human-readable bucket for value ``v`` given continuous ``edges`` (may be [])."""
+    if v is None or (isinstance(v, float) and (v != v or abs(v) == float("inf"))):
+        return f"{name} ?"
+    if not edges:                       # discrete or constant -> bucket by value
+        return f"{name}={v:g}" if isinstance(v, (int, float)) else f"{name}={v}"
+    lo = "-inf"
+    for e in edges:
+        if v < e:
+            return f"{name} [{lo},{e:g})"
+        lo = f"{e:g}"
+    return f"{name} [{lo},inf)"
+
+
+def _auc_corr_vs_false(rows, feat):
+    """Discriminative power of ``feat`` for correct-vs-false, as |AUC - 0.5| * 2.
+
+    rows: list of (verdict, feature_dict). Uses the existing rank-AUC (_auc). 0 = no
+    separation, 1 = perfectly separates correct from false. unscored rows are ignored
+    (no ground-truth verdict). None if a class is empty or the feature is constant.
+    """
+    pos = [r[1].get(feat) for r in rows if r[0] == "correct"]
+    neg = [r[1].get(feat) for r in rows if r[0] == "false"]
+    pos = [v for v in pos if isinstance(v, (int, float)) and v == v and abs(v) != float("inf")]
+    neg = [v for v in neg if isinstance(v, (int, float)) and v == v and abs(v) != float("inf")]
+    a = _auc(pos, neg)
+    if a is None:
+        return None
+    return abs(a - 0.5) * 2.0
+
+
+def attribute_fitness(rows, top_k=3, n_bins=3):
+    """Generic: attribute verdicts across the most discriminative feature axes.
+
+    Parameters
+    ----------
+    rows : list[(verdict, feature_dict)]
+        One per edit; ``verdict in {"correct","false","unscored"}``; ``feature_dict``
+        maps feature name -> value (numbers or small discretes). Built domain-side via
+        ``edit_feature_rows`` so this function stays domain-agnostic.
+    top_k : int
+        Show at most this many feature axes, chosen by correct-vs-false separation
+        (falls back to coverage/variance when no correct/false split exists).
+    n_bins : int
+        Quantile bins per continuous feature.
+
+    Returns ``{feature_name: {bucket_label: {"correct","false","unscored","n"}}}`` for
+    the top-k features, or None if there is nothing to attribute.
+    """
+    from collections import defaultdict
+    rows = [r for r in rows if r and isinstance(r[1], dict)]
+    if not rows:
+        return None
+    feats = sorted({k for _, fd in rows for k in fd})
+    if not feats:
+        return None
+
+    # Rank features: prefer discriminative power (correct vs false); when that is
+    # undefined (e.g. zero false this gen), fall back to how many edits the feature
+    # covers so we still surface SOMETHING informative.
+    def _rank(feat):
+        disc = _auc_corr_vs_false(rows, feat)
+        cover = sum(1 for _, fd in rows if fd.get(feat) is not None)
+        return (disc if disc is not None else -1.0, cover)
+    chosen = sorted(feats, key=_rank, reverse=True)[:max(1, top_k)]
+
+    out = {}
+    for feat in chosen:
+        vals = [fd.get(feat) for _, fd in rows]
+        numeric = [v for v in vals if isinstance(v, (int, float))]
+        edges = _bucketize_continuous(numeric, n_bins) if len(numeric) == len(
+            [v for v in vals if v is not None]) and numeric else []
+        cells = defaultdict(lambda: {v: 0 for v in _VERDICTS} | {"n": 0})
+        for verdict, fd in rows:
+            label = _bucket_label(fd.get(feat), edges, feat)
+            cells[label][verdict] += 1
+            cells[label]["n"] += 1
+        out[feat] = dict(cells)
+    return out or None
+
+
+def edit_feature_rows(edits, classify_fn, feature_fn):
+    """Build ``[(verdict, feature_dict)]`` for ``attribute_fitness`` — domain glue.
+
+    ``classify_fn(edit) -> "correct"|"false"|"unscored"|None`` (None drops the edit);
+    ``feature_fn(edit) -> dict`` of that edit's features. Both are supplied by the
+    caller, so the generic attributor knows nothing about merges/splits/geometry.
+    """
+    rows = []
+    for e in (edits or []):
+        v = classify_fn(e)
+        if v is None:
+            continue
+        rows.append((v, feature_fn(e) or {}))
+    return rows
+
+
+def split_repair_by_bucket(train_run, label_gt_map, fragments_graph, top_k=3):
+    """SplitSite/merge ADAPTER over the generic ``attribute_fitness``.
+
+    Wires the split-repair verdict (train-map dominant-neuron rule, same as the gate)
+    and the SplitSite feature set (gap + ``_split_site_geom``: colinear_cos, deg_b,
+    rad_ratio, tip_tangent_cos, …) into the generic attributor. Returns
+    ``{feature: {bucket: counts}}`` for the top-k most discriminative features, or
+    None. Leak-free (train map only). Adding a new SplitSite feature automatically
+    makes it eligible here with no change to this function.
+    """
+    if not label_gt_map or not train_run.edits:
+        return None
+
+    def _pk(a, b):
+        a, b = str(a), str(b)
+        return (a, b) if a <= b else (b, a)
+    site_by_pair = {}
+    for s in (train_run.split_sites or []):
+        site_by_pair[_pk(s.label_a, s.label_b)] = s
+
+    def _dominant(lbl):
+        c = label_gt_map.get(str(lbl))
+        return max(c, key=c.get) if c else None
+
+    def _labels(e):
+        if isinstance(e, dict):
+            if e.get("kind", "merge_labels") != "merge_labels":
+                return None
+            return e.get("label_a"), e.get("label_b")
+        if isinstance(e, (tuple, list)) and len(e) >= 2:
+            return e[0], e[1]
+        return None
+
+    def classify_fn(e):
+        lp = _labels(e)
+        if lp is None:
+            return None
+        da, db = _dominant(lp[0]), _dominant(lp[1])
+        if da is None or db is None:
+            return "unscored"
+        return "correct" if da == db else "false"
+
+    def feature_fn(e):
+        lp = _labels(e)
+        if lp is None:
+            return {}
+        s = site_by_pair.get(_pk(lp[0], lp[1]))
+        if s is None:
+            return {}
+        feats = {"gap_um": getattr(s, "gap_um", None)}
+        if fragments_graph is not None:
+            geom = _split_site_geom(fragments_graph, s)
+            # keep numeric/discrete features only (drop Nones implicitly via attribute_fitness)
+            for k in ("colinear_cos", "deg_b", "rad_ratio", "tip_tangent_cos"):
+                feats[k] = geom.get(k)
+        return feats
+
+    rows = edit_feature_rows(train_run.edits, classify_fn, feature_fn)
+    return attribute_fitness(rows, top_k=top_k)
+
+
 def _load_policy(heuristics_path: str):
     """Import artifacts/heuristics.py fresh from disk; return (propose_edits, module).
 
@@ -171,7 +362,12 @@ _SITES_CACHE: dict = {}
 
 
 def _enumerate_sites_cached(fragments_graph, params: dict, enumerate_merges: bool = True):
-    """Return (split_sites, merge_sites), computing once per (graph, params).
+    """Return (split_sites, merge_sites, split_stats), computing once per (graph, params).
+
+    ``split_stats`` is the GT-free enumeration-ceiling dict from
+    ``candidate_split_sites(..., return_stats=True)`` — how many label pairs were
+    found vs. dropped by the ``split_max_sites`` cap, and the gap range truncated.
+    It rides the same cache so it is paid once per param tuple, like the sites.
 
     ``params`` is a resolved (validated + clamped) ENUM_PARAMS dict. The cache key
     includes EVERY enumeration param, not just the gap — otherwise a policy that
@@ -188,16 +384,19 @@ def _enumerate_sites_cached(fragments_graph, params: dict, enumerate_merges: boo
     """
     key = (id(fragments_graph),
            params["max_gap_um"], params["split_max_sites"], params["tip_to_shaft"],
+           params.get("split_alt_per_pair", 1),
            params["min_arm_cable_um"], params["seed_depth_um"],
            params["merge_max_sites"], params["max_per_label"],
            bool(enumerate_merges))
     cached = _SITES_CACHE.get(key)
     if cached is None:
-        split_sites = ds.candidate_split_sites(
+        split_sites, split_stats = ds.candidate_split_sites(
             fragments_graph,
             max_gap_um=params["max_gap_um"],
             max_sites=params["split_max_sites"],
             tip_to_shaft=params["tip_to_shaft"],
+            alt_per_pair=params.get("split_alt_per_pair", 1),
+            return_stats=True,
         )
         if enumerate_merges:
             merge_sites = ds.candidate_merge_sites(
@@ -209,7 +408,7 @@ def _enumerate_sites_cached(fragments_graph, params: dict, enumerate_merges: boo
             )
         else:
             merge_sites = []  # split-error-only: skip the whole-brain merge scan
-        cached = (split_sites, merge_sites)
+        cached = (split_sites, merge_sites, split_stats)
         _SITES_CACHE[key] = cached
     return cached
 
@@ -237,6 +436,10 @@ class CandidateRun:
     n_split_label_dropped: int = 0  # split_label edits discarded by SPLIT-ERROR-ONLY
                                # mode (should be 0 — non-zero means the policy emitted
                                # merge repairs that were silently dropped this run).
+    split_enum_stats: dict = field(default_factory=dict)  # GT-free enumeration-ceiling
+                               # stats for the SplitSite stream (pairs found vs. dropped
+                               # by the split_max_sites cap, truncated gap range); drives
+                               # the report's enumeration recall-ceiling section.
 
     def to_json(self) -> dict:
         return {
@@ -338,7 +541,7 @@ def run_candidate(
     # SPLIT-ERROR-ONLY: skip the whole-brain merge scan so the policy is handed NO
     # MergeSite — it then cannot reason over, or pay cloud reads for, merge repairs
     # this run, and the failure report's merge sections go empty on their own.
-    split_sites, merge_sites = _enumerate_sites_cached(
+    split_sites, merge_sites, split_enum_stats = _enumerate_sites_cached(
         fragments_graph, enum_params, enumerate_merges=not splits_only)
     sites = list(split_sites) + list(merge_sites)
 
@@ -387,6 +590,16 @@ def run_candidate(
         # seed_b_node) (merge evidence: an intensity valley between two fused arms?)
         # — each is a cloud read, so gate it behind cheap geometric filters.
         "read_image_patch": rec_reader,
+        # (3) Receptive-field knob for the image reads above. Every reader method
+        # takes an optional ``shape=(z,y,x)`` (voxels) — the patch read per sample.
+        # Bigger = more spatial context but a larger cloud fetch; each axis is clamped
+        # to image_features._MAX_PATCH_DIM (64). This is the RECOMMENDED default the
+        # policy may pass, e.g. ``reader.gap_bridge_evidence(a, b, shape=ctx["image_patch_shape"])``
+        # — tune it per tier (a tight window for a clean micro-gap, a wider one to
+        # confirm a long faint bridge). None of the readers require it (they default
+        # to the reader's own shape); it is exposed so the receptive field is an
+        # explicit, documented dial rather than a buried default.
+        "image_patch_shape": (16, 16, 16),
     }
 
     # The policy may return legacy (label_a, label_b) tuples OR typed edit dicts
@@ -431,6 +644,7 @@ def run_candidate(
         enum_params=dict(enum_params),
         raw_enum_params=dict(policy_raw_enum),
         n_split_label_dropped=n_split_label_dropped,
+        split_enum_stats=dict(split_enum_stats),
     )
 
 
@@ -736,6 +950,30 @@ def _failure_report_body(
             f"{scoring._weighted_avg(cand, '% Split Edges'):.4f} "
             f"(a merge repair that drives this UP is over-splitting a real neuron).\n"
         )
+        # WHERE the repairs (and the false merges) come from. The harness attributes
+        # your accepted edits' correct/false/unscored counts across the geometric
+        # FEATURES of their SplitSites, showing the FEW features that best separate
+        # correct from false this generation (data-driven: feature axes are discovered
+        # from the site geometry, bucket edges are quantiles of THIS gen's edits — not
+        # hand-picked). These are harness-computed geometry, NOT your code's path
+        # names, but a "path" is a region of this space, so this tells you which
+        # geometric regime to invest in vs. prune.
+        _buckets = split_repair_by_bucket(train_run, label_gt_map, fragments_graph)
+        if _buckets:
+            lines.append("\n### Split-repair attribution — most discriminative "
+                         "feature axes (where your repairs vs. mistakes come from)\n")
+            for feat, cells in _buckets.items():
+                lines.append(f"**{feat}** (quantile buckets) — correct / false / "
+                             f"unscored (n):\n")
+                for label in sorted(cells):
+                    c = cells[label]
+                    lines.append(f"  - {label}: {c['correct']} / {c['false']} / "
+                                 f"{c['unscored']}  (n={c['n']})\n")
+            lines.append("Read: a bucket with high correct and zero false is a regime "
+                         "worth EXTENDING; one with few correct but >0 false (or mostly "
+                         "unscored) is a regime to TIGHTEN or prune — do not spend more "
+                         "generations micro-tuning a low-yield region of feature "
+                         "space.\n")
     else:
         # No label map (rare; e.g. a caller without train GT) — fall back to the
         # Edge-Accuracy header so the report still renders.
@@ -1204,6 +1442,142 @@ def _failure_report_body(
             lines.append(f"\n_({sp_drop} SplitSite(s) omitted: a label's dominant "
                          f"neuron is held-out, so no train-derivable verdict — "
                          f"excluded to keep the signal leak-free.)_")
+
+        # ----------------------------------------------------------------------
+        # SplitSite ENUMERATION RECALL CEILING (the analogue of the MergeSite
+        # "detector recall gap"). The audit above only scores splits the enumerator
+        # PRODUCED — so a real split the geometric scan never emitted is invisible
+        # there: it silently caps recall with no row and no gradient. This section
+        # makes that ceiling explicit, so the reviser can tell a miss it CAN fix (a
+        # site it rejected — tune thresholds) from one only ENUM_PARAMS can (a site
+        # that was never enumerated — widen the stream).
+        #
+        # Method (leak-free, GT-free geometry + the SAME train-only dominant-neuron
+        # rule as the audit): group the train-visible fragment labels by their
+        # dominant TRAIN neuron. A neuron split into |F| fragments needs |F|-1 merges
+        # to be made whole. Connect those fragments by the enumerated REAL SplitSite
+        # edges (union-find); the resulting component count C tells us how many of
+        # those merges are REACHABLE (|F|-C) vs. beyond the enumerator (C-1, because
+        # no enumerated site bridges the components). Summed over neurons this is the
+        # achievable-recall ceiling; isolated fragments (no same-neuron enumerated
+        # edge at all) are the starkest unreachable cases.
+        # Build neuron -> set(fragment labels) from the train-only map (same source
+        # as _dominant, so identical leak-free scope).
+        neuron_frags: dict = {}
+        for lbl in label_gt_map.keys():
+            dom = _dominant(lbl)
+            if dom is not None:
+                neuron_frags.setdefault(dom, set()).add(str(lbl))
+
+        # Union-find over fragment labels, joined by enumerated REAL edges only.
+        uf: dict = {}
+        def _ufind(x):
+            uf.setdefault(x, x)
+            while uf[x] != x:
+                uf[x] = uf[uf[x]]
+                x = uf[x]
+            return x
+        def _uunion(a, b):
+            ra, rb = _ufind(a), _ufind(b)
+            if ra != rb:
+                uf[ra] = rb
+        real_edges = 0
+        for s in split_sites:
+            la, lb = str(getattr(s, "label_a", "")), str(getattr(s, "label_b", ""))
+            da, db = _dominant(la), _dominant(lb)
+            if da is not None and da == db:   # a REAL (same-neuron) enumerated edge
+                _uunion(la, lb)
+                real_edges += 1
+
+        needed = reachable = ceiling = 0          # split-repairs, summed over neurons
+        frag_total = 0                            # fragments in multi-fragment neurons
+        frag_unreachable = 0                      # isolated same-neuron fragments
+        n_neurons_fragmented = 0                  # neurons broken into >=2 fragments
+        n_neurons_ceiling = 0                     # neurons with an UNreachable fragment
+        for dom, frags in neuron_frags.items():
+            k = len(frags)
+            if k < 2:
+                continue                          # not fragmented -> no split to repair
+            n_neurons_fragmented += 1
+            frag_total += k
+            comps = len({_ufind(f) for f in frags})
+            needed += (k - 1)
+            reachable += (k - comps)
+            ceiling += (comps - 1)
+            # Isolated fragments: a same-neuron label whose UF root is reached by no
+            # other fragment of this neuron (its component is a singleton within F).
+            root_counts = {}
+            for f in frags:
+                root_counts[_ufind(f)] = root_counts.get(_ufind(f), 0) + 1
+            iso = sum(1 for f in frags if root_counts[_ufind(f)] == 1)
+            if comps > 1:
+                n_neurons_ceiling += 1
+                frag_unreachable += iso
+
+        est = train_run.split_enum_stats or {}
+        lines.append("\n\n## SplitSite enumeration recall ceiling (what no policy change can reach)\n")
+        if needed > 0:
+            pct_reach = 100.0 * reachable / needed
+            lines.append(
+                f"Across **{n_neurons_fragmented}** train neurons broken into "
+                f"≥2 fragments ({frag_total} fragments total), **{needed}** "
+                f"`merge_labels` repairs are needed to make them whole. Of those, "
+                f"**{reachable}** ({pct_reach:.1f}%) are REACHABLE — the enumerator "
+                f"produced at least one REAL SplitSite bridging them, so a good policy "
+                f"CAN make them; **{ceiling}** are NOT — no enumerated SplitSite "
+                f"connects the pieces, so NO accept/reject change can repair them "
+                f"(an enumeration limit, like the MergeSite detector recall gap, not a "
+                f"policy bug). This {pct_reach:.1f}% is your achievable-recall CEILING "
+                f"on train; the SplitSite audit's MISSED bucket lives BELOW it.\n"
+            )
+            if ceiling > 0:
+                lines.append(
+                    f"- **{n_neurons_ceiling}** of those neurons have a fragment no "
+                    f"enumerated site reaches; **{frag_unreachable}** fragments are "
+                    f"fully ISOLATED (no same-neuron SplitSite at all). To pull these "
+                    f"into reach you must WIDEN the candidate stream via `ENUM_PARAMS` "
+                    f"(raise `max_gap_um` for long true gaps; set `tip_to_shaft=True` "
+                    f"if a partner is mid-shaft; raise `split_max_sites` if truncation "
+                    f"is dropping them — see below), NOT tune your thresholds.\n"
+                )
+            else:
+                lines.append(
+                    "- Every fragmented neuron is fully connected by enumerated sites: "
+                    "your recall is bounded ONLY by your own accept/reject thresholds, "
+                    "not by enumeration. Tune thresholds, not `ENUM_PARAMS`.\n"
+                )
+        else:
+            lines.append(
+                "_No train neuron is split into ≥2 fragments under the current map — "
+                "no split-repair ceiling to report._\n"
+            )
+
+        # Truncation: the split_max_sites cap keeps the CLOSEST gaps, so a real split
+        # at a far gap can be silently dropped. Pure geometry (GT-free), so always safe.
+        if est:
+            n_pairs = est.get("n_pairs_enumerated")
+            n_trunc = est.get("n_truncated") or 0
+            cap = est.get("max_sites")
+            lines.append("\n### Candidate-stream truncation (`split_max_sites` cap)\n")
+            if n_trunc > 0:
+                t0 = est.get("truncated_at_gap_um")
+                t1 = est.get("max_truncated_gap_um")
+                lines.append(
+                    f"The scan found **{n_pairs}** label pairs within "
+                    f"`max_gap_um`={est.get('max_gap_um')} µm but the `split_max_sites`"
+                    f"={cap} cap kept only the **{est.get('n_returned')}** closest — "
+                    f"**{n_trunc}** pairs (gaps "
+                    f"{t0:.2f}–{t1:.2f} µm) were DROPPED before the policy saw them. "
+                    f"Any real split among them is unreachable until you raise "
+                    f"`split_max_sites` (rail 100–50000). Note the dropped pairs are the "
+                    f"FARTHEST gaps (most likely false joins), so widen with care.\n"
+                )
+            else:
+                lines.append(
+                    f"The scan found **{n_pairs}** label pairs, all returned (cap "
+                    f"`split_max_sites`={cap} not hit) — truncation is NOT limiting "
+                    f"recall this run.\n"
+                )
 
     # Image evidence the policy ALREADY fetched, labelled by GT (train-only). The
     # policy pays cloud reads for gap_connectivity / gap_bridge_evidence /

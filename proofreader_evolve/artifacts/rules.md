@@ -70,7 +70,12 @@ Merge-repair (MergeSite → `split_label`):
 Both:
 - **No image evidence.** Geometry alone ignores fluorescence. Candidate fix: read
   the image patch (`ctx["read_image_patch"]`, may be None) to test for a
-  connecting signal across a gap, or an intensity valley at a suspected cut.
+  connecting signal across a gap, or an intensity valley at a suspected cut. The
+  image RECEPTIVE FIELD is tunable: every reader method takes `shape=(z,y,x)`
+  voxels — pass `ctx["image_patch_shape"]` (default `(16,16,16)`) or a custom value.
+  A LARGER patch sees more context but every read is a cloud fetch (slower/costlier);
+  each axis is clamped to 512. Tune per tier — a tight window for a clean micro-gap, a
+  wider one to confirm a long faint bridge.
 
 ## Candidate space (what the policy gets to choose from)
 
@@ -79,7 +84,13 @@ The policy receives a UNIFIED stream of two site kinds (branch on `site.kind`):
 - **SplitSite** (`kind == "split"`, from `dataset.candidate_split_sites`): for
   every fragment **tip** (`node_a`, degree 1), the nearest **differently-labelled**
   node within `max_gap_um` as `node_b` (tip, shaft, or branch — so tip-to-shaft
-  and branch-point reconnections are candidates). One per unordered label pair.
+  and branch-point reconnections are candidates). One per unordered label pair —
+  the CLOSEST gap. Two fragments can be near each other in more than one place, and
+  the closest gap is not always the most decisive (it may be a sideways graze while
+  another gap is a clean colinear continuation). Set `ENUM_PARAMS["split_alt_per_pair"]
+  > 1` to attach the next-closest gaps as `site.alt_gaps` (extra evidence points the
+  policy can inspect); this does NOT add sites or edits — `as_edit()` still emits one
+  `merge_labels` that unifies the pair across all its gaps.
 - **MergeSite** (`kind == "merge"`, from `dataset.candidate_merge_sites`): a
   branch node (degree ≥ 3) inside ONE label where the two longest arms are BOTH
   long — the signature of two neurites fused at a touch/crossing. Carries the cut
@@ -96,6 +107,9 @@ from a fixed rail into an evolvable knob:
 - `max_gap_um` (1–40) — split search radius; raise to reach longer true gaps a
   tight radius misses, lower to cut noise.
 - `tip_to_shaft` — if False, split partners must be tips (legacy tip-to-tip).
+- `split_alt_per_pair` (1–10) — gaps kept per SplitSite label pair; `>1` attaches the
+  next-closest gaps as `site.alt_gaps` (a PRECISION lever: judge a pair on its best
+  evidence gap, not just the closest). Adds no sites/edits; read `site.alt_gaps` to use.
 - `min_arm_cable_um` (2–50) — lower to surface SHORTER merges the 10 µm floor hides
   (a detector-recall lever for the "missed merges" mode above).
 - `seed_depth_um`, `max_per_label`, `split_max_sites`, `merge_max_sites` — see
