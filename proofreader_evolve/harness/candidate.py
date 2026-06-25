@@ -75,11 +75,19 @@ def _split_site_geom(g, s):
       rad_ratio    — max/min of the two radii (None if either missing/zero); far from
                      1.0 means two different cable calibers fused (less likely ONE
                      neuron the segmentation broke).
+      cos_a, cos_b — the TWO half-cosines separately (arm A vs gap; gap vs arm B).
+                     colinear_cos is their mean; exposing both lets the policy see
+                     ASYMMETRY (one arm aligned, the other bent — a tip grazing a
+                     shaft tends to have one low cosine).
+      tip_tangent_cos — cosine between the two arms' own tangents directly (not via
+                     the gap direction). +1 = the two cables run parallel/continuous;
+                     a different view of continuity than colinear_cos.
     Every value is a function of fragment geometry only, so it is leak-free and the
     same on train and held-out — the policy may key on these directly.
     """
     out = {"colinear_cos": None, "deg_a": None, "deg_b": None,
-           "rad_a": None, "rad_b": None, "rad_ratio": None}
+           "rad_a": None, "rad_b": None, "rad_ratio": None,
+           "cos_a": None, "cos_b": None, "tip_tangent_cos": None}
     if g is None:
         return out
     a, b = getattr(s, "node_a", None), getattr(s, "node_b", None)
@@ -109,18 +117,28 @@ def _split_site_geom(g, s):
             ai = _arm_inner_node(g, a)                    # A is a tip: its one arm
             bi = _arm_inner_node(g, b, prefer_dir=gdir)   # B's arm continuing the gap
             cos_a = cos_b = None
+            ta_u = tb_u = None                            # unit tangents (for tip_tangent_cos)
             if ai is not None:
                 ta = pa - _node_xyz(g, ai)                # outward tangent of arm A
                 n = float(np.linalg.norm(ta))
                 if n > 0:
-                    cos_a = float(np.dot(ta / n, gdir))
+                    ta_u = ta / n
+                    cos_a = float(np.dot(ta_u, gdir))
             if bi is not None:
                 tb = _node_xyz(g, bi) - pb                # B's arm leaving the junction
                 n = float(np.linalg.norm(tb))
                 if n > 0:
-                    cos_b = float(np.dot(tb / n, gdir))
+                    tb_u = tb / n
+                    cos_b = float(np.dot(tb_u, gdir))
+            out["cos_a"], out["cos_b"] = cos_a, cos_b
             if cos_a is not None and cos_b is not None:
                 out["colinear_cos"] = 0.5 * (cos_a + cos_b)
+            # Direct arm-to-arm tangent agreement (independent of the gap direction):
+            # +1 means the two cables are parallel/continuous regardless of where the
+            # gap points. ta_u points back into arm A, tb_u forward out of B, so a
+            # straight pass-through has ta_u ~ tb_u -> cos ~ +1.
+            if ta_u is not None and tb_u is not None:
+                out["tip_tangent_cos"] = float(np.dot(ta_u, tb_u))
     except Exception:
         pass
     return out
@@ -351,6 +369,13 @@ def run_candidate(
         # fragment thickness — e.g. refuse to fuse two thick (likely-real) neurites
         # — with NO cloud read. Present on the agentic SkeletonGraph already.
         "node_radius": getattr(fragments_graph, "node_radius", None),
+        # (1b) Cheap, GT-free, NO-cloud-read geometry for a SplitSite: call
+        # ctx["split_geom"](site) -> {colinear_cos, cos_a, cos_b, tip_tangent_cos,
+        # deg_a, deg_b, rad_a, rad_b, rad_ratio}. These are the deployable geometric
+        # features (straightness, per-arm asymmetry, endpoint degree, cable caliber)
+        # the policy can threshold on directly, computed from the fragment graph. The
+        # policy decides which to use — the harness only exposes them.
+        "split_geom": (lambda site: _split_site_geom(fragments_graph, site)),
         # (2) Optional, lazy, cached raw-image patch reader (the fluorescence
         # signal at the gap). None unless an image reader was provided — the policy
         # MUST handle ctx["read_image_patch"] is None. When present it is a

@@ -67,6 +67,24 @@ def _constants(path: Path) -> dict:
     return out
 
 
+# Offline fallback for the per-generation geometry/image classification, used ONLY
+# when the LLM classifier (summarize_with_llm) is unavailable. We guess from the
+# lever's raw text (constant name + comment): image keywords mark a rule that gates on
+# the fluorescence bridge; geometry keywords mark one that gates on skeleton shape. The
+# LLM is the primary classifier and overrides these; at least one flag is always set.
+_IMG_KW_RE = re.compile(r"bridge|image|fluoresc|intensity|bright", re.I)
+_GEOM_KW_RE = re.compile(
+    r"\b(gap|cos|colinear|collinear|rad|caliber|deg|tip|shaft|micro|angle|branch|"
+    r"tangent|cable)\b", re.I)
+
+
+def _fallback_modality(raw: str) -> tuple[bool, bool]:
+    """(uses_geometry, uses_image) guessed from a lever's raw text. At least one True."""
+    img = bool(_IMG_KW_RE.search(raw))
+    geom = bool(_GEOM_KW_RE.search(raw)) or not img
+    return geom, img
+
+
 def _gist(comment: str) -> str:
     """A concise SUMMARY of the lever: the comment's first sentence, COMPLETE.
 
@@ -97,7 +115,8 @@ def collect(run_dir: Path) -> dict:
                                          by_gen[accepted[0]].get("parent_heldout")) if accepted else None
     prev_score = base_score
     for g in accepted:
-        cur = _constants(run_dir / f"gen{g:02d}" / "heuristics.accepted.py")
+        pol_path = run_dir / f"gen{g:02d}" / "heuristics.accepted.py"
+        cur = _constants(pol_path)
         added = [k for k in cur if k not in prev]
         changed = [k for k in cur if k in prev and cur[k][0] != prev[k][0]]
         # A lever is a SCALAR threshold constant. Drop container-valued ones (dicts /
@@ -128,9 +147,15 @@ def collect(run_dir: Path) -> dict:
             fallback = "control-flow change (no new constant)"
         sr = by_gen[g].get("heldout_split_repair_score")
         gain = (sr - prev_score) if (sr is not None and prev_score is not None) else None
+        # Per-generation modality: geometry and image are INDEPENDENT booleans (a
+        # lever may use neither's keyword -> defaults to geometry, both -> both
+        # markers). These offline guesses are OVERRIDDEN by the LLM classifier in
+        # summarize_with_llm when it is available.
+        uses_geometry, uses_image = _fallback_modality(raw)
         rows.append({
             "gen": g, "kind": kind, "raw": raw, "summary": fallback,
             "score": sr, "gain": gain,
+            "uses_geometry": uses_geometry, "uses_image": uses_image,
         })
         prev = cur
         prev_score = sr if sr is not None else prev_score
@@ -161,8 +186,13 @@ def _llm_text(prompt: str, model: str = _MODEL) -> str:
     async def _run():
         from claude_agent_sdk import (ClaudeAgentOptions, ClaudeSDKClient,
                                       AssistantMessage, TextBlock)
+        # Match the evolution loop's reasoning effort (run_evolution._anthropic_api_env
+        # sets CLAUDE_EFFORT=xhigh for the reviser). We pass it via env on the options,
+        # NOT by forcing the provider: the plot script inherits the ambient Bedrock
+        # config, so we only align the effort level (which applies to both providers),
+        # not the Anthropic-API pinning the reviser needs.
         opts = ClaudeAgentOptions(model=model, permission_mode="bypassPermissions",
-                                  allowed_tools=[])
+                                  allowed_tools=[], env={"CLAUDE_EFFORT": "xhigh"})
         chunks = []
         async with ClaudeSDKClient(options=opts) as client:
             await client.query(prompt)
@@ -181,15 +211,20 @@ def _llm_text(prompt: str, model: str = _MODEL) -> str:
 
 
 def summarize_with_llm(summary: dict, model: str = _MODEL) -> None:
-    """Fill each row's ``summary`` with a PLAIN-ENGLISH one-liner via claude_agent_sdk.
+    """Fill each row's ``summary`` AND classify its decision modality, via the LLM.
 
     We hand the model the raw lever material (constant name=value + its code comment)
-    for every accepted generation at once and ask for one natural-language sentence
-    per generation — describing the IDEA of the rule with NO parameter names, code
-    symbols, or numbers. This avoids any hardcoded name→phrase mapping, so it works
-    for runs that introduce rules we have never seen. Best-effort: on any failure
-    (no SDK, no API key, parse error) the rows keep their offline first-sentence
-    fallback, so the figure still renders.
+    for every accepted generation at once and ask, per generation, for BOTH:
+      * one plain-English sentence describing the IDEA of the rule, and
+      * two INDEPENDENT booleans — does the rule decide on GEOMETRY (skeleton shape:
+        gap distance, straightness, cable thickness, endpoint degree) and/or on the
+        IMAGE (raw fluorescence: a bright bridge across the gap)? A generation may use
+        one, the other, or BOTH (e.g. a geometric pre-filter THEN an image confirm).
+
+    This avoids any hardcoded name→phrase mapping, so it works for unseen rules.
+    Best-effort: on any failure (no SDK, no API key, parse error) the rows keep their
+    offline first-sentence summary and keyword-guessed modality, so the figure still
+    renders.
     """
     rows = summary["rows"]
     if not rows:
@@ -198,14 +233,24 @@ def summarize_with_llm(summary: dict, model: str = _MODEL) -> None:
     prompt = (
         "You are documenting how an automated neuron-proofreading policy evolved. "
         "Each line below is ONE accepted generation: the code constant(s) it added or "
-        "changed, with the developer's inline comment. For EACH generation, write ONE "
-        "short, plain-English sentence describing the IDEA of the rule it introduced — "
-        "what kind of broken-apart neuron fragments it now reconnects, and on what "
-        "intuition. STRICT RULES: no parameter/constant names, no code symbols "
-        "(no '==', '>=', 'deg_a', etc.), no numbers/thresholds. Speak in terms a "
-        "biologist would understand (fragment tips, gaps, cable thickness, straight "
-        "continuation, T-junctions, etc.). Return ONLY a JSON object mapping the "
-        "generation number (as a string) to its sentence, nothing else.\n\n"
+        "changed, with the developer's inline comment. For EACH generation, return:\n"
+        "  - \"summary\": ONE short, plain-English sentence describing the IDEA of the "
+        "rule it introduced — what kind of broken-apart neuron fragments it now "
+        "reconnects, and on what intuition. NO parameter/constant names, NO code "
+        "symbols (no '==', '>=', 'deg_a'), NO numbers/thresholds. Speak in terms a "
+        "biologist understands (fragment tips, gaps, cable thickness, straight "
+        "continuation, T-junctions).\n"
+        "  - \"geometry\": true if the rule decides using the skeleton's SHAPE — gap "
+        "distance, straightness/direction, cable thickness/caliber, endpoint degree, "
+        "tip-vs-shaft — else false.\n"
+        "  - \"image\": true if the rule decides using the RAW IMAGE / fluorescence "
+        "signal — e.g. a bright continuous bridge of intensity across the gap "
+        "(bridge_ratio, bridge evidence) — else false.\n"
+        "These two are INDEPENDENT: a generation may use geometry only, image only, or "
+        "BOTH (a geometric pre-filter followed by an image confirmation). At least one "
+        "must be true. Return ONLY a JSON object mapping each generation number (as a "
+        "string) to an object {\"summary\": str, \"geometry\": bool, \"image\": bool}, "
+        "nothing else.\n\n"
         f"{items}"
     )
     try:
@@ -217,14 +262,24 @@ def summarize_with_llm(summary: dict, model: str = _MODEL) -> None:
         mapping = json.loads(m.group(0))
         n = 0
         for r in rows:
-            s = mapping.get(str(r["gen"]))
+            entry = mapping.get(str(r["gen"]))
+            if not isinstance(entry, dict):
+                continue
+            s = entry.get("summary")
             if s:
-                r["summary"] = s.strip(); n += 1
+                r["summary"] = str(s).strip()
+            geom, img = bool(entry.get("geometry")), bool(entry.get("image"))
+            if not (geom or img):       # guard the "at least one" contract
+                geom = True
+            r["uses_geometry"], r["uses_image"] = geom, img
+            n += 1
         summary["summary_source"] = "llm"
-        print(f"[plot_policy_evolution] LLM summarized {n}/{len(rows)} generations")
+        print(f"[plot_policy_evolution] LLM summarized + classified {n}/{len(rows)} "
+              f"generations")
     except Exception as e:
         summary["summary_source"] = f"offline-fallback ({type(e).__name__})"
-        print(f"[plot_policy_evolution] LLM summary unavailable ({e}); offline fallback")
+        print(f"[plot_policy_evolution] LLM summary/classify unavailable ({e}); "
+              f"keyword fallback")
 
 
 def summarize_decision_hierarchy(summary: dict, run_dir: Path, model: str = _MODEL) -> None:
@@ -303,12 +358,33 @@ def make_figure(summary: dict, out_path: Path, wrap: int = 66) -> Path:
     fig, ax = plt.subplots(figsize=(8.2, fig_h))
     ax.axis("off")
 
+    n_img = sum(1 for r in rows if r.get("uses_image"))
+    n_geom = sum(1 for r in rows if r.get("uses_geometry"))
+    n_both = sum(1 for r in rows if r.get("uses_geometry") and r.get("uses_image"))
     ax.set_title(f"Policy evolution — {summary['run']}   "
                  f"(score {summary['baseline_score']} → {summary['final_score']}, "
-                 f"{summary['n_accepted']} accepted)", fontsize=11, loc="left")
+                 f"{summary['n_accepted']} accepted; {n_geom} geometry / "
+                 f"{n_img} image / {n_both} both)", fontsize=11, loc="left")
+    # Legend for the modality markers. Geometry and image are INDEPENDENT: a row may
+    # carry the geometry triangle, the image circle, or BOTH side by side.
+    from matplotlib.lines import Line2D
+    ax.legend(handles=[
+        Line2D([0], [0], marker="^", color="none", mfc="#2ca02c", mec="#2ca02c",
+               ms=9, label="uses geometry (skeleton shape)"),
+        Line2D([0], [0], marker="o", color="none", mfc="#1a4f8a", mec="#1a4f8a",
+               ms=8, label="uses image (bridge evidence)"),
+    ], loc="lower right", fontsize=7.5, frameon=True, framealpha=0.9,
+       handletextpad=0.3, borderpad=0.5)
 
     total_units = table_units + hier_units
     y = total_units
+    # Two INDEPENDENT modality markers per row: a geometry triangle and/or an image
+    # circle. Both can appear (a geometric pre-filter followed by an image confirm),
+    # drawn side by side so "uses both" is visible at a glance.
+    X_MARK_G, X_MARK_I = 0.020, 0.034  # geometry / image marker columns
+    # Filled, saturated colors so BOTH modalities read at a glance: geometry = green
+    # triangle, image = blue circle (was a faint open-grey triangle, hard to spot).
+    GEOM_C, IMG_C = "#2ca02c", "#1a4f8a"
     # --- evolution table ---
     ax.text(X_GEN, y + 0.7, "gen", fontsize=9, fontweight="bold")
     ax.text(X_CHANGE, y + 0.7, "change", fontsize=9, fontweight="bold")
@@ -317,6 +393,14 @@ def make_figure(summary: dict, out_path: Path, wrap: int = 66) -> Path:
         block = len(lines)
         top = y
         ax.text(X_GEN, top, f"{r['gen']}", fontsize=9, fontweight="bold", va="top")
+        # Independent modality markers: geometry = open grey triangle, image = filled
+        # blue circle. Either, or BOTH, may be drawn (side by side).
+        if r.get("uses_geometry"):
+            ax.plot(X_MARK_G, top - 0.18, marker="^", ms=8.5, mfc=GEOM_C, mec=GEOM_C,
+                    transform=ax.transData, clip_on=False)
+        if r.get("uses_image"):
+            ax.plot(X_MARK_I, top - 0.18, marker="o", ms=7, mfc=IMG_C, mec=IMG_C,
+                    transform=ax.transData, clip_on=False)
         ax.text(X_CHANGE, top, "\n".join(lines), fontsize=8, va="top", linespacing=1.2)
         gain = f" (+{r['gain']})" if (r["gain"] is not None and r["gain"] > 0) else ""
         ax.text(X_SCORE, top, f"{r['score']}{gain}", fontsize=8.5, va="top")
@@ -348,11 +432,14 @@ def to_markdown(summary: dict) -> str:
              f"- {summary['n_accepted']} accepted / {summary['n_generations']} generations",
              f"- split-repair score {summary['baseline_score']} → {summary['final_score']}",
              "",
-             "| gen | change | score |",
-             "|---|---|---|"]
+             "| gen | geometry | image | change | score |",
+             "|---|---|---|---|---|"]
     for r in summary["rows"]:
         gain = f" (+{r['gain']})" if (r["gain"] is not None and r["gain"] > 0) else ""
-        lines.append(f"| {r['gen']} | {r['summary'].replace('|', '/')} | {r['score']}{gain} |")
+        geom = "✓" if r.get("uses_geometry") else ""
+        img = "✓" if r.get("uses_image") else ""
+        lines.append(f"| {r['gen']} | {geom} | {img} | "
+                     f"{r['summary'].replace('|', '/')} | {r['score']}{gain} |")
     hierarchy = summary.get("hierarchy") or []
     if hierarchy:
         lines += ["", "## Final policy — decision process (first matching tier wins)", ""]
@@ -383,7 +470,9 @@ def main(argv=None) -> int:
     print(f"[plot_policy_evolution] figure -> {out_path}")
     for r in summary["rows"]:
         g = f" (+{r['gain']})" if (r["gain"] is not None and r["gain"] > 0) else ""
-        print(f"  gen{r['gen']:>2}: {r['summary']}  -> score {r['score']}{g}")
+        tag = ("geom" if r.get("uses_geometry") else "    ") + \
+              ("+img" if r.get("uses_image") else "    ")
+        print(f"  gen{r['gen']:>2} [{tag}]: {r['summary']}  -> score {r['score']}{g}")
     if args.md:
         Path(args.md).write_text(to_markdown(summary))
         print(f"[plot_policy_evolution] markdown -> {args.md}")

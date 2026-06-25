@@ -1057,6 +1057,7 @@ async def run_evolution(
     split_seed: int | None = None,
     split_tol: float = 0.05, merge_tol: float = 0.0, k_folds: int = 1,
     brains: list | None = None, splits_only: bool = False,
+    use_priors: bool = True,
 ) -> None:
     # Brain set: --brains (list) takes precedence; else the single --brain. The run
     # id uses the first brain + a tag of the count so multi-brain runs are obvious.
@@ -1187,12 +1188,20 @@ async def run_evolution(
     # Validated discovery priors: pass the ABSOLUTE path (the reviser's cwd is the
     # run dir, and the file lives outside runs/, so the isolation guard allows
     # reading it). None when the knowledge base is absent => prompt unchanged.
-    priors_path = str(DISCOVERY_PRIORS.resolve()) if DISCOVERY_PRIORS.is_file() else None
-    if priors_path:
-        log(f"Discovery priors: reviser will read {priors_path} "
-            f"(trusting GENERALIZES+UPHELD findings only)")
+    # --no-priors disables the discovery knowledge base entirely (ablation: does the
+    # reviser improve WITHOUT the cross-run priors?). When off, priors_path is None so
+    # _format_priors emits nothing and the prompt is unchanged.
+    if not use_priors:
+        priors_path = None
+        log("Discovery priors: DISABLED by --no-priors (reviser runs without the "
+            "knowledge base)")
     else:
-        log(f"Discovery priors: none found at {DISCOVERY_PRIORS} (reviser runs without)")
+        priors_path = str(DISCOVERY_PRIORS.resolve()) if DISCOVERY_PRIORS.is_file() else None
+        if priors_path:
+            log(f"Discovery priors: reviser will read {priors_path} "
+                f"(trusting GENERALIZES+UPHELD findings only)")
+        else:
+            log(f"Discovery priors: none found at {DISCOVERY_PRIORS} (reviser runs without)")
     # B: memory of revisions tried against the CURRENT parent; cleared when the
     # parent advances (an accept), since past rejections no longer apply.
     attempts_vs_parent: list[dict] = []
@@ -1601,6 +1610,11 @@ def main() -> int:
                         "The gate is UNCHANGED — its split-repair metric already "
                         "scores only merge_labels — so this is a faster, "
                         "metric-consistent test; merge-error repair is deferred.")
+    p.add_argument("--no-priors", dest="use_priors", action="store_false",
+                   help="do NOT point the reviser at the AutoDiscovery knowledge "
+                        "base (autodiscovery/all-runs.combined.md). Default: read it. "
+                        "Use this for an ablation — does the reviser improve WITHOUT "
+                        "the cross-run priors?")
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
     brains = None
@@ -1613,7 +1627,7 @@ def main() -> int:
         seed_from=args.seed_from, split_seed=args.split_seed,
         split_tol=args.split_tol,
         merge_tol=args.merge_tol, k_folds=args.k_folds, brains=brains,
-        splits_only=args.splits_only,
+        splits_only=args.splits_only, use_priors=args.use_priors,
     ))
     return 0
 

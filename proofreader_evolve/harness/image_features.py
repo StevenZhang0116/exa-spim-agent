@@ -194,6 +194,24 @@ class LazyImagePatchReader:
             interior = profile[1:-1] if n_samples > 2 else profile
             bridge_min = float(np.min(interior))
             bridge_idx = int(np.argmin(profile))
+            # --- SHAPE features of the bridge profile (added) ---------------------
+            # bridge_ratio collapses the whole profile to one point (the dimmest).
+            # These describe the SHAPE so the policy can tell a single dim sample (a
+            # noise dip, probably still one neuron) from a WIDE dark valley (a true
+            # gap between two structures). All normalized by endpoint_mean so they are
+            # brain-agnostic; the policy chooses whether to use them.
+            prof = np.asarray(profile, dtype=float)
+            ref = endpoint_mean if endpoint_mean > 0 else 1.0
+            interior_arr = prof[1:-1] if n_samples > 2 else prof
+            # valley_frac: fraction of interior samples below half the endpoint
+            # brightness (how WIDE the dark stretch is, not just how deep).
+            valley_frac = float(np.mean(interior_arr < 0.5 * ref)) if len(interior_arr) else float("nan")
+            # bridge_mean_ratio: mean interior brightness / endpoints (a soft version
+            # of bridge_ratio — robust to one outlier dip).
+            bridge_mean_ratio = float(np.mean(interior_arr) / ref) if len(interior_arr) else float("nan")
+            # profile_cv: coefficient of variation along the profile (flat bright
+            # bridge ≈ 0; a deep narrow dip raises it). Shape, not depth.
+            profile_cv = float(np.std(prof) / ref) if len(prof) else float("nan")
             return {
                 "profile": profile,
                 "endpoint_mean": endpoint_mean,
@@ -202,12 +220,18 @@ class LazyImagePatchReader:
                                  if endpoint_mean > 0 else float("nan")),
                 "bridge_pos": bridge_idx / (n_samples - 1) if n_samples > 1 else 0.0,
                 "n_samples": n_samples,
+                # shape features (added)
+                "valley_frac": valley_frac,
+                "bridge_mean_ratio": bridge_mean_ratio,
+                "profile_cv": profile_cv,
             }
         except Exception:
             return {
                 "profile": [], "endpoint_mean": float("nan"),
                 "bridge_min": float("nan"), "bridge_ratio": float("nan"),
                 "bridge_pos": float("nan"), "n_samples": 0,
+                "valley_frac": float("nan"), "bridge_mean_ratio": float("nan"),
+                "profile_cv": float("nan"),
             }
 
     def merge_cut_evidence(

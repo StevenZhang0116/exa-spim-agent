@@ -1,0 +1,3 @@
+split,reachable,fixed,remaining,coverage_pct,per_edit_correct
+train,490,214,276,43.673469387755105,222
+heldout,662,285,377,43.051359516616316,293
