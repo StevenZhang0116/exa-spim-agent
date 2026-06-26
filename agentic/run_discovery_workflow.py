@@ -51,9 +51,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
+import re
 import sys
 import time
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
@@ -570,6 +573,52 @@ async def run_workflow(
     print("\n=== Workflow complete ===")
 
 
+# --- Brain-id consistency guard ---------------------------------------------
+# The run JSON's experiments were generated against ONE brain; the --pkl passed at
+# rerun time must be that SAME brain, or every reproduced number is computed on the
+# wrong data while looking superficially fine. The brain id is the 6-digit dataset
+# number. We recover it two ways and require agreement.
+_BRAIN_RE = re.compile(r"(?<!\d)(\d{6})(?!\d)")
+_CACHE_BRAIN_RE = re.compile(r"dataset_cache_(\d{6})_")
+
+
+def _brain_from_pkl(pkl_path: Path) -> str | None:
+    """Brain id from a cache filename like ``dataset_cache_789202_mcl100_add.pkl``."""
+    m = _CACHE_BRAIN_RE.search(pkl_path.name)
+    if m:
+        return m.group(1)
+    m = _BRAIN_RE.search(pkl_path.name)   # fallback: any lone 6-digit token
+    return m.group(1) if m else None
+
+
+def _brain_from_json(json_path: Path) -> tuple[str | None, dict]:
+    """Brain id inferred from the run JSON's experiment code.
+
+    The JSON has no structured dataset field, so we count 6-digit ids inside each
+    record's ``code``/``codeOutput`` (preferring ``dataset_cache_<brain>_`` refs,
+    which are unambiguous) and return the dominant one. Returns (brain_id, counts)
+    where counts is the full {brain: n} tally for diagnostics. (brain_id None if the
+    file has no recoverable id.)
+    """
+    try:
+        data = json.loads(json_path.read_text())
+    except Exception:
+        return None, {}
+    records = data if isinstance(data, list) else data.get("records", []) if isinstance(data, dict) else []
+    cache_hits: Counter = Counter()   # from dataset_cache_<brain>_ (authoritative)
+    loose_hits: Counter = Counter()   # any lone 6-digit token (fallback)
+    for it in records:
+        if not isinstance(it, dict):
+            continue
+        blob = f"{it.get('code', '')}\n{it.get('codeOutput', '')}"
+        cache_hits.update(_CACHE_BRAIN_RE.findall(blob))
+        loose_hits.update(_BRAIN_RE.findall(blob))
+    tally = cache_hits or loose_hits
+    if not tally:
+        return None, {}
+    return tally.most_common(1)[0][0], dict(tally)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -642,6 +691,33 @@ def main() -> int:
     extra_pkl_paths = [
         _resolve_existing(p, "extra dataset pkl") for p in args.extra_pkl
     ]
+
+    # GUARD: the --pkl brain id (6-digit dataset number) MUST match the brain the run
+    # JSON's experiments were generated on. Reproducing a run against the wrong brain
+    # silently computes every number on the wrong data while looking fine, so a
+    # mismatch is a hard error. (--extra-pkl is expected to be OTHER brains — it is
+    # the extrapolation set — so it is NOT checked here.)
+    json_brain, json_tally = _brain_from_json(json_path)
+    pkl_brain = _brain_from_pkl(pkl_path)
+    if json_brain is None:
+        parser.error(
+            f"Could not infer a brain id (6-digit dataset number) from {json_path} — "
+            f"no dataset_cache_<brain>_ reference or lone 6-digit token found in its "
+            f"experiment code. Cannot verify it matches --pkl; aborting.")
+    if pkl_brain is None:
+        parser.error(
+            f"Could not infer a brain id from --pkl {pkl_path.name} — expected a name "
+            f"like dataset_cache_<brain>_mcl<N>.pkl. Aborting.")
+    if json_brain != pkl_brain:
+        parser.error(
+            f"Brain-id MISMATCH: the run JSON {json_path.name} was generated on brain "
+            f"{json_brain} (code references {json_tally}), but --pkl is brain "
+            f"{pkl_brain} ({pkl_path.name}). Reproducing one brain's run against "
+            f"another brain's data computes every number on the wrong dataset. Pass "
+            f"the matching --pkl (dataset_cache_{json_brain}_*.pkl).")
+    print(f"[brain-check] OK: run JSON and --pkl are both brain {pkl_brain}",
+          file=sys.stderr)
+
     asyncio.run(
         run_workflow(
             json_path,
