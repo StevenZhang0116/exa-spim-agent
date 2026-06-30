@@ -57,6 +57,18 @@ try:
     from claude_agent_sdk import ToolUseBlock
 except ImportError:  # pragma: no cover
     ToolUseBlock = ()  # type: ignore
+try:
+    # Extended-thinking / reasoning block. Present only on SDKs that surface
+    # thinking; ``()`` makes the isinstance check below a harmless no-op otherwise.
+    from claude_agent_sdk import ThinkingBlock
+except ImportError:  # pragma: no cover
+    ThinkingBlock = ()  # type: ignore
+try:
+    # Tool RESULT block (what a tool returned) — captured into the transcript so the
+    # saved record shows what the reviser's Read/Edit calls actually produced.
+    from claude_agent_sdk import ToolResultBlock
+except ImportError:  # pragma: no cover
+    ToolResultBlock = ()  # type: ignore
 
 from proofreader_evolve.harness import (
     scoring,
@@ -518,6 +530,7 @@ async def ask_reviser(
     priors_path: str | None = None,
     splits_only: bool = False,
     gen_gap: list[dict] | None = None,
+    transcript_path: str | None = None,
 ):
     """Run the proofreader-reviser subagent on the failure report. Returns
     (text, input_tokens, output_tokens, cost_usd, read_priors). ``read_priors`` is
@@ -530,6 +543,14 @@ async def ask_reviser(
     into the prompt so the agent proposes something NEW. ``priors_path``, when
     given, points the agent at the validated discovery knowledge base (see
     ``_format_priors`` for the trust discipline applied to it).
+
+    ``transcript_path`` (optional): when given, the FULL per-generation reviser
+    record — the prompt, every assistant THINKING block (the chain-of-thought, which
+    the ledger's truncated ``diagnosis`` field drops), every TextBlock, and every
+    tool call + result, in stream order — is written to that markdown file. This is
+    the durable, untruncated audit trail of WHY the reviser made each edit; nothing
+    else in the run persists the reasoning. Subagent vs orchestrator messages are
+    tagged so the subagent's reasoning is distinguishable.
     """
     instruction = (
         "Use the proofreader-reviser subagent to improve the evolved proofreading "
@@ -581,6 +602,11 @@ async def ask_reviser(
     # the parented text gives us the actual diagnosis/reasoning; the orchestrator
     # text is kept separately as a fallback in case no subagent text is surfaced.
     sub_chunks, orch_chunks = [], []
+    # THINKING (chain-of-thought) collected separately, subagent vs orchestrator.
+    sub_think, orch_think = [], []
+    # Full stream-ordered transcript events for transcript_path (thinking, text,
+    # tool calls + results), so the saved record reads in the order it happened.
+    transcript_events: list[str] = []
     in_tok = out_tok = 0
     cost = 0.0
     # Did the reviser actually READ the discovery priors this generation? We can
@@ -588,23 +614,43 @@ async def ask_reviser(
     # used — so verify, don't assume. None when no priors were configured.
     priors_name = os.path.basename(priors_path) if priors_path else None
     read_priors = False if priors_name else None
+
+    def _ev(tag: str, body: str) -> None:
+        transcript_events.append(f"### {tag}\n\n{body.rstrip()}\n")
+
     async for message in client.receive_response():
         if isinstance(message, AssistantMessage):
             is_sub = getattr(message, "parent_tool_use_id", None) is not None
+            who = "subagent" if is_sub else "orchestrator"
             for block in message.content:
-                if isinstance(block, TextBlock):
+                # THINKING first: the chain-of-thought the ledger drops. The SDK
+                # exposes it as a ThinkingBlock with a ``.thinking`` str (older SDKs
+                # may use ``.text``); guard both.
+                if ThinkingBlock and isinstance(block, ThinkingBlock):
+                    tb = getattr(block, "thinking", None) or getattr(block, "text", "") or ""
+                    (sub_think if is_sub else orch_think).append(tb)
+                    _ev(f"💭 thinking [{who}]", tb)
+                    if verbose:
+                        print(tb, end="", flush=True)
+                elif isinstance(block, TextBlock):
                     (sub_chunks if is_sub else orch_chunks).append(block.text)
+                    _ev(f"📝 text [{who}]", block.text)
                     if verbose:
                         print(block.text, end="", flush=True)
                 elif ToolUseBlock and isinstance(block, ToolUseBlock):
                     tname = getattr(block, "name", "tool")
                     log(f"    → {tname}{' [subagent]' if is_sub else ''}")
+                    ti = getattr(block, "input", {}) or {}
+                    _ev(f"🔧 tool call [{who}]: {tname}",
+                        "```json\n" + json.dumps(ti, indent=2, default=str)[:4000] + "\n```")
                     # Flag a Read whose target is the priors file (any field that
                     # carries a path), so we can confirm the prior was consulted.
                     if priors_name and tname == "Read":
-                        ti = getattr(block, "input", {}) or {}
                         if any(priors_name in str(v) for v in ti.values()):
                             read_priors = True
+                elif ToolResultBlock and isinstance(block, ToolResultBlock):
+                    _content = getattr(block, "content", "")
+                    _ev(f"📤 tool result [{who}]", str(_content)[:4000])
             # Sum token usage across ALL assistant messages (orchestrator +
             # subagent), so the ledger reflects the subagent's real consumption,
             # not just the parent's final ResultMessage.
@@ -619,8 +665,33 @@ async def ask_reviser(
                 in_tok = ru.get("input_tokens", 0) or 0
                 out_tok = ru.get("output_tokens", 0) or 0
     # Prefer the subagent's diagnosis; fall back to orchestrator text if the SDK
-    # surfaced none (older SDKs / different routing).
+    # surfaced none (older SDKs / different routing). Same precedence for thinking.
     text = "".join(sub_chunks) or "".join(orch_chunks)
+    thinking = "".join(sub_think) or "".join(orch_think)
+
+    # Persist the FULL, untruncated reviser record (prompt + thinking + text + tool
+    # I/O) so the reasoning behind each edit survives the run — the ledger only keeps
+    # a 2000-char slice of the final text and no thinking at all.
+    if transcript_path:
+        try:
+            header = [
+                "# Reviser transcript\n",
+                f"- thinking captured: {'yes' if thinking else 'no'} "
+                f"({len(thinking)} chars)",
+                f"- final text: {len(text)} chars",
+                f"- tokens: in={in_tok} out={out_tok}; cost_usd={cost}",
+                f"- priors read: {read_priors}\n",
+                "## Prompt sent to the reviser\n",
+                "```\n" + instruction + "\n```\n",
+                "## Stream (thinking / text / tool calls, in order)\n",
+            ]
+            os.makedirs(os.path.dirname(transcript_path), exist_ok=True)
+            with open(transcript_path, "w") as f:
+                f.write("\n".join(header) + "\n" + "\n".join(transcript_events))
+        except Exception as _e:
+            log(f"   [WARN] could not write reviser transcript "
+                f"({transcript_path}): {_e}")
+
     return text, in_tok, out_tok, cost, read_priors
 
 
@@ -757,6 +828,8 @@ class BrainContext:
     train_names: list                     # this brain's train skeletons
     heldout_names: list                   # this brain's held-out skeletons
     merge_labels: dict                     # this brain's baseline merge targets
+    role: str = "split"                    # "split" (within-brain), "train" (all train),
+                                           # or "heldout" (all held-out) — see _setup_brain
     base_train: object = None              # per_swc baseline rows for train
     base_heldout: object = None            # per_swc baseline rows for held-out
     label_gt_map: dict = None              # TRAIN-only {label: {gt_neuron: count}}
@@ -772,13 +845,25 @@ class BrainContext:
 
 
 def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
-                 split_seed: int, verbose: bool, mcl: int = 100) -> BrainContext:
+                 split_seed: int, verbose: bool, mcl: int = 100,
+                 role: str = "split") -> BrainContext:
     """Load + prepare ONE brain and compute its train/held-out split + baseline.
 
     Mirrors the original single-brain setup, factored out so a run can hold several
     brains at once. The prepared-brain pickle (expensive) is reused from any prior
     run if present, exactly as before. ``mcl`` selects which fragment cache to load
     (``dataset_cache_<brain>_mcl<mcl>.pkl``); default 100.
+
+    ``role`` controls how this brain's neurons are assigned:
+      * ``"split"`` (default): the legacy per-brain split — this brain's own
+        skeletons are partitioned ``train_heldout_split`` (train feeds the failure
+        report, held-out feeds the gate), so a single brain serves BOTH roles.
+      * ``"train"``: ALL of this brain's neurons go to TRAIN (feedback); none are
+        held out. Used in CROSS-BRAIN mode where a different brain is the gate.
+      * ``"heldout"``: ALL of this brain's neurons go to the HELD-OUT gate; none
+        are train. The gate then scores on a WHOLE brain the reviser never saw —
+        a strictly cleaner generalization signal than a within-brain split (no
+        fragment of a test neuron ever appears in the train feedback).
     """
     paths = scoring.BrainPaths(brain)
     cache_path = ds.default_cache_path(brain, min_cable_length=mcl)
@@ -788,7 +873,11 @@ def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
             f"  (check --brain / --mcl; build it via notebooks/load_skeletons.ipynb "
             f"with min_cable_length={mcl} if missing)")
     log(f"[{brain}] Loading cached fragment graph (mcl={mcl}): {cache_path}")
-    fragments_graph, _gt_graph, _ = ds.load_cached_graphs(cache_path)
+    # Validate the cache CONTENTS against the requested brain + mcl, not just the
+    # filename convention — a swapped/stale pickle would otherwise train/gate on the
+    # wrong data silently. Fails fast on mismatch (see load_cached_graphs).
+    fragments_graph, _gt_graph, _ = ds.load_cached_graphs(
+        cache_path, expect_brain=brain, expect_mcl=mcl)
 
     # The policy always gets a LAZY raw-image patch reader in ctx (each read is a
     # cloud fetch, so the policy gates reads behind cheap filters). Lazy: no cloud
@@ -816,11 +905,20 @@ def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
     with Heartbeat(f"[{brain}] scoring baseline"):
         baseline_full = inc.score_incremental(prepared, label_pairs=None, verbose=verbose)
     all_gt_names = list(baseline_full.per_swc.index)
-    # Per-brain 70/30 (or as configured) split, seeded so it is reproducible. Each
-    # brain splits its OWN skeletons, so no brain lands wholly in train or held-out.
-    train_names, heldout_names = ds.train_heldout_split(
-        all_gt_names, heldout_fraction=heldout_fraction, seed=split_seed
-    )
+    # Neuron assignment depends on this brain's ROLE:
+    #   * "split"   -> per-brain 70/30 (or as configured), seeded + reproducible. Each
+    #                  brain splits its OWN skeletons, so no brain lands wholly on a side.
+    #   * "train"   -> ALL neurons are TRAIN (cross-brain mode; a different brain gates).
+    #   * "heldout" -> ALL neurons are HELD-OUT (cross-brain mode; the gate scores a
+    #                  whole brain the reviser's feedback never touched).
+    if role == "train":
+        train_names, heldout_names = list(all_gt_names), []
+    elif role == "heldout":
+        train_names, heldout_names = [], list(all_gt_names)
+    else:
+        train_names, heldout_names = ds.train_heldout_split(
+            all_gt_names, heldout_fraction=heldout_fraction, seed=split_seed
+        )
     merge_labels = inc.collect_merge_labels(prepared)
     # TRAIN-ONLY label->{gt_neuron: count} map for the SplitSite audit. Restricting
     # to train_names keeps the SplitSite TRUE/NON verdict leak-free (held-out
@@ -863,7 +961,7 @@ def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
     return BrainContext(
         brain=brain, fragments_graph=fragments_graph, image_reader=image_reader,
         prepared=prepared, baseline_full=baseline_full,
-        train_names=train_names, heldout_names=heldout_names,
+        train_names=train_names, heldout_names=heldout_names, role=role,
         merge_labels=merge_labels, base_train=base_train, base_heldout=base_heldout,
         label_gt_map=label_gt_map, heldout_label_gt_map=heldout_label_gt_map,
         image_probe_section=image_probe_section,
@@ -941,12 +1039,59 @@ async def run_evolution(
     brains: list | None = None, splits_only: bool = False,
     use_priors: bool = True, mcl: int = 100,
     converge_patience: int = 0, converge_eps: int = 1,
+    train_brains: list | None = None, test_brains: list | None = None,
 ) -> None:
-    # Brain set: --brains (list) takes precedence; else the single --brain. The run
-    # id uses the first brain + a tag of the count so multi-brain runs are obvious.
-    brain_list = [str(b) for b in (brains or [brain])]
-    primary_brain = brain_list[0]
-    run_tag = primary_brain if len(brain_list) == 1 else f"{primary_brain}+{len(brain_list)-1}"
+    # CROSS-BRAIN mode: --train-brains + --test-brains assign WHOLE brains to roles —
+    # every train brain's neurons feed the failure report, every test brain's neurons
+    # feed the gate, with NO within-brain split. This is the cleanest generalization
+    # signal (the gate scores brains the reviser's feedback never touched) and is the
+    # natural way to "focus the gate on held-out neurons' merge errors". When neither
+    # is given, behavior is the legacy per-brain split over --brains / --brain.
+    cross_brain = bool(train_brains) and bool(test_brains)
+    if bool(train_brains) ^ bool(test_brains):
+        raise SystemExit(
+            "--train-brains and --test-brains must be given TOGETHER (cross-brain "
+            "mode) — got only one. Pass both, or neither (to use the per-brain "
+            "split over --brain/--brains).")
+    if cross_brain:
+        train_brains = [str(b) for b in train_brains]
+        test_brains = [str(b) for b in test_brains]
+        # (a) No brain may repeat WITHIN a list — a duplicate would load the same
+        # brain twice, double-count it in pooling, and only surface later as a
+        # cryptic skeleton-name collision at the verify_integrity concat. Catch it
+        # here with a clear message.
+        def _dups(seq):
+            seen, dup = set(), []
+            for b in seq:
+                (dup.append(b) if b in seen else seen.add(b))
+            return sorted(set(dup))
+        train_dups, test_dups = _dups(train_brains), _dups(test_brains)
+        if train_dups or test_dups:
+            raise SystemExit(
+                f"--train-brains / --test-brains contain duplicate brain(s) "
+                f"(train: {train_dups or 'none'}; test: {test_dups or 'none'}); each "
+                f"brain may appear at most once — a repeat double-counts that brain "
+                f"and collides on skeleton names downstream.")
+        # (b) No brain may be in BOTH sets — that would leak a brain's neurons across
+        # the train/gate boundary (the whole point of cross-brain mode is disjointness).
+        overlap = sorted(set(train_brains) & set(test_brains))
+        if overlap:
+            raise SystemExit(
+                f"--train-brains and --test-brains overlap ({overlap}); a brain "
+                f"cannot be both the train and the test set (that would leak its "
+                f"neurons across the gate boundary).")
+        # role per brain, in a stable train-then-test order; the run id flags it.
+        brain_roles = ([(b, "train") for b in train_brains]
+                       + [(b, "heldout") for b in test_brains])
+        brain_list = [b for b, _ in brain_roles]
+        primary_brain = train_brains[0]
+        run_tag = f"{primary_brain}_train{len(train_brains)}_test{len(test_brains)}"
+    else:
+        # Brain set: --brains (list) takes precedence; else the single --brain.
+        brain_list = [str(b) for b in (brains or [brain])]
+        brain_roles = [(b, "split") for b in brain_list]
+        primary_brain = brain_list[0]
+        run_tag = primary_brain if len(brain_list) == 1 else f"{primary_brain}+{len(brain_list)-1}"
     run_id = f"{run_tag}_{datetime.now():%Y%m%d_%H%M%S}"
     run_dir = HERE / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -970,12 +1115,26 @@ async def run_evolution(
     # brain's 70/30 split is reproducible from this one recorded seed.
     if split_seed is None:
         split_seed = int.from_bytes(os.urandom(4), "little")
-    log(f"Brains: {brain_list} (split_seed={split_seed}, "
-        f"heldout_fraction={heldout_fraction})")
+    if cross_brain:
+        log(f"CROSS-BRAIN mode: train={train_brains} -> feedback, "
+            f"test={test_brains} -> gate (whole-brain held-out; no within-brain split)")
+    else:
+        log(f"Brains: {brain_list} (split_seed={split_seed}, "
+            f"heldout_fraction={heldout_fraction})")
     brain_ctxs = [
-        _setup_brain(b, run_dir, heldout_fraction, split_seed, verbose, mcl=mcl)
-        for b in brain_list
+        _setup_brain(b, run_dir, heldout_fraction, split_seed, verbose, mcl=mcl,
+                     role=r)
+        for b, r in brain_roles
     ]
+    # Brains that carry TRAIN neurons (feedback) and those that carry HELD-OUT
+    # neurons (gate). In the per-brain "split" mode every brain carries both, so both
+    # lists equal brain_ctxs and behavior is unchanged. In cross-brain mode they are
+    # disjoint, so the train report never sees a test brain and the gate never sees a
+    # train brain.
+    train_ctxs = [bc for bc in brain_ctxs if bc.train_names]
+    heldout_ctxs = [bc for bc in brain_ctxs if bc.heldout_names]
+    assert train_ctxs, "no brain contributes TRAIN neurons — nothing to learn from"
+    assert heldout_ctxs, "no brain contributes HELD-OUT neurons — nothing to gate on"
 
     # Pooled held-out names across brains. Pooling indexes skeletons BY NAME (concat
     # / isin / loc / fold slicing), which silently corrupts — duplicate rows, double-
@@ -985,7 +1144,7 @@ async def run_evolution(
     # fail FAST here, at the pool boundary, turning a silent miscount into a clear
     # startup error before any scoring runs.
     import pandas as _pd
-    pooled_heldout = [n for bc in brain_ctxs for n in bc.heldout_names]
+    pooled_heldout = [n for bc in heldout_ctxs for n in bc.heldout_names]
     _dupes = sorted({n for n in pooled_heldout if pooled_heldout.count(n) > 1})
     assert not _dupes, (
         f"pooled held-out skeleton names collide across brains: "
@@ -997,9 +1156,9 @@ async def run_evolution(
     # verify_integrity re-checks the same invariant at the frame level (the rows that
     # actually get weighted), so a future name-source change can't reintroduce it.
     pooled_base_heldout = _pd.concat(
-        [bc.base_heldout for bc in brain_ctxs], verify_integrity=True)
+        [bc.base_heldout for bc in heldout_ctxs], verify_integrity=True)
     baseline_heldout = scoring._weighted_avg(pooled_base_heldout, "Edge Accuracy")
-    log(f"Pooled held-out: {len(pooled_heldout)} neurons across {len(brain_ctxs)} "
+    log(f"Pooled held-out: {len(pooled_heldout)} neurons across {len(heldout_ctxs)} "
         f"brain(s); baseline (no-edit) Edge Accuracy = {baseline_heldout:.4f}")
 
     # K-fold the POOLED held-out set for gating (per-brain train reports unchanged).
@@ -1026,7 +1185,13 @@ async def run_evolution(
         # the SAME cache — using mcl100 to replay an mcl10 run would enumerate a
         # different candidate stream and the numbers would not match this run.
         "mcl": mcl,
-        "per_brain": {bc.brain: {"train": bc.train_names,
+        # Cross-brain vs per-brain split, and each brain's role, so a run is fully
+        # reproducible and downstream analysis can tell the two modes apart.
+        "cross_brain": cross_brain,
+        "train_brains": train_brains if cross_brain else None,
+        "test_brains": test_brains if cross_brain else None,
+        "per_brain": {bc.brain: {"role": bc.role,
+                                 "train": bc.train_names,
                                  "heldout": bc.heldout_names} for bc in brain_ctxs},
         "k_folds": k_eff,
         "heldout_folds": [f["heldout"] for f in heldout_folds],
@@ -1037,14 +1202,14 @@ async def run_evolution(
     log("Scoring SEED policy on pooled held-out — sets the bar gen 1 must beat...")
     with Heartbeat("scoring seed policy on pooled held-out"):
         seed_pooled, seed_runs = _score_pooled(
-            brain_ctxs, "heldout_names", str(work_heuristics), "heldout",
+            heldout_ctxs, "heldout_names", str(work_heuristics), "heldout",
             max_class_size, verbose, splits_only=splits_only,
         )
     # Dense split-repair fitness of the SEED (the PRIMARY gate signal): correct
     # held-out merges minus false ones. Edge Accuracy stays computed/recorded but is
     # no longer the bar — it reads +0.000 for most real repairs (only a bridged
     # split EDGE moves it), which is why evolution flat-lined. See classify_merge_edits.
-    parent_repair = _pooled_split_repair(brain_ctxs, seed_runs)
+    parent_repair = _pooled_split_repair(heldout_ctxs, seed_runs)
     log(f"Seed split-repair: correct={parent_repair['correct']} "
         f"false={parent_repair['false']} score={parent_repair['score']} "
         f"(unscored={parent_repair['unscored']}) — the bar gen 1 must beat by "
@@ -1091,7 +1256,15 @@ async def run_evolution(
             log(f"Discovery priors: reviser will read {priors_path} "
                 f"(trusting GENERALIZES+UPHELD findings only)")
         else:
-            log(f"Discovery priors: none found at {DISCOVERY_PRIORS} (reviser runs without)")
+            # Priors were WANTED (no --no-priors) but the knowledge base file is
+            # absent. This is an UNINTENDED degradation (≠ the deliberate --no-priors
+            # ablation), so flag it loudly: the run will proceed un-grounded, and the
+            # fix is to build the file via run_consolidation_workflow.py.
+            log(f"   [WARN] Discovery priors WANTED (no --no-priors) but the knowledge "
+                f"base is MISSING at {DISCOVERY_PRIORS} — proceeding WITHOUT priors "
+                f"(reviser is un-grounded this run). Build it via "
+                f"`python agentic/run_consolidation_workflow.py`, or pass --no-priors "
+                f"to silence this if running un-grounded is intentional.")
     # B: memory of revisions tried against the CURRENT parent; cleared when the
     # parent advances (an accept), since past rejections no longer apply.
     attempts_vs_parent: list[dict] = []
@@ -1124,7 +1297,7 @@ async def run_evolution(
             log("Step 1-3: run current policy on train, build failure report...")
             with Heartbeat(f"gen {gen}: running policy on train"):
                 _, train_runs = _score_pooled(
-                    brain_ctxs, "train_names", str(work_heuristics), "train",
+                    train_ctxs, "train_names", str(work_heuristics), "train",
                     max_class_size, verbose, splits_only=splits_only,
                 )
             report_path = str(gen_dir / "failure_report.md")
@@ -1142,7 +1315,7 @@ async def run_evolution(
                      metrics={}, per_swc=bc.base_train, output_dir="", seconds=0.0),
                  report_merge_labels(bc), bc.label_gt_map, bc.fragments_graph,
                  bc.image_probe_section)
-                for bc, tr in zip(brain_ctxs, train_runs)
+                for bc, tr in zip(train_ctxs, train_runs)
             ]
             if len(per_brain_report) == 1:
                 _, tr, base_sr, ml, lgm, fg, probe = per_brain_report[0]
@@ -1169,7 +1342,7 @@ async def run_evolution(
             # is blind to). Pool each brain's train edits against ITS OWN train map.
             train_false = sum(
                 inc.classify_merge_edits(tr.edits, bc.label_gt_map)["false"]
-                for bc, tr in zip(brain_ctxs, train_runs))
+                for bc, tr in zip(train_ctxs, train_runs))
             if train_false:
                 log(f"   [ALERT] {train_false} train-side false merge(s) — over-merges "
                     f"the held-out gate does NOT see (see failure report)")
@@ -1177,17 +1350,20 @@ async def run_evolution(
             # for the generalization-gap meta-signal. Same metric as the gate, but on
             # the TRAIN map — so train_repair["score"] vs the held-out score below
             # shows whether a change generalizes. Cheap (reuses train_runs' edits).
-            train_repair = _pooled_split_repair(brain_ctxs, train_runs,
+            train_repair = _pooled_split_repair(train_ctxs, train_runs,
                                                 map_attr="label_gt_map")
 
             # (4-5) Ask the agent to explain and revise the WORKING-COPY artifacts.
             log("Step 4-5: proofreader-reviser diagnoses and revises artifacts...")
+            reviser_transcript = str(gen_dir / "reviser_transcript.md")
             with Heartbeat(f"gen {gen}: waiting on reviser (LLM)"):
                 diagnosis, in_tok, out_tok, cost, read_priors = await ask_reviser(
                     client, report_path, str(work_heuristics), str(work_rules), verbose,
                     attempts=attempts_vs_parent, priors_path=priors_path,
                     splits_only=splits_only, gen_gap=gen_gap_history,
+                    transcript_path=reviser_transcript,
                 )
+            log(f"   reviser transcript (thinking + text + tools) -> {reviser_transcript}")
             # Verify the prior was actually consulted (we grant the tool + allow the
             # path, but only the tool stream proves it was used). Loud if not.
             if read_priors is True:
@@ -1220,7 +1396,7 @@ async def run_evolution(
             # labels (baseline merge targets + the candidate's own edited labels).
             if import_ok:
                 report_labels = set()
-                for bc, tr in zip(brain_ctxs, train_runs):
+                for bc, tr in zip(train_ctxs, train_runs):
                     report_labels |= collect_report_labels(bc.merge_labels, tr)
                 lint_ok, lint_reason = lint_no_hardcoded_labels(
                     str(work_heuristics), report_labels
@@ -1250,7 +1426,7 @@ async def run_evolution(
                 log("Step 6: score revised policy on pooled held-out...")
                 with Heartbeat(f"gen {gen}: scoring revised policy on pooled held-out"):
                     heldout_pooled, heldout_runs = _score_pooled(
-                        brain_ctxs, "heldout_names", str(work_heuristics), "heldout",
+                        heldout_ctxs, "heldout_names", str(work_heuristics), "heldout",
                         max_class_size, verbose, splits_only=splits_only,
                     )
                 heldout_acc = scoring._weighted_avg(heldout_pooled, "Edge Accuracy")
@@ -1285,7 +1461,7 @@ async def run_evolution(
                 # from one revision to the next. score_margin=1 reproduces the old
                 # accept-any-improvement behavior; 2-3 requires the gain to clear
                 # that single-repair noise floor before it is locked in as the parent.
-                cand_repair = _pooled_split_repair(brain_ctxs, heldout_runs)
+                cand_repair = _pooled_split_repair(heldout_ctxs, heldout_runs)
                 heldout_n_edits = sum(hr.n_edits for hr in heldout_runs)
                 heldout_dropped = sum(
                     getattr(hr, "n_split_label_dropped", 0) for hr in heldout_runs)
@@ -1504,6 +1680,19 @@ def main() -> int:
                         "results (data is never crossed — raw labels are not "
                         "comparable across brains). Overrides --brain. NOTE: each "
                         "brain holds ~1.6 GB prepared state in memory simultaneously.")
+    p.add_argument("--train-brains", default=None,
+                   help="CROSS-BRAIN mode: comma-separated brain_ids whose WHOLE "
+                        "neuron set is the TRAIN/feedback split (the reviser learns "
+                        "from these). Must be used WITH --test-brains, and the two "
+                        "sets must not overlap. When given, there is NO within-brain "
+                        "split — train brains feed the failure report, test brains "
+                        "feed the gate. Overrides --brain/--brains.")
+    p.add_argument("--test-brains", default=None,
+                   help="CROSS-BRAIN mode: comma-separated brain_ids whose WHOLE "
+                        "neuron set is the HELD-OUT gate (scored, never shown to the "
+                        "reviser). The gate then measures generalization on brains the "
+                        "feedback never touched — no fragment of a test neuron appears "
+                        "in train. Must be used WITH --train-brains.")
     p.add_argument("--generations", type=int, default=5)
     p.add_argument("--heldout-fraction", type=float, default=0.5,
                    help="fraction of EACH brain's GT skeletons reserved for held-out "
@@ -1568,6 +1757,11 @@ def main() -> int:
     brains = None
     if args.brains:
         brains = [b.strip() for b in args.brains.split(",") if b.strip()]
+    train_brains = test_brains = None
+    if args.train_brains:
+        train_brains = [b.strip() for b in args.train_brains.split(",") if b.strip()]
+    if args.test_brains:
+        test_brains = [b.strip() for b in args.test_brains.split(",") if b.strip()]
     asyncio.run(run_evolution(
         args.brain, args.generations, args.heldout_fraction,
         args.human_gate, args.verbose, args.model,
@@ -1577,6 +1771,7 @@ def main() -> int:
         splits_only=args.splits_only, use_priors=args.use_priors,
         mcl=args.mcl,
         converge_patience=args.converge_patience, converge_eps=args.converge_eps,
+        train_brains=train_brains, test_brains=test_brains,
     ))
     return 0
 
