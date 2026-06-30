@@ -1,214 +1,165 @@
-# === RERUN BOOTSTRAP (revised loading only) ============================
-import os as _os, sys as _sys
-
-_TARGET = "/home/zihan.zhang/.local-numpy2"
-_USER_SITE = _os.path.expanduser("~/.local/lib/python3.12/site-packages")
-_SHARED_SITE = "/shared/utils.x86_64/anaconda3-2024.10/lib/python3.12/site-packages"
-_sys.path = [p for p in _sys.path if p not in (_USER_SITE, _SHARED_SITE)]
-if _TARGET in _sys.path:
-    _sys.path.remove(_TARGET)
-_sys.path.insert(0, _TARGET)
-
-import subprocess as _subprocess
-_subprocess.check_call = lambda *a, **k: 0
-_subprocess.call = lambda *a, **k: 0
-_subprocess.run = lambda *a, **k: type("R", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
-
-_PKL = _os.environ["RERUN_PKL"]
-print("Loading dataset from:", _PKL)
-import glob as _glob
-_orig_glob = _glob.glob
-def _glob_patch(pattern, *a, **k):
-    if isinstance(pattern, str) and pattern.endswith(".pkl"):
-        return [_PKL]
-    return _orig_glob(pattern, *a, **k)
-_glob.glob = _glob_patch
-
-from pathlib import Path as _Path
-_orig_rglob = _Path.rglob
-def _rglob_patch(self, pattern, *a, **k):
-    if isinstance(pattern, str) and pattern.endswith(".pkl"):
-        return iter([_Path(_PKL)])
-    return _orig_rglob(self, pattern, *a, **k)
-_Path.rglob = _rglob_patch
-
-_orig_walk = _os.walk
-def _walk_patch(top, *a, **k):
-    yield (_os.path.dirname(_PKL), [], [_os.path.basename(_PKL)])
-_os.walk = _walk_patch
-# === END BOOTSTRAP =====================================================
-# CORRECTED ANALYSIS (entry #5, id 24) ===================================
-# Original test: Mann-Whitney U on TOTAL covered cable length
-#   (n=24 two-neuron vs n=3 super-merges in the recorded multi-brain run).
-# Recorded result: U = 0.0, p = 5.886e-03; medians 6.21 mm vs 35.19 mm.
+# CORRECTED TEST for hypothesis id 24 (super-merges cover disproportionately
+# more GT cable than 2-neuron merges).
 #
-# Why the original is wrong / weak:
-#   1. The hypothesis is literally about cable length *per fused neuron*,
-#      not total cable length — a super-merge that fuses N neurons must
-#      cover at least N times their cable, so the original comparison is
-#      partly tautological.
-#   2. Severely underpowered: with n=3 in one arm, U=0 is a floor effect.
-#      The reported "highly significant" p=0.006 is simply the smallest
-#      achievable p for 24 vs 3.
-#   3. No effect-size or CI is reported.
+# FAULTS (verifier MAJOR): (1) CONSTRUCT MISMATCH -- the hypothesis is about cable
+# PER NEURON, but the code compared TOTAL covered cable per merge label; total
+# cable is mechanically larger for super-merges because they span more neurons,
+# so the test partly tests its own definition. (2) UNDERPOWERED / no effect size
+# -- n=3 super-merges with a two-sided Mann-Whitney (U=0.0) is the minimum
+# configuration that can reach p<0.01, and it DIVERGED on rerun to n=1 / p=0.222.
 #
-# Corrected tests:
-#   (a) Mann-Whitney U on per-NEURON cable (total / num_fused_neurons) —
-#       matches the hypothesis as literally stated.
-#   (b) Cliff's delta (rank-biserial) effect size with bootstrap 95% CI
-#       (resample within each group).
-#   (c) Recompute the original total-cable comparison for side-by-side.
-# All on the SAME data.
-# =======================================================================
-import pickle
+# CORRECTION: keep the SAME merge classes but test the quantity the hypothesis
+# actually claims -- cable PER NEURON (total covered cable / number of GT neurons
+# covered). Report an exact Mann-Whitney p, the rank-biserial correlation (Cliff's
+# delta) as an EFFECT SIZE with a bootstrap 95% CI, and clearly flag the sample
+# size. We test BOTH per-neuron (corrected construct) and total (original construct)
+# so the driver can compare.
+#
+# ORIGINAL RECORDED NUMBERS (for the driver to compare):
+#   2-neuron merges n=24, super-merges n=3, Mann-Whitney U=0.0, p=5.8861e-03,
+#   medians 6.2054 mm (2-neuron total) vs 35.1873 mm (super total).
+
 import sys
+import subprocess
 import os
-import re
-from collections import defaultdict
+import glob
+import pickle
 import numpy as np
-from scipy.stats import mannwhitneyu
+from collections import defaultdict
+import scipy.stats as stats
 
-print("=" * 72)
-print("HYPO 24 — super-merges vs 2-neuron merges (corrected)")
-print("=" * 72)
+def install(*packages):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet"] + list(packages))
 
-with open(_PKL, "rb") as f:
-    payload = pickle.load(f)
+try:
+    import agentic_neuron_proofreader
+except ImportError:
+    install("psutil", "pandas", "networkx", "scipy", "tqdm", "tensorstore", "matplotlib", "boto3", "aiohttp")
+    install("https://github.com/AllenInstitute/agentic-neuron-proofreader/archive/refs/heads/main.zip")
+    import agentic_neuron_proofreader
 
-brain_id = os.path.basename(_PKL)
-m = re.search(r"dataset_cache_(\d+)_mcl(\d+)_add\.pkl$", brain_id)
-brain_id = m.group(1) if m else brain_id
+def cliffs_delta_and_rbc(a, b):
+    """Cliff's delta = P(a>b)-P(a<b); equals rank-biserial r for MW. a,b arrays."""
+    a = np.asarray(a, float)
+    b = np.asarray(b, float)
+    gt = sum((x > b).sum() for x in a)
+    lt = sum((x < b).sum() for x in a)
+    n = len(a) * len(b)
+    return (gt - lt) / n if n else np.nan
 
-gt = payload["gt_graph"]
-node_label = np.asarray(payload["gt_node_canonical_label"])
-merge_labels = set(int(x) for x in payload["gt_merge_labels"])
+def main():
+    # Find dataset files robustly
+    search_paths = [
+        "**/*_add.pkl",
+        "../*_add.pkl",
+        "../*/*_add.pkl",
+        "/*_add.pkl",
+        "/*/*_add.pkl"
+    ]
+    cache_files = set()
+    for pattern in search_paths:
+        for match in glob.glob(pattern, recursive=True):
+            cache_files.add(match)
 
-if hasattr(gt, "node_xyz"):
-    def get_xyz(n): return gt.node_xyz[n]
-else:
-    def get_xyz(n): return gt.nodes[n]["node_xyz"]
+    cache_files = list(cache_files)
+    if not cache_files:
+        print("No dataset files found.")
+        return
 
-# Nodal cable contribution (half of incident edges, mm)
-node_cable = defaultdict(float)
-for u, v in gt.edges:
-    p1 = np.array(get_xyz(u))
-    p2 = np.array(get_xyz(v))
-    dist = np.linalg.norm(p1 - p2) / 1000.0
-    node_cable[u] += dist / 2.0
-    node_cable[v] += dist / 2.0
+    # Per-merge totals and per-neuron values for the two classes.
+    total_2, total_super = [], []      # original construct: total cable
+    pern_2, pern_super = [], []        # corrected construct: cable per neuron
 
-seg_neuron_counts = defaultdict(lambda: defaultdict(int))
-seg_cable = defaultdict(float)
-for n in gt.nodes:
-    lab = int(node_label[n])
-    if lab != 0:
-        neuron = gt.node_segment_id(n)
-        seg_neuron_counts[lab][neuron] += 1
-        seg_cable[lab] += node_cable[n]
+    for file_path in cache_files:
+        with open(file_path, "rb") as f:
+            payload = pickle.load(f)
 
-merges_2_total = []
-merges_super_total = []
-merges_2_per = []
-merges_super_per = []
-for lab in merge_labels:
-    neurons_covered = [neuron for neuron, count in seg_neuron_counts[lab].items() if count > 50]
-    num_neurons = len(neurons_covered)
-    if num_neurons >= 2:
-        cable_len = seg_cable[lab]
-        if num_neurons == 2:
-            merges_2_total.append(cable_len)
-            merges_2_per.append(cable_len / num_neurons)
+        gt = payload["gt_graph"]
+        node_label = np.asarray(payload["gt_node_canonical_label"])
+        merge_labels = set(int(x) for x in payload["gt_merge_labels"])
+
+        if hasattr(gt, 'node_xyz'):
+            get_xyz = lambda n: gt.node_xyz[n]
         else:
-            merges_super_total.append(cable_len)
-            merges_super_per.append(cable_len / num_neurons)
+            get_xyz = lambda n: gt.nodes[n]['node_xyz']
 
-def summary(name, data):
-    if not data:
-        return f"{name}: NO DATA"
-    return (f"{name}: n={len(data)}, mean={np.mean(data):.4f} mm, "
-            f"median={np.median(data):.4f} mm")
+        node_cable = defaultdict(float)
+        for u, v in gt.edges:
+            p1 = np.array(get_xyz(u))
+            p2 = np.array(get_xyz(v))
+            dist = np.linalg.norm(p1 - p2) / 1000.0  # mm
+            node_cable[u] += dist / 2.0
+            node_cable[v] += dist / 2.0
 
-print("\nDescriptives:")
-print("  " + summary("2-neuron TOTAL cable", merges_2_total))
-print("  " + summary("super-merge TOTAL cable", merges_super_total))
-print("  " + summary("2-neuron PER-neuron cable", merges_2_per))
-print("  " + summary("super-merge PER-neuron cable", merges_super_per))
+        seg_neuron_counts = defaultdict(lambda: defaultdict(int))
+        seg_cable = defaultdict(float)
 
-# --- (c) ORIGINAL test recomputed -------------------------------------
-print("\n[ORIGINAL — recorded Mann-Whitney U on TOTAL cable]")
-print(f"  recorded: medians 6.2054 mm vs 35.1873 mm, U=0.0, "
-      f"p=5.886e-03 (multi-brain aggregate n=24+3)")
-if merges_2_total and merges_super_total:
-    u_orig, p_orig = mannwhitneyu(merges_2_total, merges_super_total,
-                                  alternative="two-sided")
-    print(f"  recomputed on this single brain (n={len(merges_2_total)} 2-merge, "
-          f"n={len(merges_super_total)} super): U = {u_orig:.4f}, p = {p_orig:.4e}")
-else:
-    print("  recomputed on this brain: insufficient data "
-          f"(n_2={len(merges_2_total)}, n_super={len(merges_super_total)})")
+        for n in gt.nodes:
+            lab = int(node_label[n])
+            if lab != 0:
+                neuron = gt.node_segment_id(n)
+                seg_neuron_counts[lab][neuron] += 1
+                seg_cable[lab] += node_cable[n]
 
-# --- (a) Corrected MW on PER-NEURON cable -----------------------------
-print("\n[CORRECTED (a)] Mann-Whitney U on PER-NEURON cable "
-      "(matches hypothesis wording)")
-if merges_2_per and merges_super_per:
-    u_per, p_per = mannwhitneyu(merges_2_per, merges_super_per,
-                                alternative="two-sided")
-    print(f"  per-neuron medians: 2-merge = {np.median(merges_2_per):.4f} mm, "
-          f"super = {np.median(merges_super_per):.4f} mm")
-    print(f"  U = {u_per:.4f}, p = {p_per:.4e}  "
-          f"(n_2={len(merges_2_per)}, n_super={len(merges_super_per)})")
-else:
-    print("  insufficient data")
+        for lab in merge_labels:
+            neurons_covered = [neuron for neuron, count in seg_neuron_counts[lab].items() if count > 50]
+            num_neurons = len(neurons_covered)
 
-# --- (b) Cliff's delta + bootstrap 95% CI ------------------------------
-def cliffs_delta(a, b):
-    a = np.asarray(a, float); b = np.asarray(b, float)
-    if len(a) == 0 or len(b) == 0:
-        return float("nan")
-    # vectorised pairwise sign
-    diff = b[None, :] - a[:, None]
-    return float((np.sign(diff)).mean())
+            if num_neurons >= 2:
+                cable_len = seg_cable[lab]
+                cable_per_neuron = cable_len / num_neurons  # CORRECTED quantity
+                if num_neurons == 2:
+                    total_2.append(cable_len)
+                    pern_2.append(cable_per_neuron)
+                else:
+                    total_super.append(cable_len)
+                    pern_super.append(cable_per_neuron)
 
-print("\n[CORRECTED (b)] Cliff's delta + bootstrap CI "
-      "(per-neuron and total cable)")
-rng = np.random.default_rng(42)
-def boot_ci(a, b, fn, n_boot=2000):
-    a = np.asarray(a); b = np.asarray(b)
-    if len(a) == 0 or len(b) == 0:
-        return float("nan"), float("nan")
-    boots = []
-    for _ in range(n_boot):
-        sa = a[rng.integers(0, len(a), len(a))]
-        sb = b[rng.integers(0, len(b), len(b))]
-        boots.append(fn(sa, sb))
-    return float(np.quantile(boots, 0.025)), float(np.quantile(boots, 0.975))
+    def summarize(name, data):
+        if not data:
+            print(f"{name}: No data (n=0)")
+            return
+        q25, median, q75 = np.percentile(data, [25, 50, 75])
+        print(f"{name} (n={len(data)}): median={median:.4f} mm, IQR={q75-q25:.4f} mm")
 
-for label, a, b in [
-    ("TOTAL cable    ", merges_2_total, merges_super_total),
-    ("PER-neuron cable", merges_2_per, merges_super_per),
-]:
-    if len(a) == 0 or len(b) == 0:
-        print(f"  {label}: insufficient data "
-              f"(n_2={len(a)}, n_super={len(b)})")
-        continue
-    d = cliffs_delta(a, b)
-    lo, hi = boot_ci(a, b, cliffs_delta, n_boot=2000)
-    # Magnitude interpretation per Vargha-Delaney convention
-    mag = abs(d)
-    interp = ("negligible" if mag < 0.147 else
-              "small" if mag < 0.33 else
-              "medium" if mag < 0.474 else
-              "large")
-    print(f"  {label}: Cliff's delta = {d:+.4f}  95% CI "
-          f"[{lo:+.4f}, {hi:+.4f}]  ({interp})  "
-          f"n_2={len(a)}, n_super={len(b)}")
+    print("\n=== Merge severity: PER-NEURON cable (corrected construct) ===")
+    summarize("2-Neuron merges (per-neuron)", pern_2)
+    summarize("Super-merges (per-neuron)", pern_super)
 
-print("\n" + "=" * 72)
-print("SIDE-BY-SIDE: original vs corrected")
-print("=" * 72)
-print(f"  Original (multi-brain TOTAL cable, n=24+3): U=0.0, p=5.886e-03 "
-      f"(floor effect — smallest achievable p)")
-print(f"  Corrected on this brain TOTAL cable: see above")
-print(f"  Corrected PER-NEURON cable (literal hypothesis): see above")
-print(f"  Corrected Cliff's delta (effect size) with bootstrap CI: see above")
-print(f"  brain = {brain_id}")
+    def test_pair(label, two, sup):
+        print(f"\n--- {label} ---")
+        if len(two) > 0 and len(sup) > 0:
+            # Exact two-sided Mann-Whitney (appropriate for tiny n).
+            method = "exact" if (len(two) * len(sup) < 1e5) else "auto"
+            try:
+                stat, p = stats.mannwhitneyu(sup, two, alternative='two-sided', method=method)
+            except TypeError:
+                stat, p = stats.mannwhitneyu(sup, two, alternative='two-sided')
+            delta = cliffs_delta_and_rbc(sup, two)  # >0 means super > two
+            # Bootstrap 95% CI for Cliff's delta.
+            rng = np.random.default_rng(42)
+            boots = []
+            sup_a = np.asarray(sup, float); two_a = np.asarray(two, float)
+            for _ in range(2000):
+                bs = rng.choice(sup_a, size=len(sup_a), replace=True)
+                bt = rng.choice(two_a, size=len(two_a), replace=True)
+                boots.append(cliffs_delta_and_rbc(bs, bt))
+            lo, hi = np.percentile(boots, [2.5, 97.5])
+            print(f"  n_super={len(sup)}, n_2neuron={len(two)}")
+            print(f"  Mann-Whitney U={stat}, exact two-sided p={p:.4e}")
+            print(f"  Cliff's delta (super vs 2-neuron) = {delta:.4f}  [rank-biserial effect size]")
+            print(f"  Bootstrap 95% CI for Cliff's delta = [{lo:.4f}, {hi:.4f}]")
+            if len(sup) < 3:
+                print(f"  [WARNING] n_super={len(sup)} is too small for a reliable inference.")
+        else:
+            print("  Not enough data to perform the test (one class is empty).")
+
+    test_pair("PER-NEURON cable (corrected: hypothesis quantity)", pern_2, pern_super)
+
+    print("\n=== Original construct (TOTAL cable) -- echoed for comparison ===")
+    summarize("2-Neuron merges (total)", total_2)
+    summarize("Super-merges (total)", total_super)
+    test_pair("TOTAL cable (original construct)", total_2, total_super)
+
+if __name__ == "__main__":
+    main()

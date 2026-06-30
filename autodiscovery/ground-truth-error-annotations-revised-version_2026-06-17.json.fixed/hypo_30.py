@@ -1,185 +1,194 @@
-# === RERUN_LOADING_BOOTSTRAP v2 ===
-import os as _os, sys as _sys, subprocess as _sp_boot
-try:
-    import numpy as _np_boot
-    _ver = tuple(int(x) for x in _np_boot.__version__.split(".")[:2])
-    if _ver < (2, 0):
-        raise ImportError("need numpy>=2")
-except Exception:
-    _sp_boot.check_call([_sys.executable, "-m", "pip", "install", "-q", "--user", "numpy>=2,<2.3"])
-    import importlib as _il_boot
-    if "numpy" in _sys.modules:
-        del _sys.modules["numpy"]
-import numpy as _np_chk
-print("Loading dataset from:", _os.environ.get("RERUN_PKL", "<unset>"), "| numpy", _np_chk.__version__)
-
-import os as _os2, glob as _glob_mod, subprocess as _sp
-from pathlib import Path as _Path_boot
-_RERUN_PKL = _os.environ.get("RERUN_PKL", "")
-_RERUN_DIR = _os.path.dirname(_RERUN_PKL) or "."
-_RERUN_NAME = _os.path.basename(_RERUN_PKL)
-def _os_walk_patched(top, *a, **k):
-    yield (_RERUN_DIR, [], [_RERUN_NAME])
-_os2.walk = _os_walk_patched
-_orig_rglob = _Path_boot.rglob
-def _rglob_patched(self, pat):
-    if isinstance(pat, str) and "pkl" in pat:
-        yield _Path_boot(_RERUN_PKL)
-        return
-    yield from _orig_rglob(self, pat)
-_Path_boot.rglob = _rglob_patched
-_orig_getoutput = _sp.getoutput
-def _getoutput_patched(cmd, *a, **k):
-    s = str(cmd)
-    if "find" in s and "pkl" in s:
-        return _RERUN_PKL
-    return _orig_getoutput(cmd, *a, **k)
-_sp.getoutput = _getoutput_patched
-_orig_check_call = _sp.check_call
-def _check_call_patched(args, *a, **k):
-    if isinstance(args, list) and len(args) > 3 and args[1:4] == ["-m", "pip", "install"]:
-        return 0
-    return _orig_check_call(args, *a, **k)
-_sp.check_call = _check_call_patched
-_orig_run = _sp.run
-def _run_patched(args, *a, **k):
-    if isinstance(args, list) and len(args) > 3 and args[1:4] == ["-m", "pip", "install"]:
-        class _R: returncode = 0; stdout = b""; stderr = b""
-        return _R()
-    return _orig_run(args, *a, **k)
-_sp.run = _run_patched
-# === END RERUN_LOADING_BOOTSTRAP ===
-
-# ============================================================
-# H30 / Entry 8 — CORRECTED TEST
-# Original test: Pearson r between splits_per_mm and pct_omit at n=12 neurons,
-#   plus OLS R². Recorded: Pearson r=0.65 (p=0.022), Spearman rho=0.881 (p=1.5e-4).
-# Problems:
-#   - Pearson is sensitive to outliers and heteroscedasticity, and recorded
-#     plot notes show a high-leverage neuron at y~12.6 drives the slope.
-#   - n=12 is small; Pearson p sits just below 0.05 and would not survive
-#     multiple-comparison correction.
-# Correction:
-#   1. Promote Spearman rho to the headline statistic (rank-based, robust).
-#   2. Report a bootstrap 95% CI on Spearman rho.
-#   3. Report a leave-one-out (jackknife) range on Spearman rho to expose
-#      outlier leverage. Also report Kendall's tau as a second robust check.
-# ============================================================
 import glob
+import os
 import re
 import pickle
-import gc
 import numpy as np
+import gc
+import subprocess
+import sys
+
+# ---------------------------------------------------------------------------
+# CORRECTED TEST (id 30)
+# Original (recorded/rerun): Pearson r=0.6500 (p=2.2134e-02) plus OLS
+#   R^2=0.422, F=7.315 (p=0.0221), n=12 neurons; Spearman rho=0.8811
+#   (p=1.5267e-04) was also reported.
+# WHY WRONG: n=12 is tiny and the OLS residuals are badly non-normal
+#   (Jarque-Bera p=0.00036, skew=2.06, kurtosis=6.84) with one high-leverage
+#   outlier (~2.5 splits/mm, 12.6% omit) that inflates the Pearson slope. The
+#   parametric Pearson/OLS p=0.022 is borderline and assumption-violating.
+# FIX: report the rank-based Spearman rho as the headline statistic with a
+#   *permutation* p-value (exact null by shuffling one variable's labels,
+#   robust to non-normality and the leverage point), plus a bootstrap 95% CI
+#   for rho. Same per-neuron quantities (splits_per_mm, pct_omit), same
+#   filtering, same loading. The Pearson/OLS are still echoed for comparison.
+# ---------------------------------------------------------------------------
+
+# Helper to install missing packages quietly
+
+def install(package):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", package])
+
+# Install all required packages sequentially to satisfy implicit dependencies
+for pkg in ["psutil", "tensorstore", "networkx", "pandas", "statsmodels", "matplotlib", "scipy"]:
+    try:
+        __import__(pkg)
+    except ImportError:
+        install(pkg)
+
+try:
+    import agentic_neuron_proofreader
+except ImportError:
+    install("https://github.com/AllenInstitute/agentic-neuron-proofreader/archive/refs/heads/main.zip")
+    import agentic_neuron_proofreader
+
+import pandas as pd
+import statsmodels.formula.api as smf
 import scipy.stats as stats
+import matplotlib.pyplot as plt
 from collections import defaultdict
 
-files = glob.glob("../*_add.pkl") + glob.glob("../*/*_add.pkl") + glob.glob("./*_add.pkl")
-files = sorted(set(files))
+# Locate dataset cache files. Loading fix: prefer $RERUN_PKL directly; the
+# harness also redirects any *_add.pkl glob to the provided dataset.
+rerun_pkl = os.environ.get("RERUN_PKL")
+if rerun_pkl and os.path.exists(rerun_pkl):
+    files = [rerun_pkl]
+else:
+    files = glob.glob("../*_add.pkl") + glob.glob("../*/*_add.pkl")
+    files = list(set(files))
 
 def brain_id_from_path(path):
     m = re.search(r"dataset_cache_(\d+)_mcl(\d+)_add\.pkl$", os.path.basename(path))
     return m.group(1) if m else "unknown"
 
-import os
-neurons_data = []
+data = []
+
 for path in sorted(files):
     brain_id = brain_id_from_path(path)
-    print(f"Processing Brain {brain_id} from {os.path.basename(path)}...")
+    print(f"Processing Brain ID: {brain_id} from {os.path.basename(path)}...")
+
+    # Disable garbage collection temporarily to speed up load time
     gc.disable()
     with open(path, "rb") as f:
         payload = pickle.load(f)
     gc.enable()
+
+    # Extract required graphs and arrays
     gt = payload["gt_graph"]
     node_label = np.asarray(payload["gt_node_canonical_label"])
     edge_error = np.asarray(payload["gt_edge_error"])
+
+    # Drop massive automated graph to free memory immediately
     payload.pop("fragments_graph", None)
     gc.collect()
 
+    # Step 3: Count distinct segments overlapping each neuron to compute total splits
     neuron_segs = defaultdict(set)
     for n in gt.nodes:
         lab = int(node_label[n])
         if lab != 0:
             neuron_segs[gt.node_segment_id(n)].add(lab)
+
     neuron_splits = {nm: max(len(s) - 1, 0) for nm, s in neuron_segs.items()}
 
+    # Variables to track length and edge classes per neuron
     neuron_edge_lengths = defaultdict(float)
     neuron_omit_counts = defaultdict(int)
     neuron_edge_counts = defaultdict(int)
-    for k, (u, v) in enumerate(list(gt.edges)):
+
+    gt_edges = list(gt.edges)
+
+    # Step 2 & 5: Calculate total cable length and omit error frequency per neuron
+    for k, (u, v) in enumerate(gt_edges):
         neuron_id = gt.node_segment_id(u)
-        xyz_u = gt.node_xyz[u]; xyz_v = gt.node_xyz[v]
-        d = float(np.linalg.norm(xyz_u - xyz_v))
-        neuron_edge_lengths[neuron_id] += d
+
+        xyz_u = gt.node_xyz[u]
+        xyz_v = gt.node_xyz[v]
+        dist = np.linalg.norm(xyz_u - xyz_v)
+
+        neuron_edge_lengths[neuron_id] += dist
         neuron_edge_counts[neuron_id] += 1
-        if int(edge_error[k]) == 2:
+        if edge_error[k] == 2:  # EDGE_OMIT
             neuron_omit_counts[neuron_id] += 1
-    for nid in neuron_edge_counts:
-        L = neuron_edge_lengths[nid]
-        if L < 50:
+
+    # Formulate metrics for regression
+    for neuron_id in neuron_edge_counts.keys():
+        length_um = neuron_edge_lengths[neuron_id]
+
+        # Step 6: Filter out short fragments (< 50 um length)
+        if length_um < 50:
             continue
-        length_mm = L / 1000.0
-        sp_per_mm = neuron_splits.get(nid, 0) / length_mm
-        pct_omit = (neuron_omit_counts[nid] / neuron_edge_counts[nid]) * 100.0
-        neurons_data.append((nid, brain_id, sp_per_mm, pct_omit))
-    del payload, gt, node_label, edge_error
+
+        length_mm = length_um / 1000.0
+        splits = neuron_splits.get(neuron_id, 0)
+        splits_per_mm = splits / length_mm
+
+        omit_count = neuron_omit_counts[neuron_id]
+        total_edges = neuron_edge_counts[neuron_id]
+        pct_omit = (omit_count / total_edges) * 100.0
+
+        data.append({
+            "neuron_id": neuron_id,
+            "brain_id": "B" + str(brain_id),  # Prefix string to safely use as categorical variable
+            "length_mm": length_mm,
+            "splits_per_mm": splits_per_mm,
+            "pct_omit": pct_omit
+        })
+
+    # Explicit memory cleanup per file
+    del payload
+    del gt
+    del node_label
+    del edge_error
+    del gt_edges
     gc.collect()
 
-if not neurons_data:
-    print("No qualifying neurons.")
-else:
-    splits_per_mm = np.array([d[2] for d in neurons_data])
-    pct_omit = np.array([d[3] for d in neurons_data])
-    n = len(splits_per_mm)
-    print(f"\nQualifying neurons n = {n}")
+df = pd.DataFrame(data)
+print(f"\nSuccessfully processed {len(df)} neurons meeting the length criteria.")
 
-    # Recorded statistics for direct comparison
-    pearson_r, pearson_p = stats.pearsonr(splits_per_mm, pct_omit)
-    spearman_r, spearman_p = stats.spearmanr(splits_per_mm, pct_omit)
-    kendall_t, kendall_p = stats.kendalltau(splits_per_mm, pct_omit)
+if len(df) > 0:
+    x = df['splits_per_mm'].to_numpy(dtype=float)
+    y = df['pct_omit'].to_numpy(dtype=float)
+    n = len(df)
 
-    # Bootstrap CI on Spearman rho (primary corrected statistic)
-    rng = np.random.default_rng(20260618)
-    B = 5000
-    boot_rho = np.empty(B)
-    boot_pearson = np.empty(B)
-    for b in range(B):
+    # --- Echo the original (fragile parametric) statistics for comparison ---
+    pearson_r, pearson_p = stats.pearsonr(x, y)
+    spearman_r, spearman_p = stats.spearmanr(x, y)
+    print("\n--- Original (fragile) parametric statistics, echoed for comparison ---")
+    print(f"Pearson r : {pearson_r:.4f} (p-value: {pearson_p:.4e})  [assumption-violating at n=12]")
+    print(f"Spearman r (asymptotic): {spearman_r:.4f} (p-value: {spearman_p:.4e})")
+    # recorded: Pearson r=0.6500 (p=2.2134e-02), Spearman rho=0.8811 (p=1.5267e-04),
+    #           OLS R^2=0.422, F=7.315, splits_per_mm coef=2.2771, n=12
+
+    # --- CORRECTED HEADLINE TEST: Spearman rho with a PERMUTATION p-value ---
+    # Robust to non-normality and the high-leverage outlier; exact small-n null.
+    rng = np.random.default_rng(42)
+    n_perm = 50000
+    obs_rho = stats.spearmanr(x, y).correlation
+    perm_rhos = np.empty(n_perm)
+    for i in range(n_perm):
+        yp = rng.permutation(y)
+        perm_rhos[i] = stats.spearmanr(x, yp).correlation
+    # two-sided permutation p (add-one correction)
+    perm_p = (np.sum(np.abs(perm_rhos) >= abs(obs_rho)) + 1) / (n_perm + 1)
+
+    # Bootstrap 95% CI for Spearman rho (resample neuron pairs with replacement).
+    boot_rhos = []
+    for _ in range(10000):
         idx = rng.integers(0, n, size=n)
-        if len(set(idx)) < 3:
-            boot_rho[b] = np.nan; boot_pearson[b] = np.nan; continue
-        try:
-            br, _ = stats.spearmanr(splits_per_mm[idx], pct_omit[idx])
-            bp, _ = stats.pearsonr(splits_per_mm[idx], pct_omit[idx])
-        except Exception:
-            br = np.nan; bp = np.nan
-        boot_rho[b] = br
-        boot_pearson[b] = bp
-    rho_clean = boot_rho[np.isfinite(boot_rho)]
-    pe_clean = boot_pearson[np.isfinite(boot_pearson)]
-    rho_ci = (float(np.percentile(rho_clean, 2.5)), float(np.percentile(rho_clean, 97.5)))
-    pe_ci = (float(np.percentile(pe_clean, 2.5)), float(np.percentile(pe_clean, 97.5)))
+        bx, by = x[idx], y[idx]
+        if np.std(bx) == 0 or np.std(by) == 0:
+            continue
+        boot_rhos.append(stats.spearmanr(bx, by).correlation)
+    boot_rhos = np.asarray(boot_rhos)
+    ci_lo, ci_hi = np.percentile(boot_rhos, [2.5, 97.5])
 
-    # Permutation p-value on Spearman rho
-    n_perm = 10000
-    perm_rho = np.empty(n_perm)
-    for p in range(n_perm):
-        perm_y = rng.permutation(pct_omit)
-        perm_rho[p], _ = stats.spearmanr(splits_per_mm, perm_y)
-    perm_p = float((np.abs(perm_rho) >= abs(spearman_r)).sum() + 1) / (n_perm + 1)
+    print("\n--- CORRECTED headline: Spearman rho with permutation p-value ---")
+    print(f"Spearman rho = {obs_rho:.4f}, permutation p = {perm_p:.4e} ({n_perm} permutations), n={n}")
+    print(f"Effect size (Spearman rho) 95% bootstrap CI [{ci_lo:.4f}, {ci_hi:.4f}]")
 
-    # Leave-one-out on Spearman rho
-    loo_rhos = []
-    for i in range(n):
-        mask = np.arange(n) != i
-        if mask.sum() >= 3:
-            r, _ = stats.spearmanr(splits_per_mm[mask], pct_omit[mask])
-            loo_rhos.append(r)
-    loo_min, loo_max = float(min(loo_rhos)), float(max(loo_rhos))
-
-    print("=== H30 corrected: rank-based correlation with bootstrap CI ===")
-    print(f"Spearman rho = {spearman_r:.4f}, p = {spearman_p:.4e}  [CORRECTED HEADLINE]")
-    print(f"Spearman 95% bootstrap CI: [{rho_ci[0]:.4f}, {rho_ci[1]:.4f}]  (B={B})")
-    print(f"Permutation p (Spearman, n_perm={n_perm}): {perm_p:.4e}")
-    print(f"Leave-one-out Spearman rho range: [{loo_min:.4f}, {loo_max:.4f}]")
-    print(f"Kendall tau = {kendall_t:.4f}, p = {kendall_p:.4e}")
-    print(f"[recorded for comparison] Pearson r = {pearson_r:.4f}, p = {pearson_p:.4e}")
-    print(f"Pearson 95% bootstrap CI: [{pe_ci[0]:.4f}, {pe_ci[1]:.4f}]")
+    if perm_p < 0.05:
+        print("Conclusion: Splits/mm and omit rate are significantly positively associated (rank-based, robust to n=12 non-normality).")
+    else:
+        print("Conclusion: No significant rank association between splits/mm and omit rate under the permutation test.")
+else:
+    print("\nInsufficient valid neuron data to compute correlations or plot.")

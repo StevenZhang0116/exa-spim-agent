@@ -1,197 +1,187 @@
-# === RERUN BOOTSTRAP (revised loading only) ============================
-import os as _os, sys as _sys
-
-_TARGET = "/home/zihan.zhang/.local-numpy2"
-_USER_SITE = _os.path.expanduser("~/.local/lib/python3.12/site-packages")
-_SHARED_SITE = "/shared/utils.x86_64/anaconda3-2024.10/lib/python3.12/site-packages"
-_sys.path = [p for p in _sys.path if p not in (_USER_SITE, _SHARED_SITE)]
-if _TARGET in _sys.path:
-    _sys.path.remove(_TARGET)
-_sys.path.insert(0, _TARGET)
-
-import subprocess as _subprocess
-_subprocess.check_call = lambda *a, **k: 0
-_subprocess.call = lambda *a, **k: 0
-_subprocess.run = lambda *a, **k: type("R", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
-
-_PKL = _os.environ["RERUN_PKL"]
-print("Loading dataset from:", _PKL)
-import glob as _glob
-_orig_glob = _glob.glob
-def _glob_patch(pattern, *a, **k):
-    if isinstance(pattern, str) and pattern.endswith(".pkl"):
-        return [_PKL]
-    return _orig_glob(pattern, *a, **k)
-_glob.glob = _glob_patch
-
-from pathlib import Path as _Path
-_orig_rglob = _Path.rglob
-def _rglob_patch(self, pattern, *a, **k):
-    if isinstance(pattern, str) and pattern.endswith(".pkl"):
-        return iter([_Path(_PKL)])
-    return _orig_rglob(self, pattern, *a, **k)
-_Path.rglob = _rglob_patch
-
-_orig_walk = _os.walk
-def _walk_patch(top, *a, **k):
-    yield (_os.path.dirname(_PKL), [], [_os.path.basename(_PKL)])
-_os.walk = _walk_patch
-# === END BOOTSTRAP =====================================================
-# CORRECTED ANALYSIS (entry #17, id 64) =================================
-# Original test: Mann-Whitney U on per-edge geodesic distance to nearest GT
-#   branch point, n=6,805 split vs 1,109,034 correct.
-# Recorded: means 516.30 vs 710.59 um, U=2.98e9, p=1.32e-197.
+# CORRECTED TEST for hypothesis id 64 (split edges geodesically closer to branch
+# points than correct edges).
 #
-# Why the original is wrong: distances of consecutive edges along the same
-# cable to the same branch point are heavily autocorrelated; 1.1M edges
-# treated as i.i.d. inflates the effective n. The huge p-value is
-# significance-by-sample-size.
+# FAULTS (verifier MINOR, concrete test faults): large n inflates significance and
+# the >1.1M correct edges are NON-INDEPENDENT (edges within a neuron are
+# spatially autocorrelated), so the naive Mann-Whitney p=1.32e-197 overstates the
+# evidence; part of the mean gap also reflects range truncation (split edges lack
+# the long-distance tail). The naive p is therefore not a valid test among
+# independent units.
 #
-# Corrected:
-#   (a) Cluster-bootstrap by NEURON on median(split - correct) gap and
-#       Cliff's delta + cluster-bootstrap p.
-#   (b) Per-neuron paired Wilcoxon on neuron-level median distance gaps.
-# =======================================================================
-import pickle
+# CORRECTION: keep the SAME geodesic distances and direction but (1) report an
+# EFFECT SIZE -- Cliff's delta (rank-biserial) with a CLUSTER bootstrap 95% CI
+# (resampling whole NEURONS) -- and (2) replace the naive p with a NEURON-CLUSTER
+# permutation p-value (permute split/correct label at the neuron level).
+#
+# ORIGINAL RECORDED NUMBERS (for the driver to compare):
+#   6805 split / 1109034 correct, mean dist 516.30 um (split) vs 710.59 um (correct),
+#   MW U=2979025451.5, p=1.3239e-197.
+
 import sys
 import gc
 import os
+
+import agentic_neuron_proofreader
+
+import pickle
 import numpy as np
+import pandas as pd
 import scipy.sparse as sp
 from scipy.sparse.csgraph import dijkstra
-from scipy.stats import mannwhitneyu, wilcoxon
+import scipy.stats as stats
+import matplotlib.pyplot as plt
 
-print("=" * 72)
-print("HYPO 64 — split edges closer to branch points (corrected)")
-print("=" * 72)
+print("Searching for dataset files...", flush=True)
+# Load the provided dataset directly from $RERUN_PKL
+print("Loading dataset from:", os.environ["RERUN_PKL"], flush=True)
+dataset_paths = [os.environ["RERUN_PKL"]]
 
-with open(_PKL, "rb") as f:
-    payload = pickle.load(f)
-gt = payload["gt_graph"]
-edge_error = np.asarray(payload["gt_edge_error"])
-payload.pop("fragments_graph", None)
-del payload
-gc.collect()
+print(f"Found {len(dataset_paths)} dataset files: {dataset_paths}", flush=True)
 
-edges = list(gt.edges())
-if not edges:
-    print("No edges; aborting."); sys.exit(0)
-u_arr = np.array([e[0] for e in edges])
-v_arr = np.array([e[1] for e in edges])
-weights = np.linalg.norm(gt.node_xyz[u_arr] - gt.node_xyz[v_arr], axis=1)
-N = gt.node_xyz.shape[0]
-degrees = dict(gt.degree())
-branch_points = [n for n, d in degrees.items() if d >= 3]
-print(f"\n{len(edges)} edges, {N} max nodes, {len(branch_points)} branch points")
-if not branch_points:
-    print("No branch points; aborting."); sys.exit(0)
-bp_arr = np.array(branch_points)
-dummy_node = N
-u_all = np.concatenate([u_arr, np.full(len(bp_arr), dummy_node)])
-v_all = np.concatenate([v_arr, bp_arr])
-w_all = np.concatenate([weights, np.zeros(len(bp_arr))])
-graph_sparse = sp.coo_matrix((w_all, (u_all, v_all)), shape=(N + 1, N + 1))
-dists = dijkstra(graph_sparse, directed=False, indices=dummy_node)
-node_dists = dists[:N]
-dist_u = node_dists[u_arr]; dist_v = node_dists[v_arr]
-edge_dists = np.minimum(dist_u, dist_v)
+split_distances = []
+correct_distances = []
+split_neuron = []
+correct_neuron = []
 
-EDGE_CORRECT, EDGE_SPLIT = 0, 1
-split_mask = (edge_error == EDGE_SPLIT)
-correct_mask = (edge_error == EDGE_CORRECT)
-valid = np.isfinite(edge_dists)
-split_d = edge_dists[split_mask & valid]
-correct_d = edge_dists[correct_mask & valid]
-try:
-    edge_neuron = np.array([gt.node_segment_id(int(u)) for u in u_arr])
-except Exception:
-    edge_neuron = np.array([str(u) for u in u_arr])
-_, edge_neuron_int = np.unique(edge_neuron, return_inverse=True)
-split_neuron = edge_neuron_int[split_mask & valid]
-correct_neuron = edge_neuron_int[correct_mask & valid]
+EDGE_CORRECT = 0
+EDGE_SPLIT = 1
 
-print(f"split edges: {len(split_d)}, correct edges: {len(correct_d)}")
-print(f"  mean split = {np.mean(split_d):.2f} um, mean correct = {np.mean(correct_d):.2f} um")
-print(f"  median split = {np.median(split_d):.2f} um, median correct = {np.median(correct_d):.2f} um")
+for path in dataset_paths:
+    print(f"Loading {os.path.basename(path)}...", flush=True)
+    with open(path, "rb") as f:
+        payload = pickle.load(f)
+    print(f"Finished reading {os.path.basename(path)}. Extracting graphs...", flush=True)
 
-# --- ORIGINAL recomputed -----------------------------------------------
-print("\n[ORIGINAL — recorded Mann-Whitney U]")
-print(f"  recorded: U=2.98e9, p=1.32e-197")
-u_o, p_o = mannwhitneyu(split_d, correct_d)
-print(f"  recomputed: U = {u_o:.0f}, p = {p_o:.4e}")
+    gt = payload["gt_graph"]
+    edge_error = np.asarray(payload["gt_edge_error"])
 
-# --- (a) Cluster-bootstrap by neuron -----------------------------------
-print("\n[CORRECTED (a)] Cluster-bootstrap (by neuron) on median gap & Cliff's delta")
-unique_n = np.unique(np.concatenate([split_neuron, correct_neuron]))
-print(f"  n_neurons (clusters) = {len(unique_n)}")
-split_by_n = {n: split_d[split_neuron == n] for n in unique_n}
-correct_by_n = {n: correct_d[correct_neuron == n] for n in unique_n}
+    payload.pop("fragments_graph", None)
+    del payload
+    gc.collect()
 
-def cliffs_delta_fast(a, b, n_max=3000, rng=None):
-    rng = rng or np.random.default_rng(0)
-    a = np.asarray(a); b = np.asarray(b)
-    if len(a) == 0 or len(b) == 0: return float("nan")
-    if len(a) > n_max: a = a[rng.choice(len(a), n_max, replace=False)]
-    if len(b) > n_max: b = b[rng.choice(len(b), n_max, replace=False)]
-    return float(np.sign(a[:, None] - b[None, :]).mean())
+    edges = list(gt.edges())
+    if len(edges) == 0:
+        del gt, edge_error
+        gc.collect()
+        continue
 
-rng = np.random.default_rng(19)
-obs_gap = float(np.median(split_d) - np.median(correct_d))
-obs_d = cliffs_delta_fast(split_d, correct_d, n_max=3000, rng=rng)
-print(f"  observed median gap (split - correct) = {obs_gap:.2f} um")
-print(f"  observed Cliff's delta = {obs_d:+.4f}  (<0 means split distances SMALLER)")
-boots_g, boots_d = [], []
-for _ in range(300):
-    sel = rng.choice(unique_n, size=len(unique_n), replace=True)
-    sl = [split_by_n[n] for n in sel if len(split_by_n[n]) > 0]
-    cl = [correct_by_n[n] for n in sel if len(correct_by_n[n]) > 0]
-    if not sl or not cl: continue
-    s = np.concatenate(sl); c = np.concatenate(cl)
-    boots_g.append(float(np.median(s) - np.median(c)))
-    boots_d.append(cliffs_delta_fast(s, c, n_max=2000, rng=rng))
-if boots_g:
-    lo_g, hi_g = np.quantile(boots_g, [0.025, 0.975])
-    lo_d, hi_d = np.quantile(boots_d, [0.025, 0.975])
-    p_g = 2 * min((np.asarray(boots_g) > 0).mean(), (np.asarray(boots_g) < 0).mean())
-    p_d = 2 * min((np.asarray(boots_d) > 0).mean(), (np.asarray(boots_d) < 0).mean())
-    print(f"  cluster-bootstrap 95% CI on median gap: [{lo_g:.2f}, {hi_g:.2f}] um  "
-          f"(two-sided p = {p_g:.4f})")
-    print(f"  cluster-bootstrap 95% CI on Cliff's delta: [{lo_d:+.4f}, {hi_d:+.4f}]  "
-          f"(two-sided p = {p_d:.4f})")
+    u_list = [e[0] for e in edges]
+    v_list = [e[1] for e in edges]
+    u_arr = np.array(u_list)
+    v_arr = np.array(v_list)
+
+    # Neuron id per edge (cluster / independent unit), captured before deleting gt.
+    neuron_arr = np.array([gt.node_segment_id(n) for n in u_arr])
+
+    weights = np.linalg.norm(gt.node_xyz[u_arr] - gt.node_xyz[v_arr], axis=1)
+    N = gt.node_xyz.shape[0]
+
+    degrees = dict(gt.degree())
+    branch_points = [n for n, d in degrees.items() if d >= 3]
+    print(f"Graph has {len(edges)} edges, {N} max nodes, {len(branch_points)} branch points.", flush=True)
+
+    if len(branch_points) == 0:
+        del gt, edge_error, u_arr, v_arr, weights
+        gc.collect()
+        continue
+
+    bp_arr = np.array(branch_points)
+    dummy_node = N
+    dummy_u = np.full(len(bp_arr), dummy_node)
+    dummy_v = bp_arr
+    dummy_w = np.zeros(len(bp_arr))
+
+    u_all = np.concatenate([u_arr, dummy_u])
+    v_all = np.concatenate([v_arr, dummy_v])
+    w_all = np.concatenate([weights, dummy_w])
+
+    graph_sparse = sp.coo_matrix((w_all, (u_all, v_all)), shape=(N + 1, N + 1))
+    dists = dijkstra(graph_sparse, directed=False, indices=dummy_node)
+    node_dists = dists[:N]
+
+    dist_u = node_dists[u_arr]
+    dist_v = node_dists[v_arr]
+    edge_dists = np.minimum(dist_u, dist_v)
+
+    split_mask = (edge_error == EDGE_SPLIT)
+    correct_mask = (edge_error == EDGE_CORRECT)
+    valid_mask = np.isfinite(edge_dists)
+
+    split_distances.append(edge_dists[split_mask & valid_mask])
+    correct_distances.append(edge_dists[correct_mask & valid_mask])
+    split_neuron.append(neuron_arr[split_mask & valid_mask])
+    correct_neuron.append(neuron_arr[correct_mask & valid_mask])
+
+    del gt, edge_error, u_arr, v_arr, weights, u_all, v_all, w_all
+    del graph_sparse, dists, node_dists, dist_u, dist_v, edge_dists
+    gc.collect()
+
+split_distances = np.concatenate(split_distances) if split_distances else np.array([])
+correct_distances = np.concatenate(correct_distances) if correct_distances else np.array([])
+split_neuron = np.concatenate(split_neuron) if len(split_neuron) else np.array([])
+correct_neuron = np.concatenate(correct_neuron) if len(correct_neuron) else np.array([])
+
+print(f"Total split edges evaluated: {len(split_distances):,}")
+print(f"Total correct edges evaluated: {len(correct_distances):,}")
+
+if len(split_distances) > 0 and len(correct_distances) > 0:
+    print(f"Mean distance to branch point (split):   {np.mean(split_distances):.2f} um")
+    print(f"Mean distance to branch point (correct): {np.mean(correct_distances):.2f} um")
+
+    # Naive test echoed for comparison only.
+    stat, pval = stats.mannwhitneyu(split_distances, correct_distances)
+    print(f"Naive Mann-Whitney U={stat}, p={pval:.4e} (for comparison only)")
+
+    # === EFFECT SIZE: Cliff's delta with CLUSTER (neuron) bootstrap 95% CI ===
+    def cliffs_delta_sub(a, b, rng, n_sub=4000):
+        a_s = a if len(a) <= n_sub else rng.choice(a, n_sub, replace=False)
+        b_s = b if len(b) <= n_sub else rng.choice(b, n_sub, replace=False)
+        gt_ = sum((x > b_s).sum() for x in a_s)
+        lt_ = sum((x < b_s).sum() for x in a_s)
+        return (gt_ - lt_) / (len(a_s) * len(b_s))
+
+    rng = np.random.default_rng(42)
+    delta = cliffs_delta_sub(split_distances, correct_distances, rng)
+    s_df = pd.DataFrame({"neuron": split_neuron, "d": split_distances})
+    c_df = pd.DataFrame({"neuron": correct_neuron, "d": correct_distances})
+    s_by = {k: g["d"].values for k, g in s_df.groupby("neuron")}
+    c_by = {k: g["d"].values for k, g in c_df.groupby("neuron")}
+    s_keys = np.array(list(s_by.keys()), dtype=object)
+    c_keys = np.array(list(c_by.keys()), dtype=object)
+    boots = []
+    for _ in range(300):
+        bs = np.concatenate([s_by[k] for k in rng.choice(s_keys, len(s_keys), replace=True)])
+        bc = np.concatenate([c_by[k] for k in rng.choice(c_keys, len(c_keys), replace=True)])
+        boots.append(cliffs_delta_sub(bs, bc, rng, n_sub=2000))
+    lo, hi = np.percentile(boots, [2.5, 97.5])
+    print("\n=== Effect size (cluster-aware) ===")
+    print(f"Cliff's delta (split vs correct dist) = {delta:.4f}  (negative => split closer)")
+    print(f"Cluster bootstrap 95% CI = [{lo:.4f}, {hi:.4f}]")
+
+    # === NEURON-CLUSTER permutation p-value ===
+    s_means = np.array([np.median(v) for v in s_by.values()])
+    c_means = np.array([np.median(v) for v in c_by.values()])
+    obs = np.median(s_means) - np.median(c_means)
+    pooled = np.concatenate([s_means, c_means])
+    n_s = len(s_means)
+    n_perm = 5000
+    perm = np.empty(n_perm)
+    for i in range(n_perm):
+        idx = rng.permutation(len(pooled))
+        perm[i] = np.median(pooled[idx[:n_s]]) - np.median(pooled[idx[n_s:]])
+    perm_p = (np.sum(perm <= obs) + 1) / (n_perm + 1)
+    print("\n=== Neuron-cluster permutation test ===")
+    print(f"Split-carrying neurons={n_s}, correct neurons={len(c_means)}")
+    print(f"Observed neuron-level median distance gap (split-correct) = {obs:.2f} um")
+    print(f"Cluster-permutation one-sided p (split closer) = {perm_p:.4g}")
+    print("(Compare to ORIGINAL: MW p=1.3239e-197 treating all edges as independent.)")
+
+    plt.figure(figsize=(10, 6))
+    plt.violinplot([correct_distances, split_distances], showmeans=True, showmedians=True)
+    plt.xticks([1, 2], ['Correct Edges', 'Split Edges'])
+    plt.ylabel("Geodesic Distance to Nearest Branch Point (um)")
+    plt.title("Proximity to Topological Branch Points: Split vs Correct Edges")
+    plt.grid(axis='y', alpha=0.3)
+    plt.show()
 else:
-    print("  cluster bootstrap failed")
-    lo_g = hi_g = lo_d = hi_d = float("nan"); p_g = p_d = float("nan")
-
-# --- (b) Per-neuron paired Wilcoxon ------------------------------------
-print("\n[CORRECTED (b)] Per-neuron paired Wilcoxon on neuron-level median distance")
-pairs = []
-for n in unique_n:
-    sn = split_by_n[n]; cn = correct_by_n[n]
-    if len(sn) > 0 and len(cn) > 0:
-        pairs.append((float(np.median(sn)), float(np.median(cn))))
-if pairs:
-    arr = np.array(pairs)
-    diffs = arr[:, 0] - arr[:, 1]
-    diffs_nz = diffs[diffs != 0]
-    if len(diffs_nz) > 0:
-        wstat, wp = wilcoxon(diffs_nz, alternative="less")
-        rng2 = np.random.default_rng(37)
-        boots = [np.median(diffs_nz[rng2.integers(0, len(diffs_nz), len(diffs_nz))])
-                 for _ in range(2000)]
-        ci_lo, ci_hi = np.quantile(boots, [0.025, 0.975])
-        print(f"  n_pairs = {len(diffs_nz)}, median(split-correct) per neuron = "
-              f"{np.median(diffs_nz):.2f} um")
-        print(f"  Wilcoxon (one-sided, split<correct): W = {wstat:.2f}, p = {wp:.4e}")
-        print(f"  bootstrap 95% CI on median(split-correct) per neuron: "
-              f"[{ci_lo:.2f}, {ci_hi:.2f}] um")
-    else:
-        print("  No nonzero pairs.")
-else:
-    print("  No paired neurons.")
-
-print("\n" + "=" * 72)
-print("SIDE-BY-SIDE: original vs corrected")
-print("=" * 72)
-print(f"  Original (i.i.d. edges): U=2.98e9, p=1.32e-197  (gap means 516.30 vs 710.59 um)")
-print(f"  Corrected cluster-bootstrap on gap: [{lo_g:.2f}, {hi_g:.2f}] um, p = {p_g:.4f}")
-print(f"  Corrected Cliff's delta: [{lo_d:+.4f}, {hi_d:+.4f}], p = {p_d:.4f}")
+    print("Not enough data to compute statistics.")

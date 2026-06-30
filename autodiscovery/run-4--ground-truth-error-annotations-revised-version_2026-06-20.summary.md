@@ -1,576 +1,521 @@
-# AutoDiscovery Run 4 — Top-20 Ranked Conclusions
+# AutoDiscovery Conclusion Summary — Run 4
 
-## Source
+**Source file:** `autodiscovery/run-4--ground-truth-error-annotations-revised-version_2026-06-20.json` (150 hypotheses)
+**Ranking key (`rank_by`):** `posterior-surprise` (priority = posterior × |surprisal|)
+**Ranked:** 148 hypotheses (`n_ranked`); 2 dropped for missing surprisal.
+**Shown here:** top 20 of the 148 ranked (`n_returned` = 20, `--top 20`).
+**Surprise-magnitude range across the run:** 0.0000 to 0.6899 (max priority score 0.5066).
 
-- **File:** `autodiscovery/run-4--ground-truth-error-annotations-revised-version_2026-06-20.json` (150 hypotheses)
-- **Ranking key:** `posterior-surprise` (priority = posterior × |surprisal|)
-- **Hypotheses ranked:** 148 (2 excluded for missing surprisal: IDs 10, 41)
-- **Hypotheses returned in this report:** top 20 of 148
-- **Surprise magnitude range:** 0.0000 – 0.6899
-- **Maximum priority score observed:** 0.5066
+## Synthesis
 
-### Headline synthesis
+The two strongest belief flips both concern the imaging axis and a proofreading heuristic. The single highest-priority result (#1, ID 30) is a positive flip from *Leaning False* to *Leaning True*: a strict Euclidean distance threshold (~6.84 µm) cleanly separates true split gaps from inter-neuron gaps (ROC-AUC 0.9979, F1 0.9945), validating proximity-only auto-reconnection that the loop had initially doubted. Counterbalancing this, the two strongest *negative* surprises (#2 ID 27 and #3 ID 21) both overturned a confidently-held assumption: that anisotropic Z-axis imaging resolution drives split/omit errors. Two independent tests — a mixed-effects logistic regression (p = 0.058, OR 0.80) and a chi-square on edge orientation (p = 0.060) — failed to reach significance, knocking belief down from *Likely True* to *Uncertain*. The cross-cutting theme is that **segmentation errors are governed by local topology and morphology (branch points, tortuosity, branch order, terminal/distal cable, Z-depth extremes) far more than by global imaging-axis orientation**, and that the resulting error patterns (tight split gaps, angular inertia, spatial clustering) are regular enough to power automated proofreading agents.
 
-The single highest-priority finding (#1, ID 30) is a confidence flip in favor of using Euclidean gap distance alone (~6.84 µm threshold, AUC 0.9979) to auto-bridge split errors — a "Leaning False" prior was overturned to "Leaning True" by a near-perfect ROC. The next two high-priority entries (#2 ID 27, #3 ID 21) are *negative* flips that retire a previously confident assumption: z-axis anisotropy was widely believed to drive split/omit errors, but two independent statistical tests (mixed-effects logistic regression and a Chi-square partitioning, both with p ≈ 0.06) failed to find a significant Z-vs-XY effect, collapsing belief from "Likely True" to "Uncertain". The remaining 17 entries form a tight cluster (priority 0.253, |surprisal| 0.2841) of confirmed-but-modestly-surprising priors: spatial/topological signatures (branch points, terminal edges, tortuosity, branch-density tangles, merge-omit co-location) repeatedly emerge as high-AUC discriminators of error type, and merging segments are confirmed to be "giant" overgrown labels rather than blips. Together, the run argues that **local geometry — proximity, angle, tortuosity, branch density — is a more actionable error signal than imaging axis**.
+## Ranked Conclusions
 
----
-
-## Ranked Entries
-
-### 1. (Priority 0.507 · Surprise 0.690) Euclidean gap distance alone separates true splits from inter-neuron neighbors nearly perfectly, flipping belief in favor of distance-only auto-reconnection.
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 30 · **Belief:** Leaning False → Leaning True (0.2917 → 0.7344) · **Direction:** Positive
-- **Tested:** Whether the Euclidean gap between endpoints of split predicted segments belonging to the same GT neuron is meaningfully smaller than gaps to fragments of *different* GT neurons in the local neighborhood, i.e., whether spatial proximity alone is safe for auto-reconnection.
-- **Conclusion:** Across 6,805 true split gaps and 4,189 inter-neuron gaps within 20 µm, true-split distances peak tightly at ~4.5 µm (mostly 2–7 µm) while inter-neuron gaps rarely fall below 7 µm. A binary-classifier ROC AUC of 0.9979 with an F1-optimal threshold of 6.84 µm (max F1 = 0.9945) confirms distance alone is a viable, safe heuristic. The strong positive surprisal reflects that a prior "Leaning False" assumption (worry about accidental merges) was overturned.
-- **Caveats:** None noted; sample sizes are large and the discriminator is essentially saturated.
+### 1. (Priority 0.507 · Surprise 0.690) A ~6.84 µm Euclidean threshold safely auto-reconnects the vast majority of split fragments.
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 30 · **Belief:** Leaning False → Leaning True (0.2917→0.7344) · **Direction:** Positive
+- **Tested:** Whether spatial proximity alone can distinguish true split gaps (endpoints of fragments belonging to the same GT neuron) from inter-neuron gaps, so a tool could auto-reconnect splits without causing merges.
+- **Conclusion:** Across 6,805 true split gaps and 4,189 inter-neuron gaps within 20 µm, the two distributions were almost entirely non-overlapping — true splits peak ~4.5 µm (2–7 µm band), inter-neuron gaps rarely below 7 µm. Gap distance as a binary classifier gave ROC-AUC 0.9979, and the F1-optimal threshold of 6.84 µm reached F1 = 0.9945. The large positive surprisal (+0.690) reflects that the loop had leaned against proximity-only repair, but the data strongly validate it as a safe, effective heuristic.
+- **Caveats:** None noted; review confirms faithful implementation. Results are intra-dataset, so generalization to other volumes is untested.
 - **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "Number of true split gaps: 6805, false positive gaps: 4189, ROC AUC: 0.9979, Optimal Distance Threshold: 6.84 um, Max F1 Score: 0.9945"; rerun "true split gaps: 6805, false positive gaps: 4189, ROC AUC: 0.9979, Optimal Distance Threshold: 6.84 um, Max F1 Score: 0.9945" → exact match. Revision: direct $RERUN_PKL load + numpy>=2 + scikit-learn vendored to bypass numpy-2 ABI incompatibility with the system sklearn build.
+- **Rerun result:** recorded n_true=6805, n_fp=4189, ROC-AUC=0.9979, threshold=6.84 µm, F1=0.9945; rerun n_true=6805, n_fp=4189, ROC-AUC=0.9979, threshold=6.84 µm, F1=0.9945 → exact match.
 - **Generalization:** GENERALIZES
-- **Across datasets:** origin 789202: n_true=6805, n_false=4189, ROC AUC=0.9979, optimal threshold=6.84 µm, max F1=0.9945; 794491: n_true=7847, n_false=13208, AUC=0.9889, threshold=6.48 µm, F1=0.9711; 794495: n_true=7988, n_false=8867, AUC=0.9953, threshold=6.83 µm, F1=0.9878. Distance-only separability of true splits vs inter-neuron gaps holds on all three brains (AUC ≥ 0.989, threshold 6.48–6.84 µm, F1 ≥ 0.97).
-- **Verdict:** OK
-- **Test:** ROC-AUC with F1-optimal threshold selection on a binary classifier (gap distance) — appropriate for a label-vs-distance discrimination question; no parametric assumptions.
-- **Statistical issues:**
-  - Threshold is chosen by maximizing F1 *on the same data*, which is mild in-sample optimism; held-out validation would harden the threshold claim, but with AUC = 0.9979 across n = 10,994 gaps and reproducing on two extra brains with AUC ≥ 0.989, overfitting is implausible.
-  - The 4,189 "inter-neuron" controls are spatially conditioned on being within 20 µm — this defines the operating regime but is appropriate for the practical heuristic question.
-- **Logic issues:**
-  - The "safe for auto-reconnection" conclusion is supported empirically but is still conditional on the GT being correct and on what counts as a "candidate" within 20 µm; deployed agents would need to guard against false positives in regions of dense neuropil not represented in the test set. Generalization to two extra brains substantially mitigates this concern.
-- **Downgrade based on rerun/extrapolation:** No — GENERALIZES across all three brains with consistent AUC ≥ 0.989.
+- **Across datasets:** origin (789202): ROC-AUC=0.9979, thr=6.84 µm, F1=0.9945 (n_true=6805/n_fp=4189); ds_794491: ROC-AUC=0.9889, thr=6.48 µm, F1=0.9711 (n_true=7847/n_fp=13208); ds_794495: ROC-AUC=0.9953, thr=6.83 µm, F1=0.9878 (n_true=7988/n_fp=8867). Near-perfect proximity separation and a ~6.5 µm threshold hold on both extra datasets (both exit 0).
+- **Verdict:** SOUND
+- **Test:** ROC-AUC of gap distance as a binary classifier (`sklearn roc_curve/auc`) plus F1-optimal threshold; n_true=6805 true split gaps, n_fp=4189 inter-neuron gaps within 20 µm; "ROC AUC: 0.9979 / Optimal Distance Threshold: 6.84 um / Max F1 Score: 0.9945".
+- **Statistical issues:** None material. This is a descriptive separability/classifier metric, not a hypothesis test, so independence/normality assumptions do not apply. The F1-optimal threshold is selected on the same data it is reported on (mild in-sample optimism), but the AUC=0.9979 and near-disjoint distributions leave no room for that to matter; threshold reproduces (~6.5 µm) on both extra volumes.
+- **Logic issues:** None. The conclusion (proximity-only auto-reconnect is safe) follows directly from the near-perfect separation, and the surprisal sign (+0.690, Leaning False → Leaning True) matches the evidence.
+- **Verdict rationale:** Huge effect, exact reproduction, and consistent generalization (AUC 0.989–0.998 across three volumes). The only caveat — false-positive "inter-neuron gaps" are derived from GT labels in simulation rather than live merges — is a deployment caveat, not a flaw in the recorded test.
 
-### 2. (Priority 0.323 · Surprise 0.795) Z-axis-aligned neurites are NOT meaningfully more error-prone than XY-aligned ones, retiring a confidently held anisotropy assumption.
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 27 · **Belief:** Likely True → Uncertain (0.9167 → 0.4062) · **Direction:** Negative
-- **Tested:** Whether neurites aligned with the low-resolution Z-imaging axis suffer more split/omit errors than those in the higher-resolution XY-plane, using a Bayesian mixed-effects logistic regression with neuron as a random effect.
-- **Conclusion:** Of 1,160,529 valid edges (4.44% error rate), a 20,000-edge regression returned a standardized z-alignment coefficient of −0.0661 (p = 0.0582, OR ≈ 0.80). The effect was non-significant and pointed slightly *the wrong way*, so z-axis orientation is not a primary driver of fragmentation. The large negative surprisal (−0.7954) marks this as a major confidence drop in a previously near-certain prior.
-- **Caveats:** The regression used a 20k-edge subsample of >1.1M edges; the p-value (0.0582) is borderline and might have crossed significance with the full dataset, though the OR remains close to 1.
+### 2. (Priority 0.323 · Surprise 0.795) Z-axis neurite alignment does NOT significantly raise topological error risk.
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 27 · **Belief:** Likely True → Uncertain (0.9167→0.4062) · **Direction:** Negative
+- **Tested:** Whether neurites aligned along the low-resolution z (imaging) axis suffer more splits/omissions than xy-plane-aligned segments.
+- **Conclusion:** Across 1,160,529 edges (4.44% with split/omit errors), a Bayesian mixed-effects logistic regression on a 20,000-edge subset found z-alignment to be non-significant and slightly *negative* (coef = −0.066, p = 0.058; odds ratio 0.80). The strong negative surprisal (−0.795, the run's largest magnitude) marks a confidently-held assumption the data contradicted: orientation relative to the anisotropic axis is not a primary driver of segmentation failure.
+- **Caveats:** Regression was fit on a 20,000-edge subsample (not the full 1.16M edges); p = 0.058 is borderline, so the effect is "not significant" rather than firmly null. Review found no implementation issues.
 - **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "Total valid edges loaded: 1160529, errors 51495 (4.44%); Standardized Coefficient (Z-alignment): -0.0661 (p-value = 0.05823); OR = 0.8029"; rerun "Total valid edges loaded: 1160529, errors 51495 (4.44%); Standardized Coefficient (Z-alignment): -0.0661 (p-value = 0.05823); OR = 0.8029" → exact match. Revision: direct $RERUN_PKL load + numpy>=2 + vendored patsy/statsmodels to fix the patsy "<StringDtype(na_value=nan)>" crash under pandas 3.
+- **Rerun result:** recorded edges=1160529, errors=4.44%, z_align coef=−0.0661 (p=0.05823), OR=0.8029; rerun edges=1160529, errors=4.44%, z_align coef=−0.0661 (p=0.05823), OR=0.8029 → exact match (same 20k subsample seed).
 - **Generalization:** PARTIAL
-- **Across datasets:** origin 789202: standardized coef z_align=−0.0661, p=0.0582, OR=0.8029 (non-sig, slight negative) → "Z not a driver"; 794491: coef=+0.0376, p=0.1747, OR=1.1371 (non-sig, sign FLIPS to positive) → script still prints "Z does NOT significantly affect risk"; 794495: coef=−0.1697, p=6.75e-06, OR=0.5632 (HIGHLY significant, NEGATIVE → Z-alignment *reduces* error odds, script prints "Z-axis alignment significantly DECREASES the risk"). The hypothesis's verbal conclusion "Z is not meaningfully more error-prone than XY" still holds across all three (no positive Z effect on any brain), but the underlying coefficient varies wildly in sign (−0.17, −0.07, +0.04) and significance, with 794495 contradicting the "no-effect" prior by finding a strong protective effect. The mixed-effects regression result is therefore not robust.
+- **Across datasets:** the *null/non-significant* claim does not cleanly hold. origin (789202): coef=−0.0661, p=0.05823, OR=0.8029 → "does NOT significantly affect" (borderline). ds_794491: coef=+0.0376, p=0.1747, OR=1.1371 → non-significant but sign *flipped positive*. ds_794495: coef=−0.1697, p=6.75e-06, OR=0.5632 → significant DECREASE (script itself prints "significantly DECREASES the risk"). So "no significant z-alignment effect" holds on 794491 but is contradicted on 794495 (significant), and the direction is unstable across the three (−/+/−). The original anti-anisotropy conclusion (z-alignment is NOT a risk *increaser*) is never reversed into a risk-increase, but the specific "non-significant" finding is dataset-specific.
 - **Verdict:** MAJOR
-- **Test:** Bayesian mixed-effects logistic regression (binary error outcome, neuron as random effect) — correct in principle for clustered binary data, but the chosen subsample size (20,000 of 1,160,529 edges, ~1.7%) is an arbitrary truncation that wastes ~98% of the available data and is what leaves the p-value at the 0.058 borderline.
-- **Statistical issues:**
-  - **Subsampling:** running the regression on 20k of 1.16M edges is unjustified; standard errors are inflated for no good reason. With the full dataset the same OR (~0.80) would almost certainly cross α=0.05, undermining the "non-significant" verdict.
-  - **"failed-to-reject != null is true" fallacy:** the conclusion "z-axis orientation is not a primary driver" is drawn from p = 0.058 — absence of evidence is not evidence of absence. With OR ≈ 0.80 the test is consistent with a real but small protective effect.
-  - The exact p-value, 0.05823, sits in the "borderline" band where multiple-testing penalties (FDR q=0.05 cutoff here is ~0.044) push it out of significance; it would not survive BH-FDR even alone among the top-20.
-- **Logic issues:**
-  - **Confidence flip overreaches the evidence:** the prior "Likely True" → posterior "Uncertain" (and large negative surprisal −0.795) is driven entirely by a single borderline p-value on a subsample. The hypothesis was effectively "retired" on inconclusive evidence.
-  - Generalization confirms this: on 794495 the regression strongly rejects the no-effect null in the *opposite* direction (OR=0.56, p=6.75e-06), so the "no anisotropy" headline is brain-specific, not universal.
-- **Downgrade based on rerun/extrapolation:** Yes — PARTIAL generalization (sign and significance vary across brains) means the "Z is not a driver" headline cannot be claimed as a robust finding; at minimum it should be re-cast as "no positive Z effect on these brains, with one brain showing a significant protective effect."
-- **Corrected test:** Cluster-robust GEE logistic regression with neuron as the cluster id, fit on the FULL ~1.16M edges instead of a 20k subsample. GEE is the right test because (a) it uses every data point rather than throwing 98% away and (b) it accounts for within-neuron correlation through cluster-robust standard errors — exactly the structure the original Bayesian random-effect tried to capture.
-- **Corrected result:** origin 789202 standardised coef(z_align) = -0.1229, SE = 0.0112, z = -10.93, p ≈ 0; OR per 1-unit z_align = 0.6649, 95% CI [0.6180, 0.7154]; n_edges = 1,160,529, n_neurons = 12. Side-by-side: original "coef = -0.0661, p = 0.05823, OR = 0.8029" (20k subsample) becomes "coef = -0.1229, p ≈ 0, OR = 0.6649 [0.6180, 0.7154]" — i.e. the effect was REAL and significantly protective when measured on the full data with proper clustering, not "no effect."
-- **Corrected generalization:** PARTIAL — origin 789202: OR = 0.6649 [0.6180, 0.7154], p ≈ 0 (Z significantly *protective*); 794491: OR = 1.1198 [0.8117, 1.5448], p = 0.49 (no significant effect, CI straddles 1); 794495: OR = 0.5141 [0.4254, 0.6213], p = 5.7e-12 (Z significantly protective). The protective direction is consistent on 2/3 brains; the effect is absent (CI through 1) on 794491. Z is NEVER a risk factor under the corrected test.
-- **Post-correction verdict:** OVERTURNED — the original verbal headline "Z-aligned neurites are NOT meaningfully more error-prone than XY-aligned ones" survives only as a negative claim; the *correct* claim under cluster-robust GEE is "Z-alignment is a significant PROTECTIVE factor (OR ≈ 0.51-0.66) on 2/3 brains," opposite to the prior. The original p=0.058 was a subsampling artefact, and the "Uncertain" posterior is unjustified — once 1.16M edges are properly clustered, the evidence is strong on origin and 794495.
+- **Test:** `BinomialBayesMixedGLM.fit_vb()` (variational-Bayes mixed logistic) on a 20,000-edge subsample; z_align_std Post.Mean=−0.0661, Post.SD=0.0349; the p-value (0.05823) is then manufactured by treating the posterior mean/SD as a frequentist Wald z (`z=coef/sd; p=2*(1-Φ(|z|))`). OR=0.8029.
+- **Statistical issues:** (1) Test-construction fault — a variational-Bayes posterior is not a sampling distribution, so converting Post.Mean/Post.SD into a two-sided Wald p-value is not a valid significance test; the reported p=0.058 has no defensible frequentist interpretation. (2) The model is fit on a 20k subsample of 1.16M edges, discarding ~98% of the data and the chosen-seed result is not stable across volumes. (3) Edges sharing nodes within a neuron are not independent; the per-edge likelihood treats them as such (only a neuron random-effect variance is modeled, not the within-neuron edge correlation in the orientation covariate).
+- **Logic issues:** "Failed to reach p<0.05" is presented as evidence that "z-axis orientation is not a primary driver" — the absence-of-evidence/evidence-of-absence fallacy, made worse because the p itself is invalid. The strong negative surprisal (−0.795, Likely True → Uncertain) is driven by a borderline, non-reproducing, improperly-computed p.
+- **Verdict rationale:** The headline number is a mis-constructed p-value used to license a null conclusion that does not hold up: PARTIAL generalization with the coefficient sign flipping −/+/− and one volume significant (p=6.75e-06). The downstream claim should be downgraded from a confident "no anisotropy effect" to "no consistent, validly-tested effect."
+- **Corrected test:** Frequentist logistic regression on the FULL 1.16M edges (not a 20k subsample) with a neuron-level cluster-permutation test (neuron = independent unit), replacing the invalid VB-posterior-as-Wald-z p. The original treated a variational-Bayes posterior mean/SD as a sampling distribution, which is not a valid significance test.
+- **Corrected result:** Neuron-cluster permutation Spearman rho(neuron z vs err rate) = −0.1818, two-sided p = 0.5721 (NOT significant); full-data coef = −0.1203, naive Wald p = 2.4e-136 but cluster-robust Wald p = nan (single-cluster degeneracy), OR = 0.6707. Versus the original invalid VB-Wald p = 0.05823, OR = 0.8029. The corrected proper test confirms NO significant z-alignment effect (the original null claim survives, now on valid grounds).
+- **Post-correction verdict:** UPHELD — the original conclusion was a *null* ("z-alignment is not a significant driver"), and the valid cluster-permutation test agrees (p = 0.5721, far from significant). The headline null stands, but only as "no detectable effect," not as proof of absence.
+- **Corrected generalization:** PARTIAL — 794491: permutation p = 0.5545 (not significant, consistent null); 794495: permutation p = 0.9962 (not significant) BUT the full-data cluster-robust Wald is significant (p = 2.05e-11, OR = 0.514, a *decrease*). So under the permutation test the null holds on all three, while the cluster-robust GLM flags 794495 — the no-effect conclusion is broadly supported under the correct unit-of-analysis but not perfectly uniform.
 
-### 3. (Priority 0.266 · Surprise 0.568) Z-dominant vs XY-dominant edges show essentially identical error rates (3.70% vs 3.63%), independently confirming the no-anisotropy result.
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 21 · **Belief:** Likely True → Uncertain (0.8333 → 0.4688) · **Direction:** Negative
-- **Tested:** Whether topological edge orientation partitions split/omit error rates as imaging-anisotropy theory predicts, via a Chi-square test on Z-dominant vs XY-dominant edges.
-- **Conclusion:** 433,243 Z-dominant edges (3.70% error) vs 975,802 XY-dominant edges (3.63% error) yielded χ² = 3.5328, p = 0.0602 — failing significance. The tiny absolute difference plus marginal p-value refutes the "Z-axis bias" story, and the negative surprisal (−0.5681) again represents a substantial collapse of a previously confident "Likely True" belief. This corroborates entry #2.
-- **Caveats:** The p-value is just over 0.05; with these huge sample sizes, the failure to reject is meaningful but the effect (if any) is negligibly small in absolute magnitude regardless.
+### 3. (Priority 0.266 · Surprise 0.568) Z-dominant edges show no statistically significant excess of split/omit errors.
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 21 · **Belief:** Likely True → Uncertain (0.8333→0.4688) · **Direction:** Negative
+- **Tested:** Whether hardware-driven imaging anisotropy makes Z-dominant edges fail more often than XY-dominant edges.
+- **Conclusion:** Among 433,243 Z-dominant and 975,802 XY-dominant edges, error rates were nearly identical (3.70% vs 3.63%); a chi-square test gave χ² = 3.53, p = 0.0602, failing to reject the null. The negative surprisal (−0.568) corroborates hypothesis #2: directional imaging bias is not a substantial error driver, contradicting the prior expectation.
+- **Caveats:** p = 0.060 is just above threshold — a near-miss rather than a clean null; the tiny absolute gap (0.07%) is practically negligible regardless of significance.
 - **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "Z-dominant edges: 433243 total, 16027 errors (3.70%); XY-dominant: 975802 total, 35468 errors (3.63%); Chi2 = 3.5328, p = 6.0165e-02"; rerun "Z-dominant: 433243 total, 16027 errors (3.70%); XY-dominant: 975802 total, 35468 errors (3.63%); Chi2 = 3.5328, p = 6.0165e-02" → exact match. Revision: direct $RERUN_PKL load + numpy>=2.
+- **Rerun result:** recorded Z-dom=433243 (3.70%), XY-dom=975802 (3.63%), χ²=3.5328, p=6.0165e-02; rerun identical χ²=3.5328, p=6.0165e-02 → exact match.
 - **Generalization:** DOES-NOT-GENERALIZE
-- **Across datasets:** origin 789202: Z 3.70% vs XY 3.63%, χ²=3.53, p=0.060 (no significant difference); 794491: Z 6.41% vs XY 5.50%, χ²=166.12, p=5.21e-38 (Z error rate significantly HIGHER); 794495: Z 2.24% vs XY 2.86%, χ²=395.76, p=4.62e-88 (Z error rate significantly LOWER). The "no-anisotropy" conclusion is rejected on BOTH extra brains, and in OPPOSITE directions (Z worse on 794491, Z better on 794495). The χ² test is therefore not robust across brains — the direction of any Z-vs-XY effect depends on the dataset.
-- **Verdict:** CRITICAL
-- **Test:** Chi-square test of independence on edge orientation (Z-dominant vs XY-dominant) × error (yes/no), χ²=3.5328, p=0.0602, n=1,409,045 edges — the test is the right family for a 2×2 contingency table, but it treats each edge as an independent observation when in fact edges within the same neuron / segment are heavily clustered (non-independence).
-- **Statistical issues:**
-  - **Independence violation:** edges from the same neuron / fragment share spatial, biological, and labeling structure. Treating 1.4M edges as i.i.d. inflates the effective n and shrinks the p-value (or, here, narrows the χ² distribution under H₀); a cluster-robust or mixed-effects logistic test would be the right approach.
-  - **Trivial effect size:** the absolute difference is 3.70% vs 3.63% (relative ~2%), which is biologically meaningless even if it were significant. The χ² statistic of 3.53 on n = 1.4M is a textbook example of an effect that is significance-irrelevant at any plausible α.
-  - **p just over 0.05:** under BH-FDR the cutoff at this rank is far smaller (≈ 0.044); this hypothesis would be a borderline non-survivor even before considering the clustering issue.
-- **Logic issues:**
-  - **"Failed to reject = null is true" fallacy:** the conclusion explicitly reads as "Z-dominant edges do NOT exhibit a significantly higher rate" → "refutes hypothesis that imaging anisotropy creates a substantial directional bias." A p just above 0.05 cannot refute H₁; it can only fail to reject H₀.
-  - Generalization to two extra brains rejects the null in OPPOSITE directions (Z worse on 794491, Z better on 794495), demonstrating that a no-anisotropy conclusion was an artifact of brain 789202's particular distribution.
-- **Downgrade based on rerun/extrapolation:** Yes — DOES-NOT-GENERALIZE. The "no anisotropy effect" headline is overturned by both extra brains; this hypothesis should be retracted, not reported as a confidence drop.
-- **Corrected test:** Three complementary tests at the right unit of analysis: (a) GEE logistic regression with neuron as the cluster id, (b) cluster-permutation chi-square (Z/XY label permuted at the NEURON level so all edges in a neuron flip together), and (c) per-neuron paired Wilcoxon signed-rank on (Z error-rate – XY error-rate). All three respect the within-neuron clustering that the original i.i.d. chi-square ignored.
-- **Corrected result:** origin 789202: GEE OR(Z vs XY) = 1.0184, 95% CI [0.9712, 1.0680], p = 0.45; cluster-permutation p = 0.6304 (1000 perms, 12 clusters); per-neuron Wilcoxon W = 32, p = 0.62, bootstrap 95% CI on median(Z − XY) per neuron = [−0.092%, +0.350%]. All three agree on the origin: no effect once the test respects neuron-level clustering. Side-by-side, the original "chi² = 3.5328, p = 0.0602 on n = 1,409,045 edges" was already non-significant but used 1.4M as the effective n; the correct effective n is ≈ 12 neurons and the corrected p (0.45–0.63) is much further from significance.
-- **Corrected generalization:** DOES-NOT-GENERALIZE — origin 789202: GEE p = 0.45, cluster-perm p = 0.63, Wilcoxon p = 0.62 (no effect); 794491: GEE OR = 1.18 [0.98, 1.41], p = 0.076 (NS but suggestive positive), cluster-perm p = 0.0020 (sig), Wilcoxon p = 0.20 (NS) — mixed signals; 794495: GEE OR = 0.78 [0.70, 0.87], p = 5.7e-06 (sig negative — Z LESS error), cluster-perm p = 0.0010 (sig), Wilcoxon p = 2.1e-04 (sig negative). Origin shows nothing; 794491 hints positive in 1/3 tests; 794495 shows a robust *protective* effect.
-- **Post-correction verdict:** UPHELD on origin (no anisotropy effect when test correctly handles clustering) but the verbal frame is now defensible: not "p ≈ 0.06, fail to reject" but "GEE p = 0.45 with neuron-clustered SE, CI [0.97, 1.07] centred on 1." Generalization remains DOES-NOT-GENERALIZE because the two extras show OPPOSITE directions (Z protective on 794495, Z slightly risky on 794491), both with strongly clustered-significant evidence.
+- **Across datasets:** the "no significant difference" (null) conclusion fails on both extras, which become strongly significant in *opposite* directions. origin (789202): Z-dom 3.70% vs XY-dom 3.63%, χ²=3.53, p=6.02e-02 (null, Z barely higher). ds_794491: Z-dom 6.41% vs XY-dom 5.50%, χ²=166.1, p=5.21e-38 (significant, Z *higher*). ds_794495: Z-dom 2.24% vs XY-dom 2.86%, χ²=395.8, p=4.62e-88 (significant, Z *lower*). On the extra datasets there IS a significant orientation effect, and its sign is not consistent — so the origin's clean near-null does not hold.
+- **Verdict:** MAJOR
+- **Test:** Pearson chi-square test of independence (`scipy.stats.chi2_contingency`) on a 2×2 table of Z-dominant vs XY-dominant edges × error/no-error; 433,243 Z-dominant and 975,802 XY-dominant edges; χ²=3.5328, p=0.0602.
+- **Statistical issues:** Independence assumption violated — the rows are 1.4M individual edges, but adjacent edges share nodes and run along the same neurite, so orientation and error status are spatially autocorrelated; the chi-square treats them as independent draws, which can both inflate and (here) mis-state the test. The 0.07-point absolute rate gap (3.70% vs 3.63%) is practically negligible regardless of significance.
+- **Logic issues:** "p>0.05, fail to reject null" is escalated to "This refutes the hypothesis that imaging anisotropy creates a substantial directional bias" — affirming the null from a non-significant result, the classic absence-of-evidence error. The conclusion also over-generalizes a single-volume near-miss into a claim about the imaging pipeline.
+- **Verdict rationale:** DOES-NOT-GENERALIZE: on both extra volumes the same test is strongly significant (p=5.2e-38 and p=4.6e-88) in *opposite* directions, directly contradicting "no directional bias." The origin's borderline null (which also fails BH; see Statistical Verification summary) cannot support the refutation claim and must be downgraded.
+- **Corrected test:** Neuron-level block-permutation test on the Z−XY error-rate difference (neuron = independent unit) plus a risk-rate-ratio with 95% CI, replacing the edge-independent Pearson chi-square (1.4M edges that share nodes are autocorrelated, so the chi-square overstates effective n).
+- **Corrected result:** Risk-rate ratio (Z/XY) = 1.0178, 95% CI [0.9993, 1.0366]; absolute rate diff = 0.065 pp; cluster-permutation two-sided p = 0.8136 (NOT significant). Versus original χ² = 3.5328, p = 6.0165e-02. The corrected test agrees the origin shows no detectable orientation effect, with a trivial effect size (RR≈1.02, CI brushing 1).
+- **Post-correction verdict:** UPHELD (for the origin null) — the cluster-aware test confirms no significant Z-vs-XY difference (p = 0.8136), and the effect size is negligible. But the report correctly reframes this as absence of evidence, not proof of no anisotropy.
+- **Corrected generalization:** PARTIAL — 794491: cluster-permutation p = 0.09745 (not significant, RR = 1.1645 CI [1.138, 1.192], Z slightly higher); 794495: cluster-permutation p = 0.0004998 (SIGNIFICANT, RR = 0.7852 CI [0.767, 0.804], Z *lower*). So even under the correct neuron-level test the origin/794491 null does not hold on 794495, where there is a real significant orientation effect in the opposite direction — confirming the finding is volume-specific, not a stable null.
 
-### 4. (Priority 0.265 · Surprise 0.414) Centrifugal branch order predicts split errors after all, with deep-order branches spiking past 3% error rate.
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 139 · **Belief:** Leaning False → Leaning True (0.3750 → 0.6406) · **Direction:** Positive
-- **Tested:** Whether the probability of a split error rises with centrifugal branch order (topological depth from soma), independent of local cable thickness, via logistic regression on ~1.4M edges.
-- **Conclusion:** Branch order was significant (coefficient 0.0194, p < 0.001), with split error rates remaining low and stable up to order ~30 then spiking and growing volatile beyond order ~50 (>3% near order 53). The positive surprisal (0.4139) reflects a prior leaning False that was overturned by the data.
-- **Caveats:** `norm_thickness` had zero variance across the dataset and had to be dropped, so the hypothesis as posed ("independent of local cable thickness") cannot actually be tested — thickness was just not a usable predictor in this dataset; deep-order error spikes also rest on smaller per-bin sample counts and high volatility.
+### 4. (Priority 0.265 · Surprise 0.414) Split-error risk rises with centrifugal branch order (topological depth from soma).
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 139 · **Belief:** Leaning False → Leaning True (0.375→0.6406) · **Direction:** Positive
+- **Tested:** Whether the per-edge probability of a split error increases with branch order, independent of local cable thickness.
+- **Conclusion:** Over 1.4M edges, logistic regression found branch order a significant positive predictor of split errors (coef = 0.0194, p < 0.001); split rates stay low and stable through order ~30, then spike and grow volatile in deeper branches (>3% near order 53). The positive surprisal (+0.414) reflects the loop revising upward from doubt that depth matters.
+- **Caveats:** The thickness covariate (`norm_thickness`) had zero variance and was dropped, so the "independent of thickness" clause could not actually be controlled — thickness effects cannot be ruled out. Deep-order rates are volatile due to sparse data at high orders.
 - **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "branch_order coef 0.0194, p < 0.001, ~1.4M edges, norm_thickness dropped (zero variance)"; rerun "Total edges processed: 1409045; branch_order coef 0.0194, std err 0.001, z=16.369, P>|z|=0.000; const = -5.6486; 'norm_thickness' has zero variance ... Dropping" → same coefficient, same z-stat, same dropped-thickness behavior. Revision: $RERUN_PKL replaces an `os.walk('..')` search gate that returned empty in the rerun sandbox + numpy>=2 bootstrap.
+- **Rerun result:** recorded edges=1409045, branch_order coef=0.0194, z=16.369, p<0.001; rerun edges=1409045, branch_order coef=0.0194, z=16.369, p<0.001 (norm_thickness dropped both times) → exact match.
 - **Generalization:** DOES-NOT-GENERALIZE
-- **Across datasets:** origin 789202: branch_order coef=+0.0194 (z=+16.37, p<0.001) over 1,409,045 edges (POSITIVE → deeper-order branches more split-prone); 794491: coef=−0.0157 (z=−7.66, p<0.001) over 562,675 edges (NEGATIVE → deeper-order branches *less* split-prone); 794495: coef=−0.0063 (z=−4.20, p<0.001) over 1,363,789 edges (NEGATIVE, smaller magnitude). All three are highly significant but the SIGN FLIPS on both extra brains. The "deep branch order increases split risk" claim is therefore brain-specific to 789202; on the other two brains the relationship is the OPPOSITE.
-- **Verdict:** CRITICAL
-- **Test:** Logistic regression of split error on centrifugal branch order over 1,409,045 edges (coef=+0.0194, z=16.37, p<0.001) — the test family fits a binary outcome, but observations are edges within neurons and the model uses no random effect / no cluster-robust SE.
-- **Statistical issues:**
-  - **Independence violation:** 1.4M edges across only a small set of neurons share spatial and branching structure; the standard logistic regression treats them as i.i.d. and grossly underestimates standard errors. A mixed-effects model with neuron as a random intercept would be appropriate.
-  - **Effect size vs significance:** coef = 0.0194 (per unit branch order) → odds ratio per order ≈ 1.0196, a near-trivial per-unit increase. The "spike >3% beyond order 50" is driven by sparse high-order bins and the logistic curve, not by the headline coefficient.
-  - **Confound dropped, not controlled:** `norm_thickness` had zero variance so the "independent of cable thickness" qualifier in the hypothesis was not actually tested — it was discarded.
-  - With huge n the small effect easily clears α=0.001; statistical significance is doing little scientific work here.
-- **Logic issues:**
-  - The conclusion phrases the relationship as causal ("deeper topological branches are more susceptible to splitting"); the regression is purely observational and cannot rule out confounds (depth, radius, cable density, etc.).
-  - **Cherry-picked illustration:** the >3% spike "near order 53" is highlighted but rests on small-n bins, while the global per-unit coefficient is tiny — the visualization overstates what the model captured.
-  - Generalization flips the sign on both extra brains while still printing p<0.001 each. Highly significant + sign reversal across datasets is the hallmark of either (i) genuine brain-specific structure or (ii) confounded inference, not a robust general law.
-- **Downgrade based on rerun/extrapolation:** Yes — DOES-NOT-GENERALIZE. The headline ("deep-order branches spike past 3% error rate") is contradicted on 794491 and 794495 (negative slopes); the positive sign on 789202 is dataset-specific.
-- **Corrected test:** GEE logistic regression of is_split on branch_order with neuron as the cluster id (cluster-robust SE). Same regression family the original used, but the standard error is now corrected for the within-neuron clustering the original ignored. Also reports a neuron-level Spearman between mean (and max) branch_order and per-neuron split rate as an auxiliary aggregate-level check.
-- **Corrected result:** origin 789202: GEE coef(branch_order) = +0.01943 (identical point estimate), SE = 0.00935 (~8× larger than the plain-GLM SE of 0.00119), z = 2.078, p = 0.0377; OR per +1 branch_order = 1.0196, 95% CI [1.0011, 1.0385]. Side-by-side: original plain GLM "coef = +0.0194, z = 16.37, p < 0.001" is reduced to "coef = +0.01943, z = 2.08, p = 0.038" once neuron clustering is respected — the p-value loses ~57 orders of magnitude. The auxiliary neuron-level Spearman is non-significant (rho = +0.23, p = 0.47).
-- **Corrected generalization:** DOES-NOT-GENERALIZE — origin 789202: OR = 1.0196 [1.001, 1.039], p = 0.038 (barely significant, CI almost crosses 1); 794491: OR = 0.9844 [0.970, 0.999], p = 0.034 (barely significant, OPPOSITE direction); 794495: OR = 0.9937 [0.972, 1.016], p = 0.58 (NS). Sign flips on 794491; effect vanishes on 794495 even with cluster-robust SE. The "deeper-order is more split-prone" claim survives only as a barely-significant blip on origin.
-- **Post-correction verdict:** WEAKENED on origin (still significant after clustering but at p ≈ 0.04, not p < 1e-60; OR per unit is essentially 1.02 with CI nearly straddling 1, meaning practically negligible) and OVERTURNED on extras (the direction inverts on 794491 and is NS on 794495). The "confidence flip" surprise is not justified.
+- **Across datasets:** the positive branch-order → split-risk slope flips sign on BOTH extras. origin (789202): branch_order coef=+0.0194, z=16.37, p<0.001 (risk rises with depth). ds_794491: coef=−0.0157, z=−7.66, p<0.001 (risk *decreases* with depth). ds_794495: coef=−0.0063, z=−4.20, p<0.001 (risk *decreases* with depth). All three are significant but the direction is reversed on both extra datasets, so the "deeper branches split more" conclusion is dataset-specific to the origin.
+- **Verdict:** MAJOR
+- **Test:** `statsmodels.Logit` (binary logistic regression) of is_split on branch_order over 1,409,045 edges; branch_order coef=0.0194, z=16.369, p<0.001. The `norm_thickness` covariate was dropped because it had zero variance ("constant radius").
+- **Statistical issues:** (1) The hypothesis explicitly claims the effect holds "independent of the local cable thickness," but the thickness covariate had zero variance and was dropped, so the model controls for nothing — the "independent of thickness" clause is structurally untestable in this code, not confirmed. (2) Edge non-independence: 1.4M edges within neurons are spatially correlated, so the z=16.4 (and the p<0.001) overstates the effective information; the true standard error is larger. (3) Branch-order is assigned by a BFS that increments only at branching nodes and picks an arbitrary soma (max-radius node), so the predictor is itself noisy.
+- **Logic issues:** The conclusion ("deeper topological branches are more susceptible to splitting, independent of thickness") asserts both a directional effect and a thickness-controlled mechanism the experiment never isolated. Positive surprisal (+0.414) was recorded for a slope that reverses sign on both other volumes.
+- **Verdict rationale:** DOES-NOT-GENERALIZE — coef flips from +0.0194 to −0.0157 and −0.0063 (all significant) on the two extras, so "deeper branches split more" is volume-specific; combined with the dropped-covariate fault, the causal/independence claim is unsupported and must be downgraded.
+- **Corrected test:** Cluster-robust logistic regression (SEs clustered by neuron) plus a neuron-level permutation cross-check (Spearman of per-neuron branch-order vs split rate), replacing the edge-independent `statsmodels.Logit` whose z=16.4 treated 1.4M autocorrelated within-neuron edges as independent.
+- **Corrected result:** Cluster-robust z = 1.990, p = 0.04662 (barely significant), OR per +1 branch order = 1.0196, 95% CI [1.0003, 1.0393] (lower bound essentially at 1); the neuron-level permutation cross-check gives Spearman rho = 0.2308, p = 0.4697 (NOT significant). Versus original coef = 0.0194, z = 16.369, p < 0.001 (treated as overwhelmingly significant). Once edge non-independence is handled, the z collapses from 16.4 to ~2 and the permutation test is non-significant.
+- **Post-correction verdict:** OVERTURNED — the neuron-level permutation test (the cleanest unit-of-analysis) is non-significant (p = 0.4697) and the cluster-robust CI lower bound sits at 1.0003; the "overwhelming" p<0.001 was entirely an artifact of treating 1.4M correlated edges as independent.
+- **Corrected generalization:** DOES-NOT-GENERALIZE — 794491: permutation p = 0.9146 (not significant), cluster-robust coef = −0.0157 (sign flipped); 794495: permutation p = 0.1708 (not significant), cluster-robust coef = −0.0063, z = −0.538, p = 0.5907. Under the correct test the effect is non-significant on all three and the direction reverses on both extras — the branch-order → split-risk claim does not survive.
 
-### 5. (Priority 0.253 · Surprise 0.284) "Super-merges" fusing 3+ GT neurons cover ~5× more GT cable than 2-neuron merges, confirming that worst merge errors are massive structures.
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 24 · **Belief:** Leaning True → Likely True (0.7083 → 0.8906) · **Direction:** Positive
-- **Tested:** Whether predicted segments that merge ≥3 distinct GT neurons cover significantly more GT cable length per neuron than 2-neuron-merging segments.
-- **Conclusion:** Only 27 merging segments qualified (24 two-neuron, 3 super-merges). The median covered cable was 6.21 mm for 2-neuron merges vs 35.19 mm for super-merges (Mann-Whitney U = 0.0, p = 0.0059). Super-merges therefore scale super-linearly with the number of fused neurons (~11.7 mm/neuron vs ~3.1 mm/neuron), confirming them as outsized "giants".
-- **Caveats:** Sample sizes are very small (n = 3 super-merges); the implementation compared *total* covered cable rather than the per-neuron quantity the hypothesis literally proposed (the reviewer rationalizes this is OK given the magnitude gap, but it is a literal deviation).
+### 5. (Priority 0.253 · Surprise 0.284) Super-merges (≥3 fused neurons) cover disproportionately more GT cable than 2-neuron merges.
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 24 · **Belief:** Leaning True → Likely True (0.7083→0.8906) · **Direction:** Positive
+- **Tested:** Whether merge segments fusing three or more GT neurons are massive structures covering far more cable per neuron than 2-neuron merges.
+- **Conclusion:** Of the merges found, 24 were 2-neuron and 3 were super-merges. Median covered cable was 6.21 mm for 2-neuron merges versus 35.19 mm for super-merges, a significant difference (Mann-Whitney U p = 0.0059); per-neuron coverage scaled from ~3.1 to ~11.7 mm/neuron. Modest positive surprisal (+0.284) nudged an already-favored belief upward.
+- **Caveats:** Only 3 super-merges — an extremely small sample, so the magnitude estimate is fragile. The steps compared *total* cable while the hypothesis specified *per-neuron*; review argues the conclusion still holds, but the tested quantity differed slightly from the claim.
 - **Reproduction:** DIVERGED (code: revised-loading)
-- **Rerun result:** recorded "2-Neuron Merges (n=24): Median 6.2054 mm; Super-merges (n=3): Median 35.1873 mm; Mann-Whitney U = 0.0, p = 5.8861e-03"; rerun "2-Neuron Merges (n=8): Median 6.2054 mm, IQR 12.0549 mm; Super-merges (n=1): Median 35.1873 mm; Mann-Whitney U = 0.0, p = 2.2222e-01". Medians and the U-statistic match exactly, but the rerun saw only this single brain pkl (n=8+1=9 merges) whereas the recorded run aggregated across multiple `*_add.pkl` caches (n=24+3=27 merges). Hence p flips significance (0.006 → 0.222). Divergence is due to dataset SCOPE (single-brain reproduction vs multi-brain original), not an analysis error. Revision: direct $RERUN_PKL load + numpy>=2.
+- **Rerun result:** the sample counts and significance both changed materially. Recorded: 2-neuron merges n=24, super-merges n=3, Mann-Whitney U=0.0, p=5.8861e-03 (significant). Rerun: 2-neuron merges n=8, super-merges n=1, U=0.0, p=2.2222e-01 (NOT significant — p crosses 0.05). The median covered-cable values (6.2054 mm vs 35.1873 mm) are unchanged, but the n collapse (24→8, 3→1) makes the Mann-Whitney test non-significant on the provided pkl, overturning the recorded conclusion. The merge-detection step on this dataset finds far fewer merges than the recorded run, so the small-sample test no longer reaches significance.
 - **Generalization:** PARTIAL
-- **Across datasets:** origin 789202 (single-brain rerun): 2-neuron n=8 median 6.21 mm; super-merge n=1 median 35.19 mm; U=0, p=0.222 (NOT significant; too few super-merges); 794491: 2-neuron n=37 median 1.36 mm; super-merge n=0 (NO super-merges, test not run — "Not enough data"); 794495: 2-neuron n=24 median 5.42 mm; super-merge n=2 median 168.42 mm; U=0, p=6.15e-03 (highly significant, super-merges ~31× larger). The direction is consistent where super-merges exist (origin and 794495 both have super-merge > 2-neuron by 5×–30×), but 794491 has zero super-merges and the origin single-brain rerun is itself non-significant — only 794495 reaches significance. The structural claim ("super-merges are giants") is supported when they exist, but they are sparse / absent on some brains.
+- **Across datasets:** super-merge counts are tiny and inconsistent. origin-rerun (789202): 2-neuron n=8 (median 6.21 mm) vs super n=1 (35.19 mm), U=0.0, p=2.22e-01 (not significant). ds_794491: 37 two-neuron merges but ZERO super-merges → "Not enough data to perform" the test (cannot assess). ds_794495: 2-neuron n=24 (median 5.42 mm) vs super n=2 (median 168.42 mm), U=0.0, p=6.15e-03 (significant, super-merges far larger). Direction (super-merges cover much more cable) holds wherever there are ≥1 super-merge and is significant on 794495, but the origin-rerun is non-significant and 794491 has no super-merges — too sample-starved to call a robust effect.
 - **Verdict:** MAJOR
-- **Test:** Mann-Whitney U (n=24 vs n=3) on total GT cable length, U=0.0, p=5.89e-03 — the non-parametric test is correctly chosen for small, skewed length distributions, but with n=3 in one arm power is essentially zero and U=0 is just the floor of the statistic.
-- **Statistical issues:**
-  - **Severely underpowered:** n=3 super-merges. With the minimum possible U statistic (0.0), the smallest achievable two-sided p for 24 vs 3 is exactly 0.0059, which is exactly what is reported. The "highly significant" framing is a numerical floor effect, not an effect-size demonstration.
-  - **Hypothesis-deviation:** the hypothesis says "more cable length *per neuron*" (≈ 35.19/3 vs 6.21/2 = 11.7 vs 3.1 mm per neuron) but the code compares *total* covered cable. As implemented, super-merges should mathematically cover more total cable simply because they fuse more neurons.
-  - **Reproduction divergence:** single-brain rerun has n=8+1 and p flips to 0.222; the recorded p=0.006 came from aggregating across multiple `*_add.pkl` caches (the analysis is sensitive to dataset scope).
-- **Logic issues:**
-  - "Super-merges scale super-linearly with number of fused neurons" claim is derived from medians of n=3 vs n=24 — an arithmetic ratio, not a fitted scaling law; no scaling exponent is estimated.
-  - On 794491 super-merges are absent (n=0), so the structural claim doesn't survive simple existence on every brain — it's contingent on whether the merge process produces them at all.
-- **Downgrade based on rerun/extrapolation:** Yes — PARTIAL generalization (one brain has zero super-merges; origin rerun is not significant). The claim should be re-stated as "where super-merges exist they are an order of magnitude larger than 2-neuron merges" rather than as a generic law.
-- **Corrected test:** (a) Mann-Whitney U on PER-NEURON cable (total / num_fused_neurons) rather than total cable — matches the literal hypothesis wording "more cable length per neuron"; (b) Cliff's delta with bootstrap 95% CI for an effect-size measure that doesn't depend on the floor-effect U = 0 statistic. Same source data, same group definitions, just at the unit the hypothesis actually names.
-- **Corrected result:** origin 789202 (n = 8 two-neuron, n = 1 super): per-neuron medians 3.10 mm vs 11.73 mm; U = 0, p = 0.222 (NS). Cliff's delta = +1.00 [1.00, 1.00] but degenerate due to n = 1 super-merge — the CI is artificially tight because there is only one super-merge to resample. Side-by-side: original recorded "U = 0, p = 5.886e-03 on n = 24 + 3 across many brains" becomes "U = 0, p = 0.222 on n = 8 + 1 within origin" — exactly the same floor-effect mechanism.
-- **Corrected generalization:** PARTIAL — origin 789202: n = 8 + 1, Cliff's delta = +1.00 (degenerate, no test), MW p = 0.22; 794491: n = 37 + 0 (no super-merges exist, test cannot run); 794495: n = 24 + 2, per-neuron Cliff's delta = +0.9167, 95% CI [+0.7500, +1.0000], very large effect, MW p = 6e-03 (sig). The "super-merges are huge per-neuron" claim holds robustly only on 794495; impossible to confirm on 794491; underpowered on origin.
-- **Post-correction verdict:** WEAKENED — when the test is run at the literal "per-neuron cable" level (instead of the original "total cable" which is partly tautological), the effect direction is unchanged but the evidence is dramatically weaker. The original significance was a multi-brain-aggregation artefact plus a U-statistic floor; on a per-brain corrected test, 1/3 brains have no super-merges, 1/3 has only one, and only 1/3 supports a significant effect. The structural claim ("where super-merges exist they are an order of magnitude larger than 2-neuron merges") survives, but the "highly significant" framing does not.
+- **Test:** Two-sided Mann-Whitney U (`scipy.stats.mannwhitneyu`) comparing covered cable of 2-neuron merges (n=24) vs super-merges (n=3); recorded U=0.0, p=5.8861e-03; medians 6.2054 mm vs 35.1873 mm.
+- **Statistical issues:** (1) Underpowered — n=3 super-merges (and U=0.0 with all three super-merges above all 2-neuron merges) is the minimum configuration that can even reach p<0.01; a single reclassified merge moves the conclusion. The reproduction confirms exactly this: on the provided pkl the counts collapse to n=8 / n=1 and p rises to 0.2222 (NOT significant). (2) Construct mismatch — the hypothesis is about cable *per neuron*, but the code compares *total* `seg_cable[lab]` per merge label; total cable is mechanically larger for super-merges simply because they span more neurons, so the test partly tests its own definition.
+- **Logic issues:** The conclusion ("super-merges encapsulate disproportionately larger amounts of physical GT cable") is stated as strong support, but the tested quantity (total cable) differs from the claimed quantity (per-neuron cable), and the inference rests on 3 points. Positive surprisal (+0.284) overstates the evidence.
+- **Verdict rationale:** DIVERGED on reproduction (p 0.0059 → 0.2222, crossing 0.05) and PARTIAL on generalization (untestable on 794491, significant only on 794495). A finding whose significance evaporates on re-run with n=1 in one arm is not trustworthy; downgrade.
+- **Corrected test:** Mann-Whitney U on PER-NEURON cable (the quantity the hypothesis actually claims) with a Cliff's delta effect size and bootstrap CI, replacing the original test on TOTAL cable (which is mechanically larger for super-merges because they span more neurons — the test partly tested its own definition).
+- **Corrected result:** On the per-neuron construct, n_super = 1 vs n_2neuron = 8, Mann-Whitney U = 8.0, exact two-sided p = 0.2222 (NOT significant); Cliff's delta = 1.0 [1.0, 1.0] but flagged "n_super=1 too small for reliable inference." Versus original (total cable) U = 0.0, p = 5.8861e-03. With the correct per-neuron quantity AND the provided-pkl merge counts, the test is non-significant.
+- **Post-correction verdict:** OVERTURNED — the corrected per-neuron test is non-significant (p = 0.2222) and rests on a single super-merge; the original p = 0.0059 came from both the wrong (total-cable) construct and a sample that collapsed on re-run.
+- **Corrected generalization:** INCONCLUSIVE / PARTIAL — 794491: zero super-merges, "not enough data to perform the test" (INCONCLUSIVE); 794495: per-neuron n_super = 2 vs n_2neuron = 24, U = 46.0, p = 0.02462, Cliff's delta = 0.9167 [0.75, 1.0] (significant, super larger, but still "n_super=2 too small"). The direction (super > 2-neuron) holds where ≥1 super-merge exists, but the evidence is too sample-starved to call a robust effect under the correct construct.
 
-### 6. (Priority 0.253 · Surprise 0.284) Omission errors are ~4× more frequent at topological branch points than at linear cable nodes.
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 32 · **Belief:** Leaning True → Likely True (0.7083 → 0.8906) · **Direction:** Positive
-- **Tested:** Whether omission error rates differ between branch nodes (degree > 2) and linear nodes (degree = 2), implicating local topological complexity as a cause of dropout.
-- **Conclusion:** Branch-node omit rate ≈ 11.95% vs linear-node omit rate ≈ 2.76%, with χ² = 1567.69 and p < 0.0001. The model demonstrably drops fragments at complex junctions, so proofreaders should target branching nodes for missing cable.
-- **Caveats:** None noted; effect size and significance are both very large.
+### 6. (Priority 0.253 · Surprise 0.284) Omission errors are far more frequent at branch points than on linear cable.
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 32 · **Belief:** Leaning True → Likely True (0.7083→0.8906) · **Direction:** Positive
+- **Tested:** Whether omit errors occur at higher rates at topological branch nodes (degree > 2) than at linear nodes (degree = 2).
+- **Conclusion:** Branch nodes had an ~11.95% omission rate versus ~2.76% for linear nodes — a >4× difference with χ² = 1567.69 and p < 0.0001. This strongly supports targeting complex branching junctions for missing cable during proofreading. Positive surprisal (+0.284).
+- **Caveats:** None noted; review reports a faithful, deviation-free implementation.
 - **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "Branch 606/4466/5072 (11.9479%); Linear 38610/1360197/1398807 (2.7602%); Chi-square = 1567.6878, p = 0.0000e+00"; rerun "Branch 606/4466/5072 (11.9479%); Linear 38610/1360197/1398807 (2.7602%); Chi-square = 1567.6878, p = 0.0000e+00" → exact match. Revision: direct $RERUN_PKL load + numpy>=2.
+- **Rerun result:** recorded branch omit=11.9479%, linear omit=2.7602%, χ²=1567.6878, p≈0; rerun identical contingency table (606/4466 vs 38610/1360197), χ²=1567.6878, p≈0 → exact match.
 - **Generalization:** GENERALIZES
-- **Across datasets:** origin 789202: Branch 11.95% vs Linear 2.76% (ratio 4.3×), χ²=1567.69, p≈0; 794491: Branch 7.54% vs Linear 3.41% (ratio 2.2×), χ²=193.63, p=5.13e-44; 794495: Branch 6.52% vs Linear 1.72% (ratio 3.8×), χ²=974.86, p=5.24e-214. On all three brains branch-node omit rate is significantly higher than linear-node omit rate (ratio 2.2×–4.3×, p ≪ 0.001).
+- **Across datasets:** branch nodes show a higher omit rate than linear nodes on all three, highly significant. origin (789202): branch 11.95% vs linear 2.76%, χ²=1567.7, p≈0 (~4.3×). ds_794491: branch 7.54% vs linear 3.41%, χ²=193.6, p=5.13e-44 (~2.2×). ds_794495: branch 6.52% vs linear 1.72%, χ²=974.9, p=5.24e-214 (~3.8×). Effect size is smaller on 794491 but the direction and significance hold everywhere.
 - **Verdict:** MINOR
-- **Test:** Chi-square test of independence on node-type (branch vs linear) × omit (yes/no), χ²=1567.69, p≈0, n=1,403,879 nodes — appropriate for 2×2 contingency tables and the relative effect (4.3×) is far above any conceivable null.
-- **Statistical issues:**
-  - **Independence violation:** nodes within the same neuron are not i.i.d.; clustering would tighten the SE rather than loosen it, but in principle a cluster-robust test would be more honest. Given the relative effect (4.3× ratio), no realistic clustering correction would overturn the result.
-  - Branch nodes (5,072) are far rarer than linear nodes (1.4M), but expected cell counts are still very large so χ² is well-behaved.
-- **Logic issues:**
-  - Conclusion phrases the relationship causally ("complex branching structure causes dropout") — this is observational and could reflect e.g. signal sparsity at branchings rather than topology per se. The "proofreaders should target branching nodes" actionable claim does follow directly though.
-- **Downgrade based on rerun/extrapolation:** No — GENERALIZES on all three brains with the same direction and large effect size.
+- **Test:** Pearson chi-square (`scipy.stats.chi2_contingency`) on a 2×2 table of branch nodes (degree>2) vs linear nodes (degree=2) × omitted/labeled; contingency 606/4466 (branch) vs 38610/1360197 (linear); χ²=1567.6878, p≈0; omit rates 11.95% vs 2.76%.
+- **Statistical issues:** Node-level independence is technically violated (neighboring nodes share edges), so the χ² overstates effective n; expected cell counts are all large, so the test itself is well-posed. The effect size, however, is large (≈4.3× relative rate), so the assumption violation does not threaten the qualitative conclusion.
+- **Logic issues:** None of consequence. The conclusion (target branch junctions for missing cable) follows from a >4× rate difference; correlation is not over-claimed as a proven model mechanism.
+- **Verdict rationale:** Large, reproduced, and GENERALIZES (2.2×–4.3×, p≤5e-44 on all three). The only blemish is the non-independence of nodes, which is immaterial at this effect size — hence MINOR rather than SOUND.
 
-### 7. (Priority 0.253 · Surprise 0.284) Angular alignment is a strong split-vs-false-candidate discriminator (true continuations ~153°, false ~90°, AUC 0.93).
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 33 · **Belief:** Leaning True → Likely True (0.7083 → 0.8906) · **Direction:** Positive
-- **Tested:** Whether the angle between two adjacent GT edges crossing a split is significantly closer to 180° than the angle to a nearby false candidate from a different neuron, validating "directional inertia" as a bridging heuristic.
-- **Conclusion:** Across 13,582 split node configurations, mean true-continuation angle was 152.96° vs 90.17° for false candidates (KS statistic 0.7460, p ≈ 0; ROC AUC 0.9322). Directional inertia is therefore a strong, reliable local heuristic for an agentic proofreader to bridge splits.
-- **Caveats:** None noted; the AUC is high and the distributions visibly separated.
+### 7. (Priority 0.253 · Surprise 0.284) Angular inertia (~153° vs ~90°) reliably identifies the true continuation across a split.
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 33 · **Belief:** Leaning True → Likely True (0.7083→0.8906) · **Direction:** Positive
+- **Tested:** Whether the true continuing path across a split stays closer to a straight 180° line than a nearby false-candidate edge from a different neuron.
+- **Conclusion:** Across 13,582 split configurations, true continuations averaged 152.96° versus 90.17° for false candidates; distributions were distinct (KS = 0.746, p ≈ 0) and angular alignment discriminated with ROC-AUC 0.9322. Directional inertia is thus a strong local heuristic for an agentic proofreader bridging splits. Positive surprisal (+0.284).
+- **Caveats:** None noted; review confirms no deviation from plan.
 - **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "Analyzed 13582 split node configurations; mean true 152.96°, mean false 90.17°; KS 0.7460 p≈0; ROC AUC 0.9322"; rerun "Analyzed 13582 split node configurations; mean true 152.96°, mean false 90.17°; KS 0.7460 p≈0; ROC AUC 0.9322" → exact match. Revision: direct $RERUN_PKL load + numpy>=2 + vendored sklearn.
+- **Rerun result:** recorded n=13582, true=152.96°, false=90.17°, KS=0.7460 (p≈0), ROC-AUC=0.9322; rerun identical → exact match.
 - **Generalization:** GENERALIZES
-- **Across datasets:** origin 789202: n=13,582 splits; mean true 152.96°, false 90.17°; KS=0.7460 p≈0; AUC=0.9322. 794491: n=15,637; mean true 153.49°, false 90.15°; KS=0.7335 p≈0; AUC=0.9281. 794495: n=15,929; mean true 155.17°, false 90.08°; KS=0.7559 p≈0; AUC=0.9365. Directional inertia separates true continuations (~153°–155°) from false candidates (~90°) on all three brains with AUC ≈ 0.93 throughout.
-- **Verdict:** OK
-- **Test:** KS test (KS=0.7460, p≈0) plus ROC-AUC (0.9322) on n=13,582 split configurations comparing true-continuation angle vs false-candidate angle — both are non-parametric and appropriate for distributions of bounded angles.
-- **Statistical issues:**
-  - **Non-independence:** multiple split configurations from the same neuron / region are not i.i.d.; KS p-value is therefore optimistic but the AUC = 0.9322 is a population-level discrimination quantity not sensitive to that issue.
-  - The KS effect size of 0.7460 and the discrimination AUC of 0.93 are large by any standard, and replicate on two extra brains, so the inference is robust to the clustering concern.
-- **Logic issues:**
-  - "False candidates" are operationally defined as nearby edges from a different neuron — the conclusion's actionability depends on this same operational definition being available at inference time.
-- **Downgrade based on rerun/extrapolation:** No — GENERALIZES (AUC 0.928–0.937, mean angles 152.96°–155.17° vs 90.08°–90.17° across all three brains).
+- **Across datasets:** angular inertia discriminates true vs false continuations near-identically on all three. origin (789202): true 152.96° vs false 90.17°, KS=0.7460 (p≈0), ROC-AUC=0.9322 (n=13582). ds_794491: 153.49° vs 90.15°, KS=0.7335, ROC-AUC=0.9281 (n=15637). ds_794495: 155.17° vs 90.08°, KS=0.7559, ROC-AUC=0.9365 (n=15929). Very stable, robust heuristic.
+- **Verdict:** SOUND
+- **Test:** Two-sample Kolmogorov–Smirnov (`scipy.stats.ks_2samp`) on true-continuation vs false-candidate angles plus ROC-AUC; n=13,582 split node configurations; KS=0.7460, p≈0; means 152.96° vs 90.17°; ROC-AUC=0.9322.
+- **Statistical issues:** The two angle samples are paired per split node, and KS assumes independent samples; with KS=0.746 (a near-total distributional separation) the dependence does not affect the qualitative result, and the ROC-AUC (a paired-friendly ranking metric) corroborates it. The false candidate is the geometrically nearest node from another neuron, which is a sensible, conservative comparator.
+- **Logic issues:** None. The conclusion (directional inertia is a strong local split-bridging heuristic) is exactly what a 63° mean gap and AUC 0.93 support; no causal overreach.
+- **Verdict rationale:** Very large effect, exact reproduction, and GENERALIZES with ROC-AUC 0.93 on all three volumes. KS independence is a minor technicality at this separation — SOUND.
 
-### 8. (Priority 0.253 · Surprise 0.284) Omitted cable is systematically closer to merge sites than correctly reconstructed cable.
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 36 · **Belief:** Leaning True → Likely True (0.7083 → 0.8906) · **Direction:** Positive
-- **Tested:** Whether omit errors spatially co-cluster with merge errors, indicating that the segmentation model sacrifices thin adjacent processes when fusing dominant structures.
-- **Conclusion:** Over 49,295 omit nodes vs a length-matched random sample of 49,295 correct nodes, the median distance to the nearest of 67 merge sites was 1,812.73 µm (omit) vs 1,959.88 µm (correct), with Mann-Whitney U p = 1.60e-66 — highly significant.
-- **Caveats:** The absolute distance gap (~147 µm out of ~1,900 µm) is modest in effect size; significance is driven largely by the huge sample size. Also only 67 merge sites anchor the comparison.
+### 8. (Priority 0.253 · Surprise 0.284) Omitted cable clusters spatially closer to merge sites than correct cable.
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 36 · **Belief:** Leaning True → Likely True (0.7083→0.8906) · **Direction:** Positive
+- **Tested:** Whether omit errors are spatially clustered around merge errors, suggesting the model sacrifices thin processes when fusing dominant structures.
+- **Conclusion:** Comparing 49,295 omit nodes to a length-matched sample of 49,295 correct nodes against 67 merge sites, median distance to nearest merge was 1,812.73 µm for omit nodes vs 1,959.88 µm for correct nodes — a highly significant difference (Mann-Whitney U p = 1.60e-66). This supports a systematic bias where merges co-occur with dropped adjacent processes. Positive surprisal (+0.284).
+- **Caveats:** The absolute median gap (~147 µm out of ~1,800 µm) is small in practical terms despite extreme significance from the large sample. Only 67 merge sites anchor the distance computation.
 - **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "67 merge sites, 49295 omit, 49295 correct; median omit 1812.73 µm, median correct 1959.88 µm; Mann-Whitney U = 1138194675.0, p = 1.6036e-66"; rerun "67 merge sites, 49295 omit, 49295 correct; median omit 1812.73 µm, median correct 1959.88 µm; Mann-Whitney U = 1138194675.0, p = 1.6036e-66" → exact match. Revision: direct $RERUN_PKL load + numpy>=2.
-- **Generalization:** DOES-NOT-GENERALIZE
-- **Across datasets:** origin 789202: 67 merge sites, 49,295 omit vs 49,295 correct, median omit 1812.73 µm < correct 1959.88 µm, Mann-Whitney one-sided p=1.60e-66 (omit CLOSER to merges); 794491: 86 merges, 29,033 omit / 29,033 correct, median omit 1103.24 µm > correct 842.11 µm, p=1.0000 (omit FARTHER than correct — DIRECTION FLIPS); 794495: 105 merges, 32,788 each, median omit 1422.53 µm < correct 1670.94 µm, p=9.78e-226 (omit closer, agrees with origin). 794491 reverses the spatial relationship completely, so the "omit clusters near merges" claim does not survive on that brain.
-- **Verdict:** CRITICAL
-- **Test:** One-sided Mann-Whitney U on distance-to-nearest-merge for omit vs length-matched correct nodes, n=49,295 each, p=1.60e-66 — the test is appropriate for skewed distance data but the n is artificially large because each *node* is treated as i.i.d. while distances are sourced from only 67 merge sites and densely clustered along cable.
-- **Statistical issues:**
-  - **Non-independence:** the 49,295 omit nodes lie along cable, so distances to the nearest of 67 merge sites are heavily spatially correlated; the effective n is closer to a few thousand. The p-value of 1.6e-66 is thus a vast overstatement of evidence.
-  - **Effect size is tiny:** ~147 µm gap on a ~1,900 µm baseline (≈ 7.7% relative shift). Significance is sample-size-driven; the practical "co-clustering" claim is weak.
-  - **Small anchor set:** only 67 merge sites are the reference; permuting which 67 sites are chosen would noticeably move the distance distribution. No bootstrap over merge sites is reported.
-- **Logic issues:**
-  - The conclusion "the segmentation model sacrifices thin adjacent processes when fusing dominant structures" is a *mechanistic* claim that the spatial association cannot support — it could equally well reflect that both error types co-occur in dense neuropil for unrelated reasons.
-  - Generalization reverses the direction on 794491 (omit median 1103 µm > correct 842 µm, p=1.0 one-sided), demonstrating the spatial relationship is not a robust property of the model.
-- **Downgrade based on rerun/extrapolation:** Yes — DOES-NOT-GENERALIZE. The headline finding is brain-specific (confirmed on 2 brains, reversed on 1) and should not be presented as a general property of the segmentation model.
-- **Corrected test:** (a) cluster-bootstrap by NEURON (resample neurons with replacement) on median(omit) − median(correct) distance to the nearest merge site, giving a cluster-robust 95% CI and a sign-flip p-value; (b) Cliff's delta with cluster-bootstrap CI as a non-parametric effect-size estimate; (c) merge-site bootstrap (resample the 67 merge sites with replacement) to also bound the variability from the small anchor set. All three on the same omit / length-matched-correct distance distributions.
-- **Corrected result:** origin 789202 — observed median(omit − correct) = −145.01 um. Cluster-bootstrap 95% CI = [−401.82, +91.98] um (CI straddles zero), cluster-bootstrap p = 0.2700. Cluster-bootstrap CI on Cliff's delta = [−0.1623, +0.0496] (also crosses zero). Merge-site bootstrap CI on the gap = [−346.73, +269.13] um. Side-by-side: original "median diff −147 um, U = 1.138e9, p = 1.60e-66" → corrected gives the same point estimate but the cluster-bootstrap 95% CI INCLUDES ZERO and the cluster p = 0.27 (NS). The "highly significant" p was a >60-order-of-magnitude artefact of treating 49,295 spatially correlated nodes as i.i.d.
-- **Corrected generalization:** DOES-NOT-GENERALIZE — origin 789202: gap = −145 um, cluster-bootstrap p = 0.27 (NS); 794491: gap = +261.93 um (REVERSED sign), cluster-bootstrap CI [+86.23, +445.34], p ≈ 0 (sig OPPOSITE direction); 794495: gap = −248.92 um, cluster-bootstrap CI [−517.34, +24.45], p = 0.082 (NS). Origin is NS, 794491 is significant in the WRONG direction, 794495 is the only one matching the original headline but at p = 0.08.
-- **Post-correction verdict:** OVERTURNED — once the test respects the within-neuron clustering of the ~49k nodes, the origin "p = 1.6e-66" collapses to "p = 0.27 with a CI that includes zero" and one extra brain flips the direction with cluster-significant evidence. The original "omit cable is systematically closer to merge sites" was a sample-size artefact compounding with brain-specific structure.
-
-### 9. (Priority 0.253 · Surprise 0.284) Split errors are spatially clustered: split edges have ~10× more split neighbors within 30 µm than correct edges do.
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 37 · **Belief:** Leaning True → Likely True (0.7083 → 0.8906) · **Direction:** Positive
-- **Tested:** Whether split edges have significantly more nearby split neighbors than matched correctly reconstructed edges within a 30 µm radius, identifying localized "error zones".
-- **Conclusion:** Split edges had a mean of 0.97 other split neighbors within 30 µm vs 0.10 for matched correct edges (Mann-Whitney U = 34,661,344.5, p < 0.0001). Split artifacts cluster regionally, supporting batch-correction workflows that route reviewers to hotspots.
-- **Caveats:** None noted; magnitudes and significance are both strong.
-- **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "Number of split edges: 6805, correct sampled: 6805; mean split neighbors 0.97 vs 0.10 within 30µm; Mann-Whitney U = 34661344.5, p = 0.00e+00"; rerun "Number of split edges: 6805, correct sampled: 6805; mean split neighbors 0.97 vs 0.10 within 30µm; Mann-Whitney U = 34661344.5, p = 0.00e+00" → exact match. Revision: direct $RERUN_PKL load + numpy>=2.
-- **Generalization:** GENERALIZES
-- **Across datasets:** origin 789202: n_split=6805, mean split-neighbors 0.97 vs correct 0.10 (~9.7×), U=3.47e7, p≈0; 794491: n=7847, 1.39 vs 0.28 (~5.0×), U=4.68e7, p≈0; 794495: n=7988, 1.26 vs 0.11 (~11.5×), U=5.11e7, p≈0. Split edges have 5×–12× more split neighbors within 30 µm than correct edges on every brain, all significant.
-- **Verdict:** MINOR
-- **Test:** Mann-Whitney U on per-edge counts of split neighbors within 30 µm, n=6,805 split vs 6,805 matched correct, U=3.47e7, p≈0 — non-parametric is correct for count data with zero-inflation.
-- **Statistical issues:**
-  - **Non-independence:** "split neighbors" are by construction correlated — if edge A counts edge B as a neighbor, edge B also counts A. The Mann-Whitney p is therefore optimistic, but the ~10× ratio (0.97 vs 0.10) is large enough that no plausible correction would flip the conclusion.
-  - **Definition is circular by design:** asking whether splits cluster with other splits is essentially measuring local autocorrelation. This is fine for an "error zone" engineering claim but tautological as a "discovery."
-- **Logic issues:**
-  - The implication "supports batch-correction workflows that route reviewers to hotspots" is well-grounded; no overreach.
-- **Downgrade based on rerun/extrapolation:** No — GENERALIZES on all three brains with 5×–12× ratio.
-
-### 10. (Priority 0.253 · Surprise 0.284) A heuristic A* on the fragments graph (angle + radius penalties) repairs 86% of split edges without inducing merges.
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 39 · **Belief:** Leaning True → Likely True (0.7083 → 0.8906) · **Direction:** Positive
-- **Tested:** Whether graph-based pathfinding directly on the U-Net fragments graph, penalizing trajectory deviation >45° and sudden radius changes, can reconnect >40% of split edges without creating merge errors.
-- **Conclusion:** On 6,805 targeted splits the agent found valid (no-merge) paths for 5,881 of them — an 86.42% success rate, double the 40% threshold. End-to-end Edge Accuracy improved from 78.71% to 79.13% (+0.42% net gain).
-- **Caveats:** Despite the high per-split success rate, the dataset-wide accuracy gain is small (+0.42%); merges and omissions remain unaddressed.
-- **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "Target split edges: 6805; Successfully resolved: 5881; Success rate 86.42%; Original Edge Accuracy 78.71% → New 79.13% (+0.42%)"; rerun "Target split edges: 6805; Successfully resolved: 5881; Success rate 86.42%; Original Edge Accuracy 78.71% → New 79.13% (+0.42%)" → exact match. Revision: direct $RERUN_PKL load + numpy>=2.
-- **Generalization:** GENERALIZES
-- **Across datasets:** origin 789202: target=6805, resolved=5881, success=86.42%; baseline EA 78.71% → 79.13% (+0.42%). 794491: target=7847, resolved=6648, success=84.72%; EA 74.77% → 75.95% (+1.18%). 794495: target=7988, resolved=7166, success=89.71%; EA 68.55% → 69.07% (+0.53%). Per-split success consistently 84.7%–89.7% (well above 40% threshold) and EA gain is small but positive on all three brains.
-- **Verdict:** MINOR
-- **Test:** None — this is an engineering benchmark (86.42% success rate on 6,805 split edges, no statistical test), not a hypothesis test. Reporting is descriptive.
-- **Statistical issues:**
-  - **No uncertainty quantification:** no confidence interval on the success rate, no bootstrap over neurons. Per-split success could in principle be inflated if a few neurons dominate the count.
-  - **Per-edge ≠ per-neuron:** if a few large GT neurons contribute most of the splits, "86%" is an edge-level rate dominated by them and not a neuron-level success rate.
-  - **Threshold (>40%) is loose:** the prior threshold is arbitrary; passing it does not validate the heuristic, it just clears a low bar.
-- **Logic issues:**
-  - The +0.42% EA gain is small but the conclusion fairly notes this, no overreach.
-  - "Without inducing merges" relies on the GT — at deployment time without GT, the same heuristic cannot guarantee no merges; this is more of a feasibility upper bound than a deployment claim.
-- **Downgrade based on rerun/extrapolation:** No — GENERALIZES (84.7%–89.7% success across three brains, EA gain consistently positive).
-
-### 11. (Priority 0.253 · Surprise 0.284) Merging segments behave as "giant" components — mean cable length ~30× larger than non-merging segments.
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 43 · **Belief:** Leaning True → Likely True (0.7083 → 0.8906) · **Direction:** Positive
-- **Tested:** Whether total GT cable length covered by flagged merging segments is exponentially larger than that of non-merging segments, indicating merges as runaway overgrown labels rather than local blips.
-- **Conclusion:** 64 merging segments had mean length ~15,449 µm (median ~3,099 µm) vs 8,273 non-merging segments at mean ~532 µm (median ~102 µm). Welch's t-test on log-transformed lengths: t = 16.54, p = 7.32e-25. Merge errors are dominated by massive runaway components.
-- **Caveats:** None noted; effect size is enormous.
-- **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "Number of merging segments: 64; non-merging: 8273; Merging mean 15448.96 µm, median 3099.27 µm; Non-merging mean 531.76 µm, median 101.74 µm; Welch's t=16.5444, p=7.3232e-25"; rerun "Number of merging segments: 64; non-merging: 8273; Merging mean 15448.96 µm, median 3099.27 µm; Non-merging mean 531.76 µm, median 101.74 µm; Welch's t=16.5444, p=7.3232e-25" → exact match. Revision: $RERUN_PKL replaces an `os.walk` search that returned empty in the sandbox + numpy>=2.
-- **Generalization:** GENERALIZES
-- **Across datasets:** origin 789202: 64 merging vs 8273 non-merging, mean 15449 µm vs 532 µm (~29×); t=16.54, p=7.32e-25. 794491: 98 vs 8544, mean 4457 µm vs 194 µm (~23×); t=29.03, p≈0. 794495: 98 vs 7998, mean 16277 µm vs 477 µm (~34×); t=24.02, p≈0. Merging segments are 23×–34× longer than non-merging on every brain with the log-Welch t-test extremely significant throughout.
-- **Verdict:** OK
-- **Test:** Welch's two-sample t-test on log-transformed cable length (t=16.54, p=7.32e-25, n=64 vs 8,273) — log-transform handles the heavy-tailed cable-length distribution, and Welch's correction is right for unequal variances.
-- **Statistical issues:**
-  - **Sample-size asymmetry:** 64 vs 8,273 is heavily unbalanced, but Welch's t accommodates this and ~30× mean ratio is robust.
-  - **Tautological flavor:** "merging segments are larger" is partly definitional — a segment that fuses multiple neurons must span them, so it has to be longer. The hypothesis is more informative because of the magnitude (~30×, not ~2×).
-  - Multiple-testing-wise this would clearly survive any FDR.
-- **Logic issues:**
-  - "Driven by enormous overgrown labels rather than local blips" is supported by the magnitude; no overreach.
-- **Downgrade based on rerun/extrapolation:** No — GENERALIZES (23×–34× ratio across all three brains).
-
-### 12. (Priority 0.253 · Surprise 0.284) Omit errors are >2× more likely at the extreme Z-depths of the imaged volume than at central depths.
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 45 · **Belief:** Leaning True → Likely True (0.7083 → 0.8906) · **Direction:** Positive
-- **Tested:** Whether omit error rate is higher at the top/bottom 10% of Z-coordinates than in the central 20%, attributable to optical attenuation/scattering.
-- **Conclusion:** Extreme-Z omit rate 4.44% (2,283/51,369) vs central-Z 1.94% (11,342/585,909). A Cochran–Mantel–Haenszel test controlling for brain ID gave pooled OR = 2.3561, p ≈ 0, validating spatial anisotropy of omissions specifically at axial extremes.
-- **Caveats:** This positive Z-extreme result coexists with the negative Z-orientation results (#2, #3) — the effect concerns depth extremes (boundary artifacts), not orientation-driven anisotropy along the cable.
-- **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "Extreme 2283/51369 (4.44%); Center 11342/585909 (1.94%); Pooled Odds Ratio (Extreme vs Center) = 2.3561, p = 0.0000e+00"; rerun "Extreme 2283/51369 (4.44%); Center 11342/585909 (1.94%); Pooled Odds Ratio = 2.3561, p = 0.0000e+00" → exact match. Revision: direct $RERUN_PKL load + numpy>=2.
+- **Rerun result:** recorded 67 merge sites, omit median=1812.73 µm, correct median=1959.88 µm, U=1138194675.0, p=1.6036e-66; rerun identical → exact match.
 - **Generalization:** PARTIAL
-- **Across datasets:** origin 789202: Extreme 4.44% vs Center 1.94%, pooled OR=2.3561, p≈0 (extreme Z significantly more error-prone). 794491: Extreme 4.00% vs Center 3.94%, pooled OR=1.0149, p=0.7996 (NO SIGNIFICANT EFFECT — extreme Z behaves like center). 794495: Extreme 5.37% vs Center 1.76%, pooled OR=3.1672, p≈0 (HIGHER than origin, holds strongly). The "extreme Z is worse" effect is robust on 789202 and 794495 (OR > 2.3) but absent on 794491 (OR ≈ 1, p = 0.80).
+- **Across datasets:** "omit nodes are closer to merge sites than correct nodes" holds on one extra and *reverses* on the other. origin (789202): omit median 1812.73 µm < correct 1959.88 µm (omit closer), U=1.14e9, p=1.60e-66 (significant). ds_794495: omit median 1422.53 µm < correct 1670.94 µm (omit closer), p=9.78e-226 (significant, same direction). ds_794491: omit median 1103.24 µm > correct 842.11 µm (omit *farther*), one-sided p=1.0000 (not significant; direction flipped). So the spatial co-clustering of omits with merges holds on 794495 but not on 794491.
 - **Verdict:** MAJOR
-- **Test:** Cochran-Mantel-Haenszel test "controlling for brain ID", pooled OR=2.3561, p≈0, n=637,278 nodes — CMH is appropriate for stratified 2×2 tables, but in the single-brain reproduction there is effectively only one stratum so the "controlling for brain ID" framing is misleading.
-- **Statistical issues:**
-  - **Stratification framed as multi-brain but executed single-brain:** the recorded code says "controlling for brain variations" but the reproduction confirms this was computed on a single-brain pkl; the stratifier "brain ID" was a no-op for the reported result. The pooled OR collapses to a plain OR on this dataset.
-  - **Independence violation:** nodes within the same neuron / region are not i.i.d.; CMH on stratified counts treats every node as independent. The p≈0 is overstated.
-  - **Cherry-picked bins:** "extreme = top/bottom 10%, center = central 20%" is a specific bin definition; other bin choices may attenuate the effect. No sensitivity to bin choice is reported.
-- **Logic issues:**
-  - **Mechanism overreach:** the conclusion attributes the effect to "optical attenuation or scattering along the imaging axis" — the test only shows a spatial association, not the mechanism. Many alternative causes (annotation effort at boundaries, GT density near edges, neurite truncation at volume boundaries) would produce the same signal.
-  - The PARTIAL generalization (one brain shows OR=1.01, p=0.80) materially weakens the "optical attenuation" story since the same imaging modality is used across brains; an imaging-physics explanation should generalize, but it doesn't.
-- **Downgrade based on rerun/extrapolation:** Yes — PARTIAL generalization (effect absent on 794491). The "extreme Z is worse" claim is dataset-specific, not a generic imaging-physics consequence.
-- **Corrected test:** GEE logistic regression with neuron as the cluster id, predicting is_omit from is_extreme (1 = top/bottom 10% Z, 0 = central 20% Z). This replaces the original CMH (which collapsed to a plain OR on a single-brain pkl and ignored within-neuron clustering) with the same OR but cluster-robust SE. Also a cluster-bootstrap CI on the OR by resampling neurons.
-- **Corrected result:** origin 789202 — descriptives unchanged (extreme 4.44% vs centre 1.94% on 637,278 nodes). GEE OR(Extreme vs Centre) = 2.3561 (identical point estimate), 95% CI [0.4558, 12.1801], p = 0.31; cluster-bootstrap CI on OR = [0.5046, 22.9182]. Side-by-side: original "CMH pooled OR = 2.3561, p ≈ 0 on 637k nodes" → corrected "OR = 2.3561 with cluster-robust 95% CI = [0.46, 12.18], p = 0.31." The p-value loses ALL of its "≈ 0" significance once the 12 neurons clustering the 637k nodes is recognised.
-- **Corrected generalization:** WEAKENED — origin 789202: OR = 2.36 [0.46, 12.18], p = 0.31 (NS); 794491: OR = 1.01 [0.12, 8.80], p = 0.99 (NS, CI spans 2 orders of magnitude); 794495: OR = 3.17 [2.11, 4.76], p = 2.8e-08 (sig, large). The "extreme Z worse" effect survives clustering only on 794495; on origin and 794491 the CI brackets 1 with a wide range.
-- **Post-correction verdict:** WEAKENED — the original "pooled OR = 2.36, p ≈ 0" was driven by treating all 637k nodes within only 12 clusters as independent observations; once clustering is respected, the same OR point estimate has CI [0.46, 12.18] and p = 0.31 on origin. The effect remains directionally consistent (point OR > 1 on 2/3 brains) and is robustly significant on 794495, but the original generalisation claim ("imaging-physics effect") cannot be sustained: the effect is not significant on origin or 794491 once their non-independence is accounted for.
+- **Test:** One-sided Mann-Whitney U (`alternative='less'`) of distance-to-nearest-merge for 49,295 omit nodes vs 49,295 length-matched correct nodes against 67 merge sites; U=1138194675.0, p=1.6036e-66; medians 1812.73 µm (omit) vs 1959.88 µm (correct).
+- **Statistical issues:** (1) Significance driven purely by sample size — the median difference is ~147 µm on a ~1,800 µm baseline (≈8%), a practically trivial shift, yet n≈49k per arm forces p=1.6e-66. (2) The 49k nodes are not independent observations: they are clustered along neurites and their distances are all measured to the same 67 anchor points, so the effective n is far smaller than 49,295 and the p-value is massively overstated. (3) Only 67 merge anchors define the entire distance field.
+- **Logic issues:** The conclusion infers a systematic mechanism ("the model sacrifices thin adjacent processes when fusing") from a tiny median offset; the spatial-clustering claim overreaches what an 8% median difference can support, and the direction is not even stable.
+- **Verdict rationale:** PARTIAL generalization — the effect *reverses* on 794491 (omit nodes farther, one-sided p=1.0000). A finding that is both effect-size-trivial/over-powered and direction-unstable across volumes should not be trusted as a real co-clustering law; downgrade.
+- **Corrected test:** Neuron-cluster permutation test (neuron = independent unit) on the omit−correct median distance difference, plus Cliff's delta with bootstrap CI, replacing the 49k-node Mann-Whitney that treated spatially clustered nodes referenced to only 67 anchors as independent.
+- **Corrected result:** Cliff's delta = −0.0642, 95% CI [−0.101, −0.028] (trivial, ≈−7.5% median shift); neuron-cluster permutation one-sided p = 0.4771 (NOT significant; observed neuron-level median diff only −17.33 µm). Versus original naive U = 1.14e9, p = 1.6036e-66. Once the unit of analysis is the neuron, the "omit closer to merge" effect is not significant.
+- **Post-correction verdict:** OVERTURNED — the cluster-permutation test is non-significant (p = 0.4771) and the effect size is trivial; the p = 1.6e-66 was purely an n-inflation artifact.
+- **Corrected generalization:** DOES-NOT-GENERALIZE — 794491: Cliff's delta = +0.253 (omit *farther*), permutation p = 0.8108 (not significant, direction reversed); 794495: Cliff's delta = −0.133, permutation p = 0.5007 (not significant despite naive p = 9.78e-226). Under the correct neuron-cluster test the co-clustering effect is non-significant on all three volumes.
 
-### 13. (Priority 0.253 · Surprise 0.284) Short omission gaps are usually internal dropouts within a single predicted segment; long gaps are true fragment boundaries.
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 58 · **Belief:** Leaning True → Likely True (0.7083 → 0.8906) · **Direction:** Positive
-- **Tested:** Whether continuous omit paths whose flanking nodes share the same predicted segment (bridged) are shorter than those with mismatched flanking IDs (broken).
-- **Conclusion:** 307 bridged omit paths (mean 18.71 µm, median 13.55 µm) vs 4,298 broken omit paths (mean 42.54 µm, median 20.16 µm); Mann-Whitney U p = 1.95e-19. Short omits are largely internal network dropouts and are good targets for safe auto-filling.
-- **Caveats:** Bridged sample is much smaller (n = 307) than broken (n = 4,298), but separation is clear.
+### 9. (Priority 0.253 · Surprise 0.284) Split errors are spatially clustered into localized "error zones".
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 37 · **Belief:** Leaning True → Likely True (0.7083→0.8906) · **Direction:** Positive
+- **Tested:** Whether a split edge is more likely than a correct edge to have another split within a 30 µm radius (localized artifact zones).
+- **Conclusion:** Across 6,805 split edges and a matched 6,805 correct edges, split edges averaged 0.97 split neighbors within 30 µm versus only 0.10 for correct edges (Mann-Whitney U p ≈ 0). Splits cluster regionally, supporting proofreading workflows that route reviewers to dense error hotspots for batch correction. Positive surprisal (+0.284).
+- **Caveats:** None noted; review confirms faithful implementation.
 - **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "Total Bridged 307 (mean 18.71 µm, median 13.55 µm); Total Broken 4298 (mean 42.54 µm, median 20.16 µm); Mann-Whitney U = 458554.0, p = 1.9488e-19"; rerun "Total Bridged 307 (mean 18.71 µm, median 13.55 µm); Total Broken 4298 (mean 42.54 µm, median 20.16 µm); Mann-Whitney U = 458554.0, p = 1.9488e-19" → exact match. Revision: direct $RERUN_PKL load + numpy>=2.
+- **Rerun result:** recorded 6805 split edges, mean split-neighbors 0.97 (split) vs 0.10 (correct), U=34661344.5, p≈0; rerun identical → exact match.
 - **Generalization:** GENERALIZES
-- **Across datasets:** origin 789202: bridged n=307 median 13.55 µm vs broken n=4298 median 20.16 µm, Mann-Whitney U=458554, p=1.95e-19. 794491: bridged n=219 median 10.99 µm vs broken n=4353 median 15.23 µm, U=365509, p=2.75e-09. 794495: bridged n=330 median 12.17 µm vs broken n=3815 median 16.24 µm, U=483296, p=1.20e-12. Bridged-shorter-than-broken holds on all three brains; medians and significance line up.
+- **Across datasets:** split edges have far more nearby splits than correct edges on all three, p≈0 throughout. origin (789202): 0.97 vs 0.10 split-neighbors within 30 µm, U=3.47e7, p≈0. ds_794491: 1.39 vs 0.28, U=4.68e7, p≈0. ds_794495: 1.26 vs 0.11, U=5.11e7, p≈0. Split clustering into error zones is robust.
 - **Verdict:** MINOR
-- **Test:** Mann-Whitney U on continuous omit-path length, n=307 bridged vs 4,298 broken, U=458,554, p=1.95e-19 — correct non-parametric choice for heavy-tailed lengths.
-- **Statistical issues:**
-  - **Class-imbalance is fine for Mann-Whitney U:** the test handles n=307 vs 4,298 cleanly.
-  - **Definition coupling:** "bridged" requires sufficient non-omit neighbors on the same predicted segment; "broken" includes both true terminations and structural breaks. The category label thus partially encodes path length already (a long broken span is less likely to be bridged by the same segment by chance), which inflates the apparent effect.
-  - The median ratio (13.55 vs 20.16 µm) is moderate (~1.5×); significance comes partly from n=4,605 total.
-- **Logic issues:**
-  - "Short omits are largely internal dropouts and are good targets for safe auto-filling" is supported as a class-discrimination claim. The recommendation is operationally reasonable.
-- **Downgrade based on rerun/extrapolation:** No — GENERALIZES on all three brains in the same direction.
+- **Test:** One-sided Mann-Whitney U (`alternative='greater'`) on count of split neighbors within 30 µm for 6,805 split edges vs 6,805 matched correct edges; U=34661344.5, p≈0; mean 0.97 vs 0.10 split-neighbors.
+- **Statistical issues:** The neighbor-count metric is computed against the split-edge KD-tree, so split edges count *other splits* in a set they belong to — a built-in asymmetry that inflates the split-group counts. With a ~10× mean difference the conclusion still holds, but the magnitude is partly a construction artifact, and split edges are not mutually independent observations.
+- **Logic issues:** The conclusion (splits form localized error zones supporting hotspot-routing) follows from a near-10× contrast and is appropriately operational rather than mechanistic.
+- **Verdict rationale:** Large, reproduced, GENERALIZES (0.97/1.39/1.26 vs 0.10/0.28/0.11). The metric-asymmetry and edge non-independence keep it at MINOR rather than SOUND.
+- **Corrected test:** Neuron-cluster permutation test (neuron = independent unit) on the split−correct mean split-neighbor gap, plus Cliff's delta with cluster bootstrap CI, replacing the per-edge Mann-Whitney (split edges are non-independent).
+- **Corrected result:** Cliff's delta = 0.4913, cluster bootstrap 95% CI [0.4363, 0.5600] (moderate-to-large); neuron-cluster permutation one-sided p = 0.0002 (SIGNIFICANT; observed neuron-level gap = 0.8144). Versus original mean 0.97 vs 0.10 split-neighbors, MW p ≈ 0. The clustering effect survives the cluster-aware test with a substantial effect size.
+- **Post-correction verdict:** UPHELD — significant under the neuron-cluster permutation test (p = 0.0002) with a moderate-large Cliff's delta (0.49, CI excludes 0); the split-clustering "error zone" finding is robust to the independence correction.
+- **Corrected generalization:** GENERALIZES — 794491: Cliff's delta = 0.5193 [0.460, 0.587], permutation p = 0.0004 (significant); 794495: Cliff's delta = 0.5995 [0.559, 0.641], permutation p = 0.0002 (significant). Significant with comparable/larger effect size on both extras.
 
-### 14. (Priority 0.253 · Surprise 0.284) Split edges have higher local tortuosity than correctly reconstructed edges, though the correlation is small.
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 59 · **Belief:** Leaning True → Likely True (0.7083 → 0.8906) · **Direction:** Positive
-- **Tested:** Whether high local tortuosity (path length / Euclidean distance over a 10-edge sliding window) increases the likelihood of a split error.
-- **Conclusion:** 6,611 split vs 1,091,075 correct edges: median tortuosity 1.1115 vs 1.0764 (means 1.2163 vs 1.1175). Mann-Whitney U p ≈ 0; point-biserial r = 0.0335 (also p ≈ 0). Tortuosity is statistically associated with splits but the effect is small in magnitude.
-- **Caveats:** The correlation (r = 0.0335) is tiny — significance comes from sample size; tortuosity alone is a weak per-edge predictor.
+### 10. (Priority 0.253 · Surprise 0.284) A* path-finding on the fragments graph repairs 86% of splits without inducing merges.
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 39 · **Belief:** Leaning True → Likely True (0.7083→0.8906) · **Direction:** Positive
+- **Tested:** Whether graph A* search penalizing sharp deviations (>45°) and sudden radius changes can reconnect >40% of split edges on the U-Net fragments graph without new merges.
+- **Conclusion:** The agent connected 5,881 of 6,805 targeted splits (86.42% success) without crossing into different GT neurons, far exceeding the 40% threshold; simulated repair lifted edge accuracy from 78.71% to 79.13% (+0.42%). Positive surprisal (+0.284) confirms graph path-finding is an effective split-repair strategy.
+- **Caveats:** Net accuracy gain (+0.42%) is modest at dataset scale. "No merge induced" is judged via GT labels in simulation, not a live segmentation, so real-world false-merge risk may differ.
 - **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "Split 6611, Correct 1091075; Median Tortuosity (Split) 1.1115, (Correct) 1.0764; Mean (Split) 1.2163, (Correct) 1.1175; Mann-Whitney U=4.5781e+09, p=0; Point-biserial r=0.0335, p=0"; rerun "Split 6611, Correct 1091075; Median Tortuosity (Split) 1.1115, (Correct) 1.0764; Mean (Split) 1.2163, (Correct) 1.1175; Mann-Whitney U=4.5781e+09, p=0.0000e+00; Point-biserial r=0.0335, p=0.0000e+00" → exact match. Revision: direct $RERUN_PKL load + numpy>=2.
+- **Rerun result:** recorded 5881/6805 splits resolved (86.42%), accuracy 78.71%→79.13% (+0.42%); rerun identical → exact match.
 - **Generalization:** GENERALIZES
-- **Across datasets:** origin 789202: split n=6611, correct n=1091075; median 1.1115 vs 1.0764; r=0.0335, p≈0. 794491: split n=7485, correct n=408632; median 1.0860 vs 1.0597; r=0.0607, p≈0. 794495: split n=7662, correct n=912147; median 1.0718 vs 1.0555; r=0.0253, p≈0. Same direction (split > correct), same modest effect-size (r 0.025–0.061), all p ≈ 0 across all brains.
-- **Verdict:** MAJOR
-- **Test:** Mann-Whitney U + point-biserial correlation, n=6,611 split vs 1,091,075 correct, U=4.58e9, p≈0; r=0.0335, p≈0 — both tests are appropriate in principle but the conclusion is driven entirely by the huge n.
-- **Statistical issues:**
-  - **Significance dominated by sample size:** with n ≈ 1.1M, point-biserial r = 0.0335 corresponds to a z-score around ~35; the result is unsurprising but the effect is essentially noise (r² ≈ 0.001 — tortuosity explains 0.1% of split-vs-correct variance).
-  - **Non-independence:** edges within the same neuron and along the same cable are spatially correlated; the effective n is much smaller than 1.1M. The reported p≈0 vastly overstates evidence.
-  - **Median gap of 0.035 in tortuosity** is biologically tiny; this is a textbook "large-n trivial-effect" significance trap.
-- **Logic issues:**
-  - The paper's verbal conclusion "tortuosity is statistically associated with splits but the effect is small in magnitude" is honest; the caveat in the report acknowledges the tiny r. So the inference is not overreaching — but the discovery loop still flagged this as confirmation of a "strong" structural property by virtue of significance.
-  - No predictive value: r=0.03 means a tortuosity-only classifier would be useless in practice.
-- **Downgrade based on rerun/extrapolation:** No — GENERALIZES but the effect size remains tiny (r=0.025–0.061) on all three brains. The hypothesis should be presented as "directionally consistent but practically negligible."
-- **Corrected test:** (a) Cliff's delta (rank-biserial) computed split-vs-correct on tortuosity, with cluster-bootstrap 95% CI by resampling NEURONS — that turns a "significance-driven-by-1.1M" point r-statistic into an effect-size with a CI that respects the within-neuron correlation. (b) Per-neuron paired Wilcoxon on neuron-level median tortuosity (split − correct), the appropriate aggregate test when each neuron's edges are not independent.
-- **Corrected result:** origin 789202 — Cliff's delta = +0.2562 with cluster-bootstrap 95% CI [+0.2104, +0.3324] (cluster p ≈ 0); per-neuron paired Wilcoxon W = 78, p = 2.44e-04, n_pairs = 12, bootstrap 95% CI on median(split − correct) per neuron = [+0.02389, +0.05565]. Side-by-side: original "U = 4.58e9, p ≈ 0; point-biserial r = 0.0335, p ≈ 0" — the corrected Cliff's delta of 0.26 is a SMALL but real effect by Vargha-Delaney standards (|delta| 0.147-0.33 = "small"), and the per-neuron paired Wilcoxon confirms the same direction at the right unit of analysis. The original r = 0.03 was a misleadingly small effect size because it was computed at the wrong unit (per-edge); per-cluster the effect is small-but-meaningful.
-- **Corrected generalization:** GENERALIZES — origin 789202: Cliff's delta = +0.26 [+0.21, +0.33]; 794491: Cliff's delta = +0.28 [+0.23, +0.34], per-neuron Wilcoxon p = 1.95e-03; 794495: Cliff's delta = +0.21 [+0.14, +0.24], per-neuron Wilcoxon p = 1.91e-06. The direction and magnitude are consistent across all three brains.
-- **Post-correction verdict:** WEAKENED — direction confirmed, effect-size much smaller than the p ≈ 0 originally implied but real (Cliff's delta in 0.21–0.28 range, "small" effect by Vargha-Delaney). Original framing was statistically misleading (point-biserial r on 1.1M edges); the corrected Cliff's delta and per-neuron Wilcoxon confirm a small but robust tortuosity-vs-split effect.
-
-### 15. (Priority 0.253 · Surprise 0.284) Split edges are spatially closer to merge sites than correct edges (by ~170 µm), suggesting joint failure zones.
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 61 · **Belief:** Leaning True → Likely True (0.7083 → 0.8906) · **Direction:** Positive
-- **Tested:** Whether the Euclidean distance from split edges to the nearest merge site is smaller than that for correct edges.
-- **Conclusion:** Across 6,805 split and 1,109,034 correct edges, split-to-merge mean distance 2,084.76 µm (median 1,794.64 µm) vs correct 2,265.14 µm (median 1,956.93 µm). Mann-Whitney U p = 3.50e-38, Welch's t p = 7.14e-27. Splits and merges co-localize in shared failure zones.
-- **Caveats:** Effect size is modest (~170 µm gap on ~2 mm baseline); significance again driven by sample size.
-- **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "Split mean 2084.76 µm (median 1794.64); Correct mean 2265.14 µm (median 1956.93); Mann-Whitney U=3432660112.0, p=3.50e-38; Welch's t=-10.7131, p=7.14e-27"; rerun "n_split=6805, n_correct=1109034; Split mean 2084.76 µm (median 1794.64); Correct mean 2265.14 µm (median 1956.93); Mann-Whitney U=3432660112.0, p=3.50e-38; Welch's t=-10.7131, p=7.14e-27" → exact match. Revision: direct $RERUN_PKL load + numpy>=2.
-- **Generalization:** GENERALIZES
-- **Across datasets:** origin 789202: split median 1794.64 µm vs correct 1956.93 µm, Mann-Whitney p=3.50e-38, t=−10.71, p=7.14e-27. 794491: split 818.04 vs correct 846.80 µm, p=1.98e-14, t=−2.85, p=2.18e-03 (effect much smaller but same direction). 794495: split 1476.84 vs correct 1672.23 µm, p=2.91e-73, t=−22.28, p=4.29e-107. Split-closer-to-merge holds on all three brains; gap shrinks on 794491 but direction and significance are preserved.
-- **Verdict:** MAJOR
-- **Test:** Mann-Whitney U + Welch's t (n=6,805 split, 1,109,034 correct), p=3.50e-38 / p=7.14e-27 — appropriate tests for the data shape, but the conclusion confuses statistical with practical significance.
-- **Statistical issues:**
-  - **Effect size small:** ~170 µm gap on a ~2,000 µm baseline (~8% relative shift). The colossal n drives the p-value, not the effect.
-  - **Non-independence:** distances along cable are spatially correlated; treating each of 1.1M edges as independent inflates evidence. A bootstrap over neurons would yield a much tamer p-value.
-  - **Sparse anchors:** only 67 merge sites anchor the comparison; permutation over merge sites is not reported.
-  - **Effect attenuates substantially on 794491** (median gap shrinks from ~170 µm to ~29 µm, t drops from −10.71 to −2.85) — the same direction but practically a different magnitude regime.
-- **Logic issues:**
-  - "Joint failure zones" is a mechanistic frame the test cannot establish — it could equally reflect that both error types prefer the same dense neuropil for unrelated reasons, or any unmodeled common confounder.
-  - The headline "split errors are closer to merge sites by ~170 µm" overstates the practical effect, given how small ~170 µm is relative to the baseline.
-- **Downgrade based on rerun/extrapolation:** No — GENERALIZES directionally but the effect-size attenuation on 794491 should be highlighted; the report should add "magnitude varies substantially across brains."
-- **Corrected test:** (a) cluster-bootstrap by NEURON on the median(split − correct) distance to nearest merge site, returning a 95% CI and a cluster-robust p-value; (b) Cliff's delta with cluster-bootstrap 95% CI; (c) merge-site bootstrap (resample the 67 merge anchors) to bound anchor-set variability. All on the same data.
-- **Corrected result:** origin 789202 — observed median gap (split − correct) = −162.29 um. Cluster-bootstrap 95% CI = [−373.03, +15.55] um (CI crosses zero), cluster-p = 0.1067. Cluster-bootstrap Cliff's delta CI = [−0.1935, +0.0171], p = 0.1333. Merge-site bootstrap CI = [−302.78, +274.89] um. Side-by-side: original "U = 3.43e9, p = 3.5e-38; t = −10.71, p = 7.1e-27" → corrected "gap CI straddles zero, p = 0.11; Cliff's delta CI straddles zero, p = 0.13" — neither cluster nor merge-site bootstrap can reject zero at α = 0.05.
-- **Corrected generalization:** DOES-NOT-GENERALIZE (cluster-corrected) — origin: gap CI [−373, +16], p = 0.11; 794491: gap CI [−126, +25], p = 0.18 (NS, gap collapses to ≈ −29 um); 794495: gap CI [−457, +24], p = 0.09 (NS but borderline; observed gap −195 um). None of the three brains reach cluster-significance under the corrected test, although all three point estimates are negative.
-- **Post-correction verdict:** OVERTURNED — the original "split is closer to merge sites by 170 µm with p = 3.5e-38" relied on treating 1.1M edges as i.i.d.; once the within-neuron correlation is respected, the same point estimate has a 95% CI that includes zero on every brain. The directional consistency (negative on all three) is suggestive but not significant; the "joint failure zones" mechanistic claim is not supported by a cluster-correct test.
-
-### 16. (Priority 0.253 · Surprise 0.284) Effectively 100% of GT split gaps are <15 µm, well below the 80% threshold posited.
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 63 · **Belief:** Leaning True → Likely True (0.7083 → 0.8906) · **Direction:** Positive
-- **Tested:** Whether >80% of disconnected GT segments belonging to the same neuron are separated by <15 µm, to inform a path-finding agent's search radius.
-- **Conclusion:** Across 6,805 split transitions, 100.00% of gaps fall under 15 µm, with the ECDF rising sharply between 3–5 µm. 95th percentile ≈ 5.85 µm, 99th ≈ 6.50 µm. A repair agent can use a tight ~6.5 µm radius to cover virtually all real splits while minimizing accidental merges.
-- **Caveats:** None noted; this directly reinforces entry #1.
-- **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "Total split gaps analyzed: 6805; % < 15 µm = 100.00%; ~5.85 µm covers 95%; ~6.50 µm covers 99%"; rerun "Total split gaps analyzed: 6805; % < 15 µm = 100.00%; ~5.85 µm (95%), ~6.50 µm (99%)" → exact match. Revision: direct $RERUN_PKL load + numpy>=2.
-- **Generalization:** GENERALIZES
-- **Across datasets:** origin 789202: 6805 gaps, 100.00% < 15 µm; 95% covered by 5.85 µm, 99% by 6.50 µm. 794491: 7847 gaps, 100.00% < 15 µm; 95% by 5.79 µm, 99% by 6.44 µm. 794495: 7988 gaps, 100.00% < 15 µm; 95% by 5.80 µm, 99% by 6.41 µm. The "100% under 15 µm" claim and the ~6.5 µm 99-percentile threshold are nearly identical across all three brains.
-- **Verdict:** OK
-- **Test:** Descriptive ECDF and percentile thresholds over n=6,805 gaps; no formal hypothesis test reported. The claim "≥80% are under 15 µm" is trivially true given 100% are under 15 µm.
-- **Statistical issues:**
-  - **No formal test:** no CI on the 95th/99th percentiles is reported, but with n=6,805 these percentiles are tightly estimated and the result generalizes near-identically to two extra brains, so this is fine.
-  - The 80% threshold posited in the hypothesis is far below the observed 100%, so the test is one-sided in a trivial direction; no power concern.
-- **Logic issues:**
-  - None — the description matches the conclusion. The generalization is striking: 95th-percentile is 5.79–5.85 µm across all three brains.
-- **Downgrade based on rerun/extrapolation:** No — GENERALIZES essentially identically across all three brains.
-
-### 17. (Priority 0.253 · Surprise 0.284) Split errors cluster near topological branch points (mean geodesic distance ~516 µm vs ~711 µm for correct edges).
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 64 · **Belief:** Leaning True → Likely True (0.7083 → 0.8906) · **Direction:** Positive
-- **Tested:** Whether split edges are closer (geodesically) to GT branch points than correct edges, implicating local geometric complexity in fragmentation.
-- **Conclusion:** Across 6,805 split and 1,109,034 correct edges, mean geodesic distance to nearest branch point was 516.30 µm (split) vs 710.59 µm (correct), Mann-Whitney U p = 1.32e-197. Split edges are tightly constrained to branch-point regions and lack the long-distance tails of correct edges.
-- **Caveats:** No formal review was provided for this hypothesis (review field "N/A"), so implementation faithfulness is unverified.
-- **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "split mean 516.30 µm, correct mean 710.59 µm; Mann-Whitney U p = 1.32e-197 over 6805 split & 1109034 correct edges"; rerun "Total split edges evaluated: 6,805; Total correct edges evaluated: 1,109,034; split mean 516.30 µm, correct mean 710.59 µm; Mann-Whitney U=2979025451.5, p=1.3239e-197" → exact match. Revision: $RERUN_PKL replaces a `Path.rglob` search that returned empty in the sandbox + numpy>=2.
-- **Generalization:** GENERALIZES
-- **Across datasets:** origin 789202: split mean 516.30 µm vs correct 710.59 µm over 6805/1109034 edges, U=2.98e9, p=1.32e-197. 794491: split 384.29 µm vs correct 389.49 µm over 7847/420702 edges, U=1.46e9, p=5.16e-67 (much smaller effect size — only ~5 µm gap — but same direction, still highly significant). 794495: split 423.67 µm vs correct 506.89 µm over 7988/934849 edges, U=3.47e9, p=2.97e-27. Split-closer-to-branch-point holds on all three brains; effect size is largest on the origin and weakest on 794491.
-- **Verdict:** MAJOR
-- **Test:** Mann-Whitney U on geodesic distance to nearest branch point, n=6,805 split vs 1,109,034 correct, U=2.98e9, p=1.32e-197 — appropriate non-parametric for skewed distance data; reviewer field is "N/A" so faithfulness of implementation is unaudited.
-- **Statistical issues:**
-  - **Non-independence:** geodesic distance from one edge to a branch point is highly correlated with its neighbors' distances; effective n is much smaller than 1.1M.
-  - **Effect-size attenuation:** on 794491 the median gap collapses from ~195 µm to ~5 µm yet p remains <1e-66. This is the signature of n-driven significance: direction is preserved, but the practical signal nearly vanishes on one brain.
-  - **No review (review = "N/A")** — implementation faithfulness has not been audited; the experiment loop didn't generate a checker.
-- **Logic issues:**
-  - "Complex local geometry around branch points increases the risk of fragmentation" is mechanistically plausible but the observational test cannot rule out alternative explanations (signal density, GT density, soma proximity).
-  - Headline overstates: "split edges are tightly constrained to branch-point regions" doesn't capture the highly attenuated effect on 794491.
-- **Downgrade based on rerun/extrapolation:** No — GENERALIZES directionally on all three brains, though the report should be qualified with "effect size varies by ~30× across brains."
-- **Corrected test:** (a) cluster-bootstrap by NEURON on the median(split − correct) geodesic distance to nearest branch point and on Cliff's delta; (b) per-neuron paired Wilcoxon signed-rank on neuron-level median distance. Both account for the within-neuron spatial autocorrelation the original Mann-Whitney treated as i.i.d.
-- **Corrected result:** origin 789202 — observed median gap = −184.19 um, Cliff's delta = −0.2238 with cluster-bootstrap 95% CI = [−0.2847, −0.1346], cluster-p ≈ 0; per-neuron paired Wilcoxon W = 0, p = 2.44e-04, bootstrap CI on per-neuron median(split − correct) = [−178.03, −87.09] um. Side-by-side: original "U = 2.98e9, p = 1.32e-197" → corrected "Cliff's delta = −0.22 [−0.28, −0.13] (small effect by Vargha-Delaney), cluster-p ≈ 0; per-neuron Wilcoxon p = 2.4e-04." The direction is confirmed; the effect-size moves from a "p ≈ 0 sample-size artefact" to a "small but real" Cliff's delta.
-- **Corrected generalization:** GENERALIZES — origin 789202: Cliff's delta = −0.22 [−0.28, −0.13], p ≈ 0; 794491: Cliff's delta = ≈ −0.13 [−0.18, −0.07], cluster-bootstrap CI on gap = [−56.90, −26.46] um, p ≈ 0; per-neuron Wilcoxon p = 1.95e-03. 794495: Cliff's delta = ≈ −0.08 [−0.13, −0.03], CI on gap = [−55.85, −9.74] um, p = 0.013; per-neuron Wilcoxon p = 0.027. The effect is consistent in direction and significant under the cluster-corrected test on all three brains, with effect size attenuating from "small" on origin to "negligible-to-small" on 794495.
-- **Post-correction verdict:** UPHELD — the original conclusion ("split edges are closer to branch points") survives cluster correction on all three brains, but the practical magnitude is now properly quantified as a Cliff's delta of 0.08–0.22 (negligible-to-small), not the "p ≈ 1e-197" the original i.i.d. Mann-Whitney implied. Headline framing should be "small but robust spatial association" rather than "tightly constrained."
-
-### 18. (Priority 0.253 · Surprise 0.284) Independent reconfirmation: split edges show significantly higher local 5-hop tortuosity than correct edges.
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 73 · **Belief:** Leaning True → Likely True (0.7083 → 0.8906) · **Direction:** Positive
-- **Tested:** Whether 5-hop local skeleton tortuosity is higher for split edges than for correct edges (a finer-window replication of #14).
-- **Conclusion:** 1,109,034 correct vs 6,805 split edges: median tortuosity 1.0801 vs 1.1132 (means 1.1194 vs 1.2062), one-sided Mann-Whitney p = 1.66e-276. The U-Net consistently struggles through sharp turns, but per-edge effect size is again small.
-- **Caveats:** Same caveat as #14: the absolute median difference (~0.03) is modest; the result depends on the huge sample for significance. This is essentially a robustness check of #14.
-- **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "Median Tortuosity CORRECT 1.080117, SPLIT 1.113188; Mean CORRECT 1.119395, SPLIT 1.206197; Mann-Whitney U=4714207979.0, p=1.6599e-276 over 1109034 correct & 6805 split edges"; rerun "Processed 1109034 correct edges and 6805 split edges; Median CORRECT 1.080117, SPLIT 1.113188; Mean CORRECT 1.119395, SPLIT 1.206197; Mann-Whitney U=4714207979.0, p=1.6599e-276" → exact match. Revision: $RERUN_PKL replaces a `Path.rglob` search that returned empty in the sandbox + numpy>=2.
-- **Generalization:** GENERALIZES
-- **Across datasets:** origin 789202: correct median 1.0801, split median 1.1132 over 1.11M correct / 6805 split, U=4.71e9, p=1.66e-276. 794491: correct 1.0617, split 1.0854 over 420702/7485, U=2.09e9, p≈0. 794495: correct 1.0575, split 1.0735 over 912147/7662, U=4.45e9, p=6.19e-192. Same direction (split > correct), same modest magnitude (~0.02–0.03 median gap), all p extremely small. Independent replication of #14 holds on all brains.
-- **Verdict:** MAJOR
-- **Test:** One-sided Mann-Whitney U on 5-hop local tortuosity, n=6,805 split vs 1,109,034 correct, U=4.71e9, p=1.66e-276 — appropriate non-parametric choice; same statistical concerns as #14 (this is its sliding-window replication).
-- **Statistical issues:**
-  - **Tortuosity windows overlap:** consecutive edges share most of their 5-hop window, so per-edge tortuosity values are heavily autocorrelated. The independence assumption of Mann-Whitney is violated even more strongly than in #14.
-  - **Effect size tiny:** median gap of ~0.03 in tortuosity; mean gap of ~0.09. The huge p-value is driven by n ~ 1.1M.
-  - **Replication does not add evidence:** because #18 uses the same dataset and a near-identical metric to #14, it is mostly a robustness check rather than independent confirmation. Reporting it as a separate finding inflates the apparent number of confirmations.
-- **Logic issues:**
-  - "Overwhelming statistical evidence" is misleading framing: the median gap is tiny and indistinguishable from #14's median gap. The conclusion should emphasize the marginality of the effect, not its p-value.
-- **Downgrade based on rerun/extrapolation:** No — GENERALIZES but same caveat as #14: practically negligible effect size on all brains.
-- **Corrected test:** (a) cluster-bootstrap by NEURON on the median(split − correct) 5-hop tortuosity gap and on Cliff's delta — the 5-hop sliding windows OVERLAP by 4 edges so per-edge tortuosities are not independent, and the Mann-Whitney p-value of 1.66e-276 is the inflated consequence; (b) per-neuron paired Wilcoxon on neuron-level median tortuosity (split vs correct).
-- **Corrected result:** origin 789202 — observed median gap = +0.0331 (essentially identical to the original ≈ +0.03), Cliff's delta = +0.2498 with cluster-bootstrap 95% CI = [+0.1926, +0.3110], cluster-p ≈ 0; per-neuron paired Wilcoxon W = 78, p = 2.44e-04, n_pairs = 12. Side-by-side: original "U = 4.71e9, p = 1.66e-276" → corrected "Cliff's delta = +0.25 [+0.19, +0.31] (small effect), cluster-p ≈ 0; per-neuron Wilcoxon p = 2.4e-04." Direction confirmed; effect-size moves from "significance-driven-by-n" to a "small but consistent" Cliff's delta.
-- **Corrected generalization:** GENERALIZES — origin 789202: Cliff's delta = +0.25 [+0.19, +0.31]; 794491: Cliff's delta = +0.27 [+0.22, +0.32], per-neuron Wilcoxon p = 1.95e-03; 794495: Cliff's delta = +0.19 [+0.15, +0.24], per-neuron Wilcoxon p = 1.91e-06. Consistent direction and magnitude across all three brains.
-- **Post-correction verdict:** UPHELD — direction confirmed and Cliff's delta in the 0.19–0.27 range across all three brains (small but real), matching the corrected effect-size for #14 (id 59) almost exactly (Cliff's delta 0.21–0.28 for 10-hop). This is genuine reconfirmation of the tortuosity-vs-split relationship but at a "small effect" magnitude rather than the "p ≈ 0" headline; the framing should be "small but robust" not "overwhelming statistical evidence."
-
-### 19. (Priority 0.253 · Surprise 0.284) Merge sites carry a strong geometric "tangle" signature — local branch density ~28× higher than at non-merge controls.
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 84 · **Belief:** Leaning True → Likely True (0.7083 → 0.8906) · **Direction:** Positive
-- **Tested:** Whether merge sites exhibit higher local branch density (within 15 µm) in the U-Net fragments graph than matched non-merge control sites on the same segments.
-- **Conclusion:** Across 67 merge sites, mean local branch density was 1.13 vs 0.04 at controls; paired t = 13.35 (p = 2.03e-20), Wilcoxon W = 21.0 (p = 1.19e-11), ROC-AUC 0.9236. Spurious local branching is a strong geometric feature for detecting merge errors automatically.
-- **Caveats:** Only 67 merge sites; reproducibility on larger merge populations would strengthen the result.
-- **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "67 merge sites; density merge 1.13 vs control 0.04; paired t=13.35 p=2.03e-20; Wilcoxon W=21.0 p=1.19e-11; ROC-AUC 0.9236"; rerun "Analyzed 67 merge sites; merge 1.13 vs control 0.04 branches/15µm; paired t=13.3482 p=2.0302e-20; Wilcoxon W=21.0000 p=1.1942e-11; ROC-AUC 0.9236" → all key numbers match exactly. The script exited 1 *after* printing all statistics because the post-analysis matplotlib `boxplot(..., labels=...)` keyword was renamed to `tick_labels` in matplotlib 3.11; this is a plotting-API quirk, not a reproduction failure. Revision: direct $RERUN_PKL load + numpy>=2 + vendored sklearn.
-- **Generalization:** GENERALIZES
-- **Across datasets:** origin 789202: 67 merge sites; merge density 1.13 vs control 0.04; paired t=13.35, p=2.03e-20; Wilcoxon W=21, p=1.19e-11; AUC=0.9236. 794491: 86 merges; 1.10 vs 0.08; t=12.14, p=2.97e-20; W=75, p=5.47e-13; AUC=0.8825. 794495: 105 merges; 1.02 vs 0.05; t=13.46, p=1.65e-24; W=109, p=7.95e-16; AUC=0.8857. (Same downstream matplotlib boxplot `labels` crash on all three runs after the statistics print — analysis itself reproduces cleanly on every brain.) Merge sites carry the dense-branching tangle signature on all three brains with AUC ≥ 0.88.
-- **Verdict:** OK
-- **Test:** Paired t-test (t=13.35, p=2.03e-20) + Wilcoxon signed-rank (W=21, p=1.19e-11) + ROC-AUC (0.9236) on 67 merge sites with on-segment matched controls — both tests are appropriate for paired data, and Wilcoxon (non-parametric) corroborates the parametric t-test against any normality concerns.
-- **Statistical issues:**
-  - **Small but adequate n:** 67 merge sites is modest, but the effect size is huge (1.13 vs 0.04, a ~28× ratio) so power is fine. Both parametric and non-parametric tests agree.
-  - **Matched controls on the same segment** is a reasonable design that absorbs neuron-level confounders.
-  - **Same metric used as the discoverable feature:** the AUC of 0.9236 is an in-sample-on-control-design quantity; out-of-sample performance on raw segments would be the relevant deployment number, but the structural claim (local-branch-density is high at merge sites) is solid.
-- **Logic issues:**
-  - "Strong geometric signature ... can serve as a powerful feature" is supported by AUC ≥ 0.88 on three brains, no overreach.
-- **Downgrade based on rerun/extrapolation:** No — GENERALIZES (AUC 0.88–0.94 on all three brains, paired t and Wilcoxon both significant).
-
-### 20. (Priority 0.253 · Surprise 0.284) Omit errors are nearly twice as likely on terminal (leaf-ending) edges as on internal edges.
-- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 85 · **Belief:** Leaning True → Likely True (0.7083 → 0.8906) · **Direction:** Positive
-- **Tested:** Whether omit errors disproportionately occur on terminal branches (paths ending in a leaf) rather than internal segments of the GT neuron's topology.
-- **Conclusion:** Terminal-edge omit rate 4.38% (23,792 / 543,477) vs internal-edge omit rate 2.41% (20,898 / 865,568); χ² = 4189.94, p < 1e-300. An 81% relative increase shows the segmentation model fails distal thin neurites at roughly double the internal rate.
-- **Caveats:** None noted; sample sizes and effect size are both large.
-- **Reproduction:** REPRODUCED (code: revised-loading)
-- **Rerun result:** recorded "Terminal Omit=23792 / Non-Omit=519685 (4.38%); Internal Omit=20898 / Non-Omit=844670 (2.41%); Chi-square=4189.94, p ≈ 0"; rerun "Terminal Omit=23792 Non-Omit=519685 (4.38%); Internal Omit=20898 Non-Omit=844670 (2.41%); Chi-square=4189.9364, p=0.0000e+00" → exact match. Revision: direct $RERUN_PKL load + numpy>=2.
-- **Generalization:** GENERALIZES
-- **Across datasets:** origin 789202: terminal 4.38% vs internal 2.41% (ratio 1.82×), χ²=4189.94, p≈0. 794491: terminal 4.94% vs internal 3.82% (ratio 1.29×), χ²=425.40, p=1.63e-94. 794495: terminal 2.47% vs internal 1.82% (ratio 1.36×), χ²=691.98, p=1.66e-152. Terminal-omit-rate-greater-than-internal holds on all three brains, all p ≪ 0.001; relative magnitude is ~1.3×–1.8×.
+- **Across datasets:** A* split-repair success far exceeds the 40% threshold on all three. origin (789202): 5881/6805 = 86.42% resolved, accuracy 78.71%→79.13% (+0.42%). ds_794491: 6648/7847 = 84.72%, 74.77%→75.95% (+1.18%). ds_794495: 7166/7988 = 89.71%, 68.55%→69.07% (+0.53%). Success rate is consistently ~85-90%.
 - **Verdict:** MINOR
-- **Test:** Chi-square test of independence on edge-type (terminal vs internal) × omit (yes/no), χ²=4189.94, p<1e-300, n=1,409,045 edges — appropriate for a 2×2 contingency table; expected cell counts are very large.
-- **Statistical issues:**
-  - **Independence violation:** edges within the same neuron are not i.i.d.; clustering at neuron level would tighten SE. With ratio 1.82× and χ² ≈ 4200, no realistic correction overturns the conclusion.
-  - **Effect-size attenuation across brains:** ratio drops from 1.82× (origin) to 1.29× (794491) and 1.36× (794495). Direction is consistent but the "twice as likely" headline overstates two of three brains.
-- **Logic issues:**
-  - "Distal thin neurites" is a mechanistic conjecture not directly tested — terminal edges could be omitted for many reasons (signal sparsity, axon-vs-dendrite difference, GT-curation artifacts).
-- **Downgrade based on rerun/extrapolation:** No — GENERALIZES directionally. Headline "nearly twice as likely" should be softened to "1.3× to 1.8× more likely depending on brain."
+- **Test:** Descriptive simulation — A* path-finding on the fragments graph with turn/radius penalties; 5,881/6,805 targeted splits resolved (86.42%) vs the hypothesis threshold of >40%; simulated edge accuracy 78.71%→79.13% (+0.42%). No inferential statistic.
+- **Statistical issues:** None applicable (no hypothesis test; it is a pass/fail against a fixed 40% bar). The 5,000-node A* expansion cap and the `dist_gt<10 µm` merge-validity radius are arbitrary thresholds that affect both numerator and denominator.
+- **Logic issues:** "Without inducing merges" is adjudicated against GT labels inside the simulation, not against a live segmentation, so the real-world false-merge rate is not actually measured — the no-merge guarantee is over-claimed relative to deployment. The net accuracy gain (+0.42%) is modest and should not be read as a large quality improvement.
+- **Verdict rationale:** The 86% ≫ 40% margin is reproduced and GENERALIZES (85–90% on all three), so the headline holds; MINOR only for the simulation-vs-live merge-safety overreach and arbitrary search caps.
 
----
+### 11. (Priority 0.253 · Surprise 0.284) Merge segments are runaway "giant" components, far larger than non-merging segments.
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 43 · **Belief:** Leaning True → Likely True (0.7083→0.8906) · **Direction:** Positive
+- **Tested:** Whether merge segments cover exponentially more GT cable than non-merging segments (massive overgrown labels vs local blips).
+- **Conclusion:** 64 merging segments averaged ~15,449 µm cable (median ~3,099 µm) versus ~532 µm (median ~102 µm) for 8,273 non-merging segments — a ~29× mean difference, highly significant on log-transformed lengths (Welch's t = 16.54, p = 7.32e-25). Merges are driven by enormous overgrown labels, not small local blips. Positive surprisal (+0.284).
+- **Caveats:** Only 64 merge segments, and the distribution is heavily skewed (mean ≫ median), so means are outlier-sensitive; the log transform and median mitigate but do not eliminate this.
+- **Reproduction:** REPRODUCED (code: revised-loading)
+- **Rerun result:** recorded 64 merging vs 8273 non-merging, mean 15448.96 vs 531.76 µm, Welch t=16.5444, p=7.3232e-25; rerun identical → exact match.
+- **Generalization:** GENERALIZES
+- **Across datasets:** merging segments cover vastly more cable than non-merging on all three, highly significant on log-lengths. origin (789202): mean 15449 vs 532 µm (median 3099 vs 102), Welch t=16.54, p=7.32e-25 (n=64). ds_794491: mean 4457 vs 194 µm (median 1330 vs 29), t=29.03, p≈0 (n=98). ds_794495: mean 16277 vs 477 µm (median 3226 vs 43), t=24.02, p≈0 (n=98). Robust giant-merge signature.
+- **Verdict:** SOUND
+- **Test:** Welch's two-sample t-test (`ttest_ind(equal_var=False)`) on log10-transformed segment cable lengths; 64 merging vs 8,273 non-merging segments; t=16.5444, p=7.3232e-25; means 15,449 vs 532 µm, medians 3,099 vs 102 µm.
+- **Statistical issues:** Appropriate choices throughout — the log10 transform addresses the heavy right-skew, Welch's t handles unequal variances/group sizes, and segments are the natural independent unit (one length per predicted label), so the independence assumption is satisfied here (unlike the edge-level tests). The 64-segment merge class is modest but the ~29× median gap is far from the resolution limit.
+- **Logic issues:** Minor wording — the hypothesis says "exponentially larger" while the test demonstrates a large multiplicative (log-scale) difference, not an exponential growth law; the operative conclusion (merges are giant overgrown labels, not local blips) is fully supported.
+- **Verdict rationale:** Correct test on independent units, huge effect, exact reproduction, and GENERALIZES (t≥16, p≤7e-25 on all three). SOUND.
+
+### 12. (Priority 0.253 · Surprise 0.284) Omit errors are ~2.4× more likely at extreme Z-depths than at central depths.
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 45 · **Belief:** Leaning True → Likely True (0.7083→0.8906) · **Direction:** Positive
+- **Tested:** Whether omit errors are more frequent at the extreme top/bottom Z-coordinates of the imaged volume than in central depths (optical attenuation/scattering).
+- **Conclusion:** Extreme-Z nodes (top/bottom 10%) had a 4.44% omit rate (2,283/51,369) versus 1.94% (11,342/585,909) centrally; a Cochran-Mantel-Haenszel test controlling for brain gave pooled OR 2.3561 with p ≈ 0. Axial extremes degrade reconstruction, consistent with depth-dependent signal loss. Positive surprisal (+0.284). Note this concerns Z *depth/position*, distinct from the Z *orientation* effects refuted in #2/#3.
+- **Caveats:** Min-max normalization defines "extreme" relative to each volume's own Z-range, conflating true optical depth with volume-edge boundary artifacts. None noted in review otherwise.
+- **Reproduction:** REPRODUCED (code: revised-loading)
+- **Rerun result:** recorded Extreme 4.44% (2283/51369) vs Center 1.94% (11342/585909), CMH OR=2.3561, p≈0; rerun identical → exact match.
+- **Generalization:** PARTIAL
+- **Across datasets:** the elevated omit rate at extreme Z-depths holds on one extra and vanishes on the other. origin (789202): Extreme 4.44% vs Center 1.94%, CMH OR=2.3561, p≈0 (significant). ds_794495: Extreme 5.37% vs Center 1.76%, OR=3.1672, p≈0 (significant, even stronger). ds_794491: Extreme 4.00% vs Center 3.94%, OR=1.0149, p=7.996e-01 (no effect — rates essentially equal). So depth-extreme omit excess generalizes to 794495 but not to 794491.
+- **Verdict:** MAJOR
+- **Test:** Cochran–Mantel–Haenszel test (`statsmodels StratifiedTable`) of extreme-Z vs center-Z × omit, stratified by brain; pooled OR=2.3561, p≈0; extreme 4.44% (2283/51369) vs center 1.94% (11342/585909).
+- **Statistical issues:** (1) The CMH "controlling for brain" is illusory on the origin — there is only one brain in the pkl, so the stratified test reduces to a single 2×2 chi-square with no actual confounder control. (2) Node non-independence again inflates effective n. (3) "Extreme Z" is defined by per-volume min-max normalization (top/bottom 10% of the *observed* z-range), which conflates true optical depth with volume-edge/boundary truncation artifacts — so even the OR=2.36 may reflect FOV boundary effects rather than attenuation.
+- **Logic issues:** The conclusion asserts a specific physical cause ("optical attenuation or scattering at extreme depths degrades signal") that the experiment cannot isolate from boundary/edge artifacts — a mechanism overreach. The OR=2.36 is a genuine moderate effect, but the causal attribution is unsupported.
+- **Verdict rationale:** PARTIAL generalization — the effect strengthens on 794495 (OR=3.17) but *vanishes* on 794491 (OR=1.0149, p=0.80), so it is not a stable property; combined with the no-real-stratification and boundary-confound issues, the optical-attenuation claim must be downgraded.
+- **Corrected test:** Neuron-cluster permutation test (neuron = independent unit) on the Extreme-vs-Center odds ratio, with a Woolf 95% CI on the single 2×2, replacing the CMH "stratified by brain" which had only one stratum on the origin (no real confounder control) and treated all nodes as independent.
+- **Corrected result:** Woolf OR (Extreme vs Center) = 2.3561, 95% CI [2.2504, 2.4668]; but the neuron-clustered permutation OR = 0.5320 with two-sided p = 0.6607 (NOT significant). Versus original CMH OR = 2.3561, p ≈ 0. Once neurons (not nodes) are the unit, the elevated extreme-Z omit rate is not significant on the origin.
+- **Post-correction verdict:** OVERTURNED — the neuron-cluster permutation test is non-significant (p = 0.6607); the node-level OR = 2.36 and p ≈ 0 were driven by treating ~640k non-independent nodes as independent draws, and the boundary/depth confound is unaddressed.
+- **Corrected generalization:** PARTIAL / INCONCLUSIVE — 794491: neuron OR = nan, permutation p = 0.0002 but the node-level OR is 1.0149 [0.905, 1.138] (no real effect; the tiny significant permutation p with a nan clustered OR is not interpretable as support — INCONCLUSIVE); 794495: neuron-clustered OR = 2.2188, permutation p = 0.1364 (NOT significant despite node-level OR = 3.17, p ≈ 0). Under the correct neuron-level test the extreme-Z omit excess is not significant on any volume.
+
+### 13. (Priority 0.253 · Surprise 0.284) Short omission gaps are internal dropouts bridged by the same segment; long gaps are true terminations.
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 58 · **Belief:** Leaning True → Likely True (0.7083→0.8906) · **Direction:** Positive
+- **Tested:** Whether short omit gaps are flanked by the same predicted segment on both sides (internal dropout), while long omits represent genuine fragment boundaries.
+- **Conclusion:** Of omit paths analyzed, 307 were "bridged" (same flanking segment) and 4,298 "broken"; bridged gaps were much shorter (mean 18.71 µm, median 13.55 µm) than broken gaps (mean 42.54 µm, median 20.16 µm), significantly so (Mann-Whitney U p = 1.95e-19). Short omits are largely artifactual internal dropouts. Positive surprisal (+0.284).
+- **Caveats:** Bridged paths (n = 307) are a small minority (~7%) of omit paths, so conclusions about the bridged class rest on a modest subsample.
+- **Reproduction:** REPRODUCED (code: revised-loading)
+- **Rerun result:** recorded 307 bridged (median 13.55 µm) vs 4298 broken (median 20.16 µm), U=458554.0, p=1.9488e-19; rerun identical → exact match.
+- **Generalization:** GENERALIZES
+- **Across datasets:** bridged omit paths are significantly shorter than broken ones on all three. origin (789202): bridged median 13.55 µm (n=307) vs broken 20.16 µm (n=4298), U=458554, p=1.95e-19. ds_794491: bridged 10.99 µm (n=219) vs broken 15.23 µm (n=4353), p=2.75e-09. ds_794495: bridged 12.17 µm (n=330) vs broken 16.24 µm (n=3815), p=1.20e-12. Direction and significance hold throughout.
+- **Verdict:** SOUND
+- **Test:** One-sided Mann-Whitney U (`alternative='less'`) on omit-path lengths, bridged (n=307) vs broken (n=4298); U=458554.0, p=1.9488e-19; medians 13.55 µm vs 20.16 µm.
+- **Statistical issues:** Well-posed — the analysis unit is a connected omit-path component, and distinct components are genuinely independent (unlike per-edge tests), so MW independence holds; non-parametric MW is the right choice for skewed lengths. The bridged class (n=307, ~7%) is a modest minority but adequately powered.
+- **Logic issues:** None material. The conclusion (short omits are internal dropouts bridged by the same segment; long omits are true terminations) is exactly what the bridged/broken length contrast supports.
+- **Verdict rationale:** Correct test on independent units, clear effect, exact reproduction, and GENERALIZES (p≤2.8e-09 on all three with the same direction). SOUND.
+
+### 14. (Priority 0.253 · Surprise 0.284) High local tortuosity is associated with more split errors (correlation small).
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 59 · **Belief:** Leaning True → Likely True (0.7083→0.8906) · **Direction:** Positive
+- **Tested:** Whether high local tortuosity (curvature, over a 10-edge window) raises split-error likelihood.
+- **Conclusion:** Among 6,611 split and 1,091,075 correct edges, split edges had higher median (1.1115 vs 1.0764) and mean (1.2163 vs 1.1175) tortuosity (Mann-Whitney U p ≈ 0). The effect is statistically overwhelming but the point-biserial correlation is small (r = 0.0335), so curvature is a weak though real risk factor. Positive surprisal (+0.284).
+- **Caveats:** Effect size is tiny (r = 0.0335); the near-zero p-value is driven by the >1M sample, so curvature explains very little split-error variance on its own.
+- **Reproduction:** REPRODUCED (code: revised-loading)
+- **Rerun result:** recorded 6611 split / 1091075 correct, median 1.1115 vs 1.0764, U=4.5781e+09 (p≈0), point-biserial r=0.0335; rerun identical → exact match.
+- **Generalization:** GENERALIZES
+- **Across datasets:** split edges are more tortuous than correct on all three, p≈0, with the same small effect size. origin (789202): median 1.1115 (split) vs 1.0764 (correct), p≈0, r=0.0335. ds_794491: 1.0860 vs 1.0597, p≈0, r=0.0607. ds_794495: 1.0718 vs 1.0555, p≈0, r=0.0253. Direction and significance hold; effect remains small (r≈0.03-0.06) as in the origin.
+- **Verdict:** MINOR
+- **Test:** One-sided Mann-Whitney U (`alternative='greater'`) plus point-biserial correlation on 10-edge-window tortuosity; 6,611 split vs 1,091,075 correct edges; U=4.5781e9, p≈0; point-biserial r=0.0335 (p≈0); medians 1.1115 vs 1.0764.
+- **Statistical issues:** The p≈0 is driven entirely by the >1M sample size; the actual effect is trivial (r=0.0335 → ~0.1% of variance), so curvature explains almost nothing on its own. Edges within neurons are spatially autocorrelated, further inflating the nominal significance. Crucially, the analysis *reports* r and explicitly calls the effect "small," so it does not hide the effect-size problem.
+- **Logic issues:** None — the conclusion is correctly hedged as "a weak though real risk factor," matching the r value; no claim of a strong or causal driver.
+- **Verdict rationale:** Honest reporting of a tiny-but-consistent effect that reproduces and GENERALIZES (r≈0.03–0.06 on all three). Significance-driven-by-n keeps it at MINOR; it is not FLAWED because the effect size is disclosed and the conclusion is appropriately weak.
+- **Corrected test:** Neuron-cluster permutation test (neuron = independent unit) on the split−correct median tortuosity gap, plus Cliff's delta with cluster bootstrap CI, replacing the per-edge Mann-Whitney whose p≈0 was driven by >1M autocorrelated edges.
+- **Corrected result:** Cliff's delta = 0.2618, cluster bootstrap 95% CI [0.1583, 0.3674] (small but CI excludes 0); neuron-cluster permutation one-sided p = 0.002 (SIGNIFICANT; neuron-level median gap = 0.0829). Versus original MW p ≈ 0, point-biserial r = 0.0335. The direction and significance survive the cluster correction, with a confirmed-small effect.
+- **Post-correction verdict:** UPHELD (weak effect) — significant under the neuron-cluster permutation test (p = 0.002), Cliff's delta CI excludes 0; the original "weak but real risk factor" framing is exactly right and survives the correct test.
+- **Corrected generalization:** GENERALIZES — 794491: Cliff's delta = 0.2698 [0.235, 0.346], permutation p = 0.0016 (significant); 794495: Cliff's delta = 0.1973 [0.123, 0.253], permutation p = 0.0002 (significant). Significant small effect on both extras.
+
+### 15. (Priority 0.253 · Surprise 0.284) Split edges sit modestly closer to merge sites than correct edges.
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 61 · **Belief:** Leaning True → Likely True (0.7083→0.8906) · **Direction:** Positive
+- **Tested:** Whether split edges are spatially closer to the nearest merge site than correct edges (co-localized segmentation-failure regions).
+- **Conclusion:** Across 6,805 split and 1,109,034 correct edges, split edges were closer to merge sites (mean 2,084.76 µm, median 1,794.64 µm) than correct edges (mean 2,265.14 µm, median 1,956.93 µm), highly significant (Mann-Whitney U p = 3.50e-38; Welch's t p = 7.14e-27). Splits and merges co-cluster in localized failure regions. Positive surprisal (+0.284).
+- **Caveats:** The absolute median difference (~162 µm out of ~1,800 µm) is small; extreme significance comes from the >1M edge sample, so practical co-localization is weak.
+- **Reproduction:** REPRODUCED (code: revised-loading)
+- **Rerun result:** recorded 6805 split / 1109034 correct, split median 1794.64 µm vs correct 1956.93 µm, U=3432660112.0 (p=3.50e-38), Welch t=−10.7131 (p=7.14e-27); rerun identical → exact match.
+- **Generalization:** GENERALIZES
+- **Across datasets:** split edges sit closer to merge sites than correct edges on all three, significant. origin (789202): split median 1794.64 µm vs correct 1956.93 µm, U-test p=3.50e-38, Welch p=7.14e-27. ds_794491: 818.04 vs 846.80 µm, p=1.98e-14, Welch p=2.18e-03 (significant but smallest gap, ~29 µm). ds_794495: 1476.84 vs 1672.23 µm, p=2.91e-73, Welch p=4.29e-107. Direction and significance hold; the practical gap is small (as flagged in caveats), narrowest on 794491.
+- **Verdict:** MINOR
+- **Test:** One-sided Mann-Whitney U (`alternative='less'`) and one-sided Welch's t on distance-to-nearest-merge-site; 6,805 split vs 1,109,034 correct edges; MW p=3.50e-38, Welch t=−10.7131 p=7.14e-27; medians 1794.64 vs 1956.93 µm.
+- **Statistical issues:** Effect is practically trivial — ~162 µm of a ~1,900 µm median (≈8%) — with the extreme p-values produced solely by the >1.1M correct edges; edges are non-independent and all distances reference the same small merge-site set, so effective n is much smaller than reported. The caveat explicitly flags the small absolute gap.
+- **Logic issues:** The conclusion ("split errors and merge sites are spatially clustered into localized failure regions") is plausible but stronger than an 8% median offset warrants; clustering is asserted from a small shift in central tendency.
+- **Verdict rationale:** GENERALIZES in direction/significance, but the effect is tiny and over-powered (and shrinks to ~29 µm on 794491). Honestly caveated, so MINOR rather than MAJOR.
+- **Corrected test:** Neuron-cluster permutation test (neuron = independent unit) on the split−correct median distance-to-merge gap, plus Cliff's delta with cluster bootstrap CI, replacing the per-edge Mann-Whitney / Welch t whose p≈0 came from >1.1M non-independent edges all referenced to the same small merge-site set.
+- **Corrected result:** Cliff's delta = −0.0740, cluster bootstrap 95% CI [−0.2816, 0.1356] (CI CROSSES 0 — not distinguishable from no effect); neuron-cluster permutation one-sided p = 0.6469 (NOT significant; neuron-level gap only 49.42 µm). Versus original MW p = 3.50e-38, Welch p = 7.14e-27. Once neurons are the unit, the "split closer to merge" effect vanishes.
+- **Post-correction verdict:** OVERTURNED — the cluster-permutation test is non-significant (p = 0.6469) and the Cliff's delta CI crosses 0; the extreme p-values were entirely an n-inflation artifact from non-independent edges.
+- **Corrected generalization:** DOES-NOT-GENERALIZE — 794491: Cliff's delta = −0.0375 [−0.270, 0.150] (crosses 0), permutation p = 0.3913 (not significant); 794495: Cliff's delta = −0.0966 [−0.317, 0.075] (crosses 0), permutation p = 0.3611 (not significant despite naive p = 2.91e-73). Non-significant under the correct test on all three volumes.
+
+### 16. (Priority 0.253 · Surprise 0.284) Split gaps are uniformly small — 100% under 15 µm, 99% under ~6.5 µm.
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 63 · **Belief:** Leaning True → Likely True (0.7083→0.8906) · **Direction:** Positive
+- **Tested:** Whether split errors are small localized gaps (>80% of same-neuron disconnected segments separated by <15 µm), to size a repair tool's search radius.
+- **Conclusion:** All 6,805 split gaps fell under 15 µm (100%), clustering between 3–5 µm with a max outlier ~9 µm; the 95th/99th percentiles were ~5.85 µm and ~6.50 µm. A repair agent can use a tight ~6.5 µm search radius to catch ~99% of splits while minimizing false-merge risk. Positive surprisal (+0.284). This corroborates the ~6.84 µm threshold from the top-ranked result (#1).
+- **Caveats:** None noted; consistent with ID 30. The 80% claim is far exceeded, indicating the prior framing underestimated how tight split gaps are.
+- **Reproduction:** REPRODUCED (code: revised-loading)
+- **Rerun result:** recorded 6805 split gaps, 100.00% under 15 µm, 95th pct ~5.85 µm / 99th pct ~6.50 µm; rerun identical → exact match.
+- **Generalization:** GENERALIZES
+- **Across datasets:** split gaps are uniformly tight on all three. origin (789202): 100% < 15 µm, 95th ~5.85 µm, 99th ~6.50 µm (n=6805). ds_794491: 100% < 15 µm, 95th ~5.79 µm, 99th ~6.44 µm (n=7847). ds_794495: 100% < 15 µm, 95th ~5.80 µm, 99th ~6.41 µm (n=7988). The ~6.5 µm search-radius recommendation is essentially identical across datasets.
+- **Verdict:** SOUND
+- **Test:** Descriptive distributional summary — fraction of 6,805 split gaps under 15 µm and the 95th/99th percentiles; "Percentage of split gaps < 15 µm: 100.00%", 95th ≈5.85 µm, 99th ≈6.50 µm. No inferential test.
+- **Statistical issues:** None — this is a percentile/ECDF description, not a test, so no distributional assumptions apply. The split-gap definition (adjacent same-neuron nodes with different non-zero labels) is the natural one and matches the #1 (id 30) construction.
+- **Logic issues:** The hypothesis floor ("over 80% under 15 µm") is far exceeded (100%), so the claim is comfortably true; the ~6.5 µm search-radius recommendation follows directly from the 99th percentile.
+- **Verdict rationale:** A purely descriptive, unambiguous result that reproduces and GENERALIZES (100% <15 µm, 99th ~6.4–6.5 µm on all three) and corroborates id 30. SOUND.
+
+### 17. (Priority 0.253 · Surprise 0.284) Split errors cluster geodesically closer to branch points than correct edges.
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 64 · **Belief:** Leaning True → Likely True (0.7083→0.8906) · **Direction:** Positive
+- **Tested:** Whether proximity to a GT branch point is a risk factor for split errors (complex local geometry fragments the reconstruction).
+- **Conclusion:** Among 6,805 split and 1,109,034 correct edges, mean geodesic distance to the nearest branch point was 516.30 µm for splits versus 710.59 µm for correct edges (Mann-Whitney U p = 1.32e-197). Splits concentrate near branch points and lack the long-distance outliers seen in correct edges, supporting a branch-point risk signal. Positive surprisal (+0.284).
+- **Caveats:** Review field was "N/A" (no independent audit recorded), so faithful-implementation confirmation is weaker than for other entries.
+- **Reproduction:** REPRODUCED (code: revised-loading)
+- **Rerun result:** recorded 6805 split / 1109034 correct, mean distance to branch 516.30 µm (split) vs 710.59 µm (correct), U=2979025451.5, p=1.3239e-197; rerun identical → exact match.
+- **Generalization:** GENERALIZES
+- **Across datasets:** split edges are geodesically closer to branch points than correct edges on all three, significant. origin (789202): mean 516.30 µm (split) vs 710.59 µm (correct), p=1.32e-197 (gap ~194 µm). ds_794491: 384.29 vs 389.49 µm, p=5.16e-67 (significant but practically tiny gap ~5 µm). ds_794495: 423.67 vs 506.89 µm, p=2.97e-27 (gap ~83 µm). Direction and significance hold; effect magnitude is much weaker on 794491.
+- **Verdict:** MINOR
+- **Test:** Two-sided Mann-Whitney U on geodesic (Dijkstra, multi-source from all branch points) distance to nearest branch point; 6,805 split vs 1,109,034 correct edges; U=2979025451.5, p=1.3239e-197; means 516.30 vs 710.59 µm.
+- **Statistical issues:** The geodesic-distance approach is well-implemented (dummy-node multi-source Dijkstra), but the contrast is partly driven by the correct-edge tail: split edges simply lack the long-distance outliers (max ~8,500 vs ~13,000 µm), so part of the mean gap reflects range truncation rather than concentration near branches. Large n inflates significance and the 1.1M correct edges are non-independent. The record's `review` field was "N/A" (no independent audit).
+- **Logic issues:** The conclusion (branch-point proximity is a split risk factor) is reasonable but should not be read as branch points *causing* splits — the comparison is observational and the effect collapses to ~5 µm on 794491.
+- **Verdict rationale:** GENERALIZES in direction/significance but with a meaningful effect only on two of three volumes (~194 µm and ~83 µm; ~5 µm on 794491). Sound design, modest/variable effect, n-driven significance — MINOR.
+- **Corrected test:** Neuron-cluster permutation test (neuron = independent unit) on the split−correct median geodesic-distance-to-branch gap, plus Cliff's delta with cluster bootstrap CI, replacing the per-edge Mann-Whitney on 1.1M non-independent edges.
+- **Corrected result:** Cliff's delta = −0.2184, cluster bootstrap 95% CI [−0.3692, −0.0309] (small-moderate, CI excludes 0); neuron-cluster permutation one-sided p = 0.09598 (NOT significant at 0.05; neuron-level gap = −116.52 µm). Versus original MW p = 1.3239e-197. The effect size CI excludes 0 but the cluster-permutation p just misses significance on the origin.
+- **Post-correction verdict:** WEAKENED — the Cliff's delta CI [−0.369, −0.031] still indicates splits sit somewhat closer to branch points, but the neuron-cluster permutation test is no longer significant (p = 0.096) on the origin; the p = 1.3e-197 was massively n-inflated.
+- **Corrected generalization:** PARTIAL — 794491: Cliff's delta = −0.1356 [−0.246, −0.005], permutation p = 0.009198 (significant); 794495: Cliff's delta = −0.0762 [−0.150, 0.016] (CI crosses 0), permutation p = 0.1342 (not significant). Significant under the correct test on only one of two extras, with small effect sizes throughout.
+
+### 18. (Priority 0.253 · Surprise 0.284) Split errors occur on more tortuous segments (5-hop window) than correct segments.
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 73 · **Belief:** Leaning True → Likely True (0.7083→0.8906) · **Direction:** Positive
+- **Tested:** Whether split errors fall on more highly tortuous (curved) segments than straight ones, measured over a 5-hop skeleton window.
+- **Conclusion:** Across 1,109,034 correct and 6,805 split edges, split edges had higher median (1.1132 vs 1.0801) and mean (1.2062 vs 1.1194) tortuosity, significant by one-sided Mann-Whitney U (p = 1.66e-276). This replicates ID 59 at a different window size: sharp turns systematically challenge contiguous tracking. Positive surprisal (+0.284).
+- **Caveats:** As with ID 59, the median difference is small in absolute terms; the extreme p-value reflects sample size, not large effect magnitude. The two tortuosity tests share most underlying data, so they are not fully independent confirmations.
+- **Reproduction:** REPRODUCED (code: revised-loading)
+- **Rerun result:** recorded 1109034 correct / 6805 split, median 1.0801 vs 1.1132, U=4714207979.0, p=1.6599e-276; rerun identical → exact match.
+- **Generalization:** GENERALIZES
+- **Across datasets:** split edges are more tortuous (5-hop window) than correct on all three, significant. origin (789202): split median 1.1132 vs correct 1.0801, p=1.66e-276. ds_794491: 1.0854 vs 1.0617, p≈0. ds_794495: 1.0735 vs 1.0575, p=6.19e-192. Replicates id 59 across datasets; effect small but consistent in direction and significance.
+- **Verdict:** MINOR
+- **Test:** One-sided Mann-Whitney U (`alternative='greater'`) on 5-hop-window tortuosity; 1,109,034 correct vs 6,805 split edges; U=4714207979.0, p=1.6599e-276; medians 1.1132 (split) vs 1.0801 (correct).
+- **Statistical issues:** Same tiny-effect/over-power pattern as id 59 — the median gap is ~0.03 and the p≈0 comes from >1.1M edges; unlike id 59, this run reports *no* effect-size statistic (no point-biserial r), so the practical smallness is less visible in the analysis text. Edges are non-independent. Also, this and id 59 share most of the same underlying data, so they are not independent confirmations of each other.
+- **Logic issues:** The conclusion ("overwhelming statistical evidence") leans on the p-value and omits the effect-size caveat that id 59 included, slightly overstating practical importance; the directional claim itself is correct.
+- **Verdict rationale:** Direction reproduces and GENERALIZES, but it is a near-duplicate of id 59 with the same trivial effect and is presented without an effect-size hedge — MINOR (significance-driven-by-n, redundant confirmation).
+- **Corrected test:** Neuron-cluster permutation test (neuron = independent unit) on the split−correct median 5-hop tortuosity gap, plus Cliff's delta with cluster bootstrap CI (the effect size id 73 omitted), replacing the per-edge Mann-Whitney whose p≈0 came from >1.1M non-independent edges.
+- **Corrected result:** Cliff's delta = 0.2451, cluster bootstrap 95% CI [0.1511, 0.3419] (small but CI excludes 0); neuron-cluster permutation one-sided p = 0.0007998 (SIGNIFICANT; neuron-level gap = 0.0725). Versus original MW p = 1.6599e-276 (no effect size reported). Direction and significance survive; the now-reported effect size is small.
+- **Post-correction verdict:** UPHELD (weak effect) — significant under the neuron-cluster permutation test (p = 0.0008), Cliff's delta CI excludes 0; mirrors id 59. The conclusion holds but the effect is small, as the now-added effect size makes explicit.
+- **Corrected generalization:** GENERALIZES — 794491: Cliff's delta = 0.2455 [0.210, 0.310], permutation p = 0.0014 (significant); 794495: Cliff's delta = 0.1856 [0.139, 0.246], permutation p = 0.0002 (significant). Significant small effect on both extras.
+
+### 19. (Priority 0.253 · Surprise 0.284) Merge sites carry a strong local branch-density signature (ROC-AUC 0.92).
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 84 · **Belief:** Leaning True → Likely True (0.7083→0.8906) · **Direction:** Positive
+- **Tested:** Whether merge sites exhibit higher local branch density in the UNet fragments graph than non-merge regions on the same segments (a geometric signature for auto-resolution).
+- **Conclusion:** Across 67 merge sites, mean local branch density within 15 µm was 1.13 branches versus 0.04 at matched controls on the same segments (paired t = 13.35, p = 2.03e-20; Wilcoxon W = 21.0, p = 1.19e-11), with ROC-AUC 0.9236. Spurious local branching is a highly predictive merge signature for automated proofreading. Positive surprisal (+0.284).
+- **Caveats:** Only 67 merge sites; the strong ROC-AUC rests on a small positive class, so out-of-sample predictive power is uncertain.
+- **Reproduction:** REPRODUCED (code: revised-loading)
+- **Rerun result:** recorded 67 merge sites, mean density 1.13 vs 0.04, paired t=13.3482 (p=2.0302e-20), Wilcoxon W=21.0 (p=1.1942e-11), ROC-AUC=0.9236; rerun identical → exact match (only a matplotlib deprecation warning in stderr).
+- **Generalization:** GENERALIZES
+- **Across datasets:** merge sites show much higher local branch density than controls on all three, significant, with strong ROC-AUC. origin (789202): 1.13 vs 0.04 branches/15µm, paired t=13.35, p=2.03e-20, ROC-AUC=0.9236 (n=67). ds_794491: 1.10 vs 0.08, t=12.14, p=2.97e-20, ROC-AUC=0.8825 (n=86). ds_794495: 1.02 vs 0.05, t=13.46, p=1.65e-24, ROC-AUC=0.8857 (n=105). AUC dips slightly (~0.88) but the signature is robust.
+- **Verdict:** MINOR
+- **Test:** Paired t-test and Wilcoxon signed-rank on local branch density (branches within 15 µm) at 67 merge sites vs matched on-segment controls, plus ROC-AUC; paired t=13.3482 (p=2.0302e-20), Wilcoxon W=21.0 (p=1.1942e-11), ROC-AUC=0.9236; mean 1.13 vs 0.04.
+- **Statistical issues:** The paired design (merge site vs control on the *same* segment) is the right choice and the Wilcoxon corroborates the t-test, so the significance is robust despite n=67. The one real issue: the ROC-AUC=0.9236 is computed in-sample on the very same merge/control points used to define the contrast (no held-out split), so it overstates true out-of-sample predictive power — the caveat flags the small positive class.
+- **Logic issues:** The conclusion (local branch density is a predictive merge signature for auto-proofreading) slightly overreaches by citing an in-sample AUC as "highly predictive"; the *difference* itself is solidly established.
+- **Verdict rationale:** Correct paired test, large effect, reproduces, and GENERALIZES (AUC 0.88–0.92). Downgraded to MINOR only for the in-sample AUC optimism and small n.
+
+### 20. (Priority 0.253 · Surprise 0.284) Omit errors are concentrated on terminal (distal) branches, ~1.8× the internal rate.
+- **Run:** run-4--ground-truth-error-annotations-revised-version_2026-06-20 · **ID:** 85 · **Belief:** Leaning True → Likely True (0.7083→0.8906) · **Direction:** Positive
+- **Tested:** Whether omit errors disproportionately hit terminal branches (paths ending in a leaf node) versus internal segments.
+- **Conclusion:** Terminal edges had a 4.38% omit rate (23,792/543,477) versus 2.41% for internal edges (20,898/865,568) — an 81% relative increase, χ² = 4189.94, p < 1e-300. The model struggles to track thin distal ends, so proofreaders should prioritize terminal branches for missing cable. Positive surprisal (+0.284).
+- **Caveats:** None noted; review confirms faithful classification and analysis.
+- **Reproduction:** REPRODUCED (code: revised-loading)
+- **Rerun result:** recorded terminal 4.38% (23792/543477) vs internal 2.41% (20898/865568), χ²=4189.9364, p≈0; rerun identical → exact match.
+- **Generalization:** GENERALIZES
+- **Across datasets:** terminal edges show a higher omit rate than internal on all three, significant. origin (789202): terminal 4.38% vs internal 2.41%, χ²=4189.9, p≈0 (+81% relative). ds_794491: terminal 4.94% vs internal 3.82%, χ²=425.4, p=1.63e-94 (+29% relative). ds_794495: terminal 2.47% vs internal 1.82%, χ²=692.0, p=1.66e-152 (+36% relative). Direction and significance hold; relative excess is smaller on the extras.
+- **Verdict:** MINOR
+- **Test:** Pearson chi-square (`scipy.stats.chi2_contingency`) on terminal vs internal edges × omit/non-omit; 23792/519685 (terminal) vs 20898/844670 (internal); χ²=4189.9364, p≈0; omit rates 4.38% vs 2.41% (+81% relative).
+- **Statistical issues:** Edges are not independent (terminal paths are contiguous runs of edges), so the χ² overstates effective n; expected cell counts are large, so the test is otherwise well-formed. The +81% relative excess is a substantial, non-trivial effect that survives the assumption concern.
+- **Logic issues:** None material — the conclusion (prioritize terminal/distal branches for missing cable) follows from a clear rate difference and does not over-claim a mechanism beyond "model struggles with thin distal ends."
+- **Verdict rationale:** Large effect, reproduced, GENERALIZES (+29% to +81% relative, p≤1.6e-94 on all three). Edge non-independence is the only issue and it is immaterial at this magnitude — MINOR.
 
 ## Reproduction — Summary
 
-- **Dataset pkl used:** `cache/dataset_cache_789202_mcl100_add.pkl` (single brain: 789202, mcl 100, with `_add` enrichment).
-- **Breakdown over the top-20 reranked records:** **19 REPRODUCED**, **1 DIVERGED**, **0 FAILED** (n_rerun = 20). All 20 verdicts came from `code_source: revised` (every script needed a loading/env revision; 0 ran the recorded code unchanged).
-- **Findings that did NOT reproduce:**
-  - Entry 5 (id 24, "super-merges fuse 3+ neurons"): **DIVERGED — dataset scope, not analysis bug.** The recorded experiment aggregated across multiple `*_add.pkl` brain caches (n=24 two-neuron + 3 super-merges, U=0, p=5.89e-03); the rerun has only the single-brain pkl provided (n=8 + 1, U=0, p=2.22e-01). Medians (6.21 mm vs 35.19 mm) and the U statistic still match — only the sample size and therefore the p-value differ. The within-pkl analysis is faithful.
-- **Loading revisions applied** (`autodiscovery/run-4--ground-truth-error-annotations-revised-version_2026-06-20.json.rerun/hypo_<id>.py`):
-  - **NumPy-2 pkl unpicklable under the host's NumPy 1.x** (ids 21, 24, 27, 30, 32, 33, 36, 37, 39, 45, 58, 59, 61, 63, 84, 85): vendored a fresh `numpy>=2 / scipy / pandas / sklearn / patsy / statsmodels / matplotlib / networkx / psutil / agentic_neuron_proofreader` stack to `~/.local-numpy2`, prepended it on `sys.path`, removed `~/.local/lib` and the `/shared/utils...` site-packages from the path so the new stack wins.
-  - **"Dataset not found" gates** (ids 64, 73, 139, 43): the recorded code searched `Path.rglob`/`os.walk('..')` for `*_add.pkl`, which the rerun helper's `glob`/`Path.exists` monkeypatch doesn't cover. The revision adds `Path.rglob` and `os.walk` monkeypatches in the bootstrap so any `.pkl` search yields the single `$RERUN_PKL`.
-  - **`pip install` retry loops** in every script were defanged (replaced with no-op `subprocess`) to avoid re-installing per record at runtime.
-  - **sklearn / patsy ABI incompatibilities** (ids 30, 27) were resolved by the same vendored numpy-2 stack (sklearn 1.9.0, patsy 1.0.2, statsmodels 0.14.6, pandas 3.0.3).
-- **Note on entry 19 (id 84):** the rerun's exit code is 1 but ALL key numbers (paired t=13.3482 p=2.03e-20, Wilcoxon W=21 p=1.19e-11, ROC-AUC 0.9236, n=67 merge sites) printed BEFORE the crash, which happened in a `plt.boxplot(..., labels=...)` plotting call — `labels` was renamed to `tick_labels` in matplotlib 3.11. The analysis itself reproduced exactly; only the post-analysis plot rendering was hit by a downstream library API rename, so this is counted as REPRODUCED.
+**Dataset pkl used:** `/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/cache/dataset_cache_789202_mcl100_add.pkl`
 
----
+**Breakdown (out of n_rerun = 20):** REPRODUCED 19 · DIVERGED 1 · FAILED 0. All 20 ran on `revised`-loading code (direct `$RERUN_PKL` load); 0 on recorded code. All exited 0 with no timeouts and no environment failures.
+
+**Did NOT reproduce:**
+- **Entry 5 · id 24 — DIVERGED (analysis):** merge-severity cable test. Recorded n=24 two-neuron merges / n=3 super-merges, Mann-Whitney U=0.0, p=5.8861e-03 (significant); rerun on the provided pkl found only n=8 / n=1, U=0.0, p=2.2222e-01 (not significant — p crosses 0.05). Median cable values (6.21 vs 35.19 mm) are unchanged, but the far smaller merge counts on this dataset drop the test below significance, overturning the recorded conclusion. This is a data/analysis divergence (different merge-detection counts), not a loading or environment failure.
+
+| Entry | id | Verdict | code_source |
+|------:|---:|---------|-------------|
+| 1 | 30 | REPRODUCED | revised |
+| 2 | 27 | REPRODUCED | revised |
+| 3 | 21 | REPRODUCED | revised |
+| 4 | 139 | REPRODUCED | revised |
+| 5 | 24 | DIVERGED | revised |
+| 6 | 32 | REPRODUCED | revised |
+| 7 | 33 | REPRODUCED | revised |
+| 8 | 36 | REPRODUCED | revised |
+| 9 | 37 | REPRODUCED | revised |
+| 10 | 39 | REPRODUCED | revised |
+| 11 | 43 | REPRODUCED | revised |
+| 12 | 45 | REPRODUCED | revised |
+| 13 | 58 | REPRODUCED | revised |
+| 14 | 59 | REPRODUCED | revised |
+| 15 | 61 | REPRODUCED | revised |
+| 16 | 63 | REPRODUCED | revised |
+| 17 | 64 | REPRODUCED | revised |
+| 18 | 73 | REPRODUCED | revised |
+| 19 | 84 | REPRODUCED | revised |
+| 20 | 85 | REPRODUCED | revised |
+
+**Loading revisions:** every shown record (all 20) ran on revised-loading code that replaced the original dataset search with a direct `$RERUN_PKL` load. Records whose recorded code had searched via glob/hardcoded relative paths that would otherwise miss the provided pkl include ids 64 and 73 ("Found 1 dataset files" / "No dataset files found matching *_add.pkl" gates) and ids 139, 43, 73 (hardcoded `../data/...` paths) — all now load the orchestrator pkl directly. No record hit an ENVIRONMENT failure; the runner's suppressed-package-install notices (ids 21, 32, 84) are benign no-ops, not failures.
 
 ## Generalization — Summary
 
-- **Extra datasets tested:** `cache/dataset_cache_794491_mcl100_add.pkl` and `cache/dataset_cache_794495_mcl100_add.pkl` (both single-brain caches with the same payload structure as the origin 789202 brain).
-- **Verdict breakdown over the top 20:** **14 GENERALIZES**, **3 PARTIAL**, **3 DOES-NOT-GENERALIZE**, **0 INCONCLUSIVE**.
-- **Per-entry verdicts:** #1 (id 30) GENERALIZES · #2 (id 27) PARTIAL · #3 (id 21) DOES-NOT-GENERALIZE · #4 (id 139) DOES-NOT-GENERALIZE · #5 (id 24) PARTIAL · #6 (id 32) GENERALIZES · #7 (id 33) GENERALIZES · #8 (id 36) DOES-NOT-GENERALIZE · #9 (id 37) GENERALIZES · #10 (id 39) GENERALIZES · #11 (id 43) GENERALIZES · #12 (id 45) PARTIAL · #13 (id 58) GENERALIZES · #14 (id 59) GENERALIZES · #15 (id 61) GENERALIZES · #16 (id 63) GENERALIZES · #17 (id 64) GENERALIZES · #18 (id 73) GENERALIZES · #19 (id 84) GENERALIZES · #20 (id 85) GENERALIZES.
+**Extra datasets tested (origin = 789202):** `cache/dataset_cache_794491_mcl100_add.pkl` and `cache/dataset_cache_794495_mcl100_add.pkl`. All 20 reproduced scripts ran to exit 0 on both extra pkls (no timeouts, no load failures) — so no entry is INCONCLUSIVE on execution grounds.
 
-**Findings that DO NOT fully generalize (with one-line reasons):**
+**Breakdown (out of 20):** GENERALIZES 14 · PARTIAL 4 · DOES-NOT-GENERALIZE 2 · INCONCLUSIVE 0.
 
-- **#3 (id 21) — Z-dominant vs XY-dominant Chi-square — DOES-NOT-GENERALIZE.** Origin had no significant difference (p=0.060); 794491 shows Z significantly HIGHER error rate (p=5.2e-38), 794495 shows Z significantly LOWER (p=4.6e-88). Both extras reject the no-anisotropy story, in OPPOSITE directions.
-- **#4 (id 139) — Branch order predicts splits (positive coefficient) — DOES-NOT-GENERALIZE.** Origin had coef=+0.0194 (p<0.001); 794491 coef=−0.0157 and 794495 coef=−0.0063 (both p<0.001). All three are significant, but the SIGN FLIPS on both extras.
-- **#8 (id 36) — Omitted cable closer to merge sites — DOES-NOT-GENERALIZE.** Origin and 794495 confirm (omit < correct), but on 794491 the relationship reverses (omit 1103 µm > correct 842 µm, one-sided p=1.000). The spatial co-clustering is not robust across brains.
-- **#2 (id 27) — Z-alignment mixed-effects regression — PARTIAL.** All three brains print a non-positive Z-coefficient (so the "Z not a driver" headline survives), but the standardized coef varies from +0.0376 (794491, p=0.17) to −0.0661 (origin, p=0.058) to −0.1697 (794495, highly significant, p=6.75e-06). 794495 finds a strong protective effect that the prior did not anticipate.
-- **#5 (id 24) — Super-merges fuse 3+ neurons cover more cable — PARTIAL.** Origin single-brain rerun is not significant (n=8+1, p=0.222) — flagged DIVERGED already; 794491 has 0 super-merges so the test cannot run; 794495 strongly confirms (n=24+2, p=6.15e-03). The pattern holds where super-merges exist but they are rare on some brains.
-- **#12 (id 45) — Extreme-Z omit rate vs central-Z — PARTIAL.** Origin OR=2.36 (p≈0) and 794495 OR=3.17 (p≈0) confirm; 794491 OR=1.01 (p=0.80) shows no effect at all. Edge-of-volume omission is dataset-specific.
+**Do NOT fully generalize:**
+- **Entry 3 · id 21 — DOES-NOT-GENERALIZE:** the near-null Z-dominant vs XY-dominant error-rate finding becomes strongly *significant* on both extras, in *opposite* directions (794491: Z higher, p=5.21e-38; 794495: Z lower, p=4.62e-88). Origin's clean null is dataset-specific.
+- **Entry 4 · id 139 — DOES-NOT-GENERALIZE:** branch-order → split-risk slope flips sign on both extras (origin coef=+0.0194; 794491 coef=−0.0157; 794495 coef=−0.0063), all significant. "Deeper branches split more" reverses off the origin.
+- **Entry 2 · id 27 — PARTIAL:** the "z-alignment not significant" claim holds on 794491 (p=0.175, but sign flips +) yet is contradicted on 794495 (p=6.75e-06, significant *decrease*); direction unstable (−/+/−).
+- **Entry 5 · id 24 — PARTIAL:** super-merge cable test is sample-starved — origin-rerun non-significant (p=0.222), 794491 has zero super-merges (untestable), 794495 significant (p=6.15e-03). Direction (super > 2-neuron) holds only where ≥1 super-merge exists.
+- **Entry 8 · id 36 — PARTIAL:** omit-near-merge clustering holds on 794495 (p=9.78e-226) but *reverses* on 794491 (omit farther; one-sided p=1.0000).
+- **Entry 12 · id 45 — PARTIAL:** extreme-Z omit excess holds on 794495 (OR=3.17, p≈0) but vanishes on 794491 (OR=1.0149, p=0.7996).
 
-**Synthesis.** With two extra brains tested, the local-geometry findings — distance-only split bridging (#1), branch-node omit rate (#6), angular alignment (#7), split clustering (#9), A* repair success (#10), merging-segments-are-giants (#11), bridged-vs-broken omit length (#13), tortuosity (#14, #18), split proximity to merges and branch points (#15, #17), 6.5 µm split-gap threshold (#16), merge tangle signature (#19), terminal-edge omit rate (#20) — replicate cleanly across all three brains and look like robust dataset-independent properties of the U-Net's failure modes. By contrast, every Z-axis/anisotropy claim (#2, #3, #12) is brain-specific or directionally inconsistent: the no-anisotropy story on the origin actually flips into significantly different (and contradictory) Z-effects on the other two brains, and the extreme-Z omission effect is present on 2/3 brains and absent on the third. The branch-order coefficient (#4) flips sign on both extras, so its positive direction on the origin is likely an artifact of brain 789202 rather than a general trend. The super-merge claim (#5) and the merge-omit spatial co-clustering claim (#8) hold on one extra brain but break on the other. Given only two extra datasets, statements about "robust" should be read as "consistent on 3 brains", which is good evidence but not conclusive proof of universality.
+**INCONCLUSIVE:** none.
 
----
+**Synthesis:** The robust, dataset-independent conclusions are the local-topology / morphology and proofreading-heuristic findings: the ~6.5 µm split-gap proximity threshold (id 30, 63), angular inertia (id 33), A* split repair (id 39), branch-point omission excess (id 32), terminal-branch omission excess (id 85), tortuosity → split risk (id 59, 73), split spatial clustering (id 37), giant-merge cable (id 43), bridged-vs-broken omit lengths (id 58), merge branch-density signature (id 84), and split-near-merge / split-near-branch proximity (id 61, 64) — all 14 hold direction + significance across both extra volumes (a few with weaker effect sizes, e.g. id 17/64 on 794491). In contrast, every finding tied to a *global imaging-axis / Z effect* or a tiny-sample merge statistic is fragile: the two anisotropy-related results (id 21, 27) and the branch-order slope (id 139) either flip sign or become significant in inconsistent directions across datasets, and the merge/depth findings that depend on a handful of merge sites or volume-specific Z extremes (id 24, 36, 45) hold on only one of the two extras. With only two extra datasets the evidence is moderate — the 14 GENERALIZES calls are well-supported (consistent on both), but the PARTIAL/DOES-NOT calls flag that orientation- and small-sample-driven conclusions are likely volume-specific rather than general properties of the segmentation pipeline.
 
-## Excluded (no surprisal score)
-
-The helper dropped 2 hypotheses for missing surprisal:
-
-- Run `run-4--ground-truth-error-annotations-revised-version_2026-06-20`, ID 10
-- Run `run-4--ground-truth-error-annotations-revised-version_2026-06-20`, ID 41
-
----
+| Entry | id | Verdict | Basis (one line) |
+|------:|---:|---------|------------------|
+| 1 | 30 | GENERALIZES | ROC-AUC 0.998/0.989/0.995, thr ~6.5 µm on all three |
+| 2 | 27 | PARTIAL | non-sig holds on 794491 (sign flips +); 794495 significant decrease p=6.75e-06 |
+| 3 | 21 | DOES-NOT-GENERALIZE | both extras significant in opposite directions (p=5.2e-38 / 4.6e-88) |
+| 4 | 139 | DOES-NOT-GENERALIZE | branch-order slope flips sign on both extras (+0.019 → −0.016 / −0.006) |
+| 5 | 24 | PARTIAL | sample-starved: origin p=0.222, 794491 no super-merges, 794495 p=6.15e-03 |
+| 6 | 32 | GENERALIZES | branch omit > linear on all three (χ² 1568/194/975, p≤5e-44) |
+| 7 | 33 | GENERALIZES | true ~153° vs false ~90°, ROC-AUC 0.93 on all three |
+| 8 | 36 | PARTIAL | holds 794495 (p=9.8e-226); reverses on 794491 (p=1.0) |
+| 9 | 37 | GENERALIZES | split-neighbor excess p≈0 on all three |
+| 10 | 39 | GENERALIZES | A* resolves 86/85/90% of splits, all ≫40% |
+| 11 | 43 | GENERALIZES | merge segments ~10-30× larger, t≥16, p≤7e-25 |
+| 12 | 45 | PARTIAL | holds 794495 (OR=3.17); vanishes 794491 (OR=1.01, p=0.80) |
+| 13 | 58 | GENERALIZES | bridged shorter than broken on all three (p≤2.8e-09) |
+| 14 | 59 | GENERALIZES | split more tortuous, p≈0, small r≈0.03-0.06 on all three |
+| 15 | 61 | GENERALIZES | split closer to merge on all three (p≤2e-14) |
+| 16 | 63 | GENERALIZES | 100% gaps <15 µm, 99th pct ~6.4-6.5 µm on all three |
+| 17 | 64 | GENERALIZES | split closer to branch on all three (p≤5e-67), tiny gap on 794491 |
+| 18 | 73 | GENERALIZES | split more tortuous (5-hop) on all three (p≤6e-192) |
+| 19 | 84 | GENERALIZES | merge branch-density signature, ROC-AUC 0.92/0.88/0.89 |
+| 20 | 85 | GENERALIZES | terminal omit > internal on all three (χ² 4190/425/692) |
 
 ## Statistical Verification — Summary
 
-### Per-hypothesis severity (priority order)
+**Audited:** all 20 ranked hypotheses, judged from the recorded `code` / `codeOutput` / `analysis` plus the already-folded Reproduction and Generalization numbers (no experiments re-run).
 
-**CRITICAL (3):**
-- **#3 (id 21) — Z-dominant vs XY-dominant Chi-square.** Borderline p=0.0602 misinterpreted as "refutes Z-anisotropy"; "failed to reject = null is true" fallacy. Generalization reverses the null in opposite directions on the two extra brains.
-- **#4 (id 139) — Centrifugal branch order logistic regression.** Independence violation (no neuron random effect), tiny per-unit OR ≈ 1.02 inflated by n = 1.4M, and the coefficient sign FLIPS on both extra brains while still printing p < 0.001 — the hallmark of significance without robustness.
-- **#8 (id 36) — Omitted cable closer to merge sites.** Non-independence + small ~147 µm effect on ~2 mm baseline + reversal on 794491 (omit FARTHER than correct, p=1.000). Mechanism claim ("model sacrifices thin adjacent processes") is overreach.
+**Verdict breakdown (5-level scheme SOUND | WEAK | MINOR | MAJOR | CRITICAL; each of the 20 counted once):**
 
-**MAJOR (7):**
-- **#2 (id 27) — Z-alignment mixed-effects logreg.** Arbitrary 20k subsample drops 98% of data and parks the p at the 0.058 borderline; conclusion "Z not a driver" is drawn from p>0.05 with the same null-acceptance fallacy. Generalization PARTIAL (sign and significance vary).
-- **#5 (id 24) — Super-merges fuse 3+ neurons.** Underpowered (n=3 super-merges), test compares total cable not per-neuron cable (hypothesis deviation), and on 794491 super-merges don't exist at all.
-- **#12 (id 45) — Extreme-Z omit rate.** "Stratification by brain ID" is a no-op on a single brain; non-independence understates p; mechanistic optical-attenuation claim contradicted by 794491 (OR=1.01, p=0.80).
-- **#14 (id 59) — Local tortuosity for split detection.** r=0.0335 is significance-without-effect (r² = 0.001); non-independence; large-n trivial-effect trap.
-- **#15 (id 61) — Split distance to merge sites.** ~170 µm gap on 2 mm baseline (~8% relative shift); effect attenuates ~6× on 794491.
-- **#17 (id 64) — Split distance to branch points.** Effect attenuates ~30× on 794491 (195 µm → 5 µm gap) yet p stays <1e-66; non-independence on 1.1M edges. Review field is "N/A" so faithfulness is unaudited.
-- **#18 (id 73) — 5-hop tortuosity replication.** Same significance-by-n trap as #14; not actually independent (same dataset, near-identical metric). Reports as if it adds evidence.
+- **SOUND — 5:** entries **1 (id 30), 7 (id 33), 11 (id 43), 13 (id 58), 16 (id 63)** — clean designs with large/unambiguous effects and full generalization (descriptive separability for 30/63; KS on near-disjoint angle distributions for 33; Welch t on log-lengths of independent segments for 43; Mann-Whitney on independent omit-path components for 58).
+- **WEAK — 0.**
+- **MINOR — 9:** entries **6 (id 32), 9 (id 37), 10 (id 39), 14 (id 59), 15 (id 61), 17 (id 64), 18 (id 73), 19 (id 84), 20 (id 85)** — sound direction that reproduces and generalizes, but each carries one secondary issue (edge/node non-independence inflating significance, effect-size-trivial-but-over-powered tests, in-sample ROC-AUC optimism, or simulation-vs-live overreach).
+- **MAJOR — 6:** entries **2 (id 27), 3 (id 21), 4 (id 139), 5 (id 24), 8 (id 36), 12 (id 45)** — each has a concrete test fault (detailed below) that materially undermines the recorded conclusion.
+- **CRITICAL — 0.**
 
-**MINOR (5):**
-- **#6 (id 32) — Branch vs linear node omit rate.** Large effect (4.3×), p≈0; only concern is edge non-independence which doesn't overturn the result. GENERALIZES.
-- **#9 (id 37) — Split clustering.** Partly tautological ("splits cluster with splits"), but 10× ratio is real and generalizes.
-- **#10 (id 39) — A* repair.** Engineering benchmark with no statistical test, no CI on success rate.
-- **#13 (id 58) — Bridged vs broken omit length.** Class-definition partially encodes length already; effect is moderate (~1.5× median ratio).
-- **#20 (id 85) — Terminal vs internal omit rate.** Edge non-independence; ratio attenuates to 1.3× on two extra brains.
+**Definitive tally: SOUND 5 · WEAK 0 · MINOR 9 · MAJOR 6 · CRITICAL 0 = 20.**
 
-**OK (4):**
-- **#1 (id 30) — Euclidean gap distance.** Distance-only AUC 0.9979 on 11k gaps reproducing to ≥0.989 on two extra brains; in-sample threshold optimism is mild.
-- **#7 (id 33) — Angular alignment.** AUC 0.9322 with KS 0.7460 on 13,582 splits, reproducing AUC 0.93 on two extras.
-- **#11 (id 43) — Merging segments are giants.** Welch t on log-cable-length, ~30× ratio across all brains.
-- **#16 (id 63) — 100% of split gaps under 15 µm.** Descriptive, near-identical 95th-percentile thresholds (~5.8 µm) on all three brains.
-- **#19 (id 84) — Merge-site branch density.** Paired t + Wilcoxon + AUC=0.92, with matched on-segment controls. Reproduces with AUC ≥ 0.88 on all three brains.
+**The six MAJOR findings and their concrete test faults (the discoveries a scientist should NOT trust as stated):**
 
-### Multiple comparisons (BH-FDR, q=0.05) over the top-20
+- **Entry 2 · id 27** — p-value manufactured by treating a variational-Bayes posterior mean/SD as a frequentist Wald z (`p=2*(1-Φ(coef/sd))`); a VB posterior is not a sampling distribution, so the reported p=0.058 is an invalid significance test, and it is used to license a null ("z-axis not a primary driver"). Fix: refit a proper frequentist mixed GLM (or report a credible interval, not a p), on the full data not a 20k subsample, and clustered/robust SEs.
+- **Entry 3 · id 21** — chi-square independence on 1.4M edges that share nodes (autocorrelated), and "fail to reject (p=0.060)" escalated to "refutes imaging-anisotropy bias"; DOES-NOT-GENERALIZE (both extras significant, opposite signs). Fix: use a clustered/permutation test by neuron and never read a non-significant p as proof of no effect.
+- **Entry 4 · id 139** — the `norm_thickness` control has zero variance and is dropped, so the hypothesis's "independent of cable thickness" clause is structurally untestable; edge non-independence; slope reverses sign on both extras. Fix: obtain a real thickness covariate (the radii are constant in this pkl) before claiming thickness-independence.
+- **Entry 5 · id 24** — Mann-Whitney with n=3 super-merges (U=0.0, p=0.0059) that DIVERGES to n=1 / p=0.222 on re-run, and tests *total* cable while the hypothesis is *per-neuron*. Fix: per-neuron normalization and far more super-merge instances before any inference.
+- **Entry 8 · id 36** — p=1.6e-66 from a ~8% median offset (147 µm of ~1,800 µm) over 49k non-independent nodes referenced to only 67 anchors; direction *reverses* on 794491 (p=1.0000). Fix: report the effect size, use independent units, and treat as non-generalizing.
+- **Entry 12 · id 45** — CMH "controlling for brain" has only one stratum on the origin (no real control); "extreme Z" conflates optical depth with FOV-boundary truncation; causal optical-attenuation claim; effect vanishes on 794491 (OR=1.01, p=0.80). Fix: separate boundary from depth and drop the causal language.
 
-- 18 of the 20 top-ranked findings report a usable p-value (#10 and #16 report descriptive statistics, no p; these are excluded from BH-FDR).
-- Applying Benjamini–Hochberg with q=0.05 to those 18 p-values, the cutoff is k=16 with p ≤ k/N·q = 0.0444.
-- **Survivors (16/18):** #1 (effective p ≈ 0, AUC-based), #4 (logreg p<0.001), #5 (Mann-Whitney p=0.0059), #6 (χ²≈0), #7 (KS≈0), #8 (p=1.6e-66), #9 (p≈0), #11 (p=7.3e-25), #12 (p≈0), #13 (p=1.9e-19), #14 (p≈0), #15 (p=3.5e-38), #17 (p=1.3e-197), #18 (p=1.7e-276), #19 (paired t p=2.0e-20), #20 (χ²≈0).
-- **Do NOT survive (2/18):** **#2 (id 27) p=0.0582 > 0.0444**, **#3 (id 21) p=0.0602 > 0.0444**. Both are the borderline Z-axis "no-effect" results whose verbal conclusions are already discredited by generalization across brains. The BH-FDR result confirms that these borderline p-values would also fail run-wide correction even at this small panel size.
-- For the full 150-hypothesis run (not just top-20), the BH cutoff would be considerably tighter; if one further considers the ~250-hypothesis discovery-loop family typical of these runs, ~12 spuriously significant results are expected by chance at α=0.05. The strong-effect findings (AUC > 0.9, ratios > 4×, p ≪ 1e-20) are insensitive to any reasonable correction; the borderline ones (#2, #3) are not.
+### Multiple comparisons (Benjamini–Hochberg FDR)
 
-### Cross-cutting issues
+Collected the single headline p-value from each of the 20 hypotheses. Three entries report **no inferential p** — 1/id 30 (ROC-AUC), 10/id 39 (success-rate vs a 40% bar), 16/id 63 (percentile) are descriptive — leaving **m = 17 numeric p-values**. Entries reporting p≈0 are floored at 1e-300; id 139's "p<0.001" is entered as 1e-3.
 
-- **Non-independence of edges/nodes within neurons is endemic.** #3, #4, #6, #8, #9, #14, #15, #17, #18, #20 all run tests over ~1M edges treated as i.i.d. when in reality edges within the same neuron / cable / fragment are heavily correlated. With clustering, the effective n is one-to-several orders of magnitude smaller. This does not overturn the large-effect findings (#6 ratio 4.3×, #9 ratio 10×, #20 ratio 1.8×) but it makes the borderline / small-effect findings (#14 r=0.03, #15 ~170 µm gap, #17 attenuating to ~5 µm on 794491, #18 median gap 0.03) much weaker than the printed p-values suggest. None of the top-20 used a mixed-effects model or cluster-robust SE.
-- **"Failed to reject = null is true" fallacy.** #2 and #3 both treat p just above 0.05 as confirming no effect; the prior → posterior swing on these is a major contributor to the run's "headline" surprise scores. This is the single most consequential logic error in the run.
-- **Significance driven by sample size, not effect size.** #8 (~7% relative shift on ~1M edges, p=1.6e-66), #14 (r=0.0335 on 1.1M edges, p≈0), #15 (~8% relative shift, p=3.5e-38), #17 (5–195 µm gap, p=1.3e-197), #18 (Δmedian 0.03, p=1.7e-276), #20 (1.3×–1.8× ratio on 1.4M edges) — all of these would warrant a much smaller "effect size" claim if reported with bootstrap-over-neurons CIs.
-- **Generalization-as-validation.** Three findings (#3, #4, #8) fully reverse on extra brains and three more (#2, #5, #12) are partial; the original surprise / belief shifts on these are unjustified once the extras are considered. They should be downgraded from "confidence flip" to "brain-specific."
-- **Mechanistic overreach.** #4 ("deeper-order branches more susceptible"), #8 ("model sacrifices thin processes when fusing"), #12 ("optical attenuation at depth"), #15 ("joint failure zones"), #20 ("distal thin neurites") all draw causal/mechanistic conclusions from purely associational tests. The downstream implications matter more for actionable intervention design than for the reported surprise scores.
+BH at α=0.05 (rank k, critical value k/m·α): the largest rank with p ≤ k/m·α is **rank 15 (entry 5 / id 24, p=5.886e-03 ≤ 0.0441)**, so the BH threshold is p* = 5.886e-03 and **15 of 17 survive**.
 
----
+| rank | entry · id | test | p-value | crit (k/m·α) | survives FDR? |
+|----:|-----------|------|--------:|-------------:|:-------------:|
+| 1 | 6 · 32 | chi-square | ~1e-300 | 0.0029 | YES |
+| 2 | 7 · 33 | KS | ~1e-300 | 0.0059 | YES |
+| 3 | 9 · 37 | Mann-Whitney | ~1e-300 | 0.0088 | YES |
+| 4 | 12 · 45 | CMH | ~1e-300 | 0.0118 | YES |
+| 5 | 14 · 59 | Mann-Whitney / point-biserial | ~1e-300 | 0.0147 | YES |
+| 6 | 20 · 85 | chi-square | ~1e-300 | 0.0176 | YES |
+| 7 | 18 · 73 | Mann-Whitney | 1.66e-276 | 0.0206 | YES |
+| 8 | 17 · 64 | Mann-Whitney | 1.32e-197 | 0.0235 | YES |
+| 9 | 8 · 36 | Mann-Whitney | 1.60e-66 | 0.0265 | YES |
+| 10 | 15 · 61 | Mann-Whitney | 3.50e-38 | 0.0294 | YES |
+| 11 | 11 · 43 | Welch t | 7.32e-25 | 0.0324 | YES |
+| 12 | 19 · 84 | paired t | 2.03e-20 | 0.0353 | YES |
+| 13 | 13 · 58 | Mann-Whitney | 1.95e-19 | 0.0382 | YES |
+| 14 | 4 · 139 | logistic (branch_order) | 1.0e-03 | 0.0412 | YES |
+| 15 | 5 · 24 | Mann-Whitney | 5.89e-03 | 0.0441 | YES |
+| 16 | 2 · 27 | mixed-GLM Wald (invalid) | 5.82e-02 | 0.0471 | no |
+| 17 | 3 · 21 | chi-square | 6.02e-02 | 0.0500 | no |
+
+**FDR reading:** The two findings that fail BH (entry 2 / id 27 at p=0.058 and entry 3 / id 21 at p=0.060) are precisely the two anisotropy *null* results — they were already non-significant, so failing BH is consistent with, not additional to, their "fail to reject" status; the substantive problem with them is the absence-of-evidence logic and the invalid Wald construction (id 27), not multiplicity. Entry 5 / id 24 (p=5.886e-03) survives BH only nominally and is the marginal-rank result; given its DIVERGED reproduction (re-run p=0.222) it should be regarded as not robust despite clearing the FDR line. Entry 4 / id 139 survives FDR but the surviving slope reverses sign across datasets, so FDR survival does not rescue its generalization failure. The 13 large-effect findings (ranks 1–13) survive FDR with enormous margin; for several of those (id 36, 59, 61, 64, 73, 85) the survival is driven by sample size rather than effect magnitude, so FDR survival should not be read as practical importance — see the per-entry effect-size notes.
+
+## Excluded (no surprisal score)
+
+The helper dropped 2 hypotheses lacking a surprisal score (`n_dropped_missing_surprisal` = 2):
+- run-4--ground-truth-error-annotations-revised-version_2026-06-20 · ID 10
+- run-4--ground-truth-error-annotations-revised-version_2026-06-20 · ID 41
 
 ## Statistical Test Corrections — Summary
 
-**Scope:** 10 of the top-20 hypotheses were flagged for a test-level fix and re-measured with corrected scripts in `autodiscovery/run-4--ground-truth-error-annotations-revised-version_2026-06-20.json.fixed/hypo_<id>.py`. The remaining 10 entries either ran the right test or had only a "test is fine, headline overreaches" caveat.
+**Flagged for a test fix:** 11 hypotheses (ids 21, 24, 27, 36, 37, 45, 59, 61, 64, 73, 139). Each received a corrected script that replaced the faulty test (per-edge / per-node independence assumed, invalid VB-as-Wald p, wrong construct, or n-inflated p with no effect size) with the proper unit-of-analysis test — almost always a **neuron-cluster permutation test** (neuron = independent unit) plus a **Cliff's delta / rank-biserial effect size with bootstrap CI**, or a cluster-robust regression. The corrected results were re-measured by the driver (all 11 ran to exit 0 on the origin and both extra pkls).
 
-### Post-correction verdict breakdown
+**Post-correction breakdown:** UPHELD 5 · WEAKENED 1 · OVERTURNED 5.
 
-- **UPHELD (4):** #3 (id 21), #14 (id 59), #17 (id 64), #18 (id 73). On each, the direction the original claimed survives a cluster-correct test; the effect size is properly quantified (Cliff's delta or paired Wilcoxon at the neuron level) and is "small but real" rather than the "p ≈ 0" the original i.i.d. test inflated. #3 is UPHELD only at the origin (no anisotropy effect when neuron clusters are respected) but DOES-NOT-GENERALIZE — that part is unchanged.
-- **WEAKENED (4):** #4 (id 139), #5 (id 24), #12 (id 45), #14 (id 59). The direction survives but the effect-size is much smaller than the original significance implied, or the result is significant on only 1/3 brains under the cluster-correct test. (#14 is listed in both UPHELD and WEAKENED because the direction generalises but the effect-size is small once properly estimated; see entry for details.)
-- **OVERTURNED (3):** #2 (id 27), #8 (id 36), #15 (id 61). The corrected test either inverts the sign (#2: Z is significantly PROTECTIVE under cluster-robust GEE, opposite of "Z not a driver"; #8: gap REVERSES on 794491 under cluster bootstrap), or no brain reaches cluster-significance (#15: cluster-bootstrap CI on the gap includes zero on every brain).
+| id | Entry | Original headline | Corrected headline (right test) | Post-correction verdict | Corrected generalization |
+|---:|------:|-------------------|---------------------------------|:------------------------|:-------------------------|
+| 27 | 2 | Z-alignment does NOT significantly raise error risk (invalid VB-Wald p=0.058, OR=0.80) | Neuron-permutation p=0.5721 — no significant z-alignment effect (valid null) | **UPHELD** (null) | PARTIAL (perm null on all 3; cluster-robust GLM flags 794495 p=2e-11) |
+| 21 | 3 | No significant Z-vs-XY error-rate difference (χ²=3.53, p=0.060) | RR=1.018 CI[0.999,1.037], cluster-perm p=0.8136 — trivial, not significant | **UPHELD** (null, origin) | PARTIAL (794491 perm p=0.097; 794495 perm p=5e-4, Z *lower*) |
+| 139 | 4 | Split risk rises with branch order (z=16.4, p<0.001) | Neuron-permutation p=0.4697; cluster-robust z=1.99 CI lower=1.0003 | **OVERTURNED** | DOES-NOT-GENERALIZE (perm n.s. all 3; sign flips on both extras) |
+| 24 | 5 | Super-merges cover more cable than 2-neuron merges (total cable, U=0, p=0.0059) | Per-neuron cable, U=8, p=0.2222, n_super=1 (unreliable) | **OVERTURNED** | INCONCLUSIVE/PARTIAL (794491 no super-merges; 794495 p=0.025) |
+| 36 | 8 | Omit nodes cluster closer to merges (U=1.1e9, p=1.6e-66) | Cliff's δ=−0.064 CI[−0.10,−0.03], neuron-perm p=0.4771 | **OVERTURNED** | DOES-NOT-GENERALIZE (perm n.s. both extras; reverses on 794491) |
+| 37 | 9 | Split edges have more nearby splits (mean 0.97 vs 0.10, MW p≈0) | Cliff's δ=0.49 CI[0.44,0.56], neuron-perm p=0.0002 | **UPHELD** | GENERALIZES (perm p≤4e-4, δ 0.52–0.60 both extras) |
+| 45 | 12 | Extreme-Z omit excess (CMH OR=2.36, p≈0) | Neuron-clustered OR=0.53, neuron-perm p=0.6607 | **OVERTURNED** | PARTIAL/INCONCLUSIVE (794491 nan OR; 794495 perm p=0.136 n.s.) |
+| 59 | 14 | High tortuosity → more splits (MW p≈0, r=0.034) | Cliff's δ=0.26 CI[0.16,0.37], neuron-perm p=0.002 | **UPHELD** (weak) | GENERALIZES (perm p≤0.0016 both extras, small δ) |
+| 61 | 15 | Split edges closer to merge sites (MW p=3.5e-38) | Cliff's δ=−0.074 CI[−0.28,0.14] (crosses 0), neuron-perm p=0.6469 | **OVERTURNED** | DOES-NOT-GENERALIZE (perm n.s. both extras; CIs cross 0) |
+| 64 | 17 | Splits cluster near branch points (MW p=1.3e-197) | Cliff's δ=−0.22 CI[−0.37,−0.03], neuron-perm p=0.096 | **WEAKENED** | PARTIAL (794491 perm p=0.009; 794495 perm p=0.134 n.s.) |
+| 73 | 18 | Splits on more tortuous (5-hop) segments (MW p=1.7e-276) | Cliff's δ=0.25 CI[0.15,0.34], neuron-perm p=0.0008 | **UPHELD** (weak) | GENERALIZES (perm p≤0.0014 both extras, small δ) |
 
-### Tabular summary
+**Which conclusions changed (WEAKENED or OVERTURNED — 6 of 11):**
 
-| # | id | Original test | Original headline result | Corrected test | Corrected origin result | Verdict |
-| --- | --- | --- | --- | --- | --- | --- |
-| 2 | 27 | mixed-effects logreg on 20k subsample | coef = -0.066, p = 0.058, OR = 0.80 | GEE on full 1.16M, cluster-robust SE | coef = -0.123, p ≈ 0, OR = 0.66 [0.62, 0.72] | OVERTURNED |
-| 3 | 21 | chi-square on 1.4M edges (i.i.d.) | chi2 = 3.53, p = 0.060 | GEE + cluster-perm chi2 + per-neuron Wilcoxon | OR = 1.02 [0.97, 1.07], all p > 0.45 | UPHELD (origin) |
-| 4 | 139 | plain logreg on 1.4M edges (i.i.d.) | coef = +0.019, z = 16.37, p < 0.001 | GEE with neuron cluster | coef = +0.019, p = 0.038, OR = 1.02 [1.001, 1.04] | WEAKENED |
-| 5 | 24 | Mann-Whitney U on TOTAL cable (multi-brain) | U = 0, p = 5.9e-03 (floor) | MW on PER-NEURON cable + Cliff's delta + bootstrap CI | n=8 vs 1 on origin, p = 0.22 (NS) | WEAKENED |
-| 8 | 36 | one-sided MW on 49k node distances | U = 1.138e9, p = 1.60e-66 | cluster-bootstrap by neuron + Cliff's delta + merge-site bootstrap | gap CI [-402, +92] um, p = 0.27 | OVERTURNED |
-| 12 | 45 | CMH "stratified by brain" (single-brain) | OR = 2.36, p ≈ 0 | GEE with neuron cluster + cluster-bootstrap on OR | OR = 2.36 [0.46, 12.18], p = 0.31 | WEAKENED |
-| 14 | 59 | MW + point-biserial on 1.1M edges | U = 4.58e9, p ≈ 0; r = 0.034 | cluster-bootstrap Cliff's delta + per-neuron Wilcoxon | delta = +0.26 [+0.21, +0.33] | WEAKENED |
-| 15 | 61 | one-sided MW + Welch's t on 1.1M edges | U = 3.43e9, p = 3.5e-38 | cluster-bootstrap by neuron + Cliff's delta + merge-site bootstrap | gap CI [-373, +16] um, p = 0.11 | OVERTURNED |
-| 17 | 64 | MW on 1.1M edge geodesic distances | U = 2.98e9, p = 1.32e-197 | cluster-bootstrap Cliff's delta + per-neuron Wilcoxon | delta = -0.22 [-0.28, -0.13], p ≈ 0 | UPHELD |
-| 18 | 73 | one-sided MW on 1.1M edge 5-hop tortuosity | U = 4.71e9, p = 1.66e-276 | cluster-bootstrap Cliff's delta + per-neuron Wilcoxon | delta = +0.25 [+0.19, +0.31], p ≈ 0 | UPHELD |
+- **id 139 (entry 4) — OVERTURNED.** Wrong test: edge-independent logistic regression (z=16.4) on 1.4M autocorrelated within-neuron edges. Under cluster-robust SEs + neuron permutation the effect is non-significant (perm p=0.4697) and reverses sign on both extras.
+- **id 24 (entry 5) — OVERTURNED.** Wrong test/construct: Mann-Whitney on *total* cable (the hypothesis is *per-neuron*) with n=3 super-merges. Per-neuron MW with n_super=1 gives p=0.2222.
+- **id 36 (entry 8) — OVERTURNED.** Wrong test: 49k-node Mann-Whitney treating clustered nodes referenced to 67 anchors as independent; p=1.6e-66 from a trivial ~7.5% shift. Neuron-permutation p=0.4771, δ=−0.064.
+- **id 45 (entry 12) — OVERTURNED.** Wrong test: CMH with a single stratum (no real control) over non-independent nodes. Neuron-clustered permutation OR=0.53, p=0.6607.
+- **id 61 (entry 15) — OVERTURNED.** Wrong test: per-edge MW/Welch on 1.1M non-independent edges referenced to a small merge set; δ CI crosses 0, neuron-permutation p=0.6469.
+- **id 64 (entry 17) — WEAKENED.** Wrong test: per-edge MW on 1.1M edges (p=1.3e-197). Cliff's δ CI [−0.369,−0.031] still excludes 0 but the neuron-permutation p=0.096 is no longer significant on the origin.
+- **id 21 / 27 — note:** both are *null* findings whose null survives the correct test (UPHELD as nulls), so they did not change in headline direction, but their generalization is now PARTIAL rather than DOES-NOT/PARTIAL on stronger footing — see per-entry bullets.
 
-### Patterns
-
-- **Non-independence inflation is the dominant fault.** 8 of 10 corrected entries (#3, #4, #8, #12, #14, #15, #17, #18) had a test that treated within-neuron-correlated observations as i.i.d. Once a cluster-robust (GEE) or cluster-bootstrap (neuron-resampled) test is applied, three findings (#2, #8, #15) OVERTURN, two find the effect significant only on 1 of 3 brains (#4 on origin, #12 on 794495), and three (#14, #17, #18) retain the direction at "small effect" magnitude that the original "p ≈ 0" framing massively overstated.
-- **The "failed-to-reject = null is true" fallacy compounds with under-sampling.** #2 (20k subsample, p = 0.058) and #3 (i.i.d. chi-square, p = 0.060) were the two entries whose ORIGINAL conclusions ("Z not a driver") were drawn from p > 0.05. Both are flipped under the corrected analysis — #2 becomes significantly *protective* (Z reduces error odds) on origin and 794495, and #3 becomes "no effect on origin but DOES-NOT-GENERALIZE" with one brain showing protective and one showing positive Z effect. The "Likely True → Uncertain" surprise on #2 and #3 is unjustified by the data.
-- **Sample-size-driven significance becomes effect-size honesty.** #14, #17, #18 all retained the same direction under cluster-correct tests but with Cliff's delta in the "small" range (|delta| 0.08–0.28). The original p ≈ 0 / p ≈ 1e-200 numbers were artefacts of treating ~1M correlated edges as independent; the true evidence is consistent across brains but at "small effect" magnitude.
-- **Floor effects and tautologies.** #5 (id 24) is a textbook small-sample floor effect: U = 0 with n = 3 super-merges yields the smallest achievable p of 0.006, but the per-neuron rerun on the origin brain alone gives p = 0.22; the "highly significant" claim is sustainable only on 794495 (n = 24 + 2 super-merges).
-
-### Synthesis
-
-Once the correct test is applied, the headline picture of the run shifts in three important ways. **First, the two confidence-flipping anisotropy findings (#2 id 27, #3 id 21) cannot be sustained as "no effect" results;** on origin, the cluster-robust GEE on the full 1.16M edges of #2 shows Z-alignment is significantly *protective* (OR = 0.66, p ≈ 0) — exactly the opposite of the prior's "Likely True → Uncertain" swing — while #3's "fail-to-reject" survives under correct clustering but DOES-NOT-GENERALIZE in opposite directions. **Second, the three "huge-n, tiny effect" findings (#14, #17, #18) become honest "small effect" findings:** the direction and across-brain robustness survives, but the effect-size is properly described as Cliff's delta ≈ 0.08–0.28 rather than "p ≈ 1e-200". **Third, two of the spatial co-clustering findings (#8 omit-near-merge, #15 split-near-merge) collapse under cluster correction:** the cluster-bootstrap 95% CI on the median gap includes zero on every brain for #15 and on 2/3 brains for #8, with one brain actually reversing the direction. The mechanistic claims about "joint failure zones" and "the model sacrifices thin processes when fusing" are no longer supported by a sample-size-honest test. The robustly UPHELD findings under correct tests are the local-geometry / topology ones — tortuosity (#14, #18) and branch-point proximity (#17) — at small but real effect sizes. The OVERTURNED or WEAKENED findings concentrate in (a) the Z-axis anisotropy story and (b) the spatial co-clustering claims, exactly the entries the prior cross-cutting analysis already flagged for "large-n trivial-effect significance" and "failed-to-reject fallacy."
+**Synthesis.** The corrections cleanly separate two classes of finding. (1) **Effect-driven local-morphology findings survive the right test:** split spatial clustering (id 37, δ≈0.49–0.60, perm p≤4e-4) is robustly UPHELD, and the two tortuosity → split-risk findings (id 59, id 73) are UPHELD with their true *small* effect sizes now exposed (Cliff's δ≈0.18–0.27, CIs excluding 0, perm p≤0.002) and generalizing. (2) **Findings whose headline rested on n-inflated p-values over non-independent edges/nodes collapse once the neuron is the unit of analysis:** branch-order → split risk (id 139), omit-near-merge clustering (id 36), split-near-merge clustering (id 61), extreme-Z omit excess (id 45), and the super-merge cable claim (id 24) all become non-significant (5 OVERTURNED), and split-near-branch-point (id 64) is WEAKENED to a marginal, effect-present-but-not-significant result. The two anisotropy *null* claims (id 21, 27) were robust to the test choice in their headline (still "no significant effect"), but the correct test exposes that their generalization is volume-specific (a real, oppositely-signed effect appears on 794495). Net: the proofreading-relevant *spatial-clustering of splits* and *tortuosity* signals hold up, while most *distance-to-anchor co-localization* and *global-axis / branch-order* claims were artifacts of treating millions of correlated edges as independent.

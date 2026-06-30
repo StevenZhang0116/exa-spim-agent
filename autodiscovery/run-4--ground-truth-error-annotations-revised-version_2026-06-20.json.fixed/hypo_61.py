@@ -1,175 +1,163 @@
-# === RERUN BOOTSTRAP (revised loading only) ============================
-import os as _os, sys as _sys
-
-_TARGET = "/home/zihan.zhang/.local-numpy2"
-_USER_SITE = _os.path.expanduser("~/.local/lib/python3.12/site-packages")
-_SHARED_SITE = "/shared/utils.x86_64/anaconda3-2024.10/lib/python3.12/site-packages"
-_sys.path = [p for p in _sys.path if p not in (_USER_SITE, _SHARED_SITE)]
-if _TARGET in _sys.path:
-    _sys.path.remove(_TARGET)
-_sys.path.insert(0, _TARGET)
-
-import subprocess as _subprocess
-_subprocess.check_call = lambda *a, **k: 0
-_subprocess.call = lambda *a, **k: 0
-_subprocess.run = lambda *a, **k: type("R", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
-
-_PKL = _os.environ["RERUN_PKL"]
-print("Loading dataset from:", _PKL)
-import glob as _glob
-_orig_glob = _glob.glob
-def _glob_patch(pattern, *a, **k):
-    if isinstance(pattern, str) and pattern.endswith(".pkl"):
-        return [_PKL]
-    return _orig_glob(pattern, *a, **k)
-_glob.glob = _glob_patch
-
-from pathlib import Path as _Path
-_orig_rglob = _Path.rglob
-def _rglob_patch(self, pattern, *a, **k):
-    if isinstance(pattern, str) and pattern.endswith(".pkl"):
-        return iter([_Path(_PKL)])
-    return _orig_rglob(self, pattern, *a, **k)
-_Path.rglob = _rglob_patch
-
-_orig_walk = _os.walk
-def _walk_patch(top, *a, **k):
-    yield (_os.path.dirname(_PKL), [], [_os.path.basename(_PKL)])
-_os.walk = _walk_patch
-# === END BOOTSTRAP =====================================================
-# CORRECTED ANALYSIS (entry #15, id 61) =================================
-# Original test: one-sided Mann-Whitney U + Welch's t on per-edge distance
-#   to nearest merge site, n=6,805 split vs 1,109,034 correct.
-# Recorded: medians 1794.64 vs 1956.93 um; U=3.43e9, p=3.50e-38;
-#   t=-10.71, p=7.14e-27.
+# CORRECTED TEST for hypothesis id 61 (split edges closer to merge sites than
+# correct edges).
 #
-# Why the original is wrong: edges along the same cable share distance to
-# any given anchor merge site; treating each of 1.1M edges as i.i.d.
-# inflates the evidence. Also only 67 merge anchors.
+# FAULTS (verifier MINOR, concrete test faults): the effect is practically trivial
+# -- ~162 um of a ~1900 um median (~8%) -- with the extreme p-values produced
+# SOLELY by the >1.1M correct edges; edges are NON-INDEPENDENT and all distances
+# reference the same small merge-site set, so the effective n is much smaller than
+# reported and the naive Mann-Whitney / Welch p is inflated.
 #
-# Corrected:
-#   (a) cluster-bootstrap by NEURON: 95% CI on median(split - correct) gap
-#       and Cliff's delta + cluster-bootstrap p (sign-flip);
-#   (b) merge-site bootstrap: resample the 67 merge sites to bound anchor
-#       variability.
-# =======================================================================
-import pickle
+# CORRECTION: keep the SAME distances and direction but (1) report an EFFECT SIZE
+# -- Cliff's delta (rank-biserial) with a CLUSTER bootstrap 95% CI (resampling
+# whole NEURONS) -- and (2) replace the naive p with a NEURON-CLUSTER permutation
+# p-value (permute the split/correct label at the neuron level, the independent
+# unit).
+#
+# ORIGINAL RECORDED NUMBERS (for the driver to compare):
+#   6805 split / 1109034 correct, split median 1794.64 um vs correct 1956.93 um,
+#   MW U=3432660112.0 p=3.50e-38, Welch t=-10.7131 p=7.14e-27.
+
+import subprocess
 import sys
-import gc
+import os
+import glob
+
+def install(package):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", package])
+
+for pkg in ["psutil", "pandas", "tensorstore"]:
+    try:
+        __import__(pkg)
+    except ImportError:
+        install(pkg)
+
+try:
+    import agentic_neuron_proofreader
+except ImportError:
+    install("https://github.com/AllenInstitute/agentic-neuron-proofreader/archive/refs/heads/main.zip")
+    import agentic_neuron_proofreader
+
+import pickle
 import numpy as np
+import pandas as pd
 from scipy.spatial import cKDTree
 from scipy.stats import mannwhitneyu, ttest_ind
 
-print("=" * 72)
-print("HYPO 61 — split distance to merges < correct (corrected)")
-print("=" * 72)
+file_paths = glob.glob("./*_add.pkl")
+if not file_paths:
+    print("Dataset file not found.")
+    sys.exit(1)
 
-with open(_PKL, "rb") as f:
-    payload = pickle.load(f)
-gt = payload["gt_graph"]
-edge_error = np.asarray(payload["gt_edge_error"])
-merge_sites = payload.get("gt_merge_sites", [])
-del payload
-gc.collect()
-
-if not merge_sites:
-    print("No merge sites; aborting."); sys.exit(0)
-merge_xyz = np.array([s["xyz"] for s in merge_sites])
-
-edges = list(gt.edges)
-u_arr = np.array([e[0] for e in edges]); v_arr = np.array([e[1] for e in edges])
-try:
-    u_xyz = gt.node_xyz[u_arr]
-    v_xyz = gt.node_xyz[v_arr]
-except Exception:
-    u_xyz = np.array([gt.node_xyz[n] for n in u_arr])
-    v_xyz = np.array([gt.node_xyz[n] for n in v_arr])
-midpoints = (u_xyz + v_xyz) / 2.0
-try:
-    edge_neuron = np.array([gt.node_segment_id(int(u)) for u in u_arr])
-except Exception:
-    edge_neuron = np.array([str(u) for u in u_arr])
-_, edge_neuron_int = np.unique(edge_neuron, return_inverse=True)
-
-merge_tree = cKDTree(merge_xyz)
-distances, _ = merge_tree.query(midpoints)
 EDGE_CORRECT, EDGE_SPLIT = 0, 1
-split_mask = (edge_error == EDGE_SPLIT)
-correct_mask = (edge_error == EDGE_CORRECT)
-split_d = distances[split_mask]; correct_d = distances[correct_mask]
-split_n = edge_neuron_int[split_mask]; correct_n = edge_neuron_int[correct_mask]
 
-print(f"\nn_split={len(split_d)}, n_correct={len(correct_d)}")
-print(f"  median split = {np.median(split_d):.2f} um, median correct = {np.median(correct_d):.2f} um")
+split_distances = []
+correct_distances = []
+split_neuron = []
+correct_neuron = []
 
-# --- ORIGINAL for reference ---------------------------------------------
-print("\n[ORIGINAL — recorded one-sided Mann-Whitney + Welch's t]")
-print(f"  recorded: U=3.4327e9, p=3.50e-38; t=-10.71, p=7.14e-27")
-u_o, p_o = mannwhitneyu(split_d, correct_d, alternative="less")
-t_o, pt_o = ttest_ind(split_d, correct_d, equal_var=False, alternative="less")
-print(f"  recomputed: U = {u_o:.0f}, p = {p_o:.4e}; "
-      f"t = {t_o:.4f}, p = {pt_o:.4e}")
+for file_path in file_paths:
+    with open(file_path, "rb") as f:
+        payload = pickle.load(f)
 
-# --- (a) Cluster-bootstrap by neuron -----------------------------------
-print("\n[CORRECTED (a)] Cluster-bootstrap (by neuron) on median gap & Cliff's delta")
-unique_n = np.unique(np.concatenate([split_n, correct_n]))
-print(f"  n_neurons (clusters) = {len(unique_n)}")
-split_by_n = {n: split_d[split_n == n] for n in unique_n}
-correct_by_n = {n: correct_d[correct_n == n] for n in unique_n}
-obs_gap = float(np.median(split_d) - np.median(correct_d))
+    gt = payload["gt_graph"]
+    edge_error = np.asarray(payload["gt_edge_error"])
+    merge_sites = payload.get("gt_merge_sites", [])
 
-def cliffs_delta_fast(a, b, n_max=3000, rng=None):
-    rng = rng or np.random.default_rng(0)
-    a = np.asarray(a); b = np.asarray(b)
-    if len(a) == 0 or len(b) == 0: return float("nan")
-    if len(a) > n_max: a = a[rng.choice(len(a), n_max, replace=False)]
-    if len(b) > n_max: b = b[rng.choice(len(b), n_max, replace=False)]
-    return float(np.sign(a[:, None] - b[None, :]).mean())
-
-rng = np.random.default_rng(17)
-obs_d = cliffs_delta_fast(split_d, correct_d, n_max=3000, rng=rng)
-print(f"  observed median gap (split - correct) = {obs_gap:.2f} um")
-print(f"  observed Cliff's delta = {obs_d:+.4f}  (<0 means split distances are SMALLER)")
-boots_g = []; boots_d = []
-for _ in range(300):
-    sel = rng.choice(unique_n, size=len(unique_n), replace=True)
-    sl = [split_by_n[n] for n in sel if len(split_by_n[n]) > 0]
-    cl = [correct_by_n[n] for n in sel if len(correct_by_n[n]) > 0]
-    if not sl or not cl:
+    if not merge_sites:
         continue
-    s = np.concatenate(sl); c = np.concatenate(cl)
-    boots_g.append(float(np.median(s) - np.median(c)))
-    boots_d.append(cliffs_delta_fast(s, c, n_max=2000, rng=rng))
-if boots_g:
-    lo_g, hi_g = np.quantile(boots_g, [0.025, 0.975])
-    lo_d, hi_d = np.quantile(boots_d, [0.025, 0.975])
-    p_d = 2 * min((np.asarray(boots_d) > 0).mean(), (np.asarray(boots_d) < 0).mean())
-    p_g = 2 * min((np.asarray(boots_g) > 0).mean(), (np.asarray(boots_g) < 0).mean())
-    print(f"  cluster-bootstrap 95% CI on median gap: [{lo_g:.2f}, {hi_g:.2f}] um  "
-          f"(two-sided p = {p_g:.4f})")
-    print(f"  cluster-bootstrap 95% CI on Cliff's delta: [{lo_d:+.4f}, {hi_d:+.4f}]  "
-          f"(two-sided p = {p_d:.4f})")
+    merge_xyz = np.array([site["xyz"] for site in merge_sites])
+    if len(merge_xyz) == 0:
+        continue
+    merge_tree = cKDTree(merge_xyz)
 
-# --- (b) Merge-site bootstrap ------------------------------------------
-print("\n[CORRECTED (b)] Merge-site bootstrap (resample the merge anchors)")
-n_sites = len(merge_xyz)
-print(f"  n_merge_sites = {n_sites}")
-gaps_ms = []
+    edges = list(gt.edges)
+    if len(edges) == 0:
+        continue
+
+    u = np.array([e[0] for e in edges])
+    v = np.array([e[1] for e in edges])
+
+    try:
+        u_xyz = gt.node_xyz[u]
+        v_xyz = gt.node_xyz[v]
+    except (AttributeError, TypeError, IndexError):
+        u_xyz = np.array([gt.nodes[n].get('node_xyz', gt.nodes[n].get('xyz')) for n in u])
+        v_xyz = np.array([gt.nodes[n].get('node_xyz', gt.nodes[n].get('xyz')) for n in v])
+
+    midpoints = (u_xyz + v_xyz) / 2.0
+    distances, _ = merge_tree.query(midpoints)
+    neuron_ids = np.array([gt.node_segment_id(n) for n in u])
+
+    split_mask = (edge_error == EDGE_SPLIT)
+    correct_mask = (edge_error == EDGE_CORRECT)
+
+    split_distances.extend(distances[split_mask])
+    correct_distances.extend(distances[correct_mask])
+    split_neuron.extend(neuron_ids[split_mask])
+    correct_neuron.extend(neuron_ids[correct_mask])
+
+split_distances = np.array(split_distances)
+correct_distances = np.array(correct_distances)
+split_neuron = np.array(split_neuron)
+correct_neuron = np.array(correct_neuron)
+
+print(f"Number of split edges: {len(split_distances)}")
+print(f"Number of correct edges: {len(correct_distances)}")
+if len(split_distances) == 0 or len(correct_distances) == 0:
+    print("Not enough edges in one of the classes to perform statistical test.")
+    sys.exit(0)
+
+print(f"Median split distance:   {np.median(split_distances):.2f} um")
+print(f"Median correct distance: {np.median(correct_distances):.2f} um")
+
+# Naive tests echoed for comparison only.
+stat, pval = mannwhitneyu(split_distances, correct_distances, alternative='less')
+t_stat, t_pval = ttest_ind(split_distances, correct_distances, equal_var=False, alternative='less')
+print(f"\nNaive Mann-Whitney U={stat}, p={pval:.2e} (for comparison only)")
+print(f"Naive Welch t={t_stat:.4f}, p={t_pval:.2e} (for comparison only)")
+
+# === EFFECT SIZE: Cliff's delta with CLUSTER (neuron) bootstrap 95% CI ===
+def cliffs_delta_sub(a, b, rng, n_sub=4000):
+    a_s = a if len(a) <= n_sub else rng.choice(a, n_sub, replace=False)
+    b_s = b if len(b) <= n_sub else rng.choice(b, n_sub, replace=False)
+    gt_ = sum((x > b_s).sum() for x in a_s)
+    lt_ = sum((x < b_s).sum() for x in a_s)
+    return (gt_ - lt_) / (len(a_s) * len(b_s))
+
+rng = np.random.default_rng(42)
+delta = cliffs_delta_sub(split_distances, correct_distances, rng)
+s_df = pd.DataFrame({"neuron": split_neuron, "d": split_distances})
+c_df = pd.DataFrame({"neuron": correct_neuron, "d": correct_distances})
+s_by = {k: g["d"].values for k, g in s_df.groupby("neuron")}
+c_by = {k: g["d"].values for k, g in c_df.groupby("neuron")}
+s_keys = np.array(list(s_by.keys()), dtype=object)
+c_keys = np.array(list(c_by.keys()), dtype=object)
+boots = []
 for _ in range(300):
-    sel = rng.choice(n_sites, size=n_sites, replace=True)
-    tree = cKDTree(merge_xyz[sel])
-    do, _ = tree.query((u_xyz[split_mask] + v_xyz[split_mask]) / 2.0)
-    dc, _ = tree.query((u_xyz[correct_mask] + v_xyz[correct_mask]) / 2.0)
-    gaps_ms.append(float(np.median(do) - np.median(dc)))
-gaps_ms = np.array(gaps_ms)
-lo_ms, hi_ms = np.quantile(gaps_ms, [0.025, 0.975])
-print(f"  merge-site bootstrap 95% CI on median gap: "
-      f"[{lo_ms:.2f}, {hi_ms:.2f}] um")
+    bs = np.concatenate([s_by[k] for k in rng.choice(s_keys, len(s_keys), replace=True)])
+    bc = np.concatenate([c_by[k] for k in rng.choice(c_keys, len(c_keys), replace=True)])
+    boots.append(cliffs_delta_sub(bs, bc, rng, n_sub=2000))
+lo, hi = np.percentile(boots, [2.5, 97.5])
+print("\n=== Effect size (cluster-aware) ===")
+print(f"Cliff's delta (split vs correct distance) = {delta:.4f}  (negative => split closer)")
+print(f"Cluster bootstrap 95% CI = [{lo:.4f}, {hi:.4f}]")
+print(f"Median shift = {np.median(split_distances)-np.median(correct_distances):.2f} um "
+      f"({100*(np.median(split_distances)-np.median(correct_distances))/np.median(correct_distances):.2f}% of correct)")
 
-print("\n" + "=" * 72)
-print("SIDE-BY-SIDE: original vs corrected")
-print("=" * 72)
-print(f"  Original (i.i.d. edges):       U=3.43e9, p=3.5e-38; t=-10.71, p=7.1e-27")
-print(f"  Corrected gap CI (cluster):    [{lo_g:.2f}, {hi_g:.2f}] um (observed {obs_gap:.2f})")
-print(f"  Corrected Cliff's delta CI:    [{lo_d:+.4f}, {hi_d:+.4f}] (observed {obs_d:+.4f})")
-print(f"  Corrected merge-site gap CI:   [{lo_ms:.2f}, {hi_ms:.2f}] um")
+# === NEURON-CLUSTER permutation p-value ===
+s_means = np.array([np.median(v) for v in s_by.values()])
+c_means = np.array([np.median(v) for v in c_by.values()])
+obs = np.median(s_means) - np.median(c_means)
+pooled = np.concatenate([s_means, c_means])
+n_s = len(s_means)
+n_perm = 5000
+perm = np.empty(n_perm)
+for i in range(n_perm):
+    idx = rng.permutation(len(pooled))
+    perm[i] = np.median(pooled[idx[:n_s]]) - np.median(pooled[idx[n_s:]])
+perm_p = (np.sum(perm <= obs) + 1) / (n_perm + 1)
+print("\n=== Neuron-cluster permutation test ===")
+print(f"Split-carrying neurons={n_s}, correct neurons={len(c_means)}")
+print(f"Observed neuron-level median distance gap (split-correct) = {obs:.2f} um")
+print(f"Cluster-permutation one-sided p (split closer) = {perm_p:.4g}")
+print("(Compare to ORIGINAL: MW p=3.50e-38, Welch p=7.14e-27 -- significance n-driven.)")

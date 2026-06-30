@@ -1,239 +1,271 @@
-# AutoDiscovery 跨报告合并 — 所有运行
+# AutoDiscovery 跨报告汇总摘要
 
-## Header
+## 来源报告与覆盖范围
 
-**已纳入的来源报告**(辅助脚本:`python agentic/collect_summaries.py`,`n_files = 2`,`n_entries_total = 40`):
+| 报告（run） | 来源数据集 | 条目数 |
+| --- | --- | --- |
+| `ground-truth-error-annotations-revised-version_2026-06-17` | 789202 | 20 |
+| `run-4--ground-truth-error-annotations-revised-version_2026-06-20` | 789202 | 20 |
+| `run-5--ground-truth-error-annotations-revised-version_2026-06-25` | 794495 | 20 |
 
-- `ground-truth-error-annotations-revised-version_2026-06-17.summary.md` — 运行 `ground-truth-error-annotations-revised-version_2026-06-17` — 20 条条目(较旧)。
-- `run-4--ground-truth-error-annotations-revised-version_2026-06-20.summary.md` — 运行 `run-4--ground-truth-error-annotations-revised-version_2026-06-20` — 20 条条目(较新)。
+- 已纳入的报告数（`n_files`）：3
+- 已纳入的条目总数（`n_entries_total`）：60
+- 合并去重后的不同发现数：24
+- 仅出现在单一报告中的发现数：12
 
-**聚类后:** 共保留 26 项独立的科学发现(两份报告共同印证的 14 项 + 仅在一份报告中出现的 12 项)。在那 12 项独有发现中,有 11 项仅出现在较新的 run-4 报告中,1 项仅出现在较旧的 2026-06-17 报告中。
+### 综述
 
-**综合解读。** 两份报告独立地重新发现了同一个主导主题:U-Net 分割失败是非随机的拓扑—空间现象,具体表现为 (a) **merge 错误集中在结构拥挤 / 分支密集的神经网中**,(b) **split 错误集中于拓扑分支点以及远端 / 细小突起上**,以及 (c) **omit 错误集中在末端 / 叶子边上,并形成连续的条带**。两次运行中得到最清晰的共同印证的判别指标是:跨 split 缺口的方向对齐角度(真实情况下 ~153° 对比错误情况下 ~90°,AUC ≈ 0.93)以及 split 缺口距离分布的紧致性(95 分位数 ≈ 5.8 µm,99 分位数 ≈ 6.5 µm)。最重要的独有 / 新发现来自较新的 run-4 报告:**(1) 头条结论的信念翻转,转向仅靠距离即可自动重连(AUC 0.9979,F1 最优阈值 6.84 µm)**(id 30);**(2) Z 轴各向异性假设被否定**(ids 27 和 21,经修正后分别达到 CRITICAL/MAJOR);**(3) "超合并"发现,即融合 3 个及以上神经元的合并所覆盖的 cable 是 2 神经元合并的约 5×**(id 24);以及 **(4) omit 与 split 错误在空间上与 merge 位点共定位**(ids 36 和 61),两者在 cluster-correct 检验下均被 OVERTURNED。跨报告分歧:较旧报告中的 H39 度量的是 **针对 merge 的切断**(~86% merge 移除,准确率 +11pt),而较新报告中的 H39 度量的是 **A\* split 修复**(每个 split 86% 的成功率,准确率 +0.42pt)——同一个 id,不同干预手段,不同效应。较旧报告的 H35 宣称固定半径的 split bridging "不可行"(缺口比内部边大 ~4×),而较新报告的 H30/H63 则宣称仅依靠距离 bridging 对 inter-neuron 控制组而言近乎完美——这一表面矛盾可由控制组的选择来调和(intra-fragment 内部边 vs inter-neuron 邻居)。
+在这三次运行中，占主导且被反复印证的整体图景是一小组稳健的空间/拓扑误差特征：(1) **合并位点位于稠密、多分叉的邻域中**（局部 fragment 密度高、branch-node 密度高）——分别在 10 µm、15 µm、体积密度以及作为 branch-density ROC 特征下重新测量，且在每个脑上都 GENERALIZES；(2) **合并 segment 是巨大、过度生长、不对称的"失控"标签**——确认其 cable 比非合并 segment 大约 ~15–29×，与单个主神经元呈不对称重叠（中位数 1.0），且 cable length / node count 可作为一个廉价且可泛化的合并先验；(3) **split 误差集中在 branch points 附近以及纤细的远端/终端 tips 处，并在空间上聚集成"误差区"**——由许多距离/测地/拓扑检验发现，全部在方向上 GENERALIZING（尽管有几个是超大 n / 效应量微不足道的情形，在 neuron-cluster 校正下被 WEAKEN）；(4) **split gaps 极小（≈4–7 µm，~99% < 6.5 µm），而 inter-neuron gaps 更大，因此一个 ~6.5–6.84 µm 的邻近阈值加上角度/共线性先验可安全重连 ~85–86% 的 splits**；以及 (5) **omit 误差具有突发性/连续性，并集中于远端终端分支**，由所有脑上的 Markov-transition 和 run-length 分析确认。
 
----
+最重要的**独有/新增**发现来自 run-4 和 run-5：run-4 的近乎完美的邻近分类器（ROC-AUC 0.9979，6.84 µm 阈值）、angular-inertia 延续启发式（ROC-AUC 0.9322）、对 86% 的 splits 的 A* 图修复，以及两个被驳斥的 Z-orientation/anisotropy 假设；run-5 全新的 crossing-fiber 合并几何（>45°）、双峰 split-gap GMM（现已正式经过模型选择）、不对称 merge-overlap 剪枝洞见、radius-matching 的 precision/recall 权衡，以及将 ~96% 的 omit gaps 归因于 100 µm min-cable-length 过滤器。
 
-## 独有与新发现
-
-### 1. (Priority 0.507 · Surprise 0.690) 仅靠欧氏缺口距离就能近乎完美地将真实 split 与 inter-neuron 邻居区分开,使信念转向支持仅靠距离的自动重连。
-- **来源:** `run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 30) — 仅此一份报告发现。最新运行。
-- **结论:** 在 6,805 个真实 split 缺口与 4,189 个 20 µm 以内的 inter-neuron 缺口上,真实 split 距离紧密集中在 ~4.5 µm 附近(多数在 2–7 µm),而 inter-neuron 缺口几乎不会低于 7 µm。二分类器 ROC AUC 为 0.9979,F1 最优阈值为 6.84 µm(max F1 = 0.9945),证实仅靠距离就是一个可行、安全的启发式。先验 "Leaning False" (0.2917) 被翻转为 "Leaning True" (0.7344)。在所有三个大脑上都泛化:AUC ≥ 0.9889,阈值 6.48–6.84 µm,F1 ≥ 0.9711。
-- **沿用判定:** Reproduction REPRODUCED;Generalization GENERALIZES;Verdict OK。
-- **为何独有/新:** 仅靠距离的自动重连在较旧报告中被认为不可行(H35:缺口比内部边大 ~4×)。较新报告将控制组换为 inter-neuron(而非 intra-fragment 内部边)的重新框定,使结论被反转。
-- **Caveats:** 样本内进行 F1 最优阈值选择会引入轻度乐观偏差;部署中的智能体需要防范在测试集中未代表的密集神经网区域产生的假阳性。
-
-### 2. (Priority 0.323 · Surprise 0.795) 沿 Z 轴对齐的神经突起并没有比沿 XY 对齐者明显更容易出错——但经修正后的 GEE 翻转结果为 "Z 显著具有保护性"。
-- **来源:** `run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 27) — 仅此一份报告发现。最新运行。
-- **结论:** 记录在案的混合效应 logistic 回归在 20,000 条边的子样本上(总计 1,160,529 条)给出标准化 z 对齐系数为 −0.0661,p = 0.0582,OR = 0.8029——不显著且方向上略微"反向",促使信念从 Likely True (0.9167) 降为 Uncertain (0.4062)。在全部 1.16M 条边上做 cluster-robust GEE 修正后,系数为 −0.1229,p ≈ 0,OR = 0.6649 [0.6180, 0.7154]:Z 对齐显著具有保护性,与先验相反。Generalization PARTIAL:origin 789202 有保护性(OR 0.66,p≈0);794495 有保护性(OR 0.51,p=5.7e-12);794491 无显著效应(OR 1.12,CI [0.81, 1.55])。
-- **沿用判定:** Reproduction REPRODUCED;Generalization PARTIAL;Verdict MAJOR;Post-correction verdict OVERTURNED。
-- **为何独有/新:** 较旧报告未测试 Z 轴各向异性。
-- **Caveats:** 原始 20k 子样本浪费了约 98% 可用数据;"未拒绝 = 零假设为真"的谬误导致了原始的负向意外感;经修正后的保护性效应是大脑特异的(在 794491 上不存在)。
-
-### 3. (Priority 0.266 · Surprise 0.568) Z 主导边相对 XY 主导边的错误率本质上相同(3.70% vs 3.63%),独立印证了无各向异性结果——但在额外大脑上符号翻转。
-- **来源:** `run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 21) — 仅此一份报告发现。最新运行。
-- **结论:** 433,243 条 Z 主导边(错误率 3.70%)对比 975,802 条 XY 主导边(错误率 3.63%)的卡方检验给出 χ² = 3.5328,p = 0.0602——未达显著。信念从 Likely True (0.8333) 降为 Uncertain (0.4688)。DOES-NOT-GENERALIZE:在 794491 上 Z 错误率显著更高(χ²=166.12,p=5.21e-38),在 794495 上显著更低(χ²=395.76,p=4.62e-88)。修正后的 GEE OR(Z vs XY) = 1.0184 [0.9712, 1.0680],p = 0.45 在 origin 上;UPHELD 仅在 origin 上"无效应",而两个额外大脑指向相反方向。
-- **沿用判定:** Reproduction REPRODUCED;Generalization DOES-NOT-GENERALIZE;Verdict CRITICAL;Post-correction verdict UPHELD on origin only。
-- **为何独有/新:** 是发现 #2(id 27)的配套发现;较旧报告完全未测试成像轴各向异性。
-- **Caveats:** 边缘 p = 0.0602 被误读为反驳 H₁("未拒绝 = 零假设为真"谬误);未通过 BH-FDR(阈值 0.0444);来自同一神经元的边违反独立性,使有效 n 被夸大。
-
-### 4. (Priority 0.265 · Surprise 0.414) 离心分支阶数终究可以预测 split 错误,深阶分支错误率突破 3%——但在两个额外大脑上符号都翻转。
-- **来源:** `run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 139) — 仅此一份报告发现。最新运行。
-- **结论:** 对 1,409,045 条边的 logistic 回归给出 branch_order 系数 = +0.0194,z = 16.37,p < 0.001(origin 上,阶数越深越易 split)。Generalization DOES-NOT-GENERALIZE:在 794491 上系数 = −0.0157(p < 0.001),在 794495 上系数 = −0.0063(p < 0.001)——均在相反方向上显著。带 neuron 聚类的修正后 GEE 给出 origin 上系数 = +0.01943,p = 0.038(勉强显著;OR = 1.0196 [1.001, 1.039]),在 794491 上方向相反,p = 0.034;在 794495 上 p = 0.58(NS)。
-- **沿用判定:** Reproduction REPRODUCED;Generalization DOES-NOT-GENERALIZE;Verdict CRITICAL;Post-correction verdict WEAKENED on origin and OVERTURNED on extras。
-- **为何独有/新:** 较旧报告未分析离心分支阶数。
-- **Caveats:** `norm_thickness` 方差为零被剔除,因此"独立于 cable 粗细"的限定条件从未被实测;深阶峰值依赖于稀疏的高阶分箱;机制性因果措辞并不被这种观察性回归所支持。
-
-### 5. (Priority 0.253 · Surprise 0.284) 融合 3 个及以上 GT 神经元的"超合并"覆盖的 GT cable 是 2 神经元合并的 ~5×,印证最严重的 merge 错误是巨型结构。
-- **来源:** `run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 24) — 仅此一份报告发现。最新运行。
-- **结论:** 27 个合并 segment 入选(24 个两神经元,3 个超合并)。覆盖 cable 的中位数:2 神经元为 6.21 mm,超合并为 35.19 mm(Mann-Whitney U = 0.0,p = 5.89e-03)。按每神经元计算为 ~11.7 mm/neuron vs ~3.1 mm/neuron。信念从 Leaning True (0.7083) 移至 Likely True (0.8906)。Generalization PARTIAL:794495 强力印证(n=24+2,p=6.15e-03,超合并中位数 168.42 mm);794491 没有超合并(检验无法进行);origin 单脑 rerun 给出 n=8+1,p=0.222(NS,U=0 是地板效应)。
-- **沿用判定:** Reproduction DIVERGED(数据集范围,单脑 pkl 仅有 8+1);Generalization PARTIAL;Verdict MAJOR;Post-correction verdict WEAKENED。
-- **为何独有/新:** 较旧报告未按融合神经元数对 merge 分组。
-- **Caveats:** 功效严重不足(n=3 超合并,U=0 是地板);该检验比较的是总 cable(部分上有同义反复——融合更多神经元在机械上就跨越更多 cable),而非该假设字面上提出的每神经元数量。
-
-### 6. (Priority 0.253 · Surprise 0.284) Omission 错误在拓扑分支点处的发生频率是线性 cable 节点的 ~4×。
-- **来源:** `run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 32) — 仅此一份报告发现。最新运行。
-- **结论:** 分支节点 omit 率 11.95%(606/5,072)vs 线性节点 omit 率 2.76%(38,610/1,398,807),χ² = 1567.69,p ≈ 0。模型在复杂结点处明显会丢失 fragment。在所有三个大脑上泛化:794491 7.54% vs 3.41%(比率 2.2×,χ²=193.63,p=5.13e-44);794495 6.52% vs 1.72%(比率 3.8×,χ²=974.86,p=5.24e-214)。信念从 Leaning True (0.7083) 移至 Likely True (0.8906)。
-- **沿用判定:** Reproduction REPRODUCED;Generalization GENERALIZES;Verdict MINOR。
-- **为何独有/新:** 较旧报告测试的是 OMIT 集中在 LEAVES 附近(H11、H64),而非分支点;SPLIT vs branch (H10) 是不同的错误类型。较新报告的 id 32 是首次对 OMIT vs 分支节点的测量。
-- **Caveats:** 同一神经元内的边/节点不是 i.i.d.(未对聚类建模);分支节点 (5,072) 比线性节点 (1.4M) 稀有得多;"复杂分支结构导致脱漏"的因果措辞仅为观察性。
-
-### 7. (Priority 0.253 · Surprise 0.284) 被 omit 掉的 cable 系统性地比正确重建的 cable 更靠近 merge 位点——但在 cluster 修正下被 OVERTURNED。
-- **来源:** `run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 36) — 仅此一份报告发现。最新运行。
-- **结论:** 在 49,295 个 omit 节点对比长度匹配的 49,295 个正确节点的随机样本上,到 67 个 merge 位点中最近者的距离中位数为 1,812.73 µm(omit)vs 1,959.88 µm(correct),单侧 Mann-Whitney U = 1.138e9,p = 1.60e-66。信念从 Leaning True (0.7083) 移至 Likely True (0.8906)。Generalization DOES-NOT-GENERALIZE:在 794491 上 omit 中位数 1103.24 µm > correct 842.11 µm(方向翻转,假设方向下 p=1.000);794495 印证(1422.53 vs 1670.94 µm,p=9.78e-226)。修正后的按神经元 cluster-bootstrap:差距 CI [−401.82, +91.98] µm 跨过零,p = 0.27(NS)。
-- **沿用判定:** Reproduction REPRODUCED;Generalization DOES-NOT-GENERALIZE;Verdict CRITICAL;Post-correction verdict OVERTURNED。
-- **为何独有/新:** 较旧报告未测试 omit 与 merge 的空间共定位。
-- **Caveats:** 效应极小(在 ~1,900 µm 基线上 ~147 µm 差距,~7.7%);显著性源于把 49k 个空间相关节点当作 i.i.d. 处理;机制性主张"模型在融合时牺牲相邻细突起"是过度解读。
-
-### 8. (Priority 0.253 · Surprise 0.284) 在 fragments 图上的启发式 A\*(角度 + 半径惩罚)修复了 86% 的 split 边而不引入 merge。
-- **来源:** `run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 39) — 仅此一份报告发现。最新运行。
-- **结论:** 对 6,805 个目标 split,该智能体为其中 5,881 个找到了有效(no-merge)路径——每个 split 成功率 86.42%,达到 40% 阈值的两倍。端到端 Edge Accuracy 从 78.71% 提升到 79.13%(净提升 +0.42%)。信念从 Leaning True (0.7083) 移至 Likely True (0.8906)。在所有三个大脑上泛化:794491 成功率 84.72%,EA 增益 +1.18%;794495 成功率 89.71%,EA 增益 +0.53%。
-- **沿用判定:** Reproduction REPRODUCED;Generalization GENERALIZES;Verdict MINOR。
-- **为何独有/新:** 较旧报告的 merge-cut H39 是其配套发现,但此处通过 A\* 解决的是 SPLIT 而非通过图切断解决 MERGE。相同 id 编号,不同干预,不同错误类型。
-- **Caveats:** 成功率没有统计检验或 CI;"不引入 merge"依赖 GT——在没有 GT 的部署中,no-merge 无法保证;+0.42% EA 微弱;>40% 这一阈值非常宽松易被超过。
-
-### 9. (Priority 0.253 · Surprise 0.284) 合并性 segment 表现为"巨型"组件——平均 cable 长度比非合并 segment 大 ~30×。
-- **来源:** `run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 43) — 仅此一份报告发现。最新运行。
-- **结论:** 64 个合并 segment 的平均长度 ~15,449 µm(中位数 ~3,099 µm),vs 8,273 个非合并 segment 的平均 ~532 µm(中位数 ~102 µm);对 log-cable-length 的 Welch's t = 16.54,p = 7.32e-25。信念从 Leaning True (0.7083) 移至 Likely True (0.8906)。Generalizes:794491 23×,t=29.03,p≈0;794495 34×,t=24.02,p≈0。
-- **沿用判定:** Reproduction REPRODUCED;Generalization GENERALIZES;Verdict OK。
-- **为何独有/新:** 较旧报告测量了合并 segment 的分支密度(H53),但未测量其绝对 cable 长度。
-- **Caveats:** 部分上同义反复——融合多个神经元的 segment 必然跨越它们——但 ~30× 量级才是信息丰富的主张;样本量不对称 64 vs 8,273 由 Welch's 校正处理。
-
-### 10. (Priority 0.253 · Surprise 0.284) Omit 错误在成像体积的极端 Z 深度比中央深度高 >2×。
-- **来源:** `run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 45) — 仅此一份报告发现。最新运行。
-- **结论:** 极端 Z 的 omit 率 4.44%(2,283/51,369)vs 中央 Z 1.94%(11,342/585,909);Cochran-Mantel-Haenszel 合并 OR = 2.3561,p ≈ 0。信念从 Leaning True (0.7083) 移至 Likely True (0.8906)。Generalization PARTIAL:794495 OR=3.1672(p≈0,强力印证);794491 OR=1.0149(p=0.80,无效应)。在 origin 上带 neuron 聚类的修正 GEE 给出 OR = 2.3561 [0.4558, 12.1801],p = 0.31(NS,一旦尊重聚类)。
-- **沿用判定:** Reproduction REPRODUCED;Generalization PARTIAL;Verdict MAJOR;Post-correction verdict WEAKENED。
-- **为何独有/新:** 较旧报告未测试深度极端的体积效应。
-- **Caveats:** "按大脑 ID 分层"在单脑 pkl 上等同于无操作;分箱定义(顶/底 10% vs 中央 20%)是任意的;机制性的"光学衰减"主张被 794491 反驳。
-
-### 11. (Priority 0.253 · Surprise 0.284) 短 omission 缺口通常是单个预测 segment 内部的丢失;长缺口是真正的 fragment 边界。
-- **来源:** `run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 58) — 仅此一份报告发现。最新运行。
-- **结论:** 307 条 bridged omit 路径(均值 18.71 µm,中位数 13.55 µm)vs 4,298 条 broken omit 路径(均值 42.54 µm,中位数 20.16 µm);Mann-Whitney U = 458,554,p = 1.95e-19。短 omit 大多为网络内部的丢失,提示是安全的自动填充目标。信念从 Leaning True (0.7083) 移至 Likely True (0.8906)。在所有三个大脑上泛化(中位数 10.99–13.55 vs 15.23–20.16 µm;所有 p ≤ 2.75e-09)。
-- **沿用判定:** Reproduction REPRODUCED;Generalization GENERALIZES;Verdict MINOR。
-- **为何独有/新:** 较旧报告未按 bridged-vs-broken 预测段连续性对 omit 缺口分组。
-- **Caveats:** 定义耦合——"bridged" 要求同一预测 segment 上有足够多的非 omit 邻居,已部分编码了路径长度;中位数比率适中(~1.5×);显著性部分来自 n=4,605 的总样本量。
-
-### 12. (Priority 0.287 · Surprise 0.307) 神经元级 split 率与 omit 率呈强正相关,提示存在共享的上游失效模式。
-- **来源:** `ground-truth-error-annotations-revised-version_2026-06-17` (id 30) — 仅此一份报告发现。较旧运行。
-- **结论:** 在 12 个超过 50 µm 长度阈值的神经元上,Pearson r = 0.65(p = 0.022),Spearman ρ = 0.881(p = 1.53e-04),OLS R² = 0.422。信念从 Leaning True (0.7083) 移至 Likely True (0.9327)。Generalizes:794491(n=9)Spearman ρ=0.983,p=1.94e-06;794495(n=19)Spearman ρ=0.740,p=2.89e-04。修正后:Spearman ρ 被提升为头条(bootstrap CI [0.5596, 0.9923],permutation p=3.00e-04,Kendall τ=0.7273 p=4.99e-04)。Post-correction verdict UPHELD。
-- **沿用判定:** Reproduction REPRODUCED on stats;Generalization GENERALIZES;Verdict MINOR;Post-correction verdict UPHELD。
-- **为何独有/新:** 只有较旧报告执行了对 split 率与 omit 率的逐神经元相关。较新报告没有重新审视该问题。
-- **Caveats:** n=12 个神经元极小;Pearson 对离群点敏感(codeOutput 标记出 Y≈12.6 附近一个高杠杆点);"提示共享的上游失效模式"是机制性解释,n=12 的相关分析无法将其单独分离。
+最清晰的**跨报告分歧**集中在 Z 轴效应以及 branch-order/distal 梯度上。run-4 的 "z-alignment / Z-dominant orientation 并非风险驱动因素"（#2/#3）带有 DOES-NOT-GENERALIZE / PARTIAL——同一检验在另外两个脑上变得在*相反*方向上强显著。run-4 的 "split risk 随 branch order 上升"（#139）被 OVERTURNED（符号翻转，neuron-cluster permutation 不显著）。2026-06-17 报告的 "omissions 偏远端 / 更靠近 leaves" 这一发现仅为 PARTIAL——在数据集 794491 上方向翻转——而类别型的 terminal-vs-internal omit-rate 重述则干净地 GENERALIZES。若干 "splits/omits 与 merges 共聚类" 以及 "splits 在 merges 附近级联" 的论断在按边来看是显著的，但一旦以 neuron 作为分析单位就被 OVERTURNED 或降级，而 run-5 的 split→omit 局部共现（#42）DOES-NOT-GENERALIZE（在两个额外脑上均符号翻转 + 不显著）。
 
 ---
 
-## 共同印证的发现(合并)
+## 独有与新增发现
 
-### 13. (Priority 0.287 · Surprise 0.307) Merge 错误集中在 fragment-graph 局部密度异常高 / 分支多的"缠结"结构区域。
-- **来源:** `ground-truth-error-annotations-revised-version_2026-06-17` (ids 3 [10 µm density]、23 [15 µm density]、49 [distance-to-nearest-fragment-branch]、53 [merge segment 的分支密度]、81 [体积密度]);`run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 84 [15 µm 局部分支密度,控制组的 ~28×]) — 2 份报告,6 条条目。
-- **结论:** Merge 位点周围的 fragment-graph 节点与分支结构远比匹配的控制组更密集。最受充分验证变体的标准数字(较旧的 H3):67 个 merge 位点 10 µm 范围内的局部节点密度均值 = 7.03 vs 控制组 4.39(Mann-Whitney U = 3931,p = 8.99e-15,~60% 提升)。15 µm 范围(H23):11.09 vs 6.33(U = 4100.5,p = 8.95e-17,75% 提升)。到最近分支的距离(H49):merge 位点中位数 4.48 µm vs 随机 179.76 µm(p = 2.21e-17);~40% 恰好与某个分支重合,~86% 在 10 µm 范围内。Merge segment 自身的每 100 µm cable 分支密度高 ~2×(H53:0.108 vs 0.057,p = 2.91e-25)。体积公式(H81):0.001678 vs 0.001083 nodes/µm³(Welch t = 8.93,p = 2.77e-14)。较新报告 H84 的配对设计:在同 segment 控制下 1.13 vs 0.04 branches/15 µm,paired t = 13.35(p = 2.03e-20),AUC = 0.9236。
-- **一致:** 两份报告独立地通过多种指标和半径(10 µm、15 µm、体积、同 segment 配对)在所有三个大脑上印证。效应量比率:节点密度提升 41% 到 84%(较旧);分支密度 ~28×(较新配对)。修正后的非参数 Cliff's delta(较旧 H81 修正)= 0.67 到 0.78,跨所有三个大脑。
-- **分歧:** 方向上无分歧;较旧报告 H49 的控制构造(按构造为非分支随机节点)被标记为接近循环论证,但 merge 侧的效应如此之大,结论仍然成立。
-- **沿用判定:** 所有条目 Reproduction REPRODUCED;6 条条目在所有三个大脑上 Generalization GENERALIZES;Verdicts OK / MINOR;Post-correction verdict UPHELD(若已修正)。
-- **Caveats:** Merge 侧 n 较小(origin 67,extras 86、105);较旧报告的 5 种密度变体并非统计上独立(相同的 merge 位点,只是不同的半径/体积公式)——应当算作 1 个有效信号;较新报告 H84 的 AUC 是基于配对控制的样本内 AUC。
+### 1. (Priority 0.507 · Surprise 0.690) 一个 ~6.84 µm 的欧氏阈值可安全地自动重连绝大多数 split fragments。
+- **来源：** run-4--...2026-06-20 (id 30) —— 唯一发现此邻近分类器结果的报告。
+- **结论：** 检验了仅凭空间邻近性能否将真实 split gaps 与 inter-neuron gaps 区分开来。在 20 µm 范围内的 6,805 个真实 split gaps 与 4,189 个 inter-neuron gaps 上，分布几乎完全不重叠（真实 splits 峰值约 ~4.5 µm；inter-neuron gaps 很少低于 7 µm）。以 gap distance 作为二元分类器给出 ROC-AUC 0.9979，F1 最优阈值 6.84 µm 达到 F1 = 0.9945。较大的正向 surprisal（+0.690，Leaning False → Leaning True）反映出该 loop 此前倾向于反对仅靠邻近性修复，但数据强力验证了它是一个安全、有效的启发式。
+- **沿用判定：** Reproduction REPRODUCED（精确匹配）；Generalization GENERALIZES（ds_794491 ROC-AUC=0.9889，thr=6.48 µm，F1=0.9711；ds_794495 ROC-AUC=0.9953，thr=6.83 µm，F1=0.9878）；Verdict SOUND。
+- **为何独有/新增：** 未出现在 2026-06-17 报告中；首次出现在较新的 run-4 中，作为其排名第一、最高 surprise 的结果。（Run-5 的 id 63 印证了*gap-size*这一事实，已折叠进 Corroborated #4；ROC-AUC 分类器构建为 run-4 独有。）
+- **Caveats：** 假阳性的 "inter-neuron gaps" 来自模拟中的 GT 标签而非真实合并，因此这是一个部署层面的注意事项；F1 最优阈值是在样本内选取的（轻微乐观偏差，鉴于 AUC=0.9979 可忽略）。
 
-### 14. (Priority 0.287 · Surprise 0.307) Split 错误集中在拓扑分支点附近(测地与欧氏距离都是如此)——方向稳健,量级在额外大脑上衰减。
-- **来源:** `ground-truth-error-annotations-revised-version_2026-06-17` (ids 13 [测地,去重]、19 [欧氏]、72 [拓扑]);`run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 64 [测地,均值 516 vs 711 µm]) — 2 份报告,4 条条目。
-- **结论:** Split 边比正确边显著更接近 GT 分支点。标准数字(去重 origin H13):Mann-Whitney U = 2.98e9,p = 1.32e-197,n = 1,109,034 correct vs 6,805 split;中位数差 = −184.19 µm。欧氏(H19):split 均值 275.76 µm vs correct 381.98 µm(p = 1.39e-229)。拓扑(H72):均值 518.39 vs 712.57 µm(p = 0)。较新报告 H64(同样总体上的测地距离):均值 516.30 vs 710.59 µm(p = 1.32e-197)。经 cluster-bootstrap 修正后(H13/H72/H64),origin Cliff's delta = −0.22 [−0.28, −0.13],在 extras 上衰减为 −0.08 到 −0.13;在所有大脑上逐神经元配对 Wilcoxon p ≤ 0.027。
-- **一致:** 方向(split 更靠近分支)在所有三个大脑上、跨测地/欧氏/拓扑距离公式都得以保持。Cluster-correct 后的效应量"小但稳健"(Cliff's delta 0.08–0.22)。
-- **分歧:** 量级。较旧 H13 因记录的 n 是真实 n 的 2 倍(重复 glob 导致双重计数)被标记为 MAJOR;较旧 H72 标记为 MAJOR/WEAKENED,因为 origin 上的 ~184 µm 差距在 794491 上塌缩到 ~39 µm、在 794495 上塌缩到 ~30 µm,而 floor-p 始终为 0。较新 H64 因相同的 n 驱动膨胀被标记为 MAJOR,但修正后以"小效应"量级 UPHELD。较旧 H19 标记为 MINOR。
-- **沿用判定:** Reproduction REPRODUCED(并暴露出 H13 双重计数 bug);所有条目在所有三个大脑上 Generalization 方向上 GENERALIZES;Verdicts MINOR / MAJOR;Post-correction verdict 在尊重效应量(小 Cliff's delta)的前提下 UPHELD。
-- **Caveats:** 同一骨架内的边不独立——合并后的 p 值高估了证据强度;较新 H64 中"紧密约束在分支点区域"的措辞对 794491 上严重衰减的效应是夸大其词。
+### 2. (Priority 0.409 · Surprise 0.471) 合并发生在 crossing fibers 处，其交叉角度显著大于 45°。
+- **来源：** run-5--...2026-06-25 (id 15) —— 唯一发现此结果的报告；最新的运行。
+- **结论：** 检验了一个合并位点处两个 GT 神经元之间的 3D 交叉角度是否超过 45°。在 12 个有效合并位点上，交叉角分布的均值为 65.97°、中位数为 74.93°（聚集在 65°–90°）；针对 45° 的 one-sample Wilcoxon signed-rank 检验给出 statistic 69.00，p = 0.0081，拒绝原假设。正向 surprisal（+0.471）是 run-5 中最大的信念偏移，将一个 Uncertain 先验提升至 Likely True——合并主要是一个 crossing-fiber 几何问题。
+- **沿用判定：** Reproduction REPRODUCED（精确匹配）；Generalization PARTIAL（ds_794491 中位数 54.30°，stat=223.00，p=5.37e-02，n=25 —— 方向相同但失去显著性；ds_789202 产生 0 个有效合并位点，无法检验）；Verdict WEAK。
+- **为何独有/新增：** 首次出现在最新的 run-5；在两个更早的报告中不存在任何 Z-angle/crossing-fiber 合并几何假设。
+- **Caveats：** 严重检验力不足（n=12）；45° 基准是一个任意的参照；两个额外数据集中只有一个产出了可检验的位点，且那一个也只是边缘显著（p≈0.054）。
 
-### 15. (Priority 0.287 · Surprise 0.307) Split 错误在空间上聚集 / 级联——观察到的 split 间距远短于零假设,且 split 边的 split 邻居数是正确边的 ~10×。
-- **来源:** `ground-truth-error-annotations-revised-version_2026-06-17` (id 55 [KS vs uniform null,split 间距短 9×]);`run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 37 [30 µm 内 split 邻居多 10×]) — 2 份报告。
-- **结论:** Split 不是独立事件,而是局部聚集。较旧 H55:观测 split 间距中位数 25.58 µm vs 零假设 236.98 µm(KS D = 0.454,p ≈ 0,~9.3× 短于均匀)。较新 H37:30 µm 内 split 边的其他 split 邻居均值为 0.97,而匹配的正确边为 0.10(Mann-Whitney U = 3.47e7,p ≈ 0;~9.7× 比率)。
-- **一致:** 两份报告独立印证 origin 上 split 局部聚集 ~10×;两者在所有三个大脑上泛化(H55 比率 6.0×–14.3×;H37 比率 5.0×–11.5×)。两者的信念变化:Leaning True → Likely True。Cluster-correct(较旧 H55):三个大脑上逐神经元 obs/null 中位数比率 0.07–0.13;matched-pairs r_rb = −1.0(每个神经元都展现 obs<null);每个大脑上的 cluster-permutation p ≤ 0.031。
-- **分歧:** 方向或数量级效应上无分歧。
-- **沿用判定:** 两者 Reproduction REPRODUCED;两者 Generalization GENERALIZES;Verdicts MINOR;Post-correction verdict(较旧 H55)UPHELD。
-- **Caveats:** 较旧 H55 的均匀零假设是粗略选择(未考虑 cable 密度梯度);"级联"这种因果措辞超越了空间聚集所能确立的内容。较新 H37 在设计上部分是自相关("split 与 split 聚集")。
+### 3. (Priority 0.275 · Surprise 0.300) Split gaps 呈双峰：极小的单点 dropout gaps 加上较大的遗漏段 gaps。
+- **来源：** run-5--...2026-06-25 (id 12) —— 唯一对 split-gap 模态进行建模的报告。
+- **结论：** 在 7,988 个 split gaps 上的 2-component Gaussian Mixture Model 发现 Component 1（占 splits 的 ~63.6%）均值约 ~0.0 µm（位移可忽略），Component 2（~36.4%）均值约 ~159.2 µm（std ~259.0 µm，大段遗漏），意味着连接器应使用两个搜索半径。校正后的模型选择检验正式确认了双峰性：BIC(k=1)−BIC(k=2)=114,816.7，likelihood-ratio 114,843.7，Hartigan dip statistic=0.4128，bootstrap p=0.0020。
+- **沿用判定：** Reproduction REPRODUCED（从一次记录在案的 sandbox FAILED 运行中恢复）；Generalization GENERALIZES（dip test 在两个额外脑上均拒绝单峰性，p=0.0020；large-gap 均值在 117–329 µm 之间变化）；Verdict WEAK → Post-correction verdict UPHELD。
+- **为何独有/新增：** 首次出现在最新的 run-5；更早的报告均未对 split-gap 距离拟合混合模型。
+- **Caveats：** GMM component 分配依赖于模型；Component 1 均值约 ~0.0 µm、std ~0.001 µm 可能是一个近乎退化的尖峰。原始分析未报告模型选择检验（校正前双峰性是由构造方式所断言的）。
 
-### 16. (Priority 0.287 · Surprise 0.307) Split 缺口端点的方向对齐是一个强且可利用的判别指标(反平行余弦 / 真实延续 ~153° vs 错误 ~90°)。
-- **来源:** `ground-truth-error-annotations-revised-version_2026-06-17` (id 67 [余弦相似度,隐式 AUC]);`run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 33 [角度(度),AUC = 0.9322]) — 2 份报告。
-- **结论:** Split 缺口端点表现出强烈的方向对齐,可区分真实延续与错误候选。较旧 H67:525 个 split 对的平均余弦相似度为 −0.685,vs 2,689 个空间相邻但拓扑不相连的控制为 −0.511(Mann-Whitney U = 594,814,p = 1.13e-08)。较新 H33 在 13,582 个 split 节点配置上:真实延续角度均值 = 152.96°,vs 错误的 90.17°(KS = 0.7460,p ≈ 0;ROC AUC = 0.9322)。
-- **一致:** 两份报告印证一个可作为 bridging 启发式的尖锐方向特征;两者在所有三个大脑上泛化。较新 H33 各大脑 AUC ≥ 0.9281;较旧 H67 的效应在 extras 上增强(split −0.593 到 −0.791 vs 控制 −0.333 到 −0.527)。
-- **分歧:** 较旧 H67 措辞较保守,称之为"判别指标而非清晰的分类器"(与控制组在 ~ −0.51 处重叠),而较新 H33 表述为"强且可靠"(AUC 0.93 毫不含糊)。较新 H33 的更紧操作定义(来自不同神经元的真实延续 vs 错误候选)解释了其更干净的 AUC。
-- **沿用判定:** 两者 Reproduction REPRODUCED;两者 Generalization GENERALIZES;两者 Verdicts OK。
-- **Caveats:** 较新 H33 的"错误候选"在操作上定义为来自不同神经元的邻近边——可行性主张依赖于该操作定义在推断时无 GT 的情况下仍能获得。
+### 4. (Priority 0.275 · Surprise 0.300) 合并的 segments 高度不对称——大多是单个主神经元的次要分支（overlap 中位数 1.0）。
+- **来源：** run-5--...2026-06-25 (id 22) —— 唯一测量合并重叠不对称性的报告。
+- **结论：** 在 98 个合并 segments 上，与主神经元的平均 overlap ratio 为 0.9129（中位数 1.0）；检验均值超过 0.5 的 one-sample 检验给出 t = 24.87，p = 3.58e-44。均衡的 50/50 融合极为罕见，因此合并校正是在剪除一个次要的偶然分支，而非分割一个均衡的 segment。校正后的非参数检验（Wilcoxon W=4656.0，p=1.87e-19；sign test p=1.26e-29；中位数 1.0，bootstrap CI [1.0, 1.0]）确认了相同结论。
+- **沿用判定：** Reproduction REPRODUCED；Generalization GENERALIZES（ds_794491 均值 0.8558，t=17.18，p=1.72e-31；ds_789202 均值 0.9704，t=43.12，p=8.84e-49）；Verdict MINOR → Post-correction verdict UPHELD。
+- **为何独有/新增：** 首次出现在最新的 run-5；这是对合并修复的一个可操作表述（"剪枝，而非分割"），在两个更早的报告中不存在。
+- **Caveats：** 头条结论的来源缓存为单一数据集；原始 one-sample t-test 对一个堆积在 1.0 上限处的 [0,1] 有界比率而言并不合适（检验选择错误，已在不改变结论的情况下校正）。
 
-### 17. (Priority 0.287 · Surprise 0.307) Split 错误倾向于发生在更细 / 更远端的突起上(比正确边更靠近 leaf)。
-- **来源:** `ground-truth-error-annotations-revised-version_2026-06-17` (id 60 [distance-to-leaf,origin 上短 ~344 µm],id 65 [拓扑距 leaf,origin 上短 38%]) — 仅较旧报告显式测试了 split-vs-leaf;较新报告未直接测量。但是,较旧报告的 H17(distance-to-leaf)和 H65(中位数短 38%)从两个角度描述同一性质并互相印证。
-- **结论:** Split 边比正确边更接近 GT 叶子节点。较旧 H60:split 均值 938.60 µm vs correct 均值 1282.69 µm(Mann-Whitney p = 2.16e-134)。较旧 H65:split 中位数 417.22 µm vs correct 中位数 671.61 µm(短 38%,p = 0)。在所有三个大脑上方向上泛化(差距 28–344 µm),但量级在 extras 上塌缩到 13–15%。
-- **一致:** 两条较旧条目(H60 与 H65)本质上是不同下采样下的同一测量(distance-to-leaf);都印证方向。
-- **分歧:** 跨报告间无分歧,因为只有一份报告测试了它。在较旧报告内部,H60 与 H65 被标记为统计上不独立。
-- **沿用判定:** Reproduction REPRODUCED(H60 精确,H65 因无种子下采样有漂移);Generalization GENERALIZES;两者 Verdicts MINOR。
-- **Caveats:** Distance-to-leaf 是半径/粗细的代理而非直接测量;H65 在无固定 RNG 种子的情况下下采样使得不同运行间 U 统计量变化;量级是大脑特异的。
+### 5. (Priority 0.275 · Surprise 0.300) radius-matching 约束将假阳性合并削减约 ~56%，但使修复 split 的能力减半。
+- **来源：** run-5--...2026-06-25 (id 47) —— 唯一检验此 thickness-constraint 权衡的报告。
+- **结论：** 在 < 15 µm 邻近 split-correction 启发式上增加一个叶节点 `node_radius` 差异 < 25% 的约束，将假阳性合并减少了 55.63%（151→67 对，超过 40% 的目标），但仅保留了基线 split-resolving 能力的 43.95%（1,513→665 个真实 splits 被解决）。这是一个 precision/recall 权衡，而非免费收益。
+- **沿用判定：** Reproduction REPRODUCED；Generalization GENERALIZES（ds_794491 47→15 对 = 减少 68.09%，保留 37.14%；ds_789202 22→7 对 = 减少 68.18%，保留 35.87%）；Verdict WEAK。
+- **为何独有/新增：** 首次出现在最新的 run-5；这是更早报告中不存在的一项明确的安全性/效力权衡研究。
+- **Caveats：** 没有推断统计量或 CI；主要指标依赖于很小的对数（151/67，下降至 47/15 和 22/7）。次级 "canonical merges" 指标明显是噪声（origin 33.33%，794491 −100.00%，789202 200.00%），已被搁置。
 
-### 18. (Priority 0.287 · Surprise 0.307) Omit 错误集中在末端 / 叶子结尾边而非内部边上(~1.3×–1.8× 比率)。
-- **来源:** `ground-truth-error-annotations-revised-version_2026-06-17` (id 64 [terminal vs internal,1.82× 比率]);`run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 85 [terminal vs internal,1.82× 比率]) — 2 份报告。
-- **结论:** 末端边 omit 率 ≈ 4.38% vs 内部边 omit 率 ≈ 2.41%(χ² = 4189.94,p < 1e-300;比率 1.82×)。两份报告在 origin 上数字完全一致(相同的边总体和划分)。在所有三个大脑上泛化:794491 比率 1.29×(p = 1.63e-94);794495 比率 1.36×(p = 1.66e-152)。两份报告中信念都从 Leaning True 移至 Likely True。
-- **一致:** 两份报告间数字字节级一致。两者都将方向描述为稳健。较旧 H64 经 cluster-bootstrap 修正后:rate ratio origin 1.81 [1.35, 2.44],794491 1.29 [0.96, 1.89](CI 跨过 1!),794495 1.36 [1.14, 1.59]。
-- **分歧:** 方向上无分歧;"几乎是两倍"这一头条对 origin 和 794495 是大脑特异的(在 794491 上降到 1.3×);较旧 H64 在 794491 上的 cluster-bootstrap CI 跨过 1.0。
-- **沿用判定:** 两者 Reproduction REPRODUCED;两者 Generalization GENERALIZES;两者 Verdicts MINOR;Post-correction verdict(较旧)WEAKENED——方向成立但 794491 量级界跨过 1。
-- **Caveats:** 相邻末端边共享叶子且不独立;机制性"远端细突起"框架未被直接检验。
+### 6. (Priority 0.275 · Surprise 0.300) ~96% 的 omit gaps 低于 100 µm min-cable-length 过滤器——主导 omit 的驱动因素是工具的短 fragment 过滤器，而非 U-Net 失败。
+- **来源：** run-5--...2026-06-25 (id 69) —— 唯一将 omits 归因于构建期过滤器的报告。
+- **结论：** 在 4,145 段连续遗漏段（总计 122,590 µm）中，3,971 段（95.80%）短于 100 µm，占总遗漏 cable 的 85,498 µm（69.74%）。这表明缓存中可配置的 `min_cable_length` 预处理过滤器——而非大尺度分割失败——是主导的 omit 驱动因素，对 pipeline 配置有直接影响。
+- **沿用判定：** Reproduction REPRODUCED；Generalization GENERALIZES（ds_794491 98.62% 的段 / 91.38% 的 cable；ds_789202 91.73% / 55.94%）；Verdict MINOR。
+- **为何独有/新增：** 首次出现在最新的 run-5；这是一个 pipeline 配置层面的洞见（相对于模型行为），在更早的报告中不存在。
+- **Caveats：** 因果归因过度——100 µm 截断本身就是数据集自身的构建参数，因此发现大多数 gaps 低于它部分上是循环论证的；该实验测量的是 gap-length 比例，而非这些 gaps 在其他情况下是否会被重建。
 
-### 19. (Priority 0.287 · Surprise 0.307) Omit 错误在拓扑上集中在 GT 神经元的末端叶子附近(多源 BFS 距离)。
-- **来源:** `ground-truth-error-annotations-revised-version_2026-06-17` (id 11) — 主源;由较新报告 id 85 在不同粒度上(terminal vs internal 边)印证。较旧 H11 度量单个 omit 边的连续 distance-to-leaf;较新 H85 划分为 terminal/internal。基础性质相同。
-- **结论:** Omit 边到 leaf 的拓扑距离均值为 247.18(中位数 130.5),而正确边为 325.08(中位数 168.5);单侧 Mann-Whitney U = 2.22e10,p ≈ 7.75e-311(origin)。Generalization PARTIAL:在 794491 上合并 MWU 方向翻转(omit 159.76 vs correct 138.76,p=1.000);794495 印证(omit 124.85 vs correct 172.81,p=6.10e-149)。修正后的逐骨架配对 Wilcoxon(H11):origin 12/12 个骨架显示 omit 更近(p=2.44e-04,CI [−90.51, −29.83] µm);794491 8/9 个骨架(p=1.37e-02,CI [−21.45, −4.89] µm);794495 13/19 个骨架(p=8.77e-03,CI [−28.92, −6.16] µm)。Post-correction verdict 反转为 UPHELD/GENERALIZES。
-- **一致:** 较旧 H11 与较新 H85(terminal-vs-internal 划分)都指向末端/远端 cable。两份报告中信念变化都是 Leaning True → Likely True。
-- **分歧:** 较旧 H11 在 794491 上的合并 MWU 方向翻转最初被标记为 MAJOR(DOES-NOT-GENERALIZE),但检验修正将其反转为 GENERALIZES。一旦尊重骨架级依赖,"远端细突起偏向"这一框架成立。
-- **沿用判定:** Reproduction REPRODUCED;Generalization 原本是 MAJOR / "DOES-NOT-GENERALIZE",但 Post-correction verdict UPHELD,在 cluster-aware 配对检验下"GENERALIZES"。
-- **Caveats:** 较旧 H11 记录的 p ≈ 0 是样本量驱动的地板效应;extras 上修正后的逐骨架配对效应量较小(~12–17 µm 偏移)。
+### 7. (Priority 0.265 · Surprise 0.414) split-error 风险随 centrifugal branch order（距 soma 的拓扑深度）上升——OVERTURNED。
+- **来源：** run-4--...2026-06-20 (id 139) —— 唯一检验 branch order vs split risk 的报告。
+- **结论：** 在 1.4M 条边上的 Logistic regression 发现 branch order 是 split 误差的一个显著正向预测因子（coef = 0.0194，p < 0.001；split rates 在 order 53 附近飙升至 >3%）。正向 surprisal（+0.414）反映了该 loop 向上修正。然而校正显示该效应是一个 artifact：cluster-robust z 从 16.4 塌缩至 1.990（p = 0.04662），且 neuron-level permutation Spearman rho = 0.2308 不显著（p = 0.4697）。
+- **沿用判定：** Reproduction REPRODUCED；Generalization DOES-NOT-GENERALIZE（coef 在 ds_794491 上翻转为 −0.0157、在 ds_794495 上为 −0.0063，二者均在*相反*方向显著）；Verdict MAJOR → Post-correction verdict OVERTURNED。
+- **为何独有/新增：** 只有 run-4 检验了 centrifugal branch order；首次也是唯一一次出现。
+- **Caveats：** `norm_thickness` 协变量方差为零并被剔除，因此 "独立于 thickness" 的条款在结构上无法检验；edge 非独立性夸大了原始 p；在任何脑上，该结论在正确的 neuron-level 检验下都不成立。
 
-### 20. (Priority 0.287 · Surprise 0.307) Split 错误在与分支点相邻的边上发生频率是线性边的 ~3.4×。
-- **来源:** `ground-truth-error-annotations-revised-version_2026-06-17` (id 10) — 仅此一份报告专门针对 SPLIT 错误进行了发现。较新报告的 id 32 度量了类似的 OMIT 效应(上述发现 #6)。两者都将分支邻近边作为失效位点,但针对不同错误类型——保留为独立发现(split vs omit)。较旧 H10 在此处归入共同印证,因为它是较旧报告其他所有 split-near-branch 发现(H13、H19、H72)和较新 H64 的直接分类对应——即发现 #14 的分类 / 分支边公式。
-- **结论:** 分支边 split 率 1.62%(248/15,298)vs 线性边 0.47%(6,557/1,393,747);χ² = 414.5,p = 3.9e-92。在所有三个大脑上泛化:794491 比率 2.07×;794495 比率 2.00×(方向从不翻转)。信念 Leaning True → Likely True。修正后的 cluster-aware 检验:origin rate ratio = 3.4458 [2.7788, 4.2931](cluster-permutation p=1.996e-03);794491 2.0556 [1.7943, 2.4236];794495 2.0087 [1.6411, 2.4111]。
-- **一致:** 在所有三个大脑上、在合并和 cluster-aware 检验下,方向与量级都稳健;在分类(边类)层面印证发现 #14。
-- **分歧:** 无。
-- **沿用判定:** Reproduction REPRODUCED;Generalization GENERALIZES;Verdict MINOR;Post-correction verdict UPHELD。
-- **Caveats:** 共享分支节点的边并非严格独立;巨大的 n 使 p 不再有信息——应该以 rate ratio(2.0×–3.4×)作为效应量。
+### 8. (Priority 0.253 · Surprise 0.284) Angular inertia（~153° vs ~90°）能可靠识别跨越 split 的真实延续方向。
+- **来源：** run-4--...2026-06-20 (id 33) —— 唯一将跨 split 的方向延续作为分类器来检验的报告。
+- **结论：** 在 13,582 个 split 配置中，真实延续平均为 152.96°，而假候选为 90.17°；分布是区分明显的（KS = 0.746，p ≈ 0），角度对齐以 ROC-AUC 0.9322 进行判别。方向惯性是 agentic proofreader 桥接 splits 的一个强局部启发式。
+- **沿用判定：** Reproduction REPRODUCED（精确匹配）；Generalization GENERALIZES（ds_794491 ROC-AUC=0.9281；ds_794495 ROC-AUC=0.9365）；Verdict SOUND。
+- **为何独有/新增：** 只有 run-4 将延续角度构造为 ROC 分类器。（与 Corroborated #11 中 2026-06-17 的 endpoint-cosine 发现相关但不同，后者测量的是 anti-parallel 端点对齐，而非 continuation-vs-false-candidate 判别。）
+- **Caveats：** 两个角度样本按 split node 配对，而 KS 假设独立性（在 KS=0.746 时无关紧要）；假候选是来自另一神经元的最近节点，是一个合理的保守比较对象。
 
-### 21. (Priority 0.287 · Surprise 0.307) 段间 split 缺口具有紧密、特征性的长度尺度(~5.8 µm 95 分位数,~6.5 µm 99 分位数,100% 低于 15 µm)。
-- **来源:** `ground-truth-error-annotations-revised-version_2026-06-17` (id 35 [中位数 19.67 µm,缺口比内部边大 3–4×]);`run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 63 [100% 低于 15 µm;95% 在 ~5.85 µm 之下;99% 在 ~6.50 µm 之下]) — 2 份报告。
-- **结论:** Split-bridging 缺口长度短且特征明确。较旧 H35:4,078 个 origin 缺口,中位数 19.67 µm;内部边长度 95 分位数仅 5.77 µm(Mann-Whitney p ≈ 0,缺口中位数与内部 95 分位数的比率 3.4×)。较新 H63:6,805 个 split 缺口的 100.00% 低于 15 µm;95% 由 5.85 µm 覆盖,99% 由 6.50 µm 覆盖。两者在所有三个大脑上以近乎相同的分位数泛化(95 分位数 5.79–5.85 µm;99 分位数 6.41–6.50 µm)。
-- **一致:** 两份报告独立印证真实 split 缺口的紧密特征尺度;较旧报告的中位数 19.67 µm 与较新报告的 100%-低于-15-µm + 99 分位数 6.5 µm 互相一致(中位数不同是因为较旧 H35 在中位数中计入了长尾缺口,而较新 H63 报告的是 ECDF 分位数)。
-- **分歧:** 头条解释。**较旧 H35 得出"固定半径最近邻启发式将失败"** 的结论,因为缺口分布(中位数 19.67 µm,尾部到 250 µm)远比 intra-fragment 边宽(95 分位数 5.77 µm);任何能覆盖 split 的半径都会扫到假阳性。**较新 H63 得出相反结论:紧密的 ~6.5 µm 半径覆盖 99% 的真实 split。** 这种矛盾可以由控制组的选择来调和——H35 与 intra-fragment 内部边比较(后者更短,因此仅靠距离无法把它们与 split 区分开),而 H63 报告的是缺口的绝对分布。然后较新发现 #1(id 30)通过表明仅靠距离就能以 AUC 0.998 区分真实 split 与 inter-NEURON 缺口,明确解决了这个问题。
-- **沿用判定:** 两者 Reproduction REPRODUCED;两者 Generalization GENERALIZES;两者 Verdicts OK。
-- **Caveats:** 较旧 H35 的机制性警告("固定半径启发式失败")是以特定控制集为条件的;较新报告重新评估并部分反转了该结论。
+### 9. (Priority 0.253 · Surprise 0.284) 在 fragments 图上的 A* path-finding 修复了 86% 的 splits 且未引入合并。
+- **来源：** run-4--...2026-06-20 (id 39) —— 唯一检验 graph A* split 修复的报告。
+- **结论：** 对急剧偏折（>45°）和半径突变施加惩罚的 Graph A* 搜索，连接了 6,805 个目标 splits 中的 5,881 个（86.42% 成功率，远超 40% 阈值），且未跨入不同的 GT 神经元；模拟修复将 edge accuracy 从 78.71% 提升至 79.13%（+0.42%）。
+- **沿用判定：** Reproduction REPRODUCED（精确匹配）；Generalization GENERALIZES（ds_794491 84.72%；ds_794495 89.71%，始终为 ~85–90%）；Verdict MINOR。
+- **为何独有/新增：** 只有 run-4 实现了 A* 修复模拟；其他报告中不存在。（注意：此 id 39 是 run-4 的 A* 修复，与 2026-06-17 的 id 39 不同，后者是一个 KDTree-sever 合并解决启发式——见 Corroborated #12。）
+- **Caveats：** "未引入合并" 是在模拟内部针对 GT 标签裁定的，而非真实分割，因此对部署而言该无合并保证被过度声称；5,000-node 的 A* 扩展上限和 10 µm 的 merge-validity radius 是任意的；净 accuracy 增益（+0.42%）较为微小。
 
-### 22. (Priority 0.287 · Surprise 0.307) 在预测的 merge 坐标处进行的几何定向图切断,在将 Edge Accuracy 从 82.3% 提高到 93.7% 的同时,移除了 ~86% 的 merge 边。
-- **来源:** `ground-truth-error-annotations-revised-version_2026-06-17` (id 39) — 仅较旧报告得出此具体的 MERGE-CUT 结果。较新报告的 id 39(虽 id 相同,但是 A\* SPLIT-REPAIR 发现,即上文 #8)不印证此 merge-cut 结果。
-- **结论:** 通过 KDTree 切断离每个预测 merge 坐标最近的物理 fragments-graph 节点,在 12 个神经元上将全局 mean %-merged-edges 从 13.25% 降到 1.83%(降幅 ~86%),并将 mean edge accuracy 从 82.27% 提到 93.66%;被合并最严重的神经元(N013、N018)从 ~40–43% 合并降至 ~1% 合并。Generalization PARTIAL:794491 从 20.54% 降到 6.15%(~70% 降幅,低于 80% 头条阈值);794495 28.54% → 16.02%(~44% 降幅)。修正后的逐神经元配对 Wilcoxon:每个大脑 p ≤ 2e-3;merged-edges 总分数被移除的 CI = origin [0.7007, 0.9631]、794491 [0.5164, 0.8555]、794495 [0.2264, 0.6461](即使在 origin 上 CI 下界也低于 80%)。
-- **一致:** 在本语料中为单一来源,但定性主张(定向切断总是显著减少 merge 并提升准确率,每个神经元都改善)是稳健的。
-- **分歧:** 尽管 id 编号相同,较新报告的 "id 39" 是一种不同的干预(A\* 修复 split,而非 merge 切断),并报告了远小得多的端到端 EA 增益(+0.42% vs 较旧的 +11.4%)。它们是不同的可行动原语。
-- **沿用判定:** Reproduction REPRODUCED;Generalization PARTIAL;Verdict MAJOR(降级——≥80% 的定量主张无法迁移);Post-correction verdict WEAKENED。
-- **Caveats:** 头条 ">80% merge 边降幅"是大脑特异的;应改述为"取决于大脑 44–86% 降幅"。该干预是针对 GROUND-TRUTH merge 坐标评估的,而非实际部署中所需的预测 merge 坐标。
+### 10. (Priority 0.253 · Surprise 0.284) omit 误差在极端 Z 深度处比在中心深度处发生概率约高 ~2.4×——OVERTURNED。
+- **来源：** run-4--...2026-06-20 (id 45) —— 唯一检验 axial-depth（位置）omit 过量的报告。
+- **结论：** 极端 Z 节点（顶部/底部 10%）的 omit rate 为 4.44%（2,283/51,369），而中心为 1.94%（11,342/585,909）；Cochran-Mantel-Haenszel 检验给出合并 OR 2.3561，p ≈ 0。正向 surprisal（+0.284）暗示轴向极端处的信号丢失。校正将其推翻：neuron-cluster permutation OR = 0.5320，p = 0.6607（不显著）。
+- **沿用判定：** Reproduction REPRODUCED；Generalization PARTIAL（ds_794495 OR=3.1672，p≈0，更强；ds_794491 OR=1.0149，p=7.996e-01，消失）；Verdict MAJOR → Post-correction verdict OVERTURNED。
+- **为何独有/新增：** 只有 run-4 检验了 Z *深度/位置*（与 Corroborated #13 中的 Z *orientation* 假设不同）。首次也是唯一一次出现。
+- **Caveats：** CMH 的 "控制脑" 是虚幻的（每个 origin pkl 只有一个脑）；"extreme Z" 是按体积 min-max 归一化的，混淆了光学深度与 FOV 边界 artifacts；node 非独立性夸大了原始 p。
 
-### 23. (Priority 0.287 · Surprise 0.307) Omit 错误沿 GT 骨架形成连续的连串,邻居条件概率为边际率的 ~28×。
-- **来源:** `ground-truth-error-annotations-revised-version_2026-06-17` (id 48) — 仅此一份报告直接发现。与较新报告 id 58(bridged vs broken omit 缺口,上文发现 #11)紧密相关,后者也描述了 omit 的连续条带结构。
-- **结论:** 边际 P(OMIT) = 0.0317;P(OMIT | neighbor = OMIT) = 0.8908——比率 28.09×,远高于假设的 3× 阈值(χ² = 2.23M,p ≈ 0)。Omit 不是独立事件。Generalizes:794491 比率 18.63×;794495 比率 40.42×(所有 p ≈ 0,所有 >> 3×)。修正后的无序对卡方 = 1,113,217.84(恰为记录的一半,印证了对称双重计数 bug);origin 上比率的 cluster-bootstrap CI [16.85, 47.40];每个大脑上 cluster-permutation p = 3.3e-03。
-- **一致:** 这一结构模式也隐含在较新报告 id 58 关于"短 bridged omit 路径"作为内部丢失存在的发现中(连串性的一种表现)。视作独立发现,是因为仅在较旧报告中出现的 H48 直接度量了 Markov 风格的转移概率。
-- **分歧:** 无。
-- **沿用判定:** Reproduction REPRODUCED;Generalization GENERALIZES;Verdict MINOR;Post-correction verdict UPHELD。
-- **Caveats:** 记录代码中的对称无向对计数使卡方加倍(并不使比率加倍);骨架内邻接违反独立性,但 28× 比率对样本量不敏感。
+### 11. (Priority 0.253 · Surprise 0.284) 短 omission gaps 是被同一 segment 桥接的内部 dropouts；长 gaps 是真实的终止。
+- **来源：** run-4--...2026-06-20 (id 58) —— 唯一将 omits 划分为 bridged 与 broken 两类的报告。
+- **结论：** 在所分析的 omit paths 中，307 个为 "bridged"（两侧 flanking segment 相同），4,298 个为 "broken"；bridged gaps 远短于（mean 18.71 µm，median 13.55 µm）broken gaps（mean 42.54 µm，median 20.16 µm），由 one-sided Mann-Whitney U 检验显著（p = 1.95e-19）。短 omits 大多是 artifactual 的内部 dropouts。
+- **沿用判定：** Reproduction REPRODUCED（精确匹配）；Generalization GENERALIZES（ds_794491 bridged 10.99 µm vs broken 15.23 µm，p=2.75e-09；ds_794495 12.17 µm vs 16.24 µm，p=1.20e-12）；Verdict SOUND。
+- **为何独有/新增：** 只有 run-4 区分了 bridged 与 broken omit paths；其他地方不存在。
+- **Caveats：** Bridged paths（n=307，~7% 的 omit paths）是一个不大的少数；分析单位是一个连通的 omit-path 组件（确实独立），因此 MW 独立性成立。
 
-### 24. (Priority 0.287 · Surprise 0.307) Split 边的局部 tortuosity 高于正确重建边(小但稳健的效应)。
-- **来源:** `run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 59 [10-hop window];id 73 [5-hop window]) — 均在较新报告中;较旧报告未印证。在此列出是因为这两条较新报告条目明确互相交叉印证(id 73 被表述为对 id 59 的"独立再确认")。
-- **结论:** Split 边比正确边表现出统计显著更高的 tortuosity,但每条边的效应很小。10-hop(H59):中位数 1.1115 vs 1.0764(point-biserial r = 0.0335,p ≈ 0)。5-hop(H73):中位数 1.1132 vs 1.0801,U = 4.71e9,p = 1.66e-276。在所有三个大脑上以同等小量级泛化(r = 0.025–0.061)。修正后的 Cliff's delta 在所有三个大脑上为 +0.21 到 +0.28(按 Vargha-Delaney 为"小");每个大脑上逐神经元配对 Wilcoxon p ≤ 2e-3。
-- **一致:** 5-hop 与 10-hop 变体在所有三个大脑上给出数字上一致的结论。
-- **分歧:** 跨报告间无分歧,因为只有较新报告测试了 tortuosity。
-- **沿用判定:** 两者 Reproduction REPRODUCED;两者 Generalization GENERALIZES;两者 Verdicts MAJOR(大 n 微小效应显著性陷阱);Post-correction verdict WEAKENED (id 59) / UPHELD (id 73)——方向被确认,效应量是"小但真实"。
-- **Caveats:** id 73 重用了与 id 59 相同的数据集和近乎相同的指标——并非真正独立;tortuosity 窗口重叠(相邻边共享 4–9 跳),违反独立性;每边 r ≈ 0.03 意味着仅靠 tortuosity 的分类器在实践中无用。
-
-### 25. (Priority 0.287 · Surprise 0.307) Split 缺口连接服从非线性距离-角度权衡,使固定阈值启发式失效——但不泛化。
-- **来源:** `ground-truth-error-annotations-revised-version_2026-06-17` (id 47) — 仅较旧报告。在概念上被较新报告 id 30(发现 #1)和 id 33(发现 #16)取代,这两者共同表明仅靠距离(AUC 0.998)和仅靠角度(AUC 0.93)在与 inter-neuron 控制组比较时各自都能作为判别指标——即较旧报告"比固定阈值更丰富的几何"的主张被较新报告"简单阈值终究可行"所取代。
-- **结论:** 在 1,072 对真实 split 和 142 个假合并控制上的 logistic 回归给出 distance×angle 交互项系数 = −5.96,p = 0.014(LLR p = 1.63e-17,pseudo R² = 0.093)。决策边界在 ~8 µm 之下容忍 >90° 转折,但到 15 µm 时塌缩至 0° 共线。信念从 Leaning True (0.6667) 移至 Likely True (0.9231)。Generalization DOES-NOT-GENERALIZE:794491 x3 系数 = −0.342,p = 0.800;794495 x3 系数 = −1.454,p = 0.565。修正后的 LR-vs-additive 检验:origin LR=6.6454,p=9.94e-03(在 origin 上 UPHELD);extras p_LR=0.797 和 p_LR=1.000(不能迁移)。
-- **一致:** 在本语料中为单一来源。
-- **分歧:** 与较新报告隐式分歧:较新的 id 30 和 id 33 表明简单的仅距离和仅角度启发式在与 inter-neuron 控制组比较时都能工作(AUC 0.93–0.998)。较旧报告"比固定阈值配对规则更丰富的几何"这一主张仅在 origin 上、仅针对 False-Merge 控制存活。
-- **沿用判定:** Reproduction REPRODUCED;Generalization DOES-NOT-GENERALIZE;Verdict MAJOR;Post-correction verdict UPHELD(在 origin 上)但不能迁移。
-- **Caveats:** 类别不平衡 ~7.5:1(1,072 正例 / 142 控制)夸大了交互项 SE;"非线性权衡"是从单一大脑泛化到通用规则。
-
-### 26. (Priority 0.253 · Surprise 0.284) Split 边在空间上比正确边更靠近 merge 位点(~170 µm)——但在 cluster 修正下被 OVERTURNED。
-- **来源:** `run-4--ground-truth-error-annotations-revised-version_2026-06-20` (id 61) — 仅较新报告。与独有发现 #7(id 36,omit 靠近 merge)对称,且两者在修正后都达到 OVERTURNED。归入共同印证一节是因为它与发现 #7 配对,共同定义了较新报告中一个统一的(虽然被否定的)"联合失效区"假设。
-- **结论:** Split 到 merge 的均值距离 2,084.76 µm(中位数 1,794.64 µm)vs correct 均值 2,265.14 µm(中位数 1,956.93 µm);在 6,805 个 split 边和 1,109,034 个正确边上 Mann-Whitney U p = 3.50e-38,Welch's t p = 7.14e-27。信念从 Leaning True (0.7083) 移至 Likely True (0.8906)。Generalization 在所有三个大脑上方向上 GENERALIZES(在所有大脑上 split 都更近;差距在 794491 上缩小到 ~29 µm)。修正后的按神经元 cluster-bootstrap:origin 上差距 CI [−373.03, +15.55] 跨过零,p = 0.1067(NS);在修正检验下三个大脑中无一达到 cluster-significance。
-- **一致:** 与发现 #7(id 36)在"联合失效区"框架下配对;两者都是样本量驱动,两者都未通过 cluster 修正,且都有一个大脑显示方向反转或缺失。
-- **分歧:** 跨报告无(单一来源),但 Post-correction verdict OVERTURNED 与原始头条不一致。
-- **沿用判定:** Reproduction REPRODUCED;Generalization GENERALIZES(未修正)但 Post-correction verdict OVERTURNED。
-- **Caveats:** ~170 µm 差距在 ~2,000 µm 基线上(~8% 相对偏移);显著性源于把 1.1M 条边当作 i.i.d.;一旦尊重聚类,机制性的"联合失效区"主张就不再成立。
+### 12. (Priority 0.324 · Surprise 0.351) split-gap 配对遵循一个非线性的 distance-vs-angle 权衡（仅 origin）——不泛化。
+- **来源：** ...2026-06-17 (id 47) —— 唯一拟合 distance×angle 交互作用的报告。
+- **结论：** 在 1,072 个 true-split 正例 vs 142 个 false-merge 负例上的 Logistic regression 发现了一个显著的 distance × angle 交互作用（coef = −5.96，p = 0.014；LLR p = 1.626e-17）：短 gaps（< 8 µm）容许急转，而长 gaps（~15 µm）要求共线性。在 origin 脑上，permutation test（p = 3.5964e-02）和 stratified bootstrap CI [−12.3429, −1.1075] 保持了该交互作用显著。
+- **沿用判定：** Reproduction REPRODUCED；Generalization DOES-NOT-GENERALIZE（交互作用塌缩：ds_794491 x3=−0.3416，p=0.800；ds_794495 x3=−1.4540，p=0.565，拟合未收敛）；Verdict MAJOR → Post-correction verdict UPHELD on origin，Corrected generalization DOES-NOT-GENERALIZE。
+- **为何独有/新增：** 只有 2026-06-17 报告拟合了此交互模型。（其底层工程动机——固定半径连接不够充分——在 Corroborated #6 中被单独印证。）
+- **Caveats：** 头条结论依赖于一个在严重类不平衡（1072:142）下的单一边缘交互系数（p=0.014）；pseudo-R² 仅 0.093；µm 阈值是从拟合边界读取的，未经独立验证；该非线性是 origin 脑所特有的。
 
 ---
 
-## 因冗余排除
+## 已印证发现（合并整理）
 
-以下条目被并入上述标准发现(每个集群中的非标准成员)。以 `<run abbreviation> id <id>` → 并入发现 #N 的形式列出。
+### 13. (Priority 0.323 · Surprise 0.795) Z 轴 neurite orientation/anisotropy 并非拓扑误差的一致驱动因素——数据集特定的零结果。
+- **来源：** run-4--...2026-06-20 (id 27，Z-alignment mixed-effects logistic；id 21，Z-dominant-edge chi-square) —— 2 条目，1 份报告。
+- **结论：** run-4 检验了 anisotropy 假设的两种形式。Z-alignment：在 20,000 条边子集上的 Bayesian mixed-effects logistic 给出 coef = −0.066，p = 0.058，OR 0.80（不显著，略为负）；强烈的负向 surprisal（−0.795）标记了一个被数据所否定、却曾被笃信的假设。Z-dominant edges：误差率几乎相同（3.70% Z-dom vs 3.63% XY-dom；χ² = 3.53，p = 0.0602）。校正后的 neuron-cluster permutation 检验确认在 origin 上没有可检测到的效应（z-alignment p = 0.5721；Z-dominant cluster-permutation p = 0.8136，RR≈1.02）。
+- **一致之处：** 两个条目在 origin 上得出相同结论——相对于 anisotropic 轴的取向在 origin 脑上不是一个实质性的误差驱动因素。
+- **分歧之处：** 二者都不泛化，且方式互相冲突。对于 Z-dominant edges（id 21），同一检验在额外脑上变得在*相反*方向上强显著：ds_794491 χ²=166.1，p=5.21e-38（Z 更高）；ds_794495 χ²=395.8，p=4.62e-88（Z 更低）。对于 z-alignment（id 27），系数符号不稳定（−/+/−），且 ds_794495 显著（p=6.75e-06，一个下降）。因此 "无 anisotropy 效应" 这一零结果是数据集特定的，而非一个稳定的属性。
+- **沿用判定：** Reproduction REPRODUCED（两者，精确匹配）；Verdict MAJOR（两者）；Post-correction verdict UPHELD 作为 origin 上的零结果，但 Generalization DOES-NOT-GENERALIZE（id 21）/ PARTIAL（id 27，id 21 校正后）。
+- **Caveats：** 两个原始分析都犯了 absence-of-evidence/evidence-of-absence 谬误；id 27 报告的 p 构造有误（VB 后验被当作 Wald z），且在 20k 子样本上拟合；edge 非独立性夸大了二者；应重述为 "无可检测效应"，而非证明其不存在。
 
-**较旧报告(`ground-truth-error-annotations-revised-version_2026-06-17`):**
-- id 23(merge 位点 15 µm fragment 密度,提升 75%)→ 并入发现 #13(merge-crowding 集群)。
-- id 49(~86% merge 位点位于 fragments-graph 分支点 10 µm 内)→ 并入发现 #13。
-- id 53(导致 merge 的 fragment 段分支密度 ~2×)→ 并入发现 #13。
-- id 81(merge 位点体积 fragment-node 密度高 ~55%)→ 并入发现 #13。
-- id 19(split 错误与分支节点空间相关,均值距离短 ~106 µm)→ 并入发现 #14(split-near-branch 集群)。
-- id 72(split 错误在拓扑上偏向 GT 分支节点,中位数 ~一半)→ 并入发现 #14。
-- id 65(split 边发生在更细的突起上 — 到 leaf 拓扑距中位数短 38%)→ 并入发现 #17(split-distal 集群)。
+### 14. (Priority 0.287 · Surprise 0.307) 合并位点所处的局部 neurite 邻域显著比正确/对照区域更稠密。
+- **来源：** ...2026-06-17 (id 3，10 µm radius；id 23，15 µm radius；id 81，volumetric nodes/µm³；id 49，distance to fragment branch point；id 53，branch-node density per 100 µm)，run-4--...2026-06-20 (id 84，local branch density ROC) —— 6 条目，2 份报告。
+- **结论（canonical = id 3，SOUND，最高置信度）：** 合并位点在 10 µm radius 内平均有 7.03 个 fragment nodes，而对照为 4.39，由 Mann-Whitney U 高度显著（U = 3931.0，p = 9.0e-15，n=67/67）。同样的拥挤特征在 15 µm 处重现（11.09 vs 6.33 nodes，U=4100.5，p=8.95e-17 —— id 23），表现为体积密度（0.001678 vs 0.001083 nodes/µm³，Welch t=8.93，p=2.8e-14 —— id 81）、表现为到 fragment branch points 的邻近度（median 4.48 µm vs 179.76 µm，p=2.2e-17 —— id 49）、表现为每段 cable 的 branch-node 密度（0.1078 vs 0.0568 branches/100 µm，~1.9×，p=2.9e-25 —— id 53），以及表现为一个 local-branch-density 分类器（1.13 vs 0.04 branches/15 µm，paired t=13.35，ROC-AUC=0.9236 —— run-4 id 84）。
+- **一致之处：** 全部六个都同意合并位点位于拥挤、多分叉的 neuropil 中，且全部 2-for-2 GENERALIZE（如 id 3：794491 p=2.3e-17，794495 p=1.1e-16；id 53 效应在额外脑上增长至 ~3.0×；run-4 id 84 ROC-AUC 在各脑间 0.88–0.92）。基于密度的形式（id 3/23/81）和基于 branch-density 的形式（id 49/53/84）是同一个 "稠密、多分叉环境导致合并" 论断的不同测量方式。
+- **分歧之处：** 无——全部为正，全部 GENERALIZE。
+- **沿用判定：** 该 cluster 中的最佳/最保守者—— Verdict SOUND（id 3，id 23，id 53）；id 81 WEAK（参数检验选错）→ Post-correction UPHELD；id 49 MINOR（对照未设种子）；run-4 id 84 MINOR（样本内 AUC）。
+- **Caveats：** 多数情形下正类样本很小（n≈64–105 个合并位点/segments）；id 81 对计数数据使用了 t-test（已校正为 MW，结论不变）；id 49 的对照未设种子并被限制为非 branch 节点，夸大了差距（rerun 时基线值 DIVERGED，结论成立）；id 84 的 ROC-AUC 是样本内的。
 
-**较新报告(`run-4--ground-truth-error-annotations-revised-version_2026-06-20`):**
-- id 84(merge 位点带有强几何"缠结"特征 — 局部分支密度高 ~28×)→ 并入发现 #13。
-- id 64(split 错误聚集在拓扑分支点附近,均值测地 ~516 µm vs ~711 µm)→ 并入发现 #14。
-- id 73(独立再确认:split 边的 5-hop 局部 tortuosity 更高)→ 并入发现 #24(仅较新独有 tortuosity 集群)。
-- id 85(末端边上 omit 错误几乎是内部边的两倍)→ 并入发现 #18(末端 omit 集群;与较旧 id 64 数字一致)。
+### 15. (Priority 0.287 · Surprise 0.307) 合并 segments 是巨大的 "失控" 过度生长标签，比非合并 segment 大一个数量级。
+- **来源：** run-4--...2026-06-20 (id 43，log-cable Welch t)，run-5--...2026-06-25 (id 34，cable ratio + ROC；id 55，corrected-mapping cable MWU；id 56，node count + cable MWU)，以及 id 24（super-merge cable，已推翻）—— 5 条目，2 份报告。
+- **结论（canonical = run-5 id 56 / run-4 id 43，SOUND）：** 引起合并的 segments 覆盖的 cable 远多于非合并 segment：run-4 id 43 发现 64 个合并 segments 平均 ~15,449 µm（median 3,099 µm），而 8,273 个非合并 segment 为 ~532 µm（median 102 µm）（~29× 均值，log-lengths 上 Welch t = 16.54，p = 7.32e-25）。run-5 以校正映射确认：id 34（98 个合并 segments 平均 19,040 µm vs 1,221 µm，15.6× ratio，ROC-AUC=0.869）、id 55（median 4,604.78 µm vs 160.14 µm，U=3.53e7，p=0.0）、id 56（median 791 vs 51 nodes，U=368,540，p=1.04e-38）。Cable length / node count 是一个廉价、灵敏的合并先验。
+- **一致之处：** 全部汇聚于 "合并是大规模过度生长的标签，而非局部小波动"，在所有脑上 GENERALIZING（id 43 在全部三个脑上 t≥16；id 34 ratios 8.3–17.6×；id 56 p≤1.04e-38）。id 24（super-merges ≥3 神经元覆盖的 cable 多于 2-neuron merges）是同一主题的一个更细的子论断。
+- **分歧之处：** id 24 的*显著性*未能成立：它在 rerun 时 DIVERGED（p 0.0059 → 0.2222），并在 per-neuron 构造下被 OVERTURNED（U=8.0，p=0.2222，n_super=1）；一般性的 "合并很巨大" 论断不受影响，但具体的 super-merge-vs-2-neuron 比较样本太少，无法下结论。
+- **沿用判定：** Verdict SOUND（id 43，id 34，id 55，id 56）；id 24 MAJOR → Post-correction verdict OVERTURNED。
+- **Caveats：** 合并类别样本小（n=64–98）且右偏（均值对离群值敏感；中位数更稳健）；run-5 的非合并基线依赖于 fragment-exclusion/mapping 的选择；id 24 依赖于 n=1–3 个 super-merges。
 
-未折叠其他条目;每条剩余条目都自成发现,因为 (a) 它检验的是不同的错误类型(split vs merge vs omit),(b) 它检验的是不同的机制(例如距离 vs 角度 vs 分支阶数 vs Z 轴 vs 深度),或 (c) 它达到的判定不被另一条目所涵盖。
+### 16. (Priority 0.287 · Surprise 0.307) split 误差集中在 branch points 处/附近（split rate 升高，且 split edges 更靠近 branch nodes）。
+- **来源：** ...2026-06-17 (id 10，branch-edge split rate ~3.4×；id 13，geodesic distance to branch；id 19，µm distance to GT branch；id 72，topological distance to GT branch)，run-4--...2026-06-20 (id 64，geodesic distance to branch)，run-5--...2026-06-25 (id 3，≤15 µm branch-proximal RR=1.59；id 33，distance to branch node) —— 7 条目，3 份报告。
+- **结论（canonical = ...2026-06-17 id 10，SOUND）：** Branching edges 的 split 远多于 linear edges—— 1.62%（248/15,298）vs 0.47%（6,557/1,393,747），~3.4×，χ² = 414.5，p = 3.9e-92。连续距离形式与之一致：split edges 在测地上更靠近 branch points（id 13/72：median ~196 vs 380 µm），在 µm 上（id 19：median 121 vs 222 µm），且 run-5 的 branch-proximal edges 带有 RR=1.59（0.90% vs 0.57%，p=4.90e-34）。所有三份报告独立地重新发现 bifurcations 是系统性的 split-failure 位点。
+- **一致之处：** 所有条目在每个脑上方向都 GENERALIZES（id 10 ratio 衰减至 ~2× 但保持 p≤3.5e-29；run-5 id 3 RR 在额外脑上增长至 2.58–3.24×；id 19/72 保持 2-for-2）。
+- **分歧之处：** 方向上无分歧。幅度/稳健性有差异：超大 n 的距离形式（id 13、id 72、run-4 id 64、run-5 id 33）在校正下被标记为 effect-size-trivial—— run-4 id 64 WEAKENED（origin 上 neuron-cluster permutation p=0.096，额外脑上 PARTIAL），run-5 id 33 WEAKENED（Cliff's delta 0.07，origin/794491 上 cluster CI 包含 0）。类别型 rate 形式（id 10，run-5 id 3）保持 SOUND。
+- **沿用判定：** 最佳 = SOUND（id 10，id 19，id 72，run-5 id 3）；较弱 = MINOR（id 13 —— 记录在案的 double-count bug；run-4 id 64 → WEAKENED）；run-5 id 33 WEAK → WEAKENED。
+- **Caveats：** Edge pseudo-replication 夸大了 per-edge p-values；id 13 和 id 65（见 #18）有一个记录在案的 double-counting bug（DIVERGED，结论完好）；距离效应在 794491 上显著缩小。
+
+### 17. (Priority 0.287 · Surprise 0.307) split 误差在空间上聚集成局部化的 "误差区"（一个 split 提高了附近出现 splits 的几率）。
+- **来源：** ...2026-06-17 (id 55，KS vs random null)，run-4--...2026-06-20 (id 37，30 µm 内 split-neighbors)，run-5--...2026-06-25 (id 26，Monte Carlo NN distance；id 40，KS NN distance；id 45，Monte Carlo NN replication) —— 5 条目，3 份报告。
+- **结论（canonical = run-5 id 26，SOUND）：** 观测到的 inter-split nearest-neighbor 距离在每个脑上都远低于随机零模型—— run-5 id 26：观测 140.30 µm vs 随机 320.79 µm（paired t=−15.10，p=5.76e-12，n=19 神经元）。2026-06-17 id 55（观测 median 25.58 µm vs 随机 236.98 µm，KS D=0.4539）、run-4 id 37（30 µm 内 0.97 vs 0.10 个 split-neighbors）以及 run-5 id 40（KS=0.5635）/ id 45（Monte Carlo replication，t=−14.93）全部确认 splits 是聚集而非散布的。
+- **一致之处：** 全部五个在方向上 GENERALIZE（观测值 ≈ 各脑随机值的一半）；run-4 id 37 在 neuron-cluster permutation 下 UPHELD（p=0.0002，Cliff's delta 0.49）。
+- **分歧之处：** 无——普遍为正且稳健。Run-5 id 45 明确是 id 26 在相同神经元上的复现。
+- **沿用判定：** Verdict SOUND（run-5 id 26，id 40，id 45）；...2026-06-17 id 55 MINOR（因果 "cascade" 措辞过度解读了关联）；run-4 id 37 MINOR → Post-correction UPHELD。
+- **Caveats：** "Cascade"/"一个 split 导致另一个" 是因果过度声称——检验表明的是聚集性，这与一个共享的潜在原因（局部图像质量）相符；split edges 非独立（已由 run-4 id 37 的 neuron-cluster 校正处理）。
+
+### 18. (Priority 0.287 · Surprise 0.307) split 误差偏好纤细的远端 / 终端 processes（distance-to-leaf 比正确 edges 更短）。
+- **来源：** ...2026-06-17 (id 60，mean distance-to-leaf 939 vs 1283 µm；id 65，median 417 vs 670 µm thickness proxy)，run-5--...2026-06-25 (id 38，terminal vs internal split rate；id 70，monotonic split rate vs distance-to-leaf) —— 4 条目，2 份报告。
+- **结论（canonical = ...2026-06-17 id 60，SOUND）：** split edges 比正确 edges 更靠近 terminal leaves—— mean 938.60 µm vs 1,282.69 µm（p=2.2e-134，n=6,805/1,109,034）；id 65 将其重述为 thickness proxy（median 417.22 vs 670.25 µm）。run-5 确认 terminal compartments 比 internal 更易 split（id 38：0.65% terminal vs 0.54% internal，paired t=3.93，p=9.71e-04），且 split rate 随到 leaf tip 的距离单调下降（id 70：< 50 µm 时 0.92% → > 200 µm 时 0.53%，logistic coef=−0.1361，p<0.001）。
+- **一致之处：** 方向在各条目间 GENERALIZES（id 60 保持 2-for-2；run-5 id 38 在两个额外脑上同方向 p<0.05）。
+- **分歧之处：** 幅度/稳健性有差异。Run-5 id 70 为 PARTIAL—— 正式 logistic 斜率在 ds_794491 上不显著（coef=−0.0095，p=0.409）且校正后 WEAKENED（origin 上 GEE z 从 16.4→2.87），尽管 per-neuron Spearman 的下降趋势在各处都一致。id 65 有一个记录在案的 double-counting bug（DIVERGED，结论完好）。
+- **沿用判定：** 最佳 = SOUND（id 60）；id 65 MINOR（double-count bug + 间接 thickness proxy）；run-5 id 38 WEAK（绝对差距极小 ~0.1 pp）；run-5 id 70 MAJOR → Post-correction WEAKENED，PARTIAL generalization。
+- **Caveats：** distance-to-leaf 是口径的一个*间接*proxy，而非测量得到的 radius；超大 n 夸大显著性（应读中位数/效应量）；run-5 id 70 预期的 GEE 失败并回退到了 pooled logit，错误处理了 per-neuron 非独立性。
+
+### 19. (Priority 0.287 · Surprise 0.307) omit 误差具有突发性/连续性——集中在连续段中，而非孤立的被丢弃 edges。
+- **来源：** ...2026-06-17 (id 48，Markov transition，89% conditional / 28× ratio)，run-5--...2026-06-25 (id 27，run-length transition matrix；id 50，100% zero-distance omit neighbor) —— 3 条目，2 份报告。
+- **结论（canonical = run-5 id 27，SOUND）：** omits 以黏连的 runs 出现。run-5 id 27：基线 omit 概率 2.23% 在以相邻 omit 为条件时跃升至 84.55%（Wilcoxon W=0.0，p=3.81e-06；Omit→Omit transition 0.849，mean run length 6.91 edges，max 339）。2026-06-17 id 48 发现相同结果，marginal 3.17% 上升至 conditional 89.08%（ratio 28.09，≫ 假设的 3×）。run-5 id 50（100% 的 omit edges 都有一个 zero-distance omit neighbor）是退化但已校正的版本，经一次 within-neuron permutation UPHELD，显示出超越 run-structure artifact 的真实聚集性（mean per-neuron gap −113.21 µm，p=4.9998e-05）。
+- **一致之处：** 全部 GENERALIZE（id 48 在额外脑上 ratio 18.6–40.4×；id 27 在所有脑上 conditional ~80–87%；id 50 校正后聚集性在全部三个脑上显著）。
+- **分歧之处：** 结论无分歧。
+- **沿用判定：** Verdict SOUND（run-5 id 27）；...2026-06-17 id 48 MINOR（pseudo-replicated χ²）→ Post-correction UPHELD（PARTIAL：校正后的 permutation 仅在 794491 上完成，p=9.99e-04；origin/794495 超时但描述性 ratios 巨大）；run-5 id 50 MAJOR（退化的 point-mass MWU）→ Post-correction UPHELD。
+- **Caveats：** 高条件概率对于发生在连通 runs 中的误差而言部分上是定义性的；校正后的检验（edge/neuron permutation）确认了超越该 artifact 的聚集性；id 48 的原始 χ² 是 pseudo-replicated 的，其校正后的 permutation 在两个脑上超时。
+
+### 20. (Priority 0.287 · Surprise 0.307) omit 误差在 branch points 处 / 在 terminal（远端）分支上比在 linear/internal cable 上更频繁。
+- **来源：** ...2026-06-17 (id 11，topological distance-to-leaf；id 64，terminal vs internal omit rate)，run-4--...2026-06-20 (id 32，branch vs linear node omit rate；id 85，terminal vs internal omit rate) —— 4 条目，2 份报告。
+- **结论（canonical = run-4 id 32 / ...2026-06-17 id 64，SOUND/MINOR）：** omits 集中在复杂/远端拓扑处。Branch nodes 的 omit rate 约 ~11.95%，而 linear nodes 约 ~2.76%（>4×，χ²=1567.69，p<0.0001 —— run-4 id 32）。Terminal edges 的 omit rate 为 4.38% vs internal 2.41%（~1.8×，χ²=4189.94，p≈0 —— id 64 和 run-4 id 85，数字相同）。id 11 发现 omit edges 在拓扑上更靠近 leaves（mean 247.18 vs 325.08 steps）。
+- **一致之处：** 类别型 rate 形式（id 32，id 64，run-4 id 85）干净地 GENERALIZE（terminal/branch omit rate 在所有脑上更高；ratios 衰减至 ~1.3–3.8× 但保持高度显著）。
+- **分歧之处：** id 11（连续 distance-to-leaf）为 PARTIAL—— 方向在 ds_794491 上*翻转*（omit mean 159.76 > correct 138.76，one-sided p=1.0），尽管它在 origin 和 794495 上成立。因此 "omits 偏远端" 论断作为类别型 terminal-vs-internal rate 是稳健的，但作为连续 distance-to-leaf 指标则不稳定。
+- **沿用判定：** 最佳 = SOUND（id 64）；run-4 id 32 MINOR，run-4 id 85 MINOR；id 11 WEAK（超大 n、pseudo-replication、在 794491 上方向翻转）。
+- **Caveats：** Edge/node pseudo-replication 夸大了类别型 p-values（在这些效应量下无关紧要）；id 11 的距离是拓扑步数，而非微米，且在一个额外脑上出现完全的方向翻转。
+
+### 21. (Priority 0.287 · Surprise 0.307) 每个 neuron 的 split rates 与 omit rates 呈正相关（一种共享的失败倾向）。
+- **来源：** ...2026-06-17 (id 30) —— 1 份报告，但此处作为一个跨数据集已印证的发现而非独有发现列出，因为它在两个额外脑上都强烈 GENERALIZES。
+- **结论：** 在 12 个神经元上，splits/mm 预测 omit rate，Pearson r = 0.65（p = 0.022），Spearman ρ = 0.88（p = 0.00015），OLS R² = 42.2%。校正后的 Spearman permutation（p = 4.5999e-04，bootstrap CI [0.5620, 0.9857]）稳健。在连续性上失败的神经元也倾向于完全遗漏结构。
+- **一致之处：** GENERALIZES—— ds_794491 ρ=0.9833（p=3.9999e-05），ds_794495 ρ=0.7404（p=4.7999e-04）；边缘显著的 origin Pearson 在两个额外脑上显著增强。
+- **分歧之处：** 在本次运行内的各数据集间无分歧；没有其他报告检验过 split–omit 的 per-neuron 相关性，因此它同样可以归入独有发现。之所以放在此处，是因为其多数据集印证才是要点所在。
+- **沿用判定：** Reproduction REPRODUCED；Generalization GENERALIZES；Verdict WEAK → Post-correction verdict UPHELD。
+- **Caveats：** 仅 12 个神经元；原始 Pearson/OLS 违反了正态性（Jarque-Bera p=0.00036）且存在一个高杠杆点—— Spearman 才是可信的头条；"共享机制" 的措辞是相关性无法分离出来的解释性过度声称。
+
+### 22. (Priority 0.287 · Surprise 0.307) inter-segment split gaps 极小（≈4–20 µm；~99% 低于 6.5 µm），远超内部 fragment edge lengths——促使采用紧凑的修复搜索半径。
+- **来源：** ...2026-06-17 (id 35，median gap 19.7 µm vs 95th-pct internal 5.8 µm)，run-4--...2026-06-20 (id 63，100% 的 split gaps < 15 µm，99th ~6.5 µm)，run-5--...2026-06-25 (id 35，86.77% 的 splits 涉及一个 sub-100 µm micro-fragment) —— 3 条目，3 份报告。
+- **结论（canonical = run-4 id 63，SOUND）：** split gaps 一律很小——全部 6,805 个 split gaps < 15 µm，聚集在 3–5 µm，95th/99th 百分位为 ~5.85 µm 和 ~6.50 µm，因此一个 ~6.5 µm 的搜索半径能捕获 ~99% 的 splits。2026-06-17 id 35 以对比方式表述同一事实：median inter-segment gap 19.67 µm vs 95th-pct intra-segment edge length 5.77 µm（p≈0），因此一个宽到足以容纳真实 gaps 的半径会远超内部 edges，单凭固定半径会过度连接。run-5 id 35 补充了 86.77% 的 splits 涉及一个 sub-100 µm micro-fragment。
+- **一致之处：** 全部 GENERALIZE（id 63：99th 在全部三个脑上 ~6.4–6.5 µm；id 35-17：median gap 各处均为 18–30 µm；run-5 id 35：75–87% 的 micro-fragment 涉及度）。这是独有发现 #1 的 6.84 µm 分类器的描述性基础。
+- **分歧之处：** 无。
+- **沿用判定：** Verdict SOUND（run-4 id 63，...2026-06-17 id 35）；run-5 id 35 SOUND。
+- **Caveats：** 2026-06-17 id 35 将一个中位数（gaps）与一个 95th 百分位（internal edges）作比较——这是一种刻意保守的表述，而非同类对同类的分布检验；run-5 id 35 的 100 µm micro-fragment 截断是一个选定的阈值。
+
+### 23. (Priority 0.287 · Surprise 0.307) split gaps 处对立的端点彼此指向（anti-parallel，cosine −0.68 vs −0.51）。
+- **来源：** ...2026-06-17 (id 67) —— 1 份报告；在本次运行内跨数据集得到印证，且在概念上与 run-4 的 angular-inertia 发现（#8）相关。
+- **结论：** 在 525 个 split endpoint pairs vs 2,689 个空间相邻的对照 pairs 上，split endpoints 的 mean cosine similarity 为 −0.6847（更 anti-parallel），而对照为 −0.5112，由 Mann-Whitney U 显著（p = 1.1e-08）。跨 gap 的几何共线性是提出 split-joins 的一个 GT-free 特征。
+- **一致之处：** GENERALIZES—— ds_794491 −0.5932 vs −0.3334（p=1.4e-10）；ds_794495 −0.7908 vs −0.5273（p=8.6e-20）。run-4 的 id 33 angular-inertia 结果（#8）是同一 "方向连续性桥接 splits" 思想的更强、分类器形式的表达，但测量的是 continuation-vs-false-candidate 角度而非 endpoint cosine，因此保持分开。
+- **分歧之处：** 无。
+- **沿用判定：** Reproduction REPRODUCED；Generalization GENERALIZES；Verdict SOUND。
+- **Caveats：** 对照分布的方差大得多（std 0.534 vs 0.358），因此分布有大量重叠——共线性是一个有用的先验，而非一个完美的独立分类器。
+
+### 24. (Priority 0.287 · Surprise 0.307) 局部 tortuosity / curvature 在 splits 附近统计上更高，但作为独立预测因子较弱。
+- **来源：** run-4--...2026-06-20 (id 59，10-edge window，point-biserial r=0.0335；id 73，5-hop window)，run-5--...2026-06-25 (id 36，10 µm window) —— 3 条目，2 份报告。
+- **结论（canonical = run-4 id 59，MINOR，包含效应量）：** split edges 比正确 edges 更曲折，但效应极小。run-4 id 59：median 1.1115 vs 1.0764，在 >1M edges 上 p≈0，point-biserial r = 0.0335（curvature 解释了 ~0.1% 的方差）。id 73 在 5-hop window 上复现（median 1.1132 vs 1.0801，p=1.66e-276）。run-5 id 36：mean 1.0905 vs 1.0541（t=14.27，p≈0），Cliff's delta 0.2096 —— "统计上真实，实践上微弱"。
+- **一致之处：** 全部在方向上 GENERALIZE（在所有脑上 r≈0.03–0.06 / Cliff's delta 0.19–0.26）；run-4 id 59 和 id 73 在 neuron-cluster permutation 下 UPHELD（p=0.002 和 p=0.0008），效应确认为小。
+- **分歧之处：** 无——全部同意该效应一致但小；所有报告都正确地将其谨慎表述为一个较弱的独立预测因子。
+- **沿用判定：** Verdict MINOR（run-4 id 59，id 73；run-5 id 36）→ Post-correction WEAKENED（run-5 id 36）/ UPHELD-weak（run-4 id 59，id 73）。
+- **Caveats：** 显著性由超大 n 驱动；edges 非独立；只有极端 tortuosity 的尾部在 splits 中富集；run-4 id 73 和 id 59 共享大部分底层数据，因此它们并非彼此的独立确认。
+
+---
+
+## 因冗余而排除
+
+折叠进上述合并发现的非 canonical 条目：
+
+**并入发现 #14（合并位点位于稠密、多分叉的邻域）：**
+- `ground-truth-error-annotations-revised-version_2026-06-17` id 23 → 并入 #14（canonical id 3）
+- `ground-truth-error-annotations-revised-version_2026-06-17` id 81 → 并入 #14
+- `ground-truth-error-annotations-revised-version_2026-06-17` id 49 → 并入 #14
+- `ground-truth-error-annotations-revised-version_2026-06-17` id 53 → 并入 #14
+- `run-4--ground-truth-error-annotations-revised-version_2026-06-20` id 84 → 并入 #14
+
+**并入发现 #15（合并 segments 是巨大的过度生长标签）：**
+- `run-5--ground-truth-error-annotations-revised-version_2026-06-25` id 34 → 并入 #15（canonical id 56 / run-4 id 43）
+- `run-5--ground-truth-error-annotations-revised-version_2026-06-25` id 55 → 并入 #15
+- `run-4--ground-truth-error-annotations-revised-version_2026-06-20` id 24 → 并入 #15（super-merge 子论断，已推翻）
+
+**并入发现 #16（splits 在 branch points 处/附近）：**
+- `ground-truth-error-annotations-revised-version_2026-06-17` id 13 → 并入 #16（canonical id 10）
+- `ground-truth-error-annotations-revised-version_2026-06-17` id 19 → 并入 #16
+- `ground-truth-error-annotations-revised-version_2026-06-17` id 72 → 并入 #16
+- `run-4--ground-truth-error-annotations-revised-version_2026-06-20` id 64 → 并入 #16
+- `run-5--ground-truth-error-annotations-revised-version_2026-06-25` id 33 → 并入 #16
+
+**并入发现 #17（splits 聚集成空间 "误差区"）：**
+- `ground-truth-error-annotations-revised-version_2026-06-17` id 55 → 并入 #17（canonical run-5 id 26）
+- `run-4--ground-truth-error-annotations-revised-version_2026-06-20` id 37 → 并入 #17
+- `run-5--ground-truth-error-annotations-revised-version_2026-06-25` id 40 → 并入 #17
+- `run-5--ground-truth-error-annotations-revised-version_2026-06-25` id 45 → 并入 #17
+
+**并入发现 #18（splits 偏好纤细的远端/终端 processes）：**
+- `ground-truth-error-annotations-revised-version_2026-06-17` id 65 → 并入 #18（canonical id 60）
+- `run-5--ground-truth-error-annotations-revised-version_2026-06-25` id 38 → 并入 #18
+- `run-5--ground-truth-error-annotations-revised-version_2026-06-25` id 70 → 并入 #18
+
+**并入发现 #19（omits 具有突发性/连续性）：**
+- `ground-truth-error-annotations-revised-version_2026-06-17` id 48 → 并入 #19（canonical run-5 id 27）
+- `run-5--ground-truth-error-annotations-revised-version_2026-06-25` id 50 → 并入 #19
+
+**并入发现 #20（omits 在 branch points / terminal 分支处）：**
+- `ground-truth-error-annotations-revised-version_2026-06-17` id 11 → 并入 #20（canonical id 64）
+- `run-4--ground-truth-error-annotations-revised-version_2026-06-20` id 32 → 并入 #20
+- `run-4--ground-truth-error-annotations-revised-version_2026-06-20` id 85 → 并入 #20
+
+**并入发现 #22（split gaps 极小，促使采用紧凑搜索半径）：**
+- `ground-truth-error-annotations-revised-version_2026-06-17` id 35 → 并入 #22（canonical run-4 id 63）
+- `run-5--ground-truth-error-annotations-revised-version_2026-06-25` id 35 → 并入 #22
+
+**并入发现 #24（tortuosity 为较弱的 split 预测因子）：**
+- `run-4--ground-truth-error-annotations-revised-version_2026-06-20` id 73 → 并入 #24（canonical run-4 id 59）
+- `run-5--ground-truth-error-annotations-revised-version_2026-06-25` id 36 → 并入 #24
+
+**并入发现 #13（Z-orientation 非一致驱动因素）：**
+- `run-4--ground-truth-error-annotations-revised-version_2026-06-20` id 21 → 并入 #13（与 canonical id 27 一起）
+
+**作为 split/omit 共聚类主题的已推翻/不泛化重复项折叠移除（在综述中报告，未提升为独立可信发现）：**
+- `run-4--ground-truth-error-annotations-revised-version_2026-06-20` id 36（omit cable 更靠近合并位点）→ 在 neuron-cluster permutation 下 OVERTURNED（p=0.4771）；DOES-NOT-GENERALIZE。未保留为发现。
+- `run-4--ground-truth-error-annotations-revised-version_2026-06-20` id 61（split edges 更靠近合并位点）→ OVERTURNED（cluster-permutation p=0.6469，CI 跨越 0）；DOES-NOT-GENERALIZE。未保留为发现。
+- `run-5--ground-truth-error-annotations-revised-version_2026-06-25` id 42（split→omit 局部共现）→ DOES-NOT-GENERALIZE（在 794491 上符号翻转，在 789202 上不显著）；Verdict MAJOR。未保留为可信发现。

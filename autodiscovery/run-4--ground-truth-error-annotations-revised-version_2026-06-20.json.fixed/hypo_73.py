@@ -1,204 +1,181 @@
-# === RERUN BOOTSTRAP (revised loading only) ============================
-import os as _os, sys as _sys
-
-_TARGET = "/home/zihan.zhang/.local-numpy2"
-_USER_SITE = _os.path.expanduser("~/.local/lib/python3.12/site-packages")
-_SHARED_SITE = "/shared/utils.x86_64/anaconda3-2024.10/lib/python3.12/site-packages"
-_sys.path = [p for p in _sys.path if p not in (_USER_SITE, _SHARED_SITE)]
-if _TARGET in _sys.path:
-    _sys.path.remove(_TARGET)
-_sys.path.insert(0, _TARGET)
-
-import subprocess as _subprocess
-_subprocess.check_call = lambda *a, **k: 0
-_subprocess.call = lambda *a, **k: 0
-_subprocess.run = lambda *a, **k: type("R", (), {"returncode": 0, "stdout": b"", "stderr": b""})()
-
-_PKL = _os.environ["RERUN_PKL"]
-print("Loading dataset from:", _PKL)
-import glob as _glob
-_orig_glob = _glob.glob
-def _glob_patch(pattern, *a, **k):
-    if isinstance(pattern, str) and pattern.endswith(".pkl"):
-        return [_PKL]
-    return _orig_glob(pattern, *a, **k)
-_glob.glob = _glob_patch
-
-from pathlib import Path as _Path
-_orig_rglob = _Path.rglob
-def _rglob_patch(self, pattern, *a, **k):
-    if isinstance(pattern, str) and pattern.endswith(".pkl"):
-        return iter([_Path(_PKL)])
-    return _orig_rglob(self, pattern, *a, **k)
-_Path.rglob = _rglob_patch
-
-_orig_walk = _os.walk
-def _walk_patch(top, *a, **k):
-    yield (_os.path.dirname(_PKL), [], [_os.path.basename(_PKL)])
-_os.walk = _walk_patch
-# === END BOOTSTRAP =====================================================
-# CORRECTED ANALYSIS (entry #18, id 73) =================================
-# Original test: one-sided Mann-Whitney U on per-edge 5-hop tortuosity,
-#   n=6,805 split vs 1,109,034 correct.
-# Recorded: medians 1.1132 vs 1.0801; U=4.71e9, p=1.66e-276.
+# CORRECTED TEST for hypothesis id 73 (split edges on more tortuous segments,
+# 5-hop window).
 #
-# Why the original is wrong: 5-hop tortuosity windows for consecutive edges
-# overlap by 4 edges; the values are strongly autocorrelated, violating the
-# Mann-Whitney i.i.d. assumption even more strongly than the 10-hop variant
-# in #14 (id 59).
+# FAULTS (verifier MINOR, concrete test faults): same tiny-effect / over-power
+# pattern as id 59 -- the median gap is ~0.03 and the p~0 comes from >1.1M edges;
+# UNLIKE id 59, this run reports NO effect-size statistic, so the practical
+# smallness is hidden, and edges are NON-INDEPENDENT, inflating the naive
+# Mann-Whitney p.
 #
-# Corrected:
-#   (a) Cluster-bootstrap by NEURON on median gap and Cliff's delta;
-#   (b) Per-neuron paired Wilcoxon signed-rank on neuron-level median
-#       tortuosity (split vs correct).
-# =======================================================================
-import pickle
+# CORRECTION: keep the SAME 5-hop tortuosity quantities and direction but (1) add
+# an EFFECT SIZE -- Cliff's delta (rank-biserial) with a CLUSTER bootstrap 95% CI
+# (resampling whole NEURONS) -- and (2) replace the naive p with a NEURON-CLUSTER
+# permutation p-value (permute the split/correct label at the neuron level).
+#
+# ORIGINAL RECORDED NUMBERS (for the driver to compare):
+#   1109034 correct / 6805 split, median 1.0801 vs 1.1132, MW U=4714207979.0,
+#   p=1.6599e-276 (no effect size reported originally).
+
+import glob
+import os
 import sys
-import gc
+import pickle
 import math
-from pathlib import Path
 import numpy as np
-from scipy.stats import mannwhitneyu, wilcoxon
+import pandas as pd
+import gc
+from pathlib import Path
 
-print("=" * 72)
-print("HYPO 73 — 5-hop tortuosity replication (corrected)")
-print("=" * 72)
+import agentic_neuron_proofreader
+
+from scipy.stats import mannwhitneyu
 
 def get_extremity(adj, start_node, prev_node, k, node_xyz):
-    curr = start_node; prev = prev_node; path_len = 0.0
+    curr = start_node
+    prev = prev_node
+    path_len = 0.0
     for _ in range(k):
         neighbors = [n for n in adj[curr] if n != prev]
-        if not neighbors: break
+        if not neighbors:
+            break
         nxt = neighbors[0]
         dx = node_xyz[nxt][0] - node_xyz[curr][0]
         dy = node_xyz[nxt][1] - node_xyz[curr][1]
         dz = node_xyz[nxt][2] - node_xyz[curr][2]
         path_len += math.sqrt(dx*dx + dy*dy + dz*dz)
-        prev = curr; curr = nxt
+        prev = curr
+        curr = nxt
     return curr, path_len
 
-with open(_PKL, "rb") as f:
-    payload = pickle.load(f)
-gt = payload["gt_graph"]
-edge_error = np.asarray(payload["gt_edge_error"])
-edges = list(gt.edges)
-node_xyz = gt.node_xyz
-adj = {n: list(gt.neighbors(n)) for n in gt.nodes}
+def get_tortuosity(gt, edges, edge_errors, k=5):
+    try:
+        node_xyz = gt.node_xyz
+        _ = node_xyz[next(iter(gt.nodes))]
+    except (AttributeError, TypeError, IndexError):
+        node_xyz = {n: gt.nodes[n].get('node_xyz', gt.nodes[n].get('xyz')) for n in gt.nodes}
 
-try:
-    edge_neuron = np.array([gt.node_segment_id(int(u)) for (u, v) in edges])
-except Exception:
-    edge_neuron = np.array([str(u) for (u, v) in edges])
-_, edge_neuron_int = np.unique(edge_neuron, return_inverse=True)
+    adj = {n: list(gt.neighbors(n)) for n in gt.nodes}
 
-correct_t = []; split_t = []
-correct_n = []; split_n = []
-k = 5
-for idx, (u, v) in enumerate(edges):
-    err = int(edge_error[idx])
-    if err != 0 and err != 1:
-        continue
-    u_curr, u_len = get_extremity(adj, u, v, k, node_xyz)
-    v_curr, v_len = get_extremity(adj, v, u, k, node_xyz)
-    dx = node_xyz[v][0] - node_xyz[u][0]
-    dy = node_xyz[v][1] - node_xyz[u][1]
-    dz = node_xyz[v][2] - node_xyz[u][2]
-    edge_len = math.sqrt(dx*dx + dy*dy + dz*dz)
-    path_length = u_len + v_len + edge_len
-    dx = node_xyz[v_curr][0] - node_xyz[u_curr][0]
-    dy = node_xyz[v_curr][1] - node_xyz[u_curr][1]
-    dz = node_xyz[v_curr][2] - node_xyz[u_curr][2]
-    euclid = math.sqrt(dx*dx + dy*dy + dz*dz)
-    tort = path_length / euclid if euclid > 1e-6 else 1.0
-    if err == 0:
-        correct_t.append(tort); correct_n.append(int(edge_neuron_int[idx]))
-    else:
-        split_t.append(tort); split_n.append(int(edge_neuron_int[idx]))
+    correct_tort, split_tort = [], []
+    correct_neuron, split_neuron = [], []
 
-del payload, gt, edge_error
-gc.collect()
-correct_t = np.array(correct_t); split_t = np.array(split_t)
-correct_n = np.array(correct_n); split_n = np.array(split_n)
+    for idx, (u, v) in enumerate(edges):
+        err = edge_errors[idx]
+        if err != 0 and err != 1:
+            continue
 
-print(f"\ncorrect: {len(correct_t)}, split: {len(split_t)}")
-print(f"  median correct = {np.median(correct_t):.6f}, median split = {np.median(split_t):.6f}")
+        u_curr, u_len = get_extremity(adj, u, v, k, node_xyz)
+        v_curr, v_len = get_extremity(adj, v, u, k, node_xyz)
 
-# --- ORIGINAL recomputed -----------------------------------------------
-print("\n[ORIGINAL — recorded one-sided Mann-Whitney U]")
-print(f"  recorded: U=4.71e9, p=1.66e-276")
-u_o, p_o = mannwhitneyu(split_t, correct_t, alternative="greater")
-print(f"  recomputed: U = {u_o:.0f}, p = {p_o:.4e}")
+        dx_edge = node_xyz[v][0] - node_xyz[u][0]
+        dy_edge = node_xyz[v][1] - node_xyz[u][1]
+        dz_edge = node_xyz[v][2] - node_xyz[u][2]
+        edge_len = math.sqrt(dx_edge*dx_edge + dy_edge*dy_edge + dz_edge*dz_edge)
 
-# --- (a) Cluster-bootstrap by neuron ----------------------------------
-print("\n[CORRECTED (a)] Cluster-bootstrap (by neuron) on median gap & Cliff's delta")
-unique_n = np.unique(np.concatenate([split_n, correct_n]))
-print(f"  n_neurons (clusters) = {len(unique_n)}")
-split_by_n = {n: split_t[split_n == n] for n in unique_n}
-correct_by_n = {n: correct_t[correct_n == n] for n in unique_n}
+        path_length = u_len + v_len + edge_len
 
-def cliffs_delta_fast(a, b, n_max=3000, rng=None):
-    rng = rng or np.random.default_rng(0)
-    a = np.asarray(a); b = np.asarray(b)
-    if len(a) == 0 or len(b) == 0: return float("nan")
-    if len(a) > n_max: a = a[rng.choice(len(a), n_max, replace=False)]
-    if len(b) > n_max: b = b[rng.choice(len(b), n_max, replace=False)]
-    return float(np.sign(a[:, None] - b[None, :]).mean())
+        dx_end = node_xyz[v_curr][0] - node_xyz[u_curr][0]
+        dy_end = node_xyz[v_curr][1] - node_xyz[u_curr][1]
+        dz_end = node_xyz[v_curr][2] - node_xyz[u_curr][2]
+        euclidean_dist = math.sqrt(dx_end*dx_end + dy_end*dy_end + dz_end*dz_end)
 
-rng = np.random.default_rng(23)
-obs_gap = float(np.median(split_t) - np.median(correct_t))
-obs_d = cliffs_delta_fast(split_t, correct_t, n_max=3000, rng=rng)
-print(f"  observed median gap = {obs_gap:+.6f}")
-print(f"  observed Cliff's delta = {obs_d:+.4f}")
-boots_g, boots_d = [], []
-for _ in range(300):
-    sel = rng.choice(unique_n, size=len(unique_n), replace=True)
-    sl = [split_by_n[n] for n in sel if len(split_by_n[n]) > 0]
-    cl = [correct_by_n[n] for n in sel if len(correct_by_n[n]) > 0]
-    if not sl or not cl: continue
-    s = np.concatenate(sl); c = np.concatenate(cl)
-    boots_g.append(float(np.median(s) - np.median(c)))
-    boots_d.append(cliffs_delta_fast(s, c, n_max=2000, rng=rng))
-if boots_g:
-    lo_g, hi_g = np.quantile(boots_g, [0.025, 0.975])
-    lo_d, hi_d = np.quantile(boots_d, [0.025, 0.975])
-    p_g = 2 * min((np.asarray(boots_g) > 0).mean(), (np.asarray(boots_g) < 0).mean())
-    p_d = 2 * min((np.asarray(boots_d) > 0).mean(), (np.asarray(boots_d) < 0).mean())
-    print(f"  cluster-bootstrap 95% CI on median gap: [{lo_g:+.6f}, {hi_g:+.6f}]  "
-          f"p = {p_g:.4f}")
-    print(f"  cluster-bootstrap 95% CI on Cliff's delta: [{lo_d:+.4f}, {hi_d:+.4f}]  "
-          f"p = {p_d:.4f}")
-else:
-    lo_g = hi_g = lo_d = hi_d = float("nan"); p_g = p_d = float("nan")
+        tortuosity = path_length / euclidean_dist if euclidean_dist > 1e-6 else 1.0
+        neuron = gt.node_segment_id(u)  # cluster / independent unit
 
-# --- (b) Per-neuron paired Wilcoxon ------------------------------------
-print("\n[CORRECTED (b)] Per-neuron paired Wilcoxon on neuron-level median tortuosity")
-pairs = []
-for n in unique_n:
-    sn = split_by_n[n]; cn = correct_by_n[n]
-    if len(sn) > 0 and len(cn) > 0:
-        pairs.append((float(np.median(sn)), float(np.median(cn))))
-if pairs:
-    arr = np.array(pairs); diffs = arr[:, 0] - arr[:, 1]
-    diffs_nz = diffs[diffs != 0]
-    if len(diffs_nz) > 0:
-        wstat, wp = wilcoxon(diffs_nz, alternative="greater")
-        rng2 = np.random.default_rng(43)
-        boots = [np.median(diffs_nz[rng2.integers(0, len(diffs_nz), len(diffs_nz))])
-                 for _ in range(2000)]
-        ci_lo, ci_hi = np.quantile(boots, [0.025, 0.975])
-        print(f"  n_pairs = {len(diffs_nz)}, median(split-correct) per neuron = "
-              f"{np.median(diffs_nz):+.5f}")
-        print(f"  Wilcoxon (one-sided, split>correct): W = {wstat:.2f}, p = {wp:.4e}")
-        print(f"  bootstrap 95% CI on median(split-correct) per neuron: "
-              f"[{ci_lo:+.5f}, {ci_hi:+.5f}]")
-    else:
-        print("  No nonzero pairs.")
-else:
-    print("  No paired neurons.")
+        if err == 0:
+            correct_tort.append(tortuosity); correct_neuron.append(neuron)
+        elif err == 1:
+            split_tort.append(tortuosity); split_neuron.append(neuron)
 
-print("\n" + "=" * 72)
-print("SIDE-BY-SIDE: original vs corrected")
-print("=" * 72)
-print(f"  Original (i.i.d. edges): U=4.71e9, p=1.66e-276; median gap ~0.033")
-print(f"  Corrected cluster-bootstrap on gap: [{lo_g:+.5f}, {hi_g:+.5f}], p = {p_g:.4f}")
-print(f"  Corrected Cliff's delta: [{lo_d:+.4f}, {hi_d:+.4f}], p = {p_d:.4f}")
+    return correct_tort, split_tort, correct_neuron, split_neuron
+
+def cliffs_delta_sub(a, b, rng, n_sub=4000):
+    a_s = a if len(a) <= n_sub else rng.choice(a, n_sub, replace=False)
+    b_s = b if len(b) <= n_sub else rng.choice(b, n_sub, replace=False)
+    gt_ = sum((x > b_s).sum() for x in a_s)
+    lt_ = sum((x < b_s).sum() for x in a_s)
+    return (gt_ - lt_) / (len(a_s) * len(b_s))
+
+def main():
+    # Load the provided dataset directly from $RERUN_PKL
+    print("Loading dataset from:", os.environ["RERUN_PKL"])
+    files = [Path(os.environ["RERUN_PKL"])]
+
+    if not files:
+        print("No dataset files found matching *_add.pkl")
+        sys.exit(1)
+
+    all_correct, all_split = [], []
+    all_correct_neuron, all_split_neuron = [], []
+
+    for fpath in files:
+        print(f"Loading {fpath}...")
+        with open(fpath, "rb") as f:
+            payload = pickle.load(f)
+
+        gt = payload["gt_graph"]
+        edge_error = np.asarray(payload["gt_edge_error"])
+        edges = list(gt.edges)
+
+        c_tort, s_tort, c_neu, s_neu = get_tortuosity(gt, edges, edge_error, k=5)
+        all_correct.extend(c_tort); all_split.extend(s_tort)
+        all_correct_neuron.extend(c_neu); all_split_neuron.extend(s_neu)
+
+        del payload, gt, edge_error, edges
+        gc.collect()
+
+    print(f"\nProcessed {len(all_correct)} correct edges and {len(all_split)} split edges.")
+
+    if len(all_correct) == 0 or len(all_split) == 0:
+        print("Not enough edges to compare.")
+        return
+
+    all_correct = np.array(all_correct); all_split = np.array(all_split)
+    all_correct_neuron = np.array(all_correct_neuron); all_split_neuron = np.array(all_split_neuron)
+
+    print(f"Median Tortuosity for CORRECT edges: {np.median(all_correct):.6f}")
+    print(f"Median Tortuosity for SPLIT edges:   {np.median(all_split):.6f}")
+
+    # Naive test echoed for comparison only.
+    stat, p_val = mannwhitneyu(all_split, all_correct, alternative='greater')
+    print(f"\nNaive Mann-Whitney U={stat}, p={p_val:.4e} (for comparison only)")
+
+    # === EFFECT SIZE: Cliff's delta with CLUSTER (neuron) bootstrap 95% CI ===
+    rng = np.random.default_rng(42)
+    delta = cliffs_delta_sub(all_split, all_correct, rng)
+    s_df = pd.DataFrame({"neuron": all_split_neuron, "t": all_split})
+    c_df = pd.DataFrame({"neuron": all_correct_neuron, "t": all_correct})
+    s_by = {k: g["t"].values for k, g in s_df.groupby("neuron")}
+    c_by = {k: g["t"].values for k, g in c_df.groupby("neuron")}
+    s_keys = np.array(list(s_by.keys()), dtype=object)
+    c_keys = np.array(list(c_by.keys()), dtype=object)
+    boots = []
+    for _ in range(300):
+        bs = np.concatenate([s_by[k] for k in rng.choice(s_keys, len(s_keys), replace=True)])
+        bc = np.concatenate([c_by[k] for k in rng.choice(c_keys, len(c_keys), replace=True)])
+        boots.append(cliffs_delta_sub(bs, bc, rng, n_sub=2000))
+    lo, hi = np.percentile(boots, [2.5, 97.5])
+    print("\n=== Effect size (cluster-aware) ===")
+    print(f"Cliff's delta (split vs correct tortuosity) = {delta:.4f}  (small => trivial effect)")
+    print(f"Cluster bootstrap 95% CI = [{lo:.4f}, {hi:.4f}]")
+
+    # === NEURON-CLUSTER permutation p-value ===
+    s_means = np.array([np.mean(v) for v in s_by.values()])
+    c_means = np.array([np.mean(v) for v in c_by.values()])
+    obs = np.median(s_means) - np.median(c_means)
+    pooled = np.concatenate([s_means, c_means])
+    n_s = len(s_means)
+    n_perm = 5000
+    perm = np.empty(n_perm)
+    for i in range(n_perm):
+        idx = rng.permutation(len(pooled))
+        perm[i] = np.median(pooled[idx[:n_s]]) - np.median(pooled[idx[n_s:]])
+    perm_p = (np.sum(perm >= obs) + 1) / (n_perm + 1)
+    print("\n=== Neuron-cluster permutation test ===")
+    print(f"Split-carrying neurons={n_s}, correct neurons={len(c_means)}")
+    print(f"Observed neuron-level median tortuosity gap = {obs:.4f}")
+    print(f"Cluster-permutation one-sided p (split > correct) = {perm_p:.4g}")
+    print("(Compare to ORIGINAL: MW p=1.6599e-276, no effect size reported.)")
+
+if __name__ == "__main__":
+    main()
