@@ -68,8 +68,10 @@ systematic *topological* errors, both already identified in the `_add` cache:
   rate, however, reads slightly **higher** than canonical, because the cache's
   fragments were filtered at `min_cable_length` (a GT stretch reconstructed only
   by a dropped short fragment shows as background → omit). Treat the cache omit
-  rate as an upper bound. This bias is consistent across brains (shared
-  `min_cable_length = 100` µm), so it does not skew one brain relative to another.
+  rate as an upper bound. This bias is consistent across brains when they share
+  the same `min_cable_length` (read it from `payload["min_cable_length"]`, equal
+  to the `mcl<N>` in the filename — `100` µm for this batch), so it does not skew
+  one brain relative to another.
 - **Merge percentages match closely, not byte-exactly.** The geometric walk is
   reproduced faithfully, but the canonical pipeline snaps merge sites to nearby
   branch nodes and dedups in a specific order; expect strong agreement with a
@@ -94,7 +96,7 @@ the ones you will actually use.
 | `img_path` | `str` | **Public S3** path of the raw fused ExaSPIM image. Not needed for error recovery, but lets you fetch raw-image patches on demand with no credentials — see *Optionally reading the raw image*. |
 | `segmentation_path` | `str` | Provenance only — **private GCS** path of the dense segmentation the labels were read from. Not read at load time and not needed (its information is already in the stored labels). |
 | `anisotropy` | `tuple` | µm/voxel in (x, y, z) — `(0.748, 0.748, 1.0)` for this batch of caches. **Not a fixed constant:** it is stored per dataset as-passed at build time, so always read it from the payload (`payload["anisotropy"]`) rather than hard-coding this value. |
-| `min_cable_length` | `int` | `100` — µm threshold shorter fragments were dropped at. |
+| `min_cable_length` | `int` | µm threshold shorter fragments were dropped at — the `<N>` from the `mcl<N>` filename (`100` for this batch). |
 | `node_spacing` | `int` | `5` — target µm spacing between skeleton nodes. |
 | `fragments_graph` | `SkeletonGraph` | Automated UNet reconstruction (unchanged from the plain cache). |
 | `gt_graph` | `SkeletonGraph` | Human ground-truth reconstruction (unchanged geometry; now also carries the label arrays below). |
@@ -191,15 +193,18 @@ assert node_label.size, "labels missing — this is a plain cache, not an _add c
 import glob, os, re, pickle
 import agentic_neuron_proofreader  # noqa: F401 — registers SkeletonGraph
 
-def brain_id_from_path(path):
+def brain_and_mcl_from_path(path):
+    """(brain_id, min_cable_length) parsed from the dataset_cache_<id>_mcl<N>_add.pkl name."""
     m = re.search(r"dataset_cache_(\d+)_mcl(\d+)_add\.pkl$", os.path.basename(path))
-    return m.group(1) if m else os.path.basename(path)
+    return (m.group(1), int(m.group(2))) if m else (os.path.basename(path), None)
 
 for path in sorted(glob.glob("cache/dataset_cache_*_add.pkl")):   # _add only
-    brain_id = brain_id_from_path(path)
+    brain_id, mcl = brain_and_mcl_from_path(path)
     with open(path, "rb") as f:
         payload = pickle.load(f)
     gt = payload["gt_graph"]
+    # payload["min_cable_length"] is the authoritative value; the mcl<N> from the
+    # filename should match it (assert payload["min_cable_length"] == mcl to be sure).
     # ... reduce gt + payload label arrays to per-neuron records tagged brain_id,
     #     then let `payload` be garbage-collected before the next brain ...
 ```
