@@ -2,14 +2,19 @@
 Plot one evolution run's performance across generations from its ledger.
 
 Reads ``runs/<run_name>/ledger.jsonl`` (one JSON row per generation, written by
-``harness.ledger.GenerationCost``) and renders a two-panel figure tracking how
+``harness.ledger.GenerationCost``) and renders a three-panel figure tracking how
 the policy improved generation over generation:
 
-  (1) Split-repair score (THE GATE METRIC) per generation, with the running
-      PARENT bar (best accepted-so-far) overlaid as a step line, and each
-      generation marked accepted (green ●) or rejected (red ✕). This is the one
-      figure that answers "did it get better, and which gens were kept".
-  (2) Cumulative cost (wall-clock minutes and agent $), so the accuracy gain can
+  (1) Penalized FITNESS (THE GATE METRIC) per generation, with the running PARENT
+      bar (best accepted-so-far) overlaid as a step line, and each generation
+      marked accepted (green ●) or rejected (red ✕). Fitness = split-repair score
+      − merge_penalty × false merges, so a false-merge gen dives sharply below its
+      raw score. This is the panel that answers "did it get better, which gens were
+      kept" — the accept/reject markers live here because this is what the gate
+      compares.
+  (2) The decomposition behind the fitness: the raw split-repair score
+      (correct − false) and the false-merge count that the penalty acts on.
+  (3) Cumulative cost (wall-clock minutes and agent $), so the accuracy gain can
       be read against the compute it took.
 
 Deterministic, headless (matplotlib Agg), no model. Mirrors the style of
@@ -66,32 +71,55 @@ def load_ledger(run_dir: Path) -> list[dict]:
     return rows
 
 
-def _running_parent_bar(rows: list[dict]) -> list[float]:
-    """The split-repair bar each generation had to BEAT = best accepted score so far.
+def _row_fitness(r: dict) -> float:
+    """This generation's penalized FITNESS (the gate's decision variable).
 
-    The seed's score is the bar gen 1 faces; thereafter the bar advances only on an
-    accepted generation (the gate is parent-relative). We reconstruct it from the
-    ledger alone: start at the first generation's parent-implied bar (its own score
-    if accepted, else it tells us the parent it failed to beat is <= its score), and
-    step up whenever a generation is accepted.
+    Prefer the recorded ``heldout_fitness``; fall back to reconstructing it from the
+    raw score and false-merge count for OLD ledgers written before the field existed
+    (default merge_penalty=100). Pre-smoothing runs used a hard 'false==0' gate, so
+    their reconstructed fitness is a faithful post-hoc view: a rejected false-merge
+    gen dives, exactly as the new gate would score it.
     """
+    if "heldout_fitness" in r:
+        return float(r["heldout_fitness"])
+    penalty = float(r.get("merge_penalty", 100.0))
+    score = r.get("heldout_split_repair_score", 0)
+    false = r.get("heldout_false_merges", 0)
+    return float(score) - penalty * float(false)
+
+
+def _running_parent_bar(rows: list[dict], key=None) -> list[float]:
+    """The bar each generation had to BEAT = best accepted value so far.
+
+    ``key`` maps a row to the value being tracked; default is the penalized fitness
+    (the actual gate variable). The seed's value is the bar gen 1 faces; thereafter
+    the bar advances only on an accepted generation (the gate is parent-relative). We
+    reconstruct it from the ledger alone: start at the first generation's
+    parent-implied bar, and step up whenever a generation is accepted.
+    """
+    if key is None:
+        key = _row_fitness
     bar = []
     best = None
     for r in rows:
-        score = r.get("heldout_split_repair_score", 0)
+        val = key(r)
         # The bar in force WHEN this gen was judged is the best accepted BEFORE it.
-        bar.append(best if best is not None else score)
+        bar.append(best if best is not None else val)
         if r.get("accepted"):
-            best = score if best is None else max(best, score)
+            best = val if best is None else max(best, val)
     return bar
 
 
 def make_figure(rows: list[dict], run_name: str, out_path: Path) -> Path:
-    """Render the two-panel performance figure and save it to ``out_path``."""
+    """Render the three-panel performance figure and save it to ``out_path``."""
     gens = [r.get("generation", i + 1) for i, r in enumerate(rows)]
     score = [r.get("heldout_split_repair_score", 0) for r in rows]
+    fitness = [_row_fitness(r) for r in rows]
+    false_merges = [r.get("heldout_false_merges", 0) for r in rows]
     accepted = [bool(r.get("accepted")) for r in rows]
-    parent_bar = _running_parent_bar(rows)
+    fitness_bar = _running_parent_bar(rows, key=_row_fitness)
+    # The penalty in force (last row's; constant within a run). For the title only.
+    penalty = float(rows[-1].get("merge_penalty", 100.0)) if rows else 100.0
 
     # Cumulative cost. NOTE the two ledger fields differ in kind:
     #   * wall_seconds is PER-GENERATION (time.monotonic() - gen_wall0, reset each
@@ -106,34 +134,55 @@ def make_figure(rows: list[dict], run_name: str, out_path: Path) -> Path:
     splits_only = any(r.get("splits_only") for r in rows)
     mode = " [splits-only]" if splits_only else ""
 
-    fig, axes = plt.subplots(2, 1, figsize=(11, 7), sharex=True)
-    ax0, ax3 = axes
+    fig, axes = plt.subplots(3, 1, figsize=(11, 10), sharex=True,
+                             gridspec_kw={"height_ratios": [3, 2, 2]})
+    ax0, ax1, ax3 = axes
 
-    # (1) Split-repair score + parent bar + accept/reject markers.
-    ax0.plot(gens, score, "-", color="#1f77b4", lw=1.5, zorder=1, label="candidate score")
-    ax0.step(gens, parent_bar, where="mid", color="#888", lw=1.2, ls="--",
+    # (1) Penalized FITNESS (the gate metric) + parent bar + accept/reject markers.
+    ax0.plot(gens, fitness, "-", color="#1f77b4", lw=1.5, zorder=1,
+             label="candidate fitness")
+    ax0.step(gens, fitness_bar, where="mid", color="#888", lw=1.2, ls="--",
              zorder=1, label="parent bar (to beat)")
-    for g, s, c, a in zip(gens, score, acc_color, accepted):
-        ax0.scatter([g], [s], c=c, s=70, marker="o" if a else "X",
+    for g, fval, c, a in zip(gens, fitness, acc_color, accepted):
+        ax0.scatter([g], [fval], c=c, s=70, marker="o" if a else "X",
                     edgecolors="k", linewidths=0.5, zorder=3)
-    ax0.set_ylabel("split-repair score\n(correct − false)")
+    ax0.axhline(0, color="k", lw=0.6, alpha=0.4, zorder=0)
+    ax0.set_ylabel(f"penalized fitness\n(score − {penalty:g}×false)")
     ax0.set_title(f"Run {run_name}{mode} — performance across {len(rows)} generations\n"
-                  f"gate metric: held-out split-repair score "
-                  f"(● accepted = new parent, ✕ rejected)")
+                  f"gate metric: held-out penalized fitness "
+                  f"(merge_penalty={penalty:g}; ● accepted = new parent, ✕ rejected)")
     ax0.grid(True, alpha=0.3)
-    # Legend includes the accept/reject marker meaning.
     from matplotlib.lines import Line2D
     handles = [
-        Line2D([0], [0], color="#1f77b4", lw=1.5, label="candidate score"),
+        Line2D([0], [0], color="#1f77b4", lw=1.5, label="candidate fitness"),
         Line2D([0], [0], color="#888", lw=1.2, ls="--", label="parent bar (to beat)"),
         Line2D([0], [0], marker="o", color="w", markerfacecolor="#2ca02c",
                markeredgecolor="k", markersize=9, label="accepted"),
         Line2D([0], [0], marker="X", color="w", markerfacecolor="#d62728",
                markeredgecolor="k", markersize=9, label="rejected"),
     ]
-    ax0.legend(handles=handles, loc="upper left", fontsize=8, framealpha=0.9)
+    ax0.legend(handles=handles, loc="best", fontsize=8, framealpha=0.9)
 
-    # (2) Cumulative cost (twin axis: minutes + $).
+    # (2) Decomposition: raw split-repair score (line) + false-merge count (bars).
+    # This shows WHY fitness dips — a bar of false merges is what the penalty acts on.
+    ax1.plot(gens, score, "-o", color="#9467bd", ms=4, lw=1.3,
+             label="split-repair score (correct − false)")
+    ax1.set_ylabel("split-repair score", color="#9467bd")
+    ax1.tick_params(axis="y", labelcolor="#9467bd")
+    ax1.grid(True, alpha=0.3)
+    ax1b = ax1.twinx()
+    ax1b.bar(gens, false_merges, width=0.6, color="#d62728", alpha=0.35,
+             label="false merges", zorder=0)
+    ax1b.set_ylabel("false merges", color="#d62728")
+    ax1b.tick_params(axis="y", labelcolor="#d62728")
+    # Integer ticks for the (small) false-merge count.
+    _fmax = max(false_merges) if false_merges else 0
+    ax1b.set_ylim(0, max(1, _fmax) * 1.3)
+    h1, l1 = ax1.get_legend_handles_labels()
+    h2, l2 = ax1b.get_legend_handles_labels()
+    ax1.legend(h1 + h2, l1 + l2, loc="best", fontsize=8, framealpha=0.9)
+
+    # (3) Cumulative cost (twin axis: minutes + $).
     ax3.plot(gens, cum_min, "-o", color="#ff7f0e", ms=4, lw=1.2, label="cum. wall (min)")
     ax3.set_ylabel("cumulative\nwall-clock (min)", color="#ff7f0e")
     ax3.tick_params(axis="y", labelcolor="#ff7f0e")
@@ -153,11 +202,15 @@ def make_figure(rows: list[dict], run_name: str, out_path: Path) -> Path:
 
 
 def write_csv(rows: list[dict], parent_bar: list[float], path: Path) -> Path:
-    """Dump the plotted series to CSV for spreadsheets / further analysis."""
-    # Column names mirror the ledger, EXCEPT cost is renamed to make its kind
-    # explicit: wall_seconds is per-generation; cost_usd_cumulative is the running
-    # session total (already cumulative in the ledger).
-    cols = ["generation", "accepted", "heldout_split_repair_score", "parent_bar",
+    """Dump the plotted series to CSV for spreadsheets / further analysis.
+
+    ``parent_bar`` is the FITNESS bar (the gate variable). Column names mirror the
+    ledger, EXCEPT cost is renamed to make its kind explicit: wall_seconds is
+    per-generation; cost_usd_cumulative is the running session total (already
+    cumulative in the ledger).
+    """
+    cols = ["generation", "accepted", "heldout_fitness", "parent_fitness_bar",
+            "merge_penalty", "heldout_split_repair_score",
             "heldout_correct_merges", "heldout_false_merges", "heldout_n_edits",
             "wall_seconds", "cost_usd_cumulative", "splits_only"]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -166,7 +219,8 @@ def write_csv(rows: list[dict], parent_bar: list[float], path: Path) -> Path:
         w.writerow(cols)
         for r, bar in zip(rows, parent_bar):
             w.writerow([r.get("generation"), r.get("accepted"),
-                        r.get("heldout_split_repair_score"), bar,
+                        _row_fitness(r), bar, r.get("merge_penalty", 100.0),
+                        r.get("heldout_split_repair_score"),
                         r.get("heldout_correct_merges"), r.get("heldout_false_merges"),
                         r.get("heldout_n_edits"), r.get("wall_seconds"),
                         r.get("cost_usd"), r.get("splits_only")])
@@ -178,15 +232,18 @@ def summarize(rows: list[dict]) -> str:
     if not rows:
         return "no generations in ledger."
     accepted = [r for r in rows if r.get("accepted")]
+    fits = [_row_fitness(r) for r in rows]
+    best = max(fits) if fits else 0
+    first = fits[0] if fits else 0
+    # Also report the raw split-repair score frontier as a secondary number.
     scores = [r.get("heldout_split_repair_score", 0) for r in rows]
-    best = max(scores) if scores else 0
-    first = scores[0] if scores else 0
+    best_score = max(scores) if scores else 0
     total_min = sum(r.get("wall_seconds", 0.0) for r in rows) / 60.0
     # cost_usd is the running SESSION total (cumulative), so the run total is the
     # LAST/MAX value, NOT a sum over generations.
     total_usd = max((r.get("cost_usd", 0.0) for r in rows), default=0.0)
     return (f"{len(rows)} generations, {len(accepted)} accepted. "
-            f"split-repair score {first} -> best {best}. "
+            f"fitness {first:g} -> best {best:g} (best split-repair score {best_score}). "
             f"{total_min:.0f} min wall, ${total_usd:.2f} agent cost (cumulative).")
 
 

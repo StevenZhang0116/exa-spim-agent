@@ -19,7 +19,11 @@ the label pair ``(a, b)``; ERL / # Splits / Edge Accuracy then reflect the fix.
 
 Over-merging is self-penalizing: unifying labels that belong to *different* true
 neurons inflates the merge metrics (``detect_label_intersections`` /
-``MergeCountMetric``), so Edge Accuracy is a sound single-number fitness.
+``MergeCountMetric``), so Edge Accuracy is a sound single-number HEADLINE summary
+of a scored pass. (The evolution loop's accept/reject bar is a separate, denser
+signal — the held-out split-repair fitness in ``run_evolution._fitness``; Edge
+Accuracy here is reported for diagnosis, not used as that gate. See
+``PRIMARY_METRIC`` below.)
 
 This file does NOT call any LLM. It is pure, deterministic, and runnable on its
 own so you can validate the harness before wiring in the agent.
@@ -69,18 +73,23 @@ _CONFIG_RTF = os.path.abspath(
 
 
 # The headline metrics we track each generation. Edge Accuracy is the primary
-# fitness (higher is better); the rest are reported for diagnosis.
+# HEADLINE metric of a single evaluate() pass (higher is better) — it is what
+# ``ScoreResult.primary`` reports and what the human gate / logs show. The rest
+# are reported for diagnosis.
+#
+# NOT the evolution accept/reject bar. The loop gates on a DENSE held-out
+# split-repair fitness (``(correct - false) - merge_penalty * false``; see
+# run_evolution._fitness), because Edge Accuracy reads +0.000 for most real
+# repairs (only a bridged split EDGE moves it) and so flat-lined as a gate. Edge
+# Accuracy is still computed + recorded every generation for diagnosis.
 #
 # Edge Accuracy = 100 - (% Split Edges + % Omit Edges + % Merged Edges), so it is
-# the ONLY single number that charges split, omit, AND merge errors together. The
-# project targets merge correction (a split_label edit must reduce % Merged Edges
-# / # Merges without manufacturing splits), and a merge-only fitness like Split
-# Accuracy would be blind to exactly the error class we are repairing — so Edge
-# Accuracy is the correct primary. ``Split Accuracy`` (= 100 - % Split Edges, the
-# run-length-weighted split-coverage measure) is retained as an AUXILIARY tracked
-# metric: it isolates the split-error component so the report/gate can watch that
-# a merge repair does not over-split. It is materialized per skeleton by
-# ``_ensure_derived`` so every existing ``_weighted_avg`` / subset path works.
+# the ONLY single number that charges split, omit, AND merge errors together —
+# the right HEADLINE summary for a scored pass. ``Split Accuracy`` (= 100 - %
+# Split Edges, the run-length-weighted split-coverage measure) is retained as an
+# AUXILIARY tracked metric: it isolates the split-error component so the report
+# can watch that a merge repair does not over-split. It is materialized per
+# skeleton by ``_ensure_derived`` so every ``_weighted_avg`` / subset path works.
 PRIMARY_METRIC = "Edge Accuracy"
 TRACKED_METRICS = [
     "Edge Accuracy",

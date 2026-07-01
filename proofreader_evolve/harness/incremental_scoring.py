@@ -43,6 +43,7 @@ import os
 import pickle
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import networkx as nx
 import numpy as np
@@ -68,6 +69,16 @@ from segmentation_skeleton_metrics.skeleton_metrics import (
 )
 
 from proofreader_evolve.harness import scoring  # ScoreResult, BrainPaths, helpers
+
+
+# Bump this whenever the PreparedBrain layout or the build logic changes in a way
+# that makes an OLD pickle incompatible with CURRENT code (new/renamed stored
+# fields, a different labeling/misalignment step, a graph_classes change, etc.).
+# The SHARED cross-run cache stamps this at save time and refuses to load a pickle
+# stamped with a different value — a stale artifact is rebuilt instead of silently
+# loading objects that don't match today's assumptions. Per-run caches are exempt
+# (they were written by this same code in this same run).
+PREPARED_SCHEMA_VERSION = 1
 
 
 class _SerialExecutor:
@@ -204,6 +215,11 @@ def _install_periodic_progress_log(every_seconds: float = 15.0) -> None:
     _gl.tqdm = _LoggingTqdm
 
 
+class _SharedCacheInvalid(Exception):
+    """Raised when a shared-cache pickle fails validation, so ``get_or_build`` can
+    fall back to a fresh build instead of trusting a stale/corrupt/mismatched file."""
+
+
 class PreparedBrain:
     """The once-loaded, candidate-invariant state for one brain.
 
@@ -216,31 +232,125 @@ class PreparedBrain:
     def __init__(self, brain_id, anisotropy, gt_graphs, fragment_graphs):
         self.brain_id = brain_id
         self.anisotropy = anisotropy
-        self.gt_graphs = gt_graphs
-        self.fragment_graphs = fragment_graphs
+        # CANONICAL ORDERING: the graph loaders assemble these dicts in worker
+        # `as_completed` order, which varies run-to-run — so two builds of the SAME
+        # dataset produced byte-different pickles (different dict insertion order ->
+        # different pickle serialization) even though the content was identical. Sort
+        # the keys once here so the pickle is byte-stable and content-addressable
+        # (see checksum() / the shared cache). This does NOT affect scoring: the
+        # train/held-out split sorts its own input (dataset.train_heldout_split), and
+        # every consumer keys graphs by name, never by dict position.
+        self.gt_graphs = {k: gt_graphs[k] for k in sorted(gt_graphs)}
+        self.fragment_graphs = {k: fragment_graphs[k] for k in sorted(fragment_graphs)}
 
         # Snapshot raw labels (the candidate-invariant truth).
         self._gt_raw = {
-            name: np.array(g.node_label, dtype=object) for name, g in gt_graphs.items()
+            name: np.array(g.node_label, dtype=object)
+            for name, g in self.gt_graphs.items()
         }
         self._frag_raw_label = {
-            key: g.label for key, g in fragment_graphs.items()
+            key: g.label for key, g in self.fragment_graphs.items()
         }
         # The LabelHandler universe: every fragment label.
         self.all_fragment_labels = sorted(
             {str(v) for v in self._frag_raw_label.values()} - {"0"}
         )
 
+    # --- identity / validation metadata ---
+    def checksum(self) -> str:
+        """Order-invariant content fingerprint (cheap; no full-graph hashing).
+
+        Folds the candidate-invariant truth — GT names, per-GT node/raw-label
+        digests, the sorted fragment-label universe, and per-fragment raw labels —
+        into one hex digest. Two builds of the same dataset hash EQUAL; a missing
+        fragment (e.g. a silent cloud-read drop) or a swapped brain hashes DIFFERENT.
+        Used to stamp the shared cache and to detect corruption/mismatch on load.
+        """
+        import hashlib
+        h = hashlib.md5()
+        h.update(str(self.brain_id).encode())
+        h.update(np.asarray(self.anisotropy).tobytes())
+        for name in sorted(self._gt_raw):  # GT: name + raw-segment-id snapshot
+            h.update(name.encode())
+            h.update(np.asarray(self._gt_raw[name]).astype("U").tobytes())
+        h.update("|".join(self.all_fragment_labels).encode())
+        for key in sorted(self._frag_raw_label, key=str):  # fragment raw labels
+            h.update(f"{key}={self._frag_raw_label[key]}".encode())
+        return h.hexdigest()
+
+    def metadata(self) -> dict:
+        """Self-describing header written alongside the shared-cache pickle."""
+        return {
+            "schema_version": PREPARED_SCHEMA_VERSION,
+            "brain_id": str(self.brain_id),
+            "n_gt": len(self.gt_graphs),
+            "n_fragments": len(self.fragment_graphs),
+            "n_fragment_labels": len(self.all_fragment_labels),
+            "checksum": self.checksum(),
+        }
+
     # --- persistence ---
     def save(self, path):
+        """Write the per-run pickle (bare object, no header). Byte-stable now that
+        the graph dicts are canonically ordered."""
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as f:
             pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+    def save_shared(self, path):
+        """Write the SHARED cross-run pickle as ``{"meta": ..., "brain": self}``.
+
+        The meta header is what makes cross-run reuse safe: ``load_shared`` reads it
+        FIRST and fails fast on a schema-version bump, brain mismatch, or checksum
+        drift — so a stale/renamed/corrupt artifact is rebuilt rather than silently
+        trusted. Written atomically (temp + replace) so a crash mid-write can't leave
+        a truncated pickle that a later run would load.
+        """
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.tmp.{os.getpid()}"
+        with open(tmp, "wb") as f:
+            pickle.dump({"meta": self.metadata(), "brain": self},
+                        f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, path)
 
     @staticmethod
     def load(path) -> "PreparedBrain":
         with open(path, "rb") as f:
             return pickle.load(f)
+
+    @staticmethod
+    def load_shared(path, expect_brain=None) -> "PreparedBrain":
+        """Load + VALIDATE a shared-cache pickle. Raises on any mismatch.
+
+        Guards a cross-run artifact the way ``dataset.load_cached_graphs`` guards the
+        fragment cache: schema version, brain id, and a re-derived content checksum
+        must all agree with the header. Any failure raises ``_SharedCacheInvalid`` so
+        the caller can fall back to a fresh build instead of trusting stale data.
+        """
+        with open(path, "rb") as f:
+            payload = pickle.load(f)
+        if not (isinstance(payload, dict) and "brain" in payload and "meta" in payload):
+            raise _SharedCacheInvalid(
+                f"{path}: not a shared-cache payload (missing 'meta'/'brain'). "
+                f"Refusing to load — will rebuild.")
+        meta, brain = payload["meta"], payload["brain"]
+        got_ver = meta.get("schema_version")
+        if got_ver != PREPARED_SCHEMA_VERSION:
+            raise _SharedCacheInvalid(
+                f"{path}: schema_version={got_ver} but current code is "
+                f"{PREPARED_SCHEMA_VERSION}. Stale artifact — will rebuild.")
+        if expect_brain is not None and str(meta.get("brain_id")) != str(expect_brain):
+            raise _SharedCacheInvalid(
+                f"{path}: header brain_id={meta.get('brain_id')} != requested "
+                f"{expect_brain}. Wrong/renamed cache — will rebuild.")
+        # Content check: re-derive the checksum from the loaded object and compare to
+        # the stamped one. Catches truncation/corruption and any header/body drift.
+        actual = brain.checksum()
+        if actual != meta.get("checksum"):
+            raise _SharedCacheInvalid(
+                f"{path}: checksum mismatch (header={meta.get('checksum')}, "
+                f"recomputed={actual}). Corrupt or edited — will rebuild.")
+        return brain
 
     @property
     def gt_names(self):
@@ -734,12 +844,16 @@ def classify_merge_edits(edits, label_gt_map: dict) -> dict:
     gate, never into the failure report / reviser (which use the train-only map).
 
     Returns ``{"correct": int, "false": int, "unscored": int,
-               "correct_pairs": [...], "false_pairs": [...]}``. ``split_label`` /
-    other edit kinds are ignored (they are scored by the merge metrics, not here).
+               "correct_pairs": [...], "false_pairs": [...],
+               "unscored_pairs": [(a, b), ...]}``. ``split_label`` / other edit
+    kinds are ignored (they are scored by the merge metrics, not here).
+    ``unscored_pairs`` lists the label pairs this map could not verify — the
+    blind-spot set a caller may corroborate with a GT-independent signal (e.g.
+    image bridge evidence) to gauge decision confidence.
     """
     correct = []
     false = []
-    n_unscored = 0
+    unscored_pairs = []
     for e in (edits or []):
         # Pull the two endpoint labels out of either edit form.
         if isinstance(e, dict):
@@ -753,15 +867,16 @@ def classify_merge_edits(edits, label_gt_map: dict) -> dict:
         da = _dominant_neuron(label_gt_map, a)
         db = _dominant_neuron(label_gt_map, b)
         if da is None or db is None:
-            n_unscored += 1
+            unscored_pairs.append((str(a), str(b)))
             continue
         (correct if da == db else false).append((str(a), str(b), da, db))
     return {
         "correct": len(correct),
         "false": len(false),
-        "unscored": n_unscored,
+        "unscored": len(unscored_pairs),
         "correct_pairs": correct,
         "false_pairs": false,
+        "unscored_pairs": unscored_pairs,
     }
 
 
@@ -860,20 +975,90 @@ def probe_split_oracle(prepared: PreparedBrain, min_nodes: int = 50, verbose: bo
     }
 
 
+# Shared cross-run cache for prepared brains. Unlike the per-run pickle (which
+# lives in a run's own directory and is intentionally not shared), this ONE dir
+# holds a validated, content-checksummed prepared brain per (brain, schema) that
+# every run may reuse — the ~30 min build is paid once, not once per run. Safe to
+# share because a PreparedBrain is a pure function of the (immutable) dataset and
+# carries no run-specific state; see save_shared/load_shared for the validation
+# that keeps a stale/corrupt/mismatched artifact from ever being trusted.
+PREPARED_CACHE_DIR = Path(__file__).resolve().parent.parent / "prepared_cache"
+
+
+def shared_prepared_cache_path(brain_id) -> str:
+    """Path to the shared, validated prepared-brain cache for one brain.
+
+    mcl is intentionally NOT in the name: the prepared state is built from the RAW
+    (unfiltered) GCS graphs, so it does not depend on mcl (only the separate
+    fragment cache does)."""
+    return str(PREPARED_CACHE_DIR / f"prepared_{brain_id}.pkl")
+
+
 def get_or_build(
-    paths: scoring.BrainPaths, cache_path: str, verbose=True, max_workers: int = 2
+    paths: scoring.BrainPaths,
+    cache_path: str,
+    verbose=True,
+    max_workers: int = 2,
+    shared_cache: bool = True,
 ) -> PreparedBrain:
-    """Load the PreparedBrain pickle if present, else build it once and save."""
+    """Return the PreparedBrain, building it at most once across all runs.
+
+    Resolution order (first hit wins):
+      1. ``cache_path`` — this run's OWN pickle. Present only on a resume of the
+         same run_dir; loaded as-is (this run wrote it, so no validation needed).
+      2. the SHARED validated cache (``shared_prepared_cache_path(brain)``) — reused
+         across runs when ``shared_cache`` is True and it passes ``load_shared``
+         validation (schema version + brain id + content checksum). This is what
+         saves the ~30 min rebuild on every run after the first.
+      3. BUILD fresh (~30 min), then populate BOTH the shared cache (for future
+         runs) and ``cache_path`` (for a resume of this run).
+
+    A shared-cache file that fails validation (stale schema, wrong brain, checksum
+    drift, corruption) is NOT trusted: it's ignored and rebuilt, and the fresh build
+    overwrites it. Set ``shared_cache=False`` to opt out entirely (always build into
+    ``cache_path`` only) — e.g. to force a clean rebuild.
+    """
+    # (1) This run's own pickle (resume case).
     if os.path.exists(cache_path):
         if verbose:
             print(f"Loading prepared brain from {cache_path}")
         return PreparedBrain.load(cache_path)
+
+    # (2) Shared validated cross-run cache.
+    shared_path = shared_prepared_cache_path(paths.brain_id)
+    if shared_cache and os.path.exists(shared_path):
+        try:
+            prepared = PreparedBrain.load_shared(shared_path, expect_brain=paths.brain_id)
+            if verbose:
+                print(f"Reusing shared prepared brain from {shared_path} "
+                      f"(validated; skipped ~30 min build)")
+            # Mirror into this run's own dir so a later resume reloads instantly and
+            # stays self-contained even if the shared cache is later cleared.
+            prepared.save(cache_path)
+            return prepared
+        except (_SharedCacheInvalid, pickle.UnpicklingError, EOFError, AttributeError,
+                ModuleNotFoundError) as e:
+            # Stale/corrupt/incompatible shared artifact -> rebuild, don't trust it.
+            print(f"[warn] shared prepared cache unusable ({type(e).__name__}: {e}); "
+                  f"rebuilding from scratch.")
+
+    # (3) Build fresh, then populate both caches.
     if verbose:
-        print(f"No prepared cache at {cache_path}; building (one-time ~30 min)...")
+        print(f"No usable prepared cache; building (one-time ~30 min)...")
     prepared = build_prepared_brain(paths, verbose=verbose, max_workers=max_workers)
     prepared.save(cache_path)
     if verbose:
         print(f"Saved prepared brain -> {cache_path}")
+    if shared_cache:
+        try:
+            prepared.save_shared(shared_path)
+            if verbose:
+                print(f"Populated shared prepared cache -> {shared_path}")
+        except OSError as e:
+            # A shared-cache write failure must never fail the run — the per-run
+            # pickle already succeeded, so just warn and continue.
+            print(f"[warn] could not write shared prepared cache {shared_path} "
+                  f"({e}); continuing with per-run cache only.")
     return prepared
 
 
@@ -881,7 +1066,6 @@ if __name__ == "__main__":
     # De-risk probe runner: measures the ceiling gain from perfect merge-splitting.
     #   python proofreader_evolve/harness/incremental_scoring.py --brain 789202
     import argparse
-    from pathlib import Path
 
     p = argparse.ArgumentParser(description="Oracle split_label de-risk probe.")
     p.add_argument("--brain", default="789202")

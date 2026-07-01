@@ -47,7 +47,10 @@ The evolution loop works by:
      left uncorrected, or edits that hurt — see the failure report),
   4. asking the agent to rewrite the body of ``propose_edits`` (and the companion
      ``rules.md``) to do better,
-  5. keeping the rewrite ONLY if held-out Edge Accuracy improves.
+  5. keeping the rewrite ONLY if the held-out split-repair FITNESS improves —
+     ``fitness = (correct - false) - merge_penalty * false``, kept iff it beats
+     the parent by ``score_margin``. (Edge Accuracy is recorded for diagnosis but
+     is NOT the bar: it reads +0.000 for most real repairs, so it flat-lined.)
 
 Contract (keep the CALL signature stable so the harness can always call it):
     propose_edits(sites, ctx) -> list[edit]

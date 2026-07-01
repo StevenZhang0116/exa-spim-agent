@@ -13,9 +13,29 @@ This implements exactly the cycle the reviewer asked for:
                                                    accepted policy) on held-out
        ...and measure compute/time/human effort -> ledger.jsonl
 
-The seed policy proposes no edits (== baseline), and the gate is parent-relative
-(each generation must beat the last accepted policy, not the fixed baseline), so
+The gate's decision variable is the DENSE held-out split-repair fitness
+``(correct - false) - merge_penalty * false`` (see ``_fitness`` / step 7), kept
+iff it beats the parent by ``score_margin``. Edge Accuracy is recorded for
+diagnosis but is NOT the bar — it reads +0.000 for most real repairs, so it
+flat-lined as a gate. A false merge is penalized (default 100 each), not
+hard-rejected. The seed policy is a conservative COLINEAR SPLIT-REPAIR policy
+(not a no-op — see artifacts/heuristics.py::propose_edits): it emits a small,
+high-precision set of ``merge_labels`` so the score starts off the flat no-edit
+baseline and the loop has a gradient. The gate is parent-relative (each
+generation must beat the last accepted policy, not the fixed baseline), so
 accepted improvements accumulate generation over generation.
+
+The hard fitness only sees GT-covered edits; in a sparsely-traced brain most
+edits are ``unscored`` (no GT at either endpoint). Rather than penalize those
+(which would just teach the policy to avoid untraced neurons), a CONFIDENCE layer
+attaches a GT-INDEPENDENT soft verdict to that blind spot — the image bridge_ratio
+the policy already fetched, replayed at zero extra cloud reads (see
+``_image_confidence`` / ``_confidence_level``). It reports how much of each
+decision is GT-backed vs. resting on an unverified blind spot (high/medium/low),
+logged and recorded in the ledger as an advisory label. It NEVER enters the hard
+fitness; only the opt-in ``--confidence-veto`` may block an accepted generation,
+and only on POSITIVE image evidence of a likely-false merge — never on absence of
+GT.
 
 The evolved "program" is the pair (artifacts/heuristics.py, artifacts/rules.md).
 Each generation snapshots them, lets the agent revise, re-scores on held-out, and
@@ -75,6 +95,7 @@ from proofreader_evolve.harness import (
     dataset as ds,
     candidate as cand,
     incremental_scoring as inc,
+    priors as priors_kb,
 )
 from proofreader_evolve.harness.ledger import Ledger, GenerationCost
 
@@ -92,6 +113,103 @@ DISCOVERY_PRIORS = PROJECT_ROOT / "autodiscovery" / "all-runs.combined.md"
 
 def log(msg: str) -> None:
     print(f"[{datetime.now():%H:%M:%S}] {msg}", file=sys.stderr, flush=True)
+
+
+class _Tee:
+    """A write-through stream that mirrors everything to the real console stream AND
+    an open log file, so the full run output is persisted without losing the live
+    terminal view. Wraps ONE console stream (stdout or stderr); both are wrapped so
+    ``log()``/heartbeat (stderr), the banners/summary and the reviser stream
+    (stdout), and any crashing traceback all land in the same file, in order.
+
+    Only the methods callers actually use are proxied; ``isatty`` reports the console
+    stream's value so downstream code that checks for a TTY still behaves correctly.
+    Failures writing to the file are swallowed — a logging problem must never take
+    down the run.
+    """
+
+    def __init__(self, console, fh) -> None:
+        self._console = console
+        self._fh = fh
+
+    def write(self, s):
+        n = self._console.write(s)
+        try:
+            self._fh.write(s)
+        except Exception:
+            pass
+        return n
+
+    def flush(self):
+        self._console.flush()
+        try:
+            self._fh.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        return getattr(self._console, "isatty", lambda: False)()
+
+    def __getattr__(self, name):
+        # Delegate anything not overridden (encoding, fileno, …) to the console.
+        return getattr(self._console, name)
+
+
+# The currently-installed run-log capture (single-shot CLI => at most one). main()'s
+# finally tears it down via detach_active_run_log() so the file is flushed/closed and
+# the streams restored on BOTH the normal and the crash path.
+_ACTIVE_LOG_CAP = None
+
+
+class run_log_capture:
+    """Tees stdout+stderr to ``run_dir/run.log`` for the run.
+
+    A header line records the wall-clock start and argv so a saved log is
+    self-describing. Append mode ('a') so a resumed/re-run into the same dir extends
+    rather than truncates the record. Register-on-enter so ``detach_active_run_log()``
+    (called from main()'s finally) restores the streams and closes the file even when
+    the run raises — the interpreter prints any traceback to ``sys.stderr`` (still the
+    tee) before that finally runs, so the crash is captured.
+    """
+
+    def __init__(self, run_dir: Path) -> None:
+        self._path = Path(run_dir) / "run.log"
+        self._fh = None
+        self._saved = None
+
+    def __enter__(self) -> Path:
+        global _ACTIVE_LOG_CAP
+        self._fh = open(self._path, "a", buffering=1)  # line-buffered
+        self._fh.write(
+            f"\n{'='*70}\n# run.log — started {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+            f"# argv: {' '.join(sys.argv)}\n{'='*70}\n")
+        self._saved = (sys.stdout, sys.stderr)
+        sys.stdout = _Tee(sys.stdout, self._fh)
+        sys.stderr = _Tee(sys.stderr, self._fh)
+        _ACTIVE_LOG_CAP = self
+        return self._path
+
+    def __exit__(self, *exc) -> None:
+        global _ACTIVE_LOG_CAP
+        if self._saved is not None:
+            sys.stdout, sys.stderr = self._saved
+            self._saved = None
+        if self._fh is not None:
+            try:
+                self._fh.flush(); self._fh.close()
+            except Exception:
+                pass
+            self._fh = None
+        if _ACTIVE_LOG_CAP is self:
+            _ACTIVE_LOG_CAP = None
+        return False  # never suppress exceptions
+
+
+def detach_active_run_log() -> None:
+    """Tear down the active run-log capture, if any (idempotent). Called by main()'s
+    finally so streams are restored and the log flushed on every exit path."""
+    if _ACTIVE_LOG_CAP is not None:
+        _ACTIVE_LOG_CAP.__exit__(None, None, None)
 
 
 class Heartbeat:
@@ -418,6 +536,39 @@ def revert(gen_dir: Path, heuristics: Path, rules: Path) -> None:
     shutil.copy2(gen_dir / "rules.md", rules)
 
 
+STRUCTURAL_LESSON_CAP = 12  # max over-merge taboos shown, to bound prompt tokens
+
+
+def _format_structural_lessons(lessons: list[dict]) -> str:
+    """Render the cross-parent 'over-merge taboo' list for the prompt.
+
+    Unlike ``_format_attempts`` (which is scoped to the CURRENT parent and cleared
+    on every accept), this list holds revisions that were REJECTED and had also
+    created a false merge on held-out. A false merge means the change fused two
+    DIFFERENT neurons — that is a property of the geometric condition the change
+    loosened, NOT of the parent it was competing against — so the lesson must PERSIST
+    across parents. Otherwise the reviser re-derives the same over-merge direction
+    against each new parent and the gate's fitness penalty has to catch it again.
+    Only scalar counts + the change summary are shown (no neuron identity), so this is
+    the same leak-safety level as the attempts list.
+    """
+    if not lessons:
+        return ""
+    lines = ["\nOVER-MERGE TABOO (persists across accepted generations). Each change "
+             "below CREATED >=1 false merge on held-out (fused two DIFFERENT neurons) "
+             "and was rejected. Under the smoothed gate a false merge is not an "
+             "automatic reject, but each costs a heavy fitness penalty (~merge_penalty "
+             "correct repairs), so these are high over-merge-RISK directions, NOT "
+             "parent-specific misses: only revisit one with MATERIALLY STRONGER "
+             "precision evidence (e.g. an image bridge_ratio confirmation) or a much "
+             "larger recall payoff, never by merely re-loosening the same geometric "
+             "threshold:"]
+    for L in lessons:
+        lines.append(f"  - gen{L['gen']}: {L['summary']} -> created {L['false']} "
+                     f"false merge(s)")
+    return "\n".join(lines) + "\n"
+
+
 def _format_attempts(attempts: list[dict]) -> str:
     """Render the prior-attempts archive (B: reviser memory) for the prompt.
 
@@ -430,28 +581,60 @@ def _format_attempts(attempts: list[dict]) -> str:
         return ""
     lines = ["\nAttempts already tried against the CURRENT policy "
              "(do NOT repeat these — they did not beat it). The number is the "
-             "held-out SPLIT-REPAIR score delta vs the parent (correct - false; the "
-             "gate's actual fitness, an integer count — NOT Edge Accuracy):"]
+             "held-out penalized FITNESS delta vs the parent (score - "
+             "merge_penalty*false, the gate's actual decision variable — NOT Edge "
+             "Accuracy):"]
     for a in attempts:
         lines.append(
-            f"  - gen{a['gen']}: {a['summary']} -> held-out split-repair "
-            f"{a['heldout']:+d} vs parent ({'kept' if a['accepted'] else 'rejected'})"
+            f"  - gen{a['gen']}: {a['summary']} -> held-out fitness "
+            f"{a['heldout']:+g} vs parent ({'kept' if a['accepted'] else 'rejected'})"
         )
     return "\n".join(lines) + "\n"
+
+
+def _grounded_vs_exploratory(gen_gap: list[dict]) -> str:
+    """Compare the generalization gap of GROUNDED vs EXPLORATORY accepted gens.
+
+    Layer 2 of the priors overhaul: each accepted gen carries ``grounded`` (did the
+    reviser cite a discovery finding?). If we have >=1 of EACH kind, report the mean
+    train→held-out gap for each group so the reviser learns EMPIRICALLY whether
+    grounding its changes in the validated priors is paying off on held-out — the
+    feedback loop that makes the priors a measured bias, not a blind mandate. Returns
+    "" when we lack both groups (nothing to compare) or ``grounded`` is unknown.
+    """
+    g = [r for r in gen_gap if r.get("grounded") is True]
+    e = [r for r in gen_gap if r.get("grounded") is False]
+    if not g or not e:
+        return ""
+    def _gap(rows):
+        return sum(r["train"] - r["heldout"] for r in rows) / len(rows)
+    gg, eg = _gap(g), _gap(e)
+    verdict = (
+        "GROUNDED changes are generalizing BETTER (smaller train→held-out gap) — keep "
+        "citing validated findings" if gg < eg else
+        "grounded and exploratory generalize about the same" if abs(gg - eg) < 1e-9 else
+        "EXPLORATORY changes generalized better here — the inlined priors may not fit "
+        "this brain; weigh them, don't follow blindly")
+    return (
+        f"\nGROUNDING PAYOFF (accepted gens, by whether they cited a discovery "
+        f"finding): grounded (n={len(g)}) mean train→held-out gap = {gg:+.1f}; "
+        f"exploratory (n={len(e)}) gap = {eg:+.1f}. {verdict}.\n"
+    )
 
 
 def _format_gen_gap(gen_gap: list[dict], window: int = 5) -> str:
     """Render the train→held-out generalization-gap meta-signal for the prompt.
 
-    ``gen_gap`` holds one ``{"gen", "train", "heldout"}`` per ACCEPTED generation —
-    the candidate's TRAIN and HELD-OUT split-repair scores. We show only the
-    AGGREGATE over the last ``window`` accepts (mean train score, mean held-out
-    score, and the gap), so the reviser can SEE whether its accepted changes
-    generalize — without ever revealing which neurons are held-out. A train score
-    persistently far above held-out = overfitting the train split; the reviser
-    should then favor changes grounded in generalizable geometry over ones that
-    only chase train-specific sites. Empty until there are >=2 accepted generations
-    (a gap needs history).
+    ``gen_gap`` holds one ``{"gen", "train", "heldout", "grounded"}`` per ACCEPTED
+    generation — the candidate's TRAIN and HELD-OUT split-repair scores (and whether
+    it cited a prior). We show only the AGGREGATE over the last ``window`` accepts
+    (mean train score, mean held-out score, and the gap), so the reviser can SEE
+    whether its accepted changes generalize — without ever revealing which neurons
+    are held-out. A train score persistently far above held-out = overfitting the
+    train split; the reviser should then favor changes grounded in generalizable
+    geometry over ones that only chase train-specific sites. Empty until there are
+    >=2 accepted generations (a gap needs history). A grounded-vs-exploratory
+    breakdown is appended once both kinds have been accepted.
     """
     if len(gen_gap) < 2:
         return ""
@@ -472,6 +655,7 @@ def _format_gen_gap(gen_gap: list[dict], window: int = 5) -> str:
         f"improvements grounded in GENERALIZABLE geometry/topology (tangent "
         f"continuity, caliber match, endpoint degree) over ones that chase "
         f"train-specific recall.\n"
+        + _grounded_vs_exploratory(gen_gap)
     )
 
 
@@ -495,18 +679,19 @@ def _format_priors(priors_path: str | None) -> str:
     if not priors_path:
         return ""
     return (
-        f"\n\nA validated, cross-run knowledge base of U-Net error regularities is "
-        f"available at {priors_path} (produced by the AutoDiscovery workflow: each "
-        f"finding carries Reproduction / Generalization / Verdict / Post-correction "
-        f"tokens). READ it and use it as a PRIOR to ground your improvement in "
-        f"already-verified geometry/topology — do not re-derive from scratch what it "
-        f"already establishes. DISCIPLINE on which findings to trust:\n"
-        f"  • Survey ALL the findings and USE only those whose Generalization is "
-        f"GENERALIZES AND whose post-correction Verdict is UPHELD or OK (robust "
-        f"across every brain AND after cluster-robust statistical correction). Do "
-        f"not privilege any particular finding — read the file, judge each by its "
-        f"verdict tokens, and pick the one(s) most relevant to THIS generation's "
-        f"failure report.\n"
+        f"\n\nThe failure report now INLINES (near its top, 'Grounding priors' "
+        f"section) the FEW validated findings matched to THIS generation's dominant "
+        f"failure mode — start there. They come from a validated, cross-run knowledge "
+        f"base of U-Net error regularities at {priors_path} (AutoDiscovery workflow: "
+        f"each finding carries Reproduction / Generalization / Verdict / "
+        f"Post-correction tokens). Use them as a PRIOR to ground your improvement in "
+        f"already-verified geometry/topology rather than re-deriving from scratch. "
+        f"DISCIPLINE on which findings to trust:\n"
+        f"  • The inlined findings are ALREADY pre-filtered to those whose "
+        f"Generalization is GENERALIZES and whose post-correction Verdict is UPHELD/OK "
+        f"(robust across every brain AND after cluster-robust correction). If none "
+        f"fits this failure, open {priors_path} and pick another QUALIFYING finding "
+        f"by the same rule — do not privilege any particular one.\n"
         f"  • DISTRUST and do NOT bake in any finding marked DOES-NOT-GENERALIZE, "
         f"PARTIAL, WEAKENED, or OVERTURNED (e.g. Z-axis anisotropy, centrifugal "
         f"branch-order, omit/split-near-merge co-location) — those held only on one "
@@ -519,7 +704,11 @@ def _format_priors(priors_path: str | None) -> str:
         f"NOT this run's labels — using their thresholds/discriminators is fair game "
         f"and does NOT violate the no-hardcoded-label rule; never copy a raw "
         f"segment-id literal.\n"
-        f"Cite the finding number(s) you relied on in your rules.md change log."
+        f"Cite the finding number(s) you relied on in your rules.md change log — "
+        f"e.g. 'Finding #8'. This is MEASURED: generations that cite a finding are "
+        f"tracked as 'grounded' and their held-out generalization is compared to "
+        f"un-cited ('exploratory') ones (see the GROUNDING PAYOFF line), so an honest "
+        f"citation feeds the loop that decides whether grounding is helping."
     )
 
 
@@ -531,6 +720,7 @@ async def ask_reviser(
     splits_only: bool = False,
     gen_gap: list[dict] | None = None,
     transcript_path: str | None = None,
+    structural_lessons: list[dict] | None = None,
 ):
     """Run the proofreader-reviser subagent on the failure report. Returns
     (text, input_tokens, output_tokens, cost_usd, read_priors). ``read_priors`` is
@@ -543,6 +733,12 @@ async def ask_reviser(
     into the prompt so the agent proposes something NEW. ``priors_path``, when
     given, points the agent at the validated discovery knowledge base (see
     ``_format_priors`` for the trust discipline applied to it).
+
+    ``structural_lessons`` (optional): the cross-parent 'over-merge taboo' list —
+    revisions that created a false merge on held-out. Unlike ``attempts`` it is NOT
+    cleared when the parent advances (a false merge is a geometric fact, not a
+    parent-relative miss), so the reviser stops re-deriving the same over-merge
+    direction against every new parent. See ``_format_structural_lessons``.
 
     ``transcript_path`` (optional): when given, the FULL per-generation reviser
     record — the prompt, every assistant THINKING block (the chain-of-thought, which
@@ -571,10 +767,12 @@ async def ask_reviser(
            if splits_only else "")
         + (
            "\n\nIMAGE CURRICULUM — couple reading image to PASSING THE GATE in ONE "
-           "revision. The gate keeps a candidate only if it makes MORE net correct "
-           "`merge_labels` repairs than the parent with ZERO false merges. A revision "
-           "that merely STARTS calling `gap_bridge_evidence` without changing which "
-           "labels you merge ties the parent's split-repair score and is REVERTED — "
+           "revision. The gate keeps a candidate only if it raises the penalized "
+           "FITNESS (net correct `merge_labels` repairs minus a heavy per-false-merge "
+           "penalty) above the parent — so a false merge is very costly but not an "
+           "automatic reject. A revision that merely STARTS calling "
+           "`gap_bridge_evidence` without changing which labels you merge ties the "
+           "parent's fitness and is REVERTED — "
            "so its reads (and any image signal) are thrown away and never reach a "
            "future report. Therefore, if you decide image is worth using, you MUST "
            "spend it to RAISE RECALL in the SAME revision: take SplitSites in the "
@@ -590,6 +788,7 @@ async def ask_reviser(
            "in image — improve the geometric `merge_labels` policy instead.")
         + _format_priors(priors_path)
         + _format_gen_gap(gen_gap or [])
+        + _format_structural_lessons(structural_lessons or [])
         + _format_attempts(attempts or [])
         + ("\nPropose a DIFFERENT improvement from any listed above."
            if attempts else "")
@@ -892,13 +1091,22 @@ def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
     image_reader = LazyImagePatchReader(img_path, fragments_graph)
     log(f"[{brain}] Image patch reader ENABLED (lazy): {img_path}")
 
-    # RUN ISOLATION: every run is fully self-contained — it never reads anything from
-    # a sibling run under runs/. The prepared-brain pickle is built fresh in THIS
-    # run's own directory (or reused only if THIS run already wrote it, e.g. a resume
-    # of the same run_dir). We deliberately do NOT copy a prior run's
-    # prepared_<brain>.pkl, so no cross-run state leaks in.
+    # RUN ISOLATION for EXPERIMENT state: every run's split/gate/feedback artifacts
+    # stay in THIS run's own directory — a run never reads a sibling run's results,
+    # so no experiment state leaks across runs. The prepared-brain pickle is the ONE
+    # exception, and safely so: it is a pure function of the (immutable) dataset and
+    # holds NO run-specific state (the train/held-out split, seed, gt maps, and edits
+    # are all computed AFTER loading, below). So instead of rebuilding it (~30 min)
+    # every run, get_or_build reuses a SHARED, validated cross-run cache under
+    # proofreader_evolve/prepared_cache/ — schema-version + brain-id + content-
+    # checksum are verified on load, and a stale/corrupt/mismatched artifact is
+    # rebuilt rather than trusted. This run's own prepared_<brain>.pkl is still
+    # written (for a fast resume of the same run_dir) and is preferred if present.
+    # NOTE the prepared state is built from the RAW (unfiltered) GCS graphs, so its
+    # content does NOT depend on mcl — the filename intentionally omits mcl.
     prepared_cache = str(run_dir / f"prepared_{brain}.pkl")
-    log(f"[{brain}] Preparing brain for incremental scoring (cache: {prepared_cache})")
+    log(f"[{brain}] Preparing brain for incremental scoring (per-run cache: "
+        f"{prepared_cache}; shared cache: {inc.shared_prepared_cache_path(brain)})")
     with Heartbeat(f"[{brain}] preparing brain (load/build — can be ~30 min cold)"):
         prepared = inc.get_or_build(paths, prepared_cache, verbose=verbose)
 
@@ -1021,13 +1229,181 @@ def _pooled_split_repair(brains: list, per_brain_runs: list,
         on the train map.
     """
     tot = {"correct": 0, "false": 0, "unscored": 0}
+    # Per-brain blind-spot detail, kept ALONGSIDE the pooled counts so a caller can
+    # corroborate the unscored edits with a GT-independent signal (see
+    # ``_image_confidence``). Each entry is (BrainContext, CandidateRun, unscored
+    # label-pairs) — the pair→node lookup needs that brain's own run + graph.
+    tot["_unscored_by_brain"] = []
     for bc, run in zip(brains, per_brain_runs):
         c = inc.classify_merge_edits(run.edits, getattr(bc, map_attr))
         tot["correct"] += c["correct"]
         tot["false"] += c["false"]
         tot["unscored"] += c["unscored"]
+        if c.get("unscored_pairs"):
+            tot["_unscored_by_brain"].append((bc, run, c["unscored_pairs"]))
     tot["score"] = tot["correct"] - tot["false"]
     return tot
+
+
+def _fitness(repair: dict, merge_penalty: float) -> float:
+    """The gate's decision variable: split-repair score MINUS a heavy per-false-merge
+    penalty. SMOOTH replacement for the old hard 'false == 0' gate.
+
+    ``fitness = repair["score"] - merge_penalty * repair["false"]``
+             ``= (correct - false) - merge_penalty * false``.
+
+    A false merge (fusing two DIFFERENT neurons) is still strongly discouraged — at
+    the default ``merge_penalty=100`` a single one costs ~100 correct repairs to
+    offset — but it no longer AUTOMATICALLY rejects the candidate. A change that
+    creates one false merge while repairing 120 real splits can now be kept, whereas
+    the old gate reverted it outright. This trades a small, controlled amount of
+    merge error for the split-recall it unlocks, and keeps the fitness landscape
+    continuous (a near-miss is scored just below a clean win, not slammed to reject),
+    which gives the search a usable gradient around the precision boundary.
+    """
+    return repair["score"] - merge_penalty * repair["false"]
+
+
+# --- Confidence layer (option ①): a GT-INDEPENDENT soft verdict on the blind spot -
+# The hard fitness above rests only on GT-covered edges; in a sparsely-traced brain
+# most edits are ``unscored`` (no GT at either endpoint) and carry NO verdict. We do
+# NOT fold them into the score (penalizing "no GT" would just teach the policy to
+# avoid untraced neurons — exactly the overfitting we want to avoid). Instead we
+# attach an independent, image-derived SOFT verdict and turn it into a CONFIDENCE
+# LEVEL for the accept/reject decision, so the reviewer can see how much of a
+# generation's fitness is GT-backed vs. resting on an unverified blind spot.
+#
+# Independence is the whole point: bridge_ratio is raw fluorescence continuity, NOT
+# derived from the geometry the policy decided with, so it is a genuine second
+# opinion (not circular). Leak-safe: bridge_ratio is not GT; the soft verdict stays
+# in the gate/ledger and is never shown to the reviser.
+#
+# ZERO extra cloud reads: we REPLAY the ``gap_bridge_evidence`` reads the policy
+# already made this generation (recorded in ``run.image_reads``). An unscored edit
+# whose SplitSite the policy imaged gets a soft verdict; one it never imaged stays
+# ``unknown`` (counted, never guessed).
+
+# bridge_ratio thresholds for the soft verdict. HIGH ⇒ continuous bright bridge ⇒
+# the merge is likely a REAL split repair; LOW ⇒ the gap goes dark ⇒ likely a FALSE
+# fusion of two structures. The mid band is left ``unknown`` (no confident call).
+_BRIDGE_LIKELY_CORRECT = 0.70   # bridge_ratio >= this ⇒ soft "likely correct"
+_BRIDGE_LIKELY_FALSE = 0.35     # bridge_ratio <= this ⇒ soft "likely false"
+
+
+def _image_confidence(repair: dict) -> dict:
+    """Soft, GT-independent verdict on the unscored (blind-spot) merges.
+
+    Replays the ``gap_bridge_evidence`` reads the policy already made and classifies
+    each unscored merge label-pair it imaged by ``bridge_ratio``:
+      * >= ``_BRIDGE_LIKELY_CORRECT`` -> ``soft_correct`` (bright bridge; likely one neuron)
+      * <= ``_BRIDGE_LIKELY_FALSE``   -> ``soft_false``   (dark gap; likely two neurons)
+      * in between                    -> ``soft_ambiguous``
+      * SplitSite never imaged        -> ``unknown``
+
+    Returns those counts plus:
+      * ``covered``   = unscored edits with ANY image verdict (soft_* ),
+      * ``coverage``  = covered / unscored (how much of the blind spot we can see),
+      * ``gt_fraction`` = GT-verified edits / total classified edits (correct+false).
+    No cloud reads; NaN-safe. ``soft_*`` counts are advisory — they never enter the
+    hard fitness; only ``--confidence-veto`` may act on ``soft_false`` (opt-in).
+    """
+    out = {"soft_correct": 0, "soft_false": 0, "soft_ambiguous": 0, "unknown": 0,
+           "covered": 0, "coverage": float("nan"), "gt_fraction": float("nan")}
+    total_unscored = 0
+    for bc, run, pairs in repair.get("_unscored_by_brain", []):
+        want = {tuple(sorted(p)) for p in pairs}
+        total_unscored += len(pairs)
+        # Map each imaged SplitSite's label-pair -> its best (max) bridge_ratio this
+        # gen. One pair can be imaged more than once; keep the brightest bridge (the
+        # policy's most favorable evidence for a merge).
+        pair_ratio: dict = {}
+        # node -> label so a recorded read (keyed by node) maps back to a label pair.
+        node_to_pair = {}
+        for s in (getattr(run, "split_sites", None) or []):
+            pr = tuple(sorted((str(getattr(s, "label_a", "")),
+                               str(getattr(s, "label_b", "")))))
+            for nd in (getattr(s, "node_a", None), getattr(s, "node_b", None)):
+                if nd is not None:
+                    node_to_pair[int(nd)] = pr
+        for r in (getattr(run, "image_reads", None) or []):
+            if r.get("method") != "gap_bridge_evidence":
+                continue
+            pr = node_to_pair.get(r.get("node_a")) or node_to_pair.get(r.get("node_b"))
+            if pr is None or pr not in want:
+                continue
+            br = (r.get("result") or {}).get("bridge_ratio")
+            try:
+                br = float(br)
+            except (TypeError, ValueError):
+                continue
+            if br != br:  # NaN
+                continue
+            if pr not in pair_ratio or br > pair_ratio[pr]:
+                pair_ratio[pr] = br
+        for pr in want:
+            br = pair_ratio.get(pr)
+            if br is None:
+                out["unknown"] += 1
+            elif br >= _BRIDGE_LIKELY_CORRECT:
+                out["soft_correct"] += 1
+            elif br <= _BRIDGE_LIKELY_FALSE:
+                out["soft_false"] += 1
+            else:
+                out["soft_ambiguous"] += 1
+    out["covered"] = out["soft_correct"] + out["soft_false"] + out["soft_ambiguous"]
+    if total_unscored:
+        out["coverage"] = out["covered"] / total_unscored
+    gt_verified = repair.get("correct", 0) + repair.get("false", 0)
+    denom = gt_verified + total_unscored
+    if denom:
+        out["gt_fraction"] = gt_verified / denom
+    return out
+
+
+def _confidence_level(repair: dict, conf: dict) -> str:
+    """A coarse CONFIDENCE LEVEL for this generation's accept/reject decision.
+
+    Combines how much of the decision is GT-backed with what the independent image
+    signal says about the blind spot:
+      * ``high``   — most edits GT-verified (``gt_fraction >= 0.5``): the hard
+        fitness rests on solid ground regardless of the blind spot.
+      * ``low``    — decision rests on a large blind spot AND the image signal flags
+        likely-false merges in it (``soft_false`` present with little GT backing).
+      * ``medium`` — everything else (blind spot large but image evidence is clean
+        or unknown; no positive reason to distrust the decision).
+    Purely a REPORTED label unless ``--confidence-veto`` is set (then a ``low`` with
+    image-flagged false merges can block an otherwise-accepted generation).
+    """
+    gtf = conf.get("gt_fraction")
+    if gtf == gtf and gtf is not None and gtf >= 0.5:
+        return "high"
+    if conf.get("soft_false", 0) > 0 and (gtf != gtf or gtf is None or gtf < 0.25):
+        return "low"
+    return "medium"
+
+
+def _dominant_failure_mode(train_repair: dict) -> str:
+    """Coarse label for THIS generation's dominant failure mode, from the TRAIN
+    split-repair counts, used to MATCH grounding priors to the report (Layer 1).
+
+    Leak-free: uses only the train-classified correct/false/unscored counts already
+    computed for the generalization-gap signal — no held-out, no neuron identity.
+      * no correct AND no false yet          -> "cold_start" (policy not merging)
+      * any false merges present             -> "precision" (over-merging dominates)
+      * correct merges, zero false           -> "recall"    (safe so far; push recall)
+      * otherwise                            -> "both"
+    Priors only BIAS the proposal, so a coarse mode is enough; the held-out gate,
+    not this label, still decides accept/reject.
+    """
+    correct = train_repair.get("correct", 0)
+    false = train_repair.get("false", 0)
+    if correct == 0 and false == 0:
+        return "cold_start"
+    if false > 0:
+        return "precision"
+    if correct > 0:
+        return "recall"
+    return "both"
 
 
 async def run_evolution(
@@ -1040,6 +1416,8 @@ async def run_evolution(
     use_priors: bool = True, mcl: int = 100,
     converge_patience: int = 0, converge_eps: int = 1,
     train_brains: list | None = None, test_brains: list | None = None,
+    merge_penalty: float = 100.0,
+    confidence_veto: bool = False,
 ) -> None:
     # CROSS-BRAIN mode: --train-brains + --test-brains assign WHOLE brains to roles —
     # every train brain's neurons feed the failure report, every test brain's neurons
@@ -1095,6 +1473,13 @@ async def run_evolution(
     run_id = f"{run_tag}_{datetime.now():%Y%m%d_%H%M%S}"
     run_dir = HERE / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
+    # Tee ALL console output (this function's log()/prints, the reviser stream, any
+    # traceback) to runs/<id>/run.log. Installed here — as soon as run_dir exists —
+    # and torn down by main()'s finally, so even a crash is captured. Streams are
+    # restored there too. (Setup log lines emitted BEFORE this point are the generic
+    # split/brain-assignment messages, not run-specific.)
+    run_log_capture(run_dir).__enter__()  # torn down in main()'s finally
+    log(f"  full console log -> {run_dir / 'run.log'}")
     ledger = Ledger(str(run_dir / "ledger.jsonl"))
 
     # Work on TIMESTAMPED COPIES of the artifacts, never the originals. The agent
@@ -1212,9 +1597,11 @@ async def run_evolution(
     parent_repair = _pooled_split_repair(heldout_ctxs, seed_runs)
     log(f"Seed split-repair: correct={parent_repair['correct']} "
         f"false={parent_repair['false']} score={parent_repair['score']} "
-        f"(unscored={parent_repair['unscored']}) — the bar gen 1 must beat by "
-        f"score_margin={score_margin} (keep iff gain >= {score_margin} and zero "
-        f"false merges)")
+        f"(unscored={parent_repair['unscored']}); penalized FITNESS = score - "
+        f"{merge_penalty:g}*false = {_fitness(parent_repair, merge_penalty):g} — the "
+        f"bar gen 1 must beat by score_margin={score_margin} (keep iff fitness gain "
+        f">= {score_margin}; a false merge costs {merge_penalty:g} each, so it is "
+        f"heavily discouraged but no longer an automatic reject)")
     # Full pooled held-out metric vector of the parent (run-length-weighted over the
     # pool). Advances on every accept.
     parent_metrics = {m: scoring._weighted_avg(seed_pooled, m)
@@ -1268,12 +1655,17 @@ async def run_evolution(
     # B: memory of revisions tried against the CURRENT parent; cleared when the
     # parent advances (an accept), since past rejections no longer apply.
     attempts_vs_parent: list[dict] = []
+    # Over-merge taboo: revisions that CREATED a false merge on held-out. A false
+    # merge is a geometric fact about the loosened condition, not a parent-relative
+    # miss, so this list PERSISTS across parents (never cleared on accept) — it stops
+    # the reviser re-deriving the same over-merge direction against each new parent.
+    structural_lessons: list[dict] = []
     # Convergence / early-stop (opt-in via --converge-patience > 0): record the
-    # ACCEPTED parent split-repair score at the END of each generation. We stop when
+    # ACCEPTED parent penalized FITNESS at the END of each generation. We stop when
     # the parent has gained < converge_eps over the last converge_patience gens — a
     # plateau where further reviser calls (one LLM + two scoring passes each) are
     # unlikely to pay off. Disabled (0) reproduces the run-all-generations behavior.
-    parent_score_history: list[int] = [parent_repair["score"]]  # score before gen 1
+    parent_score_history: list[float] = [_fitness(parent_repair, merge_penalty)]  # gen 0
     # Generalization-gap meta-signal (shown to the reviser): for each ACCEPTED
     # generation, the candidate's TRAIN split-repair score vs its HELD-OUT score.
     # A persistently larger train gain than held-out gain = overfitting the train
@@ -1300,6 +1692,20 @@ async def run_evolution(
                     train_ctxs, "train_names", str(work_heuristics), "train",
                     max_class_size, verbose, splits_only=splits_only,
                 )
+            # Train split-repair score of the CURRENT policy (this gen, on train).
+            # Computed HERE (before the report) so it can BOTH pick the grounding
+            # priors' failure mode below AND feed the generalization-gap signal later.
+            # Same metric as the gate, but on the TRAIN map (leak-free); cheap (reuses
+            # train_runs' edits).
+            train_repair = _pooled_split_repair(train_ctxs, train_runs,
+                                                map_attr="label_gt_map")
+            # Layer 1 — inline the FEW validated priors matched to this generation's
+            # dominant failure mode, so the reviser is grounded by DEFAULT (no reliance
+            # on it opening the knowledge-base file). Empty list when priors are
+            # unavailable/disabled, so the writers splice nothing.
+            failure_mode = _dominant_failure_mode(train_repair)
+            priors_section = (priors_kb.build_report_section(priors_path, failure_mode)
+                              if priors_path else [])
             report_path = str(gen_dir / "failure_report.md")
             # SPLIT-ERROR-ONLY: withhold merge_labels from the report so every
             # merge-diagnosis section (Baseline merge errors, MergeSite feature
@@ -1321,9 +1727,15 @@ async def run_evolution(
                 _, tr, base_sr, ml, lgm, fg, probe = per_brain_report[0]
                 cand.write_failure_report(tr, base_sr, report_path,
                                           merge_labels=ml, label_gt_map=lgm,
-                                          fragments_graph=fg, extra_sections=probe)
+                                          fragments_graph=fg, extra_sections=probe,
+                                          priors_section=priors_section,
+                                          merge_penalty=merge_penalty)
             else:
-                cand.write_multibrain_failure_report(per_brain_report, report_path)
+                cand.write_multibrain_failure_report(per_brain_report, report_path,
+                                                     priors_section=priors_section,
+                                                     merge_penalty=merge_penalty)
+            if priors_section:
+                log(f"   grounding priors inlined (failure mode: {failure_mode})")
             train_acc = scoring._weighted_avg(
                 _pd.concat([tr.score.per_swc for tr in train_runs]), "Edge Accuracy")
             n_edits_total = sum(tr.n_edits for tr in train_runs)
@@ -1346,12 +1758,8 @@ async def run_evolution(
             if train_false:
                 log(f"   [ALERT] {train_false} train-side false merge(s) — over-merges "
                     f"the held-out gate does NOT see (see failure report)")
-            # Train split-repair score of the CURRENT policy (this gen, on train),
-            # for the generalization-gap meta-signal. Same metric as the gate, but on
-            # the TRAIN map — so train_repair["score"] vs the held-out score below
-            # shows whether a change generalizes. Cheap (reuses train_runs' edits).
-            train_repair = _pooled_split_repair(train_ctxs, train_runs,
-                                                map_attr="label_gt_map")
+            # (train_repair for the generalization-gap signal was computed above,
+            # before the report, so it could also select the grounding priors.)
 
             # (4-5) Ask the agent to explain and revise the WORKING-COPY artifacts.
             log("Step 4-5: proofreader-reviser diagnoses and revises artifacts...")
@@ -1362,20 +1770,44 @@ async def run_evolution(
                     attempts=attempts_vs_parent, priors_path=priors_path,
                     splits_only=splits_only, gen_gap=gen_gap_history,
                     transcript_path=reviser_transcript,
+                    structural_lessons=structural_lessons,
                 )
             log(f"   reviser transcript (thinking + text + tools) -> {reviser_transcript}")
-            # Verify the prior was actually consulted (we grant the tool + allow the
-            # path, but only the tool stream proves it was used). Loud if not.
-            if read_priors is True:
-                log("   reviser READ the discovery priors this generation")
-            elif read_priors is False:
-                log("   [WARN] discovery priors were available but the reviser did "
-                    "NOT read them this generation — improvement is un-grounded")
 
             # (A) Persist what the reviser wrote THIS generation — before scoring or
             # any revert — so even rejected candidates are inspectable afterward.
             candidate_path, diffstat = save_candidate(gen_dir, work_heuristics, work_rules)
             log(f"   candidate saved -> {candidate_path} (diffstat vs parent: {diffstat})")
+
+            # Layer 2 — GROUNDED detection. The prompt asks the reviser to cite the
+            # finding number(s) it relied on in the rules.md change log; a citation in
+            # the lines it ADDED this generation means a prior actually SHAPED the edit
+            # (strictly stronger than read_priors, which only proves the file was
+            # opened). We diff the parent rules snapshot (gen_dir/rules.md, from
+            # snapshot()) against what the reviser wrote (work_rules) and scan only the
+            # added lines. grounded is None when no priors were configured.
+            grounded = None
+            cited = set()
+            if priors_path:
+                try:
+                    import difflib as _dl
+                    _parent_rules = (gen_dir / "rules.md").read_text().splitlines()
+                    _cand_rules = Path(work_rules).read_text().splitlines()
+                    _added = "\n".join(
+                        ln[1:] for ln in _dl.unified_diff(_parent_rules, _cand_rules,
+                                                          lineterm="")
+                        if ln.startswith("+") and not ln.startswith("+++"))
+                    cited = priors_kb.cited_findings(_added)
+                except Exception:
+                    cited = set()
+                grounded = bool(cited)
+            if grounded:
+                log(f"   grounded: reviser cited discovery finding(s) "
+                    f"{sorted(cited)} in the rules change log")
+            elif grounded is False:
+                log("   [WARN] priors were inlined but the reviser cited NO finding in "
+                    "its change log — this generation is EXPLORATORY (un-grounded); "
+                    "recorded so we can compare grounded vs exploratory generalization")
 
             # Harness-side import check (the reviser no longer has Bash to do it).
             # A revision that doesn't import is a dead candidate -> revert to parent.
@@ -1407,20 +1839,30 @@ async def run_evolution(
                         f"reverting this gen")
                     revert(gen_dir, work_heuristics, work_rules)
 
-            # The bar this gen tried to beat (pre-update): the split-repair score,
-            # which is now the gate's decision variable.
-            parent_bar = parent_repair["score"]
+            # The bar this gen tried to beat (pre-update): the parent's penalized
+            # FITNESS (split-repair score minus merge_penalty * false), which is the
+            # gate's decision variable. Capture the raw parent score too, BEFORE any
+            # accept advances parent_repair, so the ledger can record the true bar.
+            parent_bar = _fitness(parent_repair, merge_penalty)
+            parent_score_raw = parent_repair["score"]
             train_seconds = sum(tr.score.seconds for tr in train_runs)
             if not import_ok:
                 # Revision was already reverted to the parent above; don't waste a
                 # held-out scoring pass on it. Record as a non-improving gen.
                 heldout_acc = parent_mean_acc
                 cand_repair = dict(parent_repair)  # no change: candidate == parent
+                cand_fitness = parent_bar          # == parent fitness (no change)
                 heldout_n_edits = 0                # nothing scored on held-out
                 heldout_dropped = 0                # nothing scored -> nothing dropped
                 eval_seconds = train_seconds
                 keep = False
                 human_touches = 0
+                # No held-out scoring ran, so there is no decision to gauge confidence
+                # for; record neutral placeholders (the ledger call below is shared).
+                cand_conf = {"soft_correct": 0, "soft_false": 0, "soft_ambiguous": 0,
+                             "unknown": 0, "covered": 0, "coverage": float("nan"),
+                             "gt_fraction": float("nan")}
+                confidence = "n/a"
             else:
                 # (6) Re-run the REVISED policy on each brain's HELD-OUT, pool results.
                 log("Step 6: score revised policy on pooled held-out...")
@@ -1443,24 +1885,27 @@ async def run_evolution(
                 cand_pooled_metrics = {m: scoring._weighted_avg(heldout_pooled, m)
                                        for m in _FOLD_METRIC_COLS}
 
-                # (7) PRIMARY GATE = dense split-repair score on pooled held-out.
+                # (7) PRIMARY GATE = penalized split-repair FITNESS on pooled held-out.
                 # Edge Accuracy only moves when a merge bridges a true split EDGE, so
                 # most correct repairs read +0.000 and evolution flat-lined. The
                 # split-repair score counts EVERY correctly-repaired held-out split
-                # (correct) and penalizes every wrong fusion (false), giving a
-                # gradient that responds to each policy change. A candidate is kept
-                # iff it beats the parent's net repairs by at least ``score_margin``
-                # AND creates ZERO false merges on held-out (the no-new-merge guard,
-                # now exact: a false merge is a fusion of two different held-out
-                # neurons).
+                # (correct) and penalizes every wrong fusion (false); the gate then
+                # subtracts a HEAVY per-false-merge penalty to get the fitness:
+                #   fitness = (correct - false) - merge_penalty * false.
+                # A candidate is kept iff its fitness beats the parent's by at least
+                # ``score_margin``. This REPLACES the old hard 'false == 0' reject: a
+                # false merge is still heavily discouraged (at merge_penalty=100 it
+                # costs ~100 correct repairs to offset), but a change that trades a
+                # single false merge for a large recall gain is no longer rejected
+                # outright — the landscape stays smooth around the precision boundary.
                 #
                 # MARGIN (score_margin, integer >= 1). The bar is
-                # ``score >= parent + score_margin``, NOT a strict ``>`` — a strict
+                # ``fitness >= parent + score_margin``, NOT a strict ``>`` — a strict
                 # ``>`` accepts a +1 win, which on a small held-out set is within
                 # the noise of a single repaired split flipping correct<->unscored
-                # from one revision to the next. score_margin=1 reproduces the old
-                # accept-any-improvement behavior; 2-3 requires the gain to clear
-                # that single-repair noise floor before it is locked in as the parent.
+                # from one revision to the next. score_margin=1 accepts any net
+                # improvement; 2-3 requires the gain to clear that single-repair noise
+                # floor before it is locked in as the parent.
                 cand_repair = _pooled_split_repair(heldout_ctxs, heldout_runs)
                 heldout_n_edits = sum(hr.n_edits for hr in heldout_runs)
                 heldout_dropped = sum(
@@ -1469,26 +1914,24 @@ async def run_evolution(
                     isinstance(e, dict) and e.get("kind") == "split_label"
                     for hr in heldout_runs for e in (hr.edits or [])
                 )
-                _gain = cand_repair["score"] - parent_repair["score"]
-                if cand_repair["false"] > 0:
-                    improved = False
-                    gate_reason = (
-                        f"created {cand_repair['false']} false merge(s) on held-out "
-                        f"(fused different neurons) — rejected regardless of repairs "
-                        f"(correct={cand_repair['correct']})")
-                elif _gain >= score_margin:
+                cand_fitness = _fitness(cand_repair, merge_penalty)
+                _gain = cand_fitness - parent_bar
+                _fmerges = cand_repair["false"]
+                _fnote = ("false 0" if _fmerges == 0 else
+                          f"false {_fmerges} (penalty -{merge_penalty:g}*{_fmerges}="
+                          f"{-merge_penalty * _fmerges:g})")
+                if _gain >= score_margin:
                     improved = True
                     gate_reason = (
-                        f"split-repair score {parent_repair['score']} -> "
-                        f"{cand_repair['score']} ({_gain:+d} >= margin "
-                        f"{score_margin}; correct {parent_repair['correct']}"
-                        f"->{cand_repair['correct']}, false 0); no false merges")
+                        f"fitness {parent_bar:g} -> {cand_fitness:g} ({_gain:+g} >= "
+                        f"margin {score_margin}; correct {parent_repair['correct']}"
+                        f"->{cand_repair['correct']}, {_fnote})")
                 else:
                     improved = False
                     gate_reason = (
-                        f"split-repair score {cand_repair['score']} did not beat "
-                        f"parent {parent_repair['score']} by margin {score_margin} "
-                        f"({_gain:+d}; correct={cand_repair['correct']}, false=0)")
+                        f"fitness {cand_fitness:g} did not beat parent {parent_bar:g} "
+                        f"by margin {score_margin} ({_gain:+g}; "
+                        f"correct={cand_repair['correct']}, {_fnote})")
                 heldout_acc = fold_summary_mean = cand_pooled_metrics["Edge Accuracy"]
                 fold_summary = {"cand_mean": heldout_acc,
                                 "cand_fold_acc": [m["Edge Accuracy"] for m in cand_fold_metrics],
@@ -1504,12 +1947,38 @@ async def run_evolution(
                 log(f"   blind spot: {_unsc}/{heldout_n_edits} held-out merges "
                     f"UNSCORED ({_frac:.0%}) — outside held-out GT coverage, neither "
                     f"rewarded nor penalized by the gate")
+                # ① CONFIDENCE: independent image (bridge_ratio) verdict on that blind
+                # spot, replayed from reads the policy already made (zero extra reads),
+                # folded into a coarse decision-confidence level. Advisory by default;
+                # only --confidence-veto lets an image-flagged false merge block accept.
+                cand_conf = _image_confidence(cand_repair)
+                confidence = _confidence_level(cand_repair, cand_conf)
+                log(f"   confidence: {confidence.upper()} "
+                    f"(gt_fraction={cand_conf['gt_fraction']:.0%}; blind-spot image "
+                    f"verdict: {cand_conf['soft_correct']} likely-correct / "
+                    f"{cand_conf['soft_false']} likely-FALSE / "
+                    f"{cand_conf['soft_ambiguous']} ambiguous / {cand_conf['unknown']} "
+                    f"unimaged; coverage={cand_conf['coverage']:.0%})")
                 human_touches = 0
                 if human:
                     human_touches = 1
                     keep = human_gate(gen, train_acc, heldout_acc, parent_edge_accuracy)
                 else:
                     keep = improved
+                    # OPT-IN veto (--confidence-veto): if the hard gate would ACCEPT
+                    # but the decision is LOW confidence — a large unverified blind spot
+                    # AND the independent image signal flags likely-false merges in it —
+                    # block it. This acts ONLY on POSITIVE evidence of a bad merge
+                    # (soft_false), never on mere absence of GT, so it does not push the
+                    # policy away from untraced neurons.
+                    if confidence_veto and improved and confidence == "low":
+                        keep = False
+                        log(f"   [VETO] hard gate accepted but confidence is LOW "
+                            f"({cand_conf['soft_false']} image-flagged likely-false "
+                            f"merge(s) in a blind spot with gt_fraction="
+                            f"{cand_conf['gt_fraction']:.0%}); reverting. Disable with "
+                            f"no --confidence-veto to keep it as an advisory label only.")
+                        revert(gen_dir, work_heuristics, work_rules)
 
             # B: one-line summary of what this generation tried, for the memory.
             attempt_summary = (
@@ -1529,10 +1998,13 @@ async def run_evolution(
                     parent_repair = cand_repair       # advance the primary gate bar
                     # Record this accepted policy's train vs held-out split-repair
                     # scores for the generalization-gap meta-signal (next gen's prompt).
+                    # ``grounded`` lets the next gen compare grounded vs exploratory
+                    # generalization (Layer 2).
                     gen_gap_history.append({
                         "gen": gen,
                         "train": train_repair["score"],
                         "heldout": cand_repair["score"],
+                        "grounded": grounded,
                     })
                 shutil.copy2(work_heuristics, gen_dir / "heuristics.accepted.py")
                 shutil.copy2(work_rules, gen_dir / "rules.accepted.md")
@@ -1547,24 +2019,46 @@ async def run_evolution(
                 revert(gen_dir, work_heuristics, work_rules)  # restore the parent
                 note = "reverted (did not beat parent)"
                 # Remember this rejected attempt so the next gen proposes something new.
+                # Delta is in FITNESS units (penalized), matching the gate.
                 attempts_vs_parent.append({
                     "gen": gen,
                     "summary": attempt_summary,
-                    "heldout": cand_repair["score"] - parent_bar,
+                    "heldout": cand_fitness - parent_bar,
                     "accepted": False,
                 })
+                # Structural lesson: a rejection whose candidate ALSO created a false
+                # merge is a fact about geometry, not about this parent, so it must
+                # outlive the parent. (With the smoothed gate a false merge no longer
+                # forces the reject — but if the candidate was rejected AND carried a
+                # false merge, the over-merge direction is still worth remembering.)
+                # Guard on import_ok: an import/lint failure copies parent_repair into
+                # cand_repair (false==0), so it can never be mis-logged as an over-merge.
+                if import_ok and cand_repair["false"] > 0:
+                    structural_lessons.append({
+                        "gen": gen,
+                        "false": cand_repair["false"],
+                        "summary": attempt_summary,
+                    })
+                    # Dedup by summary (keep most recent) and cap, to bound prompt size.
+                    seen, dedup = set(), []
+                    for L in reversed(structural_lessons):
+                        if L["summary"] in seen:
+                            continue
+                        seen.add(L["summary"]); dedup.append(L)
+                    structural_lessons = list(reversed(dedup))[-STRUCTURAL_LESSON_CAP:]
             # B (durable): append every generation to a file that survives crashes
-            # and restarts. Tagged with the split-repair bar it was tried against, so
-            # a later reader can tell which attempts are still relevant (same parent).
+            # and restarts. Tagged with the penalized-fitness bar it was tried against,
+            # so a later reader can tell which attempts are still relevant (same parent).
             with open(attempts_log, "a") as f:
-                f.write(f"- gen{gen:02d} [vs parent split-repair {parent_bar}]: "
-                        f"score {cand_repair['score']} "
-                        f"({cand_repair['score'] - parent_bar:+d}; "
-                        f"correct={cand_repair['correct']}, false={cand_repair['false']}) "
-                        f"-> {note}; {attempt_summary}\n")
-            log(f"Step 7: split-repair score={cand_repair['score']} "
-                f"(correct={cand_repair['correct']}, false={cand_repair['false']}; "
-                f"parent={parent_bar}); Edge Accuracy={heldout_acc:.4f} -> {note}")
+                f.write(f"- gen{gen:02d} [vs parent fitness {parent_bar:g}]: "
+                        f"fitness {cand_fitness:g} "
+                        f"({cand_fitness - parent_bar:+g}; "
+                        f"score={cand_repair['score']}, correct={cand_repair['correct']}, "
+                        f"false={cand_repair['false']}) -> {note}; {attempt_summary}\n")
+            log(f"Step 7: fitness={cand_fitness:g} (split-repair "
+                f"score={cand_repair['score']}, correct={cand_repair['correct']}, "
+                f"false={cand_repair['false']}; parent fitness={parent_bar:g}); "
+                f"Edge Accuracy={heldout_acc:.4f} -> {note}")
 
             ledger.record(GenerationCost(
                 generation=gen,
@@ -1577,35 +2071,46 @@ async def run_evolution(
                 human_interventions=human_touches,
                 train_edge_accuracy=train_acc,
                 heldout_edge_accuracy=heldout_acc,
-                parent_split_repair_score=parent_bar,
+                parent_split_repair_score=parent_score_raw,  # raw parent score, for plots
                 accepted=keep,
                 note=note,
                 heldout_n_edits=heldout_n_edits,
                 heldout_correct_merges=cand_repair["correct"],
                 heldout_false_merges=cand_repair["false"],
                 heldout_split_repair_score=cand_repair["score"],
+                merge_penalty=merge_penalty,
+                heldout_fitness=cand_fitness,
+                parent_fitness=parent_bar,
                 heldout_unscored_merges=cand_repair["unscored"],
                 heldout_unscored_fraction=(
                     cand_repair["unscored"] / heldout_n_edits
                     if heldout_n_edits else float("nan")),
+                decision_confidence=confidence,
+                heldout_gt_fraction=cand_conf["gt_fraction"],
+                heldout_soft_correct=cand_conf["soft_correct"],
+                heldout_soft_false=cand_conf["soft_false"],
+                heldout_soft_ambiguous=cand_conf["soft_ambiguous"],
+                confidence_veto=confidence_veto,
                 splits_only=splits_only,
                 heldout_split_label_dropped=heldout_dropped,
                 read_priors=read_priors,
+                grounded=grounded,
+                cited_findings=",".join(str(n) for n in sorted(cited)),
                 train_false_merges=train_false,
                 candidate_path=candidate_path,
                 heuristics_diffstat=diffstat,
                 diagnosis=(diagnosis or "")[:2000],  # truncate; full text is in stdout
             ))
 
-            # Convergence / early-stop (opt-in). parent_repair["score"] is the bar
-            # AFTER this gen's accept/revert, so the history tracks the accepted
+            # Convergence / early-stop (opt-in). The parent's penalized FITNESS AFTER
+            # this gen's accept/revert is the bar, so the history tracks the accepted
             # frontier. Stop once it has gained < converge_eps over the last
             # converge_patience generations (a plateau).
-            parent_score_history.append(parent_repair["score"])
+            parent_score_history.append(_fitness(parent_repair, merge_penalty))
             if converge_patience > 0 and len(parent_score_history) > converge_patience:
                 window_gain = parent_score_history[-1] - parent_score_history[-1 - converge_patience]
                 if window_gain < converge_eps:
-                    log(f"[converged] parent split-repair score gained {window_gain} "
+                    log(f"[converged] parent fitness gained {window_gain:g} "
                         f"(< eps {converge_eps}) over the last {converge_patience} "
                         f"generation(s) — stopping early at gen {gen}/{generations}.")
                     break
@@ -1711,13 +2216,34 @@ def main() -> int:
     p.add_argument("--model", default=DEFAULT_MODEL,
                    help=f"reviser model id (default: {DEFAULT_MODEL}, Anthropic API)")
     p.add_argument("--score-margin", type=int, default=1,
-                   help="minimum amount a generation's pooled held-out split-repair "
-                        "score (correct - false) must EXCEED the parent's by to be "
-                        "accepted: keep iff gain >= score-margin AND zero false "
-                        "merges. Default 1 (accept any net improvement, legacy "
-                        "behavior). Raise to 2-3 so a single-repair swing (within "
-                        "noise on a small held-out set) is not locked in as the new "
-                        "parent. Integer (the score is an integer count).")
+                   help="minimum amount a generation's pooled held-out penalized "
+                        "FITNESS (split-repair score minus --merge-penalty*false) must "
+                        "EXCEED the parent's by to be accepted: keep iff fitness gain "
+                        ">= score-margin. Default 1 (accept any net improvement). "
+                        "Raise to 2-3 so a single-repair swing (within noise on a "
+                        "small held-out set) is not locked in as the new parent. "
+                        "Integer.")
+    p.add_argument("--merge-penalty", type=float, default=100.0,
+                   help="per-false-merge penalty in the held-out FITNESS "
+                        "(fitness = (correct - false) - merge_penalty*false). REPLACES "
+                        "the old hard 'zero false merges' gate with a smooth one: at "
+                        "the default 100, one false merge (fusing two different "
+                        "neurons) costs ~100 correct repairs to offset — heavily "
+                        "discouraged but no longer an automatic reject, so a change "
+                        "that trades one false merge for a large recall gain can be "
+                        "kept. Raise for stricter precision, lower to tolerate more "
+                        "merge error. Set very high (e.g. 1e9) to recover the old "
+                        "hard gate.")
+    p.add_argument("--confidence-veto", action="store_true",
+                   help="OPT-IN: let the ① confidence layer BLOCK an otherwise-accepted "
+                        "generation when the decision is LOW confidence — i.e. it rests "
+                        "on a large unverified blind spot AND the independent image "
+                        "signal (bridge_ratio, replayed from reads the policy already "
+                        "made — no extra cloud reads) flags likely-FALSE merges in it. "
+                        "Acts ONLY on positive image evidence of a bad merge, never on "
+                        "mere absence of GT, so it does not push the policy away from "
+                        "untraced neurons. Default OFF: the confidence level is computed "
+                        "and logged/recorded as an advisory label only.")
     p.add_argument("--max-class-size", type=int, default=None,
                    help="hard cap on labels fused into one merge class (guardrail "
                         "against brain-spanning mega-merges); default: no cap")
@@ -1762,17 +2288,38 @@ def main() -> int:
         train_brains = [b.strip() for b in args.train_brains.split(",") if b.strip()]
     if args.test_brains:
         test_brains = [b.strip() for b in args.test_brains.split(",") if b.strip()]
-    asyncio.run(run_evolution(
-        args.brain, args.generations, args.heldout_fraction,
-        args.human_gate, args.verbose, args.model,
-        score_margin=args.score_margin, max_class_size=args.max_class_size,
-        seed_from=args.seed_from, split_seed=args.split_seed,
-        k_folds=args.k_folds, brains=brains,
-        splits_only=args.splits_only, use_priors=args.use_priors,
-        mcl=args.mcl,
-        converge_patience=args.converge_patience, converge_eps=args.converge_eps,
-        train_brains=train_brains, test_brains=test_brains,
-    ))
+    try:
+        asyncio.run(run_evolution(
+            args.brain, args.generations, args.heldout_fraction,
+            args.human_gate, args.verbose, args.model,
+            score_margin=args.score_margin, max_class_size=args.max_class_size,
+            seed_from=args.seed_from, split_seed=args.split_seed,
+            k_folds=args.k_folds, brains=brains,
+            splits_only=args.splits_only, use_priors=args.use_priors,
+            mcl=args.mcl,
+            converge_patience=args.converge_patience, converge_eps=args.converge_eps,
+            train_brains=train_brains, test_brains=test_brains,
+            merge_penalty=args.merge_penalty,
+            confidence_veto=args.confidence_veto,
+        ))
+    except KeyboardInterrupt:
+        # Ctrl-C: note it in the (still-teed) log, then exit non-zero quietly.
+        log("[interrupted] KeyboardInterrupt — run stopped by user")
+        raise SystemExit(130)
+    except BaseException:
+        # Print the traceback HERE, while stdout/stderr are still teed, so the crash
+        # is captured in run.log. (The interpreter's default hook would otherwise fire
+        # only AFTER the finally below restored the streams, missing the log.) Exit
+        # non-zero via SystemExit(1) so the traceback shows exactly ONCE (SystemExit
+        # with an int prints no second traceback), not duplicated by re-raising.
+        import traceback as _tb
+        _tb.print_exc()
+        raise SystemExit(1)
+    finally:
+        # Restore stdout/stderr and flush+close runs/<id>/run.log on EVERY exit path
+        # (normal return, KeyboardInterrupt, or the crash handled just above). No-op
+        # if no run log was installed.
+        detach_active_run_log()
     return 0
 
 

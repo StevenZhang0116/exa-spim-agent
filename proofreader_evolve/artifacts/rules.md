@@ -8,9 +8,8 @@
 
 ## Objective
 
-Maximize run-length-weighted **Edge Accuracy** on held-out ground-truth
-skeletons (ERL is the tie-breaker), by repairing BOTH error classes the
-segmentation makes:
+Maximize the run-length-weighted **held-out split-repair fitness** by repairing
+BOTH error classes the segmentation makes:
 
 - **Split errors** — one true neuron broken into several fragments. Repair by
   **unifying** fragment label pairs (`merge_labels`), without joining fragments
@@ -19,20 +18,35 @@ segmentation makes:
   Repair by **splitting** that label by location (`split_label`), without
   over-splitting a single real neuron (which would raise % Split Edges).
 
-Edge Accuracy = 100 − (% Split Edges + % Omit Edges + % Merged Edges), so a good
-policy must lower split AND merge errors together while not trading one for the
-other. The failure report shows both components plus an over-split watchdog.
+The gate scores each candidate on held-out neurons with a DENSE split-repair
+signal: classify every `merge_labels` edit against the held-out label→neuron map
+into `correct` (both fragments are the same GT neuron) vs `false` (a wrong fusion
+of two different neurons), and take `score = correct − false`. This is dense —
+every correctly-repaired split counts — whereas Edge Accuracy reads +0.000 for
+most real repairs (only a bridged split EDGE moves it), which is why an
+Edge-Accuracy gate flat-lined. Edge Accuracy (= 100 − (% Split Edges + % Omit
+Edges + % Merged Edges)) and the other metrics are still computed and recorded
+per generation for DIAGNOSIS; they are not the accept/reject bar.
 
-**Acceptance gate (HARD — a generation is reverted if it fails any):**
-- Edge Accuracy must beat the parent by `gate_eps`.
-- **No new merge error (EVERY generation):** neither `# Merges` nor
-  `% Merged Edges` may rise above the parent (beyond `merge_tol`, default 0). This
-  enforces the "without creating merge errors" clause directly — raising net Edge
-  Accuracy by repairing splits while introducing a few merges is NOT accepted. A
-  correct `merge_labels` (fusing fragments of the SAME neuron) never trips this;
-  only a wrong fusion does.
-- **Over-split watchdog (only when the policy emits `split_label`):** `% Split
-  Edges` may not rise more than `split_tol` above the parent.
+**Acceptance gate (a generation is reverted if it fails):**
+- The candidate's **penalized fitness** must beat the parent's by at least
+  `score_margin` (integer, default 1 — raise to 2–3 so a single-repair swing
+  within held-out noise is not locked in):
+
+      fitness = (correct − false) − merge_penalty · false
+      keep  iff  cand_fitness ≥ parent_fitness + score_margin
+
+- **False merges are penalized, not hard-rejected.** A `false` merge (fusing two
+  DIFFERENT neurons) costs `merge_penalty` each (default 100), so a single one
+  needs ~100 correct repairs to offset — heavily discouraged, but no longer an
+  automatic revert (that hard "zero false merges" gate was replaced by this smooth
+  one so the search keeps a usable gradient around the precision boundary). Set
+  `--merge-penalty` very high (e.g. 1e9) to recover the old hard gate. A correct
+  `merge_labels` (fusing fragments of the SAME neuron) never incurs the penalty.
+- **Over-split watchdog (diagnostic).** When the policy emits `split_label`, a
+  rise in `% Split Edges` is surfaced in the failure report so over-splitting a
+  single real neuron is visible; the accept/reject decision remains the penalized
+  fitness above.
 
 ## Current criteria (Generation 0 — seed)
 
@@ -132,5 +146,11 @@ set is noisy and precision is the bottleneck.
   `node_a` (always a tip) and `node_b` (the partner, any degree).
 - **Harness (merge repair):** added `MergeSite` + `candidate_merge_sites`
   (GT-free branch-based merge detection) and a unified split+merge candidate
-  stream; fitness is Edge Accuracy (charges merge errors); the failure report now
-  lists baseline merge targets and an over-split watchdog.
+  stream; the failure report now lists baseline merge targets and an over-split
+  watchdog.
+- **Harness (gate):** replaced the Edge-Accuracy accept bar with the dense
+  held-out split-repair fitness `(correct − false) − merge_penalty · false`, kept
+  iff it beats the parent by `score_margin`. Edge Accuracy read +0.000 for most
+  real repairs (only a bridged split edge moves it), so it flat-lined; the dense
+  signal counts every repaired split. The old hard "zero false merges" revert
+  became a smooth per-false-merge penalty (default 100).

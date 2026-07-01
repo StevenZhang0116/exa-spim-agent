@@ -14,6 +14,7 @@ agent rewrites it the next evaluation picks up the new policy with no restart.
 
 from __future__ import annotations
 
+import heapq
 import importlib.util
 import json
 import os
@@ -61,6 +62,116 @@ def _arm_inner_node(g, start, prefer_dir=None, walk_um: float = 4.0):
     return cur
 
 
+def _on_graph_path_um(g, src, dst, max_steps=400, max_um=None):
+    """Shortest CABLE distance from ``src`` to ``dst`` along existing edges, or None.
+
+    Bounded Dijkstra over the fragment graph — None if ``dst`` is not reached within
+    ``max_steps`` node-visits (and ``max_um`` cable, if given). The bound is a
+    PERFORMANCE rail, not a decision threshold: the dominant case (two endpoints in
+    different components) fails fast, and a real reconnection is almost always LOCAL,
+    mirroring ``dataset._arms_reconverge``. A path longer than the bound reports None
+    (conservative miss) — the policy then sees "no short on-graph path", never a wrong
+    distance. Parameter-free as a SIGNAL: it returns the measured micron distance and
+    lets the evolved policy decide what (if any) threshold is meaningful.
+    """
+    if src is None or dst is None or src == dst:
+        return 0.0 if src == dst else None
+    best = {src: 0.0}
+    pq = [(0.0, src)]
+    steps = 0
+    while pq and steps < max_steps:
+        d, cur = heapq.heappop(pq)
+        steps += 1
+        if cur == dst:
+            return float(d)
+        if d > best.get(cur, float("inf")):
+            continue
+        if max_um is not None and d > max_um:
+            continue
+        for nbr in g.neighbors(cur):
+            nd = d + g.dist(cur, nbr)
+            if nd < best.get(nbr, float("inf")):
+                best[nbr] = nd
+                heapq.heappush(pq, (nd, nbr))
+    return None
+
+
+def _arm_cable_um(g, endpoint, max_steps=400, max_um=200.0):
+    """Total cable length of the fragment reachable from ``endpoint`` along its label.
+
+    Bounded BFS that sums edge lengths over the same-segment component containing
+    ``endpoint`` (a measure of fragment MATURITY: a long mature cable ending in a tip
+    is a more credible broken-neuron than a short stub). Bounds are performance rails;
+    a fragment larger than the bound reports the (capped) cable seen so far. Returns
+    None if the endpoint is isolated. Parameter-free as a signal — no threshold baked
+    in; the policy decides what counts as "mature".
+    """
+    if endpoint is None:
+        return None
+    try:
+        label = g.node_segment_id(endpoint)
+    except Exception:
+        return None
+    seen = {endpoint}
+    frontier = [endpoint]
+    cable = 0.0
+    steps = 0
+    while frontier and steps < max_steps:
+        cur = frontier.pop()
+        steps += 1
+        for nbr in g.neighbors(cur):
+            if nbr in seen:
+                continue
+            if g.node_segment_id(nbr) != label:
+                continue
+            seen.add(nbr)
+            cable += g.dist(cur, nbr)
+            if cable >= max_um:
+                return float(max_um)
+            frontier.append(nbr)
+    return float(cable) if seen != {endpoint} else 0.0
+
+
+def _dist_to_branch_um(g, endpoint, max_steps=400, max_um=50.0):
+    """Cable distance from ``endpoint`` to the nearest branch node (degree>=3), or None.
+
+    Walks outward within the same label until it hits a degree>=3 node, returning the
+    cable traversed. None = no branch within the bound (an effectively branch-free
+    local neighbourhood). This is the RAW geometry of where on a shaft a tip attaches
+    — a tip joining mid-span of a long branchless shaft vs. right at a junction — left
+    un-thresholded so the policy keys on the distance itself.
+    """
+    if endpoint is None:
+        return None
+    try:
+        label = g.node_segment_id(endpoint)
+    except Exception:
+        return None
+    # Dijkstra outward; stop at first degree>=3 node encountered (excluding start).
+    best = {endpoint: 0.0}
+    pq = [(0.0, endpoint)]
+    steps = 0
+    while pq and steps < max_steps:
+        d, cur = heapq.heappop(pq)
+        steps += 1
+        if cur != endpoint:
+            try:
+                if int(g.degree[cur]) >= 3:
+                    return float(d)
+            except Exception:
+                pass
+        if d > max_um:
+            continue
+        for nbr in g.neighbors(cur):
+            if g.node_segment_id(nbr) != label:
+                continue
+            nd = d + g.dist(cur, nbr)
+            if nd < best.get(nbr, float("inf")):
+                best[nbr] = nd
+                heapq.heappush(pq, (nd, nbr))
+    return None
+
+
 def _split_site_geom(g, s):
     """Cheap, GT-free geometry for one SplitSite, from the fragment graph.
 
@@ -82,12 +193,33 @@ def _split_site_geom(g, s):
       tip_tangent_cos — cosine between the two arms' own tangents directly (not via
                      the gap direction). +1 = the two cables run parallel/continuous;
                      a different view of continuity than colinear_cos.
-    Every value is a function of fragment geometry only, so it is leak-free and the
-    same on train and held-out — the policy may key on these directly.
+
+      --- TOPOLOGY (pure graph structure, brain-INDEPENDENT — no thresholds baked in;
+          the policy / report decide what value is meaningful) ---
+      same_component  — True if A and B are ALREADY connected on the graph (so merging
+                     them would CLOSE A LOOP). Real neurons are ~tree-like, so a small
+                     gap whose two ends already connect is usually a redundant
+                     reconnection — a strong NON-merge prior. None if undetermined.
+      graph_path_um   — shortest on-graph CABLE distance A->B (None if disconnected or
+                     beyond the bounded search). With a small euclidean gap, a SHORT
+                     graph path = the two tips are nearly adjacent on one strand
+                     already (loop); a long/absent path = genuinely separate strands.
+      cable_a, cable_b — total cable of each endpoint's fragment (maturity): a long
+                     mature cable ending in a tip is a more credible broken neuron than
+                     a tiny stub. Capped by a performance rail.
+      cable_min       — min(cable_a, cable_b): the SMALLER (more fragile) fragment.
+      dist_to_branch_b — for a shaft/branch endpoint B, cable distance to the nearest
+                     degree>=3 node (None if branch-free locally). Where on the shaft
+                     the tip attaches — raw, un-thresholded.
+    Every value is a function of fragment geometry/topology only, so it is leak-free
+    and the same on train and held-out — the policy may key on these directly.
     """
     out = {"colinear_cos": None, "deg_a": None, "deg_b": None,
            "rad_a": None, "rad_b": None, "rad_ratio": None,
-           "cos_a": None, "cos_b": None, "tip_tangent_cos": None}
+           "cos_a": None, "cos_b": None, "tip_tangent_cos": None,
+           "same_component": None, "graph_path_um": None,
+           "cable_a": None, "cable_b": None, "cable_min": None,
+           "dist_to_branch_b": None}
     if g is None:
         return out
     a, b = getattr(s, "node_a", None), getattr(s, "node_b", None)
@@ -139,6 +271,26 @@ def _split_site_geom(g, s):
             # straight pass-through has ta_u ~ tb_u -> cos ~ +1.
             if ta_u is not None and tb_u is not None:
                 out["tip_tangent_cos"] = float(np.dot(ta_u, tb_u))
+    except Exception:
+        pass
+    # --- Topology: pure graph structure, leak-free, no decision thresholds. ---
+    try:
+        path = _on_graph_path_um(g, a, b)
+        out["graph_path_um"] = path
+        out["same_component"] = (path is not None)
+    except Exception:
+        pass
+    try:
+        ca = _arm_cable_um(g, a)
+        cb = _arm_cable_um(g, b)
+        out["cable_a"], out["cable_b"] = ca, cb
+        if ca is not None and cb is not None:
+            out["cable_min"] = min(ca, cb)
+    except Exception:
+        pass
+    try:
+        if out["deg_b"] is not None and out["deg_b"] >= 2:
+            out["dist_to_branch_b"] = _dist_to_branch_um(g, b)
     except Exception:
         pass
     return out
@@ -278,8 +430,9 @@ def split_repair_by_bucket(train_run, label_gt_map, fragments_graph, top_k=3):
     """SplitSite/merge ADAPTER over the generic ``attribute_fitness``.
 
     Wires the split-repair verdict (train-map dominant-neuron rule, same as the gate)
-    and the SplitSite feature set (gap + ``_split_site_geom``: colinear_cos, deg_b,
-    rad_ratio, tip_tangent_cos, …) into the generic attributor. Returns
+    and the SplitSite feature set (gap + EVERY key ``_split_site_geom`` exposes:
+    colinear_cos, deg_b, rad_ratio, tip_tangent_cos, same_component, graph_path_um,
+    cable_min, dist_to_branch_b, …) into the generic attributor. Returns
     ``{feature: {bucket: counts}}`` for the top-k most discriminative features, or
     None. Leak-free (train map only). Adding a new SplitSite feature automatically
     makes it eligible here with no change to this function.
@@ -326,9 +479,13 @@ def split_repair_by_bucket(train_run, label_gt_map, fragments_graph, top_k=3):
         feats = {"gap_um": getattr(s, "gap_um", None)}
         if fragments_graph is not None:
             geom = _split_site_geom(fragments_graph, s)
-            # keep numeric/discrete features only (drop Nones implicitly via attribute_fitness)
-            for k in ("colinear_cos", "deg_b", "rad_ratio", "tip_tangent_cos"):
-                feats[k] = geom.get(k)
+            # Forward EVERY feature _split_site_geom exposes (numeric + bool/discrete);
+            # attribute_fitness ranks them by discriminative AUC and drops Nones and
+            # constants on its own. This keeps the function's promise literally true —
+            # adding a feature to _split_site_geom makes it eligible here with NO edit
+            # to this list (the old hardcoded 4-tuple silently dropped the rest).
+            for k, v in geom.items():
+                feats[k] = v
         return feats
 
     rows = edit_feature_rows(train_run.edits, classify_fn, feature_fn)
@@ -572,12 +729,17 @@ def run_candidate(
         # fragment thickness — e.g. refuse to fuse two thick (likely-real) neurites
         # — with NO cloud read. Present on the agentic SkeletonGraph already.
         "node_radius": getattr(fragments_graph, "node_radius", None),
-        # (1b) Cheap, GT-free, NO-cloud-read geometry for a SplitSite: call
+        # (1b) Cheap, GT-free, NO-cloud-read geometry+topology for a SplitSite: call
         # ctx["split_geom"](site) -> {colinear_cos, cos_a, cos_b, tip_tangent_cos,
-        # deg_a, deg_b, rad_a, rad_b, rad_ratio}. These are the deployable geometric
-        # features (straightness, per-arm asymmetry, endpoint degree, cable caliber)
-        # the policy can threshold on directly, computed from the fragment graph. The
-        # policy decides which to use — the harness only exposes them.
+        # deg_a, deg_b, rad_a, rad_b, rad_ratio,  # geometry/morphology
+        #   same_component, graph_path_um, cable_a, cable_b, cable_min,
+        #   dist_to_branch_b}.                     # pure graph TOPOLOGY (brain-indep.)
+        # These are the deployable features (straightness, per-arm asymmetry, endpoint
+        # degree, cable caliber; plus loop-closure / fragment-maturity / shaft-position
+        # topology) the policy can threshold on directly, computed from the fragment
+        # graph. same_component=True means merging would CLOSE A LOOP (a strong
+        # non-merge prior for tree-like neurons). NO thresholds are baked in — the
+        # harness exposes raw values and the policy decides which to use and where.
         "split_geom": (lambda site: _split_site_geom(fragments_graph, site)),
         # (2) Optional, lazy, cached raw-image patch reader (the fluorescence
         # signal at the gap). None unless an image reader was provided — the policy
@@ -821,6 +983,8 @@ def write_failure_report(
     label_gt_map: dict | None = None,
     fragments_graph=None,
     extra_sections: list | None = None,
+    priors_section: list | None = None,
+    merge_penalty: float = 100.0,
 ) -> str:
     """Write the 'where you were wrong' report the agent reads to revise.
 
@@ -847,17 +1011,27 @@ def write_failure_report(
         run-cached image warm-start probe from ``image_warmstart_probe``). Computed
         once per run by the caller and reused every generation, so it is independent
         of the per-generation policy/gate.
+    priors_section : list of str, optional
+        Pre-rendered 'grounding priors' lines (``harness.priors.build_report_section``)
+        matched to this generation's dominant failure mode. Inlined near the TOP of
+        the report so the validated cross-brain geometry is in front of the reviser
+        by default (removing the old "reviser never opened the priors file" failure
+        mode). Population geometry only — leak-free, like every other section.
     """
     lines = ["# Candidate failure report (train split)\n"]
+    if priors_section:
+        lines.extend(priors_section)
     lines.extend(_failure_report_body(train_run, baseline, merge_labels, label_gt_map,
-                                      fragments_graph, extra_sections))
+                                      fragments_graph, extra_sections, merge_penalty))
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write("\n".join(lines))
     return path
 
 
-def write_multibrain_failure_report(per_brain: list, path: str) -> str:
+def write_multibrain_failure_report(per_brain: list, path: str,
+                                    priors_section: list | None = None,
+                                    merge_penalty: float = 100.0) -> str:
     """Write ONE failure report aggregating several brains, each in its own section.
 
     ``per_brain`` is a list of ``(brain_id, train_run, baseline, merge_labels,
@@ -869,6 +1043,10 @@ def write_multibrain_failure_report(per_brain: list, path: str) -> str:
     so a brain's MergeSite / SplitSite TRUE/NON classification must use only its own
     maps. Each brain gets a ``# Brain <id>`` block built by the same per-brain body as
     the single-brain report; a short pooled header notes the brain set.
+
+    ``priors_section`` (optional): pre-rendered 'grounding priors' lines, inlined ONCE
+    after the pooled header (a cross-brain generality, so it is not repeated per
+    brain). See ``write_failure_report`` and ``harness.priors``.
     """
     brain_ids = [str(b) for b, *_ in per_brain]
     lines = [
@@ -878,13 +1056,15 @@ def write_multibrain_failure_report(per_brain: list, path: str) -> str:
         f"brains). Look for FEATURE patterns that hold ACROSS brains — those "
         f"generalize; a rule that only helps one brain likely will not.\n",
     ]
+    if priors_section:
+        lines.extend(priors_section)
     for brain_id, train_run, baseline, merge_labels, label_gt_map, *rest in per_brain:
         fragments_graph = rest[0] if len(rest) >= 1 else None  # optional 6th element
         extra_sections = rest[1] if len(rest) >= 2 else None   # optional 7th element
         lines.append(f"\n\n{'='*60}")
         lines.append(f"# Brain {brain_id}\n")
         lines.extend(_failure_report_body(train_run, baseline, merge_labels, label_gt_map,
-                                          fragments_graph, extra_sections))
+                                          fragments_graph, extra_sections, merge_penalty))
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write("\n".join(lines))
@@ -898,6 +1078,7 @@ def _failure_report_body(
     label_gt_map: dict | None = None,
     fragments_graph=None,
     extra_sections: list | None = None,
+    merge_penalty: float = 100.0,
 ) -> list:
     """The body (all sections below the top header) of one brain's failure report.
 
@@ -909,17 +1090,21 @@ def _failure_report_body(
     geometry per site (cross-gap colinearity, endpoint degrees, radii); None falls
     back to the gap-only audit. ``extra_sections`` (optional) is appended verbatim at
     the end (e.g. the run-cached image warm-start probe).
+
+    ``merge_penalty`` is the per-false-merge penalty the gate applies (fitness =
+    correct - false - merge_penalty*false); it is stated in the header so the reviser
+    knows how costly a false merge is under the SMOOTH gate (not an automatic reject).
     """
     cand = train_run.score.per_swc
     base = baseline.per_swc.reindex(cand.index)
     lines = []
-    # PRIMARY FITNESS = split-repair score (the gate's actual keep decision):
-    # classify each merge edit this generation against the TRAIN label->neuron map
-    # (leak-free, same classifier the gate runs on held-out) into correct (joins one
-    # neuron the segmentation broke) vs false (fuses two different neurons) vs
-    # unscored (an endpoint not train-visible). The gate keeps a candidate iff it
-    # makes MORE net correct repairs than the parent AND zero false merges, so this
-    # — not Edge Accuracy — is the number to move. Edge Accuracy is reported below
+    # PRIMARY FITNESS = penalized split-repair score (the gate's actual keep
+    # decision): classify each merge edit this generation against the TRAIN
+    # label->neuron map (leak-free, same classifier the gate runs on held-out) into
+    # correct (joins one neuron the segmentation broke) vs false (fuses two different
+    # neurons) vs unscored (an endpoint not train-visible). The gate keeps a candidate
+    # iff its FITNESS = (correct - false) - merge_penalty*false BEATS the parent's, so
+    # this — not Edge Accuracy — is the number to move. Edge Accuracy is reported below
     # as a secondary diagnostic (it barely moves on a correct repair: only a bridged
     # split EDGE shifts it, which is why it is no longer the bar).
     repair = None
@@ -928,14 +1113,20 @@ def _failure_report_body(
         repair = inc.classify_merge_edits(train_run.edits, label_gt_map)
     if repair is not None:
         score = repair["correct"] - repair["false"]
+        fitness = score - merge_penalty * repair["false"]
         lines.append(
             f"- Proposed **{train_run.n_edits} edits** from "
             f"{train_run.n_sites} candidate sites.\n"
-            f"- **Split-repair score (THE FITNESS the gate keeps on) = correct - "
-            f"false = {repair['correct']} - {repair['false']} = {score}** "
-            f"(train-classified merges; unscored={repair['unscored']}). The gate "
-            f"accepts only if this BEATS the parent AND false == 0 — a single false "
-            f"merge (fusing two different neurons) rejects the candidate outright.\n"
+            f"- Split-repair score = correct - false = {repair['correct']} - "
+            f"{repair['false']} = {score} (train-classified; "
+            f"unscored={repair['unscored']}).\n"
+            f"- **FITNESS the gate keeps on = score - {merge_penalty:g}*false = "
+            f"{fitness:g}.** The gate accepts iff this BEATS the parent's fitness. A "
+            f"false merge (fusing two different neurons) is NOT an automatic reject "
+            f"anymore, but it is HEAVILY penalized: each one costs {merge_penalty:g} "
+            f"correct repairs to offset, so only accept a merge you are confident is "
+            f"ONE neuron — a false merge is worth it only if the SAME revision adds "
+            f">{merge_penalty:g} correct repairs per false merge.\n"
             f"- Edge Accuracy (secondary diagnostic, NOT the bar; = 100 - %Split - "
             f"%Omit - %Merged): baseline "
             f"{scoring._weighted_avg(base, 'Edge Accuracy'):.4f} -> candidate "
@@ -1016,6 +1207,47 @@ def _failure_report_body(
             lines.append(
                 f"- Largest fused class = **{biggest} raw labels** "
                 f"({n_big} class(es) fuse >5 labels). {verdict}\n")
+    # EDIT-CAUSED MERGE SITES (the geometric `# Merges` metric) — ADVISORY, NEVER
+    # gated. The gate scores merges by ARGMAX (classify_merge_edits: do the two fused
+    # labels' DOMINANT neurons match?), which is structurally blind to geometry: an
+    # argmax-CORRECT repair can still drag a fragment arm into a spatial collision with
+    # a NEIGHBOURING GT skeleton, which the geometric `# Merges` metric (MergeCountMetric:
+    # a fragment leaf >50um from its own GT skeleton, then <6um to ANOTHER) counts as a
+    # merge SITE. So edit-caused sites can be >0 while the gate's argmax `false` is 0 —
+    # they are not contradictory, they measure different things. Surfacing them lets the
+    # reviser PREFER repairs that don't also create a geometric collision, but this is
+    # READ-ONLY: the accept/reject gate is unchanged (still split-repair score with zero
+    # held-out argmax-false). Leak-safe: train_run.score.merge_sites is the TRAIN run's,
+    # already restricted to the train neurons.
+    if ms is not None and len(ms) and "Caused_By_Edit" in ms.columns:
+        caused = ms[ms["Caused_By_Edit"].astype(bool)]
+        n_caused = int(len(caused))
+        if n_caused:
+            gate_false = "n/a" if repair is None else str(repair["false"])
+            lines.append(
+                "\n## Edit-caused merge sites (geometric `# Merges`) — ADVISORY, NOT the gate\n")
+            lines.append(
+                f"- Your merges created **{n_caused} geometric merge SITE(s)** on the TRAIN "
+                f"neurons (the `# Merges` / `% Merged Edges` metrics react to these), while "
+                f"the gate's argmax `false` count is **{gate_false}**. These two numbers "
+                f"measure DIFFERENT things and legitimately differ:\n"
+                f"  - the **gate** asks: do the two fused labels' DOMINANT (argmax) GT "
+                f"neurons match? — no geometry; this is the ONLY accept/reject signal;\n"
+                f"  - **`# Merges`** asks: does a fused fragment arm physically land on a "
+                f"NEIGHBOURING GT skeleton (a geometric collision site)?\n"
+                f"- An argmax-correct split repair can STILL create a geometric collision "
+                f"(e.g. a thin arm grazing an adjacent neuron). Such sites do NOT reject the "
+                f"candidate, but they erode %Merged Edges / Edge Accuracy. Where they "
+                f"cluster, PREFER a repair that fixes the split WITHOUT adding one — tighten "
+                f"the geometry (continuity / caliber / endpoint degree) for that regime "
+                f"rather than chasing the last bit of recall there.\n")
+            if "GroundTruth_ID" in caused.columns:
+                vc = caused["GroundTruth_ID"].value_counts()
+                lines.append("\nEdit-caused merge sites by GT neuron (top by count):\n")
+                for gt_id, n in vc.head(8).items():
+                    lines.append(f"  - {gt_id}: {int(n)} site(s)\n")
+                if len(vc) > 8:
+                    lines.append(f"  - …and {len(vc) - 8} more neuron(s).\n")
     # rail (ds.ENUM_PARAM_SPEC). A reviser that asked for, say, max_gap_um=80 but is
     # silently capped at 40 would otherwise never learn its request had no effect —
     # this table makes the requested→in-effect→rail mapping explicit and flags any

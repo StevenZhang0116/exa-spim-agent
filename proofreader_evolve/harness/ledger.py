@@ -36,9 +36,10 @@ class GenerationCost:
                                          # (diagnostic; can DROP as recall rises)
     heldout_edge_accuracy: float = float("nan")  # held-out Edge Accuracy (diagnostic;
                                          # NOT the gate, despite the legacy "primary")
-    # The gate threshold this generation had to BEAT: the parent policy's held-out
-    # split-repair score (correct - false), an INTEGER — NOT an Edge Accuracy. A
-    # candidate is kept iff its heldout_split_repair_score > this AND false == 0.
+    # The parent policy's held-out RAW split-repair score (correct - false), recorded
+    # for the plots. NOTE: this is NOT the gate bar anymore — the gate compares
+    # PENALIZED fitness (see ``parent_fitness`` / ``heldout_fitness`` below). Kept as a
+    # raw diagnostic and for backward-compatible plotting.
     parent_split_repair_score: float = float("nan")
     accepted: bool = False               # was the revision kept?
     note: str = ""
@@ -46,7 +47,15 @@ class GenerationCost:
     heldout_n_edits: int = 0             # total edits the policy emitted on held-out
     heldout_correct_merges: int = 0      # merges joining the SAME held-out neuron
     heldout_false_merges: int = 0        # merges fusing DIFFERENT held-out neurons
-    heldout_split_repair_score: int = 0  # correct - false (the gate's primary signal)
+    heldout_split_repair_score: int = 0  # correct - false (raw, pre-penalty)
+    # --- penalized FITNESS (the actual gate decision variable) -------------------
+    # fitness = heldout_split_repair_score - merge_penalty * heldout_false_merges.
+    # This REPLACED the hard 'false == 0' gate: a candidate is kept iff its fitness
+    # beats the parent's by >= score_margin. Recorded so the accept/reject decision
+    # is reconstructable from the ledger alone.
+    merge_penalty: float = 100.0         # per-false-merge penalty in effect this gen
+    heldout_fitness: float = 0.0         # candidate's penalized fitness on held-out
+    parent_fitness: float = 0.0          # the parent fitness bar this gen had to beat
     # --- BLIND SPOT: merges the gate could NOT verify ---------------------------
     # A merge is "unscored" when neither endpoint's dominant neuron is in the
     # held-out GT, so the gate neither rewards nor penalizes it. High unscored ⇒ most
@@ -54,6 +63,20 @@ class GenerationCost:
     # (deployable, but unverified). This is a coverage diagnostic, never a gate input.
     heldout_unscored_merges: int = 0     # merges with no held-out-GT verdict
     heldout_unscored_fraction: float = float("nan")  # unscored / total held-out edits
+    # --- ① CONFIDENCE: GT-INDEPENDENT image verdict on the blind spot -------------
+    # A coarse confidence level for this generation's accept/reject decision, plus
+    # the image (bridge_ratio) verdict it is built from. Replayed from reads the
+    # policy already made (zero extra cloud reads); advisory unless --confidence-veto.
+    # gt_fraction = GT-verified edits / (GT-verified + unscored): how much of the
+    # decision rests on GT vs. the blind spot. soft_* count the unscored merges the
+    # image signal calls likely-correct / likely-false / ambiguous; the rest were
+    # never imaged (unknown). NEVER an input to the hard fitness.
+    decision_confidence: str = "n/a"     # "high" | "medium" | "low" | "n/a"
+    heldout_gt_fraction: float = float("nan")
+    heldout_soft_correct: int = 0        # blind-spot merges image calls likely-correct
+    heldout_soft_false: int = 0          # blind-spot merges image calls likely-FALSE
+    heldout_soft_ambiguous: int = 0      # blind-spot merges with ambiguous image signal
+    confidence_veto: bool = False        # was the opt-in low-confidence veto active?
     # --- TRAIN-SIDE over-merge alert (diagnostic, NOT a gate input) --------------
     # Merges that fused two DIFFERENT neurons on a TRAIN skeleton. The gate judges
     # false merges on HELD-OUT only (kept isolated for an honest generalization
@@ -72,6 +95,13 @@ class GenerationCost:
     # assumed. True = read it; False = priors were available but not read; None = no
     # priors file was configured for this run.
     read_priors: "bool | None" = None
+    # Was this generation GROUNDED — did the reviser CITE a discovery finding number
+    # in the rules.md change log (a prior actually shaped the edit)? Strictly stronger
+    # than read_priors. True = cited >=1 finding; False = priors inlined but none
+    # cited (exploratory); None = no priors configured. Grouping accepted gens by this
+    # lets us measure whether grounding generalizes better than free exploration.
+    grounded: "bool | None" = None
+    cited_findings: str = ""             # comma-joined finding numbers cited, if any
     # --- traceability (A): what the reviser actually did this generation --------
     candidate_path: str = ""             # gen<NN>/heuristics.candidate.py (always saved)
     heuristics_diffstat: str = ""        # "+A -B" lines changed vs the parent policy
