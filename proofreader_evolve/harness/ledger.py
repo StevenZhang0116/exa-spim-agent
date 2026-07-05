@@ -102,6 +102,11 @@ class GenerationCost:
     # lets us measure whether grounding generalizes better than free exploration.
     grounded: "bool | None" = None
     cited_findings: str = ""             # comma-joined finding numbers cited, if any
+    # Subset of cited_findings whose CONTENT actually appears in the reviser's edit
+    # (rules + code), not just a bare "#N" mention — the stronger 'grounded' signal.
+    # ``grounded`` above is now True iff this is non-empty. The payoff analysis should
+    # prefer this over a bare citation. See priors.supported_citations.
+    supported_findings: str = ""
     # --- traceability (A): what the reviser actually did this generation --------
     candidate_path: str = ""             # gen<NN>/heuristics.candidate.py (always saved)
     heuristics_diffstat: str = ""        # "+A -B" lines changed vs the parent policy
@@ -128,6 +133,19 @@ class Ledger:
         with open(self.path) as f:
             return [json.loads(line) for line in f if line.strip()]
 
+    def attempts_timeline(self) -> str:
+        """Render the human-readable per-generation attempts timeline from the ledger.
+
+        This is the on-demand replacement for the old, separately-maintained
+        ``attempts.md`` file: the ledger is the single source of truth, and this
+        reconstructs the same one-line-per-generation view from it (nothing is written
+        during the run). Byte-compatible with the historical format:
+
+          - gen07 [vs parent fitness 31]: fitness 31 (+0; score=31, correct=31,
+            false=0) -> reverted (did not beat parent); +24 -1 lines; <diagnosis…>
+        """
+        return render_attempts_timeline(self.read_all())
+
     def summarize(self) -> str:
         rows = self.read_all()
         if not rows:
@@ -150,3 +168,65 @@ class Ledger:
             f"cost: {total_s:.0f}s wall, {total_out} out-tokens, "
             f"${total_cost:.4f}, {total_human} human interventions."
         )
+
+
+def _fmt_num(x) -> str:
+    """Format a number like the ``{:g}`` used in the original attempts line."""
+    try:
+        return f"{float(x):g}"
+    except (TypeError, ValueError):
+        return str(x)
+
+
+def render_attempts_timeline(rows: list[dict]) -> str:
+    """Reconstruct the attempts timeline (one line per generation) from ledger rows.
+
+    Single source of truth = ledger.jsonl. Each field maps directly:
+      parent_fitness -> "vs parent fitness"; heldout_fitness -> "fitness";
+      (heldout_fitness - parent_fitness) -> the +/- gain; heldout_split_repair_score,
+      heldout_correct_merges, heldout_false_merges -> score/correct/false; note ->
+      the accept/revert verdict; heuristics_diffstat + diagnosis(1st line, 120 chars)
+      -> the trailing one-line summary. Rows are sorted by generation.
+    """
+    out = []
+    for r in sorted(rows, key=lambda r: r.get("generation", 0)):
+        parent = r.get("parent_fitness", 0.0)
+        fit = r.get("heldout_fitness", 0.0)
+        try:
+            gain = float(fit) - float(parent)
+            gain_s = f"{gain:+g}"
+        except (TypeError, ValueError):
+            gain_s = "?"
+        # Rebuild the trailing summary EXACTLY as the loop did (byte-compatible with
+        # the historical attempts.md): "<diffstat> lines; <first line of diagnosis,
+        # 120 chars>". The ledger stores the raw (un-stripped) diagnosis, so applying
+        # the same strip -> first-line -> [:120] here reproduces the old string.
+        diffstat = r.get("heuristics_diffstat", "?")
+        diag = (r.get("diagnosis", "") or "").strip().split("\n", 1)[0][:120]
+        summary = f"{diffstat} lines; {diag}"
+        out.append(
+            f"- gen{int(r.get('generation', 0)):02d} "
+            f"[vs parent fitness {_fmt_num(parent)}]: "
+            f"fitness {_fmt_num(fit)} "
+            f"({gain_s}; score={r.get('heldout_split_repair_score', '?')}, "
+            f"correct={r.get('heldout_correct_merges', '?')}, "
+            f"false={r.get('heldout_false_merges', '?')}) "
+            f"-> {r.get('note', '')}; {summary}"
+        )
+    return "\n".join(out)
+
+
+if __name__ == "__main__":
+    # Render the attempts timeline from a run's ledger, on demand (replaces the old
+    # inline attempts.md). Usage:
+    #   python -m proofreader_evolve.harness.ledger <run_dir | ledger.jsonl>
+    import sys
+    if len(sys.argv) < 2:
+        raise SystemExit("usage: ledger.py <run_dir | path/to/ledger.jsonl>")
+    arg = sys.argv[1]
+    path = arg if arg.endswith(".jsonl") else os.path.join(arg, "ledger.jsonl")
+    if not os.path.exists(path):
+        raise SystemExit(f"no ledger at {path}")
+    with open(path) as f:
+        rows = [json.loads(line) for line in f if line.strip()]
+    print(render_attempts_timeline(rows))

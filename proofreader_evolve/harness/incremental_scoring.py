@@ -1003,38 +1003,64 @@ def get_or_build(
 ) -> PreparedBrain:
     """Return the PreparedBrain, building it at most once across all runs.
 
+    SINGLE SOURCE OF TRUTH: the ONE persisted copy lives in the shared cache
+    (``shared_prepared_cache_path(brain)``). Per-run copies under ``runs/<run>/`` are
+    NOT written in the normal path — a resume just re-reads the shared cache (seconds,
+    validated), so a duplicate ~1.6-8 GB pickle per run is pure waste. When a stale
+    per-run copy IS found (from older code, or a resume of ``cache_path``), it is used
+    to seed the shared cache and then DELETED, so state converges to the shared copy.
+
     Resolution order (first hit wins):
-      1. ``cache_path`` — this run's OWN pickle. Present only on a resume of the
-         same run_dir; loaded as-is (this run wrote it, so no validation needed).
-      2. the SHARED validated cache (``shared_prepared_cache_path(brain)``) — reused
-         across runs when ``shared_cache`` is True and it passes ``load_shared``
-         validation (schema version + brain id + content checksum). This is what
-         saves the ~30 min rebuild on every run after the first.
-      3. BUILD fresh (~30 min), then populate BOTH the shared cache (for future
-         runs) and ``cache_path`` (for a resume of this run).
+      1. the SHARED validated cache — reused across runs when ``shared_cache`` is True
+         and it passes ``load_shared`` validation (schema version + brain id + content
+         checksum). This is what saves the ~30 min rebuild on every run after the
+         first. On a hit, any leftover per-run ``cache_path`` is deleted.
+      2. a legacy/resume per-run ``cache_path`` pickle — loaded as-is, PROMOTED into
+         the shared cache, then deleted (so future runs use the shared copy).
+      3. BUILD fresh (~30 min), then write ONLY the shared cache.
 
     A shared-cache file that fails validation (stale schema, wrong brain, checksum
     drift, corruption) is NOT trusted: it's ignored and rebuilt, and the fresh build
-    overwrites it. Set ``shared_cache=False`` to opt out entirely (always build into
-    ``cache_path`` only) — e.g. to force a clean rebuild.
+    overwrites it. Set ``shared_cache=False`` to opt out entirely — then the ONLY copy
+    written is ``cache_path`` (the shared cache is neither read nor written), e.g. to
+    force a clean per-run rebuild that never touches the shared state.
     """
-    # (1) This run's own pickle (resume case).
-    if os.path.exists(cache_path):
-        if verbose:
-            print(f"Loading prepared brain from {cache_path}")
-        return PreparedBrain.load(cache_path)
-
-    # (2) Shared validated cross-run cache.
     shared_path = shared_prepared_cache_path(paths.brain_id)
-    if shared_cache and os.path.exists(shared_path):
+
+    def _drop_per_run():
+        """Remove a redundant per-run copy once the shared cache holds the truth."""
+        try:
+            if os.path.exists(cache_path):
+                os.remove(cache_path)
+                if verbose:
+                    print(f"Removed redundant per-run prepared copy {cache_path} "
+                          f"(shared cache is the single source of truth)")
+        except OSError as e:
+            print(f"[warn] could not remove per-run prepared copy {cache_path} ({e})")
+
+    # Opt-out: never touch the shared cache; the per-run pickle is the only store.
+    if not shared_cache:
+        if os.path.exists(cache_path):
+            if verbose:
+                print(f"Loading prepared brain from {cache_path} (shared cache off)")
+            return PreparedBrain.load(cache_path)
+        if verbose:
+            print("No per-run prepared cache (shared cache off); building "
+                  "(one-time ~30 min)...")
+        prepared = build_prepared_brain(paths, verbose=verbose, max_workers=max_workers)
+        prepared.save(cache_path)
+        if verbose:
+            print(f"Saved per-run prepared brain -> {cache_path}")
+        return prepared
+
+    # (1) Shared validated cross-run cache — the preferred, single persisted copy.
+    if os.path.exists(shared_path):
         try:
             prepared = PreparedBrain.load_shared(shared_path, expect_brain=paths.brain_id)
             if verbose:
                 print(f"Reusing shared prepared brain from {shared_path} "
                       f"(validated; skipped ~30 min build)")
-            # Mirror into this run's own dir so a later resume reloads instantly and
-            # stays self-contained even if the shared cache is later cleared.
-            prepared.save(cache_path)
+            _drop_per_run()  # a newer run must not keep its own duplicate
             return prepared
         except (_SharedCacheInvalid, pickle.UnpicklingError, EOFError, AttributeError,
                 ModuleNotFoundError) as e:
@@ -1042,23 +1068,37 @@ def get_or_build(
             print(f"[warn] shared prepared cache unusable ({type(e).__name__}: {e}); "
                   f"rebuilding from scratch.")
 
-    # (3) Build fresh, then populate both caches.
-    if verbose:
-        print(f"No usable prepared cache; building (one-time ~30 min)...")
-    prepared = build_prepared_brain(paths, verbose=verbose, max_workers=max_workers)
-    prepared.save(cache_path)
-    if verbose:
-        print(f"Saved prepared brain -> {cache_path}")
-    if shared_cache:
+    # (2) Legacy/resume per-run pickle: load it, PROMOTE into the shared cache so
+    # future runs reuse it, then delete the per-run copy.
+    if os.path.exists(cache_path):
+        if verbose:
+            print(f"Loading prepared brain from per-run copy {cache_path}")
+        prepared = PreparedBrain.load(cache_path)
         try:
             prepared.save_shared(shared_path)
             if verbose:
-                print(f"Populated shared prepared cache -> {shared_path}")
+                print(f"Promoted per-run copy into shared cache -> {shared_path}")
+            _drop_per_run()
         except OSError as e:
-            # A shared-cache write failure must never fail the run — the per-run
-            # pickle already succeeded, so just warn and continue.
-            print(f"[warn] could not write shared prepared cache {shared_path} "
-                  f"({e}); continuing with per-run cache only.")
+            # Keep the per-run copy if we couldn't promote it — don't lose the build.
+            print(f"[warn] could not promote per-run copy to shared cache "
+                  f"{shared_path} ({e}); keeping {cache_path}.")
+        return prepared
+
+    # (3) Build fresh, then write ONLY the shared cache.
+    if verbose:
+        print("No usable prepared cache; building (one-time ~30 min)...")
+    prepared = build_prepared_brain(paths, verbose=verbose, max_workers=max_workers)
+    try:
+        prepared.save_shared(shared_path)
+        if verbose:
+            print(f"Populated shared prepared cache -> {shared_path}")
+    except OSError as e:
+        # Shared write failed (e.g. disk/permissions). Fall back to a per-run copy so
+        # the ~30 min build is not lost; a later run can promote it via path (2).
+        print(f"[warn] could not write shared prepared cache {shared_path} ({e}); "
+              f"saving per-run copy {cache_path} instead.")
+        prepared.save(cache_path)
     return prepared
 
 

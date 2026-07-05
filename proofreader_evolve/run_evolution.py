@@ -1041,6 +1041,11 @@ class BrainContext:
                                            # markdown (run-cached, train-only, leak-
                                            # free); None if no image reader. Appended
                                            # to every generation's failure report.
+    confidence_model: object = None        # CALIBRATED multi-feature image confidence
+                                           # model (image_confidence.ConfidenceModel),
+                                           # fit ONCE on this brain's train warm-start
+                                           # REAL/FALSE examples. GATE-side per-edit
+                                           # confidence input; None -> fallback used.
 
 
 def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
@@ -1097,11 +1102,13 @@ def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
     # exception, and safely so: it is a pure function of the (immutable) dataset and
     # holds NO run-specific state (the train/held-out split, seed, gt maps, and edits
     # are all computed AFTER loading, below). So instead of rebuilding it (~30 min)
-    # every run, get_or_build reuses a SHARED, validated cross-run cache under
-    # proofreader_evolve/prepared_cache/ — schema-version + brain-id + content-
-    # checksum are verified on load, and a stale/corrupt/mismatched artifact is
-    # rebuilt rather than trusted. This run's own prepared_<brain>.pkl is still
-    # written (for a fast resume of the same run_dir) and is preferred if present.
+    # every run, get_or_build keeps a SINGLE persisted copy in a SHARED, validated
+    # cross-run cache under proofreader_evolve/prepared_cache/ — schema-version +
+    # brain-id + content-checksum are verified on load, and a stale/corrupt/mismatched
+    # artifact is rebuilt rather than trusted. NO per-run duplicate is written: a
+    # resume just re-reads the shared copy (seconds), and any leftover per-run pickle
+    # from older runs is promoted into the shared cache and then deleted. The
+    # ``cache_path`` below is only used as a fallback if the shared write fails.
     # NOTE the prepared state is built from the RAW (unfiltered) GCS graphs, so its
     # content does NOT depend on mcl — the filename intentionally omits mcl.
     prepared_cache = str(run_dir / f"prepared_{brain}.pkl")
@@ -1152,6 +1159,7 @@ def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
     # the cloud reads are paid ONCE per brain here and reused in every generation's
     # report. See candidate.image_warmstart_probe.
     image_probe_section = None
+    confidence_model = None
     if image_reader is not None:
         with Heartbeat(f"[{brain}] image warm-start probe (one-time)"):
             probe_splits = ds.candidate_split_sites(fragments_graph)
@@ -1159,9 +1167,15 @@ def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
                 probe_splits, label_gt_map, image_reader, train_names)
         if probe is not None:
             image_probe_section = probe["section"]
+            # Calibrated multi-feature confidence model, fit on THIS brain's train
+            # warm-start REAL/FALSE reads (leak-free). Threaded to the gate for
+            # per-edit confidence on blind-spot merges (option #1).
+            confidence_model = probe.get("model")
             log(f"[{brain}] image warm-start probe: bridge_ratio AUC="
                 f"{probe['auc'] if probe['auc'] is not None else float('nan'):.2f} "
-                f"(REAL {probe['n_real']} / FALSE {probe['n_false']} probed)")
+                f"(REAL {probe['n_real']} / FALSE {probe['n_false']} probed); "
+                f"confidence model = "
+                f"{confidence_model.kind if confidence_model else 'none'}")
         else:
             log(f"[{brain}] image warm-start probe: nothing to probe "
                 f"(no train-classifiable SplitSite pair)")
@@ -1173,6 +1187,7 @@ def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
         merge_labels=merge_labels, base_train=base_train, base_heldout=base_heldout,
         label_gt_map=label_gt_map, heldout_label_gt_map=heldout_label_gt_map,
         image_probe_section=image_probe_section,
+        confidence_model=confidence_model,
     )
 
 
@@ -1234,6 +1249,12 @@ def _pooled_split_repair(brains: list, per_brain_runs: list,
     # ``_image_confidence``). Each entry is (BrainContext, CandidateRun, unscored
     # label-pairs) — the pair→node lookup needs that brain's own run + graph.
     tot["_unscored_by_brain"] = []
+    # (BrainContext, CandidateRun) for EVERY brain — lets a caller re-classify each
+    # brain's edits (correct/false/unscored) with brain-local labels for a per-EDIT
+    # confidence table (see ``_per_edit_confidence``). Also carries which map was
+    # used, so the per-edit re-classification matches this pooled pass.
+    tot["_by_brain"] = list(zip(brains, per_brain_runs))
+    tot["_map_attr"] = map_attr
     for bc, run in zip(brains, per_brain_runs):
         c = inc.classify_merge_edits(run.edits, getattr(bc, map_attr))
         tot["correct"] += c["correct"]
@@ -1273,80 +1294,119 @@ def _fitness(repair: dict, merge_penalty: float) -> float:
 # LEVEL for the accept/reject decision, so the reviewer can see how much of a
 # generation's fitness is GT-backed vs. resting on an unverified blind spot.
 #
-# Independence is the whole point: bridge_ratio is raw fluorescence continuity, NOT
-# derived from the geometry the policy decided with, so it is a genuine second
-# opinion (not circular). Leak-safe: bridge_ratio is not GT; the soft verdict stays
-# in the gate/ledger and is never shown to the reviser.
+# Independence is the whole point: the image features are raw fluorescence along the
+# gap, NOT the geometry the policy decided with, so it is a genuine second opinion
+# (not circular). Leak-safe: the features are not GT, and the model is fit only on
+# TRAIN warm-start labels; the soft verdict stays in the gate/ledger, never shown to
+# the reviser (only the aggregate per-feature separability is).
+#
+# MULTI-FEATURE + CALIBRATED: rather than thresholding a single bridge_ratio scalar,
+# we run the FULL feature vector the reader already returns (bridge_ratio,
+# bridge_mean_ratio, valley_frac, profile_cv, bridge_pos) through a model calibrated
+# on the warm-start REAL/FALSE examples (image_confidence.ConfidenceModel). See #1/#2.
 #
 # ZERO extra cloud reads: we REPLAY the ``gap_bridge_evidence`` reads the policy
 # already made this generation (recorded in ``run.image_reads``). An unscored edit
 # whose SplitSite the policy imaged gets a soft verdict; one it never imaged stays
 # ``unknown`` (counted, never guessed).
 
-# bridge_ratio thresholds for the soft verdict. HIGH ⇒ continuous bright bridge ⇒
-# the merge is likely a REAL split repair; LOW ⇒ the gap goes dark ⇒ likely a FALSE
-# fusion of two structures. The mid band is left ``unknown`` (no confident call).
-_BRIDGE_LIKELY_CORRECT = 0.70   # bridge_ratio >= this ⇒ soft "likely correct"
-_BRIDGE_LIKELY_FALSE = 0.35     # bridge_ratio <= this ⇒ soft "likely false"
+# Probability bands for the calibrated model's P(REAL) -> verdict label. The model
+# (image_confidence.ConfidenceModel) outputs a probability; >= _P_LIKELY_CORRECT is a
+# confident "likely correct" merge, <= _P_LIKELY_FALSE a confident "likely false"
+# fusion, the middle band "ambiguous". These are PROBABILITY thresholds (post-
+# calibration), not the raw-bridge_ratio band the fallback model uses internally.
+_P_LIKELY_CORRECT = 0.65
+_P_LIKELY_FALSE = 0.35
+
+
+def _select_confidence_model(repair: dict):
+    """Pick the confidence model to judge this pooled pass's blind-spot merges.
+
+    In cross-brain mode the HELD-OUT brain has no train GT, so its own warm-start
+    probe can't calibrate — it carries only a fallback. Prefer a genuinely CALIBRATED
+    (``logistic``) model fit on ANY brain's train examples: image features are
+    normalized/brain-agnostic, so a train-fit model transfers to score the held-out
+    brain's edits (and keeps the confidence signal independent of the held-out GT the
+    gate uses). Falls back to a bridge_ratio sigmoid if no brain calibrated one.
+    """
+    from proofreader_evolve.harness import image_confidence as _imgconf
+    best = None
+    for bc, _run in repair.get("_by_brain", []):
+        m = getattr(bc, "confidence_model", None)
+        if m is None:
+            continue
+        if getattr(m, "kind", None) == "logistic":
+            return m  # a real calibrated model — use it
+        best = best or m
+    return best or _imgconf.ConfidenceModel.fallback()
+
+
+def _imaged_pair_proba(run, want: set, model) -> dict:
+    """Map each wanted label-pair the policy IMAGED this run -> its P(REAL).
+
+    Replays ``gap_bridge_evidence`` reads the policy already made (zero extra cloud
+    reads), runs the FULL feature vector through the calibrated ``model``, and keeps
+    the MOST favorable (max P) read when a pair was imaged more than once. Pairs the
+    policy never imaged are simply absent from the returned dict.
+    """
+    node_to_pair = {}
+    for s in (getattr(run, "split_sites", None) or []):
+        pr = tuple(sorted((str(getattr(s, "label_a", "")),
+                           str(getattr(s, "label_b", "")))))
+        for nd in (getattr(s, "node_a", None), getattr(s, "node_b", None)):
+            if nd is not None:
+                node_to_pair[int(nd)] = pr
+    pair_p: dict = {}
+    for r in (getattr(run, "image_reads", None) or []):
+        if r.get("method") != "gap_bridge_evidence":
+            continue
+        pr = node_to_pair.get(r.get("node_a")) or node_to_pair.get(r.get("node_b"))
+        if pr is None or pr not in want:
+            continue
+        p = model.predict_proba(r.get("result") or {})
+        if p != p:  # NaN (unreadable features)
+            continue
+        if pr not in pair_p or p > pair_p[pr]:
+            pair_p[pr] = p
+    return pair_p
 
 
 def _image_confidence(repair: dict) -> dict:
     """Soft, GT-independent verdict on the unscored (blind-spot) merges.
 
-    Replays the ``gap_bridge_evidence`` reads the policy already made and classifies
-    each unscored merge label-pair it imaged by ``bridge_ratio``:
-      * >= ``_BRIDGE_LIKELY_CORRECT`` -> ``soft_correct`` (bright bridge; likely one neuron)
-      * <= ``_BRIDGE_LIKELY_FALSE``   -> ``soft_false``   (dark gap; likely two neurons)
-      * in between                    -> ``soft_ambiguous``
-      * SplitSite never imaged        -> ``unknown``
+    Runs each imaged unscored merge's FULL image feature vector through the CALIBRATED
+    multi-feature model (image_confidence.ConfidenceModel; fit on the warm-start
+    REAL/FALSE examples) to get P(REAL), then buckets:
+      * P >= ``_P_LIKELY_CORRECT`` -> ``soft_correct`` (likely one neuron)
+      * P <= ``_P_LIKELY_FALSE``   -> ``soft_false``   (likely two neurons)
+      * in between                 -> ``soft_ambiguous``
+      * SplitSite never imaged     -> ``unknown``
 
     Returns those counts plus:
       * ``covered``   = unscored edits with ANY image verdict (soft_* ),
       * ``coverage``  = covered / unscored (how much of the blind spot we can see),
-      * ``gt_fraction`` = GT-verified edits / total classified edits (correct+false).
+      * ``gt_fraction`` = GT-verified edits / total classified edits (correct+false),
+      * ``model_kind`` = which model judged them ("logistic" | "fallback").
     No cloud reads; NaN-safe. ``soft_*`` counts are advisory — they never enter the
     hard fitness; only ``--confidence-veto`` may act on ``soft_false`` (opt-in).
     """
     out = {"soft_correct": 0, "soft_false": 0, "soft_ambiguous": 0, "unknown": 0,
-           "covered": 0, "coverage": float("nan"), "gt_fraction": float("nan")}
+           "covered": 0, "coverage": float("nan"), "gt_fraction": float("nan"),
+           "model_kind": "none"}
+    model = _select_confidence_model(repair)
+    out["model_kind"] = getattr(model, "kind", "none")
     total_unscored = 0
     for bc, run, pairs in repair.get("_unscored_by_brain", []):
         want = {tuple(sorted(p)) for p in pairs}
         total_unscored += len(pairs)
-        # Map each imaged SplitSite's label-pair -> its best (max) bridge_ratio this
-        # gen. One pair can be imaged more than once; keep the brightest bridge (the
-        # policy's most favorable evidence for a merge).
-        pair_ratio: dict = {}
-        # node -> label so a recorded read (keyed by node) maps back to a label pair.
-        node_to_pair = {}
-        for s in (getattr(run, "split_sites", None) or []):
-            pr = tuple(sorted((str(getattr(s, "label_a", "")),
-                               str(getattr(s, "label_b", "")))))
-            for nd in (getattr(s, "node_a", None), getattr(s, "node_b", None)):
-                if nd is not None:
-                    node_to_pair[int(nd)] = pr
-        for r in (getattr(run, "image_reads", None) or []):
-            if r.get("method") != "gap_bridge_evidence":
-                continue
-            pr = node_to_pair.get(r.get("node_a")) or node_to_pair.get(r.get("node_b"))
-            if pr is None or pr not in want:
-                continue
-            br = (r.get("result") or {}).get("bridge_ratio")
-            try:
-                br = float(br)
-            except (TypeError, ValueError):
-                continue
-            if br != br:  # NaN
-                continue
-            if pr not in pair_ratio or br > pair_ratio[pr]:
-                pair_ratio[pr] = br
+        pair_p = _imaged_pair_proba(run, want, model)
         for pr in want:
-            br = pair_ratio.get(pr)
-            if br is None:
+            p = pair_p.get(pr)
+            if p is None:
                 out["unknown"] += 1
-            elif br >= _BRIDGE_LIKELY_CORRECT:
+            elif p >= _P_LIKELY_CORRECT:
                 out["soft_correct"] += 1
-            elif br <= _BRIDGE_LIKELY_FALSE:
+            elif p <= _P_LIKELY_FALSE:
                 out["soft_false"] += 1
             else:
                 out["soft_ambiguous"] += 1
@@ -1358,6 +1418,63 @@ def _image_confidence(repair: dict) -> dict:
     if denom:
         out["gt_fraction"] = gt_verified / denom
     return out
+
+
+def _per_edit_confidence(repair: dict) -> list:
+    """A CONFIDENCE row for EVERY held-out merge edit this generation.
+
+    Combines the two evidence sources into one per-edit verdict so a human reviewer
+    (or downstream tooling) can rank/triage individual merges, not just the whole
+    generation. Each row is a dict:
+
+        {brain, label_a, label_b, verdict, source, confidence, confidence_score}
+
+    where the verdict comes from the STRONGEST evidence available for that edit:
+      * GT-verified (``correct``/``false``) -> source="gt", confidence="high",
+        verdict in {"correct","false"}. GT is authoritative, so it wins over image.
+      * unscored but IMAGED -> source="image", confidence in
+        {"likely_correct","likely_false","ambiguous"} from the CALIBRATED multi-
+        feature model's P(REAL) (an independent, GT-free signal); ``confidence_score``
+        is that probability.
+      * unscored and NOT imaged -> source="none", confidence="unknown".
+
+    LEAK-SAFE: a GATE/ledger-side artifact (uses the held-out GT map + raw image
+    features); NEVER fed to the reviser. Zero extra cloud reads — image reads are
+    replayed from what the policy already fetched (same model as ``_image_confidence``).
+    """
+    rows = []
+    map_attr = repair.get("_map_attr", "heldout_label_gt_map")
+    model = _select_confidence_model(repair)
+    # Classify per brain so EVERY edit (correct / false / unscored) gets a row with
+    # its brain id. Cheap: reuses the same maps + edits already in memory, and the
+    # SAME map this pooled pass used (so the per-edit verdicts match the counts).
+    for bc, run in repair.get("_by_brain", []):
+        c = inc.classify_merge_edits(run.edits, getattr(bc, map_attr))
+        brain = getattr(bc, "brain", "?")
+        for a, b, da, db in c.get("correct_pairs", []):
+            rows.append({"brain": brain, "label_a": a, "label_b": b,
+                         "verdict": "correct", "source": "gt", "confidence": "high",
+                         "confidence_score": 1.0})
+        for a, b, da, db in c.get("false_pairs", []):
+            rows.append({"brain": brain, "label_a": a, "label_b": b,
+                         "verdict": "false", "source": "gt", "confidence": "high",
+                         "confidence_score": 0.0})
+        # unscored edits for THIS brain, corroborated by replayed image evidence run
+        # through the calibrated multi-feature model.
+        unscored = {tuple(sorted(p)) for p in c.get("unscored_pairs", [])}
+        if not unscored:
+            continue
+        pair_p = _imaged_pair_proba(run, unscored, model)
+        for pr in sorted(unscored):
+            p = pair_p.get(pr)
+            label = model.label(p if p is not None else float("nan"),
+                                lo=_P_LIKELY_FALSE, hi=_P_LIKELY_CORRECT)
+            rows.append({"brain": brain, "label_a": pr[0], "label_b": pr[1],
+                         "verdict": "unscored",
+                         "source": "image" if label != "unknown" else "none",
+                         "confidence": label,
+                         "confidence_score": p if p is not None else float("nan")})
+    return rows
 
 
 def _confidence_level(repair: dict, conf: dict) -> str:
@@ -1404,6 +1521,30 @@ def _dominant_failure_mode(train_repair: dict) -> str:
     if correct > 0:
         return "recall"
     return "both"
+
+
+def _failure_signature(train_repair: dict, train_runs: list) -> str:
+    """A free-text description of THIS generation's failure, for CONTENT-matching the
+    grounding priors (priors.relevance) to the actual situation — not just a coarse
+    mode label. Leak-free: built only from TRAIN split-repair counts + the geometry of
+    the edits the policy MISSED / got WRONG (the same train-side signal already used
+    for the failure mode). Names the geometric axes in play so a finding whose text
+    talks about that geometry scores higher.
+    """
+    correct = train_repair.get("correct", 0)
+    false = train_repair.get("false", 0)
+    terms = []
+    if false > 0:
+        terms += ["over-merge", "false merge", "crossing", "angle", "collinear",
+                  "radius", "caliber", "precision"]
+    if correct == 0 and false == 0:
+        terms += ["proximity", "gap", "threshold", "reconnect", "not merging"]
+    # Recall pressure: many enumerated split sites but few edits emitted.
+    n_sites = sum(getattr(r, "n_sites", 0) for r in (train_runs or []))
+    n_edits = sum(getattr(r, "n_edits", 0) for r in (train_runs or []))
+    if n_sites and n_edits < 0.5 * n_sites:
+        terms += ["missed", "recall", "gap", "distance", "threshold", "reach", "branch"]
+    return " ".join(terms)
 
 
 async def run_evolution(
@@ -1674,11 +1815,23 @@ async def run_evolution(
     # "are my changes generalizing?" becomes visible feedback. Each entry:
     # {"gen": int, "train": int, "heldout": int}.
     gen_gap_history: list[dict] = []
-    # Durable mirror of every attempt (survives crashes/restarts), tagged with the
-    # parent bar each was tried against.
-    attempts_log = run_dir / "attempts.md"
-    async with ClaudeSDKClient(options=options) as client:
-        for gen in range(1, generations + 1):
+    # CLOSED priors feedback loop (fixes the "measured but ignored" gap): how often
+    # each finding has been SURFACED (rotation — fade repeats so the whole qualifying
+    # set gets exposure) and which findings were CITED in a generation that was then
+    # REVERTED (down-weight tried-and-failed levers). Both feed select_for_report.
+    priors_shown_counts: dict[int, int] = {}
+    priors_failed: set[int] = set()
+    # TOKEN COST: open a FRESH ClaudeSDKClient PER GENERATION (not one shared session
+    # for the whole loop). A shared session accumulates every prior generation's
+    # failure report (~6-7K tokens each) + full reviser transcript in-context, so
+    # input tokens grew ~QUADRATICALLY with generation count — yet none of that stale
+    # history is needed: each generation is parent-relative and stateless, and the
+    # only memory that must carry forward is re-encoded compactly and passed into
+    # ask_reviser every gen (attempts_vs_parent, gen_gap_history, structural_lessons).
+    # A clean per-gen session makes per-generation input cost FLAT (system prompt +
+    # this gen's report + those small summaries) with zero loss of carried memory.
+    for gen in range(1, generations + 1):
+        async with ClaudeSDKClient(options=options) as client:
             print(f"\n=== Generation {gen}/{generations} ===")
             gen_wall0 = time.monotonic()
             gen_dir = run_dir / f"gen{gen:02d}"
@@ -1704,8 +1857,18 @@ async def run_evolution(
             # on it opening the knowledge-base file). Empty list when priors are
             # unavailable/disabled, so the writers splice nothing.
             failure_mode = _dominant_failure_mode(train_repair)
-            priors_section = (priors_kb.build_report_section(priors_path, failure_mode)
-                              if priors_path else [])
+            # Content-match the priors to this gen's actual failure (signature) and
+            # thread the CLOSED loop: down-weight tried-and-reverted findings, rotate
+            # by prior exposure. Returns which findings were surfaced so we can update
+            # the rotation counter.
+            priors_signature = _failure_signature(train_repair, train_runs)
+            priors_section, priors_shown_now = (
+                priors_kb.build_report_section(
+                    priors_path, failure_mode, signature=priors_signature,
+                    failed_findings=priors_failed, shown_counts=priors_shown_counts)
+                if priors_path else ([], []))
+            for _n in priors_shown_now:
+                priors_shown_counts[_n] = priors_shown_counts.get(_n, 0) + 1
             report_path = str(gen_dir / "failure_report.md")
             # SPLIT-ERROR-ONLY: withhold merge_labels from the report so every
             # merge-diagnosis section (Baseline merge errors, MergeSite feature
@@ -1788,26 +1951,46 @@ async def run_evolution(
             # added lines. grounded is None when no priors were configured.
             grounded = None
             cited = set()
+            supported = set()          # citations whose CONTENT shows up in the edit
             if priors_path:
                 try:
                     import difflib as _dl
-                    _parent_rules = (gen_dir / "rules.md").read_text().splitlines()
-                    _cand_rules = Path(work_rules).read_text().splitlines()
-                    _added = "\n".join(
-                        ln[1:] for ln in _dl.unified_diff(_parent_rules, _cand_rules,
-                                                          lineterm="")
-                        if ln.startswith("+") and not ln.startswith("+++"))
-                    cited = priors_kb.cited_findings(_added)
+                    def _added_lines(parent_path, cand_path):
+                        p = parent_path.read_text().splitlines()
+                        c = Path(cand_path).read_text().splitlines()
+                        return "\n".join(
+                            ln[1:] for ln in _dl.unified_diff(p, c, lineterm="")
+                            if ln.startswith("+") and not ln.startswith("+++"))
+                    _added_rules = _added_lines(gen_dir / "rules.md", work_rules)
+                    # Also diff the CODE the reviser added — a finding is only truly
+                    # "used" if its geometry shows up in the rule or the code, not just
+                    # the change-log prose.
+                    _added_code = _added_lines(gen_dir / "heuristics.py", work_heuristics)
+                    cited = priors_kb.cited_findings(_added_rules)
+                    # #5: strengthen the grounded proxy — a citation is SUPPORTED only
+                    # if the finding's contentful vocabulary actually appears in what
+                    # the reviser changed (rules + code), distinguishing "cited AND
+                    # used" from "typed #N but changed something unrelated".
+                    supported = priors_kb.supported_citations(
+                        _added_rules, _added_code, priors_kb.load_findings(priors_path))
                 except Exception:
-                    cited = set()
-                grounded = bool(cited)
+                    cited = set(); supported = set()
+                # grounded now requires a SUPPORTED citation (stronger than a bare #N).
+                grounded = bool(supported)
             if grounded:
-                log(f"   grounded: reviser cited discovery finding(s) "
-                    f"{sorted(cited)} in the rules change log")
+                _bare = sorted(cited - supported)
+                log(f"   grounded: reviser cited AND used discovery finding(s) "
+                    f"{sorted(supported)}"
+                    + (f" (also cited but unsupported: {_bare})" if _bare else ""))
             elif grounded is False:
-                log("   [WARN] priors were inlined but the reviser cited NO finding in "
-                    "its change log — this generation is EXPLORATORY (un-grounded); "
-                    "recorded so we can compare grounded vs exploratory generalization")
+                if cited:
+                    log(f"   [WARN] cited finding(s) {sorted(cited)} but none are "
+                        f"SUPPORTED (the edit does not reflect the finding's geometry) "
+                        f"— counted EXPLORATORY, not grounded")
+                else:
+                    log("   [WARN] priors were inlined but the reviser cited NO finding "
+                        "— this generation is EXPLORATORY (un-grounded); recorded so we "
+                        "can compare grounded vs exploratory generalization")
 
             # Harness-side import check (the reviser no longer has Bash to do it).
             # A revision that doesn't import is a dead candidate -> revert to parent.
@@ -1947,18 +2130,32 @@ async def run_evolution(
                 log(f"   blind spot: {_unsc}/{heldout_n_edits} held-out merges "
                     f"UNSCORED ({_frac:.0%}) — outside held-out GT coverage, neither "
                     f"rewarded nor penalized by the gate")
-                # ① CONFIDENCE: independent image (bridge_ratio) verdict on that blind
-                # spot, replayed from reads the policy already made (zero extra reads),
-                # folded into a coarse decision-confidence level. Advisory by default;
-                # only --confidence-veto lets an image-flagged false merge block accept.
+                # ① CONFIDENCE: independent, CALIBRATED multi-feature image verdict on
+                # that blind spot, replayed from reads the policy already made (zero
+                # extra reads), folded into a coarse decision-confidence level. Advisory
+                # by default; only --confidence-veto lets an image-flagged false merge
+                # block accept.
                 cand_conf = _image_confidence(cand_repair)
                 confidence = _confidence_level(cand_repair, cand_conf)
                 log(f"   confidence: {confidence.upper()} "
-                    f"(gt_fraction={cand_conf['gt_fraction']:.0%}; blind-spot image "
-                    f"verdict: {cand_conf['soft_correct']} likely-correct / "
+                    f"(gt_fraction={cand_conf['gt_fraction']:.0%}; model="
+                    f"{cand_conf['model_kind']}; blind-spot image verdict: "
+                    f"{cand_conf['soft_correct']} likely-correct / "
                     f"{cand_conf['soft_false']} likely-FALSE / "
                     f"{cand_conf['soft_ambiguous']} ambiguous / {cand_conf['unknown']} "
                     f"unimaged; coverage={cand_conf['coverage']:.0%})")
+                # PER-EDIT confidence: one verdict per held-out merge (GT-authoritative
+                # where covered, calibrated multi-feature image model in the blind spot).
+                # A GATE-side triage artifact (uses the held-out GT map) — written to the
+                # gen dir, NEVER shown to the reviser. Zero extra cloud reads.
+                edit_conf_rows = _per_edit_confidence(cand_repair)
+                try:
+                    (gen_dir / "edit_confidence.json").write_text(json.dumps(
+                        edit_conf_rows, indent=2, default=str))
+                    log(f"   per-edit confidence: {len(edit_conf_rows)} edit(s) -> "
+                        f"{gen_dir / 'edit_confidence.json'}")
+                except OSError as _e:
+                    log(f"   [warn] could not write per-edit confidence ({_e})")
                 human_touches = 0
                 if human:
                     human_touches = 1
@@ -2015,9 +2212,17 @@ async def run_evolution(
                 # Parent advanced: prior rejections were against the OLD parent and
                 # no longer apply, so clear the in-prompt memory.
                 attempts_vs_parent = []
+                # A cited finding that just got ACCEPTED is no longer a failed lever —
+                # clear it so it can be offered again to a future generation.
+                priors_failed -= cited
             else:
                 revert(gen_dir, work_heuristics, work_rules)  # restore the parent
                 note = "reverted (did not beat parent)"
+                # CLOSE THE PRIORS LOOP (#2): a finding cited in a REVERTED generation
+                # is a lever that was tried and did not beat the parent — down-weight it
+                # in future selection so the reviser stops being handed the same failed
+                # lever. (Cleared on a later accept above.)
+                priors_failed |= cited
                 # Remember this rejected attempt so the next gen proposes something new.
                 # Delta is in FITNESS units (penalized), matching the gate.
                 attempts_vs_parent.append({
@@ -2046,15 +2251,12 @@ async def run_evolution(
                             continue
                         seen.add(L["summary"]); dedup.append(L)
                     structural_lessons = list(reversed(dedup))[-STRUCTURAL_LESSON_CAP:]
-            # B (durable): append every generation to a file that survives crashes
-            # and restarts. Tagged with the penalized-fitness bar it was tried against,
-            # so a later reader can tell which attempts are still relevant (same parent).
-            with open(attempts_log, "a") as f:
-                f.write(f"- gen{gen:02d} [vs parent fitness {parent_bar:g}]: "
-                        f"fitness {cand_fitness:g} "
-                        f"({cand_fitness - parent_bar:+g}; "
-                        f"score={cand_repair['score']}, correct={cand_repair['correct']}, "
-                        f"false={cand_repair['false']}) -> {note}; {attempt_summary}\n")
+            # B (durable): every generation's attempt is persisted in ledger.jsonl
+            # (the single source of truth) via ledger.record(...) just below. The old
+            # per-run attempts.md is no longer written inline; render the same
+            # human-readable timeline on demand from the ledger with
+            # ``python -m proofreader_evolve.harness.ledger <run_dir>`` (see
+            # ledger.render_attempts_timeline).
             log(f"Step 7: fitness={cand_fitness:g} (split-repair "
                 f"score={cand_repair['score']}, correct={cand_repair['correct']}, "
                 f"false={cand_repair['false']}; parent fitness={parent_bar:g}); "
@@ -2096,6 +2298,7 @@ async def run_evolution(
                 read_priors=read_priors,
                 grounded=grounded,
                 cited_findings=",".join(str(n) for n in sorted(cited)),
+                supported_findings=",".join(str(n) for n in sorted(supported)),
                 train_false_merges=train_false,
                 candidate_path=candidate_path,
                 heuristics_diffstat=diffstat,

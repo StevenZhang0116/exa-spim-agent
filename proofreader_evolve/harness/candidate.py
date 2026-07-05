@@ -23,6 +23,7 @@ from dataclasses import asdict, dataclass, field
 import numpy as np
 
 from proofreader_evolve.harness import dataset as ds
+from proofreader_evolve.harness import image_confidence as imgconf
 from proofreader_evolve.harness import scoring
 
 
@@ -294,6 +295,108 @@ def _split_site_geom(g, s):
     except Exception:
         pass
     return out
+
+
+# --- Information-maximizing row selection for truncated report tables --------
+# The failure-report tables are the reviser's "training set" for choosing accept/
+# reject thresholds. When a bucket has more rows than fit in the prompt, the old code
+# kept the FIRST ``cap`` (``rows[:cap]``) — an arbitrary, order-dependent slice that
+# can hide the tail's distribution (e.g. all the wide-gap examples). Instead we keep a
+# REPRESENTATIVE subset chosen from the data: spread across the quantiles of the most
+# informative feature (so every regime is visible) plus the boundary extremes (min/
+# max, where the accept/reject cutoff actually sits), then summarize what was omitted.
+# Deterministic (no RNG), leak-free (operates only on the rows already built from
+# train-only data), and no extra LLM call — it just replaces a fixed cap with a
+# data-driven choice. ``DEFAULT_TABLE_BUDGET`` keeps output ~the old magnitude.
+DEFAULT_TABLE_BUDGET = 60
+
+
+def _select_representative(items, budget=DEFAULT_TABLE_BUDGET, key=None):
+    """Pick a representative subset of ``items`` of size <= ``budget``.
+
+    ``items`` is a list of arbitrary objects; ``key(item) -> float | None`` extracts
+    the feature to spread over (e.g. gap_um). If ``key`` is None or yields too few
+    finite values, falls back to a head slice (order preserved). Otherwise the return
+    is order-preserved but CONTENT-selected to cover the feature's range:
+      * always keep the min and max (the decision-boundary extremes);
+      * fill the rest by walking evenly across the value-sorted items (quantile
+        coverage), so no regime of the feature is invisible.
+    Returns ``(kept_items, kept_index_set)`` — the subset in ORIGINAL order, and the
+    set of original indices kept (so a caller can summarize the omitted remainder).
+    """
+    n = len(items)
+    if n <= budget:
+        return list(items), set(range(n))
+    # Extract the spread key; fall back to head slice if not enough signal.
+    keyed = []
+    if key is not None:
+        for i, it in enumerate(items):
+            try:
+                v = key(it)
+                v = float(v) if v is not None else None
+            except (TypeError, ValueError):
+                v = None
+            if v is not None and v == v:  # finite
+                keyed.append((v, i))
+    if len(keyed) < max(3, budget // 2):
+        # Not enough finite feature values to spread over — keep a head slice.
+        return list(items[:budget]), set(range(budget))
+    keyed.sort()                      # by feature value
+    order = [i for _, i in keyed]     # original indices, feature-sorted
+    chosen = {order[0], order[-1]}    # boundary extremes
+    remaining = budget - len(chosen)
+    if remaining > 0 and len(order) > 2:
+        # Evenly sample the interior (quantile coverage) without RNG.
+        interior = order[1:-1]
+        if remaining >= len(interior):
+            chosen.update(interior)
+        else:
+            step = len(interior) / float(remaining)
+            for k in range(remaining):
+                chosen.add(interior[int(k * step)])
+    # Items with a non-finite key (dropped from `keyed`) are lowest priority; only
+    # backfill them if we're still under budget after the spread.
+    if len(chosen) < budget:
+        for i in range(n):
+            if i not in chosen:
+                chosen.add(i)
+                if len(chosen) >= budget:
+                    break
+    kept_idx = set(list(chosen)[:budget])
+    kept = [items[i] for i in range(n) if i in kept_idx]
+    return kept, kept_idx
+
+
+def _omitted_summary(items, kept_idx, feature_keys):
+    """One-line aggregate of the rows NOT shown, so the tail's distribution is visible.
+
+    ``feature_keys`` maps a short name -> ``fn(item) -> float | None``. For each, we
+    report the omitted rows' count and the min/median/max of that feature, so the
+    reviser knows the shape of what was truncated (e.g. "the 1076 omitted misses span
+    gap 5.9–41 µm, median 12") instead of a blind "…and 1076 more." Returns "" when
+    nothing was omitted.
+    """
+    omitted = [it for i, it in enumerate(items) if i not in kept_idx]
+    if not omitted:
+        return ""
+    parts = []
+    for name, fn in feature_keys.items():
+        vals = []
+        for it in omitted:
+            try:
+                v = fn(it)
+                v = float(v) if v is not None else None
+            except (TypeError, ValueError):
+                v = None
+            if v is not None and v == v:
+                vals.append(v)
+        if vals:
+            vals.sort()
+            med = vals[len(vals) // 2]
+            parts.append(f"{name} {vals[0]:.3g}–{vals[-1]:.3g} (median {med:.3g})")
+    span = ("; ".join(parts)) if parts else "no finite features"
+    return (f"\n…and {len(omitted)} more not shown (representative rows kept above). "
+            f"Omitted rows span: {span}.")
 
 
 # --- Generic fitness-attribution over a candidate's feature space ------------
@@ -916,7 +1019,11 @@ def image_warmstart_probe(
     false_pick = sorted(false_b, key=lambda t: abs(t[0] - med))[:half]
 
     def _probe(sites):
-        rows, vals = [], []
+        # Collect the FULL feature vector per probed site (not just bridge_ratio) so
+        # the confidence model can be calibrated multi-feature and each feature's
+        # separability reported. Zero extra reads vs. the old single-scalar probe —
+        # gap_bridge_evidence already returns every feature in one call.
+        rows, vals, feats = [], [], []
         for gap, na, nb in sites:
             res = image_reader.gap_bridge_evidence(na, nb) or {}
             br = res.get("bridge_ratio", float("nan"))
@@ -925,6 +1032,7 @@ def image_warmstart_probe(
             except (TypeError, ValueError):
                 brf = float("nan")
             vals.append(brf)
+            feats.append(imgconf.extract_features(res))
             br_s = "NaN" if brf != brf else f"{brf:.2f}"
             bm = res.get("bridge_min"); em = res.get("endpoint_mean")
             def _n(v, nd=2):
@@ -933,11 +1041,24 @@ def image_warmstart_probe(
                 except (TypeError, ValueError):
                     return "—"
             rows.append(f"| {gap:.2f} | {br_s} | {_n(bm)} | {_n(em,1)} |")
-        return rows, vals
+        return rows, vals, feats
 
-    real_rows, real_vals = _probe(real_pick)
-    false_rows, false_vals = _probe(false_pick)
+    real_rows, real_vals, real_feats = _probe(real_pick)
+    false_rows, false_vals, false_feats = _probe(false_pick)
     auc = _auc(real_vals, false_vals)
+    # CALIBRATE the multi-feature confidence model on these labeled examples (REAL vs
+    # FALSE). Applied per-edit at the gate (option #1) and its per-feature separation
+    # is reported below (option #2). Fit is leak-free: labels come only from the train
+    # dominant-neuron rule. Falls back to a bridge_ratio sigmoid if too few examples.
+    model = imgconf.ConfidenceModel.fit(real_feats, false_feats)
+    # Per-feature separability (AUC of REAL vs FALSE for EACH feature), so the reviser
+    # sees WHICH image features actually separate real from false — the signal it
+    # needs to evolve an image rule beyond a single bridge_ratio threshold.
+    feat_auc = {}
+    for i, fname in enumerate(imgconf.FEATURES):
+        rv = [f[i] for f in real_feats]
+        fv = [f[i] for f in false_feats]
+        feat_auc[fname] = _auc(rv, fv)
 
     lines = ["\n\n## Image warm-start probe: does bridge_ratio separate REAL from FALSE splits?\n"]
     lines.append(
@@ -959,6 +1080,31 @@ def image_warmstart_probe(
             f"brighter than FALSE; 0.5 = no separation). Read: {verdict}.\n")
     else:
         lines.append("_Separability AUC unavailable (a class had no valid read)._\n")
+
+    # PER-FEATURE separation: bridge_ratio is ONE of several features the reader
+    # returns in the same read. This shows how well EACH separates REAL from FALSE, so
+    # a rule can combine them (a wide dark valley `valley_frac` or an uneven profile
+    # `profile_cv` can flag a false join that bridge_ratio alone misses). AUC>0.5 means
+    # REAL tends to have the HIGHER value of that feature; <0.5 the LOWER.
+    have_feat_auc = any(v is not None for v in feat_auc.values())
+    if have_feat_auc:
+        lines.append("\n**Per-feature separability (REAL vs FALSE, same reads — no "
+                     "extra cost):**")
+        lines.append("| feature | AUC | direction (REAL is…) |")
+        lines.append("|---|---|---|")
+        for fname in imgconf.FEATURES:
+            a = feat_auc.get(fname)
+            if a is None:
+                lines.append(f"| {fname} | — | (no valid pair) |")
+            else:
+                direction = ("higher" if a >= 0.55 else
+                             "lower" if a <= 0.45 else "~no separation")
+                lines.append(f"| {fname} | {a:.2f} | {direction} |")
+        lines.append(f"\n**Calibrated confidence model:** {model.describe()}. The gate "
+                     "uses this multi-feature model (not a single bridge_ratio "
+                     "threshold) to gauge confidence on merges the held-out GT can't "
+                     "verify. Combine the features above when writing your image rule "
+                     "rather than thresholding bridge_ratio alone.\n")
     bh = "| gap_um | bridge_ratio | bridge_min | endpoint_mean |"
     bsep = "|---|---|---|---|"
     lines.append(f"**REAL splits — SHOULD merge** ({len(real_rows)} probed):")
@@ -972,7 +1118,8 @@ def image_warmstart_probe(
     else:
         lines.append("_none probed._")
     return {"section": lines, "auc": auc,
-            "n_real": len(real_rows), "n_false": len(false_rows)}
+            "n_real": len(real_rows), "n_false": len(false_rows),
+            "model": model, "feat_auc": feat_auc}
 
 
 def write_failure_report(
@@ -985,6 +1132,7 @@ def write_failure_report(
     extra_sections: list | None = None,
     priors_section: list | None = None,
     merge_penalty: float = 100.0,
+    table_budget: int = DEFAULT_TABLE_BUDGET,
 ) -> str:
     """Write the 'where you were wrong' report the agent reads to revise.
 
@@ -1022,7 +1170,8 @@ def write_failure_report(
     if priors_section:
         lines.extend(priors_section)
     lines.extend(_failure_report_body(train_run, baseline, merge_labels, label_gt_map,
-                                      fragments_graph, extra_sections, merge_penalty))
+                                      fragments_graph, extra_sections, merge_penalty,
+                                      table_budget=table_budget))
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write("\n".join(lines))
@@ -1031,7 +1180,8 @@ def write_failure_report(
 
 def write_multibrain_failure_report(per_brain: list, path: str,
                                     priors_section: list | None = None,
-                                    merge_penalty: float = 100.0) -> str:
+                                    merge_penalty: float = 100.0,
+                                    table_budget: int = DEFAULT_TABLE_BUDGET) -> str:
     """Write ONE failure report aggregating several brains, each in its own section.
 
     ``per_brain`` is a list of ``(brain_id, train_run, baseline, merge_labels,
@@ -1064,7 +1214,8 @@ def write_multibrain_failure_report(per_brain: list, path: str,
         lines.append(f"\n\n{'='*60}")
         lines.append(f"# Brain {brain_id}\n")
         lines.extend(_failure_report_body(train_run, baseline, merge_labels, label_gt_map,
-                                          fragments_graph, extra_sections, merge_penalty))
+                                          fragments_graph, extra_sections, merge_penalty,
+                                          table_budget=table_budget))
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         f.write("\n".join(lines))
@@ -1079,6 +1230,7 @@ def _failure_report_body(
     fragments_graph=None,
     extra_sections: list | None = None,
     merge_penalty: float = 100.0,
+    table_budget: int = DEFAULT_TABLE_BUDGET,
 ) -> list:
     """The body (all sections below the top header) of one brain's failure report.
 
@@ -1467,12 +1619,24 @@ def _failure_report_body(
             "fusion of >=2 GT neurons). These are the geometry patterns a `split_label` "
             "SHOULD fire on. Key your policy on these columns, never the raw label.\n"
         )
+        # Representative selection over the merge geometry (spread by angle_deg, the
+        # primary merge-vs-not axis) + an omitted-tail summary, so a large table is
+        # sampled across its regimes instead of keeping only the first 60.
+        def _angle_of(s):
+            return getattr(s, "angle_deg", None)
+        _ms_feat_keys = {
+            "angle_deg": _angle_of,
+            "radius_ratio": lambda s: getattr(s, "radius_ratio", None),
+            "cable_a": lambda s: getattr(s, "cable_a_um", None),
+        }
         if pos:
             lines.append(header); lines.append(sep)
-            for s in pos[:60]:
+            kept, kept_idx = _select_representative(pos, budget=table_budget, key=_angle_of)
+            for s in kept:
                 lines.append(_site_row(s))
-            if len(pos) > 60:
-                lines.append(f"\n…and {len(pos) - 60} more true-merge sites.")
+            tail = _omitted_summary(pos, kept_idx, _ms_feat_keys)
+            if tail:
+                lines.append(tail.replace("more not shown", "more true-merge sites not shown"))
         else:
             lines.append("_no enumerated MergeSite lands on a baseline merge label "
                          "(see the recall-gap note below)._")
@@ -1489,10 +1653,12 @@ def _failure_report_body(
         )
         if neg:
             lines.append(header); lines.append(sep)
-            for s in neg[:60]:
+            kept, kept_idx = _select_representative(neg, budget=table_budget, key=_angle_of)
+            for s in kept:
                 lines.append(_site_row(s))
-            if len(neg) > 60:
-                lines.append(f"\n…and {len(neg) - 60} more non-merge sites.")
+            tail = _omitted_summary(neg, kept_idx, _ms_feat_keys)
+            if tail:
+                lines.append(tail.replace("more not shown", "more non-merge sites not shown"))
         else:
             lines.append("_no non-merge MergeSites enumerated._")
 
@@ -1587,8 +1753,9 @@ def _failure_report_body(
                 f"{_f(geom['rad_ratio'])} | {verdict} |"
             )
 
-        # Buckets: (real|false) x (accepted|rejected). Each row carries gap + geometry
-        # + verdict.
+        # Buckets: (real|false) x (accepted|rejected). Each entry is (site, row_str) so
+        # truncation can select representative rows by the site's geometry (gap /
+        # colinear_cos), not just keep the first N.
         sp = {"real_acc": [], "real_rej": [], "false_acc": [], "false_rej": []}
         sp_drop = 0
         for s in split_sites:
@@ -1600,9 +1767,9 @@ def _failure_report_body(
             if da is None or db is None:
                 sp_drop += 1            # at least one label not train-visible -> drop
             elif da == db:
-                sp["real_acc" if accepted else "real_rej"].append(row)
+                sp["real_acc" if accepted else "real_rej"].append((s, row))
             else:
-                sp["false_acc" if accepted else "false_rej"].append(row)
+                sp["false_acc" if accepted else "false_rej"].append((s, row))
 
         n_real = len(sp["real_acc"]) + len(sp["real_rej"])
         n_false = len(sp["false_acc"]) + len(sp["false_rej"])
@@ -1654,13 +1821,29 @@ def _failure_report_body(
                       "rad_ratio | your decision |")
         _sp_sep = "|---|---|---|---|---|---|---|---|"
 
-        def _emit(title, rows, cap=60):
+        # Feature extractors for representative selection + omitted-tail summary. Rows
+        # are (site, row_str); spread over gap_um (the axis the reviser thresholds on),
+        # and summarize the omitted tail over gap_um + colinear_cos so its distribution
+        # stays visible instead of a blind "…and N more".
+        def _gap_of(entry):
+            return getattr(entry[0], "gap_um", None)
+
+        def _colinear_of(entry):
+            try:
+                return _split_site_geom(fragments_graph, entry[0]).get("colinear_cos")
+            except Exception:
+                return None
+        _sp_feat_keys = {"gap_um": _gap_of, "colinear_cos": _colinear_of}
+
+        def _emit(title, rows, cap=table_budget):
             lines.append(f"\n**{title}** ({len(rows)} sites):")
             if rows:
                 lines.append(_sp_header); lines.append(_sp_sep)
-                lines.extend(rows[:cap])
-                if len(rows) > cap:
-                    lines.append(f"\n…and {len(rows) - cap} more.")
+                kept, kept_idx = _select_representative(rows, budget=cap, key=_gap_of)
+                lines.extend(row for _s, row in kept)
+                tail = _omitted_summary(rows, kept_idx, _sp_feat_keys)
+                if tail:
+                    lines.append(tail)
             else:
                 lines.append("_none._")
 

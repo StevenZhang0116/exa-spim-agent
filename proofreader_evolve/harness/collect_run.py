@@ -146,8 +146,11 @@ def collect(run_dir: Path) -> dict:
         "final_policy": final,
         "rules_changelog": _rules_changelog(run_dir, final),
         "artifacts": {
+            # ledger.jsonl is the single source of truth for per-generation state.
+            # The human-readable attempts timeline is rendered on demand from it via
+            # ``python -m proofreader_evolve.harness.ledger <run_dir>`` (there is no
+            # longer a standalone attempts.md file).
             "ledger": str(run_dir / "ledger.jsonl"),
-            "attempts": str(run_dir / "attempts.md"),
             "final_heuristics": final.get("heuristics_path", ""),
             "final_rules": final.get("rules_path", ""),
         },

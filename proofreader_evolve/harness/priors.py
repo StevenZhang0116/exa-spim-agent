@@ -52,15 +52,21 @@ _RECALL_KW = (
 class Finding:
     """One parsed knowledge-base finding (see module docstring for the fields)."""
 
-    __slots__ = ("num", "title", "priority", "verdict_line", "conclusion", "tags")
+    __slots__ = ("num", "title", "priority", "verdict_line", "conclusion", "tags",
+                 "text")
 
-    def __init__(self, num, title, priority, verdict_line, conclusion, tags):
+    def __init__(self, num, title, priority, verdict_line, conclusion, tags, text=""):
         self.num = num
         self.title = title
         self.priority = priority
         self.verdict_line = verdict_line
         self.conclusion = conclusion
         self.tags = tags
+        # Lowercased title + conclusion — the corpus for CONTENT matching against a
+        # generation's failure signature (see relevance()). Matching the whole text,
+        # not just the title, is what lets the KB be re-titled / reworded without
+        # silently losing a finding's routing (the old title-keyword weakness).
+        self.text = text
 
     @property
     def qualifies(self) -> bool:
@@ -72,6 +78,8 @@ class Finding:
 
 
 def _tags_for(title: str) -> set:
+    """Coarse precision/recall tags from the title (kept as ONE weak signal for
+    relevance(); no longer the sole router — content overlap dominates)."""
     t = title.lower()
     tags = set()
     if any(k in t for k in _PRECISION_KW):
@@ -79,6 +87,64 @@ def _tags_for(title: str) -> set:
     if any(k in t for k in _RECALL_KW):
         tags.add("recall")
     return tags
+
+
+# Vocabulary that describes each failure mode's GEOMETRY, used to score a finding's
+# CONTENT (title + conclusion) against the current failure — a graded overlap, not a
+# title-keyword gate. Broader than the tag keywords on purpose: relevance is a score,
+# so extra terms help rank rather than mis-route.
+_MODE_VOCAB = {
+    "precision": ("angle", "angular", "crossing", "collinear", "colinear", "parallel",
+                  "cosine", "continuation", "radius", "caliber", "ratio", "overlap",
+                  "asymmetric", "tortuosity", "inertia", "runaway", "giant",
+                  "false merge", "over-merge", "precision", "distinct", "different"),
+    "recall": ("threshold", "proximity", "gap", "distance", "reconnect", "search",
+               "bimodal", "branch", "distal", "terminal", "micro", "tiny", "small",
+               "split", "missed", "recall", "dropout", "reach"),
+}
+
+
+def _tokenize(s: str) -> set:
+    return set(re.findall(r"[a-z][a-z\-]{2,}", (s or "").lower()))
+
+
+def relevance(f: "Finding", failure_mode: str, signature=None) -> float:
+    """Graded relevance of a finding to THIS generation's failure — CONTENT-based.
+
+    Combines three signals (all in [0,1]-ish, summed) instead of a title-keyword gate:
+      * mode-vocabulary overlap: how much the finding's TEXT talks about the geometry
+        of the dominant failure mode (precision vs recall vocab);
+      * signature overlap: tokens shared with a free-form ``signature`` string built
+        from the actual failure report (e.g. dominant feature axes), when provided;
+      * a small tag bonus (the old precision/recall tag) and a tiny Priority nudge as
+        a tie-breaker — Priority ranks discovery importance, so it only breaks ties.
+    Higher = more relevant. Never raises; unknown mode falls back to both vocabs.
+    """
+    text_tokens = _tokenize(f.text or f.title)
+    vocab = set()
+    if failure_mode in _MODE_VOCAB:
+        vocab = set(_MODE_VOCAB[failure_mode])
+    else:  # cold_start / both / unknown -> consider both geometries
+        for v in _MODE_VOCAB.values():
+            vocab |= set(v)
+    # Count vocab hits as substrings of the finding text (so multi-word phrases like
+    # "false merge" match), normalized by vocab size.
+    ftext = (f.text or f.title or "")
+    vocab_hits = sum(1 for kw in vocab if kw in ftext)
+    vocab_score = vocab_hits / max(1, len(vocab)) * 4.0   # weight up (dominant signal)
+
+    sig_score = 0.0
+    if signature:
+        sig_tokens = _tokenize(signature)
+        if sig_tokens:
+            overlap = len(text_tokens & sig_tokens)
+            sig_score = overlap / max(1, len(sig_tokens)) * 3.0
+
+    want = {"precision": {"precision"}, "recall": {"recall"}}.get(
+        failure_mode, {"precision", "recall"})
+    tag_bonus = 0.5 if (f.tags & want) else 0.0
+    priority_nudge = min(max(f.priority, 0.0), 1.0) * 0.1   # tie-breaker only
+    return vocab_score + sig_score + tag_bonus + priority_nudge
 
 
 def load_findings(priors_path: str) -> list:
@@ -112,7 +178,8 @@ def load_findings(priors_path: str) -> list:
                 after = after.split(":", 1)[1] if ":" in after else after
                 conclusion = after.lstrip("* )").strip()
         findings.append(Finding(num, title, priority, verdict_line,
-                                 conclusion, _tags_for(title)))
+                                 conclusion, _tags_for(title),
+                                 text=f"{title}. {conclusion}".lower()))
 
     for line in text.splitlines():
         m = _HEADER_RE.match(line)
@@ -130,37 +197,77 @@ def load_findings(priors_path: str) -> list:
     return findings
 
 
-def select_for_report(findings: list, failure_mode: str, k: int = 2) -> list:
-    """Pick up to ``k`` QUALIFYING findings most relevant to ``failure_mode``.
+def select_for_report(findings: list, failure_mode: str, k: int = 2,
+                       signature=None, failed_findings=None, shown_counts=None) -> list:
+    """Pick up to ``k`` QUALIFYING findings for THIS generation — content-matched,
+    with the harness feedback loop CLOSED (not just displayed).
 
-    ``failure_mode`` is one of ``precision`` (policy is creating false merges —
-    over-merging), ``recall`` (correct merges but splits likely left unrepaired),
-    or ``cold_start``/``both`` (mix). We rank qualifying findings by whether they
-    carry the matching tag, then by the finding's own Priority. Findings tagged for
-    BOTH modes (e.g. a proximity classifier) sort high under either mode, which is
-    intended — they are foundational to the merge_labels lever.
+    Ranking (highest first), all deterministic:
+      1. CONTENT relevance to the current failure (``relevance`` over the finding's
+         full text + an optional ``signature`` string built from the actual failure
+         report), replacing the old title-keyword-only gate (fix #3).
+      2. Penalize findings already CITED in a generation that was then REVERTED
+         (``failed_findings``): a lever that was tried against the current lineage and
+         did not beat the parent should not be re-offered first (fix #2). It is
+         down-weighted, not hard-excluded, so it can still resurface if nothing else
+         qualifies and the failure mode shifts.
+      3. ROTATE by exposure: findings surfaced many times already (``shown_counts``)
+         are nudged down so the reviser eventually sees the whole qualifying set
+         rather than the same two every generation (fix #2).
+
+    ``failed_findings`` : set[int] of finding numbers cited in a reverted gen.
+    ``shown_counts``    : dict[int,int] of how many times each finding was surfaced.
+    Both default empty (first generation / feedback disabled) → pure content ranking.
     """
     q = [f for f in findings if f.qualifies]
     if not q:
         return []
-    want = {"precision": {"precision"}, "recall": {"recall"}}.get(
-        failure_mode, {"precision", "recall"})
+    failed = set(failed_findings or ())
+    shown = dict(shown_counts or {})
 
     def _key(f):
-        match = 1 if (f.tags & want) else 0
-        return (match, f.priority)
+        score = relevance(f, failure_mode, signature)
+        if f.num in failed:
+            score -= 2.0                      # tried-and-reverted: strong down-weight
+        score -= 0.5 * shown.get(f.num, 0)    # rotation: fade with repeated exposure
+        # Tie-break deterministically by finding number so the order is stable.
+        return (score, -f.num)
 
     q.sort(key=_key, reverse=True)
     return q[:k]
 
 
-def _snippet(f: Finding, n: int = 200) -> str:
-    """The threshold/discriminator line the reviser can key a rule on."""
-    c = f.conclusion or ""
-    # First sentence (or a hard cap) — enough to carry the headline number.
-    dot = c.find(". ")
-    s = c[: dot + 1] if 0 < dot < n else c[:n]
-    return s.strip()
+_NUM_RE = re.compile(r"\d")
+
+
+def _snippet(f: Finding, n: int = 480) -> str:
+    """The threshold/discriminator text the reviser can key a rule on.
+
+    A rule needs the OPERATIVE NUMBER (e.g. "6.84 µm threshold", "angle > 45°",
+    "radius ratio ~1.0"), and in this KB that number is usually NOT in the first
+    sentence — the opener is often setup ("Tested whether …"). So instead of the old
+    first-sentence-only cut (which dropped the number), keep the sentences that carry
+    a DIGIT (the thresholds/discriminators), always including the first for context,
+    up to ``n`` chars. Falls back to the leading text if nothing is numeric.
+    """
+    c = (f.conclusion or "").strip()
+    if not c:
+        return ""
+    # Split into sentences on ". " (keep it simple; the KB is prose).
+    import re as _re
+    sents = [s.strip() for s in _re.split(r"(?<=[.;])\s+", c) if s.strip()]
+    if not sents:
+        return c[:n]
+    kept, seen = [], set()
+    # Always include the first sentence (context), then every number-bearing one.
+    for i, s in enumerate(sents):
+        if i == 0 or _NUM_RE.search(s):
+            if s not in seen:
+                kept.append(s); seen.add(s)
+        if sum(len(x) + 1 for x in kept) >= n:
+            break
+    out = " ".join(kept).strip()
+    return out[:n] if len(out) > n else out
 
 
 def render_section(selected: list, failure_mode: str) -> list:
@@ -207,14 +314,24 @@ def render_section(selected: list, failure_mode: str) -> list:
     return lines
 
 
-def build_report_section(priors_path: str, failure_mode: str, k: int = 2) -> list:
-    """Convenience: load + select + render in one call. [] on any failure so the
-    report builder can splice the result unconditionally."""
+def build_report_section(priors_path: str, failure_mode: str, k: int = 2,
+                         signature=None, failed_findings=None, shown_counts=None):
+    """Convenience: load + select + render in one call.
+
+    Returns ``(lines, shown_nums)`` where ``lines`` is the markdown block (``[]`` on
+    any failure, so the report builder can splice unconditionally) and ``shown_nums``
+    is the list of finding numbers actually surfaced this generation — the caller
+    uses it to update ``shown_counts`` (rotation) for the next call. The extra args
+    thread the CLOSED feedback loop (signature = content match; failed_findings =
+    down-weight tried-and-reverted; shown_counts = rotation)."""
     try:
         findings = load_findings(priors_path)
-        return render_section(select_for_report(findings, failure_mode, k), failure_mode)
+        selected = select_for_report(findings, failure_mode, k, signature=signature,
+                                     failed_findings=failed_findings,
+                                     shown_counts=shown_counts)
+        return render_section(selected, failure_mode), [f.num for f in selected]
     except Exception:
-        return []
+        return [], []
 
 
 # A rules.md change-log citation of a finding, e.g. "Finding #8", "finding 8",
@@ -230,10 +347,51 @@ def cited_findings(change_log_text: str) -> set:
 
     Layer-2 'grounded' detection: the prompt already asks the reviser to cite the
     finding number(s) it relied on in the rules.md change log. A citation means the
-    prior actually SHAPED the edit — strictly stronger than ``read_priors`` (which
-    only proves the file was opened). Used to tag the generation grounded vs
-    exploratory so we can measure whether grounding generalizes better.
+    prior MAY have shaped the edit — but citing is not the same as USING (see
+    ``supported_citations`` for the stronger check). Used to tag the generation
+    grounded vs exploratory so we can measure whether grounding generalizes better.
     """
     if not change_log_text:
         return set()
     return {int(m.group(1)) for m in _CITE_RE.finditer(change_log_text)}
+
+
+# Domain stop-words: tokens too generic to prove a finding was actually USED (they
+# appear in almost every finding + almost every rule change). A citation is only
+# "supported" if the added text shares CONTENTFUL vocabulary with the finding beyond
+# these — so "I applied finding #1" with no matching geometry term is NOT supported.
+_GENERIC_TOKENS = frozenset((
+    "the", "and", "for", "with", "this", "that", "split", "merge", "merges", "splits",
+    "neuron", "neurons", "fragment", "fragments", "gap", "edit", "edits", "policy",
+    "rule", "rules", "finding", "change", "threshold", "add", "added", "use", "using",
+))
+
+
+def supported_citations(change_log_text: str, added_code_text: str,
+                        findings: list) -> set:
+    """Subset of cited findings whose CONTENT actually shows up in what the reviser
+    changed — a stronger 'grounded' signal than a bare ``#N`` citation.
+
+    A citation of finding N is SUPPORTED when the reviser's added text (rules change
+    log + the added heuristics.py lines) shares at least one CONTENTFUL token with
+    finding N's own text (title + conclusion), excluding generic domain stop-words.
+    This distinguishes "cited AND the edit reflects the finding's geometry" from
+    "typed #N but changed something unrelated" — closing the gap the reviewer flagged
+    (citing ≠ using). Conservative by construction: it can miss a genuine use that
+    shares no vocabulary, so it is reported ALONGSIDE the raw citation, not instead of
+    it (the harness records both; the payoff analysis can use the stronger one).
+    """
+    cited = cited_findings(change_log_text)
+    if not cited or not findings:
+        return set()
+    by_num = {f.num: f for f in findings}
+    added_tokens = _tokenize(f"{change_log_text}\n{added_code_text or ''}") - _GENERIC_TOKENS
+    supported = set()
+    for n in cited:
+        f = by_num.get(n)
+        if f is None:
+            continue
+        ftoks = (_tokenize(f.text or f.title) - _GENERIC_TOKENS)
+        if added_tokens & ftoks:
+            supported.add(n)
+    return supported
