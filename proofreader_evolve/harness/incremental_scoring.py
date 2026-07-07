@@ -403,6 +403,17 @@ def build_prepared_brain(
 
     max_workers caps the graph-loading pools so the build fits a memory-limited
     cgroup. Default 2 is safe for a ~9 GB session; raise it if you have more RAM.
+
+    MCL-INDEPENDENT (do not break this without renaming the shared cache): the built
+    PreparedBrain is loaded from the RAW GCS graphs (paths.fragments_path /
+    paths.gt_path) with an identity handler and NO min_cable_length filter — so its
+    content is the SAME for mcl=10 and mcl=100. That is why the shared cache
+    (shared_prepared_cache_path) omits mcl from its filename and checksum(). mcl only
+    controls the SEPARATE fragment cache (dataset_cache_<brain>_mcl<mcl>.pkl) used for
+    candidate ENUMERATION, never this object. If you ever make the prepared build
+    depend on mcl (e.g. pre-filter fragments by cable length here), you MUST add mcl
+    to shared_prepared_cache_path()'s filename and to metadata()/checksum(), or runs
+    at different mcl will silently reuse the wrong cache.
     """
     _cap_graph_loading_workers(max_workers)
     _install_periodic_progress_log()  # capture-safe progress lines for the SWC read

@@ -88,6 +88,26 @@ def _row_fitness(r: dict) -> float:
     return float(score) - penalty * float(false)
 
 
+def _cumulative_cost(rows: list[dict]) -> list[float]:
+    """Cumulative agent $ across generations, robust to BOTH ledger conventions.
+
+    ``cost_usd`` has meant two different things over this project's history:
+      * PER-GENERATION (current): each gen opens a FRESH ClaudeSDKClient, so
+        ``ResultMessage.total_cost_usd`` is that gen's OWN session total — it rises
+        and falls with how much work the gen did. These must be cumsum'd.
+      * ALREADY-CUMULATIVE (old runs): one persistent session was shared across the
+        whole loop, so ``cost_usd`` was the running session total and already
+        monotonic. Cumsumming those would double-count.
+
+    We disambiguate from the data alone: an already-cumulative series is
+    non-decreasing; a per-gen series dips. So if the raw series is non-decreasing we
+    take it as-is, otherwise we cumsum. (Single-gen runs coincide either way.)
+    """
+    raw = [float(r.get("cost_usd", 0.0) or 0.0) for r in rows]
+    already_cumulative = all(b >= a for a, b in zip(raw, raw[1:]))
+    return raw if already_cumulative else list(np.cumsum(raw))
+
+
 def _running_parent_bar(rows: list[dict], key=None) -> list[float]:
     """The bar each generation had to BEAT = best accepted value so far.
 
@@ -121,14 +141,14 @@ def make_figure(rows: list[dict], run_name: str, out_path: Path) -> Path:
     # The penalty in force (last row's; constant within a run). For the title only.
     penalty = float(rows[-1].get("merge_penalty", 100.0)) if rows else 100.0
 
-    # Cumulative cost. NOTE the two ledger fields differ in kind:
-    #   * wall_seconds is PER-GENERATION (time.monotonic() - gen_wall0, reset each
-    #     gen), so we cumsum it to get cumulative wall-clock.
-    #   * cost_usd is ALREADY CUMULATIVE: it is ResultMessage.total_cost_usd from the
-    #     ONE persistent ClaudeSDKClient session shared across all generations, i.e.
-    #     the running session total — so we use it directly (cumsum would double-count).
+    # Cumulative cost. BOTH series are per-generation in kind now, so both cumsum:
+    #   * wall_seconds is PER-GENERATION (time.monotonic() - gen_wall0, reset each gen).
+    #   * cost_usd is PER-GENERATION too: each gen opens a FRESH ClaudeSDKClient, so
+    #     ResultMessage.total_cost_usd is that gen's own session total (it dips when a
+    #     gen did less work). _cumulative_cost() cumsums it — while still handling OLD
+    #     ledgers whose cost_usd was already the running total of one shared session.
     cum_min = np.cumsum([r.get("wall_seconds", 0.0) for r in rows]) / 60.0
-    cum_usd = [r.get("cost_usd", 0.0) for r in rows]
+    cum_usd = _cumulative_cost(rows)
 
     acc_color = ["#2ca02c" if a else "#d62728" for a in accepted]
     splits_only = any(r.get("splits_only") for r in rows)
@@ -206,24 +226,25 @@ def write_csv(rows: list[dict], parent_bar: list[float], path: Path) -> Path:
 
     ``parent_bar`` is the FITNESS bar (the gate variable). Column names mirror the
     ledger, EXCEPT cost is renamed to make its kind explicit: wall_seconds is
-    per-generation; cost_usd_cumulative is the running session total (already
-    cumulative in the ledger).
+    per-generation; cost_usd_cumulative is the running total we compute here (cost_usd
+    is per-generation now, so we cumsum it — see _cumulative_cost).
     """
     cols = ["generation", "accepted", "heldout_fitness", "parent_fitness_bar",
             "merge_penalty", "heldout_split_repair_score",
             "heldout_correct_merges", "heldout_false_merges", "heldout_n_edits",
             "wall_seconds", "cost_usd_cumulative", "splits_only"]
+    cum_usd = _cumulative_cost(rows)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(cols)
-        for r, bar in zip(rows, parent_bar):
+        for r, bar, cum in zip(rows, parent_bar, cum_usd):
             w.writerow([r.get("generation"), r.get("accepted"),
                         _row_fitness(r), bar, r.get("merge_penalty", 100.0),
                         r.get("heldout_split_repair_score"),
                         r.get("heldout_correct_merges"), r.get("heldout_false_merges"),
                         r.get("heldout_n_edits"), r.get("wall_seconds"),
-                        r.get("cost_usd"), r.get("splits_only")])
+                        cum, r.get("splits_only")])
     return path
 
 
@@ -239,9 +260,11 @@ def summarize(rows: list[dict]) -> str:
     scores = [r.get("heldout_split_repair_score", 0) for r in rows]
     best_score = max(scores) if scores else 0
     total_min = sum(r.get("wall_seconds", 0.0) for r in rows) / 60.0
-    # cost_usd is the running SESSION total (cumulative), so the run total is the
-    # LAST/MAX value, NOT a sum over generations.
-    total_usd = max((r.get("cost_usd", 0.0) for r in rows), default=0.0)
+    # cost_usd is per-generation (fresh session each gen), so the run total is the
+    # cumulative series' last value. _cumulative_cost() also handles old ledgers
+    # whose cost_usd was already the running total of one shared session.
+    cum_usd = _cumulative_cost(rows)
+    total_usd = cum_usd[-1] if cum_usd else 0.0
     return (f"{len(rows)} generations, {len(accepted)} accepted. "
             f"fitness {first:g} -> best {best:g} (best split-repair score {best_score}). "
             f"{total_min:.0f} min wall, ${total_usd:.2f} agent cost (cumulative).")

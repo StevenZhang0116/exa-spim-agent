@@ -40,6 +40,10 @@ truncated pickle for a later run to load.
   and repopulates. Each file is ~1.6 GB.
 - To **force a clean rebuild**, delete the brain's file here (and the per-run
   `runs/<run>/prepared_<brain>.pkl`), or call `get_or_build(..., shared_cache=False)`.
-- The per-run `runs/<run>/prepared_<brain>.pkl` is a separate, self-contained copy
-  kept for fast resume of that specific run; it is preferred over this shared cache
-  when present.
+- This **shared** cache is the single source of truth and is **preferred over any
+  per-run copy**: `get_or_build` reads it first and, on a hit, deletes the redundant
+  `runs/<run>/prepared_<brain>.pkl`. A per-run pickle is written only as a fallback
+  (a legacy/older-code copy, a resume, or when `shared_cache=False`); when one is
+  found it is **promoted into this shared cache and then deleted**, so state converges
+  here. The one exception is `get_or_build(..., shared_cache=False)`, which never
+  touches this cache and keeps the per-run copy as the only store.

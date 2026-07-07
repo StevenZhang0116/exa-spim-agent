@@ -95,7 +95,6 @@ from proofreader_evolve.harness import (
     dataset as ds,
     candidate as cand,
     incremental_scoring as inc,
-    priors as priors_kb,
 )
 from proofreader_evolve.harness.ledger import Ledger, GenerationCost
 
@@ -592,49 +591,18 @@ def _format_attempts(attempts: list[dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _grounded_vs_exploratory(gen_gap: list[dict]) -> str:
-    """Compare the generalization gap of GROUNDED vs EXPLORATORY accepted gens.
-
-    Layer 2 of the priors overhaul: each accepted gen carries ``grounded`` (did the
-    reviser cite a discovery finding?). If we have >=1 of EACH kind, report the mean
-    train→held-out gap for each group so the reviser learns EMPIRICALLY whether
-    grounding its changes in the validated priors is paying off on held-out — the
-    feedback loop that makes the priors a measured bias, not a blind mandate. Returns
-    "" when we lack both groups (nothing to compare) or ``grounded`` is unknown.
-    """
-    g = [r for r in gen_gap if r.get("grounded") is True]
-    e = [r for r in gen_gap if r.get("grounded") is False]
-    if not g or not e:
-        return ""
-    def _gap(rows):
-        return sum(r["train"] - r["heldout"] for r in rows) / len(rows)
-    gg, eg = _gap(g), _gap(e)
-    verdict = (
-        "GROUNDED changes are generalizing BETTER (smaller train→held-out gap) — keep "
-        "citing validated findings" if gg < eg else
-        "grounded and exploratory generalize about the same" if abs(gg - eg) < 1e-9 else
-        "EXPLORATORY changes generalized better here — the inlined priors may not fit "
-        "this brain; weigh them, don't follow blindly")
-    return (
-        f"\nGROUNDING PAYOFF (accepted gens, by whether they cited a discovery "
-        f"finding): grounded (n={len(g)}) mean train→held-out gap = {gg:+.1f}; "
-        f"exploratory (n={len(e)}) gap = {eg:+.1f}. {verdict}.\n"
-    )
-
-
 def _format_gen_gap(gen_gap: list[dict], window: int = 5) -> str:
     """Render the train→held-out generalization-gap meta-signal for the prompt.
 
-    ``gen_gap`` holds one ``{"gen", "train", "heldout", "grounded"}`` per ACCEPTED
-    generation — the candidate's TRAIN and HELD-OUT split-repair scores (and whether
-    it cited a prior). We show only the AGGREGATE over the last ``window`` accepts
-    (mean train score, mean held-out score, and the gap), so the reviser can SEE
-    whether its accepted changes generalize — without ever revealing which neurons
-    are held-out. A train score persistently far above held-out = overfitting the
-    train split; the reviser should then favor changes grounded in generalizable
-    geometry over ones that only chase train-specific sites. Empty until there are
-    >=2 accepted generations (a gap needs history). A grounded-vs-exploratory
-    breakdown is appended once both kinds have been accepted.
+    ``gen_gap`` holds one ``{"gen", "train", "heldout"}`` per ACCEPTED generation —
+    the candidate's TRAIN and HELD-OUT split-repair scores. We show only the
+    AGGREGATE over the last ``window`` accepts (mean train score, mean held-out
+    score, and the gap), so the reviser can SEE whether its accepted changes
+    generalize — without ever revealing which neurons are held-out. A train score
+    persistently far above held-out = overfitting the train split; the reviser
+    should then favor changes grounded in generalizable geometry over ones that
+    only chase train-specific sites. Empty until there are >=2 accepted generations
+    (a gap needs history).
     """
     if len(gen_gap) < 2:
         return ""
@@ -655,7 +623,6 @@ def _format_gen_gap(gen_gap: list[dict], window: int = 5) -> str:
         f"improvements grounded in GENERALIZABLE geometry/topology (tangent "
         f"continuity, caliber match, endpoint degree) over ones that chase "
         f"train-specific recall.\n"
-        + _grounded_vs_exploratory(gen_gap)
     )
 
 
@@ -679,19 +646,18 @@ def _format_priors(priors_path: str | None) -> str:
     if not priors_path:
         return ""
     return (
-        f"\n\nThe failure report now INLINES (near its top, 'Grounding priors' "
-        f"section) the FEW validated findings matched to THIS generation's dominant "
-        f"failure mode — start there. They come from a validated, cross-run knowledge "
-        f"base of U-Net error regularities at {priors_path} (AutoDiscovery workflow: "
-        f"each finding carries Reproduction / Generalization / Verdict / "
-        f"Post-correction tokens). Use them as a PRIOR to ground your improvement in "
-        f"already-verified geometry/topology rather than re-deriving from scratch. "
-        f"DISCIPLINE on which findings to trust:\n"
-        f"  • The inlined findings are ALREADY pre-filtered to those whose "
-        f"Generalization is GENERALIZES and whose post-correction Verdict is UPHELD/OK "
-        f"(robust across every brain AND after cluster-robust correction). If none "
-        f"fits this failure, open {priors_path} and pick another QUALIFYING finding "
-        f"by the same rule — do not privilege any particular one.\n"
+        f"\n\nA validated, cross-run knowledge base of U-Net error regularities is "
+        f"available at {priors_path} (produced by the AutoDiscovery workflow: each "
+        f"finding carries Reproduction / Generalization / Verdict / Post-correction "
+        f"tokens). READ it and use it as a PRIOR to ground your improvement in "
+        f"already-verified geometry/topology — do not re-derive from scratch what it "
+        f"already establishes. DISCIPLINE on which findings to trust:\n"
+        f"  • Survey ALL the findings and USE only those whose Generalization is "
+        f"GENERALIZES AND whose post-correction Verdict is UPHELD or OK (robust "
+        f"across every brain AND after cluster-robust statistical correction). Do "
+        f"not privilege any particular finding — read the file, judge each by its "
+        f"verdict tokens, and pick the one(s) most relevant to THIS generation's "
+        f"failure report.\n"
         f"  • DISTRUST and do NOT bake in any finding marked DOES-NOT-GENERALIZE, "
         f"PARTIAL, WEAKENED, or OVERTURNED (e.g. Z-axis anisotropy, centrifugal "
         f"branch-order, omit/split-near-merge co-location) — those held only on one "
@@ -704,11 +670,7 @@ def _format_priors(priors_path: str | None) -> str:
         f"NOT this run's labels — using their thresholds/discriminators is fair game "
         f"and does NOT violate the no-hardcoded-label rule; never copy a raw "
         f"segment-id literal.\n"
-        f"Cite the finding number(s) you relied on in your rules.md change log — "
-        f"e.g. 'Finding #8'. This is MEASURED: generations that cite a finding are "
-        f"tracked as 'grounded' and their held-out generalization is compared to "
-        f"un-cited ('exploratory') ones (see the GROUNDING PAYOFF line), so an honest "
-        f"citation feeds the loop that decides whether grounding is helping."
+        f"Cite the finding number(s) you relied on in your rules.md change log."
     )
 
 
@@ -1499,54 +1461,6 @@ def _confidence_level(repair: dict, conf: dict) -> str:
     return "medium"
 
 
-def _dominant_failure_mode(train_repair: dict) -> str:
-    """Coarse label for THIS generation's dominant failure mode, from the TRAIN
-    split-repair counts, used to MATCH grounding priors to the report (Layer 1).
-
-    Leak-free: uses only the train-classified correct/false/unscored counts already
-    computed for the generalization-gap signal — no held-out, no neuron identity.
-      * no correct AND no false yet          -> "cold_start" (policy not merging)
-      * any false merges present             -> "precision" (over-merging dominates)
-      * correct merges, zero false           -> "recall"    (safe so far; push recall)
-      * otherwise                            -> "both"
-    Priors only BIAS the proposal, so a coarse mode is enough; the held-out gate,
-    not this label, still decides accept/reject.
-    """
-    correct = train_repair.get("correct", 0)
-    false = train_repair.get("false", 0)
-    if correct == 0 and false == 0:
-        return "cold_start"
-    if false > 0:
-        return "precision"
-    if correct > 0:
-        return "recall"
-    return "both"
-
-
-def _failure_signature(train_repair: dict, train_runs: list) -> str:
-    """A free-text description of THIS generation's failure, for CONTENT-matching the
-    grounding priors (priors.relevance) to the actual situation — not just a coarse
-    mode label. Leak-free: built only from TRAIN split-repair counts + the geometry of
-    the edits the policy MISSED / got WRONG (the same train-side signal already used
-    for the failure mode). Names the geometric axes in play so a finding whose text
-    talks about that geometry scores higher.
-    """
-    correct = train_repair.get("correct", 0)
-    false = train_repair.get("false", 0)
-    terms = []
-    if false > 0:
-        terms += ["over-merge", "false merge", "crossing", "angle", "collinear",
-                  "radius", "caliber", "precision"]
-    if correct == 0 and false == 0:
-        terms += ["proximity", "gap", "threshold", "reconnect", "not merging"]
-    # Recall pressure: many enumerated split sites but few edits emitted.
-    n_sites = sum(getattr(r, "n_sites", 0) for r in (train_runs or []))
-    n_edits = sum(getattr(r, "n_edits", 0) for r in (train_runs or []))
-    if n_sites and n_edits < 0.5 * n_sites:
-        terms += ["missed", "recall", "gap", "distance", "threshold", "reach", "branch"]
-    return " ".join(terms)
-
-
 async def run_evolution(
     brain: str, generations: int, heldout_fraction: float,
     human: bool, verbose: bool, model: str = DEFAULT_MODEL,
@@ -1815,23 +1729,15 @@ async def run_evolution(
     # "are my changes generalizing?" becomes visible feedback. Each entry:
     # {"gen": int, "train": int, "heldout": int}.
     gen_gap_history: list[dict] = []
-    # CLOSED priors feedback loop (fixes the "measured but ignored" gap): how often
-    # each finding has been SURFACED (rotation — fade repeats so the whole qualifying
-    # set gets exposure) and which findings were CITED in a generation that was then
-    # REVERTED (down-weight tried-and-failed levers). Both feed select_for_report.
-    priors_shown_counts: dict[int, int] = {}
-    priors_failed: set[int] = set()
-    # TOKEN COST: open a FRESH ClaudeSDKClient PER GENERATION (not one shared session
-    # for the whole loop). A shared session accumulates every prior generation's
-    # failure report (~6-7K tokens each) + full reviser transcript in-context, so
-    # input tokens grew ~QUADRATICALLY with generation count — yet none of that stale
-    # history is needed: each generation is parent-relative and stateless, and the
-    # only memory that must carry forward is re-encoded compactly and passed into
-    # ask_reviser every gen (attempts_vs_parent, gen_gap_history, structural_lessons).
-    # A clean per-gen session makes per-generation input cost FLAT (system prompt +
-    # this gen's report + those small summaries) with zero loss of carried memory.
-    for gen in range(1, generations + 1):
-        async with ClaudeSDKClient(options=options) as client:
+    # ONE shared ClaudeSDKClient for the WHOLE loop: the session is opened once and
+    # every generation's reviser call reuses it, so the running conversation (each
+    # prior generation's failure report + full reviser transcript) stays in-context.
+    # The SDK client manages the context window across generations. NOTE: this makes
+    # per-generation input tokens grow with generation count (the whole history is
+    # re-sent each turn) — the compact carried-forward summaries (attempts_vs_parent,
+    # gen_gap_history, structural_lessons) are still passed into ask_reviser as before.
+    async with ClaudeSDKClient(options=options) as client:
+        for gen in range(1, generations + 1):
             print(f"\n=== Generation {gen}/{generations} ===")
             gen_wall0 = time.monotonic()
             gen_dir = run_dir / f"gen{gen:02d}"
@@ -1845,30 +1751,12 @@ async def run_evolution(
                     train_ctxs, "train_names", str(work_heuristics), "train",
                     max_class_size, verbose, splits_only=splits_only,
                 )
-            # Train split-repair score of the CURRENT policy (this gen, on train).
-            # Computed HERE (before the report) so it can BOTH pick the grounding
-            # priors' failure mode below AND feed the generalization-gap signal later.
-            # Same metric as the gate, but on the TRAIN map (leak-free); cheap (reuses
-            # train_runs' edits).
+            # Train split-repair score of the CURRENT policy (this gen, on train),
+            # for the generalization-gap meta-signal. Same metric as the gate, but on
+            # the TRAIN map — so train_repair["score"] vs the held-out score below
+            # shows whether a change generalizes. Cheap (reuses train_runs' edits).
             train_repair = _pooled_split_repair(train_ctxs, train_runs,
                                                 map_attr="label_gt_map")
-            # Layer 1 — inline the FEW validated priors matched to this generation's
-            # dominant failure mode, so the reviser is grounded by DEFAULT (no reliance
-            # on it opening the knowledge-base file). Empty list when priors are
-            # unavailable/disabled, so the writers splice nothing.
-            failure_mode = _dominant_failure_mode(train_repair)
-            # Content-match the priors to this gen's actual failure (signature) and
-            # thread the CLOSED loop: down-weight tried-and-reverted findings, rotate
-            # by prior exposure. Returns which findings were surfaced so we can update
-            # the rotation counter.
-            priors_signature = _failure_signature(train_repair, train_runs)
-            priors_section, priors_shown_now = (
-                priors_kb.build_report_section(
-                    priors_path, failure_mode, signature=priors_signature,
-                    failed_findings=priors_failed, shown_counts=priors_shown_counts)
-                if priors_path else ([], []))
-            for _n in priors_shown_now:
-                priors_shown_counts[_n] = priors_shown_counts.get(_n, 0) + 1
             report_path = str(gen_dir / "failure_report.md")
             # SPLIT-ERROR-ONLY: withhold merge_labels from the report so every
             # merge-diagnosis section (Baseline merge errors, MergeSite feature
@@ -1891,14 +1779,10 @@ async def run_evolution(
                 cand.write_failure_report(tr, base_sr, report_path,
                                           merge_labels=ml, label_gt_map=lgm,
                                           fragments_graph=fg, extra_sections=probe,
-                                          priors_section=priors_section,
                                           merge_penalty=merge_penalty)
             else:
                 cand.write_multibrain_failure_report(per_brain_report, report_path,
-                                                     priors_section=priors_section,
                                                      merge_penalty=merge_penalty)
-            if priors_section:
-                log(f"   grounding priors inlined (failure mode: {failure_mode})")
             train_acc = scoring._weighted_avg(
                 _pd.concat([tr.score.per_swc for tr in train_runs]), "Edge Accuracy")
             n_edits_total = sum(tr.n_edits for tr in train_runs)
@@ -1922,7 +1806,7 @@ async def run_evolution(
                 log(f"   [ALERT] {train_false} train-side false merge(s) — over-merges "
                     f"the held-out gate does NOT see (see failure report)")
             # (train_repair for the generalization-gap signal was computed above,
-            # before the report, so it could also select the grounding priors.)
+            # before the report.)
 
             # (4-5) Ask the agent to explain and revise the WORKING-COPY artifacts.
             log("Step 4-5: proofreader-reviser diagnoses and revises artifacts...")
@@ -1942,55 +1826,13 @@ async def run_evolution(
             candidate_path, diffstat = save_candidate(gen_dir, work_heuristics, work_rules)
             log(f"   candidate saved -> {candidate_path} (diffstat vs parent: {diffstat})")
 
-            # Layer 2 — GROUNDED detection. The prompt asks the reviser to cite the
-            # finding number(s) it relied on in the rules.md change log; a citation in
-            # the lines it ADDED this generation means a prior actually SHAPED the edit
-            # (strictly stronger than read_priors, which only proves the file was
-            # opened). We diff the parent rules snapshot (gen_dir/rules.md, from
-            # snapshot()) against what the reviser wrote (work_rules) and scan only the
-            # added lines. grounded is None when no priors were configured.
-            grounded = None
-            cited = set()
-            supported = set()          # citations whose CONTENT shows up in the edit
-            if priors_path:
-                try:
-                    import difflib as _dl
-                    def _added_lines(parent_path, cand_path):
-                        p = parent_path.read_text().splitlines()
-                        c = Path(cand_path).read_text().splitlines()
-                        return "\n".join(
-                            ln[1:] for ln in _dl.unified_diff(p, c, lineterm="")
-                            if ln.startswith("+") and not ln.startswith("+++"))
-                    _added_rules = _added_lines(gen_dir / "rules.md", work_rules)
-                    # Also diff the CODE the reviser added — a finding is only truly
-                    # "used" if its geometry shows up in the rule or the code, not just
-                    # the change-log prose.
-                    _added_code = _added_lines(gen_dir / "heuristics.py", work_heuristics)
-                    cited = priors_kb.cited_findings(_added_rules)
-                    # #5: strengthen the grounded proxy — a citation is SUPPORTED only
-                    # if the finding's contentful vocabulary actually appears in what
-                    # the reviser changed (rules + code), distinguishing "cited AND
-                    # used" from "typed #N but changed something unrelated".
-                    supported = priors_kb.supported_citations(
-                        _added_rules, _added_code, priors_kb.load_findings(priors_path))
-                except Exception:
-                    cited = set(); supported = set()
-                # grounded now requires a SUPPORTED citation (stronger than a bare #N).
-                grounded = bool(supported)
-            if grounded:
-                _bare = sorted(cited - supported)
-                log(f"   grounded: reviser cited AND used discovery finding(s) "
-                    f"{sorted(supported)}"
-                    + (f" (also cited but unsupported: {_bare})" if _bare else ""))
-            elif grounded is False:
-                if cited:
-                    log(f"   [WARN] cited finding(s) {sorted(cited)} but none are "
-                        f"SUPPORTED (the edit does not reflect the finding's geometry) "
-                        f"— counted EXPLORATORY, not grounded")
-                else:
-                    log("   [WARN] priors were inlined but the reviser cited NO finding "
-                        "— this generation is EXPLORATORY (un-grounded); recorded so we "
-                        "can compare grounded vs exploratory generalization")
+            # Verify the prior was actually consulted (we grant the tool + allow the
+            # path, but only the tool stream proves it was used). Loud if not.
+            if read_priors is True:
+                log("   reviser READ the discovery priors this generation")
+            elif read_priors is False:
+                log("   [WARN] discovery priors were available but the reviser did "
+                    "NOT read them this generation — improvement is un-grounded")
 
             # Harness-side import check (the reviser no longer has Bash to do it).
             # A revision that doesn't import is a dead candidate -> revert to parent.
@@ -2195,13 +2037,10 @@ async def run_evolution(
                     parent_repair = cand_repair       # advance the primary gate bar
                     # Record this accepted policy's train vs held-out split-repair
                     # scores for the generalization-gap meta-signal (next gen's prompt).
-                    # ``grounded`` lets the next gen compare grounded vs exploratory
-                    # generalization (Layer 2).
                     gen_gap_history.append({
                         "gen": gen,
                         "train": train_repair["score"],
                         "heldout": cand_repair["score"],
-                        "grounded": grounded,
                     })
                 shutil.copy2(work_heuristics, gen_dir / "heuristics.accepted.py")
                 shutil.copy2(work_rules, gen_dir / "rules.accepted.md")
@@ -2212,17 +2051,9 @@ async def run_evolution(
                 # Parent advanced: prior rejections were against the OLD parent and
                 # no longer apply, so clear the in-prompt memory.
                 attempts_vs_parent = []
-                # A cited finding that just got ACCEPTED is no longer a failed lever —
-                # clear it so it can be offered again to a future generation.
-                priors_failed -= cited
             else:
                 revert(gen_dir, work_heuristics, work_rules)  # restore the parent
                 note = "reverted (did not beat parent)"
-                # CLOSE THE PRIORS LOOP (#2): a finding cited in a REVERTED generation
-                # is a lever that was tried and did not beat the parent — down-weight it
-                # in future selection so the reviser stops being handed the same failed
-                # lever. (Cleared on a later accept above.)
-                priors_failed |= cited
                 # Remember this rejected attempt so the next gen proposes something new.
                 # Delta is in FITNESS units (penalized), matching the gate.
                 attempts_vs_parent.append({
@@ -2296,9 +2127,6 @@ async def run_evolution(
                 splits_only=splits_only,
                 heldout_split_label_dropped=heldout_dropped,
                 read_priors=read_priors,
-                grounded=grounded,
-                cited_findings=",".join(str(n) for n in sorted(cited)),
-                supported_findings=",".join(str(n) for n in sorted(supported)),
                 train_false_merges=train_false,
                 candidate_path=candidate_path,
                 heuristics_diffstat=diffstat,

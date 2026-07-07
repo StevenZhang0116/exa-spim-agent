@@ -153,9 +153,15 @@ class Ledger:
         accepted = [r for r in rows if r["accepted"]]
         total_s = sum(r["wall_seconds"] for r in rows)
         total_out = sum(r["output_tokens"] for r in rows)
-        # cost_usd is the running SESSION total (cumulative), so the run total is the
-        # LAST/MAX value, NOT a sum over generations.
-        total_cost = max((r.get("cost_usd", 0.0) for r in rows), default=0.0)
+        # cost_usd is PER-GENERATION now (each gen opens a fresh ClaudeSDKClient, so
+        # ResultMessage.total_cost_usd is that gen's own session total), so the run
+        # total is the SUM. Old ledgers used one shared session and recorded an
+        # already-cumulative (non-decreasing) cost_usd; for those the sum would
+        # double-count, so take the last value instead. Disambiguate from the data:
+        # non-decreasing => already cumulative (use last); else per-gen (sum).
+        _costs = [r.get("cost_usd", 0.0) or 0.0 for r in rows]
+        _already_cumulative = all(b >= a for a, b in zip(_costs, _costs[1:]))
+        total_cost = _costs[-1] if _already_cumulative else sum(_costs)
         total_human = sum(r["human_interventions"] for r in rows)
         # Read the current key; fall back to the legacy "heldout_primary" so old
         # ledgers still summarize.
