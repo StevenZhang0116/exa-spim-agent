@@ -42,10 +42,9 @@ Each generation snapshots them, lets the agent revise, re-scores on held-out, an
 either keeps or reverts. Every generation's cost is recorded.
 
 Run from the project root (exa-spim-agent/):
-    python proofreader_evolve/run_evolution.py --brain 789202 --generations 5
-    python proofreader_evolve/run_evolution.py --brain 789202 --generations 5 --human-gate
-    # split-error-only, mega-merge guard on, wider candidate stream (mcl10), no priors:
-    python proofreader_evolve/run_evolution.py --brain 789202 --generations 40 --no-priors --splits-only --max-class-size 6 --mcl 10
+    # cross-brain (train on 794491, gate on a WHOLE held-out brain 794495),
+    # split-error-only, mega-merge guard on, wider candidate stream (mcl10):
+    python proofreader_evolve/run_evolution.py --train-brains 794491 --test-brains 794495 --generations 30 --splits-only --max-class-size 6 --mcl 10
 """
 
 from __future__ import annotations
@@ -434,58 +433,21 @@ def build_options(model: str = DEFAULT_MODEL, run_dir: Path | None = None,
     return opts, state
 
 
-def _resolve_seed_source(seed_from: str) -> tuple[Path, Path]:
-    """Resolve ``--seed-from`` to a prior run's latest ACCEPTED (heuristics, rules).
-
-    ``seed_from`` is a run-id folder name (or a brain id -> newest matching run).
-    Returns the paths of that run's last ``gen*/heuristics.accepted.py`` and
-    ``rules.accepted.md``. Raises if the run has no accepted generation (nothing
-    to continue from).
-    """
-    runs_root = HERE / "runs"
-    run_dir = runs_root / seed_from
-    if not run_dir.is_dir():
-        matches = sorted(runs_root.glob(f"{seed_from}_*"), key=lambda p: p.stat().st_mtime)
-        if not matches:
-            raise SystemExit(f"--seed-from: no run folder matches {seed_from!r} under {runs_root}")
-        run_dir = matches[-1]
-    accepted = sorted(run_dir.glob("gen*/heuristics.accepted.py"))
-    if not accepted:
-        raise SystemExit(
-            f"--seed-from {run_dir.name}: that run has no accepted generation "
-            f"(no gen*/heuristics.accepted.py) — nothing to continue from."
-        )
-    h = accepted[-1]
-    r = h.parent / "rules.accepted.md"
-    if not r.exists():
-        raise SystemExit(f"--seed-from {run_dir.name}: {h.name} found but {r.name} missing.")
-    return h, r
-
-
-def make_working_artifacts(run_dir: Path, seed_from: str | None = None) -> tuple[Path, Path]:
-    """Copy the starting artifacts into this run's timestamped dir and return the
-    copies' paths. The run reads/revises ONLY these copies; the originals under
-    ``artifacts/`` are never touched, so the run is reproducible and the
+def make_working_artifacts(run_dir: Path) -> tuple[Path, Path]:
+    """Copy the pristine starting artifacts into this run's timestamped dir and
+    return the copies' paths. The run reads/revises ONLY these copies; the originals
+    under ``artifacts/`` are never touched, so the run is reproducible and the
     before/after files are trivially identifiable (original = ``artifacts/``,
     this run = ``runs/<brain>_<timestamp>/artifacts/``).
 
-    By DEFAULT the start is the pristine seed (``artifacts/``), i.e. from scratch.
-    If ``seed_from`` is given (a prior run-id), the run instead CONTINUES from that
-    run's latest accepted policy, so lineages can compound across runs. The
-    pristine ``artifacts/`` seed is never modified either way.
+    The start is always the pristine seed (``artifacts/``), i.e. from scratch.
     """
     work_dir = run_dir / "artifacts"
     work_dir.mkdir(parents=True, exist_ok=True)
     work_heuristics = work_dir / "heuristics.py"
     work_rules = work_dir / "rules.md"
-    if seed_from:
-        src_h, src_r = _resolve_seed_source(seed_from)
-        log(f"Seeding from prior run's accepted policy: {src_h}")
-    else:
-        src_h, src_r = HERE / "artifacts" / "heuristics.py", HERE / "artifacts" / "rules.md"
-    # HERE/artifacts == ARTIFACTS; use the module constants for the default seed.
-    shutil.copy2(src_h if seed_from else HEURISTICS, work_heuristics)
-    shutil.copy2(src_r if seed_from else RULES, work_rules)
+    shutil.copy2(HEURISTICS, work_heuristics)
+    shutil.copy2(RULES, work_rules)
     return work_heuristics, work_rules
 
 
@@ -1501,15 +1463,15 @@ def _confidence_level(repair: dict, conf: dict) -> str:
 async def run_evolution(
     brain: str, generations: int, heldout_fraction: float,
     human: bool, verbose: bool, model: str = DEFAULT_MODEL,
-    score_margin: int = 1, max_class_size=None, seed_from: str | None = None,
-    split_seed: int | None = None,
+    score_margin: int = 1,  # FIXED at 1 (accept any net fitness improvement); not a CLI arg
+    max_class_size=None,
     k_folds: int = 1,
     brains: list | None = None, splits_only: bool = False,
     use_priors: bool = True, mcl: int = 100,
-    converge_patience: int = 0, converge_eps: int = 1,
     train_brains: list | None = None, test_brains: list | None = None,
     merge_penalty: float = 100.0,
     confidence_veto: bool = False,
+    hard_merge_reject: bool = False,
 ) -> None:
     # CROSS-BRAIN mode: --train-brains + --test-brains assign WHOLE brains to roles —
     # every train brain's neurons feed the failure report, every test brain's neurons
@@ -1575,11 +1537,11 @@ async def run_evolution(
     ledger = Ledger(str(run_dir / "ledger.jsonl"))
 
     # Work on TIMESTAMPED COPIES of the artifacts, never the originals. The agent
-    # reads/revises only these; artifacts/ stays pristine. By default the start is
-    # the pristine seed (from scratch); --seed-from continues a prior run's policy.
-    work_heuristics, work_rules = make_working_artifacts(run_dir, seed_from=seed_from)
+    # reads/revises only these; artifacts/ stays pristine. The start is always the
+    # pristine from-scratch seed.
+    work_heuristics, work_rules = make_working_artifacts(run_dir)
     log(f"Run {run_id}")
-    log(f"  start policy: {'continuing run ' + seed_from if seed_from else 'from-scratch seed'}")
+    log(f"  start policy: from-scratch seed")
     log(f"  originals (untouched): {HEURISTICS}")
     log(f"  working copies (revised this run): {work_heuristics}")
     if splits_only:
@@ -1588,10 +1550,9 @@ async def run_evolution(
             "only merge_labels). Merge-error repair is deferred.")
 
     # --- One-time setup: load+prepare EVERY brain (expensive, cached) -----------
-    # Split seed: RANDOM by default; drawn once and shared across brains so every
-    # brain's 70/30 split is reproducible from this one recorded seed.
-    if split_seed is None:
-        split_seed = int.from_bytes(os.urandom(4), "little")
+    # Split seed: drawn RANDOMLY once and shared across brains so every brain's
+    # 70/30 split is reproducible from this one seed (recorded in split.json).
+    split_seed = int.from_bytes(os.urandom(4), "little")
     if cross_brain:
         log(f"CROSS-BRAIN mode: train={train_brains} -> feedback, "
             f"test={test_brains} -> gate (whole-brain held-out; no within-brain split)")
@@ -1694,6 +1655,10 @@ async def run_evolution(
         f"bar gen 1 must beat by score_margin={score_margin} (keep iff fitness gain "
         f">= {score_margin}; a false merge costs {merge_penalty:g} each, so it is "
         f"heavily discouraged but no longer an automatic reject)")
+    if hard_merge_reject:
+        log("GATE MODE: --hard-merge-reject ON — ANY held-out false merge (false>0) "
+            "rejects the candidate outright (9ca88bb gate); the merge_penalty fitness "
+            "still gates false-free candidates via score_margin.")
     # Full pooled held-out metric vector of the parent (run-length-weighted over the
     # pool). Advances on every accept.
     parent_metrics = {m: scoring._weighted_avg(seed_pooled, m)
@@ -1747,12 +1712,6 @@ async def run_evolution(
     # B: memory of revisions tried against the CURRENT parent; cleared when the
     # parent advances (an accept), since past rejections no longer apply.
     attempts_vs_parent: list[dict] = []
-    # Convergence / early-stop (opt-in via --converge-patience > 0): record the
-    # ACCEPTED parent penalized FITNESS at the END of each generation. We stop when
-    # the parent has gained < converge_eps over the last converge_patience gens — a
-    # plateau where further reviser calls (one LLM + two scoring passes each) are
-    # unlikely to pay off. Disabled (0) reproduces the run-all-generations behavior.
-    parent_score_history: list[float] = [_fitness(parent_repair, merge_penalty)]  # gen 0
     # Generalization-gap meta-signal (shown to the reviser): for each ACCEPTED
     # generation, the candidate's TRAIN split-repair score vs its HELD-OUT score.
     # A persistently larger train gain than held-out gain = overfitting the train
@@ -1977,7 +1936,21 @@ async def run_evolution(
                 _fnote = ("false 0" if _fmerges == 0 else
                           f"false {_fmerges} (penalty -{merge_penalty:g}*{_fmerges}="
                           f"{-merge_penalty * _fmerges:g})")
-                if _gain >= score_margin:
+                # HARD MERGE REJECT (--hard-merge-reject): restore the 9ca88bb gate.
+                # ANY held-out false merge (fusing two DIFFERENT neurons) rejects the
+                # candidate outright, regardless of how much recall it gained — the
+                # smoothed merge_penalty fitness is bypassed as the accept criterion.
+                # This is the strict-precision gate: false==0 is a HARD constraint, not
+                # a penalty. (It still requires the fitness margin too, so a false-free
+                # candidate that does not improve is not accepted just for being clean.)
+                if hard_merge_reject and cand_repair["false"] > 0:
+                    improved = False
+                    gate_reason = (
+                        f"HARD-REJECT: {cand_repair['false']} held-out false merge(s) "
+                        f"(fused DIFFERENT neurons) — --hard-merge-reject forbids any "
+                        f"false>0 (9ca88bb gate); fitness {cand_fitness:g} vs parent "
+                        f"{parent_bar:g} ({_gain:+g}) is not consulted")
+                elif _gain >= score_margin:
                     improved = True
                     gate_reason = (
                         f"fitness {parent_bar:g} -> {cand_fitness:g} ({_gain:+g} >= "
@@ -2154,19 +2127,6 @@ async def run_evolution(
                 diagnosis=(diagnosis or "")[:2000],  # truncate; full text is in stdout
             ))
 
-            # Convergence / early-stop (opt-in). The parent's penalized FITNESS AFTER
-            # this gen's accept/revert is the bar, so the history tracks the accepted
-            # frontier. Stop once it has gained < converge_eps over the last
-            # converge_patience generations (a plateau).
-            parent_score_history.append(_fitness(parent_repair, merge_penalty))
-            if converge_patience > 0 and len(parent_score_history) > converge_patience:
-                window_gain = parent_score_history[-1] - parent_score_history[-1 - converge_patience]
-                if window_gain < converge_eps:
-                    log(f"[converged] parent fitness gained {window_gain:g} "
-                        f"(< eps {converge_eps}) over the last {converge_patience} "
-                        f"generation(s) — stopping early at gen {gen}/{generations}.")
-                    break
-
     # Run-isolation audit: if the reviser ever attempted to touch a sibling run's
     # files, the guard denied it — but flag the run loudly so the result isn't
     # trusted as an independent sample.
@@ -2257,8 +2217,9 @@ def main() -> int:
                         "70/30 train/test split.")
     p.add_argument("--k-folds", type=int, default=1,
                    help="K-fold slicing of the held-out set, DIAGNOSTIC ONLY. The "
-                        "accept/reject gate is the POOLED split-repair score (see "
-                        "--score-margin), not a per-fold vote; K>1 only adds per-fold "
+                        "accept/reject gate is the POOLED split-repair fitness "
+                        "(kept iff it beats the parent by the fixed margin of 1), not a "
+                        "per-fold vote; K>1 only adds per-fold "
                         "Edge-Accuracy breakdown to the log / split.json so you can "
                         "see how stable a generation's result is across folds. "
                         "Default 1. Clamped to the held-out neuron count. Scoring "
@@ -2267,14 +2228,6 @@ def main() -> int:
                    help="ask a human before keeping each revision")
     p.add_argument("--model", default=DEFAULT_MODEL,
                    help=f"reviser model id (default: {DEFAULT_MODEL}, Anthropic API)")
-    p.add_argument("--score-margin", type=int, default=1,
-                   help="minimum amount a generation's pooled held-out penalized "
-                        "FITNESS (split-repair score minus --merge-penalty*false) must "
-                        "EXCEED the parent's by to be accepted: keep iff fitness gain "
-                        ">= score-margin. Default 1 (accept any net improvement). "
-                        "Raise to 2-3 so a single-repair swing (within noise on a "
-                        "small held-out set) is not locked in as the new parent. "
-                        "Integer.")
     p.add_argument("--merge-penalty", type=float, default=100.0,
                    help="per-false-merge penalty in the held-out FITNESS "
                         "(fitness = (correct - false) - merge_penalty*false). REPLACES "
@@ -2285,7 +2238,18 @@ def main() -> int:
                         "that trades one false merge for a large recall gain can be "
                         "kept. Raise for stricter precision, lower to tolerate more "
                         "merge error. Set very high (e.g. 1e9) to recover the old "
-                        "hard gate.")
+                        "hard gate, or use --hard-merge-reject for the exact 9ca88bb "
+                        "behavior.")
+    p.add_argument("--hard-merge-reject", action="store_true",
+                   help="Restore the 9ca88bb GATE: reject ANY candidate that creates "
+                        "even ONE held-out false merge (fuses two DIFFERENT neurons), "
+                        "regardless of recall gained. false==0 becomes a HARD "
+                        "constraint rather than the --merge-penalty soft penalty (the "
+                        "penalized fitness is not consulted once false>0). A false-free "
+                        "candidate must still improve the fitness (beat the parent) to be "
+                        "accepted. Default OFF (smoothed merge-penalty gate). Cleaner "
+                        "than --merge-penalty 1e9: it rejects on the COUNT, not on a "
+                        "penalty large enough to also swamp any real recall.")
     p.add_argument("--confidence-veto", action="store_true",
                    help="OPT-IN: let the ① confidence layer BLOCK an otherwise-accepted "
                         "generation when the decision is LOW confidence — i.e. it rests "
@@ -2299,24 +2263,6 @@ def main() -> int:
     p.add_argument("--max-class-size", type=int, default=None,
                    help="hard cap on labels fused into one merge class (guardrail "
                         "against brain-spanning mega-merges); default: no cap")
-    p.add_argument("--converge-patience", type=int, default=0,
-                   help="early-stop: stop if the ACCEPTED parent split-repair score "
-                        "improves by < --converge-eps over this many CONSECUTIVE "
-                        "generations (a plateau). Default 0 = disabled (run all "
-                        "--generations). E.g. 4 stops once 4 gens in a row add < eps.")
-    p.add_argument("--converge-eps", type=int, default=1,
-                   help="minimum parent-score gain over a --converge-patience window "
-                        "that counts as 'still improving'. Default 1 (the score is an "
-                        "integer count of net repairs). Only used when "
-                        "--converge-patience > 0.")
-    p.add_argument("--seed-from", default=None,
-                   help="CONTINUE from a prior run's latest accepted policy "
-                        "(run-id folder name, or brain id for its newest run) "
-                        "instead of the from-scratch seed; default: from scratch")
-    p.add_argument("--split-seed", type=int, default=None,
-                   help="RNG seed for the train/held-out split. Default: random "
-                        "per run (recorded in the run's split.json). Pass an int "
-                        "to pin a reproducible split.")
     p.add_argument("--splits-only", action="store_true",
                    help="SPLIT-ERROR-ONLY fast mode: drop every split_label "
                         "(merge-error) edit before scoring, so only merge_labels "
@@ -2344,15 +2290,14 @@ def main() -> int:
         asyncio.run(run_evolution(
             args.brain, args.generations, args.heldout_fraction,
             args.human_gate, args.verbose, args.model,
-            score_margin=args.score_margin, max_class_size=args.max_class_size,
-            seed_from=args.seed_from, split_seed=args.split_seed,
+            max_class_size=args.max_class_size,
             k_folds=args.k_folds, brains=brains,
             splits_only=args.splits_only, use_priors=args.use_priors,
             mcl=args.mcl,
-            converge_patience=args.converge_patience, converge_eps=args.converge_eps,
             train_brains=train_brains, test_brains=test_brains,
             merge_penalty=args.merge_penalty,
             confidence_veto=args.confidence_veto,
+            hard_merge_reject=args.hard_merge_reject,
         ))
     except KeyboardInterrupt:
         # Ctrl-C: note it in the (still-teed) log, then exit non-zero quietly.
