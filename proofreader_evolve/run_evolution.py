@@ -535,39 +535,6 @@ def revert(gen_dir: Path, heuristics: Path, rules: Path) -> None:
     shutil.copy2(gen_dir / "rules.md", rules)
 
 
-STRUCTURAL_LESSON_CAP = 12  # max over-merge taboos shown, to bound prompt tokens
-
-
-def _format_structural_lessons(lessons: list[dict]) -> str:
-    """Render the cross-parent 'over-merge taboo' list for the prompt.
-
-    Unlike ``_format_attempts`` (which is scoped to the CURRENT parent and cleared
-    on every accept), this list holds revisions that were REJECTED and had also
-    created a false merge on held-out. A false merge means the change fused two
-    DIFFERENT neurons — that is a property of the geometric condition the change
-    loosened, NOT of the parent it was competing against — so the lesson must PERSIST
-    across parents. Otherwise the reviser re-derives the same over-merge direction
-    against each new parent and the gate's fitness penalty has to catch it again.
-    Only scalar counts + the change summary are shown (no neuron identity), so this is
-    the same leak-safety level as the attempts list.
-    """
-    if not lessons:
-        return ""
-    lines = ["\nOVER-MERGE TABOO (persists across accepted generations). Each change "
-             "below CREATED >=1 false merge on held-out (fused two DIFFERENT neurons) "
-             "and was rejected. Under the smoothed gate a false merge is not an "
-             "automatic reject, but each costs a heavy fitness penalty (~merge_penalty "
-             "correct repairs), so these are high over-merge-RISK directions, NOT "
-             "parent-specific misses: only revisit one with MATERIALLY STRONGER "
-             "precision evidence (e.g. an image bridge_ratio confirmation) or a much "
-             "larger recall payoff, never by merely re-loosening the same geometric "
-             "threshold:"]
-    for L in lessons:
-        lines.append(f"  - gen{L['gen']}: {L['summary']} -> created {L['false']} "
-                     f"false merge(s)")
-    return "\n".join(lines) + "\n"
-
-
 def _format_attempts(attempts: list[dict]) -> str:
     """Render the prior-attempts archive (B: reviser memory) for the prompt.
 
@@ -594,35 +561,70 @@ def _format_attempts(attempts: list[dict]) -> str:
 def _format_gen_gap(gen_gap: list[dict], window: int = 5) -> str:
     """Render the train→held-out generalization-gap meta-signal for the prompt.
 
-    ``gen_gap`` holds one ``{"gen", "train", "heldout"}`` per ACCEPTED generation —
-    the candidate's TRAIN and HELD-OUT split-repair scores. We show only the
-    AGGREGATE over the last ``window`` accepts (mean train score, mean held-out
-    score, and the gap), so the reviser can SEE whether its accepted changes
-    generalize — without ever revealing which neurons are held-out. A train score
-    persistently far above held-out = overfitting the train split; the reviser
-    should then favor changes grounded in generalizable geometry over ones that
-    only chase train-specific sites. Empty until there are >=2 accepted generations
-    (a gap needs history).
+    ``gen_gap`` holds one ``{"gen", "train", "heldout", "train_reachable",
+    "heldout_reachable"}`` per ACCEPTED generation — the candidate's TRAIN and
+    HELD-OUT split-repair scores AND the number of repairable real splits each side
+    exposes. We show the AGGREGATE over the last ``window`` accepts so the reviser can
+    SEE whether its accepted changes generalize — without ever revealing which neurons
+    are held-out.
+
+    WHY RECALL FRACTION, NOT RAW GAP. The split-repair score is an unnormalized COUNT
+    of repaired real splits, and the train brain typically exposes MANY more repairable
+    real splits than the held-out brain (~13x in the 789202/794491 cross-brain split:
+    2723 train vs 203 held-out reachable). So the raw ``train - heldout`` count gap
+    widens with EVERY genuine recall gain — it mostly measures brain size, not
+    non-transfer. Steering on the raw gap froze the recall lever for whole runs even
+    though held-out recall was climbing in lockstep with (and here, ABOVE) train recall
+    (observed 789202 run 20260706: raw gap grew 52->224 while the held/train recall
+    ratio held flat and recall itself was the ONLY lever that moved the held-out score,
+    corr 0.99). We therefore compare RECALL FRACTION (correct / reachable_real) per
+    side: that is comparable across brains of different size, so a real overfit shows as
+    train recall pulling ahead of held-out recall, and honest transfer does not trip it.
+    Empty until there are >=2 accepted generations (a gap needs history).
     """
     if len(gen_gap) < 2:
         return ""
     recent = gen_gap[-window:]
+
+    def _recall(key_score, key_reach):
+        num = sum(r.get(key_score, 0) for r in recent)
+        den = sum(r.get(key_reach, 0) for r in recent)
+        return (num / den) if den else float("nan")
+
+    tr = _recall("train", "train_reachable")
+    hr = _recall("heldout", "heldout_reachable")
     mt = sum(r["train"] for r in recent) / len(recent)
     mh = sum(r["heldout"] for r in recent) / len(recent)
-    gap = mt - mh
-    trend = ("widening (train pulling ahead of held-out)" if gap > 0
-             else "held-out keeping pace" if abs(gap) < 1e-9
-             else "held-out ahead (unusual; not overfitting)")
+    # The overfit verdict is on the RECALL fractions, not the raw count gap. Only a
+    # train recall MEANINGFULLY above held-out recall is real overfitting; a raw-count
+    # gap driven purely by the larger train denominator is not.
+    have_rates = tr == tr and hr == hr  # both non-NaN (denominators present)
+    rgap = (tr - hr) if have_rates else float("nan")
+    if not have_rates:
+        verdict = (
+            "reachable-real denominators unavailable this window — cannot normalize; "
+            "treat the raw scores as counts on DIFFERENT-SIZED label sets, NOT a "
+            "transfer signal, and keep improving the geometry")
+    elif rgap > 0.10:
+        verdict = (
+            "train recall is pulling meaningfully ahead of held-out recall — your "
+            "recent accepted changes repair train splits that DON'T carry over. Prefer "
+            "improvements grounded in GENERALIZABLE geometry/topology (tangent "
+            "continuity, caliber match, endpoint degree) over ones that chase "
+            "train-specific recall")
+    else:
+        verdict = (
+            "held-out recall is keeping pace with (or ahead of) train recall — your "
+            "changes ARE generalizing. The raw score gap is mostly the larger train "
+            "brain exposing more repairable splits, NOT overfitting. KEEP RAISING "
+            "RECALL: it is what moves the held-out gate")
     return (
         f"\n\nGENERALIZATION CHECK (aggregate over the last {len(recent)} ACCEPTED "
-        f"generations; no neuron identities, just scores): mean TRAIN split-repair "
-        f"score = {mt:.1f}, mean HELD-OUT split-repair score = {mh:.1f}, "
-        f"gap (train - held-out) = {gap:+.1f} — {trend}. The gate scores you on "
-        f"HELD-OUT, so a large positive gap means your recent accepted changes "
-        f"repair train splits that DON'T carry over. If the gap is widening, prefer "
-        f"improvements grounded in GENERALIZABLE geometry/topology (tangent "
-        f"continuity, caliber match, endpoint degree) over ones that chase "
-        f"train-specific recall.\n"
+        f"generations; no neuron identities). Compared as RECALL FRACTION "
+        f"(repaired / repairable real splits), which is comparable across brains of "
+        f"different size — NOT raw counts: TRAIN recall = {tr:.1%} "
+        f"(mean score {mt:.1f}), HELD-OUT recall = {hr:.1%} (mean score {mh:.1f}); "
+        f"recall gap (train - held-out) = {rgap:+.1%}. {verdict}.\n"
     )
 
 
@@ -682,10 +684,14 @@ async def ask_reviser(
     splits_only: bool = False,
     gen_gap: list[dict] | None = None,
     transcript_path: str | None = None,
-    structural_lessons: list[dict] | None = None,
 ):
     """Run the proofreader-reviser subagent on the failure report. Returns
-    (text, input_tokens, output_tokens, cost_usd, read_priors). ``read_priors`` is
+    (text, input_tokens, output_tokens, cost_usd, read_priors,
+    cache_read_tokens, cache_creation_tokens), all token counts taken from the
+    terminal ResultMessage.usage (authoritative). ``input_tokens`` is UNCACHED input
+    only; ``cache_read_tokens`` is input served from the prompt cache — in the shared
+    session that dominates, so the true input the model saw is
+    ``input_tokens + cache_read_tokens + cache_creation_tokens``. ``read_priors`` is
     True/False when a priors file was configured (did the reviser actually Read it
     this generation?), or None when no priors were configured.
 
@@ -695,12 +701,6 @@ async def ask_reviser(
     into the prompt so the agent proposes something NEW. ``priors_path``, when
     given, points the agent at the validated discovery knowledge base (see
     ``_format_priors`` for the trust discipline applied to it).
-
-    ``structural_lessons`` (optional): the cross-parent 'over-merge taboo' list —
-    revisions that created a false merge on held-out. Unlike ``attempts`` it is NOT
-    cleared when the parent advances (a false merge is a geometric fact, not a
-    parent-relative miss), so the reviser stops re-deriving the same over-merge
-    direction against every new parent. See ``_format_structural_lessons``.
 
     ``transcript_path`` (optional): when given, the FULL per-generation reviser
     record — the prompt, every assistant THINKING block (the chain-of-thought, which
@@ -750,7 +750,6 @@ async def ask_reviser(
            "in image — improve the geometric `merge_labels` policy instead.")
         + _format_priors(priors_path)
         + _format_gen_gap(gen_gap or [])
-        + _format_structural_lessons(structural_lessons or [])
         + _format_attempts(attempts or [])
         + ("\nPropose a DIFFERENT improvement from any listed above."
            if attempts else "")
@@ -768,7 +767,22 @@ async def ask_reviser(
     # Full stream-ordered transcript events for transcript_path (thinking, text,
     # tool calls + results), so the saved record reads in the order it happened.
     transcript_events: list[str] = []
-    in_tok = out_tok = 0
+    # Token accounting. The AUTHORITATIVE numbers come from the terminal
+    # ResultMessage.usage (the CLI's end-of-turn accounting), NOT a hand-sum of the
+    # streamed AssistantMessage.usage blocks. The old hand-sum undercounted massively
+    # for TWO reasons: (1) the reviser runs inside a Task SUBAGENT whose usage is not
+    # all surfaced as parent AssistantMessages, and (2) it counted only ``input_tokens``
+    # /``output_tokens`` and IGNORED cache tokens — yet in the shared session almost
+    # ALL input is served from cache (``cache_read_input_tokens``), so the real input
+    # was ~150x what got logged. We now read every field from ResultMessage.usage and
+    # keep the streamed sum only as a fallback for SDKs that don't populate it.
+    #   NOTE (semantics): like ``total_cost_usd``, these ResultMessage.usage values may
+    #   be SESSION-CUMULATIVE in the shared-client design (monotonic across gens), not
+    #   per-gen. They are recorded RAW; delta consecutive ledger rows for a per-gen view
+    #   (the same disambiguation _cumulative_cost applies to cost_usd).
+    stream_in = stream_out = 0          # fallback only (streamed AssistantMessage sum)
+    in_tok = out_tok = 0                # uncached input / output (from ResultMessage)
+    cache_read_tok = cache_creation_tok = 0
     cost = 0.0
     # Did the reviser actually READ the discovery priors this generation? We can
     # grant the tool + allow the path, but only the tool-call stream tells us it was
@@ -812,19 +826,24 @@ async def ask_reviser(
                 elif ToolResultBlock and isinstance(block, ToolResultBlock):
                     _content = getattr(block, "content", "")
                     _ev(f"📤 tool result [{who}]", str(_content)[:4000])
-            # Sum token usage across ALL assistant messages (orchestrator +
-            # subagent), so the ledger reflects the subagent's real consumption,
-            # not just the parent's final ResultMessage.
+            # FALLBACK ONLY: sum streamed AssistantMessage usage. This undercounts
+            # (misses subagent + cache tokens) and is used solely when the terminal
+            # ResultMessage carries no usage dict (older SDKs).
             usage = getattr(message, "usage", None) or {}
-            in_tok += usage.get("input_tokens", 0) or 0
-            out_tok += usage.get("output_tokens", 0) or 0
+            stream_in += usage.get("input_tokens", 0) or 0
+            stream_out += usage.get("output_tokens", 0) or 0
         elif isinstance(message, ResultMessage):
             cost = getattr(message, "total_cost_usd", 0.0) or 0.0
-            # Fall back to the result usage only if no per-message usage was seen.
-            if in_tok == 0 and out_tok == 0:
-                ru = getattr(message, "usage", None) or {}
-                in_tok = ru.get("input_tokens", 0) or 0
-                out_tok = ru.get("output_tokens", 0) or 0
+            # AUTHORITATIVE: the CLI's end-of-turn usage accounting, including the
+            # subagent's consumption AND the cache tokens the streamed sum ignores.
+            ru = getattr(message, "usage", None) or {}
+            in_tok = ru.get("input_tokens", 0) or 0
+            out_tok = ru.get("output_tokens", 0) or 0
+            cache_read_tok = ru.get("cache_read_input_tokens", 0) or 0
+            cache_creation_tok = ru.get("cache_creation_input_tokens", 0) or 0
+            # If the ResultMessage had no usage dict at all, keep the streamed sum.
+            if not ru:
+                in_tok, out_tok = stream_in, stream_out
     # Prefer the subagent's diagnosis; fall back to orchestrator text if the SDK
     # surfaced none (older SDKs / different routing). Same precedence for thinking.
     text = "".join(sub_chunks) or "".join(orch_chunks)
@@ -840,7 +859,10 @@ async def ask_reviser(
                 f"- thinking captured: {'yes' if thinking else 'no'} "
                 f"({len(thinking)} chars)",
                 f"- final text: {len(text)} chars",
-                f"- tokens: in={in_tok} out={out_tok}; cost_usd={cost}",
+                f"- tokens: in={in_tok} out={out_tok} "
+                f"cache_read={cache_read_tok} cache_creation={cache_creation_tok} "
+                f"(total_in={in_tok + cache_read_tok + cache_creation_tok}); "
+                f"cost_usd={cost}",
                 f"- priors read: {read_priors}\n",
                 "## Prompt sent to the reviser\n",
                 "```\n" + instruction + "\n```\n",
@@ -853,7 +875,7 @@ async def ask_reviser(
             log(f"   [WARN] could not write reviser transcript "
                 f"({transcript_path}): {_e}")
 
-    return text, in_tok, out_tok, cost, read_priors
+    return text, in_tok, out_tok, cost, read_priors, cache_read_tok, cache_creation_tok
 
 
 def lint_no_hardcoded_labels(
@@ -1217,6 +1239,14 @@ def _pooled_split_repair(brains: list, per_brain_runs: list,
     # used, so the per-edit re-classification matches this pooled pass.
     tot["_by_brain"] = list(zip(brains, per_brain_runs))
     tot["_map_attr"] = map_attr
+    # ``reachable_real`` = count of enumerated SplitSites whose two labels share a
+    # dominant neuron in THIS map's scope = the repairable-real-split DENOMINATOR for
+    # this side (matches the coverage json's per_site["reachable"]). Recall =
+    # correct / reachable_real. This is the denominator the generalization-gap signal
+    # MUST divide by: the train brain exposes ~13x more reachable real splits than the
+    # held-out brain, so raw scores are not comparable across the split — see
+    # ``_format_gen_gap``.
+    reachable_real = 0
     for bc, run in zip(brains, per_brain_runs):
         c = inc.classify_merge_edits(run.edits, getattr(bc, map_attr))
         tot["correct"] += c["correct"]
@@ -1224,7 +1254,14 @@ def _pooled_split_repair(brains: list, per_brain_runs: list,
         tot["unscored"] += c["unscored"]
         if c.get("unscored_pairs"):
             tot["_unscored_by_brain"].append((bc, run, c["unscored_pairs"]))
+        m = getattr(bc, map_attr)
+        for s in (getattr(run, "split_sites", None) or []):
+            da = inc._dominant_neuron(m, getattr(s, "label_a", None))
+            db = inc._dominant_neuron(m, getattr(s, "label_b", None))
+            if da is not None and da == db:
+                reachable_real += 1
     tot["score"] = tot["correct"] - tot["false"]
+    tot["reachable_real"] = reachable_real
     return tot
 
 
@@ -1710,11 +1747,6 @@ async def run_evolution(
     # B: memory of revisions tried against the CURRENT parent; cleared when the
     # parent advances (an accept), since past rejections no longer apply.
     attempts_vs_parent: list[dict] = []
-    # Over-merge taboo: revisions that CREATED a false merge on held-out. A false
-    # merge is a geometric fact about the loosened condition, not a parent-relative
-    # miss, so this list PERSISTS across parents (never cleared on accept) — it stops
-    # the reviser re-deriving the same over-merge direction against each new parent.
-    structural_lessons: list[dict] = []
     # Convergence / early-stop (opt-in via --converge-patience > 0): record the
     # ACCEPTED parent penalized FITNESS at the END of each generation. We stop when
     # the parent has gained < converge_eps over the last converge_patience gens — a
@@ -1735,7 +1767,7 @@ async def run_evolution(
     # The SDK client manages the context window across generations. NOTE: this makes
     # per-generation input tokens grow with generation count (the whole history is
     # re-sent each turn) — the compact carried-forward summaries (attempts_vs_parent,
-    # gen_gap_history, structural_lessons) are still passed into ask_reviser as before.
+    # gen_gap_history) are still passed into ask_reviser as before.
     async with ClaudeSDKClient(options=options) as client:
         for gen in range(1, generations + 1):
             print(f"\n=== Generation {gen}/{generations} ===")
@@ -1812,12 +1844,12 @@ async def run_evolution(
             log("Step 4-5: proofreader-reviser diagnoses and revises artifacts...")
             reviser_transcript = str(gen_dir / "reviser_transcript.md")
             with Heartbeat(f"gen {gen}: waiting on reviser (LLM)"):
-                diagnosis, in_tok, out_tok, cost, read_priors = await ask_reviser(
+                (diagnosis, in_tok, out_tok, cost, read_priors,
+                 cache_read_tok, cache_creation_tok) = await ask_reviser(
                     client, report_path, str(work_heuristics), str(work_rules), verbose,
                     attempts=attempts_vs_parent, priors_path=priors_path,
                     splits_only=splits_only, gen_gap=gen_gap_history,
                     transcript_path=reviser_transcript,
-                    structural_lessons=structural_lessons,
                 )
             log(f"   reviser transcript (thinking + text + tools) -> {reviser_transcript}")
 
@@ -2041,6 +2073,13 @@ async def run_evolution(
                         "gen": gen,
                         "train": train_repair["score"],
                         "heldout": cand_repair["score"],
+                        # Denominators so the gap can be compared as RECALL FRACTION,
+                        # not raw counts: train and held-out expose very different
+                        # numbers of repairable real splits (~13x here), so raw
+                        # train-minus-held-out mostly measures brain size, not
+                        # non-transfer. See ``_format_gen_gap``.
+                        "train_reachable": train_repair.get("reachable_real", 0),
+                        "heldout_reachable": cand_repair.get("reachable_real", 0),
                     })
                 shutil.copy2(work_heuristics, gen_dir / "heuristics.accepted.py")
                 shutil.copy2(work_rules, gen_dir / "rules.accepted.md")
@@ -2062,26 +2101,6 @@ async def run_evolution(
                     "heldout": cand_fitness - parent_bar,
                     "accepted": False,
                 })
-                # Structural lesson: a rejection whose candidate ALSO created a false
-                # merge is a fact about geometry, not about this parent, so it must
-                # outlive the parent. (With the smoothed gate a false merge no longer
-                # forces the reject — but if the candidate was rejected AND carried a
-                # false merge, the over-merge direction is still worth remembering.)
-                # Guard on import_ok: an import/lint failure copies parent_repair into
-                # cand_repair (false==0), so it can never be mis-logged as an over-merge.
-                if import_ok and cand_repair["false"] > 0:
-                    structural_lessons.append({
-                        "gen": gen,
-                        "false": cand_repair["false"],
-                        "summary": attempt_summary,
-                    })
-                    # Dedup by summary (keep most recent) and cap, to bound prompt size.
-                    seen, dedup = set(), []
-                    for L in reversed(structural_lessons):
-                        if L["summary"] in seen:
-                            continue
-                        seen.add(L["summary"]); dedup.append(L)
-                    structural_lessons = list(reversed(dedup))[-STRUCTURAL_LESSON_CAP:]
             # B (durable): every generation's attempt is persisted in ledger.jsonl
             # (the single source of truth) via ledger.record(...) just below. The old
             # per-run attempts.md is no longer written inline; render the same
@@ -2099,6 +2118,8 @@ async def run_evolution(
                 eval_seconds=eval_seconds,
                 input_tokens=in_tok,
                 output_tokens=out_tok,
+                cache_read_input_tokens=cache_read_tok,
+                cache_creation_input_tokens=cache_creation_tok,
                 cost_usd=cost,
                 n_evaluations=2,
                 human_interventions=human_touches,

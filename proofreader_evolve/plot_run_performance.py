@@ -92,12 +92,12 @@ def _cumulative_cost(rows: list[dict]) -> list[float]:
     """Cumulative agent $ across generations, robust to BOTH ledger conventions.
 
     ``cost_usd`` has meant two different things over this project's history:
-      * PER-GENERATION (current): each gen opens a FRESH ClaudeSDKClient, so
-        ``ResultMessage.total_cost_usd`` is that gen's OWN session total — it rises
-        and falls with how much work the gen did. These must be cumsum'd.
-      * ALREADY-CUMULATIVE (old runs): one persistent session was shared across the
-        whole loop, so ``cost_usd`` was the running session total and already
-        monotonic. Cumsumming those would double-count.
+      * ALREADY-CUMULATIVE (current): one persistent ClaudeSDKClient is shared across
+        the whole loop, so ``ResultMessage.total_cost_usd`` is the running session
+        total and already monotonic. Cumsumming these would double-count.
+      * PER-GENERATION (the intervening per-gen-session design): each gen opened a
+        FRESH ClaudeSDKClient, so ``cost_usd`` was that gen's OWN session total — it
+        rose and fell with how much work the gen did, so those must be cumsum'd.
 
     We disambiguate from the data alone: an already-cumulative series is
     non-decreasing; a per-gen series dips. So if the raw series is non-decreasing we
@@ -141,12 +141,14 @@ def make_figure(rows: list[dict], run_name: str, out_path: Path) -> Path:
     # The penalty in force (last row's; constant within a run). For the title only.
     penalty = float(rows[-1].get("merge_penalty", 100.0)) if rows else 100.0
 
-    # Cumulative cost. BOTH series are per-generation in kind now, so both cumsum:
-    #   * wall_seconds is PER-GENERATION (time.monotonic() - gen_wall0, reset each gen).
-    #   * cost_usd is PER-GENERATION too: each gen opens a FRESH ClaudeSDKClient, so
-    #     ResultMessage.total_cost_usd is that gen's own session total (it dips when a
-    #     gen did less work). _cumulative_cost() cumsums it — while still handling OLD
-    #     ledgers whose cost_usd was already the running total of one shared session.
+    # Cumulative cost + time. The two series differ in kind, so they are handled
+    # differently:
+    #   * wall_seconds is PER-GENERATION (time.monotonic() - gen_wall0, reset each
+    #     gen), so it is always cumsum'd here.
+    #   * cost_usd is ALREADY-CUMULATIVE now that one ClaudeSDKClient is shared across
+    #     the loop (ResultMessage.total_cost_usd is the running session total). So we
+    #     hand it to _cumulative_cost(), which takes a monotonic series as-is and only
+    #     cumsums the per-gen-session ledgers from the intervening fresh-client design.
     cum_min = np.cumsum([r.get("wall_seconds", 0.0) for r in rows]) / 60.0
     cum_usd = _cumulative_cost(rows)
 

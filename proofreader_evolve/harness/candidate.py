@@ -1160,11 +1160,13 @@ def write_failure_report(
         once per run by the caller and reused every generation, so it is independent
         of the per-generation policy/gate.
     priors_section : list of str, optional
-        Pre-rendered 'grounding priors' lines (``harness.priors.build_report_section``)
-        matched to this generation's dominant failure mode. Inlined near the TOP of
-        the report so the validated cross-brain geometry is in front of the reviser
-        by default (removing the old "reviser never opened the priors file" failure
-        mode). Population geometry only — leak-free, like every other section.
+        Pre-rendered 'grounding priors' lines, inlined near the TOP of the report
+        when supplied. CURRENTLY UNUSED by run_evolution.py: the loop was rewound to
+        the earlier design where the reviser is pointed at the discovery knowledge
+        base and READS it itself (see ``_format_priors``), rather than the harness
+        inlining a ranked menu. The parameter is retained (defaults to None => no
+        section) so the inlining path can be re-enabled without a signature change.
+        Population geometry only — leak-free, like every other section.
     """
     lines = ["# Candidate failure report (train split)\n"]
     if priors_section:
@@ -1196,7 +1198,9 @@ def write_multibrain_failure_report(per_brain: list, path: str,
 
     ``priors_section`` (optional): pre-rendered 'grounding priors' lines, inlined ONCE
     after the pooled header (a cross-brain generality, so it is not repeated per
-    brain). See ``write_failure_report`` and ``harness.priors``.
+    brain). CURRENTLY UNUSED by run_evolution.py (the loop reads the priors file
+    itself rather than inlining a menu — see ``write_failure_report``); retained for
+    re-enabling without a signature change.
     """
     brain_ids = [str(b) for b, *_ in per_brain]
     lines = [

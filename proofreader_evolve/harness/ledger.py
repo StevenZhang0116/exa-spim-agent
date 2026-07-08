@@ -23,8 +23,15 @@ class GenerationCost:
     generation: int
     wall_seconds: float = 0.0            # total wall-clock for the generation
     eval_seconds: float = 0.0            # time inside evaluate() (the scorer)
-    input_tokens: int = 0                # agent input tokens (from ResultMessage)
-    output_tokens: int = 0               # agent output tokens
+    input_tokens: int = 0                # UNCACHED agent input tokens (ResultMessage.usage)
+    output_tokens: int = 0               # agent output tokens (ResultMessage.usage)
+    # Cache tokens from ResultMessage.usage. In the shared-session design almost ALL
+    # input is served from cache, so ``input_tokens`` alone drastically understates the
+    # input the model processed; the TRUE input is input_tokens + cache_read_input_tokens
+    # + cache_creation_input_tokens. Cheap ($) but real, and the thing that grows with
+    # generation count — so track it explicitly to see the shared-session cost curve.
+    cache_read_input_tokens: int = 0     # input served from the prompt cache
+    cache_creation_input_tokens: int = 0 # input written INTO the cache this turn
     cost_usd: float = 0.0                # agent $ (from ResultMessage if present)
     n_evaluations: int = 0               # how many evaluate() calls this gen
     human_interventions: int = 0         # # of human approvals/edits this gen
@@ -95,17 +102,16 @@ class GenerationCost:
     # assumed. True = read it; False = priors were available but not read; None = no
     # priors file was configured for this run.
     read_priors: "bool | None" = None
-    # Was this generation GROUNDED — did the reviser CITE a discovery finding number
-    # in the rules.md change log (a prior actually shaped the edit)? Strictly stronger
-    # than read_priors. True = cited >=1 finding; False = priors inlined but none
-    # cited (exploratory); None = no priors configured. Grouping accepted gens by this
-    # lets us measure whether grounding generalizes better than free exploration.
+    # GROUNDED / citation tracking. NO LONGER POPULATED by run_evolution.py: the loop
+    # was rewound to the earlier design (reviser reads the discovery file itself, no
+    # inlined ranked menu and no grounded-vs-exploratory feedback loop), so these keep
+    # their defaults (None / "") in new runs. They remain on the schema so ledgers from
+    # the menu-era still parse; a re-enable would set them again. When it WAS populated:
+    # grounded=True meant the reviser cited a finding whose content shaped the edit,
+    # cited_findings listed the bare "#N" mentions, and supported_findings was the
+    # subset whose content actually appeared in the edit (the stronger signal).
     grounded: "bool | None" = None
-    cited_findings: str = ""             # comma-joined finding numbers cited, if any
-    # Subset of cited_findings whose CONTENT actually appears in the reviser's edit
-    # (rules + code), not just a bare "#N" mention — the stronger 'grounded' signal.
-    # ``grounded`` above is now True iff this is non-empty. The payoff analysis should
-    # prefer this over a bare citation. See priors.supported_citations.
+    cited_findings: str = ""
     supported_findings: str = ""
     # --- traceability (A): what the reviser actually did this generation --------
     candidate_path: str = ""             # gen<NN>/heuristics.candidate.py (always saved)
@@ -152,26 +158,35 @@ class Ledger:
             return "no generations recorded yet."
         accepted = [r for r in rows if r["accepted"]]
         total_s = sum(r["wall_seconds"] for r in rows)
-        total_out = sum(r["output_tokens"] for r in rows)
-        # cost_usd is PER-GENERATION now (each gen opens a fresh ClaudeSDKClient, so
-        # ResultMessage.total_cost_usd is that gen's own session total), so the run
-        # total is the SUM. Old ledgers used one shared session and recorded an
-        # already-cumulative (non-decreasing) cost_usd; for those the sum would
-        # double-count, so take the last value instead. Disambiguate from the data:
-        # non-decreasing => already cumulative (use last); else per-gen (sum).
-        _costs = [r.get("cost_usd", 0.0) or 0.0 for r in rows]
-        _already_cumulative = all(b >= a for a, b in zip(_costs, _costs[1:]))
-        total_cost = _costs[-1] if _already_cumulative else sum(_costs)
+        # cost_usd (and, in the shared-session design, the ResultMessage.usage token
+        # counts) may be SESSION-CUMULATIVE (monotonic across gens) rather than per-gen.
+        # Disambiguate from the data: a non-decreasing series is already cumulative, so
+        # take its LAST value; otherwise it is per-gen, so SUM. This handles both the
+        # shared-session ledgers (cumulative) and the intervening per-gen-session ones.
+        def _total(key):
+            vals = [r.get(key, 0) or 0 for r in rows]
+            if not vals:
+                return 0
+            return vals[-1] if all(b >= a for a, b in zip(vals, vals[1:])) else sum(vals)
+        total_out = _total("output_tokens")
+        total_in = _total("input_tokens")
+        total_cache_read = _total("cache_read_input_tokens")
+        total_cache_creation = _total("cache_creation_input_tokens")
+        total_cost = _total("cost_usd")
         total_human = sum(r["human_interventions"] for r in rows)
         # Read the current key; fall back to the legacy "heldout_primary" so old
         # ledgers still summarize.
         def _hea(r):
             return r.get("heldout_edge_accuracy", r.get("heldout_primary", float("nan")))
         best = max((_hea(r) for r in rows if _hea(r) == _hea(r)), default=float("nan"))
+        total_input_all = total_in + total_cache_read + total_cache_creation
         return (
             f"{len(rows)} generations, {len(accepted)} accepted. "
             f"best held-out Edge Accuracy={best:.4f}. "
-            f"cost: {total_s:.0f}s wall, {total_out} out-tokens, "
+            f"cost: {total_s:.0f}s wall, "
+            f"in={total_input_all} tok (uncached {total_in} + cache_read "
+            f"{total_cache_read} + cache_creation {total_cache_creation}), "
+            f"out={total_out} tok, "
             f"${total_cost:.4f}, {total_human} human interventions."
         )
 
