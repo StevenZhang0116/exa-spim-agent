@@ -21,9 +21,9 @@ comment, and the split-repair score (with the +gain).
 
 Usage (from the ``exa-spim-agent/`` project root)
 -------------------------------------------------
-    python proofreader_evolve/plot_policy_evolution.py 789202_20260623_005939
-    python proofreader_evolve/plot_policy_evolution.py <run_name> --out fig.png
-    python proofreader_evolve/plot_policy_evolution.py <run_name> --md summary.md
+    python proofreader_evolve/plotting/plot_policy_evolution.py 789202_20260623_005939
+    python proofreader_evolve/plotting/plot_policy_evolution.py <run_name> --out fig.png
+    python proofreader_evolve/plotting/plot_policy_evolution.py <run_name> --md summary.md
 """
 
 from __future__ import annotations
@@ -39,7 +39,8 @@ import matplotlib
 matplotlib.use("Agg")  # headless: write files, never open a window
 import matplotlib.pyplot as plt  # noqa: E402
 
-HERE = Path(__file__).resolve().parent
+# HERE = proofreader_evolve/ (anchors runs/). This file is in proofreader_evolve/plotting/.
+HERE = Path(__file__).resolve().parent.parent
 RUNS_DIR = HERE / "runs"
 
 # Top-level constant assignment with an optional trailing comment:

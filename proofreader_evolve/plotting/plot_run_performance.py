@@ -22,9 +22,9 @@ Deterministic, headless (matplotlib Agg), no model. Mirrors the style of
 
 Usage (from the ``exa-spim-agent/`` project root)
 -------------------------------------------------
-    python proofreader_evolve/plot_run_performance.py 789202_20260623_005939
-    python proofreader_evolve/plot_run_performance.py <run_name> --out perf.png
-    python proofreader_evolve/plot_run_performance.py <run_name> --csv series.csv
+    python proofreader_evolve/plotting/plot_run_performance.py 789202_20260623_005939
+    python proofreader_evolve/plotting/plot_run_performance.py <run_name> --out perf.png
+    python proofreader_evolve/plotting/plot_run_performance.py <run_name> --csv series.csv
 
 ``run_name`` is the directory name under ``proofreader_evolve/runs/`` (a full path
 is also accepted). Default output: ``runs/<run_name>/performance.png``.
@@ -44,7 +44,8 @@ matplotlib.use("Agg")  # headless: write files, never open a window
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-HERE = Path(__file__).resolve().parent
+# HERE = proofreader_evolve/ (anchors runs/). This file is in proofreader_evolve/plotting/.
+HERE = Path(__file__).resolve().parent.parent
 RUNS_DIR = HERE / "runs"
 
 

@@ -44,7 +44,7 @@ either keeps or reverts. Every generation's cost is recorded.
 Run from the project root (exa-spim-agent/):
     # cross-brain (train on 794491, gate on a WHOLE held-out brain 794495),
     # split-error-only, mega-merge guard on, wider candidate stream (mcl10):
-    python proofreader_evolve/run_evolution.py --train-brains 794491 --test-brains 794495 --generations 30 --splits-only --max-class-size 6 --mcl 10
+    python proofreader_evolve/cli/run_evolution.py --train-brains 794491 --test-brains 794495 --generations 30 --splits-only --max-class-size 6 --mcl 10
 """
 
 from __future__ import annotations
@@ -62,7 +62,9 @@ from datetime import datetime
 from pathlib import Path
 
 # Make `proofreader_evolve` importable when run as a script from the project root.
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# This file lives in proofreader_evolve/cli/, so PROJECT_ROOT (exa-spim-agent/) is
+# three parents up: cli/ -> proofreader_evolve/ -> exa-spim-agent/.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from claude_agent_sdk import (
@@ -97,7 +99,9 @@ from proofreader_evolve.harness import (
 )
 from proofreader_evolve.harness.ledger import Ledger, GenerationCost
 
-HERE = Path(__file__).resolve().parent
+# HERE = the proofreader_evolve/ package dir (anchors artifacts/, runs/, prepared_cache/).
+# This file is in proofreader_evolve/cli/, so it is the file's parent's parent.
+HERE = Path(__file__).resolve().parent.parent
 ARTIFACTS = HERE / "artifacts"
 HEURISTICS = ARTIFACTS / "heuristics.py"
 RULES = ARTIFACTS / "rules.md"
@@ -2144,20 +2148,20 @@ async def run_evolution(
     # plotting failure (e.g. headless matplotlib quirk) must never fail a finished run.
     perf_png = run_dir / "performance.png"
     try:
-        from proofreader_evolve import plot_run_performance as _prp
+        from proofreader_evolve.plotting import plot_run_performance as _prp
         _rows = _prp.load_ledger(run_dir)
         if _rows:
             _prp.make_figure(_rows, run_dir.name, perf_png)
             log(f"Performance figure -> {perf_png}")
     except Exception as _e:
         log(f"[WARN] could not auto-generate performance figure ({_e}); "
-            f"run `python proofreader_evolve/plot_run_performance.py {run_dir.name}` manually")
+            f"run `python proofreader_evolve/plotting/plot_run_performance.py {run_dir.name}` manually")
 
     # Auto-generate the policy-evolution summary figure (what lever each accepted
     # generation added, in plain English via the LLM). Best-effort, same as above.
     policy_png = run_dir / "policy_evolution.png"
     try:
-        from proofreader_evolve import plot_policy_evolution as _ppe
+        from proofreader_evolve.plotting import plot_policy_evolution as _ppe
         _summary = _ppe.collect(run_dir)
         if _summary["rows"]:
             _ppe.summarize_with_llm(_summary)        # plain-English summaries
@@ -2165,7 +2169,7 @@ async def run_evolution(
             log(f"Policy-evolution figure -> {policy_png}")
     except Exception as _e:
         log(f"[WARN] could not auto-generate policy-evolution figure ({_e}); "
-            f"run `python proofreader_evolve/plot_policy_evolution.py {run_dir.name}` manually")
+            f"run `python proofreader_evolve/plotting/plot_policy_evolution.py {run_dir.name}` manually")
 
     print("\n=== Evolution complete ===")
     print(ledger.summarize())
