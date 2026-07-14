@@ -35,6 +35,10 @@ Run from the project root (exa-spim-agent/), in the panda env:
     python proofreader_evolve/probes/phase0_merge_reward_ceiling.py --brain 794495 --mcl 10
     python proofreader_evolve/probes/phase0_merge_reward_ceiling.py --brain 789202 --mcl 10 --heldout-fraction 0.5 --split-seed 0
     # add --with-oracle to ALSO run the (slow) oracle rescore for held-out sparse-metric deltas
+
+The full output is teed to a timestamped log under proofreader_evolve/probes/logs/
+(phase0_<brain>_<timestamp>.log) so a probe result is persisted next to the code;
+pass --no-log to skip saving.
 """
 
 from __future__ import annotations
@@ -42,12 +46,14 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 
 # Make ``proofreader_evolve`` importable when run as a script from the project root.
 # This file lives in proofreader_evolve/probes/, so PROJECT_ROOT (exa-spim-agent/) is
 # three parents up: probes/ -> proofreader_evolve/ -> exa-spim-agent/.
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+HERE = Path(__file__).resolve().parent               # proofreader_evolve/probes/
+PROJECT_ROOT = HERE.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from proofreader_evolve.harness import (
@@ -55,6 +61,40 @@ from proofreader_evolve.harness import (
     dataset as ds,
     incremental_scoring as inc,
 )
+
+# Where probe logs are saved: proofreader_evolve/probes/logs/.
+LOG_DIR = HERE / "logs"
+
+
+class _Tee:
+    """Mirror everything written to a console stream INTO a log file too, so the full
+    probe output is persisted without losing the live terminal view. Failures writing
+    to the file are swallowed — logging must never take down the probe. isatty()
+    reflects the console so downstream TTY checks still behave."""
+
+    def __init__(self, console, fh) -> None:
+        self._console, self._fh = console, fh
+
+    def write(self, s):
+        n = self._console.write(s)
+        try:
+            self._fh.write(s)
+        except Exception:
+            pass
+        return n
+
+    def flush(self):
+        self._console.flush()
+        try:
+            self._fh.flush()
+        except Exception:
+            pass
+
+    def isatty(self):
+        return getattr(self._console, "isatty", lambda: False)()
+
+    def __getattr__(self, name):
+        return getattr(self._console, name)
 
 
 def _heldout_names(prepared, heldout_fraction: float | None, split_seed: int) -> list[str]:
@@ -134,7 +174,7 @@ def main() -> int:
     p.add_argument("--min-nodes", type=int, default=50,
                    help="a label is a merge error iff it lands on >= this many nodes on "
                         ">= 2 held-out GT neurons (=_MERGE_MIN_NODES; matches the oracle "
-                        "and %Merged Edges). Default 50.")
+                        "and %%Merged Edges). Default 50.")
     p.add_argument("--heldout-fraction", type=float, default=None,
                    help="per-brain regime: reserve this within-brain fraction as held-out "
                         "(else the WHOLE brain is held-out, i.e. cross-brain gate scope)")
@@ -143,8 +183,34 @@ def main() -> int:
     p.add_argument("--with-oracle", action="store_true",
                    help="ALSO run the (slow) oracle rescore for held-out sparse-metric "
                         "deltas — secondary context; the go/no-go is the counts.")
+    p.add_argument("--no-log", action="store_true",
+                   help="do NOT save a log file (default: tee full output to "
+                        "proofreader_evolve/probes/logs/phase0_<brain>_<timestamp>.log)")
     args = p.parse_args()
 
+    # Tee stdout+stderr to a timestamped log under probes/logs/ (unless --no-log), so
+    # the full probe output — including any traceback — is persisted next to the code.
+    # datetime is used only here (not inside _probe), so the probe stays import-clean.
+    if args.no_log:
+        return _probe(args)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOG_DIR / f"phase0_{args.brain}_{datetime.now():%Y%m%d_%H%M%S}.log"
+    saved = (sys.stdout, sys.stderr)
+    with open(log_path, "a", buffering=1) as fh:   # line-buffered
+        fh.write(f"{'='*70}\n# phase0 probe — started {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+                 f"# argv: {' '.join(sys.argv)}\n{'='*70}\n")
+        sys.stdout, sys.stderr = _Tee(saved[0], fh), _Tee(saved[1], fh)
+        try:
+            rc = _probe(args)
+            print(f"\n[log saved] {log_path}")
+            return rc
+        finally:
+            sys.stdout, sys.stderr = saved         # restore even on crash (traceback teed first)
+
+
+def _probe(args) -> int:
+    """The probe body: compute n_mergeable, n_detectable, their intersection, verdict.
+    Separated from main() so the log-tee wrapper can capture ALL of its output."""
     brain = args.brain
     paths = scoring.BrainPaths(brain)
 

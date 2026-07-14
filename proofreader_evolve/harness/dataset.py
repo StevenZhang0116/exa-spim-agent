@@ -95,7 +95,14 @@ def agentic_xyz_to_metrics_frame(xyz, anisotropy=_METRICS_ANISOTROPY):
 ENUM_PARAM_SPEC = {
     # candidate_split_sites
     "max_gap_um":       (15.0,  1.0,  40.0),   # tip->partner search radius (µm)
-    "split_max_sites":  (5000,  100,  50000),  # cap on split candidates
+    "split_max_sites":  (5000,  100,  50000),  # GLOBAL cap on split candidates (final)
+    "split_per_tip_k":  (4,     1,    32),     # PER-TIP quota: keep only each tip's k
+                                               # closest differently-labelled partners
+                                               # BEFORE the global split_max_sites cap,
+                                               # so a dense region cannot consume the
+                                               # whole budget and starve a sparse tip's
+                                               # only true partner. Set high (e.g. 32) to
+                                               # approximate the old global-only behavior.
     "tip_to_shaft":     (True,  None, None),   # bool: partners may be shaft/branch
     "split_alt_per_pair": (1,    1,    10),    # gaps kept per label pair (>1 attaches
                                                # extra evidence gaps as SplitSite.alt_gaps)
@@ -301,6 +308,24 @@ class SplitSite:
         single ``merge_labels(label_a, label_b)`` (one merge unifies the pair across
         ALL their gaps via union-find), so edit count / scoring are unchanged. Empty
         in the default (``alt_per_pair == 1``) behavior.
+    recip_rank_a : int
+        Reciprocal-neighbor rank of the PARTNER (``label_b``) among the anchor tip
+        (``node_a``)'s differently-labelled partners, ordered by gap. ``1`` means the
+        partner is this tip's CLOSEST other-label neighbor; larger = farther down the
+        tip's preference list; ``0`` = not ranked (undefined). A low rank says the tip
+        genuinely "points at" this partner rather than merely being near it.
+    recip_rank_b : int
+        The mirror: rank of the anchor (``label_a``) among the partner node
+        (``node_b``)'s nearest differently-labelled TIPS, ordered by gap. Edges run
+        tip→partner, so this asks whether the partner reciprocally picks this tip.
+        ``1`` = the partner's closest tip; ``0`` = not ranked.
+    mutual_nearest : bool
+        True iff ``recip_rank_a == 1 and recip_rank_b == 1`` — the two endpoints are
+        each other's #1 reconnection choice (a reciprocal / mutual-nearest-neighbor
+        pair). This is a strong TRUE-split signal: two fragment ends that each select
+        the other as their nearest partner are far more likely one broken neuron than
+        a tip grazing an unrelated neuron that does not point back. A cheap,
+        GT-free precision discriminator the policy can gate merges on.
     """
 
     kind: str = field(default="split", init=False)  # site-type tag for the policy
@@ -313,6 +338,11 @@ class SplitSite:
     xyz_a: tuple
     xyz_b: tuple
     alt_gaps: list = field(default_factory=list)
+    # Reciprocal-neighbor features (see class docstring). Defaults keep every existing
+    # SplitSite construction valid and mean "undefined / not mutual".
+    recip_rank_a: int = 0
+    recip_rank_b: int = 0
+    mutual_nearest: bool = False
 
     def as_edit(self) -> tuple:
         """The label pair this site would unify if accepted.
@@ -329,6 +359,7 @@ def candidate_split_sites(
     max_sites: int = 5000,
     tip_to_shaft: bool = True,
     alt_per_pair: int = 1,
+    per_tip_k: int = 4,
     return_stats: bool = False,
 ):
     """Enumerate candidate split-repair sites: a fragment tip near a *differently
@@ -359,7 +390,19 @@ def candidate_split_sites(
     max_gap_um : float
         Only return tip→node pairs closer than this physical distance.
     max_sites : int
-        Cap on returned sites (closest gaps first), to bound the agent's input.
+        GLOBAL cap on returned sites (closest gaps first), applied AFTER the per-tip
+        quota, to bound the agent's input.
+    per_tip_k : int
+        PER-TIP quota: from each anchor tip, keep only its ``per_tip_k`` closest
+        differently-labelled partners before the pair-level dedup and the global
+        ``max_sites`` cap. This stops a dense region's tips from filling the entire
+        global budget with their many near-partners and starving a sparse tip whose
+        ONE true reconnection partner would otherwise be ranked out (the failure mode
+        behind the observed ~0.3% reachable-real recall: the global top-5000 kept only
+        gaps < ~1.87 µm, so a sparse tip's slightly-farther true partner never made the
+        list). Clamped to >= 1; set very high (>= max tip degree) to recover the old
+        global-only behavior. The reciprocal-rank / mutual-nearest features are computed
+        over the SAME per-tip ordering.
     tip_to_shaft : bool
         If True, the partner node may be any node (tip/shaft/branch). If False,
         partners are restricted to other tips (legacy tip-to-tip enumeration).
@@ -425,11 +468,56 @@ def candidate_split_sites(
     neighbor_lists = partner_tree.query_ball_point(node_coords[tip_idx], r=max_gap_um)
 
     alt_per_pair = max(1, int(alt_per_pair))
+    per_tip_k = max(1, int(per_tip_k))
+
+    # id(node) -> its index into the aligned arrays (node_coords / node_labels), so a
+    # SplitSite's node_a / node_b (fragment-graph node ids) can be turned back into an
+    # array index for the reciprocal-rank queries below.
+    id_to_idx = {int(nid): k for k, nid in enumerate(node_arr)}
+
+    # A node's ranking of its differently-labelled partner LABELS by closest gap,
+    # computed over the SAME partner set the enumeration uses (partner_tree). Returns
+    # ``{partner_label: rank}`` with rank 1 = the node's closest other-label partner.
+    # Memoized per node index: each tip and each partner node is queried at most once,
+    # and the whole enumeration is itself cached once per (graph, params) — so this is
+    # paid once per run. This one function backs BOTH per-tip quota (via the anchor's
+    # ranking) AND the reciprocal-neighbor features, so the two are always consistent.
+    _rank_memo: dict[int, dict[str, int]] = {}
+
+    def _partner_label_rank(node_index: int) -> dict[str, int]:
+        cached = _rank_memo.get(node_index)
+        if cached is not None:
+            return cached
+        own = node_labels[node_index]
+        nbrs = partner_tree.query_ball_point(node_coords[node_index], r=max_gap_um)
+        best_by_label: dict[str, float] = {}
+        for pj in nbrs:
+            gi = int(partner_idx[pj])
+            if gi == node_index:
+                continue
+            lb = node_labels[gi]
+            if lb == "0" or lb == own:
+                continue
+            gap = float(np.linalg.norm(node_coords[node_index] - node_coords[gi]))
+            if lb not in best_by_label or gap < best_by_label[lb]:
+                best_by_label[lb] = gap
+        ranked = sorted(best_by_label, key=best_by_label.get)
+        out = {lb: r + 1 for r, lb in enumerate(ranked)}
+        _rank_memo[node_index] = out
+        return out
 
     # Collect candidate gaps per unordered label pair. When alt_per_pair == 1 we keep
     # only the single closest gap (legacy behavior); otherwise we accumulate all gaps
     # for a pair and keep the closest ``alt_per_pair`` at the end. Each gap entry is
     # (gap, node_a, node_b, xyz_a, xyz_b); node_a is always the tip.
+    #
+    # PER-TIP QUOTA: from each tip we keep only its ``per_tip_k`` closest partner
+    # LABELS (ranked by their closest gap). A pair survives if EITHER of its tips ranks
+    # the other within top-k (union), so a sparse tip's single true partner is
+    # preserved even when the partner's dense side would rank it out. This is what
+    # stops a dense region from consuming the whole global ``max_sites`` budget and
+    # starving sparse tips (the mechanism behind the ~0.3% reachable-real recall: the
+    # global top-N kept only the very closest gaps brain-wide).
     gaps_by_pair: dict[frozenset, list] = {}
     for ti, neighbors in zip(tip_idx, neighbor_lists):
         la = node_labels[ti]
@@ -437,6 +525,11 @@ def candidate_split_sites(
             continue
         ai = int(node_arr[ti])
         a_xyz = node_coords[ti]
+        # This tip's top-k partner labels (rank 1..per_tip_k) — its own quota.
+        tip_rank = _partner_label_rank(ti)
+        kept_labels = {lb for lb, rk in tip_rank.items() if rk <= per_tip_k}
+        if not kept_labels:
+            continue
         for pj in neighbors:
             gi = int(partner_idx[pj])
             if gi == ti:
@@ -444,6 +537,8 @@ def candidate_split_sites(
             lb = node_labels[gi]
             if lb == "0" or lb == la:
                 continue  # unlabelled or same fragment — not a split-repair candidate
+            if lb not in kept_labels:
+                continue  # beyond this tip's per-tip quota — drop before the global cap
             gap = float(np.linalg.norm(a_xyz - node_coords[gi]))
             entry = (
                 gap,
@@ -472,28 +567,43 @@ def candidate_split_sites(
             {"gap_um": g_, "node_a": a_, "node_b": b_, "xyz_a": xa_, "xyz_b": xb_}
             for (g_, a_, b_, xa_, xb_) in bucket[1:alt_per_pair]
         ]
+        la_s = str(g.node_segment_id(ai))
+        lb_s = str(g.node_segment_id(bi))
+        # Reciprocal-neighbor features (GT-free precision signal). recip_rank_a is how
+        # the anchor tip ranks the partner's label; recip_rank_b is how the partner
+        # node ranks the anchor's label — both over the same partner set, via the
+        # memoized ranker. mutual_nearest = each is the other's #1 choice.
+        rank_a = _partner_label_rank(id_to_idx[ai]).get(lb_s, 0) if ai in id_to_idx else 0
+        rank_b = _partner_label_rank(id_to_idx[bi]).get(la_s, 0) if bi in id_to_idx else 0
         sites.append(
             SplitSite(
-                label_a=str(g.node_segment_id(ai)),
-                label_b=str(g.node_segment_id(bi)),
+                label_a=la_s,
+                label_b=lb_s,
                 gap_um=gap,
                 node_a=ai,                              # always the tip
                 node_b=bi,                              # tip / shaft / branch partner
                 xyz_a=axyz,
                 xyz_b=bxyz,
                 alt_gaps=alt_gaps,
+                recip_rank_a=int(rank_a),
+                recip_rank_b=int(rank_b),
+                mutual_nearest=bool(rank_a == 1 and rank_b == 1),
             )
         )
     sites.sort(key=lambda s: s.gap_um)
 
-    # Enumeration-ceiling stats (GT-free): the cap keeps the CLOSEST gaps, so any
+    # Enumeration-ceiling stats (GT-free): the GLOBAL cap keeps the CLOSEST gaps, so any
     # pair beyond index ``max_sites`` is silently dropped before the policy sees it.
     # Surface what was lost so the failure report can distinguish a recall miss the
     # policy CAN fix (a site it rejected) from one only ENUM_PARAMS can (a site that
-    # was never enumerated / was truncated away). Computed before the slice.
+    # was never enumerated / was truncated away). NOTE: the per-tip quota already ran,
+    # so ``n_pairs_enumerated`` counts pairs that survived BOTH the max_gap radius AND
+    # each tip's per_tip_k quota; a pair dropped by the quota is not counted here (it is
+    # a per_tip_k limit, reported separately via that knob). Computed before the slice.
     n_pairs = len(sites)
     n_returned = min(n_pairs, max_sites)
     truncated = sites[max_sites:] if n_pairs > max_sites else []
+    n_mutual = sum(1 for s in sites[:max_sites] if s.mutual_nearest)
     stats = {
         "n_pairs_enumerated": n_pairs,
         "n_returned": n_returned,
@@ -502,6 +612,8 @@ def candidate_split_sites(
         "max_truncated_gap_um": float(truncated[-1].gap_um) if truncated else None,
         "max_gap_um": float(max_gap_um),
         "max_sites": int(max_sites),
+        "per_tip_k": int(per_tip_k),
+        "n_mutual_nearest": int(n_mutual),  # returned sites that are reciprocal #1 pairs
         "tip_to_shaft": bool(tip_to_shaft),
     }
     sites = sites[:max_sites]

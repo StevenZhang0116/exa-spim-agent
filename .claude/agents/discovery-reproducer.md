@@ -8,7 +8,12 @@ description: >-
   experiments for one run export with its dataset. Folds a reproduction verdict
   into the existing ranked Markdown report.
 tools: Bash, Read, Write, Edit, Glob
+# Mechanical work: read the driver's compute JSON, compare fresh vs recorded
+# numbers, fix only data-loading, fold verdicts. No deep statistical reasoning,
+# so medium effort is enough (kept on the session's Opus for number-comparison
+# reliability rather than downgraded to a cheaper model).
 model: inherit
+effort: medium
 ---
 
 # AutoDiscovery Experiment Reproducer
@@ -60,13 +65,14 @@ match the summarizer's, so the rerun set is exactly the reported set).
    `rerun_runtime_ms`, `rerun_stdout`, `rerun_stderr`. This stdout JSON is your
    source of truth — read it straight from the command.
 
-2. **Second pass — revise the LOADING of any record that failed for a data /
-   environment reason, then rerun.** Inspect the `rerun_stderr` of every
-   `rerun_exitcode != 0` / `rerun_timed_out` result. If the failure is in the
-   data-loading or bootstrap — e.g. `ModuleNotFoundError: numpy._core...` (a
-   NumPy-2-written pkl the host's NumPy 1.x can't unpickle), a "dataset not
-   found" gate that exited before loading, or a `pip install` retry loop that
-   timed out — then **revise only the loading section**, not the analysis:
+2. **Second pass — revise the LOADING of any record that failed for a data
+   reason, then rerun.** Inspect the `rerun_stderr` of every
+   `rerun_exitcode != 0` / `rerun_timed_out` result. Each result also carries a
+   `rerun_failure_kind` (`"analysis"` | `"environment"` | `null`): you fix
+   `"analysis"`-class LOADING failures — a "dataset not found" gate that exited
+   before loading, a hardcoded path/glob that found nothing, a `pip install`
+   retry loop that timed out. **Revise only the loading section**, not the
+   analysis:
 
    a. Export the editable scripts (same `--rank-by`/`--top`):
 
@@ -78,15 +84,11 @@ match the summarizer's, so the rerun set is exactly the reported set).
       This writes `autodiscovery/<RUN>.rerun/hypo_<id>.py` for each record, plus
       `MANIFEST.json` and `REVISION_GUIDE.md`. Read the guide.
 
-   b. Edit ONLY the `hypo_<id>.py` files of the records that failed for a
-      data/env reason. Replace the dataset search with a direct load of the
-      provided pkl and fix the environment problem, e.g.:
+   b. Edit ONLY the `hypo_<id>.py` files of the records that failed to LOAD the
+      dataset. Replace the dataset search with a direct load of the provided pkl:
 
       ```python
-      import os, sys, subprocess
-      # pkl was written with NumPy 2; ensure a compatible NumPy BEFORE importing it
-      subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "numpy>=2"])
-      import pickle
+      import os, pickle
       print("Loading dataset from:", os.environ["RERUN_PKL"])
       with open(os.environ["RERUN_PKL"], "rb") as f:
           payload = pickle.load(f)   # keep the SAME variable name the script uses
@@ -94,9 +96,23 @@ match the summarizer's, so the rerun set is exactly the reported set).
 
       Keep the downstream variable names and keys (`fragments_graph`, `gt_graph`,
       `gt_edge_error`, `gt_node_canonical_label`, `gt_merge_sites`, …) and the
-      ENTIRE analysis + its prints unchanged. Remove pip-retry loops; install
-      each dependency once, up front. Do NOT touch records that already
-      reproduced or that failed for a genuine analysis reason.
+      ENTIRE analysis + its prints unchanged. Remove pip-retry loops. Do NOT
+      touch records that already reproduced or that failed for a genuine analysis
+      reason.
+
+      **The driver owns the environment — do NOT manage packages or NumPy.** The
+      runner already turns every `pip`/`apt`/`conda install` into a no-op, and the
+      host env is pre-provisioned (numpy, pandas, scipy, statsmodels, sklearn,
+      networkx, matplotlib, tensorstore, the proofreader package). Just `import`
+      what you need. NEVER `pip install numpy...`, never `del sys.modules['numpy']`
+      to reload it, and **never put a numpy/site-packages/source path on
+      `sys.path`** (e.g. `sys.path.insert(0, "/tmp/np2")`) — that triggers "you
+      should not try to import numpy from its source directory" and breaks the
+      script. A `rerun_failure_kind == "environment"` result (import error,
+      missing module, native-load failure) is NOT yours to patch per-script:
+      leave it, and report it as an environment failure for the driver to fix
+      once, globally. (If the env is systematically broken the helper aborts with
+      a preflight / `environment_failure` error before you ever fold anything.)
 
    c. Rerun executing the revised scripts (recorded code is used for any record
       you did not revise):
@@ -141,7 +157,7 @@ summarizer's bullets intact; the later verifier step will add its own bullets):
 
 ```markdown
 - **Reproduction:** REPRODUCED | DIVERGED | FAILED (code: recorded | revised-loading)
-- **Rerun result:** <fresh key numbers vs recorded — quote both, e.g. "recorded p=3.12e-03, U=13597; rerun p=3.10e-03, U=13601 → match" — or the error line if FAILED. If you revised the loading, say what you changed (e.g. "direct $RERUN_PKL load + numpy>=2")>
+- **Rerun result:** <fresh key numbers vs recorded — quote both, e.g. "recorded p=3.12e-03, U=13597; rerun p=3.10e-03, U=13601 → match" — or the error line if FAILED. If you revised the loading, say what you changed (e.g. "direct $RERUN_PKL load"). If FAILED, state whether it was an environment failure (rerun_failure_kind="environment") vs an analysis failure.>
 ```
 
 Write every field complete — never truncate with `…` or `...` (the helper
@@ -163,7 +179,9 @@ It must contain:
   cross-referenced to entry number / id, with the one-line reason each
   (distinguishing unfixable loading/env failures from analysis failures).
 - A one-line note of which records needed loading revisions and why (e.g.
-  "ids 10,11,13… : NumPy-2 pkl; ids 3,39,53,72: dataset-not-found gate").
+  "ids 3,39,53,72: dataset-not-found gate; ids 10,11: hardcoded path"), and
+  separately any records that hit an ENVIRONMENT failure (import/native-load
+  error) that is the driver's to fix, not a loading revision.
 
 After updating the file, reply with the report path and a 3–5 bullet executive
 summary of what reproduced and what did not. Your final message is the

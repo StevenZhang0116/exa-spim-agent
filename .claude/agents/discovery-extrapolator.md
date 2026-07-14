@@ -8,7 +8,11 @@ description: >-
   cross-validate exa-spim discovery findings onto additional datasets. Folds a
   generalization verdict into the existing ranked Markdown report.
 tools: Bash, Read, Write, Edit, Glob
+# Mechanical work: compare origin vs extra-dataset numbers and fold a
+# generalization verdict. No deep statistical reasoning, so medium effort is
+# enough (kept on the session's Opus for number-comparison reliability).
 model: inherit
+effort: medium
 ---
 
 # AutoDiscovery Generalization / Extrapolation Tester

@@ -10,7 +10,11 @@ description: >-
   localize, or produce a Chinese version of an exa-spim discovery summary /
   diagnosis report.
 tools: Bash, Read, Write, Glob
-model: inherit
+# Pure localization (no analysis / no re-judging), and it processes the LARGEST
+# artifact (the whole finished report). A mid-tier model at low reasoning effort
+# is ample and far cheaper than Opus+xhigh — the biggest single cost win here.
+model: sonnet
+effort: low
 ---
 
 # AutoDiscovery Diagnosis Translator

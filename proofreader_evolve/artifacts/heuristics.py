@@ -19,7 +19,14 @@ The candidate stream has TWO kinds of site (dispatch on ``site.kind``):
     clean colinear continuation) — inspect ``alt_gaps`` to judge on the BEST evidence
     point. It does NOT change the action: ``as_edit()`` still emits ONE
     ``merge_labels(label_a, label_b)`` (one merge unifies the pair across all gaps).
-    From ``dataset.candidate_split_sites``.
+    Also: ``mutual_nearest`` (bool) / ``recip_rank_a`` / ``recip_rank_b`` — the
+    reciprocal-neighbor test. ``recip_rank_a`` is where the partner ranks among the
+    anchor tip's closest differently-labelled partners (1 = closest); ``recip_rank_b``
+    is the mirror from the partner's side; ``mutual_nearest`` is True iff BOTH are 1
+    (each endpoint is the other's #1 reconnection choice). A gap-independent PRECISION
+    cue: mutual-nearest pairs are far more likely ONE broken neuron than a tip grazing
+    an unrelated neurite that does not point back — gate risky (non-colinear / into-
+    shaft / caliber-mismatched) merges on it. From ``dataset.candidate_split_sites``.
 
   - MergeSite  (kind == "merge"): ONE label fused across two neurites —
     two neurons the segmentation glued together. Valid repair = ``split_label``
@@ -121,7 +128,13 @@ ENUM_PARAMS = {
     "min_arm_cable_um": 10.0,  # both arms of a merge candidate must reach this (µm) [2..50]
     "seed_depth_um": 8.0,      # how deep to place each split seed into its arm (µm) [2..30]
     "max_per_label": 8,        # cap on merge candidates emitted per raw label [1..100]
-    # "split_max_sites": 5000, # global cap on split candidates [100..50000]
+    # "split_max_sites": 5000, # GLOBAL cap on split candidates [100..50000]
+    # "split_per_tip_k": 4,    # PER-TIP quota: keep only each tip's k closest
+    #                          # differently-labelled partners BEFORE the global cap
+    #                          # [1..32]. Raise toward 32 to approximate the old
+    #                          # global-only stream; lower to concentrate the budget on
+    #                          # each tip's best partners so a dense region cannot
+    #                          # starve a sparse tip's single true partner.
     # "merge_max_sites": 5000, # global cap on merge candidates [100..50000]
     # "split_alt_per_pair": 1, # gaps kept per SplitSite label pair [1..10]. >1 attaches
     #                          # the next-closest gaps as site.alt_gaps (extra evidence

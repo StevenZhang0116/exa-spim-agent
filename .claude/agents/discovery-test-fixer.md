@@ -9,7 +9,12 @@ description: >-
   asked to fix, correct, redo, or re-test the statistics of flagged exa-spim
   discovery findings.
 tools: Bash, Read, Write, Edit, Glob
+# Authoring corrected statistical tests (choosing the right test, effect sizes +
+# CIs, cluster/permutation p-values) is deep statistical reasoning. This one
+# agent does both the author and fold steps, so keep the whole agent on Opus at
+# xhigh; set explicitly here (not via a session env var) so the depth is guaranteed.
 model: inherit
+effort: xhigh
 ---
 
 # AutoDiscovery Statistical Test Fixer
@@ -53,6 +58,20 @@ unless that bug is the statistical fault itself.
    has no `.rerun` file, export it first with
    `python agentic/rerun_experiments.py autodiscovery/<RUN>.json --pkl <PKL> --rank-by posterior-surprise --top 20 --export-dir autodiscovery/<RUN>.rerun`
    and apply the same loading fix.
+
+   **Copy the working script's loading/import section VERBATIM — do not rewrite
+   it.** Your job is to change the statistical test, nothing else. In particular,
+   the driver owns the environment: the runner neutralizes every
+   `pip`/`apt`/`conda install`, and the host env already provides numpy, pandas,
+   scipy, statsmodels, sklearn, networkx, matplotlib, tensorstore and the
+   proofreader package. NEVER add a package install, NEVER `pip install numpy`,
+   NEVER `del sys.modules['numpy']` to reload it, and **NEVER put a numpy /
+   site-packages / source-tree path on `sys.path`** (e.g.
+   `sys.path.insert(0, "/tmp/np2")`). That last pattern raises "you should not
+   try to import numpy from its source directory" and was what broke an entire
+   corrected-test batch — every corrected script failed identically while the
+   loading-fixed scripts they started from ran fine. If the `.rerun` script
+   imports a library and runs, your corrected script must import it the SAME way.
 
 2. **Write a corrected script per flagged record** into a NEW dir
    `autodiscovery/<RUN>.fixed/hypo_<id>.py`. Change ONLY the statistical test and
@@ -98,7 +117,16 @@ unless that bug is the statistical fault itself.
    - **OVERTURNED** — the correct test no longer supports the conclusion (effect
      not significant under the right test, or driven entirely by the artefact).
    Ground every call in the corrected numbers; never invent a result. If a
-   corrected script cannot run, say so and leave the original verdict.
+   corrected script cannot run, say so and leave the original verdict — but first
+   check WHY from its `rerun_failure_kind`: an `"environment"` failure (import /
+   missing-module / native-load error, e.g. a numpy import error) is NOT a
+   property of your corrected test and must NOT be reported as a statistical
+   outcome. Fix the script so it imports like the working `.rerun` version (you
+   most likely added a forbidden install or `sys.path` edit — see step 1) and
+   re-measure. Only a genuine `"analysis"` failure of the corrected test itself
+   may be reported as "could not run". (If EVERY corrected script fails to import
+   and none run, the helper aborts with an `environment_failure` / preflight error
+   before you fold anything — that is an environment to fix, not a result.)
 
 ## Output
 

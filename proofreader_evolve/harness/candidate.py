@@ -18,9 +18,13 @@ import heapq
 import importlib.util
 import json
 import os
+import signal
+import threading
+import time
 from dataclasses import asdict, dataclass, field
 
 import numpy as np
+from scipy.spatial import KDTree
 
 from proofreader_evolve.harness import dataset as ds
 from proofreader_evolve.harness import image_confidence as imgconf
@@ -644,7 +648,7 @@ def _enumerate_sites_cached(fragments_graph, params: dict, enumerate_merges: boo
     """
     key = (id(fragments_graph),
            params["max_gap_um"], params["split_max_sites"], params["tip_to_shaft"],
-           params.get("split_alt_per_pair", 1),
+           params.get("split_alt_per_pair", 1), params.get("split_per_tip_k", 4),
            params["min_arm_cable_um"], params["seed_depth_um"],
            params["merge_max_sites"], params["max_per_label"],
            bool(enumerate_merges))
@@ -656,6 +660,7 @@ def _enumerate_sites_cached(fragments_graph, params: dict, enumerate_merges: boo
             max_sites=params["split_max_sites"],
             tip_to_shaft=params["tip_to_shaft"],
             alt_per_pair=params.get("split_alt_per_pair", 1),
+            per_tip_k=params.get("split_per_tip_k", 4),
             return_stats=True,
         )
         if enumerate_merges:
@@ -700,6 +705,16 @@ class CandidateRun:
                                # stats for the SplitSite stream (pairs found vs. dropped
                                # by the split_max_sites cap, truncated gap range); drives
                                # the report's enumeration recall-ceiling section.
+    # (1) PER-STEP TIMING: wall-clock of the policy's own propose_edits() call, kept
+    # SEPARATE from scoring (score.seconds). Without this, a policy that writes an
+    # accidentally O(N^2) feature (e.g. a per-site full-graph scan) is invisible — its
+    # cost hides inside the scoring heartbeat. Recorded per run and surfaced in the
+    # ledger so a runaway policy is attributable to the policy, not the scorer.
+    policy_seconds: float = 0.0
+    # (2) BUDGET: True iff propose_edits exceeded ``policy_time_budget`` and was
+    # aborted. A timed-out policy yields NO edits (the candidate is treated as a failed
+    # generation upstream, like an import/lint failure), so this run is a no-op repair.
+    policy_timed_out: bool = False
 
     def to_json(self) -> dict:
         return {
@@ -709,7 +724,146 @@ class CandidateRun:
             "primary": self.score.primary,
             "metrics": self.score.metrics,
             "seconds": self.score.seconds,
+            "policy_seconds": self.policy_seconds,
+            "policy_timed_out": self.policy_timed_out,
         }
+
+
+class PolicyTimeout(Exception):
+    """Raised when ``propose_edits`` exceeds its wall-clock budget (option 2).
+
+    A policy is arbitrary evolved code; a quadratic feature over a whole-brain
+    candidate stream can run for an hour (observed: a per-site full-graph distance
+    scan). The budget turns that from a silent multi-hour stall into a fast, bounded
+    REJECT — the same failure class as a non-importing or lint-failing revision.
+    """
+
+
+class _policy_time_budget:
+    """Context manager that aborts the body if it runs longer than ``seconds``.
+
+    Uses SIGALRM on the main thread (the common case: run_candidate is called
+    synchronously from the loop), which can interrupt even a tight C-level numpy loop
+    at the next Python bytecode check. When not on the main thread (SIGALRM is
+    unavailable there), it degrades to a NO-OP guard — the wall-clock is still recorded
+    by the caller, so a slow policy is at least VISIBLE even if not interrupted. A
+    non-positive or None budget disables the guard entirely.
+    """
+
+    def __init__(self, seconds: float | None):
+        self.seconds = seconds
+        self._armed = False
+        self._old_handler = None
+
+    def __enter__(self):
+        if not self.seconds or self.seconds <= 0:
+            return self
+        # signal.alarm only works on the main thread; guard so a worker-thread caller
+        # (or a platform without SIGALRM) degrades gracefully instead of raising.
+        if threading.current_thread() is not threading.main_thread():
+            return self
+        if not hasattr(signal, "SIGALRM"):
+            return self
+
+        def _fire(signum, frame):
+            raise PolicyTimeout(
+                f"propose_edits exceeded {self.seconds:g}s budget")
+
+        self._old_handler = signal.signal(signal.SIGALRM, _fire)
+        # setitimer takes a float; alarm() would truncate a sub-second budget to 0.
+        signal.setitimer(signal.ITIMER_REAL, float(self.seconds))
+        self._armed = True
+        return self
+
+    def __exit__(self, *exc):
+        if self._armed:
+            signal.setitimer(signal.ITIMER_REAL, 0)  # disarm
+            if self._old_handler is not None:
+                signal.signal(signal.SIGALRM, self._old_handler)
+            self._armed = False
+        return False  # never suppress (PolicyTimeout propagates to run_candidate)
+
+
+# (3) SHARED SPATIAL INDEX — the systematic fix for the ROOT CAUSE of the O(N^2)
+# blowup. gen12's policy hand-wrote a foreign-label density feature as a full O(N)
+# numpy scan of every node coordinate, PER candidate site (the docstring even claimed
+# it was bounded). It did that because the policy had no efficient radius query — the
+# fragment graph exposes node_xyz but no spatial index. We build ONE KD-tree per
+# fragment graph (cached by graph identity, like the site enumeration) and expose two
+# helpers on ctx so the natural, least-effort way to write a spatial feature is also
+# the fast one:
+#   * ctx["nodes_within"](xyz, radius) -> np.ndarray of node ids within radius (µm)
+#   * ctx["foreign_labels_near"](xyz, radius, exclude=(la, lb)) -> set of distinct
+#     segment ids near xyz other than the excluded pair (the exact gen12 feature,
+#     but O(log N + hits) instead of O(N)).
+_KDTREE_CACHE: dict = {}
+
+
+def _graph_kdtree(fragments_graph):
+    """Return (KDTree, node_id_array) for a fragment graph, built once and cached.
+
+    Cached by ``id(fragments_graph)`` — the loop reuses one graph instance for the
+    whole run, so the tree is paid once (like ``_enumerate_sites_cached``). Returns
+    ``(None, None)`` if the graph has no usable ``node_xyz`` so callers no-op safely.
+    """
+    key = id(fragments_graph)
+    cached = _KDTREE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    xyz = getattr(fragments_graph, "node_xyz", None)
+    if xyz is None:
+        _KDTREE_CACHE[key] = (None, None)
+        return None, None
+    try:
+        node_ids = np.asarray(list(fragments_graph.nodes))
+        coords = np.asarray(xyz, dtype=float)[node_ids]
+        tree = KDTree(coords)
+    except Exception:
+        _KDTREE_CACHE[key] = (None, None)
+        return None, None
+    _KDTREE_CACHE[key] = (tree, node_ids)
+    return tree, node_ids
+
+
+def _nodes_within(fragments_graph, xyz, radius_um):
+    """Node ids within ``radius_um`` (µm) of ``xyz`` — KD-tree query, O(log N + hits).
+
+    Returns an ``np.ndarray`` of fragment-graph node ids (empty on any failure or if
+    the graph has no coordinates). The efficient replacement for a full-array
+    ``np.linalg.norm(all_coords - xyz)`` scan.
+    """
+    tree, node_ids = _graph_kdtree(fragments_graph)
+    if tree is None:
+        return np.empty(0, dtype=int)
+    try:
+        pt = np.asarray(xyz, dtype=float)
+        idx = tree.query_ball_point(pt, r=float(radius_um))
+        return node_ids[np.asarray(idx, dtype=int)]
+    except Exception:
+        return np.empty(0, dtype=int)
+
+
+def _foreign_labels_near(fragments_graph, xyz, radius_um, exclude=()):
+    """Distinct segment ids within ``radius_um`` of ``xyz``, excluding ``exclude``.
+
+    The crossing/tangle density cue (how many UNRELATED fragments crowd a gap),
+    computed via the KD-tree instead of a per-site whole-graph scan. ``exclude`` is
+    the pair whose own labels should not count (e.g. a SplitSite's ``label_a`` /
+    ``label_b``). Returns a set of segment-id strings; empty on failure.
+    """
+    near = _nodes_within(fragments_graph, xyz, radius_um)
+    if len(near) == 0:
+        return set()
+    own = {str(x) for x in exclude}
+    out: set = set()
+    for n in near:
+        try:
+            seg = str(fragments_graph.node_segment_id(int(n)))
+        except Exception:
+            continue
+        if seg not in own:
+            out.add(seg)
+    return out
 
 
 def run_candidate(
@@ -723,6 +877,7 @@ def run_candidate(
     image_reader=None,
     verbose: bool = False,
     splits_only: bool = False,
+    policy_time_budget: float | None = None,
 ) -> CandidateRun:
     """Execute the evolved policy and score its edits on the given GT subset.
 
@@ -844,6 +999,17 @@ def run_candidate(
         # non-merge prior for tree-like neurons). NO thresholds are baked in — the
         # harness exposes raw values and the policy decides which to use and where.
         "split_geom": (lambda site: _split_site_geom(fragments_graph, site)),
+        # (3) EFFICIENT SPATIAL QUERIES (KD-tree backed, O(log N + hits)). Use these
+        # for any "what fragments are near here" feature instead of scanning node_xyz
+        # yourself — a hand-written full scan is O(N) PER site and made held-out scoring
+        # run for an hour once. ``nodes_within(xyz, radius)`` -> node-id array within
+        # ``radius`` µm of a point; ``foreign_labels_near(xyz, radius, exclude=(a,b))``
+        # -> set of distinct segment ids near ``xyz`` other than the excluded pair (the
+        # crossing/tangle density cue). Both no-op to empty if the graph has no coords.
+        "nodes_within": (lambda xyz, radius: _nodes_within(fragments_graph, xyz, radius)),
+        "foreign_labels_near": (
+            lambda xyz, radius, exclude=(): _foreign_labels_near(
+                fragments_graph, xyz, radius, exclude)),
         # (2) Optional, lazy, cached raw-image patch reader (the fluorescence
         # signal at the gap). None unless an image reader was provided — the policy
         # MUST handle ctx["read_image_patch"] is None. When present it is a
@@ -872,7 +1038,24 @@ def run_candidate(
     # to the typed form, so the loop accepts either without the old, lossy
     # tuple(map(str, e)) coercion (which silently corrupted dict edits into a
     # 4-tuple of their keys).
-    raw_edits = propose_edits(sites, ctx)
+    #
+    # (1) TIME the policy call separately from scoring, and (2) BUDGET it: a policy is
+    # arbitrary evolved code that can run an accidental O(N^2) feature over the whole
+    # candidate stream. If it exceeds ``policy_time_budget`` it is aborted and treated
+    # as producing NO edits (a no-op candidate), so the generation is rejected like any
+    # other failed revision rather than stalling the run for an hour.
+    policy_timed_out = False
+    _t_policy = time.monotonic()
+    try:
+        with _policy_time_budget(policy_time_budget):
+            raw_edits = propose_edits(sites, ctx)
+    except PolicyTimeout:
+        policy_timed_out = True
+        raw_edits = []
+        if verbose:
+            print(f"[{split_name}] propose_edits exceeded "
+                  f"{policy_time_budget:g}s budget — aborted, treating as no edits")
+    policy_seconds = time.monotonic() - _t_policy
     edits = normalize_edits(raw_edits)
 
     # SPLIT-ERROR-ONLY: defensive guard. With no MergeSite enumerated above the policy
@@ -910,6 +1093,8 @@ def run_candidate(
         raw_enum_params=dict(policy_raw_enum),
         n_split_label_dropped=n_split_label_dropped,
         split_enum_stats=dict(split_enum_stats),
+        policy_seconds=policy_seconds,
+        policy_timed_out=policy_timed_out,
     )
 
 
@@ -1270,9 +1455,24 @@ def _failure_report_body(
     if repair is not None:
         score = repair["correct"] - repair["false"]
         fitness = score - merge_penalty * repair["false"]
+        # BLIND-SPOT HEADLINE: what fraction of THIS gen's edits the train GT can even
+        # judge. In a sparsely-traced (esp. cross-brain) run this is ~1-3%, i.e. the
+        # score above rests on a tiny minority of the policy's actual output; the rest
+        # are graded on held-out neurons NOT visible in this report. Stated up top as a
+        # headline (not buried as a parenthetical) so the reviser knows how thin the
+        # ground under its fitness is before reading anything else.
+        _n_edits = train_run.n_edits or 0
+        _scored = repair["correct"] + repair["false"]
+        _blind_frac = (repair["unscored"] / _n_edits) if _n_edits else float("nan")
         lines.append(
             f"- Proposed **{train_run.n_edits} edits** from "
             f"{train_run.n_sites} candidate sites.\n"
+            f"- **BLIND SPOT: only {_scored} of your {_n_edits} edits ({(1 - _blind_frac):.0%}) "
+            f"can be scored by train GT; the other {repair['unscored']} "
+            f"({_blind_frac:.0%}) are `unscored` — they touch no train-traced neuron, so "
+            f"this report cannot tell if they are right, and your gate fitness is decided "
+            f"mostly by held-out neurons you cannot see here.** Prefer edits whose "
+            f"geometry generalizes over ones that merely add unscored volume.\n"
             f"- Split-repair score = correct - false = {repair['correct']} - "
             f"{repair['false']} = {score} (train-classified; "
             f"unscored={repair['unscored']}).\n"
@@ -1283,6 +1483,11 @@ def _failure_report_body(
             f"correct repairs to offset, so only accept a merge you are confident is "
             f"ONE neuron — a false merge is worth it only if the SAME revision adds "
             f">{merge_penalty:g} correct repairs per false merge.\n"
+            f"- PRIMARY RECALL SIGNAL is the **'SplitSite audit'** section below "
+            f"(REAL splits you MISSED = your recall headroom, with per-site GT-free "
+            f"geometry to separate real splits from false joins). Read that section "
+            f"FIRST after this header — it is the actionable one; the tables between "
+            f"here and it are secondary diagnostics.\n"
             f"- Edge Accuracy (secondary diagnostic, NOT the bar; = 100 - %Split - "
             f"%Omit - %Merged): baseline "
             f"{scoring._weighted_avg(base, 'Edge Accuracy'):.4f} -> candidate "
@@ -1749,12 +1954,19 @@ def _failure_report_body(
         def _split_row(s, verdict):
             gap = getattr(s, "gap_um", None)
             geom = _split_site_geom(fragments_graph, s)
+            # Reciprocal-neighbor signal (GT-free): "y" when the two endpoints are each
+            # other's #1 partner (a strong TRUE-split cue); otherwise the (rank_a,
+            # rank_b) pair so the reviser can see how far down each tip's preference
+            # list the partner sits. 0 => unranked/undefined.
+            ra = int(getattr(s, "recip_rank_a", 0) or 0)
+            rb = int(getattr(s, "recip_rank_b", 0) or 0)
+            mutual = "y" if getattr(s, "mutual_nearest", False) else f"{ra},{rb}"
             return (
                 f"| {_f(gap)} | {_f(geom['colinear_cos'])} | "
                 f"{geom['deg_a'] if geom['deg_a'] is not None else '—'} | "
                 f"{geom['deg_b'] if geom['deg_b'] is not None else '—'} | "
                 f"{_f(geom['rad_a'])} | {_f(geom['rad_b'])} | "
-                f"{_f(geom['rad_ratio'])} | {verdict} |"
+                f"{_f(geom['rad_ratio'])} | {mutual} | {verdict} |"
             )
 
         # Buckets: (real|false) x (accepted|rejected). Each entry is (site, row_str) so
@@ -1808,8 +2020,17 @@ def _failure_report_body(
                 "  • `rad_a`/`rad_b`/`rad_ratio` — neurite radius at each end and "
                 "their max/min. A ratio far from 1.0 = two different cable calibers "
                 "(less likely one broken neuron).\n"
-                "Find the colinear_cos / rad_ratio cutoff that separates your MISSES "
-                "from your hits below.\n"
+                "  • `mutual (recip #1?)` — reciprocal-neighbor test: `y` iff each "
+                "endpoint is the OTHER's #1 (closest, differently-labelled) "
+                "reconnection partner; otherwise the raw `(rank_a,rank_b)` pair "
+                "(rank 1 = this endpoint's closest other-label partner; 0 = "
+                "unranked). Two fragment ends that each pick each other are far more "
+                "likely ONE broken neuron than a tip grazing an unrelated neurite "
+                "that does not point back — a strong, gap-independent PRECISION cue. "
+                "Read it off `site.mutual_nearest` / `site.recip_rank_a` / "
+                "`site.recip_rank_b` in propose_edits (no split_geom call needed).\n"
+                "Find the colinear_cos / rad_ratio / mutual cutoff that separates "
+                "your MISSES from your hits below.\n"
             )
         else:
             lines.append(
@@ -1822,8 +2043,8 @@ def _failure_report_body(
             f"{len(sp['false_acc'])} / correctly rejected {len(sp['false_rej'])}).\n")
 
         _sp_header = ("| gap_um | colinear_cos | deg_a | deg_b | rad_a | rad_b | "
-                      "rad_ratio | your decision |")
-        _sp_sep = "|---|---|---|---|---|---|---|---|"
+                      "rad_ratio | mutual (recip #1?) | your decision |")
+        _sp_sep = "|---|---|---|---|---|---|---|---|---|"
 
         # Feature extractors for representative selection + omitted-tail summary. Rows
         # are (site, row_str); spread over gap_um (the axis the reviser thresholds on),
@@ -1996,6 +2217,24 @@ def _failure_report_body(
                     f"The scan found **{n_pairs}** label pairs, all returned (cap "
                     f"`split_max_sites`={cap} not hit) — truncation is NOT limiting "
                     f"recall this run.\n"
+                )
+            # Per-tip quota + reciprocal-neighbor summary. The per-tip quota runs
+            # BEFORE the global cap, so a dense region can no longer starve a sparse
+            # tip's one true partner; n_mutual counts returned sites that are
+            # reciprocal #1 pairs (the strong true-split cue exposed per row).
+            ptk = est.get("per_tip_k")
+            n_mut = est.get("n_mutual_nearest")
+            if ptk is not None:
+                lines.append(
+                    f"Per-tip quota `split_per_tip_k`={ptk}: each tip contributes only "
+                    f"its {ptk} closest differently-labelled partners BEFORE the global "
+                    f"cap (rail 1–32), so a dense region cannot consume the whole budget "
+                    f"and starve a sparse tip's single true partner. Raise it toward the "
+                    f"max to approximate the old global-only stream; lower it to "
+                    f"concentrate the budget on each tip's very best partners."
+                    + (f" Of the returned sites, **{n_mut}** are reciprocal #1 "
+                       f"(mutual-nearest) pairs — see the `mutual` column in the "
+                       f"SplitSite audit.\n" if n_mut is not None else "\n")
                 )
 
     # Image evidence the policy ALREADY fetched, labelled by GT (train-only). The

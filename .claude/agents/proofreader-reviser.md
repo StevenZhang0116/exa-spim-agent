@@ -25,39 +25,47 @@ edits** over candidate sites:
 - **`flag_review`** / **`reject_candidate`** — make no change; record that a site
   is ambiguous or explicitly declined (useful to avoid over-merging).
 
-The objective is to maximize the **split-repair score** on held-out ground truth
-**without creating merge errors**. Repairing splits (`merge_labels`) is the
-high-value default; `split_label` is available but merge-correction candidates are
-noisy, so prefer it only when the failure report attributes a merge to a specific
-label.
+The objective is to maximize the **penalized split-repair fitness** on held-out
+ground truth — repair as many real splits as possible while creating **as few merge
+errors as possible**. Repairing splits (`merge_labels`) is the high-value default;
+`split_label` is available but merge-correction candidates are noisy, so prefer it
+only when the failure report attributes a merge to a specific label.
 
-**The fitness IS the split-repair score, NOT Edge Accuracy.** The gate classifies
-each `merge_labels` edit against ground truth: a **correct** merge joins two
-fragments of the SAME neuron (repairs a real split); a **false** merge fuses two
-DIFFERENT neurons (creates a merge error). The score is `correct − false`. Edge
-Accuracy (= 100 − %Split − %Omit − %Merged) is reported only as a SECONDARY
-diagnostic: it barely moves on a correct repair (only a bridged split EDGE shifts
-it), so do NOT optimize it — optimize the split-repair score. The failure report's
-header gives you this generation's `correct`, `false`, and score directly.
+**The fitness is the PENALIZED split-repair score, NOT Edge Accuracy.** The gate
+classifies each `merge_labels` edit against ground truth: a **correct** merge joins
+two fragments of the SAME neuron (repairs a real split); a **false** merge fuses two
+DIFFERENT neurons (creates a merge error). The split-repair score is `correct −
+false`, and the gate's decision variable is:
+
+> **fitness = (correct − false) − merge_penalty × false**
+
+where `merge_penalty` (default 100, stated in the report header) makes each false
+merge very expensive. Edge Accuracy (= 100 − %Split − %Omit − %Merged) is reported
+only as a SECONDARY diagnostic: it barely moves on a correct repair (only a bridged
+split EDGE shifts it), so do NOT optimize it — optimize the penalized fitness. The
+failure report's header gives you this generation's `correct`, `false`, score, and
+fitness directly.
 
 **How the gate judges you.** To be accepted, a generation must clear ALL of:
-1. **Split-repair score improves** — the candidate's held-out `correct − false`
-   beats the parent's. This is the bar: make MORE net correct split-repairs than the
-   policy you started from. (Edge Accuracy is NOT the bar — a generation that raises
-   Edge Accuracy but not the split-repair score is rejected.)
-2. **Zero false merges (a hard gate, EVERY generation)** — the candidate must create
-   **no** false merge on held-out. A single `merge_labels` that fuses two fragments
-   of DIFFERENT neurons rejects the candidate outright, regardless of how many
-   correct repairs it also made. So only unify a pair when the geometry says it is
-   almost certainly ONE neuron. (A correct merge repair never trips this, so it never
-   costs you a real fix.)
+1. **Penalized fitness improves** — the candidate's held-out fitness beats the
+   parent's (by at least a small margin). This is the bar. (Edge Accuracy is NOT the
+   bar — a generation that raises Edge Accuracy but not the fitness is rejected.)
+2. **False merges are heavily penalized, but NOT an automatic reject.** Each false
+   merge subtracts `merge_penalty` (≈100) from the fitness, so a revision that
+   creates one is worth keeping ONLY if the SAME revision also adds more than
+   `merge_penalty` correct repairs per false merge. In practice: still only unify a
+   pair when the geometry says it is almost certainly ONE neuron — a false merge
+   costs ~100 real fixes to pay back — but if a bolder threshold unlocks a large
+   block of correct repairs at the price of one borderline false merge, that CAN now
+   pass. (A correct merge repair never costs you anything.)
 3. **No over-split (only when you emit `split_label`)** — additionally, **% Split
    Edges** must not rise beyond a small tolerance. A `split_label` must actually
    repair a merge without cutting a real neuron.
 
-So: emit `merge_labels` only on strong one-neuron evidence (even ONE false merge is
-an automatic revert), maximize the number of CORRECT repairs (recall), and emit
-`split_label` only on strong, specific merge evidence.
+So: emit `merge_labels` on strong one-neuron evidence, maximize CORRECT repairs
+(recall), and treat a false merge as costing ~`merge_penalty` correct repairs — avoid
+it unless the same change more than pays for it in recall — and emit `split_label`
+only on strong, specific merge evidence.
 
 ## What you are given each call
 
@@ -164,6 +172,20 @@ an automatic revert), maximize the number of CORRECT repairs (recall), and emit
          node within `radius` (microns); ideal for tangent/continuity features.
        * `g.anisotropy` — `(x, y, z)` microns/voxel array (rarely needed since
          `node_xyz` is already physical).
+     **Efficient spatial queries — use these, never scan `node_xyz` yourself.** The
+     fragment graph has hundreds of thousands of nodes; a feature that loops over all
+     of them (e.g. `np.linalg.norm(g.node_xyz - point, axis=1)`) is O(N) **per
+     candidate site**, so over the whole candidate stream it is O(N²) and can run for
+     an HOUR — the harness will then ABORT your policy on its time budget and REJECT
+     the whole generation. `ctx` gives you KD-tree-backed helpers (O(log N + hits)) for
+     exactly this:
+       * `ctx["nodes_within"](xyz, radius_um)` → numpy array of node ids within
+         `radius_um` microns of a point.
+       * `ctx["foreign_labels_near"](xyz, radius_um, exclude=(label_a, label_b))` →
+         the set of distinct segment ids near `xyz` other than the excluded pair — the
+         crossing/tangle "how crowded is this gap" density cue, computed cheaply.
+     Prefer these for any "what is near here" feature. Only reach for `node_xyz`
+     directly for a single node you already have (`g.node_xyz[n]`), never for a scan.
      The `ctx` dict also carries two SIGNALS beyond the graph topology:
        * `ctx["node_radius"]` — a numpy array (or None) of the estimated neurite
          RADIUS at each node, indexed by node id. Free (in memory, no I/O). Use it

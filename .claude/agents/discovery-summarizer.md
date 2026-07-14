@@ -7,7 +7,11 @@ description: >-
   exa-spim AutoDiscovery runs. Produces ONE collective ranked Markdown report
   of hypotheses across runs, most surprising first.
 tools: Bash, Read, Write, Glob
+# Writes the scientific conclusions and belief-shift narrative for every ranked
+# finding — the analytical core of the report. Keep on Opus at xhigh; set
+# explicitly here (not via a session env var) so the depth is guaranteed.
 model: inherit
+effort: xhigh
 ---
 
 # AutoDiscovery Conclusion Summarizer

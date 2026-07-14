@@ -2,7 +2,7 @@
 Plot one evolution run's performance across generations from its ledger.
 
 Reads ``runs/<run_name>/ledger.jsonl`` (one JSON row per generation, written by
-``harness.ledger.GenerationCost``) and renders a three-panel figure tracking how
+``harness.ledger.GenerationCost``) and renders a five-panel figure tracking how
 the policy improved generation over generation:
 
   (1) Penalized FITNESS (THE GATE METRIC) per generation, with the running PARENT
@@ -14,7 +14,14 @@ the policy improved generation over generation:
       compares.
   (2) The decomposition behind the fitness: the raw split-repair score
       (correct − false) and the false-merge count that the penalty acts on.
-  (3) Cumulative cost (wall-clock minutes and agent $), so the accuracy gain can
+  (3) STANDARD BENCHMARK (diagnostic, NOT gated): held-out Edge Accuracy across
+      generations, with the same accept/reject markers and the seed baseline — so
+      you can see whether an accepted (fitness-improving) gen actually moved the
+      real benchmark or diverged from it.
+  (4) STANDARD BENCHMARK (diagnostic): the merge burden — held-out % Merged Edges
+      (line) and # Merges (bars) — the terms a proxy-only gate can silently worsen
+      while fitness climbs.
+  (5) Cumulative cost (wall-clock minutes and agent $), so the accuracy gain can
       be read against the compute it took.
 
 Deterministic, headless (matplotlib Agg), no model. Mirrors the style of
@@ -131,14 +138,52 @@ def _running_parent_bar(rows: list[dict], key=None) -> list[float]:
     return bar
 
 
+def _row_merged_edges(r: dict) -> float:
+    """Held-out % Merged Edges (diagnostic). Prefer the absolute field; fall back to
+    reconstructing it from the (older) seed-relative delta if present, so ledgers
+    written before the absolute field parse too. NaN when neither is available."""
+    if r.get("heldout_merged_edges") is not None and "heldout_merged_edges" in r:
+        v = r.get("heldout_merged_edges")
+        if v is not None and v == v:  # not None, not NaN
+            return float(v)
+    # Legacy: some ledgers stored only the delta vs the immutable seed.
+    if "merged_edges_vs_seed" in r:
+        try:
+            return float(r["merged_edges_vs_seed"])  # a delta, not absolute; flagged below
+        except (TypeError, ValueError):
+            pass
+    return float("nan")
+
+
 def make_figure(rows: list[dict], run_name: str, out_path: Path) -> Path:
-    """Render the three-panel performance figure and save it to ``out_path``."""
+    """Render the five-panel performance figure and save it to ``out_path``.
+
+    Panels: (1) penalized fitness (the gate), (2) split-repair score + false merges,
+    (3) held-out Edge Accuracy (diagnostic benchmark), (4) held-out merge burden
+    (% Merged Edges + # Merges, diagnostic), (5) cumulative cost. Panels 3-4 are the
+    STANDARD benchmark metrics — recorded/logged only, never the gate — so a run can
+    be read for whether the fitness gain tracked or diverged from the real benchmark.
+    """
     gens = [r.get("generation", i + 1) for i, r in enumerate(rows)]
     score = [r.get("heldout_split_repair_score", 0) for r in rows]
     fitness = [_row_fitness(r) for r in rows]
     false_merges = [r.get("heldout_false_merges", 0) for r in rows]
     accepted = [bool(r.get("accepted")) for r in rows]
     fitness_bar = _running_parent_bar(rows, key=_row_fitness)
+    # (3) held-out Edge Accuracy and (4) merge burden — the STANDARD benchmark, kept as
+    # diagnostics (never gated on). NaN-safe: import/lint-failed gens have no held-out
+    # metrics, and old ledgers may lack the absolute # Merges field entirely.
+    edge_acc = [float(r.get("heldout_edge_accuracy", float("nan"))) for r in rows]
+    merged_edges = [_row_merged_edges(r) for r in rows]
+    n_merges = [float(r.get("heldout_merges", float("nan"))) for r in rows]
+    have_edge = any(v == v for v in edge_acc)
+    have_merged = any(v == v for v in merged_edges)
+    have_nmerges = any(v == v for v in n_merges)
+    # Flag when %Merged is only available as a seed-relative delta (legacy ledgers
+    # without the absolute field) so the axis label does not mislead.
+    merged_is_delta = (have_merged
+                       and not any("heldout_merged_edges" in r for r in rows)
+                       and any("merged_edges_vs_seed" in r for r in rows))
     # The penalty in force (last row's; constant within a run). For the title only.
     penalty = float(rows[-1].get("merge_penalty", 100.0)) if rows else 100.0
 
@@ -157,9 +202,9 @@ def make_figure(rows: list[dict], run_name: str, out_path: Path) -> Path:
     splits_only = any(r.get("splits_only") for r in rows)
     mode = " [splits-only]" if splits_only else ""
 
-    fig, axes = plt.subplots(3, 1, figsize=(11, 10), sharex=True,
-                             gridspec_kw={"height_ratios": [3, 2, 2]})
-    ax0, ax1, ax3 = axes
+    fig, axes = plt.subplots(5, 1, figsize=(11, 15), sharex=True,
+                             gridspec_kw={"height_ratios": [3, 2, 2, 2, 2]})
+    ax0, ax1, ax_ea, ax_mrg, ax3 = axes
 
     # (1) Penalized FITNESS (the gate metric) + parent bar + accept/reject markers.
     ax0.plot(gens, fitness, "-", color="#1f77b4", lw=1.5, zorder=1,
@@ -205,7 +250,55 @@ def make_figure(rows: list[dict], run_name: str, out_path: Path) -> Path:
     h2, l2 = ax1b.get_legend_handles_labels()
     ax1.legend(h1 + h2, l1 + l2, loc="best", fontsize=8, framealpha=0.9)
 
-    # (3) Cumulative cost (twin axis: minutes + $).
+    # (3) STANDARD BENCHMARK — held-out Edge Accuracy across generations (diagnostic,
+    # NOT the gate). Accept/reject markers repeated here so the reader can see whether
+    # an ACCEPTED (fitness-improving) generation actually moved the real benchmark, or
+    # diverged from it. Edge Accuracy = 100 − %Split − %Omit − %Merged.
+    if have_edge:
+        ax_ea.plot(gens, edge_acc, "-", color="#1f77b4", lw=1.3, zorder=1)
+        for g, v, c, a in zip(gens, edge_acc, acc_color, accepted):
+            if v == v:
+                ax_ea.scatter([g], [v], c=c, s=45, marker="o" if a else "X",
+                              edgecolors="k", linewidths=0.4, zorder=3)
+        # Seed baseline (gen-1's parent Edge Accuracy is the seed's) as a reference line.
+        seed_ea = next((v for v in edge_acc if v == v), None)
+        if seed_ea is not None:
+            ax_ea.axhline(seed_ea, color="#888", lw=1.0, ls="--", alpha=0.7,
+                          label=f"seed EA {seed_ea:.3f}")
+            ax_ea.legend(loc="best", fontsize=8, framealpha=0.9)
+    else:
+        ax_ea.text(0.5, 0.5, "no held-out Edge Accuracy recorded",
+                   ha="center", va="center", transform=ax_ea.transAxes,
+                   fontsize=9, color="#888")
+    ax_ea.set_ylabel("held-out\nEdge Accuracy")
+    ax_ea.grid(True, alpha=0.3)
+
+    # (4) STANDARD BENCHMARK — merge burden: % Merged Edges (line) + # Merges (bars),
+    # the terms a proxy-only gate can silently worsen while fitness climbs. Diagnostic.
+    _merged_label = ("Δ% Merged Edges vs seed" if merged_is_delta else "% Merged Edges")
+    if have_merged:
+        ax_mrg.plot(gens, merged_edges, "-o", color="#d62728", ms=4, lw=1.3,
+                    label=_merged_label)
+        ax_mrg.set_ylabel(f"held-out\n{_merged_label}", color="#d62728")
+        ax_mrg.tick_params(axis="y", labelcolor="#d62728")
+    else:
+        ax_mrg.text(0.5, 0.5, "no % Merged Edges recorded",
+                    ha="center", va="center", transform=ax_mrg.transAxes,
+                    fontsize=9, color="#888")
+    ax_mrg.grid(True, alpha=0.3)
+    if have_nmerges:
+        ax_mrgb = ax_mrg.twinx()
+        ax_mrgb.bar(gens, [v if v == v else 0 for v in n_merges], width=0.6,
+                    color="#8c564b", alpha=0.30, zorder=0, label="# Merges")
+        ax_mrgb.set_ylabel("# Merges", color="#8c564b")
+        ax_mrgb.tick_params(axis="y", labelcolor="#8c564b")
+        hm, lm = ax_mrg.get_legend_handles_labels()
+        hb, lb = ax_mrgb.get_legend_handles_labels()
+        ax_mrg.legend(hm + hb, lm + lb, loc="best", fontsize=8, framealpha=0.9)
+    elif have_merged:
+        ax_mrg.legend(loc="best", fontsize=8, framealpha=0.9)
+
+    # (5) Cumulative cost (twin axis: minutes + $).
     ax3.plot(gens, cum_min, "-o", color="#ff7f0e", ms=4, lw=1.2, label="cum. wall (min)")
     ax3.set_ylabel("cumulative\nwall-clock (min)", color="#ff7f0e")
     ax3.tick_params(axis="y", labelcolor="#ff7f0e")

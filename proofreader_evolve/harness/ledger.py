@@ -43,6 +43,14 @@ class GenerationCost:
                                          # (diagnostic; can DROP as recall rises)
     heldout_edge_accuracy: float = float("nan")  # held-out Edge Accuracy (diagnostic;
                                          # NOT the gate, despite the legacy "primary")
+    # Held-out STANDARD benchmark metrics (run-length-weighted, pooled) — DIAGNOSTIC
+    # ONLY, never gate inputs (the gate is the penalized split-repair fitness). Recorded
+    # in ABSOLUTE terms so the performance figure can plot Edge Accuracy and the merge
+    # burden (% Merged Edges / # Merges) across generations. NaN on import/lint-failed
+    # gens (no held-out scoring ran).
+    heldout_merged_edges: float = float("nan")   # held-out % Merged Edges
+    heldout_merges: float = float("nan")         # held-out # Merges (count)
+    heldout_split_edges: float = float("nan")    # held-out % Split Edges
     # The parent policy's held-out RAW split-repair score (correct - false), recorded
     # for the plots. NOTE: this is NOT the gate bar anymore — the gate compares
     # PENALIZED fitness (see ``parent_fitness`` / ``heldout_fitness`` below). Kept as a
@@ -84,6 +92,16 @@ class GenerationCost:
     heldout_soft_false: int = 0          # blind-spot merges image calls likely-FALSE
     heldout_soft_ambiguous: int = 0      # blind-spot merges with ambiguous image signal
     confidence_veto: bool = False        # was the opt-in low-confidence veto active?
+    # --- POLICY EXECUTION COST + BUDGET (options 1 & 2) --------------------------
+    # propose_edits' OWN wall-clock on held-out (separate from scoring), and whether
+    # it blew the time budget. A quadratic per-site feature over a whole-brain
+    # candidate stream can run for an hour; timing makes that attributable to the
+    # policy (not the scorer), and a timeout REJECTS the generation (heldout_policy_
+    # timed_out True => note is a BUDGET-REJECT). 0.0 / False when no held-out policy
+    # pass ran (import/lint failed first).
+    heldout_policy_seconds: float = 0.0
+    heldout_policy_timed_out: bool = False
+    policy_time_budget: float = 0.0    # the budget in effect this run (seconds)
     # --- TRAIN-SIDE over-merge alert (diagnostic, NOT a gate input) --------------
     # Merges that fused two DIFFERENT neurons on a TRAIN skeleton. The gate judges
     # false merges on HELD-OUT only (kept isolated for an honest generalization

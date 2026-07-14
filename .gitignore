@@ -19,11 +19,17 @@ checkpoints/
 logs/
 notebooks/verify_stats/
 
-# Evolution runs: TRACK the small artifacts (ledger, per-gen heuristics/rules,
-# failure reports, attempts.md, SUMMARY.md) but NOT the huge prepared-brain
-# pickle (~2 GB each). (Also covered by the global *.pkl above; listed here too
-# for clarity since runs/ is otherwise tracked.)
-proofreader_evolve/runs/**/prepared_*.pkl
+# Evolution runs: ignore the entire directory (large/local artifacts).
+proofreader_evolve/runs/
+
+# Prepared-brain shared cache: the cached pickles are large (~1.6 GB each) and
+# fully rebuildable, so keep them local. Track the folder + its README only.
+proofreader_evolve/prepared_cache/*
+!proofreader_evolve/prepared_cache/README.md
+
+# Autodiscovery: ignore the generated .fixed and .rerun subfolders.
+autodiscovery/*.json.fixed/
+autodiscovery/*.json.rerun/
 
 # Credentials and tokens
 *.json

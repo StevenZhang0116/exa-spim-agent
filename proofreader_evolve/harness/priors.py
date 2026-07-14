@@ -352,11 +352,66 @@ def _snippet(f: Finding, n: int = 480) -> str:
     return out[:n] if len(out) > n else out
 
 
+def build_unranked_section(priors_path: str) -> list:
+    """Inline the WHOLE qualifying prior set into the report — UNRANKED.
+
+    This is the delivery path the loop uses: the findings are put IN the failure
+    report (which the reviser always reads) instead of pointed-at as a file it may
+    skip. Deliberately UNRANKED and Priority-FREE: findings are listed in stable
+    file order (by finding number), with NO discovery-importance ordering and NO
+    Priority shown, so the agent is not steered toward any particular lever — WHICH
+    finding(s) to use is entirely the agent's call. The only curation is the trust
+    filter (``Finding.qualifies``): keep GENERALIZES + UPHELD/SOUND, drop
+    DOES-NOT-GENERALIZE / PARTIAL / WEAKENED / OVERTURNED — those would overfit a
+    single brain, so hiding them is a guardrail, not a recommendation.
+
+    Returns a list of markdown lines ([] on any failure / no qualifying finding, so
+    the report builder can splice it unconditionally). Each finding shows its number,
+    title, verdict line, and the threshold/discriminator snippet the agent can key a
+    rule on — full detail for EVERY finding (no top-k tier), since we are not ranking.
+    """
+    findings = [f for f in load_findings(priors_path) if f.qualifies]
+    if not findings:
+        return []
+    findings.sort(key=lambda f: f.num)          # stable file order, NOT by importance
+    lines = [
+        "\n## Grounding priors (validated cross-brain — UNRANKED; you choose)\n",
+        f"The {len(findings)} findings below are from the AutoDiscovery knowledge base, "
+        f"pre-filtered to those that GENERALIZE across every brain AND survive "
+        f"statistical correction (findings that held on only one brain or collapsed "
+        f"under correction are excluded). They are GT-derived POPULATION geometry (not "
+        f"this run's labels), so keying a threshold/discriminator on one is fair game "
+        f"and does NOT violate the no-hardcoded-label rule. They are listed in no "
+        f"particular order and with NO importance ranking — WHICH one(s) to use, if "
+        f"any, is your decision; read them and pick what fits this generation's "
+        f"failure. They only BIAS your proposal — the held-out gate still decides. "
+        f"Cite the finding number(s) you rely on in your rules.md change log (e.g. "
+        f"'Finding #8').\n",
+    ]
+    for f in findings:
+        snip = _snippet(f)
+        # verdict_line keeps its raw "- **Verdict carried over:**" markdown prefix from
+        # the KB; strip it so the rendered line reads cleanly under our own bullet.
+        vl = (f.verdict_line or "").lstrip("- ")
+        for pre in ("**Verdict carried over:**", "**Verdict carried over:",
+                    "Verdict carried over:"):
+            if vl.startswith(pre):
+                vl = vl[len(pre):].strip()
+                break
+        lines.append(
+            f"- **Finding #{f.num} — {f.title}**\n"
+            f"  - Verdict: {vl}\n"
+            + (f"  - Threshold/discriminator: {snip}\n" if snip else "")
+        )
+    return lines
+
+
 # How many top-ranked findings get the FULL threshold/discriminator write-up. The
 # rest are still listed (title + priority + one-line snippet) as a compact menu, so
 # the agent knows every available lever without the section ballooning. This is a
 # DISPLAY detail only — nothing is hidden or filtered, the whole qualifying set is
-# shown; ``top_detail`` just controls how verbose each entry is.
+# shown; ``top_detail`` just controls how verbose each entry is. (Used only by the
+# DORMANT ranked path below; the live loop uses build_unranked_section above.)
 _TOP_DETAIL = 4
 
 

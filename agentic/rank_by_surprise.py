@@ -64,6 +64,20 @@ def parse_surprisal(raw) -> float | None:
         return None
 
 
+def truncate(text: str, limit: int) -> str:
+    """Middle-truncate long text to keep the stdout payload manageable.
+
+    Keeps the head and tail (where imports/loading and the test+printed numbers
+    usually live) and drops the middle, so a very long ``code`` / ``codeOutput``
+    still fits the verifier's slim top-K payload without losing the salient ends.
+    """
+    if len(text) <= limit:
+        return text
+    head = text[: limit // 2]
+    tail = text[-limit // 2 :]
+    return f"{head}\n…[{len(text) - limit} chars omitted]…\n{tail}"
+
+
 def belief_label(p: float | None) -> str:
     """Map a belief probability to a coarse, human-readable label.
 
@@ -184,38 +198,55 @@ def rank_records(
     return ranked, dropped
 
 
-def to_records(ranked: list[dict]) -> list[dict]:
-    """Reshape ranked hypotheses into compact records for the agent."""
+def to_records(
+    ranked: list[dict],
+    *,
+    include_code: bool = False,
+    max_code_chars: int = 6000,
+) -> list[dict]:
+    """Reshape ranked hypotheses into compact records for the agent.
+
+    With ``include_code`` each record also carries the recorded experiment
+    ``code`` and ``codeOutput`` (middle-truncated to ``max_code_chars`` each) so
+    a statistical-audit agent can read the top-K SLICE instead of the full
+    multi-MB run export. This is what lets the verifier judge the test/logic
+    from the helper's stdout alone — its whole point is to avoid loading the
+    ~95% of records that are not in the reported top K.
+    """
     out = []
     for rank, r in enumerate(ranked, start=1):
         s = r["_surprisal"]
         prior = r.get("prior")
         posterior = r.get("posterior")
         plan = r.get("experimentPlan") or {}
-        out.append(
-            {
-                "rank": rank,
-                "run": r.get("_run", ""),
-                "source_file": r.get("_source_file", ""),
-                "id": r.get("id"),
-                "status": r.get("status", ""),
-                "surprisal": round(s, 4),
-                "surprise_magnitude": round(abs(s), 4),
-                "priority_score": round(r.get("_priority", 0.0), 4),
-                "is_surprising": bool(r.get("isSurprising", abs(s) >= 0.3)),
-                "prior": round(prior, 4) if isinstance(prior, (int, float)) else None,
-                "posterior": round(posterior, 4)
-                if isinstance(posterior, (int, float))
-                else None,
-                "belief_before": belief_label(prior),
-                "belief_after": belief_label(posterior),
-                "direction": direction(prior, posterior),
-                "hypothesis": (r.get("hypothesis") or "").strip(),
-                "objective": (plan.get("objective") or "").strip(),
-                "analysis": (r.get("analysis") or "").strip(),
-                "review": (r.get("review") or "").strip(),
-            }
-        )
+        rec = {
+            "rank": rank,
+            "run": r.get("_run", ""),
+            "source_file": r.get("_source_file", ""),
+            "id": r.get("id"),
+            "status": r.get("status", ""),
+            "surprisal": round(s, 4),
+            "surprise_magnitude": round(abs(s), 4),
+            "priority_score": round(r.get("_priority", 0.0), 4),
+            "is_surprising": bool(r.get("isSurprising", abs(s) >= 0.3)),
+            "prior": round(prior, 4) if isinstance(prior, (int, float)) else None,
+            "posterior": round(posterior, 4)
+            if isinstance(posterior, (int, float))
+            else None,
+            "belief_before": belief_label(prior),
+            "belief_after": belief_label(posterior),
+            "direction": direction(prior, posterior),
+            "hypothesis": (r.get("hypothesis") or "").strip(),
+            "objective": (plan.get("objective") or "").strip(),
+            "analysis": (r.get("analysis") or "").strip(),
+            "review": (r.get("review") or "").strip(),
+        }
+        if include_code:
+            rec["code"] = truncate((r.get("code") or "").strip(), max_code_chars)
+            rec["codeOutput"] = truncate(
+                str(r.get("codeOutput") or "").strip(), max_code_chars
+            )
+        out.append(rec)
     return out
 
 
@@ -274,6 +305,24 @@ def main(argv: list[str] | None = None) -> int:
             "high surprise first)."
         ),
     )
+    parser.add_argument(
+        "--include-code",
+        action="store_true",
+        help=(
+            "Also emit each returned record's recorded 'code' and 'codeOutput' "
+            "(middle-truncated to --max-code-chars). Lets an audit agent read "
+            "the top-K SLICE instead of the full multi-MB run export."
+        ),
+    )
+    parser.add_argument(
+        "--max-code-chars",
+        type=int,
+        default=6000,
+        help=(
+            "With --include-code, truncate each record's code and codeOutput to "
+            "this many chars (head+tail kept, middle dropped). Default 6000."
+        ),
+    )
     args = parser.parse_args(argv)
 
     files = resolve_paths(args.paths)
@@ -288,7 +337,9 @@ def main(argv: list[str] | None = None) -> int:
         all_records.extend(recs)
 
     ranked, dropped = rank_records(all_records, rank_by=args.rank_by)
-    records = to_records(ranked)
+    records = to_records(
+        ranked, include_code=args.include_code, max_code_chars=args.max_code_chars
+    )
     if args.top is not None:
         records = records[: args.top]
 

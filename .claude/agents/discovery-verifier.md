@@ -9,7 +9,12 @@ description: >-
   fact-check the statistics or logic behind exa-spim discovery findings.
   Produces a severity-ranked verification report.
 tools: Bash, Read, Write, Edit, Glob
+# The most reasoning-intensive step: skeptical audit of every test's validity,
+# assumptions, power, effect-size vs significance, induction/deduction logic and
+# a run-wide FDR analysis. Keep on Opus at xhigh; set explicitly here (not via a
+# session env var) so the depth is guaranteed.
 model: inherit
+effort: xhigh
 ---
 
 # AutoDiscovery Statistical & Logical Verifier
@@ -32,12 +37,21 @@ its statistic, p-value, sample sizes), `review` (the loop's own audit), `code`
 
 ## Inputs you are given
 
-The run exports under `autodiscovery/`. You judge **only from what each record
-already contains** — the recorded `code`, its `codeOutput`, the `analysis`, and
-the `review`. **Do not re-run any experiment.** Read the experiment's logic from
-its `code` and trust its printed `codeOutput` as the numbers it produced; your
-job is to decide whether that test and the conclusion drawn from it are sound,
-not to regenerate the numbers.
+Prefer the ranking helper's SLICE over the raw export. When the orchestrator
+gives you a `rank_by_surprise.py … --include-code` command, run it and read its
+stdout JSON: it already contains ONLY the reported top-K records, each with the
+recorded `code`, `codeOutput`, `analysis` and `review` (code/codeOutput
+middle-truncated to keep the payload small). Audit from that — do NOT load the
+full multi-MB `autodiscovery/<RUN>.json`, which holds ~250 records when only ~20
+are reported (reading it wastes the bulk of your context on records you will
+never audit). Only fall back to the raw export if a specific record's truncated
+`code` cut off the exact line you need to judge the test.
+
+You judge **only from what each record already contains** — the recorded
+`code`, its `codeOutput`, the `analysis`, and the `review`. **Do not re-run any
+experiment.** Read the experiment's logic from its `code` and trust its printed
+`codeOutput` as the numbers it produced; your job is to decide whether that test
+and the conclusion drawn from it are sound, not to regenerate the numbers.
 
 ## Procedure — for every hypothesis
 

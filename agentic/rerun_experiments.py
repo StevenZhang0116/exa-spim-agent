@@ -25,16 +25,25 @@ works when the host environment can unpickle the dataset and the script's
 bootstrap is benign.
 
 Export → revise → rerun (agent-in-the-loop): the recorded scripts often fail to
-reproduce for DATA-LOADING / ENVIRONMENT reasons, not analysis reasons — e.g. a
-NumPy-2-written pkl that the host's NumPy 1.x can't unpickle, a "dataset not
-found" gate the monkeypatch doesn't intercept, or a ``pip install`` retry loop
-that times out. For those, ``--export-dir`` dumps each top-K record's code as an
-editable ``hypo_<id>.py`` (plus ``MANIFEST.json`` and ``REVISION_GUIDE.md``) so
-the agent can revise ONLY the loading/bootstrap part — load the pkl directly
-from ``$RERUN_PKL``, pin a compatible NumPy, drop pip-retry loops — keeping the
-analysis identical. ``--code-dir`` then executes those revised scripts (falling
-back to the recorded ``code`` for any record without a revised file) and reports
-which source each result used.
+reproduce because they cannot LOCATE the dataset — a "dataset not found" gate the
+monkeypatch doesn't intercept, or a hardcoded path/glob that finds nothing. For
+those, ``--export-dir`` dumps each top-K record's code as an editable
+``hypo_<id>.py`` (plus ``MANIFEST.json`` and ``REVISION_GUIDE.md``) so the agent
+can revise ONLY the loading part — load the pkl directly from ``$RERUN_PKL`` —
+keeping the analysis identical. ``--code-dir`` then executes those revised
+scripts (falling back to the recorded ``code`` for any record without a revised
+file) and reports which source each result used.
+
+The driver owns the ENVIRONMENT, not the scripts. The host interpreter is the
+single source of truth and is pre-provisioned with the scientific stack; the
+runner neutralizes any ``pip``/``apt``/``conda`` install the recorded code
+attempts (they become logged no-ops) so a script can neither swap the NumPy
+version mid-run nor hang in an install retry loop. Before running anything, a
+one-time preflight imports numpy/pandas/scipy/statsmodels and aborts loudly
+(exit 3) if the env itself is broken; if every script fails with an
+import/native-load error and none succeed, the run is flagged
+``environment_failure`` and also exits 3 — so a broken env can never be folded
+as a batch of "could not run" statistical verdicts.
 
 Corrected statistical test (fix a wrong test, then re-measure): when the
 verifier flags a hypothesis whose STATISTICAL TEST is wrong (wrong test for the
@@ -114,10 +123,10 @@ _REVISION_GUIDE = """\
 # Rerun revision guide
 
 Each `hypo_<id>.py` here is one hypothesis's recorded experiment script. The
-reruns fail mostly for DATA-LOADING / ENVIRONMENT reasons, not analysis reasons.
-Revise ONLY the data-loading and bootstrap part of each script; keep the
-statistical ANALYSIS and what it prints byte-for-byte identical so the rerun is
-a faithful reproduction.
+reruns fail mostly because the script cannot LOCATE the dataset (hardcoded paths
+/ globs / "dataset not found" gates), not for analysis reasons. Revise ONLY the
+data-loading part of each script; keep the statistical ANALYSIS and what it
+prints byte-for-byte identical so the rerun is a faithful reproduction.
 
 You MAY change, near the top of each script:
 - Replace the dataset search (hardcoded paths, `os.path.exists`, `glob.glob`,
@@ -130,12 +139,22 @@ You MAY change, near the top of each script:
   Keep the SAME variable name the rest of the script uses (e.g. `payload`,
   `data`) and the same downstream keys (`fragments_graph`, `gt_graph`,
   `gt_edge_error`, `gt_node_canonical_label`, `gt_merge_sites`, ...).
-- Fix environment/version problems that block the load, e.g. a pkl written with
-  NumPy 2 that won't unpickle under NumPy 1.x — pin/upgrade inside the script
-  (`subprocess.check_call([sys.executable,"-m","pip","install","-q","numpy>=2"])`
-  BEFORE importing numpy), or otherwise make the unpickle succeed.
-- Remove `pip install` RETRY LOOPS that re-install on every iteration and cause
-  timeouts; install each dependency at most once, quietly, up front.
+
+The ENVIRONMENT is owned by the driver, NOT by your script. Do NOT manage
+packages or interpreters from inside the script:
+- Do NOT `pip install` / `apt install` / `conda install` anything, and do NOT
+  add or keep install retry loops — the runner already turns every install
+  command into a logged no-op, so they only waste time. The host env is
+  pre-provisioned with numpy, pandas, scipy, statsmodels, sklearn, networkx,
+  matplotlib, tensorstore and the proofreader package; just `import` them.
+- Do NOT touch NumPy: never `pip install numpy...`, never `del sys.modules[...]`
+  to reload it, and NEVER put a numpy/site-packages/source directory on
+  `sys.path` (e.g. `sys.path.insert(0, "/tmp/np2")`). Importing numpy from a
+  source tree raises "you should not try to import numpy from its source
+  directory" and breaks the whole script. Just `import numpy as np`.
+- If an import genuinely fails, that is an ENVIRONMENT problem for the driver to
+  fix (provision the package once, globally) — not something to patch per
+  script. Leave it; the driver reports it as an environment failure.
 
 You MUST NOT change:
 - The statistical test, its parameters, the sampling/grouping logic, the effect
@@ -224,9 +243,78 @@ def resolve_code(
 # ``pickle.load(open(<path>, "rb"))`` after an ``os.path.exists`` / ``glob.glob``
 # search, which these patches cover.
 _RUNNER = r'''
-import builtins, glob, os, runpy, sys
+import builtins, glob, os, runpy, subprocess, sys
 
 _PKL = os.environ["RERUN_PKL"]
+
+
+# --- Driver owns the environment --------------------------------------------
+# The host env is the single source of truth: it is pre-provisioned with the
+# scientific stack the recorded scripts need (numpy, pandas, scipy, statsmodels,
+# sklearn, networkx, matplotlib, tensorstore, the proofreader package). The
+# recorded scripts, however, routinely try to `pip install` those at run time
+# (sometimes in retry loops that hang until the timeout) or to SWAP the NumPy
+# version mid-script — both mutate the interpreter environment unpredictably and
+# were a real source of failures (a NumPy source tree shoved onto sys.path made
+# `import numpy` fail for every corrected script in one run). So we neutralize
+# package installs HERE, in the driver's runner, rather than trusting each
+# script (or an agent) to get the bootstrap right: pip / apt / conda install
+# commands become logged no-ops, and the script runs against the one known-good
+# env. A package that is genuinely missing then surfaces as a loud import error
+# (which the driver classifies as an environment failure), not as a silent
+# version swap or a half-hour hang.
+def _is_install_cmd(a):
+    if isinstance(a, str):
+        s = a.split()
+    elif isinstance(a, (list, tuple)):
+        s = [str(x) for x in a]
+    else:
+        return False
+    if not s:
+        return False
+    prog = os.path.basename(s[0])
+    if prog.startswith("pip") and "install" in s:
+        return True
+    if "pip" in s and "install" in s:          # python -m pip install ...
+        return True
+    if prog in ("apt", "apt-get", "conda", "mamba", "sudo") and "install" in s:
+        return True
+    return False
+
+
+_orig_check_call = subprocess.check_call
+def _check_call(a, *args, **kw):
+    if _is_install_cmd(a):
+        print("[runner] suppressed package install:", a, file=sys.stderr, flush=True)
+        return 0
+    return _orig_check_call(a, *args, **kw)
+subprocess.check_call = _check_call
+
+_orig_check_output = subprocess.check_output
+def _check_output(a, *args, **kw):
+    if _is_install_cmd(a):
+        print("[runner] suppressed package install:", a, file=sys.stderr, flush=True)
+        return "" if (kw.get("text") or kw.get("encoding")) else b""
+    return _orig_check_output(a, *args, **kw)
+subprocess.check_output = _check_output
+
+_orig_run = subprocess.run
+def _run(a, *args, **kw):
+    if _is_install_cmd(a):
+        print("[runner] suppressed package install:", a, file=sys.stderr, flush=True)
+        return subprocess.CompletedProcess(a, 0, "" if kw.get("text") else b"",
+                                           "" if kw.get("text") else b"")
+    return _orig_run(a, *args, **kw)
+subprocess.run = _run
+
+_orig_popen = subprocess.Popen
+class _Popen(_orig_popen):
+    def __init__(self, a, *args, **kw):
+        if _is_install_cmd(a):
+            print("[runner] suppressed package install:", a, file=sys.stderr, flush=True)
+            a = [sys.executable, "-c", "pass"]
+        super().__init__(a, *args, **kw)
+subprocess.Popen = _Popen
 
 
 def _is_pkl(x):
@@ -327,6 +415,80 @@ def truncate(text: str | None, limit: int) -> str:
     head = text[: limit // 2]
     tail = text[-limit // 2 :]
     return f"{head}\n…[{len(text) - limit} chars omitted]…\n{tail}"
+
+
+# A failure is an ENVIRONMENT failure (the interpreter could not import the
+# scientific stack) rather than an ANALYSIS failure (the script ran but the
+# statistics/data logic raised, or a "dataset not found" gate exited) when its
+# stderr carries an import/native-load signature. We classify these distinctly so
+# a broken env can NEVER again masquerade as a batch of INCONCLUSIVE statistical
+# verdicts: the driver aborts on a systematic env failure instead of letting an
+# agent fold per-hypothesis "could not run" calls. The patterns are deliberately
+# narrow — a "dataset not found" gate or a genuine analysis exception is NOT an
+# environment failure (the reproducer is meant to fix loading and rerun those).
+_ENV_FAILURE_RE = re.compile(
+    r"ModuleNotFoundError"
+    r"|ImportError"
+    r"|cannot import name"
+    r"|you should not try to import numpy from its source directory"
+    r"|numpy\._core"
+    r"|_multiarray_umath"
+    r"|undefined symbol"
+    r"|DLL load failed"
+    r"|cannot open shared object file"
+    r"|\.so: cannot open",
+    re.IGNORECASE,
+)
+
+
+def classify_failure(stderr: str | None) -> str | None:
+    """Tag a non-zero run as ``"environment"`` vs ``"analysis"`` (None if clean).
+
+    Used both per-result (so the agent sees why a script failed) and to decide
+    whether a whole compute step is a systematic environment failure worth
+    aborting on, rather than folding as statistical verdicts.
+    """
+    if not stderr:
+        return "analysis"
+    return "environment" if _ENV_FAILURE_RE.search(stderr) else "analysis"
+
+
+def preflight_env(python: str, *, timeout: int = 60) -> tuple[bool, str]:
+    """Cheap one-time check that the run interpreter can import the core stack.
+
+    Catches a broken base environment ONCE, up front, with a clear message —
+    instead of discovering it as N identical per-script import failures after
+    spending time launching each. Returns ``(ok, detail)``; ``detail`` is the
+    captured error when not ok. The recorded scripts also use statsmodels for the
+    corrected tests, so it is included.
+    """
+    probe = (
+        "import importlib, sys\n"
+        "mods = ['numpy', 'pandas', 'scipy', 'statsmodels']\n"
+        "bad = []\n"
+        "for m in mods:\n"
+        "    try:\n"
+        "        importlib.import_module(m)\n"
+        "    except Exception as e:\n"
+        "        bad.append('%s: %s: %s' % (m, type(e).__name__, e))\n"
+        "if bad:\n"
+        "    sys.stderr.write('\\n'.join(bad))\n"
+        "    sys.exit(1)\n"
+        "import numpy\n"
+        "print(numpy.__version__)\n"
+    )
+    try:
+        proc = subprocess.run(
+            [python, "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return False, f"preflight could not launch the interpreter: {e}"
+    if proc.returncode != 0:
+        return False, (proc.stderr or proc.stdout or "unknown import error").strip()
+    return True, (proc.stdout or "").strip()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -445,8 +607,38 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"mode": "export", **summary}, indent=2, ensure_ascii=False))
         return 0
 
+    # Preflight (#4 guardrail): verify ONCE, up front, that the run interpreter
+    # can import the core scientific stack. A globally broken env then fails here
+    # with one clear message instead of as N identical per-script import errors,
+    # and the non-zero exit stops the workflow before any agent folds the result.
+    ok, detail = preflight_env(sys.executable)
+    if not ok:
+        print(
+            f"[rerun] PREFLIGHT FAILED: the interpreter ({sys.executable}) cannot "
+            f"import the core scientific stack — aborting before running any "
+            f"script.\n{detail}",
+            file=sys.stderr,
+            flush=True,
+        )
+        print(
+            json.dumps(
+                {
+                    "json_file": str(args.json_file),
+                    "pkl": str(pkl),
+                    "preflight_ok": False,
+                    "environment_failure": True,
+                    "preflight_error": detail,
+                    "results": [],
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        return 3
+    print(f"[rerun] preflight OK (numpy {detail})", file=sys.stderr, flush=True)
+
     results = []
-    n_ok = n_failed = n_timeout = 0
+    n_ok = n_failed = n_timeout = n_env_failed = 0
     n_revised = n_corrected = 0
     for rank, r in enumerate(ranked, start=1):
         code, source = resolve_code(r, args.code_dir, args.corrected_dir)
@@ -460,6 +652,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
             flush=True,
         )
+        failure_kind = None  # None | "environment" | "analysis"
         if not code.strip():
             run = {
                 "timed_out": False,
@@ -469,6 +662,7 @@ def main(argv: list[str] | None = None) -> int:
                 "runtime_ms": 0,
             }
             outcome = "NO-CODE"
+            failure_kind = "analysis"
             n_failed += 1
         else:
             run = rerun_one(code, pkl, args.timeout)
@@ -479,7 +673,12 @@ def main(argv: list[str] | None = None) -> int:
                 outcome = "OK"
                 n_ok += 1
             else:
-                outcome = f"FAILED(exit={run['exitcode']})"
+                failure_kind = classify_failure(run["stderr"])
+                if failure_kind == "environment":
+                    n_env_failed += 1
+                    outcome = f"ENV-FAILED(exit={run['exitcode']})"
+                else:
+                    outcome = f"FAILED(exit={run['exitcode']})"
                 n_failed += 1
 
         # Progress log after each hypothesis: outcome, this run's wall time, and
@@ -538,6 +737,7 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 "rerun_exitcode": run["exitcode"],
                 "rerun_timed_out": run["timed_out"],
+                "rerun_failure_kind": failure_kind,
                 "rerun_runtime_ms": run["runtime_ms"],
                 "rerun_stdout": truncate(run["stdout"], args.max_output_chars),
                 "rerun_stderr": truncate(run["stderr"], args.max_output_chars),
@@ -562,10 +762,33 @@ def main(argv: list[str] | None = None) -> int:
         "n_recorded": len(results) - n_revised - n_corrected,
         "n_ok": n_ok,
         "n_failed": n_failed,
+        "n_env_failed": n_env_failed,
         "n_timeout": n_timeout,
+        "preflight_ok": True,
+        # A systematic environment failure: nothing ran AND every failure is an
+        # import/native-load error. This is the signature of a broken env (the
+        # NumPy-source-tree regression), NOT a batch of legitimately-inconclusive
+        # statistics — flag it so the downstream fold step / orchestrator does not
+        # record N "could not run" verdicts as if they were real findings.
+        "environment_failure": (
+            n_ok == 0 and n_env_failed > 0 and n_env_failed == n_failed
+        ),
         "results": results,
     }
     print(json.dumps(payload, indent=2, ensure_ascii=False))
+    # Exit 3 (distinct from argparse's 2) on a systematic env failure so the
+    # driver's run_compute() aborts loudly BEFORE an agent folds a bad result,
+    # rather than treating it as a normal completion.
+    if payload["environment_failure"]:
+        print(
+            f"[rerun] ENVIRONMENT FAILURE: {n_env_failed}/{len(results)} scripts "
+            f"failed to import the scientific stack and none succeeded. This is an "
+            f"environment problem, not a statistical result — aborting so it is not "
+            f"folded as 'could not run' verdicts. Inspect a rerun_stderr above.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 3
     return 0
 
 
