@@ -83,6 +83,7 @@ ENV/
 !.claude/agents/
 !.claude/settings.json
 .claude/settings.local.json
+.agents/
 
 # Large data files
 *.tif
