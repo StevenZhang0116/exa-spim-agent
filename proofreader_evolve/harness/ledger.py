@@ -61,8 +61,17 @@ class GenerationCost:
     # --- held-out edit activity (what the policy actually did on the gated set) --
     heldout_n_edits: int = 0             # total edits the policy emitted on held-out
     heldout_correct_merges: int = 0      # merges joining the SAME held-out neuron
-    heldout_false_merges: int = 0        # merges fusing DIFFERENT held-out neurons
-    heldout_split_repair_score: int = 0  # correct - false (raw, pre-penalty)
+    heldout_false_merges: int = 0        # merges fusing DIFFERENT held-out neurons (TOTAL)
+    # Blame-attributed split of heldout_false_merges. Only false_policy is penalized by
+    # the gate: a GENUINELY NEW fusion of two clean fragments. false_preexisting = a
+    # fragment that ALREADY spanned both neurons before the merge (a pre-existing
+    # segmentation/GT merge the policy merely joined onto — not its fault). See
+    # incremental_scoring.classify_merge_edits. heldout_false_merges ==
+    # false_policy + false_preexisting.
+    heldout_false_merges_policy: int = 0       # policy-caused (penalized)
+    heldout_false_merges_preexisting: int = 0  # pre-existing (NOT penalized)
+    heldout_split_repair_score: int = 0  # correct - false_policy (pre-penalty; only the
+                                         # policy-caused false merges are subtracted)
     # --- penalized FITNESS (the actual gate decision variable) -------------------
     # fitness = heldout_split_repair_score - merge_penalty * heldout_false_merges.
     # This REPLACED the hard 'false == 0' gate: a candidate is kept iff its fitness

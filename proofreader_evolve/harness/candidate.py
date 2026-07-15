@@ -1453,8 +1453,15 @@ def _failure_report_body(
         from proofreader_evolve.harness import incremental_scoring as inc
         repair = inc.classify_merge_edits(train_run.edits, label_gt_map)
     if repair is not None:
-        score = repair["correct"] - repair["false"]
-        fitness = score - merge_penalty * repair["false"]
+        # The gate penalizes only POLICY-CAUSED false merges (a genuinely NEW fusion of
+        # two clean fragments); a pre-existing two-neuron fragment the policy merely
+        # joined is not its fault (see incremental_scoring.classify_merge_edits). Report
+        # score/fitness the SAME way the gate computes them so the reviser optimizes the
+        # real objective. Fall back to total ``false`` for older maps.
+        _false_pol = repair.get("false_policy", repair["false"])
+        _false_pre = repair.get("false_preexisting", 0)
+        score = repair["correct"] - _false_pol
+        fitness = score - merge_penalty * _false_pol
         # BLIND-SPOT HEADLINE: what fraction of THIS gen's edits the train GT can even
         # judge. In a sparsely-traced (esp. cross-brain) run this is ~1-3%, i.e. the
         # score above rests on a tiny minority of the policy's actual output; the rest
@@ -1473,16 +1480,20 @@ def _failure_report_body(
             f"this report cannot tell if they are right, and your gate fitness is decided "
             f"mostly by held-out neurons you cannot see here.** Prefer edits whose "
             f"geometry generalizes over ones that merely add unscored volume.\n"
-            f"- Split-repair score = correct - false = {repair['correct']} - "
-            f"{repair['false']} = {score} (train-classified; "
-            f"unscored={repair['unscored']}).\n"
-            f"- **FITNESS the gate keeps on = score - {merge_penalty:g}*false = "
-            f"{fitness:g}.** The gate accepts iff this BEATS the parent's fitness. A "
-            f"false merge (fusing two different neurons) is NOT an automatic reject "
-            f"anymore, but it is HEAVILY penalized: each one costs {merge_penalty:g} "
-            f"correct repairs to offset, so only accept a merge you are confident is "
-            f"ONE neuron — a false merge is worth it only if the SAME revision adds "
-            f">{merge_penalty:g} correct repairs per false merge.\n"
+            f"- Split-repair score = correct - policy_false = {repair['correct']} - "
+            f"{_false_pol} = {score} (train-classified; unscored={repair['unscored']}). "
+            f"Of {repair['false']} total false merge(s), {_false_pol} are POLICY-CAUSED "
+            f"(a NEW fusion of two clean fragments) and {_false_pre} are PRE-EXISTING (a "
+            f"fragment that already spanned both neurons before your merge — NOT your "
+            f"fault, and NOT penalized).\n"
+            f"- **FITNESS the gate keeps on = score - {merge_penalty:g}*policy_false = "
+            f"{fitness:g}.** The gate accepts iff this BEATS the parent's fitness. Only a "
+            f"POLICY-CAUSED false merge (a new fusion of two DIFFERENT neurons) is "
+            f"penalized — each costs {merge_penalty:g} correct repairs to offset, so only "
+            f"accept a merge you are confident is ONE neuron. Joining onto a fragment that "
+            f"is ALREADY a two-neuron mix is not penalized (you did not create that), so "
+            f"do NOT waste precision effort avoiding those — focus on not creating NEW "
+            f"fusions of two clean fragments.\n"
             f"- PRIMARY RECALL SIGNAL is the **'SplitSite audit'** section below "
             f"(REAL splits you MISSED = your recall headroom, with per-site GT-free "
             f"geometry to separate real splits from false joins). Read that section "

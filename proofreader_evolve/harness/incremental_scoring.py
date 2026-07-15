@@ -836,7 +836,8 @@ def _dominant_neuron(label_gt_map: dict, label) -> str | None:
     return max(counts, key=counts.get)
 
 
-def classify_merge_edits(edits, label_gt_map: dict) -> dict:
+def classify_merge_edits(edits, label_gt_map: dict,
+                         preexisting_min_nodes: int = _MERGE_MIN_NODES) -> dict:
     """Classify each ``merge_labels`` edit against a {label: {neuron: count}} map.
 
     This is the DENSE gate signal that ``Edge Accuracy`` lacks: a merge edit only
@@ -849,21 +850,43 @@ def classify_merge_edits(edits, label_gt_map: dict) -> dict:
       * either endpoint absent from the map -> ``unscored`` (touches no neuron in
         this map's scope; not counted either way).
 
+    BLAME ATTRIBUTION for a false merge (the fix the gate needs). A merge is flagged
+    ``false`` when the two fragments' dominant neurons differ — but that does NOT
+    always mean THIS merge created a two-neuron fusion. If a fragment ALREADY spans
+    both neurons (>= ``preexisting_min_nodes`` nodes on each), the entanglement
+    predates the merge — the segmentation/GT mixed them before the policy touched
+    anything — so the cross-neuron verdict is not this policy's fault. We therefore
+    split ``false`` into:
+      * ``false_policy``      — a GENUINE new fusion: NEITHER fragment already spanned
+        both neurons, so joining them is what created the N1+N2 merge. This is the
+        precision failure the gate should punish.
+      * ``false_preexisting`` — at least one fragment already straddled both neurons
+        (a pre-existing merge error); the dominant-neuron mismatch is a GT-bookkeeping
+        artifact of the join, not a new error the policy introduced.
+    The gate penalizes only ``false_policy`` (see ``run_evolution._fitness``); the
+    total ``false`` is still returned for continuity / diagnosis.
+
     ``label_gt_map`` MUST be built over the SAME GT subset the gate scores on
     (e.g. ``label_gt_counts(prepared, gt_names=heldout_names)`` for the held-out
     gate). LEAK BOUNDARY: this is GT-derived; pass the HELD-OUT map only into the
     gate, never into the failure report / reviser (which use the train-only map).
 
-    Returns ``{"correct": int, "false": int, "unscored": int,
-               "correct_pairs": [...], "false_pairs": [...],
-               "unscored_pairs": [(a, b), ...]}``. ``split_label`` / other edit
-    kinds are ignored (they are scored by the merge metrics, not here).
-    ``unscored_pairs`` lists the label pairs this map could not verify — the
-    blind-spot set a caller may corroborate with a GT-independent signal (e.g.
-    image bridge evidence) to gauge decision confidence.
+    Returns ``{"correct", "false", "false_policy", "false_preexisting", "unscored",
+               "correct_pairs", "false_pairs", "false_policy_pairs",
+               "false_preexisting_pairs", "unscored_pairs"}``. ``split_label`` / other
+    edit kinds are ignored (they are scored by the merge metrics, not here).
     """
+    def _spans_both(label, n1, n2) -> bool:
+        """True if ``label`` already lands on BOTH neurons n1 and n2 with at least
+        ``preexisting_min_nodes`` nodes each — i.e. the fragment is itself a
+        pre-existing two-neuron merge, so a join involving it is not a NEW fusion."""
+        c = label_gt_map.get(str(label)) or {}
+        return c.get(n1, 0) >= preexisting_min_nodes and c.get(n2, 0) >= preexisting_min_nodes
+
     correct = []
     false = []
+    false_policy = []
+    false_preexisting = []
     unscored_pairs = []
     for e in (edits or []):
         # Pull the two endpoint labels out of either edit form.
@@ -880,13 +903,29 @@ def classify_merge_edits(edits, label_gt_map: dict) -> dict:
         if da is None or db is None:
             unscored_pairs.append((str(a), str(b)))
             continue
-        (correct if da == db else false).append((str(a), str(b), da, db))
+        if da == db:
+            correct.append((str(a), str(b), da, db))
+            continue
+        # A false merge: attribute blame. Pre-existing iff EITHER fragment already
+        # spans both da and db (>= min_nodes each) — the two-neuron mix predates this
+        # merge. Otherwise BOTH fragments were clean single-neuron pieces and joining
+        # them is what created the fusion -> policy-caused.
+        rec = (str(a), str(b), da, db)
+        false.append(rec)
+        if _spans_both(a, da, db) or _spans_both(b, da, db):
+            false_preexisting.append(rec)
+        else:
+            false_policy.append(rec)
     return {
         "correct": len(correct),
         "false": len(false),
+        "false_policy": len(false_policy),
+        "false_preexisting": len(false_preexisting),
         "unscored": len(unscored_pairs),
         "correct_pairs": correct,
         "false_pairs": false,
+        "false_policy_pairs": false_policy,
+        "false_preexisting_pairs": false_preexisting,
         "unscored_pairs": unscored_pairs,
     }
 

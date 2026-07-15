@@ -1263,7 +1263,8 @@ def _pooled_split_repair(brains: list, per_brain_runs: list,
         reviser. Pass the TRAIN per-brain runs with this so train edits are scored
         on the train map.
     """
-    tot = {"correct": 0, "false": 0, "unscored": 0}
+    tot = {"correct": 0, "false": 0, "false_policy": 0, "false_preexisting": 0,
+           "unscored": 0}
     # Per-brain blind-spot detail, kept ALONGSIDE the pooled counts so a caller can
     # corroborate the unscored edits with a GT-independent signal (see
     # ``_image_confidence``). Each entry is (BrainContext, CandidateRun, unscored
@@ -1287,6 +1288,12 @@ def _pooled_split_repair(brains: list, per_brain_runs: list,
         c = inc.classify_merge_edits(run.edits, getattr(bc, map_attr))
         tot["correct"] += c["correct"]
         tot["false"] += c["false"]
+        # Blame-attributed false merges: only false_policy (a GENUINELY new fusion)
+        # is penalized by the gate; false_preexisting is a fragment that already
+        # spanned both neurons before this merge (see classify_merge_edits). Older
+        # callers/maps may not populate these -> fall back to the whole ``false``.
+        tot["false_policy"] += c.get("false_policy", c["false"])
+        tot["false_preexisting"] += c.get("false_preexisting", 0)
         tot["unscored"] += c["unscored"]
         if c.get("unscored_pairs"):
             tot["_unscored_by_brain"].append((bc, run, c["unscored_pairs"]))
@@ -1296,28 +1303,51 @@ def _pooled_split_repair(brains: list, per_brain_runs: list,
             db = inc._dominant_neuron(m, getattr(s, "label_b", None))
             if da is not None and da == db:
                 reachable_real += 1
-    tot["score"] = tot["correct"] - tot["false"]
+    # Split-repair score credits genuine repairs and subtracts only POLICY-caused false
+    # merges (a newly-created fusion). A pre-existing two-neuron fragment the policy
+    # merely joined (false_preexisting) is NEUTRAL — the policy did not create that
+    # entanglement, so it neither helps nor hurts the score. (Was correct - false; the
+    # change makes the gate blind to un-fixable pre-existing merges — see
+    # classify_merge_edits blame attribution.)
+    tot["score"] = tot["correct"] - tot["false_policy"]
     tot["reachable_real"] = reachable_real
     return tot
 
 
-def _fitness(repair: dict, merge_penalty: float) -> float:
-    """The gate's decision variable: split-repair score MINUS a heavy per-false-merge
-    penalty. SMOOTH replacement for the old hard 'false == 0' gate.
+def _policy_false(repair: dict) -> int:
+    """The POLICY-CAUSED false merges — the only ones the gate should punish.
 
-    ``fitness = repair["score"] - merge_penalty * repair["false"]``
-             ``= (correct - false) - merge_penalty * false``.
-
-    A false merge (fusing two DIFFERENT neurons) is still strongly discouraged — at
-    the default ``merge_penalty=100`` a single one costs ~100 correct repairs to
-    offset — but it no longer AUTOMATICALLY rejects the candidate. A change that
-    creates one false merge while repairing 120 real splits can now be kept, whereas
-    the old gate reverted it outright. This trades a small, controlled amount of
-    merge error for the split-recall it unlocks, and keeps the fitness landscape
-    continuous (a near-miss is scored just below a clean win, not slammed to reject),
-    which gives the search a usable gradient around the precision boundary.
+    A ``false`` merge is a cross-neuron fusion, but not all are the policy's fault: if
+    a fragment ALREADY spanned both neurons before the merge, the entanglement predates
+    the join (see ``incremental_scoring.classify_merge_edits`` blame attribution). We
+    penalize only ``false_policy`` (a genuinely NEW fusion of two clean fragments).
+    Falls back to the total ``false`` for older repair dicts that predate the split.
     """
-    return repair["score"] - merge_penalty * repair["false"]
+    return int(repair.get("false_policy", repair.get("false", 0)))
+
+
+def _fitness(repair: dict, merge_penalty: float) -> float:
+    """The gate's decision variable: split-repair score MINUS a heavy penalty on the
+    POLICY-CAUSED false merges. SMOOTH replacement for the old hard 'false == 0' gate.
+
+    ``fitness = repair["score"] - merge_penalty * false_policy``
+             ``= (correct - false_policy) - merge_penalty * false_policy``.
+
+    Only ``false_policy`` is penalized — a genuinely NEW cross-neuron fusion the policy
+    created. A ``false_preexisting`` (a fragment that already spanned both neurons before
+    this merge) is NOT the policy's fault, so it neither lowers the score nor incurs the
+    penalty (see ``incremental_scoring.classify_merge_edits``). This stops the gate from
+    punishing the policy for un-fixable pre-existing segmentation/GT merges (observed on
+    794495 gen24: all 4 held-out ``false`` were pre-existing, so the true policy-caused
+    count was 0).
+
+    A policy-caused false merge is still strongly discouraged — at the default
+    ``merge_penalty=100`` a single one costs ~100 correct repairs to offset — but it no
+    longer AUTOMATICALLY rejects the candidate. This trades a small, controlled amount of
+    NEW merge error for the split-recall it unlocks, and keeps the fitness landscape
+    continuous, giving the search a usable gradient around the precision boundary.
+    """
+    return repair["score"] - merge_penalty * _policy_false(repair)
 
 
 # --- Confidence layer (option ①): a GT-INDEPENDENT soft verdict on the blind spot -
@@ -1760,16 +1790,20 @@ async def run_evolution(
     # split EDGE moves it), which is why evolution flat-lined. See classify_merge_edits.
     parent_repair = _pooled_split_repair(heldout_ctxs, seed_runs)
     log(f"Seed split-repair: correct={parent_repair['correct']} "
-        f"false={parent_repair['false']} score={parent_repair['score']} "
+        f"false={parent_repair['false']} "
+        f"({_policy_false(parent_repair)} policy-caused / "
+        f"{parent_repair.get('false_preexisting', 0)} pre-existing) "
+        f"score={parent_repair['score']} "
         f"(unscored={parent_repair['unscored']}); penalized FITNESS = score - "
-        f"{merge_penalty:g}*false = {_fitness(parent_repair, merge_penalty):g} — the "
-        f"bar gen 1 must beat by score_margin={score_margin} (keep iff fitness gain "
-        f">= {score_margin}; a false merge costs {merge_penalty:g} each, so it is "
-        f"heavily discouraged but no longer an automatic reject)")
+        f"{merge_penalty:g}*policy_false = {_fitness(parent_repair, merge_penalty):g} — "
+        f"the bar gen 1 must beat by score_margin={score_margin} (keep iff fitness gain "
+        f">= {score_margin}; only a POLICY-CAUSED false merge costs {merge_penalty:g} "
+        f"each — a pre-existing two-neuron fragment the policy joined is not penalized)")
     if hard_merge_reject:
-        log("GATE MODE: --hard-merge-reject ON — ANY held-out false merge (false>0) "
-            "rejects the candidate outright (9ca88bb gate); the merge_penalty fitness "
-            "still gates false-free candidates via score_margin.")
+        log("GATE MODE: --hard-merge-reject ON — ANY held-out POLICY-CAUSED false merge "
+            "(a new fusion; false_policy>0) rejects the candidate outright (9ca88bb "
+            "gate); pre-existing merges are ignored, and the merge_penalty fitness still "
+            "gates clean candidates via score_margin.")
     # Full pooled held-out metric vector of the parent (run-length-weighted over the
     # pool). Advances on every accept. The standard benchmark metrics (Edge Accuracy,
     # % Merged Edges, # Merges, % Split Edges) are computed and recorded/logged for
@@ -1964,8 +1998,12 @@ async def run_evolution(
                 # TRAIN-SIDE over-merge alert (diagnostic; the gate judges false merges
                 # on HELD-OUT, so these never reject — but they are real over-merges the
                 # gate is blind to). Pool each brain's train edits against ITS OWN map.
+                # Count only POLICY-CAUSED false merges (a genuinely new fusion) — the
+                # same blame attribution the gate uses; pre-existing two-neuron fragments
+                # the policy merely joined are not over-merges it introduced.
                 train_false = sum(
-                    inc.classify_merge_edits(tr.edits, bc.label_gt_map)["false"]
+                    inc.classify_merge_edits(tr.edits, bc.label_gt_map).get(
+                        "false_policy", 0)
                     for bc, tr in zip(train_ctxs, train_runs))
                 train_seconds = sum(tr.score.seconds for tr in train_runs)
                 # Cache the full bundle keyed by parent state, so the next
@@ -2124,15 +2162,17 @@ async def run_evolution(
                 # Edge Accuracy only moves when a merge bridges a true split EDGE, so
                 # most correct repairs read +0.000 and evolution flat-lined. The
                 # split-repair score counts EVERY correctly-repaired held-out split
-                # (correct) and penalizes every wrong fusion (false); the gate then
-                # subtracts a HEAVY per-false-merge penalty to get the fitness:
-                #   fitness = (correct - false) - merge_penalty * false.
-                # A candidate is kept iff its fitness beats the parent's by at least
-                # ``score_margin``. This REPLACES the old hard 'false == 0' reject: a
-                # false merge is still heavily discouraged (at merge_penalty=100 it
-                # costs ~100 correct repairs to offset), but a change that trades a
-                # single false merge for a large recall gain is no longer rejected
-                # outright — the landscape stays smooth around the precision boundary.
+                # (correct) and penalizes only POLICY-CAUSED wrong fusions (false_policy);
+                # the gate then subtracts a HEAVY per-false-merge penalty to get fitness:
+                #   fitness = (correct - false_policy) - merge_penalty * false_policy.
+                # A ``false_preexisting`` (a fragment that already spanned both neurons
+                # before the merge) is NOT the policy's fault, so it does not enter the
+                # score or the penalty (see classify_merge_edits / _fitness). A candidate
+                # is kept iff its fitness beats the parent's by at least ``score_margin``.
+                # This REPLACES the old hard 'false == 0' reject: a policy-caused false
+                # merge is still heavily discouraged (at merge_penalty=100 it costs ~100
+                # correct repairs to offset), but a change that trades a single one for a
+                # large recall gain is no longer rejected outright.
                 #
                 # MARGIN (score_margin, integer >= 1). The bar is
                 # ``fitness >= parent + score_margin``, NOT a strict ``>`` — a strict
@@ -2151,17 +2191,24 @@ async def run_evolution(
                 )
                 cand_fitness = _fitness(cand_repair, merge_penalty)
                 _gain = cand_fitness - parent_bar
-                _fmerges = cand_repair["false"]
-                _fnote = ("false 0" if _fmerges == 0 else
-                          f"false {_fmerges} (penalty -{merge_penalty:g}*{_fmerges}="
-                          f"{-merge_penalty * _fmerges:g})")
+                # Only POLICY-caused false merges are penalized; pre-existing two-neuron
+                # fragments the policy merely joined are not the policy's fault (see
+                # _fitness / classify_merge_edits). Log both so the split is visible.
+                _fpol = _policy_false(cand_repair)
+                _fpre = int(cand_repair.get("false_preexisting", 0))
+                _fnote = ("false 0" if cand_repair["false"] == 0 else
+                          f"false {cand_repair['false']} "
+                          f"({_fpol} policy-caused [penalty -{merge_penalty:g}*{_fpol}="
+                          f"{-merge_penalty * _fpol:g}] + {_fpre} pre-existing [not penalized])")
                 # HARD MERGE REJECT (--hard-merge-reject): restore the 9ca88bb gate.
-                # ANY held-out false merge (fusing two DIFFERENT neurons) rejects the
-                # candidate outright, regardless of how much recall it gained — the
-                # smoothed merge_penalty fitness is bypassed as the accept criterion.
-                # This is the strict-precision gate: false==0 is a HARD constraint, not
-                # a penalty. (It still requires the fitness margin too, so a false-free
-                # candidate that does not improve is not accepted just for being clean.)
+                # ANY held-out POLICY-CAUSED false merge (a NEW fusion of two DIFFERENT
+                # neurons) rejects the candidate outright, regardless of how much recall
+                # it gained — the smoothed merge_penalty fitness is bypassed as the accept
+                # criterion. This is the strict-precision gate: false_policy==0 is a HARD
+                # constraint, not a penalty. Pre-existing merges (a fragment already
+                # spanning both neurons) do NOT trigger it — the policy did not create
+                # them. (It still requires the fitness margin too, so a clean candidate
+                # that does not improve is not accepted just for being clean.)
                 if heldout_policy_timed_out:
                     # (2) BUDGET REJECT: the policy exceeded its wall-clock budget on at
                     # least one held-out brain, so its edits are incomplete/absent. Never
@@ -2176,13 +2223,14 @@ async def run_evolution(
                         f"fitness. Use an efficient ctx spatial helper "
                         f"(nodes_within / foreign_labels_near) instead of scanning "
                         f"node_xyz per site.")
-                elif hard_merge_reject and cand_repair["false"] > 0:
+                elif hard_merge_reject and _fpol > 0:
                     improved = False
                     gate_reason = (
-                        f"HARD-REJECT: {cand_repair['false']} held-out false merge(s) "
-                        f"(fused DIFFERENT neurons) — --hard-merge-reject forbids any "
-                        f"false>0 (9ca88bb gate); fitness {cand_fitness:g} vs parent "
-                        f"{parent_bar:g} ({_gain:+g}) is not consulted")
+                        f"HARD-REJECT: {_fpol} held-out POLICY-CAUSED false merge(s) "
+                        f"(a NEW fusion of two DIFFERENT neurons) — --hard-merge-reject "
+                        f"forbids any policy-caused false>0 (9ca88bb gate); fitness "
+                        f"{cand_fitness:g} vs parent {parent_bar:g} ({_gain:+g}) is not "
+                        f"consulted. ({_fpre} pre-existing false merge(s) ignored.)")
                 elif _gain >= score_margin:
                     improved = True
                     gate_reason = (
@@ -2316,7 +2364,11 @@ async def run_evolution(
                     "summary": attempt_summary,
                     "heldout": cand_fitness - parent_bar,
                     "correct": cand_repair["correct"],
-                    "false": cand_repair["false"],
+                    # ``false`` here is the PENALIZED (policy-caused) count — the one the
+                    # reviser should act on. Pre-existing false merges are not its fault
+                    # and are excluded, so the near-miss decomposition points at fusions
+                    # it can actually cull.
+                    "false": _policy_false(cand_repair),
                     "accepted": False,
                 })
             # B (durable): every generation's attempt is persisted in ledger.jsonl
@@ -2327,20 +2379,24 @@ async def run_evolution(
             # ledger.render_attempts_timeline).
             log(f"Step 7: fitness={cand_fitness:g} (split-repair "
                 f"score={cand_repair['score']}, correct={cand_repair['correct']}, "
-                f"false={cand_repair['false']}; parent fitness={parent_bar:g}); "
+                f"false={cand_repair['false']} [{_policy_false(cand_repair)} policy-caused / "
+                f"{cand_repair.get('false_preexisting', 0)} pre-existing]; "
+                f"parent fitness={parent_bar:g}); "
                 f"Edge Accuracy={heldout_acc:.4f} -> {note}")
             # HIGH-RECALL NEAR-MISS alert: a REVERTED candidate that repaired many real
-            # splits and lost only to a few false merges is not "breadth is death" — it
-            # is a precision-cull opportunity. Surface it loudly so the pattern that
-            # traps this loop (walking away from a 100+-repair regime over a handful of
-            # false merges) is visible in the log, not just implicit in the ledger.
-            if (not keep and cand_repair["false"] > 0
+            # splits and lost only to a few POLICY-CAUSED false merges is not "breadth is
+            # death" — it is a precision-cull opportunity. Keys off false_policy (the
+            # culla­ble fusions), not the total false, so pre-existing merges (which the
+            # policy cannot fix) do not mask a genuine near-miss.
+            _near_false = _policy_false(cand_repair)
+            if (not keep and _near_false > 0
                     and cand_repair["correct"] >= 20
-                    and cand_repair["correct"] > 10 * cand_repair["false"]):
+                    and cand_repair["correct"] > 10 * _near_false):
                 log(f"   [NEAR-MISS] reverted candidate repaired "
                     f"{cand_repair['correct']} real splits, lost only to "
-                    f"{cand_repair['false']} false merge(s) — culling those {cand_repair['false']} "
-                    f"would unlock this high-recall regime (do not abandon the breadth)")
+                    f"{_near_false} policy-caused false merge(s) — culling those "
+                    f"{_near_false} would unlock this high-recall regime (do not abandon "
+                    f"the breadth)")
 
             ledger.record(GenerationCost(
                 generation=gen,
@@ -2364,6 +2420,9 @@ async def run_evolution(
                 heldout_n_edits=heldout_n_edits,
                 heldout_correct_merges=cand_repair["correct"],
                 heldout_false_merges=cand_repair["false"],
+                heldout_false_merges_policy=_policy_false(cand_repair),
+                heldout_false_merges_preexisting=int(
+                    cand_repair.get("false_preexisting", 0)),
                 heldout_split_repair_score=cand_repair["score"],
                 merge_penalty=merge_penalty,
                 heldout_fitness=cand_fitness,
@@ -2430,6 +2489,46 @@ async def run_evolution(
         log(f"[WARN] could not auto-generate policy-evolution figure ({_e}); "
             f"run `python proofreader_evolve/plotting/plot_policy_evolution.py {run_dir.name}` manually")
 
+    # Auto-generate the search-dynamics + train/held-out generalization figure (all
+    # generations incl. REJECTED ones, with why-rejected annotations, plus the
+    # overfitting view the other two figures lack). Best-effort, same as above. Also
+    # emits a compact per-gen Markdown digest next to it.
+    search_png = run_dir / "search_dynamics.png"
+    try:
+        from proofreader_evolve.plotting import plot_search_dynamics as _psd
+        _rows_sd = _psd.load_ledger(run_dir)
+        if _rows_sd:
+            _psd.make_figure(_rows_sd, run_dir.name, search_png, run_dir=run_dir)
+            _psd.write_md(_rows_sd, run_dir.name, run_dir, run_dir / "search_digest.md")
+            log(f"Search-dynamics figure -> {search_png}")
+    except Exception as _e:
+        log(f"[WARN] could not auto-generate search-dynamics figure ({_e}); "
+            f"run `python proofreader_evolve/plotting/plot_search_dynamics.py {run_dir.name}` manually")
+
+    # Auto-generate the policy-similarity analysis (sentence-transformer embeddings of
+    # each generation's rules.candidate.md -> gen×gen cosine heatmap + drift trajectory,
+    # plus a dump of the exact text embedded per gen). Best-effort: this needs the
+    # optional ``sentence-transformers`` dependency (and downloads a model on first
+    # use), so a missing package or offline host must NEVER fail a finished run — it is
+    # logged and skipped, and can be produced later with the standalone CLI (ideally in
+    # the `panda` env where sentence-transformers is installed).
+    sim_png = run_dir / "policy_similarity.png"
+    try:
+        from proofreader_evolve.plotting import analyze_policy_similarity as _aps
+        _gens, _sim, _acc, _retained = _aps.analyze(
+            run_dir, source="rules", model_name="all-MiniLM-L6-v2", drop_common=True)
+        _aps.make_figure(_gens, _sim, _acc, run_dir.name, "rules",
+                         "all-MiniLM-L6-v2", sim_png)
+        _aps.write_csv(_gens, _sim, sim_png.with_suffix(".csv"))
+        _aps.dump_retained_chunks(_gens, _retained, "rules", "all-MiniLM-L6-v2", True,
+                                  sim_png.with_name(sim_png.stem + "_input_chunks.md"))
+        log(f"Policy-similarity figure -> {sim_png}")
+    except Exception as _e:
+        log(f"[WARN] could not auto-generate policy-similarity figure ({_e}); "
+            f"it needs `sentence-transformers` (pip install; downloads a model). Run "
+            f"`python proofreader_evolve/plotting/analyze_policy_similarity.py "
+            f"{run_dir.name}` manually (e.g. in the panda env).")
+
     print("\n=== Evolution complete ===")
     print(ledger.summarize())
     print(f"Cross-run access attempts (denied): {n_viol}")
@@ -2440,6 +2539,10 @@ async def run_evolution(
         print(f"Performance figure           -> {perf_png}")
     if policy_png.exists():
         print(f"Policy-evolution figure      -> {policy_png}")
+    if search_png.exists():
+        print(f"Search-dynamics figure       -> {search_png}")
+    if sim_png.exists():
+        print(f"Policy-similarity figure     -> {sim_png}")
 
 
 def main() -> int:
