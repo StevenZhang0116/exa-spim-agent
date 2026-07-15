@@ -116,8 +116,14 @@ class GenerationCost:
     # false merges on HELD-OUT only (kept isolated for an honest generalization
     # signal), so these never reject a candidate — but they are real over-merges the
     # gate is blind to (partners in train / no-GT regions). Recorded so train-side
-    # precision regressions are visible per generation.
+    # precision regressions are visible per generation. This is the POLICY-CAUSED count
+    # (blame-attributed the same way the gate is — see classify_merge_edits).
     train_false_merges: int = 0
+    # Train-side NEUTRAL false merges: a fragment already spanned both neurons before
+    # the edit (pre-existing merge). Not the policy's fault — recorded (not gated) so
+    # post-analysis can extract/visualize the train-side neutral count symmetrically
+    # with heldout_false_merges_preexisting.
+    train_false_merges_preexisting: int = 0
     # --- run mode (split-error-only fast mode) ----------------------------------
     splits_only: bool = False            # True => merge-error repair disabled this
                                          # run (no MergeSite enumerated; split_label

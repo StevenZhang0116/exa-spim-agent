@@ -1929,6 +1929,7 @@ async def run_evolution(
                 train_repair = bundle["train_repair"]
                 train_acc = bundle["train_acc"]
                 train_false = bundle["train_false"]
+                train_false_preexisting = bundle.get("train_false_preexisting", 0)
                 n_edits_total = bundle["n_edits_total"]
                 train_seconds = 0.0  # nothing re-scored this gen
                 gen_dir.mkdir(parents=True, exist_ok=True)
@@ -1997,14 +1998,20 @@ async def run_evolution(
                         f"edit(s) the policy emitted — merge repairs disabled this run")
                 # TRAIN-SIDE over-merge alert (diagnostic; the gate judges false merges
                 # on HELD-OUT, so these never reject — but they are real over-merges the
-                # gate is blind to). Pool each brain's train edits against ITS OWN map.
-                # Count only POLICY-CAUSED false merges (a genuinely new fusion) — the
-                # same blame attribution the gate uses; pre-existing two-neuron fragments
-                # the policy merely joined are not over-merges it introduced.
-                train_false = sum(
-                    inc.classify_merge_edits(tr.edits, bc.label_gt_map).get(
-                        "false_policy", 0)
-                    for bc, tr in zip(train_ctxs, train_runs))
+                # gate is blind to). Pool each brain's train edits against ITS OWN map,
+                # classifying once and splitting the SAME way the gate does:
+                #   train_false            = POLICY-CAUSED (a genuinely new fusion),
+                #   train_false_preexisting = NEUTRAL (a fragment already spanning both
+                #                             neurons — not the policy's fault, not
+                #                             penalized, not credited).
+                # Both are recorded so post-analysis can extract/visualize the train-side
+                # neutral count symmetrically with the held-out one.
+                train_false = 0
+                train_false_preexisting = 0
+                for bc, tr in zip(train_ctxs, train_runs):
+                    _c = inc.classify_merge_edits(tr.edits, bc.label_gt_map)
+                    train_false += _c.get("false_policy", 0)
+                    train_false_preexisting += _c.get("false_preexisting", 0)
                 train_seconds = sum(tr.score.seconds for tr in train_runs)
                 # Cache the full bundle keyed by parent state, so the next
                 # repeated-parent generation reuses it instead of re-scoring.
@@ -2013,6 +2020,7 @@ async def run_evolution(
                     "train_repair": train_repair,
                     "train_acc": train_acc,
                     "train_false": train_false,
+                    "train_false_preexisting": train_false_preexisting,
                     "n_edits_total": n_edits_total,
                     "report_text": Path(report_path).read_text(),
                 }
@@ -2263,6 +2271,23 @@ async def run_evolution(
                 log(f"   blind spot: {_unsc}/{heldout_n_edits} held-out merges "
                     f"UNSCORED ({_frac:.0%}) — outside held-out GT coverage, neither "
                     f"rewarded nor penalized by the gate")
+                # NEUTRAL (pre-existing) false merges: joins onto a fragment that was
+                # ALREADY a two-neuron mix before the edit. These are NOT penalized
+                # (not the policy's fault) but also earn NO recall credit — a wash. The
+                # COUNT is recorded (heldout_false_merges_preexisting) so post-analysis
+                # can extract/visualize it; logged here so a heavily-pre-merged brain
+                # (where the gate silently under-credits real repairs in corrupt regions)
+                # is visible rather than silent. Flag it if it rivals the scored recall.
+                _scored_edits = cand_repair["correct"] + cand_repair["false"]
+                _pre_share = (_fpre / _scored_edits) if _scored_edits else float("nan")
+                if _fpre:
+                    _hot = (_pre_share == _pre_share and _pre_share >= 0.25)
+                    log(f"   {'[NOTE] ' if _hot else ''}neutral pre-existing false "
+                        f"merges: {_fpre} (fragment already spanned both neurons — not "
+                        f"penalized, not credited"
+                        + (f"; {_pre_share:.0%} of scored edits — this brain is heavily "
+                           f"pre-merged, so real repairs in those regions go "
+                           f"UNDER-CREDITED)" if _hot else ")"))
                 # ① CONFIDENCE: independent, CALIBRATED multi-feature image verdict on
                 # that blind spot, replayed from reads the policy already made (zero
                 # extra reads), folded into a coarse decision-confidence level. Advisory
@@ -2444,6 +2469,7 @@ async def run_evolution(
                 heldout_split_label_dropped=heldout_dropped,
                 read_priors=read_priors,
                 train_false_merges=train_false,
+                train_false_merges_preexisting=train_false_preexisting,
                 candidate_path=candidate_path,
                 heuristics_diffstat=diffstat,
                 diagnosis=(diagnosis or "")[:2000],  # truncate; full text is in stdout
