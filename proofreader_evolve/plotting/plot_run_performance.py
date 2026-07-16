@@ -13,7 +13,10 @@ the policy improved generation over generation:
       kept" — the accept/reject markers live here because this is what the gate
       compares.
   (2) The decomposition behind the fitness: the raw split-repair score
-      (correct − false) and the false-merge count that the penalty acts on.
+      (correct − false_policy) and the false-merge count, SPLIT BY BLAME — the
+      POLICY-caused false merges (solid, the only ones the gate penalizes) and the
+      PRE-EXISTING ones (hatched, a fragment already spanning both neurons; shown for
+      context, not penalized). So the bar height reconciles with the fitness dip.
   (3) STANDARD BENCHMARK (diagnostic, NOT gated): held-out Edge Accuracy across
       generations, with the same accept/reject markers and the seed baseline — so
       you can see whether an accepted (fitness-improving) gen actually moved the
@@ -92,7 +95,9 @@ def _row_fitness(r: dict) -> float:
         return float(r["heldout_fitness"])
     penalty = float(r.get("merge_penalty", 100.0))
     score = r.get("heldout_split_repair_score", 0)
-    false = r.get("heldout_false_merges", 0)
+    # Penalize only POLICY-caused false merges (what the gate does); fall back to the
+    # total for ledgers predating the blame split.
+    false = r.get("heldout_false_merges_policy", r.get("heldout_false_merges", 0))
     return float(score) - penalty * float(false)
 
 
@@ -167,7 +172,18 @@ def make_figure(rows: list[dict], run_name: str, out_path: Path) -> Path:
     gens = [r.get("generation", i + 1) for i, r in enumerate(rows)]
     score = [r.get("heldout_split_repair_score", 0) for r in rows]
     fitness = [_row_fitness(r) for r in rows]
-    false_merges = [r.get("heldout_false_merges", 0) for r in rows]
+    # Held-out false merges, split by BLAME (matches the gate + plot_search_dynamics):
+    #   * false_policy     — a GENUINELY NEW cross-neuron fusion the policy created;
+    #                        the ONLY component the gate penalizes (fitness subtracts it).
+    #   * false_preexisting — a fragment that ALREADY spanned both neurons before the
+    #                        merge; the policy merely joined onto it, so it is NOT the
+    #                        policy's fault and NOT penalized. Shown for context only.
+    # Older ledgers only have the total; fall back to policy=total, preexisting=0 so the
+    # penalized bar still equals what the gate acted on.
+    false_policy = [int(r.get("heldout_false_merges_policy",
+                             r.get("heldout_false_merges", 0)) or 0) for r in rows]
+    false_preexisting = [int(r.get("heldout_false_merges_preexisting", 0) or 0) for r in rows]
+    have_blame = any("heldout_false_merges_policy" in r for r in rows)
     accepted = [bool(r.get("accepted")) for r in rows]
     fitness_bar = _running_parent_bar(rows, key=_row_fitness)
     # (3) held-out Edge Accuracy and (4) merge burden — the STANDARD benchmark, kept as
@@ -231,20 +247,30 @@ def make_figure(rows: list[dict], run_name: str, out_path: Path) -> Path:
     ]
     ax0.legend(handles=handles, loc="best", fontsize=8, framealpha=0.9)
 
-    # (2) Decomposition: raw split-repair score (line) + false-merge count (bars).
-    # This shows WHY fitness dips — a bar of false merges is what the penalty acts on.
+    # (2) Decomposition: raw split-repair score (line) + false-merge count (bars),
+    # split by BLAME so the bar height reconciles with the fitness panel. The gate only
+    # penalizes POLICY-caused false merges (solid red), so that is the component tied to
+    # the fitness dip; PRE-EXISTING false merges (hatched, faded) are shown stacked on
+    # top for context but are NOT the policy's fault and NOT penalized. (Before this,
+    # the bar showed the TOTAL, which read as e.g. "19 false merges" next to a fitness
+    # penalized for only the 4 policy-caused ones.)
     ax1.plot(gens, score, "-o", color="#9467bd", ms=4, lw=1.3,
-             label="split-repair score (correct − false)")
+             label="split-repair score (correct − false_policy)")
     ax1.set_ylabel("split-repair score", color="#9467bd")
     ax1.tick_params(axis="y", labelcolor="#9467bd")
     ax1.grid(True, alpha=0.3)
     ax1b = ax1.twinx()
-    ax1b.bar(gens, false_merges, width=0.6, color="#d62728", alpha=0.35,
-             label="false merges", zorder=0)
+    ax1b.bar(gens, false_policy, width=0.6, color="#d62728", alpha=0.55,
+             label="false merges — POLICY (penalized)", zorder=1)
+    if have_blame and any(false_preexisting):
+        ax1b.bar(gens, false_preexisting, width=0.6, bottom=false_policy,
+                 color="#d62728", alpha=0.18, hatch="////",
+                 label="false merges — pre-existing (not penalized)", zorder=0)
     ax1b.set_ylabel("false merges", color="#d62728")
     ax1b.tick_params(axis="y", labelcolor="#d62728")
-    # Integer ticks for the (small) false-merge count.
-    _fmax = max(false_merges) if false_merges else 0
+    # Integer ticks headroom over the STACKED total (policy + pre-existing).
+    _ftot = [p + x for p, x in zip(false_policy, false_preexisting)]
+    _fmax = max(_ftot) if _ftot else 0
     ax1b.set_ylim(0, max(1, _fmax) * 1.3)
     h1, l1 = ax1.get_legend_handles_labels()
     h2, l2 = ax1b.get_legend_handles_labels()
@@ -326,8 +352,9 @@ def write_csv(rows: list[dict], parent_bar: list[float], path: Path) -> Path:
     is per-generation now, so we cumsum it — see _cumulative_cost).
     """
     cols = ["generation", "accepted", "heldout_fitness", "parent_fitness_bar",
-            "merge_penalty", "heldout_split_repair_score",
-            "heldout_correct_merges", "heldout_false_merges", "heldout_n_edits",
+            "merge_penalty", "heldout_split_repair_score", "heldout_correct_merges",
+            "heldout_false_merges", "heldout_false_merges_policy",
+            "heldout_false_merges_preexisting", "heldout_n_edits",
             "wall_seconds", "cost_usd_cumulative", "splits_only"]
     cum_usd = _cumulative_cost(rows)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -338,7 +365,11 @@ def write_csv(rows: list[dict], parent_bar: list[float], path: Path) -> Path:
             w.writerow([r.get("generation"), r.get("accepted"),
                         _row_fitness(r), bar, r.get("merge_penalty", 100.0),
                         r.get("heldout_split_repair_score"),
-                        r.get("heldout_correct_merges"), r.get("heldout_false_merges"),
+                        r.get("heldout_correct_merges"),
+                        r.get("heldout_false_merges"),
+                        r.get("heldout_false_merges_policy",
+                              r.get("heldout_false_merges")),
+                        r.get("heldout_false_merges_preexisting"),
                         r.get("heldout_n_edits"), r.get("wall_seconds"),
                         cum, r.get("splits_only")])
     return path

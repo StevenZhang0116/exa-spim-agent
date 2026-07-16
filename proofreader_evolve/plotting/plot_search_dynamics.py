@@ -140,14 +140,22 @@ def make_figure(rows: list[dict], run_name: str, out_path: Path,
     # merges too. NaN-safe for import-failed gens.
     tr_ea = [float(r.get("train_edge_accuracy", float("nan"))) for r in rows]
     ho_ea = [float(r.get("heldout_edge_accuracy", float("nan"))) for r in rows]
-    tr_false = [int(r.get("train_false_merges", 0) or 0) for r in rows]
-    # Held-out false merges, split into POLICY-caused (penalized by the gate) and
-    # PRE-EXISTING (a fragment already spanning both neurons — NOT penalized). Older
-    # ledgers only have the total, so fall back: policy = total, preexisting = 0.
+    # False merges, split into POLICY-caused (a genuinely new fusion of two clean
+    # fragments) and PRE-EXISTING (a fragment already spanning both neurons — NOT the
+    # policy's fault). BOTH sides are shown split, symmetrically.
+    #   NOTE the field naming: the loop records the TRAIN policy-caused count in the
+    #   un-suffixed ``train_false_merges`` (NOT a total — see run_evolution:
+    #   train_false += classify_merge_edits(...)["false_policy"]), and the pre-existing
+    #   count separately in ``train_false_merges_preexisting``. Held-out uses the
+    #   explicit ``heldout_false_merges_policy`` / ``_preexisting`` pair. Older ledgers
+    #   lack the preexisting fields -> fall back to preexisting = 0 (policy = recorded).
+    tr_false_pol = [int(r.get("train_false_merges", 0) or 0) for r in rows]
+    tr_false_pre = [int(r.get("train_false_merges_preexisting", 0) or 0) for r in rows]
     ho_false_pol = [int(r.get("heldout_false_merges_policy",
                              r.get("heldout_false_merges", 0)) or 0) for r in rows]
     ho_false_pre = [int(r.get("heldout_false_merges_preexisting", 0) or 0) for r in rows]
-    have_blame = any("heldout_false_merges_policy" in r for r in rows)
+    have_blame = any(("heldout_false_merges_policy" in r
+                      or "train_false_merges_preexisting" in r) for r in rows)
 
     xb = _cross_brain_info(run_dir) if run_dir is not None else {"cross_brain": False}
     cross = xb.get("cross_brain")
@@ -239,15 +247,23 @@ def make_figure(rows: list[dict], run_name: str, out_path: Path,
     ax1.set_ylabel("Edge Accuracy")
     ax1.grid(True, alpha=0.3)
     # Twin axis: over-merge counts (false merges) train vs held-out. Train is
-    # diagnostic-only (never gates); held-out gates. The HELD-OUT bar is STACKED into
-    # POLICY-caused (solid — what the gate penalizes) and PRE-EXISTING (hatched — a
-    # fragment already spanning both neurons, NOT penalized), so you see how much of the
-    # "false" the policy is actually responsible for. Train stays a single bar.
+    # diagnostic-only (never gates); held-out gates. BOTH bars are STACKED, symmetrically,
+    # into POLICY-caused (solid — a genuinely new fusion; what the gate penalizes on
+    # held-out) and PRE-EXISTING (hatched — a fragment already spanning both neurons, NOT
+    # the policy's fault). Showing the pre-existing component on BOTH sides avoids the
+    # misread where train looks far cleaner than held-out only because its (often large)
+    # pre-existing false merges were hidden.
     ax1b = ax1.twinx()
     _w = 0.4
     xg = np.array(gens, float)
-    ax1b.bar(xg - _w / 2, tr_false, width=_w, color="#1f77b4", alpha=0.25,
-             label="TRAIN false (policy-caused)", zorder=0)
+    # TRAIN (left half-bar, blue): policy solid + pre-existing hatched.
+    ax1b.bar(xg - _w / 2, tr_false_pol, width=_w, color="#1f77b4", alpha=0.45,
+             label="TRAIN false: POLICY-caused", zorder=0)
+    if have_blame and any(tr_false_pre):
+        ax1b.bar(xg - _w / 2, tr_false_pre, width=_w, bottom=tr_false_pol,
+                 color="#1f77b4", alpha=0.16, hatch="////",
+                 label="TRAIN false: pre-existing (NOT policy)", zorder=0)
+    # HELD-OUT (right half-bar, red): policy solid + pre-existing hatched.
     ax1b.bar(xg + _w / 2, ho_false_pol, width=_w, color="#d62728", alpha=0.45,
              label="HELD-OUT false: POLICY-caused (penalized)", zorder=0)
     if have_blame and any(ho_false_pre):
@@ -255,8 +271,9 @@ def make_figure(rows: list[dict], run_name: str, out_path: Path,
                  color="#d62728", alpha=0.18, hatch="////",
                  label="HELD-OUT false: pre-existing (NOT penalized)", zorder=0)
     ax1b.set_ylabel("false merges (over-merges)")
-    _fmax = max(tr_false + [p + q for p, q in zip(ho_false_pol, ho_false_pre)]) \
-        if (tr_false or ho_false_pol) else 0
+    _tr_tot = [p + q for p, q in zip(tr_false_pol, tr_false_pre)]
+    _ho_tot = [p + q for p, q in zip(ho_false_pol, ho_false_pre)]
+    _fmax = max(_tr_tot + _ho_tot) if (_tr_tot or _ho_tot) else 0
     ax1b.set_ylim(0, max(1, _fmax) * 1.3)
     _brains = ""
     if cross:

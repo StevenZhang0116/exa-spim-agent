@@ -2531,29 +2531,12 @@ async def run_evolution(
         log(f"[WARN] could not auto-generate search-dynamics figure ({_e}); "
             f"run `python proofreader_evolve/plotting/plot_search_dynamics.py {run_dir.name}` manually")
 
-    # Auto-generate the policy-similarity analysis (sentence-transformer embeddings of
-    # each generation's rules.candidate.md -> gen×gen cosine heatmap + drift trajectory,
-    # plus a dump of the exact text embedded per gen). Best-effort: this needs the
-    # optional ``sentence-transformers`` dependency (and downloads a model on first
-    # use), so a missing package or offline host must NEVER fail a finished run — it is
-    # logged and skipped, and can be produced later with the standalone CLI (ideally in
-    # the `panda` env where sentence-transformers is installed).
-    sim_png = run_dir / "policy_similarity.png"
-    try:
-        from proofreader_evolve.plotting import analyze_policy_similarity as _aps
-        _gens, _sim, _acc, _retained = _aps.analyze(
-            run_dir, source="rules", model_name="all-MiniLM-L6-v2", drop_common=True)
-        _aps.make_figure(_gens, _sim, _acc, run_dir.name, "rules",
-                         "all-MiniLM-L6-v2", sim_png)
-        _aps.write_csv(_gens, _sim, sim_png.with_suffix(".csv"))
-        _aps.dump_retained_chunks(_gens, _retained, "rules", "all-MiniLM-L6-v2", True,
-                                  sim_png.with_name(sim_png.stem + "_input_chunks.md"))
-        log(f"Policy-similarity figure -> {sim_png}")
-    except Exception as _e:
-        log(f"[WARN] could not auto-generate policy-similarity figure ({_e}); "
-            f"it needs `sentence-transformers` (pip install; downloads a model). Run "
-            f"`python proofreader_evolve/plotting/analyze_policy_similarity.py "
-            f"{run_dir.name}` manually (e.g. in the panda env).")
+    # NOTE: the semantic policy-similarity analysis (sentence-transformer embeddings ->
+    # policy_similarity.png) is intentionally NOT auto-generated here — it is decoupled
+    # from the workflow (it needs the optional sentence-transformers dependency and
+    # downloads a model). Produce it on demand with the standalone CLI, e.g.:
+    #   conda run -n panda python \
+    #     proofreader_evolve/plotting/analyze_policy_similarity.py <run_name>
 
     print("\n=== Evolution complete ===")
     print(ledger.summarize())
@@ -2567,8 +2550,6 @@ async def run_evolution(
         print(f"Policy-evolution figure      -> {policy_png}")
     if search_png.exists():
         print(f"Search-dynamics figure       -> {search_png}")
-    if sim_png.exists():
-        print(f"Policy-similarity figure     -> {sim_png}")
 
 
 def main() -> int:
