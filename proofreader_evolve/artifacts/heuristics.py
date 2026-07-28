@@ -135,6 +135,15 @@ ENUM_PARAMS = {
     #                          # global-only stream; lower to concentrate the budget on
     #                          # each tip's best partners so a dense region cannot
     #                          # starve a sparse tip's single true partner.
+    # "split_image_rescue": 0, # IMAGE-GUIDED RESCUE [0..5000]: probe this many of the
+    #                          # FARTHEST dropped (truncated) pairs with
+    #                          # gap_bridge_evidence and re-add any with a bright
+    #                          # continuous bridge (raises the enumeration CEILING beyond
+    #                          # geometry — reaches far-gap splits the cap/max_gap_um
+    #                          # drop). Needs a live image reader; each probe is a few
+    #                          # cloud reads, so start small. Rescued sites carry
+    #                          # site.image_rescued=True and site.bridge_ratio.
+    # "split_image_rescue_min_bridge": 0.7,  # bridge_ratio floor to rescue [0..1]
     # "merge_max_sites": 5000, # global cap on merge candidates [100..50000]
     # "split_alt_per_pair": 1, # gaps kept per SplitSite label pair [1..10]. >1 attaches
     #                          # the next-closest gaps as site.alt_gaps (extra evidence

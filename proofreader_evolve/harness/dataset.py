@@ -25,8 +25,10 @@ heuristics are free to compute richer features (angles, radii, image patches).
 
 from __future__ import annotations
 
+import hashlib
 import os
 import pickle
+import time
 from dataclasses import dataclass, field
 
 import networkx as nx
@@ -103,6 +105,16 @@ ENUM_PARAM_SPEC = {
                                                # whole budget and starve a sparse tip's
                                                # only true partner. Set high (e.g. 32) to
                                                # approximate the old global-only behavior.
+    "split_image_rescue":     (0,   0,  5000), # IMAGE-GUIDED RESCUE: probe this many of
+                                               # the FARTHEST dropped (truncated) pairs
+                                               # with gap_bridge_evidence and re-add any
+                                               # with a bright continuous bridge. 0 = off
+                                               # (default; no cloud reads). Raises the
+                                               # enumeration CEILING beyond geometry.
+                                               # Each probe is ~5-25 cloud reads, so keep
+                                               # small; needs a live image reader.
+    "split_image_rescue_min_bridge": (0.7, 0.0, 1.0),  # bridge_ratio floor to rescue a
+                                               # dropped pair (higher = stricter).
     "tip_to_shaft":     (True,  None, None),   # bool: partners may be shaft/branch
     "split_alt_per_pair": (1,    1,    10),    # gaps kept per label pair (>1 attaches
                                                # extra evidence gaps as SplitSite.alt_gaps)
@@ -110,7 +122,11 @@ ENUM_PARAM_SPEC = {
     "min_arm_cable_um": (10.0,  2.0,  50.0),   # both arms must reach this (µm)
     "seed_depth_um":    (8.0,   2.0,  30.0),   # seed placement depth into each arm
     "merge_max_sites":  (5000,  100,  50000),  # global cap on merge candidates
-    "max_per_label":    (8,     1,    100),    # cap on merge sites per raw label
+    "max_per_label":    (4,     1,    100),    # cap on merge sites per raw label. Default
+                                               # 4 (was 8): a policy that omits this now
+                                               # gets 4 merge candidates/label — halving
+                                               # the per-label budget vs the old default.
+                                               # A policy MAY still set any value in [1,100].
 }
 
 
@@ -343,6 +359,12 @@ class SplitSite:
     recip_rank_a: int = 0
     recip_rank_b: int = 0
     mutual_nearest: bool = False
+    # True iff this site was NOT reachable by geometry (dropped at the global cap /
+    # beyond the geometric budget) and was RESCUED by image evidence — a bright
+    # continuous bridge across the gap. False for ordinary geometric candidates. Lets a
+    # policy treat image-rescued far-gap sites with appropriate caution.
+    image_rescued: bool = False
+    bridge_ratio: float = float("nan")  # gap_bridge_evidence.bridge_ratio when rescued
 
     def as_edit(self) -> tuple:
         """The label pair this site would unify if accepted.
@@ -361,6 +383,10 @@ def candidate_split_sites(
     alt_per_pair: int = 1,
     per_tip_k: int = 4,
     return_stats: bool = False,
+    image_reader=None,
+    image_rescue_max: int = 0,
+    image_rescue_min_bridge: float = 0.7,
+    image_rescue_shape=(16, 16, 16),
 ):
     """Enumerate candidate split-repair sites: a fragment tip near a *differently
     labelled* node.
@@ -406,6 +432,26 @@ def candidate_split_sites(
     tip_to_shaft : bool
         If True, the partner node may be any node (tip/shaft/branch). If False,
         partners are restricted to other tips (legacy tip-to-tip enumeration).
+    image_reader : LazyImagePatchReader or None
+        Optional image reader for IMAGE-GUIDED candidate RESCUE. Geometry alone drops
+        far-gap pairs at the ``max_sites`` cap (and never proposes beyond ``max_gap_um``),
+        so a true split whose continuation is faint/long is unreachable by ANY policy.
+        When a reader is given and ``image_rescue_max > 0``, the FARTHEST pairs the
+        global cap dropped (the ``truncated`` tail) are probed with
+        ``gap_bridge_evidence``; any whose ``bridge_ratio >= image_rescue_min_bridge``
+        (a continuous bright bridge across the gap ⇒ likely one neuron) are RESCUED back
+        into the returned sites, tagged ``image_rescued=True``. This lets image raise the
+        enumeration CEILING, not just filter within it. None (default) ⇒ geometry only,
+        no rescue, no cloud reads.
+    image_rescue_max : int
+        Cap on how many dropped pairs to image-probe (each is ~5-25 cloud reads, so this
+        bounds cost). 0 (default) disables rescue even if a reader is passed. The tail is
+        probed CLOSEST-dropped-first (most likely a real continuation).
+    image_rescue_min_bridge : float
+        ``bridge_ratio`` threshold to rescue a dropped pair (default 0.7). Higher =
+        stricter (fewer, higher-confidence rescues).
+    image_rescue_shape : tuple
+        Image patch shape passed to ``gap_bridge_evidence``.
     alt_per_pair : int
         How many gaps to retain PER unordered label pair (default 1 = legacy: keep
         only the single closest gap). With ``alt_per_pair > 1``, the closest gap
@@ -604,9 +650,39 @@ def candidate_split_sites(
     n_returned = min(n_pairs, max_sites)
     truncated = sites[max_sites:] if n_pairs > max_sites else []
     n_mutual = sum(1 for s in sites[:max_sites] if s.mutual_nearest)
+
+    # IMAGE-GUIDED RESCUE (option B): the global cap just dropped ``truncated`` — the
+    # farthest-gap pairs — which is exactly where an isolated fragment's faint/long true
+    # continuation hides. If an image reader is provided, probe the closest-dropped of
+    # those with gap_bridge_evidence and RESCUE any with a bright continuous bridge
+    # (bridge_ratio >= threshold), appending them to the kept set tagged image_rescued.
+    # This raises the enumeration CEILING (adds candidates geometry never would), unlike
+    # the accept/reject policy which only filters within the geometric set. Cost is
+    # bounded by ``image_rescue_max`` (each probe is a handful of cloud reads).
+    kept = sites[:max_sites]
+    rescued: list[SplitSite] = []
+    n_rescue_probed = 0
+    if (image_reader is not None and image_rescue_max > 0 and truncated):
+        # Probe the CLOSEST dropped pairs first (most likely a real continuation).
+        for s in truncated[:image_rescue_max]:
+            n_rescue_probed += 1
+            try:
+                ev = image_reader.gap_bridge_evidence(
+                    s.node_a, s.node_b, shape=image_rescue_shape)
+                br = float(ev.get("bridge_ratio", float("nan")))
+            except Exception:
+                br = float("nan")
+            if br == br and br >= image_rescue_min_bridge:   # not NaN and bright bridge
+                s.image_rescued = True
+                s.bridge_ratio = br
+                rescued.append(s)
+    if rescued:
+        kept = kept + rescued
+        kept.sort(key=lambda s: s.gap_um)
+
     stats = {
         "n_pairs_enumerated": n_pairs,
-        "n_returned": n_returned,
+        "n_returned": len(kept),
         "n_truncated": len(truncated),
         "truncated_at_gap_um": float(truncated[0].gap_um) if truncated else None,
         "max_truncated_gap_um": float(truncated[-1].gap_um) if truncated else None,
@@ -615,8 +691,12 @@ def candidate_split_sites(
         "per_tip_k": int(per_tip_k),
         "n_mutual_nearest": int(n_mutual),  # returned sites that are reciprocal #1 pairs
         "tip_to_shaft": bool(tip_to_shaft),
+        # image-rescue accounting (0 / absent when no reader or rescue disabled)
+        "image_rescue_probed": int(n_rescue_probed),
+        "image_rescued": int(len(rescued)),
+        "image_rescue_min_bridge": float(image_rescue_min_bridge) if image_reader else None,
     }
-    sites = sites[:max_sites]
+    sites = kept
     if return_stats:
         return sites, stats
     return sites
@@ -910,6 +990,335 @@ def _arms_reconverge(g, branch, first_a, first_b, max_explore_um, max_steps=400)
     return False
 
 
+# --- Parallel MergeSite enumeration (#1) --------------------------------------------
+# The whole-brain scan spends most of its time in PER-NODE graph walks (branch arms,
+# bridge necks) — embarrassingly parallel across nodes. We parallelize ONLY that per-node
+# GENERATION, by contiguous node-block, and keep the FINALIZE (sort / global cross-label
+# dedup / cap) SERIAL in the parent. This is what preserves byte-identity: concatenating
+# per-block results in block order reproduces the exact serial node-iteration order, so
+# the stable sorts, the global bridge dedup, and the sort+cap all see the identical input
+# and produce the identical output. `_candidate_merge_sites_impl` (the serial reference)
+# is NEVER touched; `n_workers <= 1` dispatches to it unchanged.
+#
+# BACKEND: fork + copy-on-write. The fragment graph is published to a module global BEFORE
+# the pool forks, so workers inherit it read-only (no multi-GB pickle per task). CAVEAT 1
+# (memory): reading networkx adjacency touches refcounts -> COW copies pages over time, so
+# per-worker RSS grows; pick `n_workers` for the node's free RAM (user-controlled). CAVEAT
+# 2 (deadlock): fork-after-threads with an open TensorStore/gRPC client wedges (see
+# incremental_scoring._cap_graph_loading_workers). candidate_merge_sites reads ONLY the
+# fragment graph (no image), so this is safe at enumeration time — but never call the
+# parallel path after opening a TensorStore reader in the same process.
+_WORKER_GRAPH = None   # set in the parent before forking; inherited COW by each worker
+_WORKER_NODES = None   # the node list (order == serial iteration); COW-inherited, not pickled
+
+
+def _branch_site_for_node(g, node, min_arm_cable_um, seed_depth_um, check_reconvergence):
+    """The branch-detector body for ONE node — a MergeSite or None. Extracted so the
+    parallel worker and (via the verifier) the serial reference compute identically.
+    Mirrors the inline branch loop in `_candidate_merge_sites_impl` exactly."""
+    radius = getattr(g, "node_radius", None)
+
+    def tangent(arm):
+        if len(arm) < 2:
+            return None
+        v = np.asarray(g.node_xyz[arm[-1]], dtype=float) - np.asarray(
+            g.node_xyz[arm[0]], dtype=float)
+        n = np.linalg.norm(v)
+        return v / n if n > 0 else None
+
+    def seed_in_arm(arm):
+        cable = 0.0
+        for k in range(1, len(arm)):
+            cable += g.dist(arm[k - 1], arm[k])
+            if cable >= seed_depth_um:
+                return arm[k]
+        return arm[-1]
+
+    def arm_mean_radius(arm):
+        if radius is None or len(arm) == 0:
+            return None
+        vals = [float(radius[n]) for n in arm if radius[n] > 0]
+        return float(np.mean(vals)) if vals else None
+
+    deg = g.degree[node]
+    if deg < 3:
+        return None
+    label = str(g.node_segment_id(node))
+    if label == "0":
+        return None
+    arms = []
+    for nbr in g.neighbors(node):
+        arm, cable = _arm_from_branch(g, node, nbr, seed_depth_um * 3)
+        arms.append((cable, arm))
+    arms.sort(key=lambda t: t[0], reverse=True)
+    if len(arms) < 2:
+        return None
+    (cable_a, arm_a), (cable_b, arm_b) = arms[0], arms[1]
+    if cable_b < min_arm_cable_um:
+        return None
+    ta, tb = tangent(arm_a), tangent(arm_b)
+    if ta is not None and tb is not None:
+        cos = float(np.clip(np.dot(ta, tb), -1.0, 1.0))
+        angle_deg = float(np.degrees(np.arccos(cos)))
+    else:
+        angle_deg = float("nan")
+    ra, rb = arm_mean_radius(arm_a), arm_mean_radius(arm_b)
+    radius_ratio = (max(ra, rb) / min(ra, rb)) if (ra and rb and min(ra, rb) > 0) else None
+    sa, sb = seed_in_arm(arm_a), seed_in_arm(arm_b)
+    if check_reconvergence:
+        arms_reconverge = _arms_reconverge(
+            g, node, arm_a[1], arm_b[1], max_explore_um=seed_depth_um * 8)
+    else:
+        arms_reconverge = None
+    extra_seeds = []
+    for k, (cable_k, arm_k) in enumerate(arms[2:]):
+        if cable_k < min_arm_cable_um:
+            break
+        sk = seed_in_arm(arm_k)
+        extra_seeds.append({"suffix": chr(ord("c") + k),
+                            "xyz": tuple(map(float, g.node_xyz[sk])),
+                            "node": int(sk), "cable_um": float(cable_k)})
+    seed_groups = _pair_arms_into_neurites(
+        g, [(cable, arm) for cable, arm in arms if cable >= min_arm_cable_um],
+        tangent, seed_in_arm)
+    return MergeSite(
+        label=label, cut_node=int(node), cut_xyz=tuple(map(float, g.node_xyz[node])),
+        seed_a_node=int(sa), seed_b_node=int(sb),
+        seed_a_xyz=tuple(map(float, g.node_xyz[sa])),
+        seed_b_xyz=tuple(map(float, g.node_xyz[sb])),
+        branch_degree=int(deg), angle_deg=angle_deg, radius_ratio=radius_ratio,
+        cable_a_um=float(cable_a), cable_b_um=float(cable_b), detector="branch",
+        arms_reconverge=arms_reconverge, extra_seeds=extra_seeds, seed_groups=seed_groups)
+
+
+def _bridge_candidate_for_node(g, node, min_arm_cable_um, seed_depth_um,
+                               max_kink_angle_deg=120.0):
+    """The bridge-detector's PER-NODE candidate generation (the expensive walk part), or
+    None. Returns a picklable tuple identical to the one the serial `_bridge_merge_sites`
+    appends to its `candidates` list — the serial sort/dedup/construction (which is global
+    and stays in the parent) is unchanged and consumes these."""
+    if g.degree[node] != 2:
+        return None
+    label = str(g.node_segment_id(node))
+    if label == "0":
+        return None
+    a, b = list(g.neighbors(node))
+    chain_a, cable_a = _walk_until(g, a, node, seed_depth_um * 3)
+    chain_b, cable_b = _walk_until(g, b, node, seed_depth_um * 3)
+    if cable_a < min_arm_cable_um or cable_b < min_arm_cable_um:
+        return None
+    va = np.asarray(g.node_xyz[chain_a[-1]], float) - np.asarray(g.node_xyz[node], float)
+    vb = np.asarray(g.node_xyz[chain_b[-1]], float) - np.asarray(g.node_xyz[node], float)
+    na, nb = np.linalg.norm(va), np.linalg.norm(vb)
+    if na == 0 or nb == 0:
+        return None
+    cos = float(np.clip(np.dot(va, vb) / (na * nb), -1.0, 1.0))
+    angle_deg = float(np.degrees(np.arccos(cos)))
+    if angle_deg > max_kink_angle_deg:
+        return None
+    sharpness = max_kink_angle_deg - angle_deg
+    return (sharpness, node, chain_a, chain_b, cable_a, cable_b, angle_deg, label)
+
+
+def _merge_worker(args):
+    """Runs in a forked worker: process node-block [lo, hi) of the module-global graph +
+    node list, returning ORDERED (branch_sites, bridge_candidates) for that block. Only
+    the small ``args`` tuple (bounds + scalars) is pickled to the worker; the ~21M-node
+    graph AND node list are read from module globals (fork+COW inherited, NOT pickled) —
+    that is what keeps dispatch cheap at whole-brain scale. Order within the block == node
+    order, so parent concatenation reproduces the serial sequence exactly."""
+    lo, hi, min_arm, seed_depth, check_recon = args
+    g, node_list = _WORKER_GRAPH, _WORKER_NODES
+    branch, bridge = [], []
+    for node in node_list[lo:hi]:
+        s = _branch_site_for_node(g, node, min_arm, seed_depth, check_recon)
+        if s is not None:
+            branch.append(s)
+        c = _bridge_candidate_for_node(g, node, min_arm, seed_depth)
+        if c is not None:
+            bridge.append(c)
+    return branch, bridge
+
+
+def _candidate_merge_sites_parallel(g, min_arm_cable_um, seed_depth_um, max_sites,
+                                    max_per_label, check_reconvergence, n_workers):
+    """Byte-identical parallel twin of `_candidate_merge_sites_impl`: parallel per-node
+    generation (branch + bridge candidates) by node-block, then the SAME serial finalize."""
+    import concurrent.futures as _cf
+    import multiprocessing as _mp
+    global _WORKER_GRAPH, _WORKER_NODES
+
+    node_list = list(g.nodes)                         # fixed order == serial iteration
+    n = len(node_list)
+    if n == 0:
+        return []
+    # Contiguous blocks preserve global node order under concatenation. Tasks carry ONLY
+    # (lo, hi) + scalars — NOT node_list — so ex.map pickles a handful of ints per task
+    # instead of the full ~21M-id list to every worker (the whole-brain dispatch cost fix).
+    n_blocks = max(1, int(n_workers))
+    step = (n + n_blocks - 1) // n_blocks
+    tasks = [(lo, min(lo + step, n), min_arm_cable_um, seed_depth_um, check_reconvergence)
+             for lo in range(0, n, step)]
+
+    # Progress log so it's OBVIOUS the parallel path fired and with how many workers (the
+    # scan is otherwise silent for tens of minutes). SLURM cgroup-pins the job, so also
+    # report the CPU budget: if n_blocks > allocated CPUs the workers oversubscribe (no
+    # speedup) — the line makes that mismatch visible. flush=True survives log capture.
+    try:
+        _avail = len(os.sched_getaffinity(0))         # CPUs this process may actually use
+    except (AttributeError, OSError):
+        _avail = os.cpu_count() or 0
+    _t_par = time.monotonic()
+    print(f"[candidate_merge_sites] PARALLEL: {n_blocks} worker(s) over {n:,} nodes "
+          f"({step:,} nodes/block); this process is pinned to {_avail} CPU(s)"
+          + ("" if n_blocks <= _avail else
+             f" — WARNING: {n_blocks} workers > {_avail} CPUs, will OVERSUBSCRIBE (no speedup)")
+          + ".", flush=True)
+
+    # Publish graph + node list as globals BEFORE forking so workers inherit them read-only
+    # via copy-on-write (no pickle). Restored in finally so we never leak the big graph.
+    _WORKER_GRAPH, _WORKER_NODES = g, node_list
+    try:
+        ctx = _mp.get_context("fork")
+        with _cf.ProcessPoolExecutor(max_workers=n_blocks, mp_context=ctx) as ex:
+            results = list(ex.map(_merge_worker, tasks))   # ordered: map preserves task order
+    finally:
+        _WORKER_GRAPH = _WORKER_NODES = None
+    print(f"[candidate_merge_sites] PARALLEL: {n_blocks} worker(s) finished branch+bridge "
+          f"GENERATION in {time.monotonic() - _t_par:.1f}s. Now the SERIAL finalize "
+          f"(bridge dedup + component detector) runs — this is NOT parallelized, so "
+          f"expect more time below.", flush=True)
+
+    # Reassemble in block order == serial node order.
+    _n_branch = sum(len(b) for b, _ in results)
+    _n_bridge_cand = sum(len(c) for _, c in results)
+    per_label: dict[str, list] = {}
+    for branch_sites, _bridge in results:             # branch first (serial did branch loop first)
+        for site in branch_sites:
+            per_label.setdefault(site.label, []).append(site)
+
+    # Bridge: concatenate per-block candidates in order, then run the SERIAL finalize
+    # (sort by sharpness + global cross-label dedup + seed/construct) UNCHANGED, so the
+    # global dedup is byte-identical to _bridge_merge_sites.
+    _t = time.monotonic()
+    bridge_candidates = [c for _b, bridge in results for c in bridge]
+    _n_bridge = 0
+    for site in _bridge_finalize(g, bridge_candidates, seed_depth_um):
+        per_label.setdefault(site.label, []).append(site)
+        _n_bridge += 1
+    print(f"[candidate_merge_sites] SERIAL bridge finalize: {_n_bridge} sites from "
+          f"{_n_bridge_cand:,} candidates in {time.monotonic() - _t:.1f}s "
+          f"(branch sites: {_n_branch}).", flush=True)
+
+    # Component detector stays serial (order-safe parallelization is harder; profile first).
+    _t = time.monotonic()
+    _n_comp = 0
+    for site in _component_merge_sites(g, min_arm_cable_um, seed_depth_um):
+        per_label.setdefault(site.label, []).append(site)
+        _n_comp += 1
+    print(f"[candidate_merge_sites] SERIAL component detector: {_n_comp} sites in "
+          f"{time.monotonic() - _t:.1f}s.", flush=True)
+
+    sites: list = []
+    for label, label_sites in per_label.items():
+        label_sites.sort(key=lambda s: min(s.cable_a_um, s.cable_b_um), reverse=True)
+        sites.extend(label_sites[:max_per_label])
+    sites.sort(key=lambda s: min(s.cable_a_um, s.cable_b_um), reverse=True)
+    _out = sites[:max_sites]
+    print(f"[candidate_merge_sites] DONE: {len(_out)} sites returned "
+          f"(after per-label + global cap).", flush=True)
+    return _out
+
+
+# --- Persistent cross-run MergeSite cache (B) ---------------------------------------
+# The whole-brain candidate_merge_sites scan is ~tens of minutes; without this every run
+# re-pays it. We memoize the RESULT LIST to a shared pickle per (graph content, merge
+# params, schema). Mirrors incremental_scoring.get_or_build's discipline: a content
+# fingerprint + a schema version guard the artifact so a stale/mismatched/corrupt file is
+# recomputed rather than trusted. This caches OUTPUT ONLY (no recomputation on hit), so a
+# hit is trivially byte-identical to a fresh scan.
+MERGE_CACHE_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "merge_site_cache"))
+
+# Bump when MergeSite fields or the enumeration logic change in a way that makes an OLD
+# cached list incompatible with current code (new/renamed fields, a changed detector).
+MERGE_CACHE_SCHEMA = 1
+
+
+def _graph_fingerprint(g) -> str:
+    """Order-invariant content hash of a fragment graph — the CACHE IDENTITY.
+
+    Two loads of the SAME fragment cache hash EQUAL; a different brain / mcl / a dropped
+    fragment hashes DIFFERENT. Folds node count, edge count, and digests of the
+    node_xyz coords + per-node segment ids (both sorted by node id so insertion order
+    never matters). Cheap relative to the ~30-min scan it guards."""
+    h = hashlib.md5()
+    nodes = np.fromiter((int(n) for n in g.nodes), dtype=np.int64)
+    nodes.sort()
+    h.update(b"n"); h.update(nodes.tobytes())
+    h.update(b"e"); h.update(np.int64(g.number_of_edges()).tobytes())
+    xyz = np.asarray(g.node_xyz, dtype=np.float64)[nodes]   # rows in sorted-node order
+    h.update(b"xyz"); h.update(np.ascontiguousarray(xyz).tobytes())
+    # segment ids in the same order (the label identity the sites carry).
+    segs = "|".join(str(g.node_segment_id(int(n))) for n in nodes)
+    h.update(b"seg"); h.update(segs.encode("utf-8", "replace"))
+    return h.hexdigest()
+
+
+def _merge_cache_key(g, min_arm_cable_um, seed_depth_um, max_sites, max_per_label) -> dict:
+    """Identity of one cached MergeSite result: graph fingerprint + exact params + schema."""
+    return {
+        "schema": MERGE_CACHE_SCHEMA,
+        "fingerprint": _graph_fingerprint(g),
+        "min_arm_cable_um": float(min_arm_cable_um),
+        "seed_depth_um": float(seed_depth_um),
+        "max_sites": int(max_sites),
+        "max_per_label": int(max_per_label),
+    }
+
+
+def _merge_cache_path(key: dict) -> str:
+    """Content-addressed filename for a key (param+fingerprint digest)."""
+    digest = hashlib.md5(
+        "|".join(f"{k}={key[k]}" for k in sorted(key)).encode()).hexdigest()
+    return os.path.join(MERGE_CACHE_DIR, f"merge_{digest}.pkl")
+
+
+def _load_merge_cache(key: dict):
+    """Return the cached MergeSite list if a VALID artifact exists for ``key``, else None.
+
+    Validates the stored key matches (schema + fingerprint + every param) before
+    trusting the payload, so a hash collision or a hand-edited file can't feed wrong
+    sites. Any read/unpickle error -> None (recompute), never a crash."""
+    path = _merge_cache_path(key)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "rb") as f:
+            payload = pickle.load(f)
+    except (pickle.UnpicklingError, EOFError, OSError, AttributeError, ModuleNotFoundError):
+        return None
+    if not (isinstance(payload, dict) and payload.get("key") == key
+            and isinstance(payload.get("sites"), list)):
+        return None
+    return payload["sites"]
+
+
+def _save_merge_cache(key: dict, sites: list) -> None:
+    """Persist ``sites`` for ``key`` atomically (temp + replace). Best-effort: a write
+    failure (disk/permissions) is swallowed — the scan already ran, the cache is only an
+    optimization."""
+    try:
+        os.makedirs(MERGE_CACHE_DIR, exist_ok=True)
+        path = _merge_cache_path(key)
+        tmp = f"{path}.tmp.{os.getpid()}"
+        with open(tmp, "wb") as f:
+            pickle.dump({"key": key, "sites": sites}, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def candidate_merge_sites(
     fragments_graph,
     min_arm_cable_um: float = 10.0,
@@ -917,6 +1326,7 @@ def candidate_merge_sites(
     max_sites: int = 5000,
     max_per_label: int = 8,
     check_reconvergence: bool = False,
+    n_workers: int = 1,
 ) -> list[MergeSite]:
     """Enumerate candidate merge-repair sites from fragment geometry alone.
 
@@ -962,136 +1372,74 @@ def candidate_merge_sites(
     list[MergeSite] sorted by descending ``min(cable_a_um, cable_b_um)`` — the
     candidates whose two arms are both longest (most confidently two real neurons)
     come first.
+
+    PERSISTENT CACHE (B): the whole-brain scan is ~tens of minutes, and every run
+    re-pays it from scratch even for identical params. So the RESULT is memoized to a
+    shared cross-run pickle keyed by the graph's CONTENT fingerprint + the exact merge
+    params (+ a schema version). A validated hit returns the stored list in ms; a miss
+    (new graph, new params, stale schema, or corruption) recomputes via
+    ``_candidate_merge_sites_impl`` — byte-for-byte the pre-cache result — and saves it.
+    ``check_reconvergence=True`` is NOT cached (it changes the sites and is a rare
+    diagnostic path). Disable entirely with env ``PE_MERGE_CACHE=0``.
+
+    PARALLEL (#1): ``n_workers > 1`` runs the per-node generation across that many forked
+    workers (``_candidate_merge_sites_parallel``) and returns a BYTE-IDENTICAL result to
+    the serial ``n_workers=1`` path (parallelism is by node-block with the finalize kept
+    serial; verified). ``n_workers`` is SPEED-ONLY, so it is deliberately NOT part of the
+    cache key — a cached result from any worker count is reused. Default 1 = the untouched
+    serial reference. Do not use >1 after a TensorStore reader is open in this process
+    (fork-after-threads deadlock; enumeration runs before that, so it is safe there).
     """
+    def _compute():
+        if int(n_workers) > 1:
+            return _candidate_merge_sites_parallel(
+                fragments_graph, min_arm_cable_um, seed_depth_um, max_sites,
+                max_per_label, check_reconvergence, int(n_workers))
+        return _candidate_merge_sites_impl(
+            fragments_graph, min_arm_cable_um=min_arm_cable_um, seed_depth_um=seed_depth_um,
+            max_sites=max_sites, max_per_label=max_per_label,
+            check_reconvergence=check_reconvergence)
+
+    # check_reconvergence changes site content and is a rare off-path diagnostic; never
+    # serve/persist it from the cache (which is keyed only by the standard params).
+    if check_reconvergence or os.environ.get("PE_MERGE_CACHE") == "0":
+        return _compute()
+
+    key = _merge_cache_key(fragments_graph, min_arm_cable_um, seed_depth_um,
+                           max_sites, max_per_label)
+    cached = _load_merge_cache(key)
+    if cached is not None:
+        return cached
+    sites = _compute()
+    _save_merge_cache(key, sites)
+    return sites
+
+
+def _candidate_merge_sites_impl(
+    fragments_graph,
+    min_arm_cable_um: float = 10.0,
+    seed_depth_um: float = 8.0,
+    max_sites: int = 5000,
+    max_per_label: int = 8,
+    check_reconvergence: bool = False,
+) -> list[MergeSite]:
+    """The whole-brain MergeSite scan (unchanged body). ``candidate_merge_sites`` wraps
+    this with the optional persistent cross-run cache; keeping the compute path in its
+    own function guarantees a cache MISS reproduces the pre-cache result byte-for-byte."""
     g = fragments_graph
     if g.number_of_nodes() == 0:
         return []
 
-    radius = getattr(g, "node_radius", None)
-
-    def tangent(arm):
-        """Unit direction from the cut along an arm (cut node is arm[0])."""
-        if len(arm) < 2:
-            return None
-        v = np.asarray(g.node_xyz[arm[-1]], dtype=float) - np.asarray(
-            g.node_xyz[arm[0]], dtype=float)
-        n = np.linalg.norm(v)
-        return v / n if n > 0 else None
-
-    def seed_in_arm(arm):
-        """Node ~seed_depth_um into the arm (clamp to far end if arm is shorter)."""
-        cable = 0.0
-        for k in range(1, len(arm)):
-            cable += g.dist(arm[k - 1], arm[k])
-            if cable >= seed_depth_um:
-                return arm[k]
-        return arm[-1]
-
-    def arm_mean_radius(arm):
-        if radius is None or len(arm) == 0:
-            return None
-        vals = [float(radius[n]) for n in arm if radius[n] > 0]
-        return float(np.mean(vals)) if vals else None
-
     per_label: dict[str, list[MergeSite]] = {}
-    # Branch nodes only — degree>=3 is where two arms can meet within one label.
+    # Branch detector: degree>=3 is where two arms can meet within one label. The
+    # SINGLE SOURCE OF TRUTH for the per-node branch logic is _branch_site_for_node —
+    # the parallel path (`_merge_worker`) calls the SAME helper, so serial and parallel
+    # cannot drift (previously this loop was inlined + duplicated; see Concern A).
     for node in g.nodes:
-        deg = g.degree[node]
-        if deg < 3:
-            continue
-        label = str(g.node_segment_id(node))
-        if label == "0":
-            continue
-
-        # Characterize each arm out of this branch; keep those long enough.
-        arms = []
-        for nbr in g.neighbors(node):
-            arm, cable = _arm_from_branch(g, node, nbr, seed_depth_um * 3)
-            arms.append((cable, arm))
-        arms.sort(key=lambda t: t[0], reverse=True)
-        if len(arms) < 2:
-            continue
-        (cable_a, arm_a), (cable_b, arm_b) = arms[0], arms[1]
-        if cable_b < min_arm_cable_um:  # second-longest arm too short -> spur, not merge
-            continue
-
-        ta, tb = tangent(arm_a), tangent(arm_b)
-        if ta is not None and tb is not None:
-            cos = float(np.clip(np.dot(ta, tb), -1.0, 1.0))
-            angle_deg = float(np.degrees(np.arccos(cos)))
-        else:
-            angle_deg = float("nan")
-
-        ra, rb = arm_mean_radius(arm_a), arm_mean_radius(arm_b)
-        if ra and rb and min(ra, rb) > 0:
-            radius_ratio = max(ra, rb) / min(ra, rb)
-        else:
-            radius_ratio = None
-
-        sa, sb = seed_in_arm(arm_a), seed_in_arm(arm_b)
-
-        # Reconvergence check: do the two arms re-join downstream (one neuron's
-        # branches / a loop) rather than belong to two fused neurons? This is a
-        # bounded BFS PER BRANCH NODE; on a whole-brain fragment graph (millions of
-        # nodes, many branch nodes) it dominates enumeration time even when bounded,
-        # because a genuine merge never re-joins and so always runs to the bound.
-        # OFF by default for that reason — the signal is advisory, never required for
-        # correctness. A policy that wants it can re-enumerate with
-        # check_reconvergence=True on a smaller scope, or compute it itself from
-        # ctx["fragments_graph"] for just the few sites it is actually weighing.
-        if check_reconvergence:
-            arms_reconverge = _arms_reconverge(
-                g, node, arm_a[1], arm_b[1], max_explore_um=seed_depth_um * 8
-            )
-        else:
-            arms_reconverge = None
-
-        # High-degree fusion (X-crossing, deg>=4): a single cut into two sides is
-        # not enough — emit a seed for each ADDITIONAL long arm so EditHandler can
-        # partition the label into one side per arm. Only arms clearing the cable
-        # floor count (short spurs are not separate neurites).
-        extra_seeds = []
-        for k, (cable_k, arm_k) in enumerate(arms[2:]):
-            if cable_k < min_arm_cable_um:
-                break  # arms are cable-sorted desc; the rest are shorter spurs
-            sk = seed_in_arm(arm_k)
-            extra_seeds.append({
-                "suffix": chr(ord("c") + k),
-                "xyz": tuple(map(float, g.node_xyz[sk])),
-                "node": int(sk),
-                "cable_um": float(cable_k),
-            })
-
-        # An X-crossing (degree 4) is two neurites passing THROUGH the node, not four
-        # separate sides: the two arms that continue roughly straight across (tangents
-        # closest to anti-parallel) belong to ONE neuron. Pair the long arms by
-        # tangent so a confident grouping cuts the label into one side per NEURITE.
-        # Only attempted for an even count of long arms with usable tangents; left
-        # empty otherwise (falls back to per-arm seeds, the prior behavior).
-        seed_groups = _pair_arms_into_neurites(
-            g, [(cable, arm) for cable, arm in arms if cable >= min_arm_cable_um],
-            tangent, seed_in_arm,
-        )
-
-        site = MergeSite(
-            label=label,
-            cut_node=int(node),
-            cut_xyz=tuple(map(float, g.node_xyz[node])),
-            seed_a_node=int(sa),
-            seed_b_node=int(sb),
-            seed_a_xyz=tuple(map(float, g.node_xyz[sa])),
-            seed_b_xyz=tuple(map(float, g.node_xyz[sb])),
-            branch_degree=int(deg),
-            angle_deg=angle_deg,
-            radius_ratio=radius_ratio,
-            cable_a_um=float(cable_a),
-            cable_b_um=float(cable_b),
-            detector="branch",
-            arms_reconverge=arms_reconverge,
-            extra_seeds=extra_seeds,
-            seed_groups=seed_groups,
-        )
-        per_label.setdefault(label, []).append(site)
+        site = _branch_site_for_node(g, node, min_arm_cable_um, seed_depth_um,
+                                     check_reconvergence)
+        if site is not None:
+            per_label.setdefault(site.label, []).append(site)
 
     # --- Additional GT-free detectors (P1-1): topologies the branch scan misses ---
     # A real merge often has NO degree>=3 node — two neurites fused through a thin
@@ -1152,34 +1500,26 @@ def _bridge_merge_sites(g, min_arm_cable_um, seed_depth_um,
     Yields ``MergeSite(detector="bridge")``. ``cut_node`` is the neck; the two seeds
     sit ``seed_depth_um`` into each side. Deployable (geometry only).
     """
-    radius = getattr(g, "node_radius", None)
-    candidates = []  # (sharpness, node, side_a_chain, side_b_chain, cable_a, cable_b)
+    # Per-node candidate generation (the expensive walks). Kept in its own helper
+    # (_bridge_candidate_for_node) so the parallel path can generate these by node-block
+    # and hand the SAME candidate tuples to the SAME finalize below — byte-identical.
+    candidates = []  # (sharpness, node, side_a_chain, side_b_chain, cable_a, cable_b, angle, label)
     for node in g.nodes:
-        if g.degree[node] != 2:
-            continue
-        label = str(g.node_segment_id(node))
-        if label == "0":
-            continue
-        a, b = list(g.neighbors(node))
-        chain_a, cable_a = _walk_until(g, a, node, seed_depth_um * 3)
-        chain_b, cable_b = _walk_until(g, b, node, seed_depth_um * 3)
-        if cable_a < min_arm_cable_um or cable_b < min_arm_cable_um:
-            continue
-        # Turn angle at the neck: tangents from the node out along each side.
-        va = np.asarray(g.node_xyz[chain_a[-1]], float) - np.asarray(g.node_xyz[node], float)
-        vb = np.asarray(g.node_xyz[chain_b[-1]], float) - np.asarray(g.node_xyz[node], float)
-        na, nb = np.linalg.norm(va), np.linalg.norm(vb)
-        if na == 0 or nb == 0:
-            continue
-        cos = float(np.clip(np.dot(va, vb) / (na * nb), -1.0, 1.0))
-        angle_deg = float(np.degrees(np.arccos(cos)))  # ~180 = straight, low = kink
-        if angle_deg > max_kink_angle_deg:
-            continue  # too straight to be a merge neck
-        sharpness = max_kink_angle_deg - angle_deg
-        candidates.append((sharpness, node, chain_a, chain_b, cable_a, cable_b, angle_deg, label))
+        c = _bridge_candidate_for_node(g, node, min_arm_cable_um, seed_depth_um,
+                                       max_kink_angle_deg)
+        if c is not None:
+            candidates.append(c)
+    yield from _bridge_finalize(g, candidates, seed_depth_um, min_separation_um)
 
-    # Suppress near-duplicate necks (a gentle bend spans several degree-2 nodes):
-    # keep the sharpest within min_separation_um.
+
+def _bridge_finalize(g, candidates, seed_depth_um, min_separation_um: float = 20.0):
+    """Serial finalize for bridge candidates: sort by sharpness, suppress near-duplicate
+    necks within ``min_separation_um`` (keep sharpest, GLOBAL across labels), and build the
+    MergeSite for each survivor. Shared verbatim by the serial and parallel paths, so the
+    order-dependent global dedup + construction is identical. ``candidates`` MUST already
+    be in serial node order (the parallel path concatenates blocks in order to match)."""
+    radius = getattr(g, "node_radius", None)
+    candidates = list(candidates)
     candidates.sort(reverse=True, key=lambda t: t[0])
     kept_xyz: list = []
     for sharp, node, chain_a, chain_b, cable_a, cable_b, angle_deg, label in candidates:

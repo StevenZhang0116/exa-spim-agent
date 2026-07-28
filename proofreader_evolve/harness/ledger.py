@@ -130,6 +130,16 @@ class GenerationCost:
                                          # edits dropped before scoring)
     heldout_split_label_dropped: int = 0 # split_label edits the policy emitted that
                                          # were discarded by splits_only (should be 0)
+    # --- run mode (two-phase split-then-merge) -----------------------------------
+    two_phase: bool = False              # True => the policy ran twice (merge-repair
+                                         # pass -> re-enumerate -> split-repair pass)
+    # Held-out MERGE-REPAIR (split_label) credit, symmetric with the split-repair
+    # merge counts. Populated only in two-phase runs (0 otherwise). correct = fused
+    # segments correctly cut; false = clean single-neuron segments wrongly cut (a
+    # manufactured split error, penalized like a false merge in the fitness).
+    heldout_mrepair_correct: int = 0
+    heldout_mrepair_false: int = 0
+    heldout_mrepair_unscored: int = 0
     # Did the reviser actually READ the discovery priors (all-runs.combined.md) this
     # generation? Verified from the tool-call stream (a Read of the priors file), not
     # assumed. True = read it; False = priors were available but not read; None = no

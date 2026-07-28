@@ -824,6 +824,43 @@ def label_gt_counts(prepared: "PreparedBrain", gt_names=None) -> dict:
     return out
 
 
+def label_gt_counts_split(prepared: "PreparedBrain", split_handler, gt_names=None) -> dict:
+    """Like ``label_gt_counts`` but keyed by POST-SPLIT pseudo-labels.
+
+    For the TWO-PHASE gate: after a merge-repair pass cuts a fused segment ``L`` into
+    ``L#a`` / ``L#b`` by coordinate, a phase-2 ``merge_labels`` edit targets one of
+    those pseudo-labels — but the raw-keyed ``label_gt_counts`` map has no entry for
+    ``"L#a"``, so ``classify_merge_edits`` would score it ``unscored`` and give the
+    correct repair no credit. This rebuilds the label→neuron count map with each GT
+    node's raw label mapped through ``split_handler.apply_split(raw, xyz)`` — the SAME
+    coordinate rule the scorer uses — so ``L#a`` and ``L#b`` become DISTINCT keys, each
+    carrying only the GT nodes on that side. A raw label with no split spec maps to
+    itself (``apply_split`` fast path), so labels the phase-1 pass did not touch keep
+    their ordinary raw-keyed counts and this reduces EXACTLY to ``label_gt_counts``
+    when ``split_handler`` has no split edits.
+
+    ``split_handler`` MUST be an ``EditHandler`` built from the phase-1 ``split_label``
+    edits with ``build_graph_partitions(prepared.fragment_graphs)`` already called, so
+    its per-node side assignment matches the one the final score uses. DIAGNOSIS-ONLY
+    / same LEAK BOUNDARY as ``label_gt_counts`` (reads GT node labels): the held-out
+    map goes only into the gate.
+    """
+    keep = set(gt_names) if gt_names is not None else None
+    out: dict[str, dict[str, int]] = {}
+    for name, raw in prepared._gt_raw.items():
+        if keep is not None and name not in keep:
+            continue
+        g = prepared.gt_graphs[name]
+        for i in range(len(raw)):
+            lab = str(raw[i])
+            if lab == "0":
+                continue
+            pseudo = split_handler.apply_split(lab, g.node_xyz(i))
+            counts = out.setdefault(str(pseudo), {})
+            counts[name] = counts.get(name, 0) + 1
+    return out
+
+
 def _dominant_neuron(label_gt_map: dict, label) -> str | None:
     """The GT neuron a fragment label MOSTLY lands on (by node count), or None.
 
@@ -927,6 +964,74 @@ def classify_merge_edits(edits, label_gt_map: dict,
         "false_policy_pairs": false_policy,
         "false_preexisting_pairs": false_preexisting,
         "unscored_pairs": unscored_pairs,
+    }
+
+
+def classify_split_edits(edits, label_gt_map: dict,
+                         min_nodes: int = _MERGE_MIN_NODES) -> dict:
+    """Classify each ``split_label`` edit against a {label: {neuron: count}} map.
+
+    The SYMMETRIC counterpart of ``classify_merge_edits`` for the merge-repair pass:
+    a ``split_label`` cuts one raw segment ``L`` into pieces. Whether that cut is a
+    repair or a fresh error is a pure GT-node-count question — the SAME cross-skeleton
+    rule the ``% Merged Edges`` metric uses (``detect_label_intersections``: a label
+    is a MEANINGFUL two-neuron merge only when it lands on >= 2 GT skeletons with at
+    least ``min_nodes`` nodes each). So, for each split edit, count the GT neurons on
+    which ``L`` is meaningfully present:
+
+      * >= 2 neurons -> ``correct`` — ``L`` genuinely fuses two (or more) neurons, so
+        splitting it repairs a real MERGE error. This is the credit the gate rewards.
+      * exactly 1 neuron -> ``false`` — ``L`` sits on a SINGLE real neuron, so cutting
+        it manufactures a SPLIT error out of a clean segment. This is the precision
+        failure the gate should punish (the split analogue of ``false_policy``).
+      * 0 neurons clear the floor (label absent, or only sub-threshold traces) ->
+        ``unscored`` — ``L`` touches no neuron meaningfully in this map's scope, so the
+        cut neither repairs nor breaks anything the metric would score.
+
+    This is deliberately AS COARSE as ``classify_merge_edits`` (dominant / meaningful-
+    presence node counts, not edge-level geometry): it is the DENSE gate signal that
+    counts every merge-repair, symmetric with the split-repair count, so a two-phase
+    fitness can add the two. Edge-level correctness (did the cut land in the right
+    place?) is still captured independently by the re-scored ``% Merged Edges`` /
+    ``% Split Edges`` benchmark metrics on the split path — this classifier answers the
+    coarser "was splitting THIS label the right call at all?".
+
+    THRESHOLD / SCOPE: ``min_nodes`` (>= floor) matches ``classify_merge_edits``'s
+    ``_spans_both`` and ``_MERGE_MIN_NODES``. ``label_gt_map`` MUST be built over the
+    SAME GT subset the gate scores on (held-out map for the gate, train map for the
+    report). LEAK BOUNDARY identical to ``classify_merge_edits``: GT-derived, so the
+    held-out map goes ONLY into the gate, never the reviser.
+
+    Non-``split_label`` edits are ignored (``merge_labels`` is scored by
+    ``classify_merge_edits``). Returns ``{"correct", "false", "unscored",
+    "correct_labels", "false_labels", "unscored_labels"}`` where each ``*_labels`` is
+    the list of raw label ids in that bucket (a label split more than once is counted
+    once — the edits compose into a single multi-seed partition, see EditHandler).
+    """
+    correct, false, unscored = [], [], []
+    seen: set = set()
+    for e in (edits or []):
+        if not isinstance(e, dict) or e.get("kind") != "split_label":
+            continue  # merge_labels / flag / reject: not a split to classify here
+        lbl = str(e.get("label"))
+        if lbl in seen:
+            continue  # several split_label edits on ONE label = one composed cut
+        seen.add(lbl)
+        counts = label_gt_map.get(lbl) or {}
+        meaningful = [n for n, c in counts.items() if c >= min_nodes]
+        if len(meaningful) >= 2:
+            correct.append(lbl)
+        elif len(meaningful) == 1:
+            false.append(lbl)
+        else:
+            unscored.append(lbl)
+    return {
+        "correct": len(correct),
+        "false": len(false),
+        "unscored": len(unscored),
+        "correct_labels": correct,
+        "false_labels": false,
+        "unscored_labels": unscored,
     }
 
 

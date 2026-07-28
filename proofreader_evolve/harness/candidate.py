@@ -625,7 +625,8 @@ def _load_policy(heuristics_path: str):
 _SITES_CACHE: dict = {}
 
 
-def _enumerate_sites_cached(fragments_graph, params: dict, enumerate_merges: bool = True):
+def _enumerate_sites_cached(fragments_graph, params: dict, enumerate_merges: bool = True,
+                            image_reader=None):
     """Return (split_sites, merge_sites, split_stats), computing once per (graph, params).
 
     ``split_stats`` is the GT-free enumeration-ceiling dict from
@@ -646,12 +647,20 @@ def _enumerate_sites_cached(fragments_graph, params: dict, enumerate_merges: boo
     repairs this run). It is part of the cache key so a split-only run and a full
     run never share a cached entry.
     """
+    # Image-rescue params (option B): only active when a reader is present AND the
+    # policy asked for a non-zero rescue budget. Part of the cache key (with a bool for
+    # whether a reader exists) so a rescue-on run never reuses a geometry-only entry.
+    _rescue = int(params.get("split_image_rescue", 0) or 0)
+    _rescue_thr = float(params.get("split_image_rescue_min_bridge", 0.7))
+    _rescue_on = image_reader is not None and _rescue > 0
     key = (id(fragments_graph),
            params["max_gap_um"], params["split_max_sites"], params["tip_to_shaft"],
            params.get("split_alt_per_pair", 1), params.get("split_per_tip_k", 4),
            params["min_arm_cable_um"], params["seed_depth_um"],
            params["merge_max_sites"], params["max_per_label"],
-           bool(enumerate_merges))
+           bool(enumerate_merges),
+           _rescue if _rescue_on else 0, _rescue_thr if _rescue_on else None,
+           id(image_reader) if _rescue_on else None)
     cached = _SITES_CACHE.get(key)
     if cached is None:
         split_sites, split_stats = ds.candidate_split_sites(
@@ -661,6 +670,9 @@ def _enumerate_sites_cached(fragments_graph, params: dict, enumerate_merges: boo
             tip_to_shaft=params["tip_to_shaft"],
             alt_per_pair=params.get("split_alt_per_pair", 1),
             per_tip_k=params.get("split_per_tip_k", 4),
+            image_reader=(image_reader if _rescue_on else None),
+            image_rescue_max=(_rescue if _rescue_on else 0),
+            image_rescue_min_bridge=_rescue_thr,
             return_stats=True,
         )
         if enumerate_merges:
@@ -715,6 +727,15 @@ class CandidateRun:
     # aborted. A timed-out policy yields NO edits (the candidate is treated as a failed
     # generation upstream, like an import/lint failure), so this run is a no-op repair.
     policy_timed_out: bool = False
+    # TWO-PHASE mode (two_phase=True): the phase-1 ``split_label`` edits, kept SEPARATE
+    # from ``edits`` (which holds the scored union) so the gate can credit them via
+    # ``classify_split_edits``. Empty in single-pass / splits-only runs. The re-enumerated
+    # phase-2 SplitSites (over the post-split label surface) land in ``split_sites``.
+    split_edits: list = field(default_factory=list)
+    # The phase-1 EditHandler (split-only, partitions built) — the gate needs it to
+    # build a POST-SPLIT label→neuron map (label_gt_counts_split) so a phase-2 merge
+    # onto a pseudo-label like "L#a" is scored, not read as unscored. None off two-phase.
+    split_handler: object = None
 
     def to_json(self) -> dict:
         return {
@@ -866,6 +887,101 @@ def _foreign_labels_near(fragments_graph, xyz, radius_um, exclude=()):
     return out
 
 
+class _RelabeledFragmentGraph:
+    """Read-only VIEW over a fragment ``SkeletonGraph`` that returns POST-SPLIT
+    pseudo-labels from ``node_segment_id()`` while leaving all geometry/topology
+    untouched. This is the seam that lets the TWO-PHASE pipeline re-enumerate
+    SplitSites over the label surface a merge-repair pass produced.
+
+    After phase 1 emits ``split_label`` edits that cut a fused segment ``L`` into
+    ``L#a`` / ``L#b`` (by coordinate, via the same ``EditHandler.apply_split`` the
+    scorer uses), the split-repair enumerator must see ``L#a`` and ``L#b`` as
+    DISTINCT labels so a tip landing near one side becomes a candidate merge onto
+    that side specifically. ``candidate_split_sites`` derives a node's label solely
+    from ``g.node_segment_id(n)``, so overriding ONLY that method — and delegating
+    everything else (``nodes``, ``degree``, ``neighbors``, ``node_xyz``,
+    ``node_radius``, ``dist``, …) to the base graph — relabels the enumeration
+    without copying or mutating the graph.
+
+    Cost: ``apply_split`` returns the raw label unchanged for any label without a
+    split spec (the fast path), so only nodes whose raw label was actually split
+    pay a KD-tree query; the rest are O(1). Identity is distinct from the base graph,
+    so the ``id()``-keyed site / KD-tree caches build a fresh entry for the view
+    (which is what re-enumeration wants) without colliding with the base graph's.
+
+    CONSISTENCY: the ``handler`` here is built from the phase-1 ``split_label`` edits
+    with ``build_graph_partitions`` already called, so its ``apply_split`` yields the
+    SAME pseudo-suffixes the final scorer's handler will (suffix assignment depends
+    only on the split seeds + fragment graphs, never on the merge edits added later
+    — see ``EditHandler.build_graph_partitions``). That is why a phase-2
+    ``merge_labels(A, "L#a")`` edit composes correctly at score time.
+    """
+
+    def __init__(self, base, handler):
+        # Stored in __dict__ so normal lookup finds them (no __getattr__ recursion).
+        self._base = base
+        self._handler = handler
+
+    def node_segment_id(self, node):
+        raw = str(self._base.node_segment_id(node))
+        return self._handler.apply_split(raw, self._base.node_xyz[node])
+
+    def __getattr__(self, name):
+        # Only reached for names NOT on this instance/class -> delegate to the base
+        # graph. Guard the two private attrs so a partially-constructed / unpickled
+        # view raises AttributeError instead of recursing forever.
+        if name in ("_base", "_handler"):
+            raise AttributeError(name)
+        return getattr(self._base, name)
+
+
+def _build_policy_ctx(fragments_graph, enum_params, n_split_sites, n_merge_sites,
+                      rec_reader):
+    """Build the ``ctx`` dict handed to ``propose_edits`` — the policy's GT-free
+    view of the brain. Extracted so the single-pass and both TWO-PHASE passes build
+    an IDENTICAL ctx shape (differing only in which ``fragments_graph`` and site
+    counts are bound). ``rec_reader`` is the (optional) RecordingImageReader wrapping
+    the run's image reader, shared across passes so image reads accumulate.
+    """
+    return {
+        "max_gap_um": enum_params["max_gap_um"],
+        # The resolved (validated + clamped) enumeration priors actually in effect
+        # this run — so the policy / failure report can see what candidate stream it
+        # was handed (e.g. distinguish "no site here" from "my widened gap took
+        # effect"). The values may differ from a policy's raw ENUM_PARAMS if a knob
+        # was clamped to its safety rail.
+        "enum_params": dict(enum_params),
+        "fragments_graph": fragments_graph,
+        # Candidate-stream composition, so the policy can tell how many of each
+        # kind it was handed without re-scanning (sites carry a ``kind`` tag too).
+        "n_split_sites": n_split_sites,
+        "n_merge_sites": n_merge_sites,
+        # (1) Cheap, in-memory signal: per-node neurite radius (float16 array indexed
+        # by node id). Lets the policy reason about fragment thickness with NO cloud
+        # read. Present on the agentic SkeletonGraph already.
+        "node_radius": getattr(fragments_graph, "node_radius", None),
+        # (1b) Cheap, GT-free, NO-cloud-read geometry+topology for a SplitSite: call
+        # ctx["split_geom"](site) -> {colinear_cos, cos_a, cos_b, tip_tangent_cos,
+        # deg_a, deg_b, rad_a, rad_b, rad_ratio, same_component, graph_path_um,
+        # cable_a, cable_b, cable_min, dist_to_branch_b}. NO thresholds baked in.
+        "split_geom": (lambda site: _split_site_geom(fragments_graph, site)),
+        # (3) EFFICIENT SPATIAL QUERIES (KD-tree backed). Use these for any "what
+        # fragments are near here" feature instead of scanning node_xyz yourself.
+        "nodes_within": (lambda xyz, radius: _nodes_within(fragments_graph, xyz, radius)),
+        "foreign_labels_near": (
+            lambda xyz, radius, exclude=(): _foreign_labels_near(
+                fragments_graph, xyz, radius, exclude)),
+        # (2) Optional, lazy, cached raw-image patch reader (the fluorescence signal
+        # at the gap). None unless an image reader was provided — the policy MUST
+        # handle ctx["read_image_patch"] is None. When present it is a
+        # LazyImagePatchReader wrapped for passive read recording.
+        "read_image_patch": rec_reader,
+        # (3) Receptive-field knob for the image reads above (voxels, per axis clamped
+        # to image_features._MAX_PATCH_DIM). Documented default the policy may pass.
+        "image_patch_shape": (16, 16, 16),
+    }
+
+
 def run_candidate(
     prepared,
     fragments_graph,
@@ -877,6 +993,7 @@ def run_candidate(
     image_reader=None,
     verbose: bool = False,
     splits_only: bool = False,
+    two_phase: bool = False,
     policy_time_budget: float | None = None,
 ) -> CandidateRun:
     """Execute the evolved policy and score its edits on the given GT subset.
@@ -884,6 +1001,29 @@ def run_candidate(
     Scoring uses the incremental scorer (seconds), so this is cheap enough to
     call twice per generation. The candidate-site geometry still comes from the
     fast cached fragment graph.
+
+    TWO-PHASE mode (``two_phase=True``, mutually exclusive with ``splits_only``)
+    runs the policy TWICE with a re-enumeration between the passes, so a segment
+    the segmentation fused across two neurons is UNTANGLED before a clean fragment
+    is connected to it (the split-first-then-merge proofreading order):
+
+      Phase 1 (MERGE-REPAIR): enumerate MergeSites + SplitSites over the RAW fragment
+        graph, call the policy, and keep ONLY its ``split_label`` edits. These cut
+        each fused segment ``L`` into pseudo-labels ``L#a`` / ``L#b`` by coordinate.
+      RE-ENUMERATE: wrap the fragment graph in a ``_RelabeledFragmentGraph`` whose
+        ``node_segment_id`` returns the phase-1 pseudo-labels, and enumerate
+        SplitSites over THAT surface — so a tip near ``L``'s N002 side now sees
+        ``L#a`` (that side alone) as its candidate merge partner, not the whole
+        tangle.
+      Phase 2 (SPLIT-REPAIR): call the policy again on the re-enumerated SplitSites
+        and keep its ``merge_labels`` edits.
+      SCORE: the union (phase-1 splits + phase-2 merges) is scored once. The
+        EditHandler resolves split-first-then-merge, so a ``merge_labels(A, "L#a")``
+        composes onto the correct post-split side.
+
+    The gate credits phase-1 splits via ``classify_split_edits`` and phase-2 merges
+    via ``classify_merge_edits`` (both symmetric, GT-verified); see run_evolution.
+    Single-pass (neither flag) and ``splits_only`` behavior are unchanged.
 
     Parameters
     ----------
@@ -940,6 +1080,9 @@ def run_candidate(
         raw_enum = {"max_gap_um": max_gap_um}
     enum_params = ds.resolve_enum_params(raw_enum)
 
+    if splits_only and two_phase:
+        raise ValueError("splits_only and two_phase are mutually exclusive")
+
     # The policy reasons over a UNIFIED candidate stream of two site kinds:
     #   - SplitSite (kind="split"): two nearby fragments with DIFFERENT labels;
     #     valid action = merge_labels (repairs a split error).
@@ -956,118 +1099,111 @@ def run_candidate(
     # SPLIT-ERROR-ONLY: skip the whole-brain merge scan so the policy is handed NO
     # MergeSite — it then cannot reason over, or pay cloud reads for, merge repairs
     # this run, and the failure report's merge sections go empty on their own.
+    # ``image_reader`` is threaded in for OPTIONAL image-guided candidate RESCUE (only
+    # active when the policy set ENUM_PARAMS["split_image_rescue"] > 0). It runs ONCE at
+    # enumeration (cached with the rescue params in the key), NOT per policy call, so a
+    # rescue budget of N costs ~N image probes for the whole run, not per generation.
     split_sites, merge_sites, split_enum_stats = _enumerate_sites_cached(
-        fragments_graph, enum_params, enumerate_merges=not splits_only)
-    sites = list(split_sites) + list(merge_sites)
+        fragments_graph, enum_params, enumerate_merges=not splits_only,
+        image_reader=image_reader)
 
     # Passively record the image-evidence calls the policy makes (gap_connectivity /
     # merge_cut_evidence), so the failure report can turn the reads the policy ALREADY
     # paid for into a labelled learning signal. Adds NO extra cloud reads. Only wraps
-    # when an image reader is actually present.
+    # when an image reader is actually present. Shared across both two-phase passes so
+    # image reads accumulate on ONE recorder.
     if image_reader is not None:
         from proofreader_evolve.harness.image_features import RecordingImageReader
         rec_reader = RecordingImageReader(image_reader)
     else:
         rec_reader = None
-    ctx = {
-        "max_gap_um": enum_params["max_gap_um"],
-        # The resolved (validated + clamped) enumeration priors actually in effect
-        # this run — so the policy / failure report can see what candidate stream it
-        # was handed (e.g. distinguish "no site here" from "my widened gap took
-        # effect"). The values may differ from a policy's raw ENUM_PARAMS if a knob
-        # was clamped to its safety rail.
-        "enum_params": dict(enum_params),
-        "fragments_graph": fragments_graph,
-        # Candidate-stream composition, so the policy can tell how many of each
-        # kind it was handed without re-scanning (sites carry a ``kind`` tag too).
-        "n_split_sites": len(split_sites),
-        "n_merge_sites": len(merge_sites),
-        # (1) Cheap, in-memory signal the policy was missing: per-node neurite
-        # radius (float16 array indexed by node id). Lets the policy reason about
-        # fragment thickness — e.g. refuse to fuse two thick (likely-real) neurites
-        # — with NO cloud read. Present on the agentic SkeletonGraph already.
-        "node_radius": getattr(fragments_graph, "node_radius", None),
-        # (1b) Cheap, GT-free, NO-cloud-read geometry+topology for a SplitSite: call
-        # ctx["split_geom"](site) -> {colinear_cos, cos_a, cos_b, tip_tangent_cos,
-        # deg_a, deg_b, rad_a, rad_b, rad_ratio,  # geometry/morphology
-        #   same_component, graph_path_um, cable_a, cable_b, cable_min,
-        #   dist_to_branch_b}.                     # pure graph TOPOLOGY (brain-indep.)
-        # These are the deployable features (straightness, per-arm asymmetry, endpoint
-        # degree, cable caliber; plus loop-closure / fragment-maturity / shaft-position
-        # topology) the policy can threshold on directly, computed from the fragment
-        # graph. same_component=True means merging would CLOSE A LOOP (a strong
-        # non-merge prior for tree-like neurons). NO thresholds are baked in — the
-        # harness exposes raw values and the policy decides which to use and where.
-        "split_geom": (lambda site: _split_site_geom(fragments_graph, site)),
-        # (3) EFFICIENT SPATIAL QUERIES (KD-tree backed, O(log N + hits)). Use these
-        # for any "what fragments are near here" feature instead of scanning node_xyz
-        # yourself — a hand-written full scan is O(N) PER site and made held-out scoring
-        # run for an hour once. ``nodes_within(xyz, radius)`` -> node-id array within
-        # ``radius`` µm of a point; ``foreign_labels_near(xyz, radius, exclude=(a,b))``
-        # -> set of distinct segment ids near ``xyz`` other than the excluded pair (the
-        # crossing/tangle density cue). Both no-op to empty if the graph has no coords.
-        "nodes_within": (lambda xyz, radius: _nodes_within(fragments_graph, xyz, radius)),
-        "foreign_labels_near": (
-            lambda xyz, radius, exclude=(): _foreign_labels_near(
-                fragments_graph, xyz, radius, exclude)),
-        # (2) Optional, lazy, cached raw-image patch reader (the fluorescence
-        # signal at the gap). None unless an image reader was provided — the policy
-        # MUST handle ctx["read_image_patch"] is None. When present it is a
-        # LazyImagePatchReader; call .read_patch(node_id[, shape]),
-        # .gap_connectivity(node_a, node_b) (cheap split evidence: signal at each
-        # endpoint — does NOT test the gap interior), .gap_bridge_evidence(node_a,
-        # node_b) (split evidence: is there a CONTINUOUS bright bridge across the gap?
-        # high bridge_ratio ⇒ safe to merge), or .merge_cut_evidence(seed_a_node,
-        # seed_b_node) (merge evidence: an intensity valley between two fused arms?)
-        # — each is a cloud read, so gate it behind cheap geometric filters.
-        "read_image_patch": rec_reader,
-        # (3) Receptive-field knob for the image reads above. Every reader method
-        # takes an optional ``shape=(z,y,x)`` (voxels) — the patch read per sample.
-        # Bigger = more spatial context but a larger cloud fetch; each axis is clamped
-        # to image_features._MAX_PATCH_DIM (64). This is the RECOMMENDED default the
-        # policy may pass, e.g. ``reader.gap_bridge_evidence(a, b, shape=ctx["image_patch_shape"])``
-        # — tune it per tier (a tight window for a clean micro-gap, a wider one to
-        # confirm a long faint bridge). None of the readers require it (they default
-        # to the reader's own shape); it is exposed so the receptive field is an
-        # explicit, documented dial rather than a buried default.
-        "image_patch_shape": (16, 16, 16),
-    }
 
-    # The policy may return legacy (label_a, label_b) tuples OR typed edit dicts
-    # ({"kind": "merge_labels"|"split_label"|...}). normalize_edits promotes both
-    # to the typed form, so the loop accepts either without the old, lossy
-    # tuple(map(str, e)) coercion (which silently corrupted dict edits into a
-    # 4-tuple of their keys).
-    #
-    # (1) TIME the policy call separately from scoring, and (2) BUDGET it: a policy is
-    # arbitrary evolved code that can run an accidental O(N^2) feature over the whole
-    # candidate stream. If it exceeds ``policy_time_budget`` it is aborted and treated
-    # as producing NO edits (a no-op candidate), so the generation is rejected like any
-    # other failed revision rather than stalling the run for an hour.
-    policy_timed_out = False
-    _t_policy = time.monotonic()
-    try:
-        with _policy_time_budget(policy_time_budget):
-            raw_edits = propose_edits(sites, ctx)
-    except PolicyTimeout:
-        policy_timed_out = True
-        raw_edits = []
-        if verbose:
-            print(f"[{split_name}] propose_edits exceeded "
-                  f"{policy_time_budget:g}s budget — aborted, treating as no edits")
-    policy_seconds = time.monotonic() - _t_policy
-    edits = normalize_edits(raw_edits)
+    def _run_policy(sites, graph_for_ctx, n_split, n_merge):
+        """Call ``propose_edits`` once, timed + budgeted, returning
+        ``(normalized_edits, seconds, timed_out)``. A policy is arbitrary evolved
+        code that can run an accidental O(N^2) feature over the whole candidate
+        stream; on budget overrun it is aborted and treated as producing NO edits, so
+        the generation is rejected like any other failed revision rather than stalling
+        the run for an hour."""
+        ctx = _build_policy_ctx(graph_for_ctx, enum_params, n_split, n_merge, rec_reader)
+        timed_out = False
+        _t = time.monotonic()
+        try:
+            with _policy_time_budget(policy_time_budget):
+                raw = propose_edits(sites, ctx)
+        except PolicyTimeout:
+            timed_out = True
+            raw = []
+            if verbose:
+                print(f"[{split_name}] propose_edits exceeded "
+                      f"{policy_time_budget:g}s budget — aborted, treating as no edits")
+        return normalize_edits(raw), (time.monotonic() - _t), timed_out
 
-    # SPLIT-ERROR-ONLY: defensive guard. With no MergeSite enumerated above the policy
-    # has nothing to build a split_label from, but a policy could still hardcode one,
-    # so drop any split_label before it reaches the (expensive) scorer. A non-zero
-    # count here means the policy emitted merge repairs that were SILENTLY discarded —
-    # surface it on the run so that is visible rather than mysterious.
+    split_edits: list = []
+    split_handler = None
     n_split_label_dropped = 0
-    if splits_only and edits:
-        kept = [e for e in edits if e.get("kind") != "split_label"]
-        n_split_label_dropped = len(edits) - len(kept)
-        edits = kept
+
+    if not two_phase:
+        # --- SINGLE-PASS (unchanged): one policy call over split+merge sites -------
+        sites = list(split_sites) + list(merge_sites)
+        edits, policy_seconds, policy_timed_out = _run_policy(
+            sites, fragments_graph, len(split_sites), len(merge_sites))
+        # SPLIT-ERROR-ONLY defensive guard: with no MergeSite enumerated the policy
+        # has nothing to build a split_label from, but a policy could still hardcode
+        # one, so drop any split_label before it reaches the (expensive) scorer. A
+        # non-zero count means merge repairs were SILENTLY discarded — surface it.
+        if splits_only and edits:
+            kept = [e for e in edits if e.get("kind") != "split_label"]
+            n_split_label_dropped = len(edits) - len(kept)
+            edits = kept
+        n_sites = len(sites)
+    else:
+        # --- TWO-PHASE: split-repair first, re-enumerate, then merge-repair --------
+        # Phase 1 (MERGE-REPAIR): run over the raw split+merge stream, keep ONLY the
+        # policy's split_label edits (they cut fused segments into pseudo-labels).
+        p1_sites = list(split_sites) + list(merge_sites)
+        p1_edits, p1_seconds, p1_timed_out = _run_policy(
+            p1_sites, fragments_graph, len(split_sites), len(merge_sites))
+        split_edits = [e for e in p1_edits if e.get("kind") == "split_label"]
+
+        # Build the phase-1 split handler and its graph-aware partitions so the
+        # re-enumeration view and the post-split GT map both see the SAME per-node
+        # side assignment the final scorer will (suffix assignment depends only on the
+        # split seeds + fragment graphs, not on any later merge — see EditHandler).
+        from proofreader_evolve.harness.edit_handler import EditHandler
+        split_handler = EditHandler(split_edits, all_labels=prepared.all_fragment_labels,
+                                    max_class_size=max_class_size)
+        if split_handler.split_labels:
+            split_handler.build_graph_partitions(prepared.fragment_graphs)
+            # RE-ENUMERATE SplitSites over the POST-SPLIT label surface: a tip near
+            # one side of a just-split segment now sees that side (``L#a``) as its
+            # candidate partner, not the whole tangle. Fresh graph identity -> a fresh
+            # site/KD-tree cache entry (which is what re-enumeration wants).
+            relabeled = _RelabeledFragmentGraph(fragments_graph, split_handler)
+            p2_split_sites, _p2_merge, p2_enum_stats = _enumerate_sites_cached(
+                relabeled, enum_params, enumerate_merges=False, image_reader=image_reader)
+            ctx_graph = relabeled
+        else:
+            # No split proposed -> re-enumeration is identical to phase 1's splits.
+            p2_split_sites, p2_enum_stats = split_sites, split_enum_stats
+            ctx_graph = fragments_graph
+
+        # Phase 2 (SPLIT-REPAIR): run over the re-enumerated SplitSites, keep ONLY
+        # merge_labels edits (a split_label here would re-cut the post-split graph;
+        # merge repair is this pass's job — drop any stray split_label).
+        p2_edits, p2_seconds, p2_timed_out = _run_policy(
+            list(p2_split_sites), ctx_graph, len(p2_split_sites), 0)
+        merge_edits = [e for e in p2_edits if e.get("kind") == "merge_labels"]
+        n_split_label_dropped = sum(1 for e in p2_edits if e.get("kind") == "split_label")
+
+        # SCORE the union: splits first, then merges. The EditHandler resolves
+        # split-before-merge, so a merge_labels(A, "L#a") composes onto the right side.
+        edits = split_edits + merge_edits
+        split_sites = list(p2_split_sites)   # report/gate reflect the re-enumeration
+        split_enum_stats = dict(p2_enum_stats)
+        policy_seconds = p1_seconds + p2_seconds
+        policy_timed_out = p1_timed_out or p2_timed_out
+        n_sites = len(p1_sites) + len(p2_split_sites)
 
     # Always route through the typed path so split_label edits actually take
     # effect. A pure-merge edit list reproduces the legacy label-pair result
@@ -1082,7 +1218,7 @@ def run_candidate(
     )
     return CandidateRun(
         split=split_name,
-        n_sites=len(sites),
+        n_sites=n_sites,
         n_edits=len(edits),
         score=result,
         edits=edits,
@@ -1095,6 +1231,8 @@ def run_candidate(
         split_enum_stats=dict(split_enum_stats),
         policy_seconds=policy_seconds,
         policy_timed_out=policy_timed_out,
+        split_edits=split_edits,
+        split_handler=split_handler,
     )
 
 
@@ -2247,6 +2385,137 @@ def _failure_report_body(
                        f"(mutual-nearest) pairs — see the `mutual` column in the "
                        f"SplitSite audit.\n" if n_mut is not None else "\n")
                 )
+
+            # IMAGE-GUIDED RESCUE (ENUM_PARAMS["split_image_rescue"]): report its yield,
+            # and — when it's OFF but pairs are being truncated — advertise it as a lever
+            # that raises the CEILING (adds far-gap candidates geometry drops), not just
+            # filters. Only meaningful with a live image reader.
+            _resc_n = est.get("image_rescued")
+            _resc_probed = est.get("image_rescue_probed") or 0
+            if _resc_probed > 0:
+                lines.append(
+                    f"Image rescue `split_image_rescue`: probed {_resc_probed} of the "
+                    f"farthest dropped pairs with `gap_bridge_evidence`; RESCUED "
+                    f"**{_resc_n}** (bright continuous bridge, bridge_ratio >= "
+                    f"{est.get('image_rescue_min_bridge')}) back into the candidate "
+                    f"stream (tagged `site.image_rescued`). These are far-gap splits "
+                    f"geometry alone drops — raise the budget to rescue more, but gate "
+                    f"acceptance on `bridge_ratio` since far gaps are precision-risky.\n")
+            elif n_trunc > 0:
+                lines.append(
+                    f"Image rescue `split_image_rescue` is OFF (0). It would probe the "
+                    f"farthest dropped pairs (the {n_trunc} truncated here) with "
+                    f"`gap_bridge_evidence` and re-add any with a bright continuous "
+                    f"bridge — a way to reach far-gap splits WITHOUT raising "
+                    f"`split_max_sites`/`max_gap_um` wholesale (only the image-confirmed "
+                    f"ones enter). Needs a live image reader; each probe is a few cloud "
+                    f"reads, so start small (e.g. 100).\n")
+
+        # --- max_gap_um HEADROOM: how the reachable ceiling would rise at a WIDER
+        # radius. The ceiling above is measured at THIS run's max_gap_um; the isolated
+        # fragments may simply have their same-neuron partner just past that radius. To
+        # turn "raise max_gap_um" from vague advice into a QUANTIFIED lever (the way the
+        # split_max_sites truncation count already is), we re-enumerate REAL same-neuron
+        # SplitSite edges ONCE at the rail-max radius (uncapped, high per-tip-k), then
+        # recompute the union-find ceiling filtering those edges by gap at several
+        # thresholds. Leak-free (same train-only dominant-neuron rule). Best-effort:
+        # skipped silently if the fragment graph is absent or the wide scan fails.
+        if needed > 0 and fragments_graph is not None:
+            try:
+                _cur_gap = float(est.get("max_gap_um", 15.0)) if est else 15.0
+                _rail_hi = ds.ENUM_PARAM_SPEC["max_gap_um"][2]   # 40.0
+                # candidate thresholds strictly WIDER than current, up to the rail.
+                _thrs = [g for g in (20.0, 25.0, 30.0, 40.0) if g > _cur_gap + 1e-6]
+                if _thrs:
+                    # One wide, uncapped, high-per-tip-k enumeration -> all REAL edges
+                    # with their gaps (so we can threshold post-hoc).
+                    _wide = ds.candidate_split_sites(
+                        fragments_graph, max_gap_um=_rail_hi, max_sites=200000,
+                        tip_to_shaft=True, per_tip_k=32)
+                    _real_wide = []   # (la, lb, gap) for same-neuron pairs
+                    for s in _wide:
+                        la, lb = str(s.label_a), str(s.label_b)
+                        da, db = _dominant(la), _dominant(lb)
+                        if da is not None and da == db:
+                            _real_wide.append((la, lb, float(s.gap_um)))
+
+                    def _ceiling_at(max_gap):
+                        """Reachable split-repairs when REAL edges up to ``max_gap`` are
+                        available (reuses the union-find ceiling logic)."""
+                        uf2: dict = {}
+                        def _f(x):
+                            uf2.setdefault(x, x)
+                            while uf2[x] != x:
+                                uf2[x] = uf2[uf2[x]]; x = uf2[x]
+                            return x
+                        for la, lb, g in _real_wide:
+                            if g <= max_gap:
+                                ra, rb = _f(la), _f(lb)
+                                if ra != rb:
+                                    uf2[ra] = rb
+                        reach = 0
+                        for dom, frags in neuron_frags.items():
+                            if len(frags) < 2:
+                                continue
+                            reach += len(frags) - len({_f(f) for f in frags})
+                        return reach
+
+                    lines.append("\n### Reachable-recall ceiling vs `max_gap_um` "
+                                 "(is a WIDER radius worth it?)\n")
+                    lines.append(
+                        f"The ceiling above is at THIS run's `max_gap_um`={_cur_gap:g} µm. "
+                        f"Below is the SAME ceiling recomputed as if the tip→partner "
+                        f"search radius were widened (all else equal), so you can see how "
+                        f"many more real splits become REACHABLE — a QUANTIFIED case for "
+                        f"raising `max_gap_um` (rail max {_rail_hi:g}), not just "
+                        f"`split_max_sites`:\n")
+                    lines.append("| max_gap_um | reachable repairs | % of needed |")
+                    lines.append("|---|---|---|")
+                    _cur_reach = _ceiling_at(_cur_gap)
+                    lines.append(f"| {_cur_gap:g} (current) | {_cur_reach} | "
+                                 f"{100.0*_cur_reach/needed:.1f}% |")
+                    for _g in _thrs:
+                        _rc = _ceiling_at(_g)
+                        _delta = _rc - _cur_reach
+                        lines.append(f"| {_g:g} | {_rc} (+{_delta}) | "
+                                     f"{100.0*_rc/needed:.1f}% |")
+                    _best = _ceiling_at(_rail_hi)
+                    if _best <= _cur_reach:
+                        lines.append(
+                            "\n=> Widening `max_gap_um` adds ~NOTHING: the isolated "
+                            "fragments have NO same-neuron partner even within the rail-max "
+                            "radius. Their true continuations are beyond geometric reach — "
+                            "raising the radius will not help (consider image-guided "
+                            "candidates or an upstream fragmentation fix), and do NOT keep "
+                            "raising `split_max_sites` (the cap is not the limit).\n")
+                    else:
+                        lines.append(
+                            f"\n=> Widening `max_gap_um` to {_rail_hi:g} would lift the "
+                            f"reachable ceiling from {100.0*_cur_reach/needed:.1f}% to "
+                            f"{100.0*_best/needed:.1f}% — a real lever you have NOT yet "
+                            f"pulled. Raise `max_gap_um` in `ENUM_PARAMS` (watch precision: "
+                            f"wider gaps admit more false joins, so lean on your geometry / "
+                            f"reciprocal-neighbour / image checks).\n")
+            except Exception as _e:
+                lines.append(f"\n_(max_gap_um headroom table skipped: {_e})_\n")
+
+        # --- ISOLATION NUDGE (C): when the cap is already high and isolated fragments
+        # dominate the remaining ceiling, say EXPLICITLY that split_max_sites is no
+        # longer the limit — so the reviser stops re-raising it and looks at max_gap_um
+        # / isolation instead.
+        if needed > 0 and est:
+            _cap = est.get("max_sites") or 0
+            _trunc = est.get("n_truncated") or 0
+            _cap_hi = ds.ENUM_PARAM_SPEC["split_max_sites"][2]
+            if _cap >= _cap_hi and ceiling > 0:
+                lines.append(
+                    f"\n**Note:** `split_max_sites` is already at its rail max "
+                    f"({_cap_hi}) — the global cap is NOT what limits recall now"
+                    + (f" (only {_trunc} pairs still truncated)" if _trunc else "")
+                    + f". The remaining ceiling ({ceiling} unreachable repairs, "
+                    f"{frag_unreachable} isolated fragments) is set by `max_gap_um` "
+                    f"and fragment isolation — widen the radius (see the table above) "
+                    f"or accept the enumeration limit; do NOT re-raise the cap.\n")
 
     # Image evidence the policy ALREADY fetched, labelled by GT (train-only). The
     # policy pays cloud reads for gap_connectivity / gap_bridge_evidence /

@@ -725,6 +725,7 @@ async def ask_reviser(
     attempts: list[dict] | None = None,
     priors_path: str | None = None,
     splits_only: bool = False,
+    two_phase: bool = False,
     gen_gap: list[dict] | None = None,
     transcript_path: str | None = None,
 ):
@@ -773,6 +774,20 @@ async def ask_reviser(
            "(split-error) policy. The failure report's merge sections are omitted "
            "accordingly."
            if splits_only else "")
+        + ("\n\nIMPORTANT — THIS RUN: TWO-PHASE split-then-merge. Your `propose_edits` "
+           "is called TWICE per brain with a re-enumeration between: (phase 1) on the "
+           "raw SplitSite+MergeSite stream, where ONLY your `split_label` edits are "
+           "kept — they untangle fused segments into pseudo-labels `L#a`/`L#b`; then "
+           "SplitSites are RE-ENUMERATED over that post-split surface; (phase 2) on the "
+           "re-enumerated SplitSites, where ONLY your `merge_labels` edits are kept. "
+           "BOTH kinds are scored and credited: a correct `split_label` (cutting a "
+           "segment that truly spans 2+ neurons) earns merge-repair credit, and a "
+           "`merge_labels` may now target a post-split side (e.g. connect a clean "
+           "fragment to `L#a` rather than the whole tangle). A `split_label` that cuts "
+           "a clean single-neuron segment is penalized like a false merge. Keep "
+           "`propose_edits` dispatching on `site.kind` and emit BOTH edit kinds as "
+           "appropriate — do not disable either."
+           if two_phase else "")
         + (
            "\n\nIMAGE CURRICULUM — couple reading image to PASSING THE GATE in ONE "
            "revision. The gate keeps a candidate only if it raises the penalized "
@@ -1213,7 +1228,8 @@ def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
 
 def _score_pooled(brains: list, names_attr: str, work_heuristics: str,
                   split_name: str, max_class_size, verbose: bool,
-                  splits_only: bool = False, policy_time_budget: float | None = None):
+                  splits_only: bool = False, two_phase: bool = False,
+                  policy_time_budget: float | None = None):
     """Run the policy on every brain's own (train|heldout) skeletons and POOL results.
 
     Each brain is scored with ITS OWN prepared state + fragment graph + image reader
@@ -1234,7 +1250,8 @@ def _score_pooled(brains: list, names_attr: str, work_heuristics: str,
             bc.prepared, bc.fragments_graph, names, split_name,
             work_heuristics, max_class_size=max_class_size,
             image_reader=bc.image_reader, verbose=verbose,
-            splits_only=splits_only, policy_time_budget=policy_time_budget,
+            splits_only=splits_only, two_phase=two_phase,
+            policy_time_budget=policy_time_budget,
         )
         per_brain_runs.append(run)
         frames.append(run.score.per_swc)
@@ -1264,7 +1281,13 @@ def _pooled_split_repair(brains: list, per_brain_runs: list,
         on the train map.
     """
     tot = {"correct": 0, "false": 0, "false_policy": 0, "false_preexisting": 0,
-           "unscored": 0}
+           "unscored": 0,
+           # TWO-PHASE merge-repair (split_label) credit, symmetric with the split-
+           # repair counts above and only populated when a run emitted split_label
+           # edits (classify_split_edits). ``mrepair_correct`` = fused segments the
+           # policy correctly cut (label spanned >= 2 GT neurons); ``mrepair_false`` =
+           # clean single-neuron segments it wrongly cut (a manufactured split error).
+           "mrepair_correct": 0, "mrepair_false": 0, "mrepair_unscored": 0}
     # Per-brain blind-spot detail, kept ALONGSIDE the pooled counts so a caller can
     # corroborate the unscored edits with a GT-independent signal (see
     # ``_image_confidence``). Each entry is (BrainContext, CandidateRun, unscored
@@ -1284,8 +1307,29 @@ def _pooled_split_repair(brains: list, per_brain_runs: list,
     # held-out brain, so raw scores are not comparable across the split — see
     # ``_format_gen_gap``.
     reachable_real = 0
+    # Which GT subset this pooled pass scores on — needed to build a POST-SPLIT
+    # label→neuron map in the SAME scope for two-phase phase-2 merge classification.
+    _gt_names_attr = {"heldout_label_gt_map": "heldout_names",
+                      "label_gt_map": "train_names"}.get(map_attr)
     for bc, run in zip(brains, per_brain_runs):
-        c = inc.classify_merge_edits(run.edits, getattr(bc, map_attr))
+        # TWO-PHASE: the run carries phase-1 split_label edits (run.split_edits) and a
+        # split_handler. Phase-2 merge_labels may target POST-SPLIT pseudo-labels
+        # ("L#a"), which the raw-keyed map cannot score — so classify merges against a
+        # split-aware map (identical to the raw map when nothing was split). Credit the
+        # split_label edits symmetrically via classify_split_edits.
+        split_edits = getattr(run, "split_edits", None) or []
+        split_handler = getattr(run, "split_handler", None)
+        if split_edits and split_handler is not None and _gt_names_attr is not None:
+            merge_map = inc.label_gt_counts_split(
+                bc.prepared, split_handler,
+                gt_names=getattr(bc, _gt_names_attr))
+            sc = inc.classify_split_edits(split_edits, getattr(bc, map_attr))
+            tot["mrepair_correct"] += sc["correct"]
+            tot["mrepair_false"] += sc["false"]
+            tot["mrepair_unscored"] += sc["unscored"]
+        else:
+            merge_map = getattr(bc, map_attr)
+        c = inc.classify_merge_edits(run.edits, merge_map)
         tot["correct"] += c["correct"]
         tot["false"] += c["false"]
         # Blame-attributed false merges: only false_policy (a GENUINELY new fusion)
@@ -1297,7 +1341,10 @@ def _pooled_split_repair(brains: list, per_brain_runs: list,
         tot["unscored"] += c["unscored"]
         if c.get("unscored_pairs"):
             tot["_unscored_by_brain"].append((bc, run, c["unscored_pairs"]))
-        m = getattr(bc, map_attr)
+        # Reachable-real denominator: use the SAME map the merges were scored against
+        # (split-aware for two-phase, so a re-enumerated SplitSite whose partner is a
+        # pseudo-label "L#a" resolves), so recall = correct / reachable_real ties out.
+        m = merge_map
         for s in (getattr(run, "split_sites", None) or []):
             da = inc._dominant_neuron(m, getattr(s, "label_a", None))
             db = inc._dominant_neuron(m, getattr(s, "label_b", None))
@@ -1309,7 +1356,14 @@ def _pooled_split_repair(brains: list, per_brain_runs: list,
     # entanglement, so it neither helps nor hurts the score. (Was correct - false; the
     # change makes the gate blind to un-fixable pre-existing merges — see
     # classify_merge_edits blame attribution.)
-    tot["score"] = tot["correct"] - tot["false_policy"]
+    # TWO-PHASE: add the symmetric merge-repair term — a correctly-cut fused segment
+    # (mrepair_correct) is credited like a repaired split, and a wrongly-cut clean
+    # segment (mrepair_false) subtracts like a false merge. Both are 0 when no
+    # split_label edits were emitted, so single-pass / splits-only ``score`` is
+    # unchanged. The heavy per-error penalty stays in _fitness (applied to both
+    # error kinds), keeping ``score`` the pre-penalty repair tally.
+    tot["score"] = (tot["correct"] - tot["false_policy"]
+                    + tot["mrepair_correct"] - tot["mrepair_false"])
     tot["reachable_real"] = reachable_real
     return tot
 
@@ -1327,8 +1381,11 @@ def _policy_false(repair: dict) -> int:
 
 
 def _fitness(repair: dict, merge_penalty: float) -> float:
-    """The gate's decision variable: split-repair score MINUS a heavy penalty on the
-    POLICY-CAUSED false merges. SMOOTH replacement for the old hard 'false == 0' gate.
+    """The gate's decision variable: repair score MINUS a heavy penalty on the
+    POLICY-CAUSED false edits. SMOOTH replacement for the old hard 'false == 0' gate.
+    ``merge_penalty`` is a per-false-ERROR weight: it penalizes false merges always, and
+    (under --two-phase) false splits with the SAME weight — the name is kept for
+    backward compatibility (CLI flag + ledger field); see the --merge-penalty help.
 
     ``fitness = repair["score"] - merge_penalty * false_policy``
              ``= (correct - false_policy) - merge_penalty * false_policy``.
@@ -1346,8 +1403,14 @@ def _fitness(repair: dict, merge_penalty: float) -> float:
     longer AUTOMATICALLY rejects the candidate. This trades a small, controlled amount of
     NEW merge error for the split-recall it unlocks, and keeps the fitness landscape
     continuous, giving the search a usable gradient around the precision boundary.
+
+    TWO-PHASE: a wrongly-cut clean segment (``mrepair_false`` — a manufactured SPLIT
+    error) is penalized with the SAME per-error weight, symmetric with a false merge, so
+    the merge-repair pass is held to the same precision bar. ``mrepair_false`` is 0 off
+    two-phase, so single-pass / splits-only fitness is byte-identical.
     """
-    return repair["score"] - merge_penalty * _policy_false(repair)
+    return repair["score"] - merge_penalty * (
+        _policy_false(repair) + int(repair.get("mrepair_false", 0)))
 
 
 # --- Confidence layer (option ①): a GT-INDEPENDENT soft verdict on the blind spot -
@@ -1565,7 +1628,8 @@ def _confidence_level(repair: dict, conf: dict) -> str:
 
 
 def _parent_train_key(policy_source: str, train_ctxs: list, mcl: int,
-                      max_class_size, splits_only: bool) -> str:
+                      max_class_size, splits_only: bool,
+                      two_phase: bool = False) -> str:
     """Stable hash of everything the TRAIN pass is a pure function of.
 
     The Step 1-3 train pass (enumerate -> propose_edits -> score -> build report) has
@@ -1579,8 +1643,10 @@ def _parent_train_key(policy_source: str, train_ctxs: list, mcl: int,
 
     Determinants: the policy SOURCE (drives propose_edits + ENUM_PARAMS), the train
     brain ids (which data is scored), ``mcl`` (which fragment cache), ``max_class_size``
-    (the merge-class cap that bounds scoring), and ``splits_only`` (drops split_label
-    edits and changes the report's merge sections). rules.md is deliberately EXCLUDED:
+    (the merge-class cap that bounds scoring), ``splits_only`` (drops split_label
+    edits and changes the report's merge sections), and ``two_phase`` (a wholly
+    different execution: two policy calls with a re-enumeration between, so the edits
+    and report differ). rules.md is deliberately EXCLUDED:
     the train scorer never reads it (only the LLM does), so it cannot change the train
     result. ``resolved_enum_params`` is captured transitively via the policy source
     (ENUM_PARAMS is a literal in it); hashing the source is the conservative superset.
@@ -1595,6 +1661,7 @@ def _parent_train_key(policy_source: str, train_ctxs: list, mcl: int,
         f"mcl={mcl}",
         f"mcs={max_class_size}",
         f"splits_only={bool(splits_only)}",
+        f"two_phase={bool(two_phase)}",
     ])
     return hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()
 
@@ -1606,6 +1673,7 @@ async def run_evolution(
     max_class_size=None,
     k_folds: int = 1,
     brains: list | None = None, splits_only: bool = False,
+    two_phase: bool = False,
     use_priors: bool = True, mcl: int = 100,
     train_brains: list | None = None, test_brains: list | None = None,
     merge_penalty: float = 100.0,
@@ -1684,10 +1752,21 @@ async def run_evolution(
     log(f"  start policy: from-scratch seed")
     log(f"  originals (untouched): {HEURISTICS}")
     log(f"  working copies (revised this run): {work_heuristics}")
+    if splits_only and two_phase:
+        raise SystemExit(
+            "--splits-only and --two-phase are mutually exclusive: splits-only DROPS "
+            "merge-error repair, two-phase is precisely the mode that ADDS it. Pass "
+            "at most one.")
     if splits_only:
         log("  SPLIT-ERROR-ONLY mode: split_label (merge-error) edits are dropped "
             "before scoring — faster, and the gate metric is unchanged (it scores "
             "only merge_labels). Merge-error repair is deferred.")
+    if two_phase:
+        log("  TWO-PHASE mode: (1) merge-repair pass emits split_label edits that "
+            "untangle fused segments; (2) SplitSites are RE-ENUMERATED over the "
+            "post-split label surface; (3) a split-repair pass emits merge_labels onto "
+            "the resulting pseudo-labels. The gate credits both passes symmetrically "
+            "(classify_split_edits + classify_merge_edits).")
 
     # --- One-time setup: load+prepare EVERY brain (expensive, cached) -----------
     # Split seed: drawn RANDOMLY once and shared across brains so every brain's
@@ -1766,6 +1845,11 @@ async def run_evolution(
         # Cross-brain vs per-brain split, and each brain's role, so a run is fully
         # reproducible and downstream analysis can tell the two modes apart.
         "cross_brain": cross_brain,
+        # Execution mode, so downstream analysis / the viz notebook can tell a
+        # two-phase run (split_label + merge_labels edits, re-enumerated) from a
+        # single-pass or splits-only one and apply the matching classifier.
+        "splits_only": bool(splits_only),
+        "two_phase": bool(two_phase),
         "train_brains": train_brains if cross_brain else None,
         "test_brains": test_brains if cross_brain else None,
         "per_brain": {bc.brain: {"role": bc.role,
@@ -1782,7 +1866,7 @@ async def run_evolution(
         seed_pooled, seed_runs = _score_pooled(
             heldout_ctxs, "heldout_names", str(work_heuristics), "heldout",
             max_class_size, verbose, splits_only=splits_only,
-            policy_time_budget=policy_time_budget,
+            two_phase=two_phase, policy_time_budget=policy_time_budget,
         )
     # Dense split-repair fitness of the SEED (the PRIMARY gate signal): correct
     # held-out merges minus false ones. Edge Accuracy stays computed/recorded but is
@@ -1918,7 +2002,8 @@ async def run_evolution(
             report_path = str(gen_dir / "failure_report.md")
             parent_policy_source = Path(work_heuristics).read_text()
             parent_train_key = _parent_train_key(
-                parent_policy_source, train_ctxs, mcl, max_class_size, splits_only)
+                parent_policy_source, train_ctxs, mcl, max_class_size, splits_only,
+                two_phase)
             bundle = parent_bundle_cache.get(parent_train_key)
             if bundle is not None:
                 # HIT: reuse the cached train pass. Re-materialize this gen's failure
@@ -1940,7 +2025,7 @@ async def run_evolution(
                     _, train_runs = _score_pooled(
                         train_ctxs, "train_names", str(work_heuristics), "train",
                         max_class_size, verbose, splits_only=splits_only,
-                        policy_time_budget=policy_time_budget,
+                        two_phase=two_phase, policy_time_budget=policy_time_budget,
                     )
                 # Train split-repair score of the CURRENT policy (this gen, on train),
                 # for the generalization-gap meta-signal. Same metric as the gate, but
@@ -2044,7 +2129,8 @@ async def run_evolution(
                  cache_read_tok, cache_creation_tok) = await ask_reviser(
                     client, report_path, str(work_heuristics), str(work_rules), verbose,
                     attempts=attempts_vs_parent, priors_path=priors_path,
-                    splits_only=splits_only, gen_gap=gen_gap_history,
+                    splits_only=splits_only, two_phase=two_phase,
+                    gen_gap=gen_gap_history,
                     transcript_path=reviser_transcript,
                 )
             log(f"   reviser transcript (thinking + text + tools) -> {reviser_transcript}")
@@ -2135,7 +2221,7 @@ async def run_evolution(
                     heldout_pooled, heldout_runs = _score_pooled(
                         heldout_ctxs, "heldout_names", str(work_heuristics), "heldout",
                         max_class_size, verbose, splits_only=splits_only,
-                        policy_time_budget=policy_time_budget,
+                        two_phase=two_phase, policy_time_budget=policy_time_budget,
                     )
                 heldout_acc = scoring._weighted_avg(heldout_pooled, "Edge Accuracy")
                 eval_seconds = train_seconds + sum(
@@ -2467,6 +2553,10 @@ async def run_evolution(
                 policy_time_budget=policy_time_budget,
                 splits_only=splits_only,
                 heldout_split_label_dropped=heldout_dropped,
+                two_phase=two_phase,
+                heldout_mrepair_correct=cand_repair.get("mrepair_correct", 0),
+                heldout_mrepair_false=cand_repair.get("mrepair_false", 0),
+                heldout_mrepair_unscored=cand_repair.get("mrepair_unscored", 0),
                 read_priors=read_priors,
                 train_false_merges=train_false,
                 train_false_merges_preexisting=train_false_preexisting,
@@ -2602,7 +2692,7 @@ def main() -> int:
     p.add_argument("--model", default=DEFAULT_MODEL,
                    help=f"reviser model id (default: {DEFAULT_MODEL}, Anthropic API)")
     p.add_argument("--merge-penalty", type=float, default=100.0,
-                   help="per-false-merge penalty in the held-out FITNESS "
+                   help="per-false-error penalty in the held-out FITNESS "
                         "(fitness = (correct - false) - merge_penalty*false). REPLACES "
                         "the old hard 'zero false merges' gate with a smooth one: at "
                         "the default 100, one false merge (fusing two different "
@@ -2612,7 +2702,14 @@ def main() -> int:
                         "kept. Raise for stricter precision, lower to tolerate more "
                         "merge error. Set very high (e.g. 1e9) to recover the old "
                         "hard gate, or use --hard-merge-reject for the exact 9ca88bb "
-                        "behavior.")
+                        "behavior. NAME/SCOPE NOTE: under --two-phase this SAME knob "
+                        "also weights a false SPLIT (a split_label that wrongly cuts a "
+                        "clean single-neuron segment) with the same per-error cost, so "
+                        "it is really a per-false-error penalty there; the name is kept "
+                        "as `merge_penalty` for backward compatibility (CLI flag + "
+                        "ledger field + past-run reproducibility). In single-pass / "
+                        "--splits-only there are no split_label edits, so it weights "
+                        "false merges only, exactly as before.")
     p.add_argument("--hard-merge-reject", action="store_true",
                    help="Restore the 9ca88bb GATE: reject ANY candidate that creates "
                         "even ONE held-out false merge (fuses two DIFFERENT neurons), "
@@ -2656,7 +2753,21 @@ def main() -> int:
                         "coordinate-aware split path (Dijkstra + fragment rebuild). "
                         "The gate is UNCHANGED — its split-repair metric already "
                         "scores only merge_labels — so this is a faster, "
-                        "metric-consistent test; merge-error repair is deferred.")
+                        "metric-consistent test; merge-error repair is deferred. "
+                        "Mutually exclusive with --two-phase.")
+    p.add_argument("--two-phase", action="store_true",
+                   help="TWO-PHASE split-then-merge mode (mutually exclusive with "
+                        "--splits-only). Runs the policy TWICE per brain: (1) a "
+                        "MERGE-REPAIR pass whose split_label edits untangle fused "
+                        "segments into pseudo-labels; the SplitSites are then "
+                        "RE-ENUMERATED over that post-split label surface; (2) a "
+                        "SPLIT-REPAIR pass whose merge_labels connect clean fragments "
+                        "onto the correct post-split side. The gate credits both passes "
+                        "symmetrically (classify_split_edits for the cuts, "
+                        "classify_merge_edits for the joins) and penalizes a wrongly-cut "
+                        "clean segment like a false merge. Solves the err15 case: a "
+                        "fragment that pre-spans two neurons is split BEFORE a clean "
+                        "fragment is merged onto it. Default OFF (single-pass).")
     p.add_argument("--no-priors", dest="use_priors", action="store_false",
                    help="do NOT point the reviser at the AutoDiscovery knowledge "
                         "base (autodiscovery/all-runs.combined.md). Default: read it. "
@@ -2678,7 +2789,8 @@ def main() -> int:
             args.human_gate, args.verbose, args.model,
             max_class_size=args.max_class_size,
             k_folds=args.k_folds, brains=brains,
-            splits_only=args.splits_only, use_priors=args.use_priors,
+            splits_only=args.splits_only, two_phase=args.two_phase,
+            use_priors=args.use_priors,
             mcl=args.mcl,
             train_brains=train_brains, test_brains=test_brains,
             merge_penalty=args.merge_penalty,

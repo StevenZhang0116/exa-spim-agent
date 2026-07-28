@@ -19,6 +19,11 @@ checkpoints/
 logs/
 notebooks/verify_stats/
 
+# Merge-site detector artifacts (large/local, rebuildable)
+mergesite_detector_examples_794495/
+merge_site_cache/
+metrics_merge_site_patches_794495/
+
 # Evolution runs: ignore the entire directory (large/local artifacts).
 proofreader_evolve/runs/
 
