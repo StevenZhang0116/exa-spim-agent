@@ -5,6 +5,11 @@ It uses the same `_add.pkl` cache, but poses a different task: **detect merge
 errors from the predicted reconstruction alone, then check yourself against the
 ground truth.** The ground truth is a *grader*, never an *input* to the decision.
 
+It mirrors the sibling doc's three-part shape: **§1 Dataset context** (what the
+cache is and why the task is framed blind — no keys or code), **§2 Dataset schema**
+(the concrete payload keys, the fragment-graph API, and the detect→score code you
+actually run), and **§3 Intent** (the goal the detector serves).
+
 > **The one rule (read this first).** Your merge detector may read **only the
 > network fragment information** — `fragments_graph` and its geometry / topology
 > (plus the scalar build parameters). It must **never** read `gt_graph`,
@@ -12,11 +17,14 @@ ground truth.** The ground truth is a *grader*, never an *input* to the decision
 > `gt_merge_sites` while deciding where a merge is. Those five are the **answer
 > key**: you touch them only afterward, in a separate scoring step, to measure how
 > well the blind detector did. Structure the code so this is guaranteed, not just
-> intended (see §3).
+> intended — §2 (*The blind detection interface*) shows how.
 
 ---
 
 ## 1) Dataset context
+
+*Scope: what this cache is and why the task is framed blind. No payload keys, no
+API, no code — those are all in §2.*
 
 **Origin — identical to the labeled cache.** Each `_add.pkl` was built once from a
 plain `dataset_cache_<brain_id>_mcl<N>.pkl` by reading the brain's dense predicted
@@ -52,16 +60,26 @@ angles at its junctions, the presence of multiple somata, and so on. If it is, t
 detector generalizes to untraced neurons and to brains with no ground truth at all.
 If it is not, that is itself a finding.
 
+**The blindness firewall, conceptually.** Think of the payload as two disjoint
+zones: the **reconstruction** (what the detector sees) and the **answer key** (what
+grades it). Data flows one way only — key → scorer, never key → detector. §2 lists
+exactly which keys fall in each zone and shows how to make the boundary structural.
+
 ---
 
-## 2) The blindness firewall — two disjoint zones of the payload
+## 2) Dataset schema
 
-Every `_add.pkl` is one dict. For this task, partition its keys into two zones and
-never let data flow from the right zone into the left:
+*Scope: the concrete payload keys, the fragment-graph API, and the detect→score
+code. This is everything you actually read and call.*
+
+### The two zones of the payload
+
+Every `_add.pkl` is one dict. Partition its keys into two zones and never let data
+flow from the right zone into the detector:
 
 | Zone | Keys | Role |
 |---|---|---|
-| **DETECTION INPUT** — the detector may read these | `fragments_graph`; `anisotropy`; `min_cable_length`; `node_spacing`; (optionally `img_path` for raw voxels, see §6) | The U-Net reconstruction and its build parameters. This is *all* the detector sees. |
+| **DETECTION INPUT** — the detector may read these | `fragments_graph`; `anisotropy`; `min_cable_length`; `node_spacing`; (optionally `img_path` for raw voxels — see *Optional: raw image* below) | The U-Net reconstruction and its build parameters. This is *all* the detector sees. |
 | **ANSWER KEY** — scoring only, never the detector | `gt_graph`; `gt_node_canonical_label`; `gt_edge_error`; `gt_merge_labels`; `gt_merge_sites` | Ground-truth-derived merge truth, used *after* detection to grade it. |
 
 The two right-zone keys that actually encode merges (recap from
@@ -85,9 +103,7 @@ The two right-zone keys that actually encode merges (recap from
 > — only their *fragment-side* ideas (leaves, walks, caliber), reframed to need no
 > GT.
 
----
-
-## 3) What a merge looks like in the fragments graph (feature families)
+### The fragment-graph API (the detection input)
 
 `fragments_graph` is a `SkeletonGraph` (subclass of `networkx.Graph`) whose nodes
 carry parallel NumPy arrays. Every feature below is computable from it alone. The
@@ -126,9 +142,11 @@ def comp_segment_id(comp_id):
     return int(frag.component_id_to_swc_id[comp_id].split(".")[0])
 ```
 
+### What a merge looks like in the fragments graph (feature families)
+
 The feature families a blind detector can exploit:
 
-### (a) Topological — junction structure
+#### (a) Topological — junction structure
 A neuron's arbor is (topologically) a tree that branches *forward*. A merge splices
 two arbors, which shows up at a junction node:
 
@@ -143,7 +161,7 @@ two arbors, which shows up at a junction node:
 - **Cycles.** A true skeleton is acyclic; a loop (`nx.cycle_basis`) often marks two
   processes fused at two points.
 
-### (b) Geometric — angles and straightness at a junction
+#### (b) Geometric — angles and straightness at a junction
 At a junction node `p`, take a robust outgoing direction per incident branch by
 walking a few microns out (the immediate neighbor at ~`node_spacing` = 5 µm is
 noisy):
@@ -176,7 +194,7 @@ def branch_direction(g, node, nbr, reach_um=15.0):
   range; a junction whose angle is wildly outside it (near 0° or near 180°) is
   suspect.
 
-### (c) Caliber — radius continuity
+#### (c) Caliber — radius continuity
 - **No taper across the junction.** At a true bifurcation the daughter cables are
   thinner than the parent (a Rall-ratio-like relationship). At a merge crossing,
   both through-going cables keep roughly constant, similar caliber — measure mean
@@ -185,7 +203,7 @@ def branch_direction(g, node, nbr, reach_um=15.0):
 - **Radius step.** An abrupt caliber discontinuity along an otherwise smooth cable
   can mark where a foreign process was fused on.
 
-### (d) Morphological — soma count (strong but conditional)
+#### (d) Morphological — soma count (strong but conditional)
 Each real neuron has exactly one soma. If `frag.soma_centroids` is populated, a
 single connected component (or segment) containing **≥2 soma centroids** is an
 almost-certain merge. This is the highest-precision cue available — but it only
@@ -193,27 +211,23 @@ catches soma-to-soma or soma-adjacent merges, and **only if the cache actually
 stored somata** (the array may be empty). Use it as a high-confidence prior, not the
 whole detector.
 
-### (e) Scale — cable and reach
+#### (e) Scale — cable and reach
 Merged segments tend to be **large and spatially spread**: high total cable length,
 a bounding box far larger than a single neurite, or two dense node-clusters far
 apart in space bridged by sparse cable. Cheap component-level scalars
 (`frag.cable_length(root=nodes[0])`, xyz spread) make an effective **prefilter** to
 avoid running the expensive junction analysis on all ~hundreds-of-thousands of
-fragments (see §5 performance note).
+fragments.
 
 > **Honesty about difficulty.** None of these features is individually decisive —
 > real neurons occasionally cross themselves, some merges are short and geometrically
 > bland, and the fragment skeleton is filtered at `min_cable_length` (short fragments
 > were dropped, so some bridges are missing entirely). Expect to **combine** cues
 > (e.g. crossing-geometry ∧ caliber-continuity, or a soma-count override) and to
-> tune thresholds against the answer key in §4. A single hard rule will either
-> over-flag self-crossings or miss subtle fusions.
+> tune thresholds against the answer key (*Scoring*, below). A single hard rule will
+> either over-flag self-crossings or miss subtle fusions.
 
----
-
-## 4) The blind detection interface
-
-### Load — cloud-free, read the input zone only
+### Loading — cloud-free, input zone only
 
 ```python
 import pickle
@@ -232,7 +246,7 @@ Use plain `pickle.load` (not `BrainDataset.load_from_cache`, which opens the raw
 image on S3). See `labeled_dataset_cache.md` §2 for the environment/memory caveats —
 budget >20 GB RAM per cache, load one brain at a time.
 
-### Enforce the firewall in the type system
+### The blind detection interface
 
 Make the detector a pure function of the input zone. Its signature **cannot receive
 the payload**, so it structurally cannot read the answer key:
@@ -248,7 +262,7 @@ def detect_merges(fragments_graph, anisotropy, min_cable_length):
       "segment_ids": set[int]                       # segments flagged as merges
       "sites": list[{"segment_id": int, "xyz": (x, y, z) µm, "score": float}]
     """
-    ...  # feature logic from §3 — no gt_* anywhere in this scope
+    ...  # feature logic from the feature families above — no gt_* anywhere in scope
     return {"segment_ids": segment_ids, "sites": sites}
 
 
@@ -256,10 +270,8 @@ detections = detect_merges(frag, anisotropy, min_cable_length)
 # `payload` is deliberately NOT passed in — the detector can't cheat.
 ```
 
-### A concrete starter detector (illustrative)
-
-Cheap prefilter → junction geometry → per-segment decision. Tune every threshold
-against §4 scoring.
+**A concrete starter detector (illustrative).** Cheap prefilter → junction geometry
+→ per-segment decision. Tune every threshold against the scoring step below.
 
 ```python
 import numpy as np
@@ -303,11 +315,9 @@ with `_has_thick_passthrough` flagging any near-antiparallel pair
 (`dot < cross_dot`) whose *both* branches exceed `thick_um` mean radius, and
 `_dedup` collapsing sites closer than 30 µm (mirroring the canonical
 `MERGE_DEDUP_UM` so your sites are comparable to the key's). Fill in the small
-helpers from the sketches in §3.
+helpers from the sketches in the feature families above.
 
----
-
-## 5) Scoring against the answer key (the check)
+### Scoring against the answer key (the check)
 
 Only **now** open the right zone. Detection and scoring are separate calls; the
 payload enters here for the first time.
@@ -355,12 +365,11 @@ def score(detections, payload, site_tol_um=30.0):
     }
 ```
 
-### The caveat that governs this whole task: GT is sparse
-
-Only a handful of neurons are traced per brain (`labeled_dataset_cache.md` §1). The
-answer key therefore contains **only merges that fuse ≥2 traced neurons**. A blind
-detector will also flag merges between **untraced** neurons — those are *real
-merges the key simply cannot confirm*. So:
+**The caveat that governs this whole task: GT is sparse.** Only a handful of neurons
+are traced per brain (`labeled_dataset_cache.md` §1). The answer key therefore
+contains **only merges that fuse ≥2 traced neurons**. A blind detector will also
+flag merges between **untraced** neurons — those are *real merges the key simply
+cannot confirm*. So:
 
 - **Recall is well-defined.** Of the GT-confirmed merges (`gt_merge_labels` /
   `gt_merge_sites`), how many did the blind detector catch? Report this directly.
@@ -374,33 +383,27 @@ merges the key simply cannot confirm*. So:
   This is the honest analogue of the labeled-cache doc's "evaluation is relative to
   the traced neurons" framing.
 
-### Relationship to the canonical thresholds
+**Relationship to the canonical thresholds.** The answer key was built with
+GT-dependent thresholds: a segment counts as a merge if it lands on ≥2 GT neurons
+with **>50 GT nodes on each** (node-count rule) or if the geometric walk finds a
+fragment leaf **>50 µm** from GT that walks back to **within 6 µm** of a *different*
+GT neuron, sites deduped at **30 µm** (`canonical_labeling.py`: `MERGE_MIN_NODES`,
+`MERGE_DIST_AWAY_UM`, `MERGE_APPROACH_UM`, `MERGE_DEDUP_UM`). Every one of those
+tests references GT, so none of them is available to you. Your detector's job is to
+reproduce the *outcome* of these tests — the `gt_merge_labels` set — from fragment
+features that use no GT. The 30 µm dedup is the one threshold you can borrow directly
+(it is a property of the fragment skeleton), which is why the starter detector and
+the scorer both use it — it keeps your sites and the key's sites on the same footing.
 
-The answer key was built with GT-dependent thresholds: a segment counts as a merge
-if it lands on ≥2 GT neurons with **>50 GT nodes on each** (node-count rule) or if
-the geometric walk finds a fragment leaf **>50 µm** from GT that walks back to
-**within 6 µm** of a *different* GT neuron, sites deduped at **30 µm**
-(`canonical_labeling.py`: `MERGE_MIN_NODES`, `MERGE_DIST_AWAY_UM`,
-`MERGE_APPROACH_UM`, `MERGE_DEDUP_UM`). Every one of those tests references GT, so
-none of them is available to you. Your detector's job is to reproduce the *outcome*
-of these tests — the `gt_merge_labels` set — from fragment features that use no GT.
-The 30 µm dedup is the one threshold you can borrow directly (it is a property of
-the fragment skeleton), which is why the starter detector and the scorer both use
-it — it keeps your sites and the key's sites on the same footing.
+**What "good" looks like.** A useful blind detector achieves **high site-level
+recall** and **high adjudicable-segment precision** on each brain, and — when more
+than one `_add.pkl` is present — does so **consistently across brains** rather than
+being carried by one. Pool per-segment records tagged with `brain_id` (parse it from
+the filename, as in `labeled_dataset_cache.md` §2). Because merges are rare, also
+report absolute counts (`n_key_labels`, TP, flagged-but-unadjudicable) next to the
+rates — a recall of "3/4" means something different from "300/400".
 
-### What "good" looks like
-
-A useful blind detector achieves **high site-level recall** and **high
-adjudicable-segment precision** on each brain, and — when more than one `_add.pkl`
-is present — does so **consistently across brains** rather than being carried by
-one. Pool per-segment records tagged with `brain_id` (parse it from the filename,
-as in `labeled_dataset_cache.md` §2). Because merges are rare, also report absolute
-counts (`n_key_labels`, TP, flagged-but-unadjudicable) next to the rates — a recall
-of "3/4" means something different from "300/400".
-
----
-
-## 6) Optional: raw image as a second blind evidence channel
+### Optional: raw image as a second blind evidence channel
 
 Everything above is fragment-graph-only. If you want *more* evidence than the
 skeleton carries — e.g. to confirm that two crossing cables are genuinely two
@@ -419,11 +422,14 @@ opened image reader in explicitly, and still never pass `payload`.
 
 > The dense **segmentation** remains intentionally inaccessible (private GCS,
 > provenance only). You do not need it: the merge signal is either in the fragment
-> skeleton (§3) or, optionally, in the public raw image (this section).
+> skeleton (the feature families above) or, optionally, in the public raw image
+> (this section).
 
 ---
 
-## 7) Intent
+## 3) Intent
+
+*Scope: the goal the detector serves and the bar for success.*
 
 The goal is a **ground-truth-blind merge detector** — one that finds fused segments
 from the reconstruction's own geometry and topology, so it works on the untraced
