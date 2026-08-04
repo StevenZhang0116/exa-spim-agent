@@ -153,21 +153,34 @@ carry parallel NumPy arrays. Every feature below is computable from it alone. Th
 `SkeletonGraph` class is defined in the `agentic_neuron_proofreader` package (import
 it before unpickling — the load snippet does this). The API you have:
 
-- `frag.node_xyz` — `(N, 3)` float32, **(x, y, z) microns**.
+- `frag.node_xyz` — `(N, 3)` float32, **(x, y, z) microns**. Note: `frag.node_voxel(i)` returns `(z, y, x)` voxel coordinates — a different axis order.
 - `frag.node_radius` — `(N,)` float16, skeleton caliber estimate per node.
 - `frag.node_component_id` — `(N,)` int; one connected component = one fragment
   skeleton.
-- `frag.component_id_to_swc_id` — `dict[int, str]`; the **segment id** is
-  `swc_id.split(".")[0]`. Use `frag.node_segment_id(node)` /
-  `frag.node_swc_id(node)`.
+- `frag.component_id_to_swc_id` — `dict[int, str]`; each value is a string of the
+  form `"<segment_id>.0"` — the segment id stored as a float literal (e.g.
+  `'32323215387.0'`). The `.0` is an artifact of how the id was serialised, not a
+  meaningful sub-index. `swc_id.split(".")[0]` extracts the segment id as a string;
+  wrap in `int(...)` for the integer. The convenience wrappers
+  `frag.node_segment_id(node)` → `str` and `frag.node_swc_id(node)` → `str` do the
+  split for you and are preferred.
 - Topology via NetworkX: `frag.degree[n]`, `frag.neighbors(n)`,
   `nx.connected_components(frag)`.
-- Helpers: `frag.dist(i, j)` (µm), `frag.leaf_nodes()` (degree 1),
-  `frag.branching_nodes()` (degree > 2), `frag.nodes_within_distance(root, µm)`,
-  `frag.rooted_subgraph(root, µm)`, `frag.cable_length(root=...)`,
-  `frag.kdtree` (KD-tree over `node_xyz`), `frag.node_voxel(i)` → (z, y, x) voxel.
-- `frag.soma_centroids`, `frag.soma_component_ids` — soma detections (**may be
-  empty** in a given cache; treat as a bonus signal, not a dependency).
+- Helpers: `frag.dist(i, j)` → float µm (**Euclidean distance between any two nodes** by their xyz coords, not restricted to adjacent nodes);
+  `frag.leaf_nodes()` (degree 1); `frag.branching_nodes()` (degree > 2);
+  `frag.nodes_within_distance(root, µm)`; `frag.rooted_subgraph(root, µm)`;
+  `frag.cable_length(root=node)` → total edge-sum cable length (µm) of the entire
+  connected component containing `node` (the `root=` arg identifies the component,
+  not a traversal start — result is the same for any node in that component);
+  `frag.nodes_with_segment_id(seg_id)` → `set` of all node ids whose segment
+  id equals `seg_id` (unions across components when a segment spans several);
+  `frag.kdtree` (KD-tree over `node_xyz`); `frag.node_voxel(i)` → (z, y, x) voxel.
+- `frag.soma_centroids` — `list` of length K, each element an xyz-µm tuple of a
+  detected soma centroid. `frag.soma_component_ids` — `list` of length K (parallel
+  to `soma_centroids`), each element the int component id for that centroid. **Both
+  are plain Python lists and may be empty** (`K = 0`, as in the current cache); treat
+  as a high-confidence bonus signal, not a dependency. A component whose id appears
+  ≥2 times in `soma_component_ids` is an almost-certain merge.
 
 **Unit of analysis.** The answer key is per **segment id**, but the physical merge
 signature lives inside a **connected component** (the actual skeleton). Detect on
@@ -277,7 +290,42 @@ fragments.
 > tune thresholds against the answer key (*Scoring*, below). A single hard rule will
 > either over-flag self-crossings or miss subtle fusions.
 
+### Install the package (one-time setup)
+
+Loading any `_add.pkl` requires `agentic_neuron_proofreader` on the Python path —
+the package that defines `SkeletonGraph`. Without it `pickle.load` fails
+immediately because the `.pkl` stores `SkeletonGraph` instances that must be
+reconstructable.
+
+> **Already installed?** Check with `python -c "import agentic_neuron_proofreader"` and skip the steps below if it succeeds. Inside this repo's environment the package is often already importable.
+
+Clone and install from
+[`AllenInstitute/neuron-proofreader`](https://github.com/AllenInstitute/neuron-proofreader):
+
+```bash
+git clone https://github.com/AllenInstitute/neuron-proofreader.git
+cd neuron-proofreader
+pip install -e .          # drop -e for a normal (non-editable) install
+```
+
+**Python ≥ 3.9 is required** (the package uses `dict` and `list` type-hint syntax
+that is not available in 3.8 or earlier).
+
+Runtime dependencies (`numpy`, `networkx`, `scipy`, `tqdm`) are pulled in
+automatically. `tensorstore` is only needed for the optional raw-image section and
+is also included in the package.
+
+> **Environment gotcha.** `SkeletonGraph` imports `scipy.spatial.KDTree`, so
+> `numpy` and `scipy` must be **binary-compatible** in your interpreter. A mismatch
+> raises `ValueError: numpy.dtype size changed, may indicate binary incompatibility`
+> on import — fix it by installing numpy and scipy together in a fresh environment.
+
 ### Loading — cloud-free, input zone only
+
+> **Conda environment.** On Allen Institute HPC nodes the pre-built environment that
+> satisfies all binary constraints is `panda`. Activate it before running:
+> `conda activate panda`. If you are building your own environment, install
+> `numpy` and `scipy` together to ensure binary compatibility.
 
 Point `ADD_PATH` at *any* `_add.pkl` — the code is dataset-agnostic. Filenames follow
 `dataset_cache_<brain_id>_mcl<N>_add.pkl`, so glob a cache directory rather than
@@ -347,6 +395,96 @@ detections = detect_merges(frag, anisotropy, min_cable_length)
 # `payload` is deliberately NOT passed in — the detector can't cheat.
 ```
 
+**Helper functions.** The starter detector below calls seven utilities; define them
+once before `detect_merges`:
+
+```python
+import numpy as np
+from collections import defaultdict
+from scipy.spatial import KDTree
+
+
+def branch_direction(g, node, nbr, reach_um=15.0):
+    """Unit vector from `node` outward along the branch that starts toward `nbr`."""
+    prev, cur, acc = node, nbr, g.dist(node, nbr)
+    while acc < reach_um:
+        nxt = [k for k in g.neighbors(cur) if k != prev]
+        if len(nxt) != 1:
+            break
+        prev, cur = cur, nxt[0]
+        acc += g.dist(prev, cur)
+    v = g.node_xyz[cur] - g.node_xyz[node]
+    nrm = np.linalg.norm(v)
+    return v / nrm if nrm > 0 else v
+
+
+def _group_by_component(g):
+    """Return {component_id: [node_ids]}."""
+    groups = defaultdict(list)
+    for n in g.nodes:
+        groups[int(g.node_component_id[n])].append(n)
+    return groups
+
+
+def _branch_radius(g, node, nbr, reach_um=15.0):
+    """Mean node_radius (µm) along the branch from node toward nbr, up to reach_um."""
+    prev, cur, acc = node, nbr, g.dist(node, nbr)
+    radii = [float(g.node_radius[nbr])]
+    while acc < reach_um:
+        nxt = [k for k in g.neighbors(cur) if k != prev]
+        if len(nxt) != 1:
+            break
+        prev, cur = cur, nxt[0]
+        acc += g.dist(prev, cur)
+        radii.append(float(g.node_radius[cur]))
+    return float(np.mean(radii)) if radii else 0.0
+
+
+def _has_thick_passthrough(dirs, rads, cross_dot=-0.8, thick_um=0.8):
+    """True if any antiparallel branch pair (dot < cross_dot) both have mean radius > thick_um."""
+    for i in range(len(dirs)):
+        for j in range(i + 1, len(dirs)):
+            if np.dot(dirs[i], dirs[j]) < cross_dot:
+                if rads[i] > thick_um and rads[j] > thick_um:
+                    return True
+    return False
+
+
+def _crossing_score(dirs, rads):
+    """Merge confidence 0–1: magnitude of the most antiparallel dot product.
+    Near 1.0 = two branches point almost exactly opposite (a through-cable)."""
+    best = 0.0
+    for i in range(len(dirs)):
+        for j in range(i + 1, len(dirs)):
+            best = max(best, -float(np.dot(dirs[i], dirs[j])))
+    return best
+
+
+def _num_somata_in_component(g, comp_id):
+    """Number of detected soma centroids belonging to comp_id."""
+    ids = g.soma_component_ids  # plain list, may be empty
+    if not ids:
+        return 0
+    return sum(1 for cid in ids if cid == comp_id)
+
+
+def _dedup(sites, radius_um=30.0):
+    """Suppress sites within radius_um of a higher-scored site; return survivors."""
+    if not sites:
+        return []
+    sites = sorted(sites, key=lambda s: -s["score"])
+    kept, suppressed = [], set()
+    tree = KDTree([s["xyz"] for s in sites])
+    for i, s in enumerate(sites):
+        if i in suppressed:
+            continue
+        kept.append(s)
+        for j in tree.query_ball_point(s["xyz"], radius_um):
+            if j != i:
+                suppressed.add(j)
+    return kept
+```
+
 **A concrete starter detector (illustrative).** Cheap prefilter → junction geometry
 → per-segment decision. Tune every threshold against the scoring step below.
 
@@ -391,8 +529,7 @@ def detect_merges(fragments_graph, anisotropy, min_cable_length,
 with `_has_thick_passthrough` flagging any near-antiparallel pair
 (`dot < cross_dot`) whose *both* branches exceed `thick_um` mean radius, and
 `_dedup` collapsing sites closer than 30 µm (mirroring the canonical
-`MERGE_DEDUP_UM` so your sites are comparable to the key's). Fill in the small
-helpers from the sketches in the feature families above.
+`MERGE_DEDUP_UM` so your sites are comparable to the key's).
 
 ### Scoring against the answer key (the check)
 
