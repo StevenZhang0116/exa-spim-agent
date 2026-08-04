@@ -1,14 +1,14 @@
 # Blind merge-error detection from fragment features
 
-This document is a companion to [`labeled_dataset_cache.md`](labeled_dataset_cache.md).
-It uses the same `_add.pkl` cache, but poses a different task: **detect merge
-errors from the predicted reconstruction alone, then check yourself against the
-ground truth.** The ground truth is a *grader*, never an *input* to the decision.
+This document is self-contained: everything you need is here plus one `_add.pkl`
+cache file. The task: **detect merge errors from the predicted reconstruction
+alone, then check yourself against the ground truth.** The ground truth is a
+*grader*, never an *input* to the decision.
 
-It mirrors the sibling doc's three-part shape: **§1 Dataset context** (what the
-cache is and why the task is framed blind — no keys or code), **§2 Dataset schema**
-(the concrete payload keys, the fragment-graph API, and the detect→score code you
-actually run), and **§3 Intent** (the goal the detector serves).
+It is organized in three parts: **§1 Dataset context** (what the cache is and why
+the task is framed blind — no keys or code), **§2 Dataset schema** (the concrete
+payload keys, the fragment-graph API, and the detect→score code you actually run),
+and **§3 Intent** (the goal the detector serves).
 
 > **The one rule (read this first).** Your merge detector may read **only the
 > network fragment information** — `fragments_graph` and its geometry / topology
@@ -26,13 +26,17 @@ actually run), and **§3 Intent** (the goal the detector serves).
 *Scope: what this cache is and why the task is framed blind. No payload keys, no
 API, no code — those are all in §2.*
 
-**Origin — identical to the labeled cache.** Each `_add.pkl` was built once from a
-plain `dataset_cache_<brain_id>_mcl<N>.pkl` by reading the brain's dense predicted
-**segmentation** volume, labeling every ground-truth node, and running the
-canonical split/merge/omit scoring. **You do not run any of this** — the labels are
-already baked in. All cloud access happened at build time; the `_add.pkl` loads
-with no segmentation and no credentials. See `labeled_dataset_cache.md` §1 for the
-full provenance; everything there still holds.
+**Origin.** Each `_add.pkl` was built once, ahead of time, from a plain skeleton
+cache (`dataset_cache_<brain_id>_mcl<N>.pkl`) by reading the brain's dense predicted
+**segmentation** volume, looking up the predicted segment id at every ground-truth
+node's voxel, classifying every ground-truth edge (correct / split / omit / merge),
+running the geometric merge-detection walk, and writing all of that back into the
+`_add.pkl`. **You do not run any of this** — the labels are already baked in. All
+cloud access happened at build time; the `_add.pkl` you have loads with no
+segmentation and no credentials. The cache holds two skeleton graphs — the
+automated **UNet fragment** reconstruction (`fragments_graph`, hundreds of thousands
+of fragment components) and the human **ground-truth** tracings (`gt_graph`, tens of
+neurons) — plus the baked-in canonical labels described in §2.
 
 **What this task changes.** The labeled-cache doc treats the stored merge labels as
 the *deliverable* — errors already identified, ready for a corrector to consume.
@@ -60,6 +64,24 @@ angles at its junctions, the presence of multiple somata, and so on. If it is, t
 detector generalizes to untraced neurons and to brains with no ground truth at all.
 If it is not, that is itself a finding.
 
+**Explore freely — the feature list is a starting point, not a specification.** The
+cues catalogued in §2 are the ones we could name up front; they are almost certainly
+*not* the complete or the best set. Treat this cache as a dataset to interrogate,
+not a checklist to execute. Look at the data from angles this doc does not mention —
+plot distributions of any per-node, per-edge, per-junction, or per-component quantity
+you can derive from the fragments; cluster components by shape; ask what actually
+separates the merged segments from the clean ones; go looking for structure the
+narrative here missed (surprising radius patterns, tortuosity, branch-length
+statistics, spatial density, connectivity motifs, soma geometry, whatever the data
+suggests). Two disciplined uses of the answer key make this *exploration*, not
+cheating: (1) as an **exploratory-data-analysis target** — you may inspect
+`gt_merge_labels` / `gt_merge_sites` to *understand* what distinguishes a merge and
+to *discover* new fragment-only features; and (2) as a **validation harness** — to
+score whatever detector you build. The single invariant is the firewall below: the
+deployed `detect_merges` must remain a pure function of fragment features, no matter
+how you arrived at those features. Novel, well-motivated signals that beat the
+starter cues are the goal, not a deviation from it.
+
 **The blindness firewall, conceptually.** Think of the payload as two disjoint
 zones: the **reconstruction** (what the detector sees) and the **answer key** (what
 grades it). Data flows one way only — key → scorer, never key → detector. §2 lists
@@ -82,13 +104,34 @@ flow from the right zone into the detector:
 | **DETECTION INPUT** — the detector may read these | `fragments_graph`; `anisotropy`; `min_cable_length`; `node_spacing`; (optionally `img_path` for raw voxels — see *Optional: raw image* below) | The U-Net reconstruction and its build parameters. This is *all* the detector sees. |
 | **ANSWER KEY** — scoring only, never the detector | `gt_graph`; `gt_node_canonical_label`; `gt_edge_error`; `gt_merge_labels`; `gt_merge_sites` | Ground-truth-derived merge truth, used *after* detection to grade it. |
 
-The two right-zone keys that actually encode merges (recap from
-`labeled_dataset_cache.md` §2):
+Full schema of every key in the payload:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `fragments_graph` | `SkeletonGraph` | Automated UNet reconstruction (the detection input; API in the next subsection). |
+| `gt_graph` | `SkeletonGraph` | Human ground-truth tracings. **Answer key** — carries the label arrays below. |
+| `anisotropy` | `tuple` | µm/voxel in (x, y, z); stored per dataset — read it, don't hard-code. |
+| `min_cable_length` | `int` | µm threshold shorter fragments were dropped at (the `<N>` in the filename). |
+| `node_spacing` | `int` | Target µm spacing between skeleton nodes. |
+| `img_path` | `str` | Public-S3 path of the raw fused image (optional; see *Optional: raw image*). |
+| `segmentation_path` | `str` | Provenance only — private-GCS path of the dense segmentation. Not readable here, not needed. |
+| `gt_node_canonical_label` | `np.ndarray (N_gt,) int64` | Predicted segment id at each GT node's voxel; `0` = unlabeled. |
+| `gt_edge_error` | `np.ndarray (E_gt,) uint8` | Per-GT-edge class, parallel to `list(gt_graph.edges)`: `0=correct, 1=split, 2=omit, 3=merged`. |
+| `gt_merge_labels` | `np.ndarray (M,) int64` | Segment ids that fuse ≥2 GT neurons (see below). |
+| `gt_merge_sites` | `list[dict]` | One entry per merge site (see below). |
+
+The last four arrays are also attached to `gt_graph` as `gt_graph.node_label`,
+`gt_graph.edge_error`, `gt_graph.merge_labels`, and `gt_graph.merge_sites`, so you
+can read them off either the payload dict or the graph.
+
+The two keys that actually encode merges — your answer key:
 
 - **`gt_merge_labels`** — `np.ndarray (M,) int64`. Predicted segment ids that fuse
-  ≥2 GT neurons. This is the canonical `labels_with_merge` set: the **union** of the
-  node-count rule (a segment landing on ≥2 GT neurons with >50 nodes on each) and
-  the geometric merge-site walk. This is your **segment-level answer key**.
+  ≥2 GT neurons. This is the canonical merge set (`labels_with_merge`): the **union**
+  of two rules — (a) a *node-count* rule (a segment landing on ≥2 GT neurons with
+  >50 GT nodes on each) and (b) a *geometric walk* (walk a fragment from a leaf far
+  from GT inward until it re-approaches a *different* GT neuron). This is your
+  **segment-level answer key**.
 - **`gt_merge_sites`** — `list[dict]`, one per site:
   `{"segment_id": int, "gt_neuron": str, "xyz": (x, y, z) µm}`. This is your
   **site-level answer key** (where each merge happens, and which traced neuron it
@@ -107,7 +150,8 @@ The two right-zone keys that actually encode merges (recap from
 
 `fragments_graph` is a `SkeletonGraph` (subclass of `networkx.Graph`) whose nodes
 carry parallel NumPy arrays. Every feature below is computable from it alone. The
-API you have (from `data_modules/graph_classes.py`):
+`SkeletonGraph` class is defined in the `agentic_neuron_proofreader` package (import
+it before unpickling — the load snippet does this). The API you have:
 
 - `frag.node_xyz` — `(N, 3)` float32, **(x, y, z) microns**.
 - `frag.node_radius` — `(N,)` float16, skeleton caliber estimate per node.
@@ -144,7 +188,13 @@ def comp_segment_id(comp_id):
 
 ### What a merge looks like in the fragments graph (feature families)
 
-The feature families a blind detector can exploit:
+The feature families below are a **non-exhaustive** starting catalogue — the signals
+we could name in advance. They are meant to seed your own investigation, not to
+bound it: combine them, replace them, and add families of your own (see "Explore
+freely" in §1). Every attribute in the API above is fair game for a feature you
+invent, and the answer key is available to *check* whether a candidate feature
+actually separates merges from clean segments. The families a blind detector can
+start from:
 
 #### (a) Topological — junction structure
 A neuron's arbor is (topologically) a tree that branches *forward*. A merge splices
@@ -229,22 +279,49 @@ fragments.
 
 ### Loading — cloud-free, input zone only
 
+Point `ADD_PATH` at *any* `_add.pkl` — the code is dataset-agnostic. Filenames follow
+`dataset_cache_<brain_id>_mcl<N>_add.pkl`, so glob a cache directory rather than
+hard-coding one brain, and read every dataset-specific quantity (anisotropy, mcl,
+node spacing) **from the payload**, never as a literal.
+
 ```python
-import pickle
+import glob, os, pickle
 import numpy as np
 import agentic_neuron_proofreader  # noqa: F401 — registers SkeletonGraph for unpickling
 
-with open("cache/dataset_cache_794495_mcl100_add.pkl", "rb") as f:
+CACHE_DIR = os.environ.get("ADD_CACHE_DIR", "cache")     # wherever your caches live
+add_paths = sorted(glob.glob(os.path.join(CACHE_DIR, "dataset_cache_*_add.pkl")))
+assert add_paths, f"no *_add.pkl under {CACHE_DIR}"
+
+ADD_PATH = add_paths[0]                                  # or pick a brain: ...{brain}_mcl{N}_add.pkl
+with open(ADD_PATH, "rb") as f:
     payload = pickle.load(f)
 
-frag             = payload["fragments_graph"]     # the ONLY graph the detector sees
-anisotropy       = tuple(payload["anisotropy"])   # (0.748, 0.748, 1.0) for this batch
-min_cable_length = int(payload["min_cable_length"])
+frag             = payload["fragments_graph"]            # the ONLY graph the detector sees
+anisotropy       = tuple(payload["anisotropy"])          # µm/voxel — read it, don't hard-code
+min_cable_length = int(payload["min_cable_length"])      # the <N> from the filename
+node_spacing     = payload.get("node_spacing")           # target µm between skeleton nodes
 ```
 
-Use plain `pickle.load` (not `BrainDataset.load_from_cache`, which opens the raw
-image on S3). See `labeled_dataset_cache.md` §2 for the environment/memory caveats —
-budget >20 GB RAM per cache, load one brain at a time.
+The `brain_id` and `<N>` are recoverable from the filename when you need to tag
+pooled results across datasets:
+
+```python
+import re
+def brain_and_mcl(path):
+    m = re.search(r"dataset_cache_(\d+)_mcl(\d+)_add\.pkl$", os.path.basename(path))
+    return (m.group(1), int(m.group(2))) if m else (os.path.basename(path), None)
+```
+
+Use plain `pickle.load` — it is cloud-free and reconstructs both graphs plus the
+label arrays without touching the network. The one environment requirement is that
+`numpy` and `scipy` be **binary-compatible** in your interpreter (`SkeletonGraph`
+imports `scipy.spatial.KDTree`; a mismatch raises `ValueError: numpy.dtype size
+changed` on import — install numpy and scipy together). **Memory:** budget well over
+20 GB RAM per cache — the reconstructed graphs are far larger than the on-disk file.
+Load one brain at a time; to run over a whole collection, loop `add_paths`, reduce
+each to the small per-segment records you pool (tagged with `brain_id`), and let
+`payload` be garbage-collected before the next.
 
 ### The blind detection interface
 
@@ -366,10 +443,11 @@ def score(detections, payload, site_tol_um=30.0):
 ```
 
 **The caveat that governs this whole task: GT is sparse.** Only a handful of neurons
-are traced per brain (`labeled_dataset_cache.md` §1). The answer key therefore
-contains **only merges that fuse ≥2 traced neurons**. A blind detector will also
-flag merges between **untraced** neurons — those are *real merges the key simply
-cannot confirm*. So:
+are traced per brain (tens, in a `gt_graph` sitting next to a `fragments_graph` of
+hundreds of thousands of components); there is no dense GT — a region with no traced
+neuron is simply unlabeled. The answer key therefore contains **only merges that
+fuse ≥2 traced neurons**. A blind detector will also flag merges between **untraced**
+neurons — those are *real merges the key simply cannot confirm*. So:
 
 - **Recall is well-defined.** Of the GT-confirmed merges (`gt_merge_labels` /
   `gt_merge_sites`), how many did the blind detector catch? Report this directly.
@@ -380,28 +458,27 @@ cannot confirm*. So:
   in `gt_node_canonical_label` land on ≥1 traced neuron, so GT *can* rule on them.
   Compute precision only over `pred_labels ∩ adjudicable`. Detections outside that
   set are reported (`n_pred_labels − n_pred_adjudicable`) but not scored as wrong.
-  This is the honest analogue of the labeled-cache doc's "evaluation is relative to
-  the traced neurons" framing.
+  This keeps evaluation honestly *relative to the traced neurons* — the only thing
+  the sparse GT can adjudicate.
 
-**Relationship to the canonical thresholds.** The answer key was built with
+**Relationship to the thresholds that built the key.** The answer key was built with
 GT-dependent thresholds: a segment counts as a merge if it lands on ≥2 GT neurons
 with **>50 GT nodes on each** (node-count rule) or if the geometric walk finds a
 fragment leaf **>50 µm** from GT that walks back to **within 6 µm** of a *different*
-GT neuron, sites deduped at **30 µm** (`canonical_labeling.py`: `MERGE_MIN_NODES`,
-`MERGE_DIST_AWAY_UM`, `MERGE_APPROACH_UM`, `MERGE_DEDUP_UM`). Every one of those
-tests references GT, so none of them is available to you. Your detector's job is to
-reproduce the *outcome* of these tests — the `gt_merge_labels` set — from fragment
-features that use no GT. The 30 µm dedup is the one threshold you can borrow directly
-(it is a property of the fragment skeleton), which is why the starter detector and
-the scorer both use it — it keeps your sites and the key's sites on the same footing.
+GT neuron, sites deduped at **30 µm**. Every one of those tests references GT, so
+none of them is available to you. Your detector's job is to reproduce the *outcome*
+of these tests — the `gt_merge_labels` set — from fragment features that use no GT.
+The 30 µm dedup is the one threshold you can borrow directly (it is a property of
+the fragment skeleton), which is why the starter detector and the scorer both use
+it — it keeps your sites and the key's sites on the same footing.
 
 **What "good" looks like.** A useful blind detector achieves **high site-level
 recall** and **high adjudicable-segment precision** on each brain, and — when more
 than one `_add.pkl` is present — does so **consistently across brains** rather than
 being carried by one. Pool per-segment records tagged with `brain_id` (parse it from
-the filename, as in `labeled_dataset_cache.md` §2). Because merges are rare, also
-report absolute counts (`n_key_labels`, TP, flagged-but-unadjudicable) next to the
-rates — a recall of "3/4" means something different from "300/400".
+the filename with the `brain_and_mcl` helper in the load section). Because merges are
+rare, also report absolute counts (`n_key_labels`, TP, flagged-but-unadjudicable)
+next to the rates — a recall of "3/4" means something different from "300/400".
 
 ### Optional: raw image as a second blind evidence channel
 
@@ -412,13 +489,29 @@ a candidate site. **This is still GT-blind** (the raw fluorescence is not the
 answer key), but it goes beyond "network fragment information", so treat it as an
 optional secondary channel, not the core detector.
 
-The image is on public S3 (`img_path` in the payload); no credentials, only outbound
-network. Set `AWS_EC2_METADATA_DISABLED=true`, open
-`img_util.TensorStoreImage(payload["img_path"])`, and read a patch centered on a
-candidate site's voxel (`xyz_to_voxel(xyz, anisotropy)`), exactly as in
-`labeled_dataset_cache.md` §2 ("Optionally reading the raw image"). Keeping this out
-of `detect_merges`'s signature preserves the firewall — if you use it, pass the
-opened image reader in explicitly, and still never pass `payload`.
+The image is on the **public** AIND open-data S3 bucket (`img_path` in the payload,
+an `s3://aind-open-data/...` path); no credentials, only outbound network. The reader
+backend is `tensorstore` (shipped with `agentic_neuron_proofreader`). Set
+`AWS_EC2_METADATA_DISABLED=true` before opening it so the S3 client does not stall
+probing for instance metadata:
+
+```python
+import os
+from agentic_neuron_proofreader.utils import img_util
+
+os.environ["AWS_EC2_METADATA_DISABLED"] = "true"        # public S3; no credentials
+image = img_util.TensorStoreImage(payload["img_path"])  # raw fused image
+
+def xyz_to_voxel(xyz, anisotropy):
+    """(x, y, z) µm -> (z, y, x) integer voxel."""
+    return tuple(int(c / a) for c, a in zip(xyz, anisotropy))[::-1]
+
+center = xyz_to_voxel(site["xyz"], anisotropy)          # site from detect_merges
+patch  = image.read(center, (128, 128, 128))            # (z, y, x) patch, from S3
+```
+
+Keeping this out of `detect_merges`'s signature preserves the firewall — if you use
+it, pass the opened image reader in explicitly, and still never pass `payload`.
 
 > The dense **segmentation** remains intentionally inaccessible (private GCS,
 > provenance only). You do not need it: the merge signal is either in the fragment
@@ -434,9 +527,19 @@ opened image reader in explicitly, and still never pass `payload`.
 The goal is a **ground-truth-blind merge detector** — one that finds fused segments
 from the reconstruction's own geometry and topology, so it works on the untraced
 neurons that dominate every brain and on brains with no tracing at all. The stored
-`gt_merge_labels` / `gt_merge_sites` are a **validation harness**, not an input:
-they tell you, after the fact, how close your feature-based decisions came to the
-canonical answer. A detector that scores well *only* because it peeked at the labels
+`gt_merge_labels` / `gt_merge_sites` are a **validation harness** (and a legitimate
+target for *exploratory* feature discovery), not a runtime input: they tell you,
+after the fact, how close your feature-based decisions came to the canonical answer.
+A detector that scores well *only* because it peeked at the labels at decision time
 is worthless here; a detector that scores well while provably blind is exactly the
 component a post-hoc proofreading tool needs to *resolve* merges (cut the fused
 segment at the detected site) without a human first tracing the neuron.
+
+How you *get* to that detector is wide open. The feature families in §2 are a floor,
+not a ceiling — the most useful outcome of this task may well be a merge signature
+nobody wrote down here, surfaced by looking at the fragment data from an angle this
+doc did not anticipate. Treat the cache as something to explore and be curious
+about: characterize the fragments, test hypotheses against the answer key, and let
+the data redirect you. The one non-negotiable is the firewall — the final decision
+function reads fragment features only — but within it, prize discovery over
+compliance.
