@@ -7,27 +7,30 @@ deliverable next to the input: ``<stem>.summary.md`` (plus a 简体中文
 ``<stem>.summary.zh.md``). Subagents live in ``.claude/agents/`` and are
 auto-discovered via ``setting_sources``.
 
-Architecture — driver-owned compute, agents only read + fold
-------------------------------------------------------------
+Architecture — driver-owned compute, agents operate on artifacts
+---------------------------------------------------------------
 The workflow is a sequence of typed STEPS of two kinds, so a long re-execution
 NEVER runs inside an agent turn (the failure that previously wedged the run —
 an hour-long ``rerun_experiments.py`` killed at turn-end / lost to ``nohup &``):
 
   * compute step — the DRIVER runs ``rerun_experiments.py`` as a blocking
-    foreground subprocess and captures its stdout JSON to a file next to the
-    export (``<stem>.json.reproduce.json`` / ``.extrapolate.json`` /
-    ``.corrected.json``). Deterministic, observable, resumable; a non-zero exit
-    aborts loudly before any agent folds a bad result.
-  * agent step — an instruction to the persistent SDK session; the subagent only
-    READS the compute JSON already on disk and folds verdicts into the report
-    (or authors corrected scripts). Always fast and turn-safe.
+    foreground subprocess and captures its stdout JSON beside the export. In
+    predictive mode, generated artifact names include a ``.predictive`` scope
+    so they cannot be confused with positive/both runs. Deterministic,
+    observable, resumable; a non-zero exit aborts before an agent folds bad data.
+  * agent step — an instruction to the persistent SDK session; the agent reads
+    source/result artifacts already on disk and selects findings, writes or
+    updates reports, edits loading, or authors corrected scripts. It never owns
+    a long experiment run.
 
-The PHASES (the unit ``--steps`` / ``--from`` select), in order:
-  1. summarize   — [agent] rank the hypotheses and write the top-K report.
-  2. reproduce   — [compute] run recorded code on ``--pkl`` → [agent] fix only
-                   data-loading failures → [compute] re-measure the fixed code →
+The PHASES, in order:
+  1. summarize   — [agent] optionally select predictive candidates, rank the
+                   retained hypotheses, and write the report.
+  2. reproduce   — [compute] run recorded code on ``--pkl`` → [compute] export
+                   editable scripts → [agent] fix data-loading failures (writes
+                   marker if edited) → [compute] re-measure if marker present →
                    [agent] fold REPRODUCED/DIVERGED/FAILED verdicts. (The
-                   re-measure is skipped when no loading fix was needed.)
+                   re-measure is skipped when the agent wrote no marker.)
   3. extrapolate — (only with ``--extra-pkl``) [compute] run the reproduced code
                    on each OTHER dataset → [agent] fold GENERALIZES/PARTIAL/
                    DOES-NOT-GENERALIZE/INCONCLUSIVE verdicts.
@@ -40,33 +43,31 @@ The PHASES (the unit ``--steps`` / ``--from`` select), in order:
   6. translate   — [agent] faithful 简体中文 localization of the finished report.
                    Pure localization (no re-analysis), so it ALWAYS runs last.
 
-Two free parameters near the top control what the report contains:
-``RANK_BY`` (``"posterior-surprise"`` ranks by ``posterior * |surprisal|`` so
-findings that are both strongly believed and highly belief-shifting come first;
-``"surprise"`` ranks by ``|surprisal|`` alone) and ``TOP_K`` (keep only the K
-top-ranked hypotheses in the final Markdown; ``None`` keeps all).
+``RANK_BY`` controls ordering. Positive/both modes keep a percentage-based
+top-K. Predictive mode removes only explicit exclusions and keeps every
+remaining candidate; ranking changes display order but never inclusion. Its
+selection is cached as ``autodiscovery/<RUN>.predictive-selection.json`` and
+reused while both the run JSON hash and selection-policy version still match.
 
 Usage (from the ``exa-spim-agent/`` project root):
-    python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl ../data/RUN.pkl
-    python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl DATA.pkl --verbose
+    python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl ../data/RUN.pkl --direction both
+    python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl DATA.pkl --direction positive
+    # Keep every feature not explicitly excluded, regardless of direction:
+    python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl DATA.pkl \
+        --direction predictive
+    # Preview selected IDs; predictive mode creates/reuses its cached manifest:
+    python agentic/run_discovery_workflow.py autodiscovery/RUN.json \
+        --direction predictive --smoke
     # Also test generalization onto other datasets:
     python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl ORIGIN.pkl \
-        --extra-pkl OTHER1.pkl --extra-pkl OTHER2.pkl
-    # Inspect the resolved plan (which phases are compute vs agent) without running:
-    python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl ORIGIN.pkl \
-        --extra-pkl OTHER1.pkl --plan
-    # Resume / run a subset by PHASE, reusing earlier phases' on-disk artifacts
-    # (<RUN>.summary.md, <RUN>.json.rerun, the compute JSONs) — e.g. the corrective phase:
-    python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl ORIGIN.pkl \
-        --steps fix-tests
-    python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl ORIGIN.pkl \
-        --from verify          # run verify and everything after it
+        --extra-pkl OTHER1.pkl --extra-pkl OTHER2.pkl --direction predictive
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -119,25 +120,106 @@ def describe_tool(block) -> str:
 # agentic/run_discovery_workflow.py -> parent.parent is the project root.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# --- Free parameters for the summarization step ------------------------------
-# TOP_K: how many top-ranked hypotheses to keep in the final Markdown report.
-#   Only these K entries are written out (and later verified). Set to None to
-#   keep every ranked hypothesis.
+# --- Ranking configuration ---------------------------------------------------
+# TOP_K_MAX: hard ceiling on hypotheses kept in the report.
+# TOP_K_PCT: fraction of the total hypothesis count to keep.
+# For positive/both, effective TOP_K = min(TOP_K_MAX, floor(N × TOP_K_PCT));
+# computed at startup from the actual record count in the run JSON and stored in
+# the module global TOP_K. Example: 50 hypotheses → 10. Predictive mode keeps
+# every hypothesis selected by its semantic inclusion pass (TOP_K=None).
 # RANK_BY: which deterministic ordering rank_by_surprise.py uses.
 #   "posterior-surprise" ranks by posterior * |surprisal| so hypotheses that
 #   are BOTH strongly believed true AND highly belief-shifting come first;
 #   "surprise" ranks by |surprisal| alone.
-TOP_K: int | None = 20
+# DIRECTION: direction filter applied before ranking.
+#   "both"     — keep positive AND negative surprisal (any strong belief shift).
+#   "positive" — keep only hypotheses where the experiment RAISED belief
+#                (posterior > prior by more than 0.02); discards surprising-but-
+#                now-disbelieved findings.
+#   "predictive" — start with every hypothesis, remove only explicit exclusions
+#                  (invalid, constant, non-predictive, or wholly confounded), and
+#                  keep every remaining candidate without a score/top-K cutoff.
+# Set from --direction (required CLI argument) at startup; see main().
+TOP_K_MAX: int = 20
+TOP_K_PCT: float = 0.20
 RANK_BY: str = "posterior-surprise"
 
-_TOP_K_PHRASE = (
-    f"the top {TOP_K} hypotheses" if TOP_K is not None else "all ranked hypotheses"
-)
+TOP_K: int | None = TOP_K_MAX  # overridden at startup; see main()
+DIRECTION: str = "both"       # overridden at startup from --direction; see main()
+PREDICTIVE_MANIFEST: str | None = None
+# Bump this whenever predictive_selection_instruction changes semantically.
+PREDICTIVE_POLICY_VERSION: str = "exclusion-only-v1"
+PREDICTIVE_MANIFEST_SUFFIX: str = ".predictive-selection.json"
+
+# --- Timeout constants -------------------------------------------------------
+# AGENT_STEP_TIMEOUT_S: maximum wall time for a single agent step (SDK turn).
+#   Most fold steps finish in 1-3 min; the verifier/summarizer may take longer.
+#   15 minutes is generous but bounded — an infinite wait on a hung session is worse.
+# COMPUTE_TIMEOUT_S: maximum wall time for a single rerun_experiments.py invocation.
+#   20 hypotheses × ~60s each ≈ 20 min; 2 hours gives a safe margin for heavy tests.
+AGENT_STEP_TIMEOUT_S: int = 900    # 15 minutes
+COMPUTE_TIMEOUT_S: int = 7200      # 2 hours
 
 
 def _top_flags() -> str:
-    """The shared ``--rank-by``/``--top`` flags both helpers must agree on."""
-    return f"--rank-by {RANK_BY}" + (f" --top {TOP_K}" if TOP_K is not None else "")
+    """The shared ``--rank-by``/``--top``/``--direction`` flags both helpers must agree on."""
+    flags = f"--rank-by {RANK_BY} --direction {DIRECTION}"
+    if DIRECTION == "predictive":
+        if PREDICTIVE_MANIFEST is None:
+            raise RuntimeError("predictive direction requires a selection manifest")
+        if TOP_K is not None:
+            raise RuntimeError("predictive direction must not apply a top-K cutoff")
+        flags += f" --predictive-manifest {PREDICTIVE_MANIFEST}"
+    if TOP_K is not None:
+        flags += f" --top {TOP_K}"
+    return flags
+
+
+def _top_k_phrase() -> str:
+    """Human-readable effective top-K for agent instructions."""
+    return f"the top {TOP_K} hypotheses" if TOP_K is not None else "all ranked hypotheses"
+
+
+def _compute_top_k(n_hypotheses: int) -> int:
+    """Effective top-K: min(TOP_K_MAX, floor(N × TOP_K_PCT)), at least 1.
+
+    Falls back to TOP_K_MAX when ``n_hypotheses`` is 0 (e.g. JSON read error).
+    """
+    if n_hypotheses <= 0:
+        return TOP_K_MAX
+    return max(1, min(TOP_K_MAX, int(n_hypotheses * TOP_K_PCT)))
+
+
+def predictive_manifest_path(json_path: Path) -> Path:
+    """Persistent predictive-selection cache beside the run export."""
+    return json_path.with_name(f"{json_path.stem}{PREDICTIVE_MANIFEST_SUFFIX}")
+
+
+def predictive_selection_instruction(json_rel: str, manifest_rel: str) -> str:
+    """Instruction shared by full and smoke predictive selection."""
+    return (
+        f"Read every hypothesis in the single AutoDiscovery export at {json_rel} "
+        "using an EXCLUSION-ONLY policy for downstream detector candidates. "
+        "START with every hypothesis and ignore whether its belief-shift "
+        "direction is Positive or Negative. Do NOT impose any AUC, PR-AUC, "
+        "p-value, effect-size, priority-score, rank, or top-K cutoff. Do NOT "
+        "exclude a feature merely because its standalone evidence is weak, "
+        "low-ranked, inverse, specialist, or uncertain; keep it for downstream "
+        "cross-validation. EXCLUDE only features that the available result "
+        "clearly establishes are constant/unavailable, invalidly computed, "
+        "approximately random with no useful subgroup enrichment, or entirely "
+        "explained by a known confounder. A statistically significant but "
+        "explicitly non-discriminative effect may also be excluded. Write a "
+        f"JSON manifest to {manifest_rel} with this top-level selection schema: "
+        "{\"source_file\": <path>, \"criterion\": \"predictive\", "
+        "\"selected_ids\": [<original hypothesis ids>], "
+        "\"excluded\": [{\"id\": <id>, \"reason\": <short reason>}]} . "
+        "Every original hypothesis ID must appear exactly once, either in "
+        "selected_ids or excluded. Preserve each ID's original JSON type, make "
+        "selected_ids unique, and write valid JSON only. The driver will add "
+        "source-hash and policy-version cache metadata after validation. Report "
+        "the selected IDs and output path."
+    )
 
 
 def rank_cmd(json_rel: str, *, include_code: bool = False) -> str:
@@ -147,8 +229,8 @@ def rank_cmd(json_rel: str, *, include_code: bool = False) -> str:
     verifier stay in sync. ``json_rel`` is the run file path relative to the
     project root, so the helper ranks only that single file. With
     ``include_code`` the helper also emits each returned record's truncated
-    ``code`` / ``codeOutput`` so the verifier can audit the top-K SLICE instead
-    of loading the full multi-MB export (~6x less to read for TOP_K=20).
+    ``code`` / ``codeOutput`` so the verifier can audit only the selected report
+    set instead of loading the full multi-MB export.
     """
     cmd = f"python agentic/rank_by_surprise.py {json_rel} {_top_flags()}"
     return cmd + " --include-code" if include_code else cmd
@@ -168,7 +250,7 @@ def rerun_argv(
     The DRIVER (not an agent) runs this as a blocking foreground subprocess, so
     no long re-execution ever lives inside an agent turn. All compute phases —
     reproduce, extrapolate, and the corrected-test re-measurement — go through
-    this one builder so they always agree on ``--rank-by``/``--top``:
+    this one builder so they always agree on ``--rank-by``/``--direction``/``--top``:
 
     - ``export_dir_rel``  : export editable hypo_<id>.py scripts and exit (no run).
     - ``code_dir_rel``    : run the loading-fixed scripts instead of recorded code.
@@ -178,7 +260,13 @@ def rerun_argv(
       ``extrapolations`` list), to judge generalization.
     """
     argv = ["python", "agentic/rerun_experiments.py", json_rel,
-            "--pkl", pkl_rel, "--rank-by", RANK_BY]
+            "--pkl", pkl_rel, "--rank-by", RANK_BY, "--direction", DIRECTION]
+    if DIRECTION == "predictive":
+        if PREDICTIVE_MANIFEST is None:
+            raise RuntimeError("predictive direction requires a selection manifest")
+        if TOP_K is not None:
+            raise RuntimeError("predictive direction must not apply a top-K cutoff")
+        argv += ["--predictive-manifest", PREDICTIVE_MANIFEST]
     if TOP_K is not None:
         argv += ["--top", str(TOP_K)]
     # Export mode is mutually exclusive with running (the helper enforces this).
@@ -193,7 +281,7 @@ def rerun_argv(
     return argv
 
 
-def run_compute(argv: list[str], out_rel: str | None, verbose: bool) -> None:
+def run_compute(argv: list[str], out_rel: str | None) -> None:
     """Run a deterministic helper subprocess to completion in the FOREGROUND.
 
     This is the heart of the driver-owned design: the long ``rerun_experiments.py``
@@ -218,6 +306,14 @@ def run_compute(argv: list[str], out_rel: str | None, verbose: bool) -> None:
             cwd=str(PROJECT_ROOT),
             stdout=out_fh if out_fh is not None else None,
             check=False,
+            timeout=COMPUTE_TIMEOUT_S,
+        )
+    except subprocess.TimeoutExpired:
+        if out_fh is not None:
+            out_fh.close()
+        raise SystemExit(
+            f"Compute step TIMED OUT after {COMPUTE_TIMEOUT_S}s: {pretty}. "
+            "Aborting — increase COMPUTE_TIMEOUT_S if the dataset is large."
         )
     finally:
         if out_fh is not None:
@@ -228,8 +324,7 @@ def run_compute(argv: list[str], out_rel: str | None, verbose: bool) -> None:
         # a resume can tell the JSON is not trustworthy, then abort.
         raise SystemExit(
             f"Compute step FAILED (exit {proc.returncode}) after {dur:.0f}s: {pretty}. "
-            "Aborting before any agent folds a bad result. Fix the cause and resume "
-            "with --from on this phase."
+            "Aborting before any agent folds a bad result."
         )
     log(f"  [compute] done in {dur:.0f}s.")
 
@@ -260,41 +355,62 @@ def build_steps(
       foreground subprocess and captures its stdout JSON to a file next to the
       run export. Deterministic, no LLM, fully observable, resumable.
     - ``"agent"`` — an instruction sent to the persistent SDK session; the
-      subagent only READS the compute JSON already on disk and folds verdicts
-      into the Markdown report (or authors corrected scripts). Always fast.
+      agent operates on source/result artifacts already on disk: selecting or
+      summarizing findings, folding verdicts, editing loading, or authoring
+      corrected scripts. It never owns a long experiment run.
 
     Each step carries a ``"phase"`` (summarize / reproduce / extrapolate /
-    verify / fix-tests / translate) — the unit ``--steps`` / ``--from`` select
-    on. ``json_rel`` is the run JSON to digest, ``pkl_rel`` the origin dataset,
+    verify / fix-tests / translate). ``json_rel`` is the run JSON to digest,
+    ``pkl_rel`` the origin dataset,
     ``summary_rel`` the Markdown deliverable — all relative to the project root.
-    Order: summarize → reproduce (run→fix-loading→remeasure→fold) →
+    Order: summarize → reproduce (run→export→fix-loading→remeasure→fold) →
     [extrapolate (run→fold), only with ``extra_pkls_rel``] → verify →
     fix-tests (author→measure→fold) → translate. Translate is purely cosmetic and
     always runs last.
     """
     extra_pkls_rel = extra_pkls_rel or []
-    rerun_dir_rel = f"{json_rel}.rerun"
-    fixed_dir_rel = f"{json_rel}.fixed"
+    scope_suffix = ".predictive" if DIRECTION == "predictive" else ""
+    rerun_dir_rel = f"{json_rel}{scope_suffix}.rerun"
+    fixed_dir_rel = f"{json_rel}{scope_suffix}.fixed"
     # Compute-output JSONs live next to the run export so they survive across
     # runs and a resume can reuse the expensive ones instead of recomputing.
-    repro_raw_rel = f"{json_rel}.reproduce-raw.json"   # recorded code on origin
-    repro_rel = f"{json_rel}.reproduce.json"           # loading-fixed code on origin
-    extrap_rel = f"{json_rel}.extrapolate.json"        # +extra datasets
-    corrected_rel = f"{json_rel}.corrected.json"       # corrected tests +extras
+    repro_raw_rel = f"{json_rel}{scope_suffix}.reproduce-raw.json"   # recorded code on origin
+    repro_rel = f"{json_rel}{scope_suffix}.reproduce.json"           # loading-fixed code on origin
+    extrap_rel = f"{json_rel}{scope_suffix}.extrapolate.json"        # +extra datasets
+    corrected_rel = f"{json_rel}{scope_suffix}.corrected.json"       # corrected tests +extras
 
-    steps: list[dict[str, object]] = [
+    steps: list[dict[str, object]] = []
+    if DIRECTION == "predictive":
+        if PREDICTIVE_MANIFEST is None:
+            raise RuntimeError("predictive direction requires a selection manifest")
+        steps.append(
+            {
+                "name": "select-predictive-hypotheses",
+                "phase": "summarize",
+                "kind": "agent",
+                "expects_file": PREDICTIVE_MANIFEST,
+                "validate_predictive_manifest_for": json_rel,
+                "reuse_predictive_manifest_for": json_rel,
+                "instruction": predictive_selection_instruction(
+                    json_rel, PREDICTIVE_MANIFEST
+                ),
+            }
+        )
+
+    steps.extend([
         {
             "name": "summarize-discoveries",
             "phase": "summarize",
             "kind": "agent",
+            "expects": ["priority_score", "##"],
             "instruction": (
                 "Use the discovery-summarizer subagent to digest the single "
                 f"AutoDiscovery run export at {json_rel}. It must run "
                 f"`{rank_cmd(json_rel)}` to rank that file's hypotheses by the "
                 "combined posterior-and-surprise priority (posterior * "
-                f"|surprisal|), keeping only {_TOP_K_PHRASE}. The report MUST "
-                f"contain ONLY those top {TOP_K if TOP_K is not None else 'N'} "
-                "records (do NOT add entries beyond what the helper returns). "
+                f"|surprisal|), keeping only {_top_k_phrase()}. The report MUST "
+                "contain ONLY the records the helper returns (do NOT add entries "
+                "beyond what the helper returns). "
                 f"Write the ranked report to {summary_rel}, ordered by the "
                 "helper's ranking (highest priority first), and display each "
                 "entry's priority_score alongside its surprise magnitude. Report "
@@ -311,6 +427,18 @@ def build_steps(
             "out": repro_raw_rel,
         },
         {
+            "name": "reproduce-export",
+            "phase": "reproduce",
+            "kind": "compute",
+            # Export editable hypo_<id>.py scripts to rerun_dir_rel so the
+            # fix-loading agent can edit them directly — no subprocess inside
+            # an agent turn. Skipped when scripts already exist (resume case)
+            # to avoid overwriting loading-fix edits from a prior run.
+            "argv": rerun_argv(json_rel, pkl_rel, export_dir_rel=rerun_dir_rel),
+            "out": None,
+            "skip_if_scripts_exist_in": rerun_dir_rel,
+        },
+        {
             "name": "reproduce-fix-loading",
             "phase": "reproduce",
             "kind": "agent",
@@ -318,22 +446,22 @@ def build_steps(
                 "Use the discovery-reproducer subagent to FIX ONLY data-loading / "
                 "environment failures so the experiments can run — do NOT re-measure "
                 "or fold verdicts yet (a later step does that). The driver has "
-                f"already executed each top-ranked record's recorded `code` on "
-                f"{pkl_rel}; read the results JSON it wrote at {repro_raw_rel} "
+                f"already executed each selected record's recorded `code` on "
+                f"{pkl_rel} and exported editable scripts to {rerun_dir_rel}; "
+                f"read the results JSON at {repro_raw_rel} "
                 "(top-level counts + a `results` list; each has `id`, `status`, "
                 "`rerun_exitcode`, `rerun_stdout`, `rerun_stderr`). For every result "
                 "that FAILED or TIMED OUT for a DATA-LOADING / ENVIRONMENT reason "
                 "(a NumPy-2-written pkl the host can't unpickle, a 'dataset not "
-                "found' gate, a pip-install retry loop), export the editable scripts "
-                f"with `python agentic/rerun_experiments.py {json_rel} --pkl "
-                f"{pkl_rel} {_top_flags()} --export-dir {rerun_dir_rel}` (this only "
-                "writes files, it does not run anything), then revise ONLY the "
+                "found' gate, a pip-install retry loop), revise ONLY the "
                 f"loading/bootstrap of the failing {rerun_dir_rel}/hypo_<id>.py "
                 "(load the pkl directly from $RERUN_PKL, fix the NumPy version, drop "
                 "pip-retry loops) while keeping the ANALYSIS byte-for-byte identical. "
-                "Do NOT touch scripts that already succeeded. If NOTHING failed for "
-                f"a loading reason, leave {rerun_dir_rel} empty and say so — the "
-                "driver will then reuse the recorded-code results directly. Report "
+                "Do NOT touch scripts that already succeeded. If you edit any scripts, "
+                f"create an empty marker file `{rerun_dir_rel}/.loading-fixes-applied` "
+                "so the driver knows to re-measure with the fixed code. If NOTHING "
+                f"failed for a loading reason, do NOT create the marker and say so — "
+                "the driver will reuse the recorded-code results directly. Report "
                 "which ids you fixed and why."
             ),
         },
@@ -343,15 +471,17 @@ def build_steps(
             "kind": "compute",
             "argv": rerun_argv(json_rel, pkl_rel, code_dir_rel=rerun_dir_rel),
             "out": repro_rel,
-            # If the agent wrote no loading-fix scripts, the --code-dir run would
-            # equal the recorded-code run, so skip it and reuse the raw JSON.
-            "skip_if_no_scripts_in": rerun_dir_rel,
+            # The agent writes a marker when it edits any script; without it
+            # the loading-fix results equal the recorded-code run, so skip and
+            # reuse the raw JSON (avoids running the same experiments twice).
+            "skip_if_no_marker": f"{rerun_dir_rel}/.loading-fixes-applied",
             "reuse_out_from": repro_raw_rel,
         },
         {
             "name": "reproduce-fold",
             "phase": "reproduce",
             "kind": "agent",
+            "expects": ["Reproduction — Summary"],
             "instruction": (
                 "Use the discovery-reproducer subagent to fold the reproduction "
                 "verdicts into the report. The driver has produced the final "
@@ -368,11 +498,11 @@ def build_steps(
                 "findings did NOT reproduce."
             ),
         },
-    ]
+    ])
 
     # Optional extrapolation phase: only when other datasets were provided. The
-    # driver runs the reproduced code (the reviser's --code-dir) on each extra pkl;
-    # the agent only folds the generalization verdicts.
+    # driver runs the pre-exported (and loading-fixed where needed) scripts via
+    # --code-dir on each extra pkl; the agent only folds the generalization verdicts.
     if extra_pkls_rel:
         extra_list = ", ".join(extra_pkls_rel)
         steps.append(
@@ -385,6 +515,13 @@ def build_steps(
                     code_dir_rel=rerun_dir_rel, extra_pkls_rel=extra_pkls_rel,
                 ),
                 "out": extrap_rel,
+                # When the reproduce phase has not run, rerun_dir_rel may be
+                # empty. Passing --code-dir to an empty dir is implicit; fall
+                # back to recorded code instead.
+                "check_scripts_in": rerun_dir_rel,
+                "argv_if_no_scripts": rerun_argv(
+                    json_rel, pkl_rel, extra_pkls_rel=extra_pkls_rel,
+                ),
             }
         )
         steps.append(
@@ -392,6 +529,7 @@ def build_steps(
                 "name": "extrapolate-fold",
                 "phase": "extrapolate",
                 "kind": "agent",
+                "expects": ["Generalization — Summary"],
                 "instruction": (
                     "Use the discovery-extrapolator subagent to fold GENERALIZATION "
                     "verdicts into the report. The driver has already re-run each "
@@ -420,13 +558,14 @@ def build_steps(
             "name": "verify-statistics-and-logic",
             "phase": "verify",
             "kind": "agent",
+            "expects": ["Statistical Verification — Summary"],
             "instruction": (
                 "Use the discovery-verifier subagent to audit whether each "
                 "hypothesis's statistical test and its inductive/deductive "
                 "reasoning are correct. For the recorded code, codeOutput and "
                 f"analysis, run `{rank_cmd(json_rel, include_code=True)}` and read "
-                "its stdout JSON — that already contains ONLY the reported top "
-                f"{TOP_K if TOP_K is not None else 'N'} records, each with the "
+                "its stdout JSON — that already contains ONLY the reported "
+                "records selected for this report, each with the "
                 "recorded `code`, `codeOutput`, `analysis` and `review` "
                 "(code/codeOutput middle-truncated); audit from that SLICE, do "
                 f"NOT read the full multi-MB export {json_rel}. Also use the "
@@ -479,10 +618,9 @@ def build_steps(
                 "significance of a trivial effect, p-value misuse, double-counting). "
                 "Do NOT touch entries judged SOUND, or whose only problem is "
                 "generalization. For each selected id, start from the loading-fixed "
-                f"script {rerun_dir_rel}/hypo_<id>.py (if it has none, export it "
-                f"first with `python agentic/rerun_experiments.py {json_rel} --pkl "
-                f"{pkl_rel} {_top_flags()} --export-dir {rerun_dir_rel}` and apply "
-                "the same loading fix) and write a corrected hypo_<id>.py into "
+                f"(or recorded) script {rerun_dir_rel}/hypo_<id>.py — the driver "
+                "pre-exports every reported script there during the reproduce phase so "
+                "they are always available — and write a corrected hypo_<id>.py into "
                 f"{fixed_dir_rel} that changes ONLY the statistical test (print an "
                 "effect size with a CI, and a cluster/permutation p-value where "
                 "independence is violated), keeping the same data and quantities. "
@@ -516,6 +654,7 @@ def build_steps(
             # Folding is a no-op when the measure step was skipped (no corrected
             # JSON on disk); the driver detects that and skips this step too.
             "skip_if_missing": corrected_rel,
+            "expects": ["Statistical Test Corrections — Summary"],
             "instruction": (
                 "Use the discovery-test-fixer subagent to fold CORRECTED-test "
                 "verdicts into the report. The driver has re-measured the corrected "
@@ -553,6 +692,7 @@ def build_steps(
             "name": "translate-report",
             "phase": "translate",
             "kind": "agent",
+            "expects_file": summary_zh_rel,
             "instruction": (
                 "Use the discovery-translator subagent to produce a faithful "
                 f"简体中文 translation of the finished report at {summary_rel}, "
@@ -569,60 +709,6 @@ def build_steps(
             ),
         }
     )
-    return steps
-
-
-# The selectable unit for --steps / --from is the PHASE (a phase may expand into
-# several compute+agent steps internally). These are the phase tokens, in order.
-# ``rerun`` is kept as a back-compat alias for the renamed ``reproduce`` phase.
-PHASE_ORDER: list[str] = [
-    "summarize", "reproduce", "extrapolate", "verify", "fix-tests", "translate",
-]
-PHASE_ALIASES: dict[str, str] = {"rerun": "reproduce"}
-
-
-def _canonical_phase(token: str, available: list[str]) -> str:
-    """Resolve a user token (phase name or alias) to a phase present in this run."""
-    phase = PHASE_ALIASES.get(token, token)
-    if phase in available:
-        return phase
-    raise SystemExit(
-        f"Unknown step/phase '{token}'. Choose from: {', '.join(available)} "
-        f"(alias: {', '.join(f'{k}→{v}' for k, v in PHASE_ALIASES.items())})."
-    )
-
-
-def select_steps(
-    steps: list[dict[str, object]],
-    only: list[str] | None,
-    from_step: str | None,
-) -> list[dict[str, object]]:
-    """Filter the built steps by ``--steps`` / ``--from``, selecting whole PHASES.
-
-    Selection is by phase, not by the internal compute/agent sub-steps: keeping a
-    phase keeps all of its steps in order. Resuming relies on earlier phases'
-    artifacts already being on disk — the ``<RUN>.summary.md`` report (with its
-    folded-in verdicts), the ``<RUN>.json.rerun`` loading-fixed scripts, and the
-    compute-output JSONs (``<RUN>.json.reproduce.json`` etc.). ``--steps`` keeps
-    exactly the named phases (in pipeline order); ``--from`` keeps that phase and
-    everything after it. They are mutually exclusive; with neither, all run.
-    """
-    # Phases present in THIS run, in pipeline order (extrapolate may be absent).
-    present: list[str] = []
-    for s in steps:
-        ph = str(s["phase"])
-        if ph not in present:
-            present.append(ph)
-    if only and from_step:
-        raise SystemExit("--steps and --from are mutually exclusive.")
-    if only:
-        wanted = {_canonical_phase(t, present) for t in only}
-        return [s for s in steps if str(s["phase"]) in wanted]
-    if from_step:
-        start = _canonical_phase(from_step, present)
-        start_idx = present.index(start)
-        keep = set(present[start_idx:])
-        return [s for s in steps if str(s["phase"]) in keep]
     return steps
 
 
@@ -661,14 +747,8 @@ def build_options() -> ClaudeAgentOptions:
     )
 
 
-async def run_step(client: ClaudeSDKClient, step: dict[str, str], verbose: bool) -> str:
-    """Send one workflow step to the session and return its final text.
-
-    Logs live progress (each tool call / subagent launch) to stderr so a
-    long-running step is observable, streams assistant text as it arrives (when
-    ``verbose``), and returns the concatenated assistant text for the step so a
-    caller could chain on it.
-    """
+async def _run_step_inner(client: ClaudeSDKClient, step: dict[str, str]) -> str:
+    """Core logic for one agent step — called by run_step inside a timeout guard."""
     await client.query(step["instruction"])
 
     chunks: list[str] = []
@@ -678,15 +758,10 @@ async def run_step(client: ClaudeSDKClient, step: dict[str, str], verbose: bool)
             for block in message.content:
                 if isinstance(block, TextBlock):
                     chunks.append(block.text)
-                    if verbose:
-                        print(block.text, end="", flush=True)
                 elif ToolUseBlock and isinstance(block, ToolUseBlock):
                     n_tools += 1
                     log(f"  → {describe_tool(block)}")
         elif isinstance(message, ResultMessage):
-            # End of this turn. Surface timing / cost / token usage when present.
-            if verbose:
-                print()  # newline after the streamed text
             cost = getattr(message, "total_cost_usd", None)
             dur_ms = getattr(message, "duration_ms", None)
             parts = [f"{n_tools} tool call(s)"]
@@ -696,6 +771,59 @@ async def run_step(client: ClaudeSDKClient, step: dict[str, str], verbose: bool)
                 parts.append(f"${cost:.4f}")
             log(f"  step turn finished — {', '.join(parts)}")
     return "".join(chunks)
+
+
+async def run_step(client: ClaudeSDKClient, step: dict[str, str]) -> str:
+    """Send one workflow step to the session and return its final text.
+
+    Wraps ``_run_step_inner`` with ``AGENT_STEP_TIMEOUT_S`` so a hung SDK turn
+    aborts loudly rather than blocking the workflow indefinitely.
+    """
+    try:
+        return await asyncio.wait_for(
+            _run_step_inner(client, step),
+            timeout=AGENT_STEP_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        raise SystemExit(
+            f"Agent step '{step['name']}' timed out after {AGENT_STEP_TIMEOUT_S}s. "
+            "Aborting — increase AGENT_STEP_TIMEOUT_S if the step legitimately needs more time."
+        )
+
+
+def _validate_step_output(step: dict, summary_path: Path) -> None:
+    """Warn if expected section markers are absent from the summary after a fold step.
+
+    Each fold step declares ``"expects": [marker, ...]`` — strings that must
+    appear in the summary file if the step ran correctly. A missing marker does
+    not abort the workflow (the agent may have legitimately phrased things
+    differently) but logs a visible WARNING so the operator can inspect the file.
+    ``"expects_file"`` checks that a separate output file exists (used by the
+    translate step, which writes a sibling .zh.md rather than editing the summary).
+    """
+    expects = step.get("expects", [])
+    expects_file = step.get("expects_file")
+
+    if expects:
+        if not summary_path.is_file():
+            log(f"  [validate] WARNING: summary {summary_path.name} not found "
+                f"after step '{step['name']}'.")
+        else:
+            text = summary_path.read_text(encoding="utf-8", errors="replace")
+            missing = [m for m in expects if m not in text]
+            if missing:
+                log(f"  [validate] WARNING: step '{step['name']}' may be incomplete — "
+                    f"expected markers absent from {summary_path.name}: {missing}")
+            else:
+                log(f"  [validate] OK: expected markers present after '{step['name']}'.")
+
+    if expects_file:
+        ef = PROJECT_ROOT / expects_file
+        if not ef.is_file() or ef.stat().st_size == 0:
+            log(f"  [validate] WARNING: step '{step['name']}' expected output file "
+                f"{expects_file} is missing or empty.")
+        else:
+            log(f"  [validate] OK: output file {expects_file} exists after '{step['name']}'.")
 
 
 def _rel_to_root(path: Path) -> str:
@@ -708,11 +836,12 @@ def _rel_to_root(path: Path) -> str:
 
 
 def _has_hypo_scripts(dir_rel: str) -> bool:
-    """True if ``dir_rel`` holds at least one ``hypo_<id>.py`` the agent wrote.
+    """True if ``dir_rel`` holds at least one ``hypo_<id>.py``.
 
-    The loading-fix and test-fix agent steps may legitimately write NOTHING (no
-    failure to fix / no test to correct). The following compute step then has no
-    work to do, so the driver uses this to skip the redundant re-run.
+    Used in three contexts: ``skip_if_scripts_exist_in`` (driver-exported
+    scripts, avoid clobbering on resume), ``skip_if_no_scripts_in`` (agent-
+    authored corrected scripts, nothing to re-measure), and ``check_scripts_in``
+    (select fallback argv when the reproduce phase was skipped).
     """
     d = PROJECT_ROOT / dir_rel
     return d.is_dir() and any(d.glob("hypo_*.py"))
@@ -737,29 +866,129 @@ def _valid_compute_json(out_rel: str) -> bool:
     return bool(isinstance(payload, dict) and payload.get("results"))
 
 
-async def run_compute_step(
-    step: dict[str, object], verbose: bool, force: bool = False
+def _source_sha256(source_path: Path) -> str:
+    """Content hash used to invalidate a cached predictive selection."""
+    return hashlib.sha256(source_path.read_bytes()).hexdigest()
+
+
+def _validate_predictive_manifest(
+    manifest_rel: str, source_rel: str, *, log_success: bool = True
 ) -> None:
+    """Fail fast unless a predictive manifest partitions every source ID once."""
+    manifest_path = PROJECT_ROOT / manifest_rel
+    source_path = PROJECT_ROOT / source_rel
+    try:
+        manifest = json.loads(manifest_path.read_text())
+        source = json.loads(source_path.read_text())
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"Invalid predictive selection manifest: {exc}")
+
+    if isinstance(source, dict):
+        for key in ("records", "hypotheses", "results", "data"):
+            if isinstance(source.get(key), list):
+                source = source[key]
+                break
+    if not isinstance(source, list) or not isinstance(manifest, dict):
+        raise SystemExit("Predictive selection source/manifest has an invalid schema.")
+
+    selected = manifest.get("selected_ids")
+    excluded = manifest.get("excluded")
+    if not isinstance(selected, list) or not isinstance(excluded, list):
+        raise SystemExit(
+            "Predictive manifest must contain selected_ids and excluded lists."
+        )
+    excluded_ids = [row.get("id") for row in excluded if isinstance(row, dict)]
+    if len(excluded_ids) != len(excluded):
+        raise SystemExit("Every predictive manifest excluded entry must contain an id.")
+
+    source_ids = [row.get("id") for row in source if isinstance(row, dict)]
+    source_keys = [json.dumps(value, sort_keys=True) for value in source_ids]
+    selected_keys = [json.dumps(value, sort_keys=True) for value in selected]
+    excluded_keys = [json.dumps(value, sort_keys=True) for value in excluded_ids]
+    combined = selected_keys + excluded_keys
+    if len(combined) != len(set(combined)):
+        raise SystemExit(
+            "Predictive manifest contains duplicate or overlapping hypothesis IDs."
+        )
+    if set(combined) != set(source_keys):
+        missing = sorted(set(source_keys) - set(combined))
+        extra = sorted(set(combined) - set(source_keys))
+        raise SystemExit(
+            f"Predictive manifest does not partition all source IDs; "
+            f"missing={missing}, extra={extra}."
+        )
+    if log_success:
+        log(
+            f"  [validate] predictive manifest selected {len(selected)} of "
+            f"{len(source_ids)} hypotheses."
+        )
+
+
+def _stamp_predictive_manifest(manifest_rel: str, source_rel: str) -> None:
+    """Add cache metadata after the agent's selection has been validated."""
+    manifest_path = PROJECT_ROOT / manifest_rel
+    source_path = PROJECT_ROOT / source_rel
+    payload = json.loads(manifest_path.read_text())
+    payload["source_sha256"] = _source_sha256(source_path)
+    payload["policy_version"] = PREDICTIVE_POLICY_VERSION
+    payload["generated_at"] = datetime.now().astimezone().isoformat()
+    manifest_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _predictive_manifest_is_current(manifest_rel: str, source_rel: str) -> bool:
+    """Whether a cached manifest matches the source and current policy."""
+    manifest_path = PROJECT_ROOT / manifest_rel
+    source_path = PROJECT_ROOT / source_rel
+    try:
+        payload = json.loads(manifest_path.read_text())
+        if payload.get("policy_version") != PREDICTIVE_POLICY_VERSION:
+            return False
+        if payload.get("source_sha256") != _source_sha256(source_path):
+            return False
+        _validate_predictive_manifest(
+            manifest_rel, source_rel, log_success=False
+        )
+    except (OSError, ValueError, SystemExit):
+        return False
+    return True
+
+
+def run_compute_step(step: dict[str, object]) -> None:
     """Execute one ``kind == "compute"`` step in the driver (no agent involved).
 
     Honors skip rules so a resume reuses expensive results and the common path
     stays cheap. Checked in order:
     - reuse-if-output-exists: if this step's ``out`` JSON is already on disk and
-      VALID (parses, non-empty ``results``), reuse it instead of recomputing —
-      this is what makes ``--from extrapolate`` cheap when ``.extrapolate.json``
-      already exists from a prior run. ``--force`` (``force=True``) overrides it.
+      VALID (parses, non-empty ``results``), reuse it instead of recomputing.
+    - ``skip_if_scripts_exist_in``: skip (without overwriting) when the target
+      dir already holds hypo_*.py scripts — used by the export step so a resume
+      never clobbers loading-fix edits from a prior run.
     - ``skip_if_no_scripts_in``: if the preceding agent wrote no hypo_<id>.py
       there, this run would duplicate an earlier one — skip it, and when
       ``reuse_out_from`` is given, copy that earlier JSON to this step's ``out``
       so the downstream fold step finds its expected input.
+    - ``skip_if_no_marker``: if the file at this path is absent (the preceding
+      agent wrote no loading-fix marker), skip and reuse ``reuse_out_from`` —
+      the recorded-code run already captured the correct results.
+    - ``check_scripts_in`` / ``argv_if_no_scripts``: when the dir is empty, use
+      the fallback argv (without ``--code-dir``) so the step runs against the
+      recorded code instead of an empty directory.
     """
     out_rel = step.get("out")  # type: ignore[assignment]
     # 1) Reuse a valid existing output (resume without recomputing).
-    if out_rel and not force and _valid_compute_json(str(out_rel)):
-        log(f"  [compute] reusing existing {out_rel} "
-            "(valid; pass --force to recompute).")
+    if out_rel and _valid_compute_json(str(out_rel)):
+        log(f"  [compute] reusing existing {out_rel} (valid).")
         return
-    # 2) Nothing for the preceding agent to have fixed/corrected → skip the run.
+    # 2) Scripts already on disk — skip export to avoid clobbering edits.
+    skip_exist = step.get("skip_if_scripts_exist_in")
+    if skip_exist and _has_hypo_scripts(str(skip_exist)):
+        log(f"  [compute] skipped (scripts already in {skip_exist}; "
+            "not overwriting).")
+        return
+    # 3) Nothing for the preceding agent to have fixed/corrected → skip the run.
     skip_dir = step.get("skip_if_no_scripts_in")
     if skip_dir and not _has_hypo_scripts(str(skip_dir)):
         reuse = step.get("reuse_out_from")
@@ -771,64 +1000,103 @@ async def run_compute_step(
             log(f"  [compute] skipped (no scripts in {skip_dir}); "
                 "nothing to re-measure.")
         return
-    run_compute(list(step["argv"]), str(out_rel) if out_rel else None, verbose)
-
-
-def print_plan(steps: list[dict[str, object]]) -> None:
-    """Print the resolved step list (kind + phase + command/output) and exit.
-
-    Lets you see exactly what the driver will run — which phases are compute vs
-    agent and which long re-executions happen — without starting anything.
-    """
-    print(f"Resolved plan — {len(steps)} step(s):")
-    for i, s in enumerate(steps, start=1):
-        kind = str(s["kind"])
-        if kind == "compute":
-            cmd = " ".join(shlex.quote(a) for a in s["argv"])  # type: ignore[arg-type]
-            extra = f"  → {s['out']}" if s.get("out") else ""
-            skip = f"  [skip if no scripts in {s['skip_if_no_scripts_in']}]" if s.get("skip_if_no_scripts_in") else ""
-            reuse = "  [reuse if output exists, unless --force]" if s.get("out") else ""
-            print(f"  {i:2}. [{s['phase']}/compute] {s['name']}")
-            print(f"        $ {cmd}{extra}{skip}{reuse}")
+    # 4) No loading-fix marker → agent made no changes; reuse the raw run output.
+    skip_marker = step.get("skip_if_no_marker")
+    if skip_marker and not (PROJECT_ROOT / str(skip_marker)).is_file():
+        reuse = step.get("reuse_out_from")
+        if reuse and out_rel:
+            shutil.copyfile(PROJECT_ROOT / str(reuse), PROJECT_ROOT / str(out_rel))
+            log(f"  [compute] skipped (no loading fixes applied — "
+                f"marker {skip_marker} absent); reused {reuse} → {out_rel}.")
         else:
-            skip = f"  [skip if missing {s['skip_if_missing']}]" if s.get("skip_if_missing") else ""
-            print(f"  {i:2}. [{s['phase']}/agent]   {s['name']}{skip}")
+            log(f"  [compute] skipped (marker {skip_marker} absent).")
+        return
+    # 5) Select argv: use the no-code-dir fallback when the scripts dir is empty
+    #    (e.g. reproduce phase was skipped) to avoid passing --code-dir to an
+    #    empty directory whose behaviour is implicit in rerun_experiments.py.
+    check_dir = step.get("check_scripts_in")
+    if check_dir and not _has_hypo_scripts(str(check_dir)):
+        argv = list(step.get("argv_if_no_scripts", step["argv"]))
+        log(f"  [compute] {check_dir} is empty — using fallback argv "
+            "(no --code-dir).")
+    else:
+        argv = list(step["argv"])
+    run_compute(argv, str(out_rel) if out_rel else None)
+
+
+def _print_smoke_selection(json_rel: str) -> None:
+    """Print one line per selected hypothesis using the normal ranking helper."""
+    command = shlex.split(rank_cmd(json_rel))
+    proc = subprocess.run(
+        command,
+        cwd=str(PROJECT_ROOT),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise SystemExit(
+            f"Smoke selection failed (exit {proc.returncode}): "
+            f"{' '.join(shlex.quote(part) for part in command)}\n{proc.stderr}"
+        )
+    try:
+        payload = json.loads(proc.stdout)
+        records = payload["records"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise SystemExit(f"Smoke selection returned invalid JSON: {exc}")
+
+    for record in records:
+        hypothesis = " ".join(str(record.get("hypothesis", "")).split())
+        print(f"ID {record.get('id')}: {hypothesis}")
+
+
+async def run_smoke(json_path: Path) -> None:
+    """Select, print, and stop without running the discovery workflow."""
+    global PREDICTIVE_MANIFEST
+    json_rel = _rel_to_root(json_path)
+
+    if DIRECTION != "predictive":
+        PREDICTIVE_MANIFEST = None
+        _print_smoke_selection(json_rel)
+        return
+
+    manifest_path = predictive_manifest_path(json_path)
+    PREDICTIVE_MANIFEST = _rel_to_root(manifest_path)
+    try:
+        if not _predictive_manifest_is_current(PREDICTIVE_MANIFEST, json_rel):
+            step = {
+                "name": "smoke-select-predictive-hypotheses",
+                "instruction": predictive_selection_instruction(
+                    json_rel, PREDICTIVE_MANIFEST
+                ),
+            }
+            async with ClaudeSDKClient(options=build_options()) as client:
+                await run_step(client, step)
+            _validate_predictive_manifest(PREDICTIVE_MANIFEST, json_rel)
+            _stamp_predictive_manifest(PREDICTIVE_MANIFEST, json_rel)
+        _print_smoke_selection(json_rel)
+    finally:
+        PREDICTIVE_MANIFEST = None
 
 
 async def run_workflow(
     json_path: Path,
     pkl_path: Path,
     extra_pkl_paths: list[Path],
-    verbose: bool,
-    only_steps: list[str] | None = None,
-    from_step: str | None = None,
-    plan_only: bool = False,
-    force: bool = False,
 ) -> None:
+    global PREDICTIVE_MANIFEST
     options = build_options()
     # Paths handed to the agent are relative to PROJECT_ROOT (the session cwd).
     json_rel = _rel_to_root(json_path)
+    if DIRECTION == "predictive":
+        PREDICTIVE_MANIFEST = _rel_to_root(predictive_manifest_path(json_path))
+    else:
+        PREDICTIVE_MANIFEST = None
     pkl_rel = _rel_to_root(pkl_path)
     extra_pkls_rel = [_rel_to_root(p) for p in extra_pkl_paths]
     summary_rel = _rel_to_root(json_path.with_suffix(".summary.md"))
     steps = build_steps(json_rel, pkl_rel, summary_rel, extra_pkls_rel)
-
-    first_phase = str(steps[0]["phase"])
-    steps = select_steps(steps, only_steps, from_step)
-    if not steps:
-        log("No steps selected to run.")
-        return
-    if plan_only:
-        print_plan(steps)
-        return
-    # Resuming a later phase relies on earlier phases' artifacts already on disk.
-    if str(steps[0]["phase"]) != first_phase:
-        summary_path = json_path.with_suffix(".summary.md")
-        if not summary_path.is_file():
-            log(
-                f"WARNING: resuming at phase '{steps[0]['phase']}' but {summary_rel} "
-                "does not exist yet — the earlier steps that write it were skipped."
-            )
 
     extra_note = f", extrapolate onto {len(extra_pkls_rel)} dataset(s)" if extra_pkls_rel else ""
     n_compute = sum(1 for s in steps if s["kind"] == "compute")
@@ -838,22 +1106,19 @@ async def run_workflow(
         f"[{', '.join(str(s['name']) for s in steps)}]."
     )
     wf_start = time.monotonic()
-    # Open the SDK session only if at least one agent step is selected, so a
-    # compute-only selection (e.g. --steps reproduce on a fresh export) needs no
-    # model session at all.
-    needs_session = any(s["kind"] == "agent" for s in steps)
-    client_cm = ClaudeSDKClient(options=options) if needs_session else None
+    client_cm = ClaudeSDKClient(options=options)
+
+    summary_path = PROJECT_ROOT / summary_rel
 
     async def _drive(client) -> None:
-        if client is not None:
-            log("SDK session opened.")
+        log("SDK session opened.")
         for i, step in enumerate(steps, start=1):
             name, kind = str(step["name"]), str(step["kind"])
             print(f"\n=== Step {i}/{len(steps)}: {name} [{kind}] ===")
             log(f"Step {i}/{len(steps)} '{name}' ({kind}) started.")
             step_start = time.monotonic()
             if kind == "compute":
-                await run_compute_step(step, verbose, force=force)
+                run_compute_step(step)
             else:
                 # An agent fold step whose compute input was skipped has no work.
                 miss = step.get("skip_if_missing")
@@ -861,67 +1126,71 @@ async def run_workflow(
                     log(f"  [agent] skipped ('{name}'): {miss} absent "
                         "(its compute step was skipped — nothing to fold).")
                     continue
-                final_text = await run_step(client, step, verbose)
-                if not verbose:
-                    print(final_text.strip())
+                cached_source = step.get("reuse_predictive_manifest_for")
+                if cached_source and _predictive_manifest_is_current(
+                    str(step["expects_file"]), str(cached_source)
+                ):
+                    log(
+                        f"  [agent] reusing predictive selection manifest "
+                        f"{step['expects_file']}."
+                    )
+                    continue
+                final_text = await run_step(client, step)
+                print(final_text.strip())
+                _validate_step_output(step, summary_path)
+                manifest_source = step.get("validate_predictive_manifest_for")
+                if manifest_source:
+                    _validate_predictive_manifest(
+                        str(step["expects_file"]), str(manifest_source)
+                    )
+                    _stamp_predictive_manifest(
+                        str(step["expects_file"]), str(manifest_source)
+                    )
             log(
                 f"Step {i}/{len(steps)} '{name}' done in "
                 f"{time.monotonic() - step_start:.0f}s."
             )
 
-    if client_cm is not None:
-        async with client_cm as client:
-            await _drive(client)
-    else:
-        await _drive(None)
+    async with client_cm as client:
+        await _drive(client)
     log(f"Workflow complete in {time.monotonic() - wf_start:.0f}s.")
     print("\n=== Workflow complete ===")
 
 
-# --- Brain-id consistency guard ---------------------------------------------
-# The run JSON's experiments were generated against ONE brain; the --pkl passed at
-# rerun time must be that SAME brain, or every reproduced number is computed on the
-# wrong data while looking superficially fine. The brain id is the 6-digit dataset
-# number. We recover it two ways and require agreement.
-_BRAIN_RE = re.compile(r"(?<!\d)(\d{6})(?!\d)")
-_CACHE_BRAIN_RE = re.compile(r"dataset_cache_(\d{6})_")
+# --- Dataset consistency guards ----------------------------------------------
+# _CACHE_STEM_RE: matches the full stem (brain + mcl + add/sub) from a concrete
+# dataset_cache_<stem>.pkl path.  Wildcards (*) are not word chars so glob
+# patterns in experiment code are silently skipped.
+# _MCL_RE / _SUFFIX_RE: extract the mcl level and add/sub suffix for granularity
+# matching between --pkl and --extra-pkl.
+_CACHE_STEM_RE = re.compile(r"dataset_cache_([\w]+)\.pkl")
+_MCL_RE = re.compile(r"_mcl(\d+)(?:_|\.pkl)")
+_SUFFIX_RE = re.compile(r"_(add|sub)\.pkl$")
 
 
-def _brain_from_pkl(pkl_path: Path) -> str | None:
-    """Brain id from a cache filename like ``dataset_cache_789202_mcl100_add.pkl``."""
-    m = _CACHE_BRAIN_RE.search(pkl_path.name)
-    if m:
-        return m.group(1)
-    m = _BRAIN_RE.search(pkl_path.name)   # fallback: any lone 6-digit token
+def _pkl_stem(pkl_path: Path) -> str | None:
+    """Full cache stem from a pkl filename.
+
+    Returns ``'794495_mcl100_add'`` for
+    ``'dataset_cache_794495_mcl100_add.pkl'``, or ``None`` if the name does not
+    follow the ``dataset_cache_<stem>.pkl`` convention.
+    """
+    m = _CACHE_STEM_RE.search(pkl_path.name)
     return m.group(1) if m else None
 
 
-def _brain_from_json(json_path: Path) -> tuple[str | None, dict]:
-    """Brain id inferred from the run JSON's experiment code.
+def _pkl_granularity(pkl_path: Path) -> tuple[str, str] | None:
+    """``(mcl_level, suffix)`` from a pkl filename for cross-dataset matching.
 
-    The JSON has no structured dataset field, so we count 6-digit ids inside each
-    record's ``code``/``codeOutput`` (preferring ``dataset_cache_<brain>_`` refs,
-    which are unambiguous) and return the dominant one. Returns (brain_id, counts)
-    where counts is the full {brain: n} tally for diagnostics. (brain_id None if the
-    file has no recoverable id.)
+    Returns ``('100', 'add')`` for ``dataset_cache_794495_mcl100_add.pkl``, or
+    ``None`` if either token cannot be parsed.  Extra datasets used for
+    extrapolation must share both tokens with the origin ``--pkl``.
     """
-    try:
-        data = json.loads(json_path.read_text())
-    except Exception:
-        return None, {}
-    records = data if isinstance(data, list) else data.get("records", []) if isinstance(data, dict) else []
-    cache_hits: Counter = Counter()   # from dataset_cache_<brain>_ (authoritative)
-    loose_hits: Counter = Counter()   # any lone 6-digit token (fallback)
-    for it in records:
-        if not isinstance(it, dict):
-            continue
-        blob = f"{it.get('code', '')}\n{it.get('codeOutput', '')}"
-        cache_hits.update(_CACHE_BRAIN_RE.findall(blob))
-        loose_hits.update(_BRAIN_RE.findall(blob))
-    tally = cache_hits or loose_hits
-    if not tally:
-        return None, {}
-    return tally.most_common(1)[0][0], dict(tally)
+    mcl_m = _MCL_RE.search(pkl_path.name)
+    suf_m = _SUFFIX_RE.search(pkl_path.name)
+    if mcl_m and suf_m:
+        return mcl_m.group(1), suf_m.group(1)
+    return None
 
 
 def main() -> int:
@@ -934,11 +1203,11 @@ def main() -> int:
     parser.add_argument(
         "--pkl",
         type=Path,
-        required=True,
+        default=None,
         help=(
             "The ORIGIN dataset .pkl this run's experiments load, used to "
             "re-execute and reproduce the findings (relative to the project root "
-            "or absolute)."
+            "or absolute). Required unless --smoke is used."
         ),
     )
     parser.add_argument(
@@ -957,51 +1226,29 @@ def main() -> int:
         ),
     )
     parser.add_argument(
-        "--steps",
-        nargs="+",
-        default=None,
-        metavar="PHASE",
+        "--direction",
+        required=True,
+        choices=["both", "positive", "predictive"],
         help=(
-            "Run ONLY these phases (summarize, reproduce [alias: rerun], "
-            "extrapolate, verify, fix-tests, translate), reusing earlier phases' "
-            "on-disk artifacts (<RUN>.summary.md, <RUN>.json.rerun, the compute "
-            "JSONs <RUN>.json.reproduce.json / .extrapolate.json / .corrected.json). "
-            "A phase may expand into several compute+agent steps. E.g. --steps "
-            "translate to only (re)generate the 简体中文 <RUN>.summary.zh.md."
+            "Which hypothesis directions to include in the report. "
+            "'positive' keeps only hypotheses where the experiment RAISED belief "
+            "(posterior > prior by more than 0.02) — surprising confirmations only. "
+            "'both' keeps positive AND negative direction hypotheses (any strong "
+            "belief shift, regardless of whether belief went up or down). "
+            "'predictive' starts with every hypothesis, removes only explicit "
+            "invalid/constant/non-predictive/confounded exclusions, and applies no "
+            "score or top-K cutoff to the remaining candidates."
         ),
     )
     parser.add_argument(
-        "--from",
-        dest="from_step",
-        default=None,
-        metavar="PHASE",
-        help=(
-            "Resume from this phase and run everything after it, reusing prior "
-            "artifacts. E.g. --from verify. Mutually exclusive with --steps."
-        ),
-    )
-    parser.add_argument(
-        "--plan",
+        "--smoke",
         action="store_true",
         help=(
-            "Print the resolved step list (which phases are driver-run compute vs "
-            "agent, and the exact commands) and exit without running anything."
+            "Print each selected hypothesis as 'ID <id>: <one-line hypothesis>' "
+            "using the current direction and top-K policy, then stop. Does not "
+            "require --pkl or run later workflow phases. Predictive smoke creates "
+            "or reuses <RUN>.predictive-selection.json beside the run export."
         ),
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help=(
-            "Recompute every compute step even when a valid output JSON "
-            "(<RUN>.json.reproduce.json / .extrapolate.json / .corrected.json) "
-            "already exists. By default such results are REUSED on resume instead "
-            "of re-running the (slow) rerun_experiments.py."
-        ),
-    )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Stream every assistant text block as it arrives.",
     )
     args = parser.parse_args()
 
@@ -1012,64 +1259,140 @@ def main() -> int:
         return rp
 
     json_path = _resolve_existing(args.path, "run JSON file")
-    pkl_path = _resolve_existing(args.pkl, "dataset pkl")
-    extra_pkl_paths = [
-        _resolve_existing(p, "extra dataset pkl") for p in args.extra_pkl
-    ]
+    if args.smoke and args.extra_pkl:
+        parser.error("--smoke cannot be combined with --extra-pkl.")
+    if not args.smoke and args.pkl is None:
+        parser.error("--pkl is required unless --smoke is used.")
+    pkl_path = (
+        _resolve_existing(args.pkl, "dataset pkl")
+        if args.pkl is not None
+        else None
+    )
+    extra_pkl_paths = (
+        [_resolve_existing(p, "extra dataset pkl") for p in args.extra_pkl]
+        if not args.smoke
+        else []
+    )
 
-    # --plan needs no model session and no expensive checks — show and exit.
-    if args.plan:
-        asyncio.run(
-            run_workflow(
-                json_path, pkl_path, extra_pkl_paths, args.verbose,
-                only_steps=args.steps, from_step=args.from_step, plan_only=True,
-            )
+    global DIRECTION
+    DIRECTION = args.direction
+    direction_labels = {
+        "positive": "positive only (posterior > prior)",
+        "both": "both positive and negative",
+        "predictive": "exclusion-only predictive candidates (no cutoff)",
+    }
+    print(
+        f"[direction] {direction_labels[DIRECTION]}",
+        file=sys.stderr,
+    )
+
+    # Positive/both use the usual percentage-based top-K. Predictive mode keeps
+    # every semantically selected candidate. This is resolved once here so all
+    # subsequent helpers and agent instructions agree.
+    global TOP_K
+    try:
+        _raw = json.loads(json_path.read_text())
+        _records = (
+            _raw if isinstance(_raw, list)
+            else _raw.get("records", []) if isinstance(_raw, dict)
+            else []
         )
+        n_hypo = sum(1 for r in _records if isinstance(r, dict))
+    except Exception:
+        _records = []
+        n_hypo = 0
+    # Predictive is exclusion-only: every non-excluded feature continues. The
+    # other modes retain the existing percentage cap.
+    TOP_K = None if DIRECTION == "predictive" else _compute_top_k(n_hypo)
+    _pct_val = int(n_hypo * TOP_K_PCT) if n_hypo > 0 else 0
+    if TOP_K is None:
+        print(
+            f"[selection] {n_hypo} hypotheses → keep every candidate not "
+            "explicitly excluded (no score/top-K cutoff)",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"[top-k] {n_hypo} hypotheses → TOP_K={TOP_K} "
+            f"(min({TOP_K_MAX}, floor({n_hypo}×{TOP_K_PCT:.0%}))="
+            f"min({TOP_K_MAX},{_pct_val})={TOP_K})",
+            file=sys.stderr,
+        )
+
+    if args.smoke:
+        asyncio.run(run_smoke(json_path))
         return 0
 
-    # GUARD: the --pkl brain id (6-digit dataset number) MUST match the brain the run
-    # JSON's experiments were generated on. Reproducing a run against the wrong brain
-    # silently computes every number on the wrong data while looking fine, so a
-    # mismatch is a hard error. (--extra-pkl is expected to be OTHER brains — it is
-    # the extrapolation set — so it is NOT checked here.)
-    json_brain, json_tally = _brain_from_json(json_path)
-    pkl_brain = _brain_from_pkl(pkl_path)
-    if json_brain is None:
+    assert pkl_path is not None  # enforced above unless smoke returned
+
+    # GUARD 1: --pkl full stem must match the dominant dataset_cache_<stem>.pkl
+    # reference in the run JSON.  The stem encodes brain id, mcl level, and
+    # add/sub suffix, so a mismatch means every reproduced number is on wrong data.
+    # Reuse the already-parsed records instead of reading the JSON a second time.
+    hits: Counter = Counter()
+    for _it in _records:
+        if not isinstance(_it, dict):
+            continue
+        _blob = f"{_it.get('code', '')}\n{_it.get('codeOutput', '')}"
+        for _m in _CACHE_STEM_RE.finditer(_blob):
+            hits[_m.group(1)] += 1
+    json_stem = hits.most_common(1)[0][0] if hits else None
+    json_tally = dict(hits)
+    pkl_stem_val = _pkl_stem(pkl_path)
+    if json_stem is None:
         parser.error(
-            f"Could not infer a brain id (6-digit dataset number) from {json_path} — "
-            f"no dataset_cache_<brain>_ reference or lone 6-digit token found in its "
-            f"experiment code. Cannot verify it matches --pkl; aborting.")
-    if pkl_brain is None:
+            f"No concrete dataset_cache_<stem>.pkl reference found in "
+            f"{json_path.name}. Cannot verify --pkl matches the origin dataset.")
+    if pkl_stem_val is None:
         parser.error(
-            f"Could not infer a brain id from --pkl {pkl_path.name} — expected a name "
-            f"like dataset_cache_<brain>_mcl<N>.pkl. Aborting.")
-    if json_brain != pkl_brain:
+            f"--pkl {pkl_path.name} does not follow the "
+            f"dataset_cache_<stem>.pkl naming convention.")
+    if pkl_stem_val != json_stem:
         parser.error(
-            f"Brain-id MISMATCH: the run JSON {json_path.name} was generated on brain "
-            f"{json_brain} (code references {json_tally}), but --pkl is brain "
-            f"{pkl_brain} ({pkl_path.name}). Reproducing one brain's run against "
-            f"another brain's data computes every number on the wrong dataset. Pass "
-            f"the matching --pkl (dataset_cache_{json_brain}_*.pkl).")
-    print(f"[brain-check] OK: run JSON and --pkl are both brain {pkl_brain}",
+            f"Dataset MISMATCH: the run JSON references "
+            f"dataset_cache_{json_stem}.pkl (tally: {json_tally}) but --pkl is "
+            f"dataset_cache_{pkl_stem_val}.pkl. Pass "
+            f"--pkl dataset_cache_{json_stem}.pkl.")
+    print(f"[dataset-check] OK: --pkl matches JSON origin ({pkl_stem_val})",
           file=sys.stderr)
+
+    # GUARD 2: --extra-pkl files must share the same mcl level and add/sub suffix
+    # as --pkl.  Extra datasets are expected to be DIFFERENT brains (the
+    # extrapolation set), but must use identical processing parameters.
+    if extra_pkl_paths:
+        pkl_gran = _pkl_granularity(pkl_path)
+        if pkl_gran is None:
+            parser.error(
+                f"Could not parse mcl level / add|sub suffix from "
+                f"--pkl {pkl_path.name}.")
+        for ep in extra_pkl_paths:
+            ep_gran = _pkl_granularity(ep)
+            if ep_gran is None:
+                parser.error(
+                    f"Could not parse mcl level / add|sub suffix from "
+                    f"--extra-pkl {ep.name}.")
+            if ep_gran != pkl_gran:
+                mcl_p, suf_p = pkl_gran
+                mcl_e, suf_e = ep_gran
+                parser.error(
+                    f"Granularity MISMATCH: --pkl uses mcl{mcl_p}_{suf_p} but "
+                    f"--extra-pkl {ep.name} uses mcl{mcl_e}_{suf_e}. "
+                    f"Extra datasets must share the same mcl level and suffix.")
+        mcl_ok, suf_ok = pkl_gran
+        print(
+            f"[granularity-check] OK: all --extra-pkl files match --pkl "
+            f"(mcl{mcl_ok}_{suf_ok})",
+            file=sys.stderr,
+        )
 
     asyncio.run(
         run_workflow(
             json_path,
             pkl_path,
             extra_pkl_paths,
-            args.verbose,
-            only_steps=args.steps,
-            from_step=args.from_step,
-            force=args.force,
         )
     )
     return 0
-
-
-# NOTE on the brain-check + --plan ordering: --plan is handled above, BEFORE the
-# brain-id guard, so you can inspect a plan without a matching pkl on hand. The
-# real run below still enforces the guard.
 
 
 if __name__ == "__main__":

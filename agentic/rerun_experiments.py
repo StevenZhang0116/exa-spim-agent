@@ -10,11 +10,11 @@ Each AutoDiscovery run export (one JSON file) is a list of tested-hypothesis
 objects. Each carries a ``code`` field: a self-contained Python script that
 loads a dataset ``.pkl``, runs a statistical test, and prints its results (the
 recorded ``codeOutput``). This helper takes ONE run JSON and ONE dataset pkl,
-selects the SAME top-ranked records the summarizer reported (using the same
-``--rank-by`` / ``--top`` flags), re-runs each record's ``code`` against the
-given pkl, and prints the fresh output alongside the recorded one as JSON to
-stdout. It does NOT judge reproduction — that is the agent's job; the helper
-only re-executes deterministically and reports raw old-vs-new output.
+selects the SAME records the summarizer reported (using the same ranking,
+direction, optional top-K, and predictive manifest). Predictive mode forbids
+top-K and therefore re-runs every non-excluded record. It re-runs each record's
+``code`` against the given pkl, and prints fresh and recorded output as JSON.
+It does NOT judge reproduction; it only re-executes deterministically.
 
 Two execution paths
 -------------------
@@ -27,7 +27,7 @@ bootstrap is benign.
 Export → revise → rerun (agent-in-the-loop): the recorded scripts often fail to
 reproduce because they cannot LOCATE the dataset — a "dataset not found" gate the
 monkeypatch doesn't intercept, or a hardcoded path/glob that finds nothing. For
-those, ``--export-dir`` dumps each top-K record's code as an editable
+those, ``--export-dir`` dumps each selected record's code as an editable
 ``hypo_<id>.py`` (plus ``MANIFEST.json`` and ``REVISION_GUIDE.md``) so the agent
 can revise ONLY the loading part — load the pkl directly from ``$RERUN_PKL`` —
 keeping the analysis identical. ``--code-dir`` then executes those revised
@@ -58,6 +58,10 @@ Usage (paths relative to the ``exa-spim-agent/`` project root)
     python agentic/rerun_experiments.py autodiscovery/RUN.json --pkl ../data/RUN.pkl
     python agentic/rerun_experiments.py autodiscovery/RUN.json --pkl DATA.pkl \
         --rank-by posterior-surprise --top 20
+    # Predictive selection (the workflow creates this manifest):
+    python agentic/rerun_experiments.py autodiscovery/RUN.json --pkl DATA.pkl \
+        --direction predictive \
+        --predictive-manifest autodiscovery/.predictive/RUN.selection.json
     # Agent-in-the-loop: export editable scripts, revise them, then rerun:
     python agentic/rerun_experiments.py autodiscovery/RUN.json --pkl DATA.pkl \
         --top 20 --export-dir autodiscovery/RUN.rerun
@@ -99,7 +103,11 @@ from pathlib import Path
 # Reuse the exact ranking the summarizer uses so the rerun set matches the
 # report set. rank_by_surprise.py lives next to this file.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from rank_by_surprise import load_records, rank_records  # noqa: E402
+from rank_by_surprise import (  # noqa: E402
+    load_predictive_ids,
+    load_records,
+    rank_records,
+)
 
 # Every ``*.pkl`` filename literal a recorded script might open.
 _PKL_LITERAL = re.compile(r"""["']([^"']*?\.pkl)["']""")
@@ -520,20 +528,43 @@ def main(argv: list[str] | None = None) -> int:
         "--rank-by",
         choices=["surprise", "posterior-surprise"],
         default="posterior-surprise",
-        help="Ranking key (must match the summarizer's) for picking the top-K.",
+        help="Ranking key; must match the summarizer's selection command.",
+    )
+    parser.add_argument(
+        "--direction",
+        choices=["both", "positive", "predictive"],
+        default="both",
+        help=(
+            "Direction filter (must match the summarizer's): 'positive' re-runs only "
+            "hypotheses where the experiment raised belief (posterior > prior by >0.02); "
+            "'both' allows either belief direction; 'predictive' re-runs "
+            "the IDs in --predictive-manifest."
+        ),
+    )
+    parser.add_argument(
+        "--predictive-manifest",
+        type=Path,
+        default=None,
+        help=(
+            "JSON manifest with a selected_ids list. Required when "
+            "--direction predictive."
+        ),
     )
     parser.add_argument(
         "--top",
         type=int,
-        default=20,
-        help="Re-run only the N top-ranked records (the ones in the report).",
+        default=None,
+        help=(
+            "Re-run only the N top-ranked records. Not allowed with "
+            "--direction predictive, which re-runs every non-excluded record."
+        ),
     )
     parser.add_argument(
         "--export-dir",
         type=Path,
         default=None,
         help=(
-            "Write each top-K record's code as an editable hypo_<id>.py (plus "
+            "Write each selected record's code as an editable hypo_<id>.py (plus "
             "MANIFEST.json and REVISION_GUIDE.md) into this dir, then exit "
             "without running. Edit the loading sections and rerun with --code-dir."
         ),
@@ -573,6 +604,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.direction == "predictive" and args.predictive_manifest is None:
+        parser.error("--direction predictive requires --predictive-manifest PATH.")
+    if args.direction == "predictive" and args.top is not None:
+        parser.error("--direction predictive does not allow --top.")
+    try:
+        predictive_ids = (
+            load_predictive_ids(args.predictive_manifest)
+            if args.predictive_manifest is not None
+            else None
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        parser.error(f"Invalid predictive manifest: {exc}")
+
     if not args.json_file.is_file():
         parser.error(f"No such run JSON: {args.json_file}")
     if not args.pkl.is_file():
@@ -591,7 +635,12 @@ def main(argv: list[str] | None = None) -> int:
         extra_pkls.append(ep.resolve())
 
     records = load_records(args.json_file)
-    ranked, _ = rank_records(records, rank_by=args.rank_by)
+    ranked, _, _excluded = rank_records(
+        records,
+        rank_by=args.rank_by,
+        direction=args.direction,
+        predictive_ids=predictive_ids,
+    )
     if args.top is not None:
         ranked = ranked[: args.top]
 

@@ -17,7 +17,10 @@ tested-hypothesis objects with (at least) the fields ``id``, ``status``,
 This script gathers the hypotheses from ALL given JSON files (or, with no
 paths, every ``autodiscovery/*.json`` next to it) and prints the ordered
 records as JSON to stdout for the agent to turn into a single combined,
-cross-run scientific summary. Two ranking modes are supported (``--rank-by``):
+cross-run scientific summary. ``--direction`` optionally filters the records;
+predictive mode consumes the exclusion-only manifest written by the discovery
+workflow and does not allow a top-K cutoff. Two ranking modes are supported
+(``--rank-by``):
 
 * ``surprise`` (default) — rank by surprise MAGNITUDE (``abs(surprisal)``)
   descending: the most belief-shifting results, regardless of which way belief
@@ -52,6 +55,7 @@ from pathlib import Path
 
 # The folder run exports live in, relative to this script (agentic/ -> ../autodiscovery).
 DEFAULT_DIR = Path(__file__).resolve().parent.parent / "autodiscovery"
+PREDICTIVE_MANIFEST_SUFFIX = ".predictive-selection.json"
 
 
 def parse_surprisal(raw) -> float | None:
@@ -69,7 +73,7 @@ def truncate(text: str, limit: int) -> str:
 
     Keeps the head and tail (where imports/loading and the test+printed numbers
     usually live) and drops the middle, so a very long ``code`` / ``codeOutput``
-    still fits the verifier's slim top-K payload without losing the salient ends.
+    still fits the verifier's selected-record payload without losing salient ends.
     """
     if len(text) <= limit:
         return text
@@ -159,9 +163,12 @@ def priority_score(r: dict) -> float:
 
 
 def rank_records(
-    records: list[dict], rank_by: str = "surprise"
-) -> tuple[list[dict], list[dict]]:
-    """Split into (ranked-with-surprisal, dropped-missing-surprisal).
+    records: list[dict],
+    rank_by: str = "surprise",
+    direction: str = "both",
+    predictive_ids: set[str] | None = None,
+) -> tuple[list[dict], list[dict], list[dict]]:
+    """Split into (ranked-with-surprisal, dropped-missing-surprisal, excluded-direction).
 
     ``rank_by`` selects the ordering key, both descending:
 
@@ -170,17 +177,51 @@ def rank_records(
       so confidently-held surprising findings rank above surprising-but-now-
       disbelieved ones.
 
+    ``direction`` filters which records enter the ranked set:
+
+    * ``"both"``     — all records (positive and negative belief shift).
+    * ``"positive"`` — only records where ``posterior - prior > 0.02``
+      (the experiment raised belief in the hypothesis).
+    * ``"predictive"`` — only records whose IDs were selected for plausible
+      predictive power, regardless of belief-shift direction. The caller must
+      supply ``predictive_ids`` from a workflow-produced selection manifest.
+
     Ties are broken by run then ID so the ordering is stable and reproducible.
     """
-    ranked, dropped = [], []
+    ranked, dropped, excluded = [], [], []
     for r in records:
         s = parse_surprisal(r.get("surprisal"))
         if s is None:
-            dropped.append(r)
-        else:
-            r["_surprisal"] = s
-            r["_priority"] = priority_score(r)
-            ranked.append(r)
+            # Predictive mode is deliberately independent of belief direction;
+            # a selected feature must not disappear merely because its belief-
+            # shift score is missing. Keep it at the end of the ranking.
+            if direction == "predictive" and predictive_ids is not None:
+                if str(r.get("id")) not in predictive_ids:
+                    excluded.append(r)
+                    continue
+                s = 0.0
+            else:
+                dropped.append(r)
+                continue
+        if direction == "positive":
+            try:
+                delta = float(r.get("posterior", 0)) - float(r.get("prior", 0))
+            except (TypeError, ValueError):
+                delta = 0.0
+            if delta <= 0.02:
+                excluded.append(r)
+                continue
+        elif direction == "predictive":
+            if predictive_ids is None:
+                raise ValueError(
+                    "direction='predictive' requires a predictive selection manifest"
+                )
+            if str(r.get("id")) not in predictive_ids:
+                excluded.append(r)
+                continue
+        r["_surprisal"] = s
+        r["_priority"] = priority_score(r)
+        ranked.append(r)
 
     def id_key(r: dict):
         raw = r.get("id")
@@ -195,7 +236,19 @@ def rank_records(
         primary = lambda r: -abs(r["_surprisal"])
 
     ranked.sort(key=lambda r: (primary(r), r.get("_run", ""), id_key(r)))
-    return ranked, dropped
+    return ranked, dropped, excluded
+
+
+def load_predictive_ids(path: Path) -> set[str]:
+    """Load selected hypothesis IDs from a predictive-selection manifest."""
+    with path.open(encoding="utf-8-sig") as f:
+        payload = json.load(f)
+    ids = payload.get("selected_ids") if isinstance(payload, dict) else None
+    if not isinstance(ids, list):
+        raise ValueError(
+            f"{path} must be a JSON object containing a selected_ids list"
+        )
+    return {str(value) for value in ids}
 
 
 def to_records(
@@ -208,10 +261,9 @@ def to_records(
 
     With ``include_code`` each record also carries the recorded experiment
     ``code`` and ``codeOutput`` (middle-truncated to ``max_code_chars`` each) so
-    a statistical-audit agent can read the top-K SLICE instead of the full
-    multi-MB run export. This is what lets the verifier judge the test/logic
-    from the helper's stdout alone — its whole point is to avoid loading the
-    ~95% of records that are not in the reported top K.
+    a statistical-audit agent can read the selected report records instead of
+    the full multi-MB run export. This lets the verifier judge the test/logic
+    from the helper's stdout alone without loading unreported records.
     """
     out = []
     for rank, r in enumerate(ranked, start=1):
@@ -262,7 +314,13 @@ def resolve_paths(raw_paths: list[Path]) -> list[Path]:
     files: list[Path] = []
     for p in raw_paths:
         if p.is_dir():
-            files.extend(sorted(p.glob("*.json")))
+            files.extend(
+                sorted(
+                    candidate
+                    for candidate in p.glob("*.json")
+                    if not candidate.name.endswith(PREDICTIVE_MANIFEST_SUFFIX)
+                )
+            )
         else:
             files.append(p)
 
@@ -293,7 +351,10 @@ def main(argv: list[str] | None = None) -> int:
         "--top",
         type=int,
         default=None,
-        help="Keep only the N top-ranked hypotheses overall.",
+        help=(
+            "Keep only the N top-ranked hypotheses overall. Not allowed with "
+            "--direction predictive, which is exclusion-only."
+        ),
     )
     parser.add_argument(
         "--rank-by",
@@ -311,7 +372,7 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Also emit each returned record's recorded 'code' and 'codeOutput' "
             "(middle-truncated to --max-code-chars). Lets an audit agent read "
-            "the top-K SLICE instead of the full multi-MB run export."
+            "the selected report records instead of the full run export."
         ),
     )
     parser.add_argument(
@@ -323,7 +384,41 @@ def main(argv: list[str] | None = None) -> int:
             "this many chars (head+tail kept, middle dropped). Default 6000."
         ),
     )
+    parser.add_argument(
+        "--direction",
+        choices=["both", "positive", "predictive"],
+        default="both",
+        help=(
+            "Direction filter applied before ranking. "
+            "'positive' keeps only hypotheses where the experiment RAISED belief "
+            "(posterior - prior > 0.02); 'both' (default) keeps positive AND "
+            "negative direction hypotheses; 'predictive' keeps the IDs listed in "
+            "--predictive-manifest, regardless of belief direction."
+        ),
+    )
+    parser.add_argument(
+        "--predictive-manifest",
+        type=Path,
+        default=None,
+        help=(
+            "JSON manifest with a selected_ids list. Required when "
+            "--direction predictive."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.direction == "predictive" and args.predictive_manifest is None:
+        parser.error("--direction predictive requires --predictive-manifest PATH.")
+    if args.direction == "predictive" and args.top is not None:
+        parser.error("--direction predictive does not allow --top.")
+    try:
+        predictive_ids = (
+            load_predictive_ids(args.predictive_manifest)
+            if args.predictive_manifest is not None
+            else None
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        parser.error(f"Invalid predictive manifest: {exc}")
 
     files = resolve_paths(args.paths)
     if not files:
@@ -336,7 +431,12 @@ def main(argv: list[str] | None = None) -> int:
         per_file.append({"file": f.name, "n": len(recs)})
         all_records.extend(recs)
 
-    ranked, dropped = rank_records(all_records, rank_by=args.rank_by)
+    ranked, dropped, excluded = rank_records(
+        all_records,
+        rank_by=args.rank_by,
+        direction=args.direction,
+        predictive_ids=predictive_ids,
+    )
     records = to_records(
         ranked, include_code=args.include_code, max_code_chars=args.max_code_chars
     )
@@ -347,12 +447,17 @@ def main(argv: list[str] | None = None) -> int:
         "source_files": [str(f) for f in files],
         "per_file_counts": per_file,
         "rank_by": args.rank_by,
+        "direction_filter": args.direction,
         "n_total": len(all_records),
         "n_ranked": len(ranked),
         "n_returned": len(records),
         "n_dropped_missing_surprisal": len(dropped),
+        "n_excluded_direction": len(excluded),
         "dropped": [
             {"run": r.get("_run", ""), "id": r.get("id")} for r in dropped
+        ],
+        "excluded_direction": [
+            {"run": r.get("_run", ""), "id": r.get("id")} for r in excluded
         ],
         "surprise_magnitude_max": records[0]["surprise_magnitude"]
         if records
