@@ -27,10 +27,9 @@ The PHASES, in order:
   1. summarize   — [agent] optionally select predictive candidates, rank the
                    retained hypotheses, and write the report.
   2. reproduce   — [compute] run recorded code on ``--pkl`` → [compute] export
-                   editable scripts → [agent] fix data-loading failures (writes
-                   marker if edited) → [compute] re-measure if marker present →
-                   [agent] fold REPRODUCED/DIVERGED/FAILED verdicts. (The
-                   re-measure is skipped when the agent wrote no marker.)
+                   editable scripts → [agent] fix data-loading failures →
+                   [compute] hash-detect and re-measure only changed scripts,
+                   merging them with the first pass → [agent] fold verdicts.
   3. extrapolate — (only with ``--extra-pkl``) [compute] run the reproduced code
                    on each OTHER dataset → [agent] fold GENERALIZES/PARTIAL/
                    DOES-NOT-GENERALIZE/INCONCLUSIVE verdicts.
@@ -42,6 +41,22 @@ The PHASES, in order:
                    was flagged.)
   6. translate   — [agent] faithful 简体中文 localization of the finished report.
                    Pure localization (no re-analysis), so it ALWAYS runs last.
+
+Every step folds into ONE report whose top-level layout is fixed by
+``REPORT_SECTION_ORDER`` (Header → Ranked Conclusions → Reproduction →
+Generalization → Statistical Verification → Statistical Test Corrections →
+Excluded). ``## Excluded`` is the trailing appendix, so each step inserts before
+it. ``_scale_timeouts`` sizes agent turns from the hypothesis count, because
+predictive mode removed the top-K that the old flat budget assumed. Compute
+steps have a fixed 12-hour budget for large experiment reruns.
+
+A full (non-smoke) run also tees its entire console output to
+``<RUN>.json[.predictive].workflow.log.txt`` beside the export (override with
+``--log-txt``, ``/dev/null`` to skip): the dataset guards, step progress, every
+subagent tool call, each step's final reply, the compute subprocesses' live
+``[rerun k/N]`` output, validation WARNINGs, and any fatal diagnostic. It is
+flushed as it goes and closed with an ``# OK/FAILED after Ns`` footer, so a log
+with no footer means the process was killed rather than finished.
 
 ``RANK_BY`` controls ordering. Positive/both modes keep a percentage-based
 top-K. Predictive mode removes only explicit exclusions and keeps every
@@ -67,15 +82,18 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
+import platform
 import re
 import shlex
-import shutil
 import subprocess
 import sys
+import threading
 import time
+import traceback
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -99,6 +117,86 @@ except ImportError:  # pragma: no cover - depends on installed SDK version
 def log(msg: str) -> None:
     """Timestamped progress line to stderr (kept separate from step output)."""
     print(f"[{datetime.now():%H:%M:%S}] {msg}", file=sys.stderr, flush=True)
+
+
+class _Tee:
+    """Fan writes out to several streams at once (console + log file).
+
+    Stands in for ``sys.stdout`` / ``sys.stderr`` so the whole workflow is
+    captured to a txt file while still streaming live to the terminal. Flushes on
+    every write: this run takes hours, so a buffered log that only lands at exit
+    would be useless while it is going — and empty if the process is killed.
+    """
+
+    def __init__(self, *streams):
+        self._streams = streams
+
+    def write(self, data):
+        for s in self._streams:
+            s.write(data)
+            s.flush()
+        return len(data)
+
+    def flush(self):
+        for s in self._streams:
+            s.flush()
+
+    def isatty(self):
+        # Never claim a TTY: a tee is not one, and libraries that probe this to
+        # decide on progress bars / ANSI codes would otherwise pollute the log.
+        return False
+
+
+@contextlib.contextmanager
+def driver_log(log_txt: Path):
+    """Capture this driver's whole console output to ``log_txt`` for the block.
+
+    Mirrors ``run_detector_build_workflow.py``: the workflow runs for hours over
+    several agent turns and several long compute subprocesses, and until now none
+    of that output was persisted anywhere — a run that died mid-step left no
+    record of which step it was on, which validation WARNINGs had fired, or what
+    the compute child printed before it failed. Everything written through
+    ``sys.stdout`` / ``sys.stderr`` inside the block is tee'd here as it goes.
+
+    The header ties the log back to its invocation; the footer is written last on
+    purpose, so a log with no footer means the process was KILLED (an OOM, a
+    Slurm timeout) rather than having finished.
+    """
+    log_txt.parent.mkdir(parents=True, exist_ok=True)
+    orig_out, orig_err = sys.stdout, sys.stderr
+    started = time.monotonic()
+    with log_txt.open("w", encoding="utf-8") as log_fh:
+        log_fh.write(f"# {' '.join(sys.argv)}\n")
+        log_fh.write(f"# started {datetime.now():%Y-%m-%d %H:%M:%S}\n")
+        log_fh.write(f"# host {platform.node()}  python {platform.python_version()}\n\n")
+        log_fh.flush()
+        sys.stdout = _Tee(orig_out, log_fh)
+        sys.stderr = _Tee(orig_err, log_fh)
+        outcome = "FAILED"
+        try:
+            yield log_fh
+            outcome = "OK"
+        except SystemExit as exc:
+            # Step failures and argparse guards raise SystemExit carrying the
+            # diagnostic as its message. Python prints that to the real stderr on
+            # the way out — but only after the finally below has restored it, so
+            # the log would end with no hint of WHY. Write it straight to the
+            # file rather than through the tee, which would duplicate it on the
+            # console.
+            if exc.code not in (0, None):
+                log_fh.write(f"FATAL: {exc.code}\n")
+                log_fh.flush()
+            raise
+        except BaseException:
+            traceback.print_exc()
+            raise
+        finally:
+            sys.stdout, sys.stderr = orig_out, orig_err
+            log_fh.write(
+                f"\n# {outcome} after {time.monotonic() - started:.0f}s "
+                f"(ended {datetime.now():%Y-%m-%d %H:%M:%S})\n"
+            )
+            log_fh.flush()
 
 
 def describe_tool(block) -> str:
@@ -150,15 +248,36 @@ PREDICTIVE_MANIFEST: str | None = None
 # Bump this whenever predictive_selection_instruction changes semantically.
 PREDICTIVE_POLICY_VERSION: str = "exclusion-only-v1"
 PREDICTIVE_MANIFEST_SUFFIX: str = ".predictive-selection.json"
+# Default name for this driver's captured console log (see driver_log_path).
+DRIVER_LOG_SUFFIX: str = ".workflow.log.txt"
 
-# --- Timeout constants -------------------------------------------------------
-# AGENT_STEP_TIMEOUT_S: maximum wall time for a single agent step (SDK turn).
-#   Most fold steps finish in 1-3 min; the verifier/summarizer may take longer.
-#   15 minutes is generous but bounded — an infinite wait on a hung session is worse.
-# COMPUTE_TIMEOUT_S: maximum wall time for a single rerun_experiments.py invocation.
-#   20 hypotheses × ~60s each ≈ 20 min; 2 hours gives a safe margin for heavy tests.
-AGENT_STEP_TIMEOUT_S: int = 900    # 15 minutes
-COMPUTE_TIMEOUT_S: int = 7200      # 2 hours
+# --- Timeout budgets ---------------------------------------------------------
+# Agent budgets scale with how many hypotheses the report carries, because the
+# summarize step authors one full entry per record in a single turn. Compute
+# steps use a fixed 12-hour budget: rerun_experiments.py executes one script per
+# record (each with its own 1800-second cap), and large predictive runs can take
+# substantially longer than the old record-count estimate allowed.
+AGENT_STEP_BASE_S: int = 600        # 10 min of fixed overhead per agent turn
+AGENT_STEP_PER_RECORD_S: int = 30   # + writing/folding one entry
+AGENT_STEP_CEILING_S: int = 3600    # 1 h — a hung session must still abort
+
+AGENT_STEP_TIMEOUT_S: int = 900     # overridden at startup; see _scale_timeouts()
+COMPUTE_TIMEOUT_S: int = 43200      # 12 h per compute step
+
+
+def _scale_timeouts(n_records: int) -> tuple[int, int]:
+    """Size the agent budget from the hypothesis count and report both budgets.
+
+    ``n_records`` is an upper bound on what the report will carry: the effective
+    top-K for positive/both, or the export's full record count for predictive
+    (whose selection manifest may not exist yet on a first run).
+    """
+    global AGENT_STEP_TIMEOUT_S
+    n = max(0, n_records)
+    AGENT_STEP_TIMEOUT_S = min(
+        AGENT_STEP_CEILING_S, AGENT_STEP_BASE_S + AGENT_STEP_PER_RECORD_S * n
+    )
+    return AGENT_STEP_TIMEOUT_S, COMPUTE_TIMEOUT_S
 
 
 def _top_flags() -> str:
@@ -193,6 +312,17 @@ def _compute_top_k(n_hypotheses: int) -> int:
 def predictive_manifest_path(json_path: Path) -> Path:
     """Persistent predictive-selection cache beside the run export."""
     return json_path.with_name(f"{json_path.stem}{PREDICTIVE_MANIFEST_SUFFIX}")
+
+
+def driver_log_path(json_path: Path) -> Path:
+    """Default console-log path beside the run export.
+
+    Scoped by ``--direction`` exactly like the compute artifacts
+    (``.predictive.rerun``, ``.predictive.reproduce.json``, …) so a predictive run
+    never overwrites the log of a positive/both run on the same export.
+    """
+    scope = ".predictive" if DIRECTION == "predictive" else ""
+    return json_path.with_name(f"{json_path.name}{scope}{DRIVER_LOG_SUFFIX}")
 
 
 def predictive_selection_instruction(json_rel: str, manifest_rel: str) -> str:
@@ -244,6 +374,12 @@ def rerun_argv(
     corrected_dir_rel: str | None = None,
     extra_pkls_rel: list[str] | None = None,
     export_dir_rel: str | None = None,
+    base_results_rel: str | None = None,
+    origin_results_rel: str | None = None,
+    only_changed: bool = False,
+    only_corrected: bool = False,
+    extra_only: bool = False,
+    checkpoint_rel: str | None = None,
 ) -> list[str]:
     """Build the ``rerun_experiments.py`` argv for ONE run export + dataset pkl.
 
@@ -256,8 +392,16 @@ def rerun_argv(
     - ``code_dir_rel``    : run the loading-fixed scripts instead of recorded code.
     - ``corrected_dir_rel``: run the test-fixer's corrected scripts (takes
       precedence per record over ``--code-dir``).
-    - ``extra_pkls_rel``  : also run each record on these OTHER datasets (the
+    - ``extra_pkls_rel``  : also run each executed record on these OTHER datasets (the
       ``extrapolations`` list), to judge generalization.
+    - ``base_results_rel`` / ``only_changed``: merge unchanged first-pass
+      results and execute only scripts whose resolved code hash changed.
+    - ``origin_results_rel`` / ``extra_only``: reuse origin measurements and
+      execute only code×extra-dataset work items.
+    - ``only_corrected``  : restrict execution to scripts present in the
+      corrected directory.
+    - ``checkpoint_rel``  : atomically persist and resume fingerprint-matching
+      work items.
     """
     argv = ["python", "agentic/rerun_experiments.py", json_rel,
             "--pkl", pkl_rel, "--rank-by", RANK_BY, "--direction", DIRECTION]
@@ -276,6 +420,18 @@ def rerun_argv(
         argv += ["--code-dir", code_dir_rel]
     if corrected_dir_rel is not None:
         argv += ["--corrected-dir", corrected_dir_rel]
+    if base_results_rel is not None:
+        argv += ["--base-results", base_results_rel]
+    if origin_results_rel is not None:
+        argv += ["--origin-results", origin_results_rel]
+    if only_changed:
+        argv.append("--only-changed")
+    if only_corrected:
+        argv.append("--only-corrected")
+    if extra_only:
+        argv.append("--extra-only")
+    if checkpoint_rel is not None:
+        argv += ["--checkpoint", checkpoint_rel]
     for p in extra_pkls_rel or []:
         argv += ["--extra-pkl", p]
     return argv
@@ -288,44 +444,91 @@ def run_compute(argv: list[str], out_rel: str | None) -> None:
     invocations run here, as a blocking child of the driver, NOT inside an agent
     turn — so nothing is ever killed at turn-end or lost to a ``nohup &`` detach.
     The child's stdout (its JSON payload) is captured to ``out_rel`` when given;
-    its stderr (the live ``[rerun k/N]`` progress) streams straight through so a
-    long run stays observable. A non-zero exit aborts the workflow loudly rather
-    than letting a later agent step fold a half-written or empty JSON.
+    its stderr (the live ``[rerun k/N]`` progress) is relayed line by line so a
+    long run stays observable. Output is written to a sibling temporary file and
+    atomically replaces the final JSON only after a successful exit; failures
+    leave any prior valid result untouched and abort before an agent can fold it.
+
+    The relay is what puts the child's progress in the driver log: inheriting this
+    process's file descriptors would send it to the real terminal only, bypassing
+    the ``_Tee`` installed on ``sys.stderr`` — and the compute steps are where the
+    hours go, so their output is exactly what a post-mortem needs.
     """
     pretty = " ".join(shlex.quote(a) for a in argv)
     log(f"  [compute] {pretty}")
     if out_rel is not None:
         log(f"  [compute] → stdout JSON to {out_rel}")
     start = time.monotonic()
-    out_fh = open(PROJECT_ROOT / out_rel, "w") if out_rel is not None else None
+    out_path = PROJECT_ROOT / out_rel if out_rel is not None else None
+    tmp_out_path = (
+        out_path.with_name(f".{out_path.name}.{os.getpid()}.tmp")
+        if out_path is not None
+        else None
+    )
+    out_fh = open(tmp_out_path, "w") if tmp_out_path is not None else None
+
+    def _pump(pipe, sink) -> None:
+        """Relay a child pipe to one of our (possibly tee'd) streams, live."""
+        try:
+            for line in pipe:
+                sink.write(line)
+                sink.flush()
+        except (ValueError, OSError):
+            pass  # pipe closed under us on kill — nothing left to relay
+        finally:
+            pipe.close()
+
+    pumps: list[threading.Thread] = []
     try:
-        # cwd=PROJECT_ROOT so the relative paths in argv resolve; stderr inherits
-        # this process's stderr so progress is visible live; stdout → the file.
-        proc = subprocess.run(
+        # cwd=PROJECT_ROOT so the relative paths in argv resolve. stderr is always
+        # piped and relayed; stdout goes to the JSON file when there is one, and
+        # is relayed as console output when there is not.
+        proc = subprocess.Popen(
             argv,
             cwd=str(PROJECT_ROOT),
-            stdout=out_fh if out_fh is not None else None,
-            check=False,
-            timeout=COMPUTE_TIMEOUT_S,
+            stdout=out_fh if out_fh is not None else subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
         )
-    except subprocess.TimeoutExpired:
-        if out_fh is not None:
-            out_fh.close()
-        raise SystemExit(
-            f"Compute step TIMED OUT after {COMPUTE_TIMEOUT_S}s: {pretty}. "
-            "Aborting — increase COMPUTE_TIMEOUT_S if the dataset is large."
-        )
+        # Daemon threads, and the timeout stays on proc.wait() rather than on the
+        # reads: a child that hangs while printing nothing must still be killed.
+        for pipe, sink in ((proc.stderr, sys.stderr), (proc.stdout, sys.stdout)):
+            if pipe is None:
+                continue
+            t = threading.Thread(target=_pump, args=(pipe, sink), daemon=True)
+            t.start()
+            pumps.append(t)
+        try:
+            proc.wait(timeout=COMPUTE_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            if tmp_out_path is not None:
+                tmp_out_path.unlink(missing_ok=True)
+            raise SystemExit(
+                f"Compute step TIMED OUT after {COMPUTE_TIMEOUT_S}s: {pretty}. "
+                "Aborting — increase COMPUTE_TIMEOUT_S if the dataset is large."
+            )
     finally:
+        # Join before closing the output file so no relayed line is lost, but
+        # bounded: a wedged pump thread must not hold the workflow hostage.
+        for t in pumps:
+            t.join(timeout=10)
         if out_fh is not None:
             out_fh.close()
     dur = time.monotonic() - start
     if proc.returncode != 0:
-        # Drop a non-empty hint into the (now-suspect) output file's neighbour so
-        # a resume can tell the JSON is not trustworthy, then abort.
+        # The child wrote only to the temporary path, so discard it and preserve
+        # any prior final JSON. Per-work-item checkpoints retain completed work.
+        if tmp_out_path is not None:
+            tmp_out_path.unlink(missing_ok=True)
         raise SystemExit(
             f"Compute step FAILED (exit {proc.returncode}) after {dur:.0f}s: {pretty}. "
             "Aborting before any agent folds a bad result."
         )
+    if tmp_out_path is not None and out_path is not None:
+        os.replace(tmp_out_path, out_path)
     log(f"  [compute] done in {dur:.0f}s.")
 
 
@@ -338,6 +541,71 @@ def zh_path_for(summary_rel: str) -> str:
     if summary_rel.endswith(".md"):
         return summary_rel[: -len(".md")] + ".zh.md"
     return summary_rel + ".zh.md"
+
+
+# --- Canonical report layout -------------------------------------------------
+# Every fold step appends a file-wide "— Summary" section to the SAME report, and
+# each step used to describe its position only relative to its predecessor —
+# nothing anchored the summaries to the ranked list. Three past runs therefore
+# produced three different layouts (in one, Reproduction and Generalization landed
+# ABOVE the ranked list while Verification landed below it, and the top section was
+# titled "Synthesis" instead of "Header"). Every instruction now quotes this one
+# order, and `## Excluded` is the trailing appendix: later steps insert BEFORE it
+# rather than at the end of the file.
+HEADER_SECTION = "## Header"
+RANKED_SECTION = "## Ranked Conclusions (highest priority first)"
+EXCLUDED_SECTION = "## Excluded"
+REPORT_SECTION_ORDER: tuple[str, ...] = (
+    HEADER_SECTION,
+    RANKED_SECTION,
+    "## Reproduction — Summary",
+    "## Generalization — Summary",
+    "## Statistical Verification — Summary",
+    "## Statistical Test Corrections — Summary",
+    EXCLUDED_SECTION,
+)
+
+
+def layout_rule(section: str) -> str:
+    """The placement sentence every fold step appends to its instruction.
+
+    One shared sentence rather than per-step prose, so the sections cannot drift
+    apart again: a step that only knows its predecessor cannot keep the file in a
+    stable order.
+    """
+    order = " → ".join(REPORT_SECTION_ORDER)
+    return (
+        f"PLACEMENT: the report uses one canonical top-level order shared by every "
+        f"step of this workflow — {order}. Insert '{section}' at exactly that "
+        f"position; sections for phases that did not run are simply absent. Never "
+        f"reorder or re-title sections already in the file, and keep "
+        f"'{EXCLUDED_SECTION} …' LAST as the appendix (insert before it, not at the "
+        f"end of the file). "
+    )
+
+
+def excluded_rule() -> str:
+    """What the summarize step must put in the trailing Excluded appendix.
+
+    Previously unspecified: in predictive mode a past run improvised the section by
+    reading the selection manifest itself, which no instruction asked for — so the
+    appendix was not reproducible. The ranking helper now reports each exclusion's
+    reason, so the content is pinned to data the agent is already given.
+    """
+    if DIRECTION == "predictive":
+        return (
+            f"Close the report with an '{EXCLUDED_SECTION} (predictive-selection)' "
+            "appendix built from the helper's `excluded_direction` list "
+            "(`n_excluded_direction` entries, each with `id` and the selection "
+            "`reason`): one bullet per excluded hypothesis, quoting its reason "
+            "verbatim. This documents what was dropped and why, so the kept set is "
+            "auditable against the full export. "
+        )
+    return (
+        f"If the helper reported dropped hypotheses (`n_dropped_missing_surprisal` "
+        f"> 0), close the report with an '{EXCLUDED_SECTION} (no surprisal score)' "
+        "appendix listing their run + id so coverage is transparent. "
+    )
 
 
 def build_steps(
@@ -378,6 +646,10 @@ def build_steps(
     repro_rel = f"{json_rel}{scope_suffix}.reproduce.json"           # loading-fixed code on origin
     extrap_rel = f"{json_rel}{scope_suffix}.extrapolate.json"        # +extra datasets
     corrected_rel = f"{json_rel}{scope_suffix}.corrected.json"       # corrected tests +extras
+    repro_raw_checkpoint_rel = f"{repro_raw_rel}.checkpoint.json"
+    repro_checkpoint_rel = f"{repro_rel}.checkpoint.json"
+    extrap_checkpoint_rel = f"{extrap_rel}.checkpoint.json"
+    corrected_checkpoint_rel = f"{corrected_rel}.checkpoint.json"
 
     steps: list[dict[str, object]] = []
     if DIRECTION == "predictive":
@@ -402,7 +674,12 @@ def build_steps(
             "name": "summarize-discoveries",
             "phase": "summarize",
             "kind": "agent",
-            "expects": ["priority_score", "##"],
+            # Check the two headings this step OWNS and every later step anchors
+            # to. The previous markers could not catch a layout problem:
+            # "priority_score" is a code identifier a report need never print
+            # (one past run contains it zero times) and "##" is true of any
+            # Markdown file.
+            "expects": [HEADER_SECTION, RANKED_SECTION],
             "instruction": (
                 "Use the discovery-summarizer subagent to digest the single "
                 f"AutoDiscovery run export at {json_rel}. It must run "
@@ -413,7 +690,12 @@ def build_steps(
                 "beyond what the helper returns). "
                 f"Write the ranked report to {summary_rel}, ordered by the "
                 "helper's ranking (highest priority first), and display each "
-                "entry's priority_score alongside its surprise magnitude. Report "
+                "entry's priority_score alongside its surprise magnitude. "
+                f"Use exactly these two top-level headings, verbatim: "
+                f"'{HEADER_SECTION}' for the source/ranking/count preamble and "
+                f"one-paragraph synthesis, then '{RANKED_SECTION}' for the ranked "
+                "entries — later steps insert their own sections around these two "
+                "and depend on the exact titles. " + excluded_rule() + "Report "
                 "the path it wrote and a short executive summary of the "
                 "highest-priority conclusions (high posterior and high surprise)."
             ),
@@ -423,7 +705,9 @@ def build_steps(
             "name": "reproduce-run",
             "phase": "reproduce",
             "kind": "compute",
-            "argv": rerun_argv(json_rel, pkl_rel),
+            "argv": rerun_argv(
+                json_rel, pkl_rel, checkpoint_rel=repro_raw_checkpoint_rel
+            ),
             "out": repro_raw_rel,
         },
         {
@@ -450,32 +734,34 @@ def build_steps(
                 f"{pkl_rel} and exported editable scripts to {rerun_dir_rel}; "
                 f"read the results JSON at {repro_raw_rel} "
                 "(top-level counts + a `results` list; each has `id`, `status`, "
-                "`rerun_exitcode`, `rerun_stdout`, `rerun_stderr`). For every result "
-                "that FAILED or TIMED OUT for a DATA-LOADING / ENVIRONMENT reason "
+                "`rerun_exitcode`, `rerun_stdout`, `rerun_stderr`, and the separate "
+                "`result_status`/`result_failure_reason`). For every result whose "
+                "result is UNUSABLE for a DATA-LOADING / ENVIRONMENT reason — even "
+                "when the script incorrectly exited 0 — "
                 "(a NumPy-2-written pkl the host can't unpickle, a 'dataset not "
                 "found' gate, a pip-install retry loop), revise ONLY the "
                 f"loading/bootstrap of the failing {rerun_dir_rel}/hypo_<id>.py "
                 "(load the pkl directly from $RERUN_PKL, fix the NumPy version, drop "
                 "pip-retry loops) while keeping the ANALYSIS byte-for-byte identical. "
-                "Do NOT touch scripts that already succeeded. If you edit any scripts, "
-                f"create an empty marker file `{rerun_dir_rel}/.loading-fixes-applied` "
-                "so the driver knows to re-measure with the fixed code. If NOTHING "
-                f"failed for a loading reason, do NOT create the marker and say so — "
-                "the driver will reuse the recorded-code results directly. Report "
-                "which ids you fixed and why."
+                "Do NOT touch scripts whose result is USABLE. No marker file is "
+                "needed: the driver compares code hashes and selectively reruns only "
+                "the scripts whose contents actually changed. Report which ids you "
+                "fixed and why."
             ),
         },
         {
             "name": "reproduce-remeasure",
             "phase": "reproduce",
             "kind": "compute",
-            "argv": rerun_argv(json_rel, pkl_rel, code_dir_rel=rerun_dir_rel),
+            "argv": rerun_argv(
+                json_rel,
+                pkl_rel,
+                code_dir_rel=rerun_dir_rel,
+                base_results_rel=repro_raw_rel,
+                only_changed=True,
+                checkpoint_rel=repro_checkpoint_rel,
+            ),
             "out": repro_rel,
-            # The agent writes a marker when it edits any script; without it
-            # the loading-fix results equal the recorded-code run, so skip and
-            # reuse the raw JSON (avoids running the same experiments twice).
-            "skip_if_no_marker": f"{rerun_dir_rel}/.loading-fixes-applied",
-            "reuse_out_from": repro_raw_rel,
         },
         {
             "name": "reproduce-fold",
@@ -486,16 +772,18 @@ def build_steps(
                 "Use the discovery-reproducer subagent to fold the reproduction "
                 "verdicts into the report. The driver has produced the final "
                 f"reproduction results JSON at {repro_rel} (each result marks its "
-                "`code_source` as recorded|revised and carries `rerun_stdout` plus "
-                "the recorded `recorded_output`). Do NOT re-run anything. For each "
+                "`code_source` as recorded|revised, carries `result_status` / "
+                "`result_failure_reason`, and has `rerun_stdout` plus the recorded "
+                "`recorded_output`). Do NOT re-run anything. For each "
                 "record compare the fresh key numbers (test statistic, p-value, "
                 "effect size, n) to the recorded ones and assign a REPRODUCED / "
                 f"DIVERGED / FAILED verdict. Read {summary_rel} and fold the result "
                 "INTO each hypothesis's existing ranked entry (append Reproduction / "
                 "Rerun result bullets in place, keeping prior bullets; note whether "
                 "the code was recorded or revised-loading), plus one "
-                "'Reproduction — Summary' section. Report the path and which "
-                "findings did NOT reproduce."
+                "'## Reproduction — Summary' section. "
+                + layout_rule("## Reproduction — Summary")
+                + "Report the path and which findings did NOT reproduce."
             ),
         },
     ])
@@ -513,14 +801,24 @@ def build_steps(
                 "argv": rerun_argv(
                     json_rel, pkl_rel,
                     code_dir_rel=rerun_dir_rel, extra_pkls_rel=extra_pkls_rel,
+                    origin_results_rel=repro_rel,
+                    extra_only=True,
+                    checkpoint_rel=extrap_checkpoint_rel,
                 ),
                 "out": extrap_rel,
-                # When the reproduce phase has not run, rerun_dir_rel may be
-                # empty. Passing --code-dir to an empty dir is implicit; fall
-                # back to recorded code instead.
+                # reproduce-export always runs before this step, so rerun_dir_rel
+                # is normally populated. It can still be empty if that export
+                # produced nothing (no selected records, or a prior export that
+                # failed after creating the dir) — passing --code-dir to an empty
+                # dir has implicit behaviour, so fall back to recorded code.
                 "check_scripts_in": rerun_dir_rel,
                 "argv_if_no_scripts": rerun_argv(
-                    json_rel, pkl_rel, extra_pkls_rel=extra_pkls_rel,
+                    json_rel,
+                    pkl_rel,
+                    extra_pkls_rel=extra_pkls_rel,
+                    origin_results_rel=repro_rel,
+                    extra_only=True,
+                    checkpoint_rel=extrap_checkpoint_rel,
                 ),
             }
         )
@@ -537,18 +835,18 @@ def build_steps(
                     f"NOT generated on ({extra_list}); read the results JSON at "
                     f"{extrap_rel}. Each result has the origin fields PLUS an "
                     "`extrapolations` list — one entry per extra pkl with `pkl`, "
-                    "`pkl_name`, `exitcode`, `timed_out`, `runtime_ms`, `stdout`, "
-                    "`stderr`. Do NOT re-run anything. For each hypothesis compare "
+                    "`pkl_name`, `exitcode`, `timed_out`, `runtime_ms`, "
+                    "`result_status`, `result_failure_reason`, `stdout`, `stderr`. "
+                    "Do NOT re-run anything. For each hypothesis compare "
                     "the origin numbers to each extra dataset's numbers (direction, "
                     "significance, effect size) and assign GENERALIZES / PARTIAL / "
                     "DOES-NOT-GENERALIZE / INCONCLUSIVE (INCONCLUSIVE when a script "
                     f"could not run on an extra pkl). Read {summary_rel} and fold "
                     "the result INTO each hypothesis's existing ranked entry (append "
                     "Generalization / Across datasets bullets in place, keeping prior "
-                    "bullets), plus one 'Generalization — Summary' section placed "
-                    "AFTER 'Reproduction — Summary' and BEFORE any 'Statistical "
-                    "Verification' section. Report the path and which findings do "
-                    "NOT generalize."
+                    "bullets), plus one '## Generalization — Summary' section. "
+                    + layout_rule("## Generalization — Summary")
+                    + "Report the path and which findings do NOT generalize."
                 ),
             }
         )
@@ -582,12 +880,11 @@ def build_steps(
                 "place, keeping the summary, reproduction and generalization "
                 "bullets). Use the 5-level verdict scheme SOUND | WEAK | MINOR | "
                 "MAJOR | CRITICAL (the downstream fix-tests step keys off "
-                "MAJOR/CRITICAL and concrete test-fault bullets). Place one "
-                "file-wide 'Statistical Verification — Summary' section AFTER the "
-                "'Generalization — Summary' section (when present) and BEFORE any "
-                "'Excluded' section; include the verdict breakdown and a "
-                "Benjamini–Hochberg FDR subsection. Report the path and the most "
-                "serious problems found."
+                "MAJOR/CRITICAL and concrete test-fault bullets). Add one "
+                "file-wide '## Statistical Verification — Summary' section with the "
+                "verdict breakdown and a Benjamini–Hochberg FDR subsection. "
+                + layout_rule("## Statistical Verification — Summary")
+                + "Report the path and the most serious problems found."
             ),
         }
     )
@@ -640,10 +937,22 @@ def build_steps(
                 json_rel, pkl_rel,
                 code_dir_rel=rerun_dir_rel, corrected_dir_rel=fixed_dir_rel,
                 extra_pkls_rel=extra_pkls_rel,
+                only_corrected=True,
+                checkpoint_rel=corrected_checkpoint_rel,
             ),
             "out": corrected_rel,
             # No corrected scripts → nothing to re-measure; skip the run entirely.
             "skip_if_no_scripts_in": fixed_dir_rel,
+            # Same empty-.rerun/ fallback as extrapolate-run: this step also
+            # passes --code-dir rerun_dir_rel, so it needs the same guard rather
+            # than relying on --code-dir's implicit empty-dir behaviour.
+            "check_scripts_in": rerun_dir_rel,
+            "argv_if_no_scripts": rerun_argv(
+                json_rel, pkl_rel,
+                corrected_dir_rel=fixed_dir_rel, extra_pkls_rel=extra_pkls_rel,
+                only_corrected=True,
+                checkpoint_rel=corrected_checkpoint_rel,
+            ),
         }
     )
     steps.append(
@@ -651,15 +960,20 @@ def build_steps(
             "name": "fix-tests-fold",
             "phase": "fix-tests",
             "kind": "agent",
-            # Folding is a no-op when the measure step was skipped (no corrected
-            # JSON on disk); the driver detects that and skips this step too.
+            # Folding is a no-op when the measure step was skipped; the driver
+            # detects that and skips this step too. BOTH guards are needed:
+            # skip_if_missing alone let a stale .corrected.json from an earlier
+            # run be folded as if it belonged to this one, so this step skips
+            # unless the author step actually wrote corrected scripts.
+            "skip_if_no_scripts_in": fixed_dir_rel,
             "skip_if_missing": corrected_rel,
             "expects": ["Statistical Test Corrections — Summary"],
             "instruction": (
                 "Use the discovery-test-fixer subagent to fold CORRECTED-test "
                 "verdicts into the report. The driver has re-measured the corrected "
                 f"scripts; read the results JSON at {corrected_rel} and use the "
-                f"`code_source: corrected` results{corrected_note} Do NOT re-run "
+                f"`code_source: corrected` results and their `result_status` / "
+                f"`result_failure_reason` fields{corrected_note} Do NOT re-run "
                 "anything. For each corrected hypothesis assign UPHELD / WEAKENED / "
                 "OVERTURNED by comparing the corrected numbers (statistic, p, effect "
                 "size + CI) to the original"
@@ -673,8 +987,9 @@ def build_steps(
                 "/ Post-correction verdict"
                 + (" / Corrected generalization" if extra_pkls_rel else "")
                 + " bullets INTO each fixed entry in place (keep all prior bullets), "
-                "plus one 'Statistical Test Corrections — Summary' section at the "
-                "very end. Report the path and which findings changed under the "
+                "plus one '## Statistical Test Corrections — Summary' section. "
+                + layout_rule("## Statistical Test Corrections — Summary")
+                + "Report the path and which findings changed under the "
                 "correct test."
             ),
         }
@@ -703,8 +1018,9 @@ def build_steps(
                 "probabilities) verbatim. Keep verbatim (do NOT translate) every "
                 "identifier, hypothesis id, run/dataset id, file path, code span, "
                 "metric/test name, unit, and verdict token (REPRODUCED, DIVERGED, "
-                "GENERALIZES, DOES-NOT-GENERALIZE, PARTIAL, OK, MINOR, MAJOR, "
-                "CRITICAL, UPHELD, WEAKENED, OVERTURNED). Do NOT re-run or re-judge "
+                "FAILED, GENERALIZES, DOES-NOT-GENERALIZE, PARTIAL, INCONCLUSIVE, "
+                "SOUND, WEAK, MINOR, MAJOR, CRITICAL, UPHELD, WEAKENED, "
+                "OVERTURNED). Do NOT re-run or re-judge "
                 "anything. Write exactly that one file and report its path."
             ),
         }
@@ -747,9 +1063,9 @@ def build_options() -> ClaudeAgentOptions:
     )
 
 
-async def _run_step_inner(client: ClaudeSDKClient, step: dict[str, str]) -> str:
+async def _run_step_inner(client: ClaudeSDKClient, step: dict[str, object]) -> str:
     """Core logic for one agent step — called by run_step inside a timeout guard."""
-    await client.query(step["instruction"])
+    await client.query(str(step["instruction"]))
 
     chunks: list[str] = []
     n_tools = 0
@@ -773,8 +1089,12 @@ async def _run_step_inner(client: ClaudeSDKClient, step: dict[str, str]) -> str:
     return "".join(chunks)
 
 
-async def run_step(client: ClaudeSDKClient, step: dict[str, str]) -> str:
+async def run_step(client: ClaudeSDKClient, step: dict[str, object]) -> str:
     """Send one workflow step to the session and return its final text.
+
+    ``step`` is one entry from ``build_steps`` (plus the lighter dict ``run_smoke``
+    builds), so its values are heterogeneous — ``instruction`` is a str, but
+    siblings hold argv lists, ``None``, and skip flags.
 
     Wraps ``_run_step_inner`` with ``AGENT_STEP_TIMEOUT_S`` so a hung SDK turn
     aborts loudly rather than blocking the workflow indefinitely.
@@ -845,25 +1165,6 @@ def _has_hypo_scripts(dir_rel: str) -> bool:
     """
     d = PROJECT_ROOT / dir_rel
     return d.is_dir() and any(d.glob("hypo_*.py"))
-
-
-def _valid_compute_json(out_rel: str) -> bool:
-    """True if ``out_rel`` already holds a usable ``rerun_experiments.py`` payload.
-
-    Used to REUSE an expensive compute result on resume instead of recomputing.
-    A previous run can leave a half-written / empty / non-JSON file behind (e.g.
-    a killed process) — exactly what cost an hour last time — so a bare
-    ``exists()`` is not enough. We require the file to parse as JSON and carry a
-    non-empty ``results`` list, the contract every downstream fold step relies on.
-    """
-    p = PROJECT_ROOT / out_rel
-    if not p.is_file() or p.stat().st_size == 0:
-        return False
-    try:
-        payload = json.loads(p.read_text())
-    except (ValueError, OSError):
-        return False
-    return bool(isinstance(payload, dict) and payload.get("results"))
 
 
 def _source_sha256(source_path: Path) -> str:
@@ -961,57 +1262,38 @@ def run_compute_step(step: dict[str, object]) -> None:
 
     Honors skip rules so a resume reuses expensive results and the common path
     stays cheap. Checked in order:
-    - reuse-if-output-exists: if this step's ``out`` JSON is already on disk and
-      VALID (parses, non-empty ``results``), reuse it instead of recomputing.
     - ``skip_if_scripts_exist_in``: skip (without overwriting) when the target
       dir already holds hypo_*.py scripts — used by the export step so a resume
       never clobbers loading-fix edits from a prior run.
     - ``skip_if_no_scripts_in``: if the preceding agent wrote no hypo_<id>.py
-      there, this run would duplicate an earlier one — skip it, and when
-      ``reuse_out_from`` is given, copy that earlier JSON to this step's ``out``
-      so the downstream fold step finds its expected input.
-    - ``skip_if_no_marker``: if the file at this path is absent (the preceding
-      agent wrote no loading-fix marker), skip and reuse ``reuse_out_from`` —
-      the recorded-code run already captured the correct results.
+      there, this run would have no work, so skip it.
+    - all result-producing steps enter the helper, which cheaply reuses its
+      per-work-item checkpoint and notices changed code/data/configuration.
     - ``check_scripts_in`` / ``argv_if_no_scripts``: when the dir is empty, use
       the fallback argv (without ``--code-dir``) so the step runs against the
       recorded code instead of an empty directory.
+
+    Skip rules deliberately run before launching the helper so an empty corrected
+    phase cannot make a fold step consume stale output from an earlier run.
     """
     out_rel = step.get("out")  # type: ignore[assignment]
-    # 1) Reuse a valid existing output (resume without recomputing).
-    if out_rel and _valid_compute_json(str(out_rel)):
-        log(f"  [compute] reusing existing {out_rel} (valid).")
-        return
-    # 2) Scripts already on disk — skip export to avoid clobbering edits.
+    # 1) Scripts already on disk — skip export to avoid clobbering edits.
     skip_exist = step.get("skip_if_scripts_exist_in")
     if skip_exist and _has_hypo_scripts(str(skip_exist)):
         log(f"  [compute] skipped (scripts already in {skip_exist}; "
             "not overwriting).")
         return
-    # 3) Nothing for the preceding agent to have fixed/corrected → skip the run.
+    # 2) Nothing for the preceding agent to have fixed/corrected → skip the run.
     skip_dir = step.get("skip_if_no_scripts_in")
     if skip_dir and not _has_hypo_scripts(str(skip_dir)):
-        reuse = step.get("reuse_out_from")
-        if reuse and out_rel:
-            shutil.copyfile(PROJECT_ROOT / str(reuse), PROJECT_ROOT / str(out_rel))
-            log(f"  [compute] skipped (no scripts in {skip_dir}); "
-                f"reused {reuse} → {out_rel}.")
-        else:
-            log(f"  [compute] skipped (no scripts in {skip_dir}); "
-                "nothing to re-measure.")
+        log(f"  [compute] skipped (no scripts in {skip_dir}); "
+            "nothing to re-measure.")
+        if out_rel and (PROJECT_ROOT / str(out_rel)).is_file():
+            log(f"  [compute] NOTE: {out_rel} on disk is from an EARLIER run "
+                "and is NOT part of this one; the fold step skips with this "
+                "step, so it will not be read.")
         return
-    # 4) No loading-fix marker → agent made no changes; reuse the raw run output.
-    skip_marker = step.get("skip_if_no_marker")
-    if skip_marker and not (PROJECT_ROOT / str(skip_marker)).is_file():
-        reuse = step.get("reuse_out_from")
-        if reuse and out_rel:
-            shutil.copyfile(PROJECT_ROOT / str(reuse), PROJECT_ROOT / str(out_rel))
-            log(f"  [compute] skipped (no loading fixes applied — "
-                f"marker {skip_marker} absent); reused {reuse} → {out_rel}.")
-        else:
-            log(f"  [compute] skipped (marker {skip_marker} absent).")
-        return
-    # 5) Select argv: use the no-code-dir fallback when the scripts dir is empty
+    # 3) Select argv: use the no-code-dir fallback when the scripts dir is empty
     #    (e.g. reproduce phase was skipped) to avoid passing --code-dir to an
     #    empty directory whose behaviour is implicit in rerun_experiments.py.
     check_dir = step.get("check_scripts_in")
@@ -1024,8 +1306,8 @@ def run_compute_step(step: dict[str, object]) -> None:
     run_compute(argv, str(out_rel) if out_rel else None)
 
 
-def _print_smoke_selection(json_rel: str) -> None:
-    """Print one line per selected hypothesis using the normal ranking helper."""
+def _print_smoke_selection(json_rel: str) -> list[str]:
+    """Print and return one line per selected hypothesis."""
     command = shlex.split(rank_cmd(json_rel))
     proc = subprocess.run(
         command,
@@ -1046,9 +1328,29 @@ def _print_smoke_selection(json_rel: str) -> None:
     except (ValueError, KeyError, TypeError) as exc:
         raise SystemExit(f"Smoke selection returned invalid JSON: {exc}")
 
+    summaries = []
     for record in records:
         hypothesis = " ".join(str(record.get("hypothesis", "")).split())
-        print(f"ID {record.get('id')}: {hypothesis}")
+        summary = f"ID {record.get('id')}: {hypothesis}"
+        summaries.append(summary)
+        print(summary)
+    return summaries
+
+
+def _save_smoke_summaries(manifest_rel: str, summaries: list[str]) -> None:
+    """Persist the exact human-readable smoke output in its manifest."""
+    manifest_path = PROJECT_ROOT / manifest_rel
+    try:
+        payload = json.loads(manifest_path.read_text())
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"Unable to save smoke summaries to manifest: {exc}")
+    if not isinstance(payload, dict):
+        raise SystemExit("Unable to save smoke summaries: manifest is not an object.")
+    payload["one_line_summaries"] = summaries
+    manifest_path.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
 
 
 async def run_smoke(json_path: Path) -> None:
@@ -1075,7 +1377,8 @@ async def run_smoke(json_path: Path) -> None:
                 await run_step(client, step)
             _validate_predictive_manifest(PREDICTIVE_MANIFEST, json_rel)
             _stamp_predictive_manifest(PREDICTIVE_MANIFEST, json_rel)
-        _print_smoke_selection(json_rel)
+        summaries = _print_smoke_selection(json_rel)
+        _save_smoke_summaries(PREDICTIVE_MANIFEST, summaries)
     finally:
         PREDICTIVE_MANIFEST = None
 
@@ -1121,6 +1424,14 @@ async def run_workflow(
                 run_compute_step(step)
             else:
                 # An agent fold step whose compute input was skipped has no work.
+                # Checked before skip_if_missing: an output file left by an
+                # earlier run can exist while THIS run's phase produced nothing.
+                no_scripts = step.get("skip_if_no_scripts_in")
+                if no_scripts and not _has_hypo_scripts(str(no_scripts)):
+                    log(f"  [agent] skipped ('{name}'): no hypo_*.py in "
+                        f"{no_scripts} (nothing was authored this run — any "
+                        "output JSON on disk belongs to an earlier run).")
+                    continue
                 miss = step.get("skip_if_missing")
                 if miss and not (PROJECT_ROOT / str(miss)).is_file():
                     log(f"  [agent] skipped ('{name}'): {miss} absent "
@@ -1250,6 +1561,23 @@ def main() -> int:
             "or reuses <RUN>.predictive-selection.json beside the run export."
         ),
     )
+    parser.add_argument(
+        "--log-txt",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Path for this driver's captured console log. Default: "
+            f"<RUN>.json[.predictive]{DRIVER_LOG_SUFFIX} beside the run export. "
+            "Everything printed — the dataset guards, step progress, each "
+            "subagent tool call, every step's final reply, the compute "
+            "subprocesses' live progress, validation WARNINGs, and any fatal "
+            "diagnostic — is tee'd there as well as to the terminal, flushed as "
+            "it goes, so a workflow that dies mid-step still leaves a record. "
+            "Pass /dev/null to skip. Ignored with --smoke, whose output is "
+            "already persisted in the predictive-selection manifest."
+        ),
+    )
     args = parser.parse_args()
 
     def _resolve_existing(p: Path, what: str) -> Path:
@@ -1276,122 +1604,154 @@ def main() -> int:
 
     global DIRECTION
     DIRECTION = args.direction
-    direction_labels = {
-        "positive": "positive only (posterior > prior)",
-        "both": "both positive and negative",
-        "predictive": "exclusion-only predictive candidates (no cutoff)",
-    }
-    print(
-        f"[direction] {direction_labels[DIRECTION]}",
-        file=sys.stderr,
-    )
 
-    # Positive/both use the usual percentage-based top-K. Predictive mode keeps
-    # every semantically selected candidate. This is resolved once here so all
-    # subsequent helpers and agent instructions agree.
-    global TOP_K
-    try:
-        _raw = json.loads(json_path.read_text())
-        _records = (
-            _raw if isinstance(_raw, list)
-            else _raw.get("records", []) if isinstance(_raw, dict)
-            else []
-        )
-        n_hypo = sum(1 for r in _records if isinstance(r, dict))
-    except Exception:
-        _records = []
-        n_hypo = 0
-    # Predictive is exclusion-only: every non-excluded feature continues. The
-    # other modes retain the existing percentage cap.
-    TOP_K = None if DIRECTION == "predictive" else _compute_top_k(n_hypo)
-    _pct_val = int(n_hypo * TOP_K_PCT) if n_hypo > 0 else 0
-    if TOP_K is None:
+    def _announce_selection() -> list:
+        """Print the direction, resolve TOP_K, and return the parsed records.
+
+        Called INSIDE the driver-log block for a full run so these lines — the
+        policy the whole run is scored under — are the first thing in the log.
+        """
+        direction_labels = {
+            "positive": "positive only (posterior > prior)",
+            "both": "both positive and negative",
+            "predictive": "exclusion-only predictive candidates (no cutoff)",
+        }
         print(
-            f"[selection] {n_hypo} hypotheses → keep every candidate not "
-            "explicitly excluded (no score/top-K cutoff)",
+            f"[direction] {direction_labels[DIRECTION]}",
             file=sys.stderr,
         )
-    else:
+
+        # Positive/both use the usual percentage-based top-K. Predictive mode keeps
+        # every semantically selected candidate. This is resolved once here so all
+        # subsequent helpers and agent instructions agree.
+        global TOP_K
+        try:
+            _raw = json.loads(json_path.read_text())
+            records = (
+                _raw if isinstance(_raw, list)
+                else _raw.get("records", []) if isinstance(_raw, dict)
+                else []
+            )
+            n_hypo = sum(1 for r in records if isinstance(r, dict))
+        except Exception:
+            records = []
+            n_hypo = 0
+        # Predictive is exclusion-only: every non-excluded feature continues. The
+        # other modes retain the existing percentage cap.
+        TOP_K = None if DIRECTION == "predictive" else _compute_top_k(n_hypo)
+        _pct_val = int(n_hypo * TOP_K_PCT) if n_hypo > 0 else 0
+        if TOP_K is None:
+            print(
+                f"[selection] {n_hypo} hypotheses → keep every candidate not "
+                "explicitly excluded (no score/top-K cutoff)",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"[top-k] {n_hypo} hypotheses → TOP_K={TOP_K} "
+                f"(min({TOP_K_MAX}, floor({n_hypo}×{TOP_K_PCT:.0%}))="
+                f"min({TOP_K_MAX},{_pct_val})={TOP_K})",
+                file=sys.stderr,
+            )
+
+        # Per-step budgets follow the record count, not a fixed top-K.
+        n_budget = n_hypo if TOP_K is None else TOP_K
+        agent_s, compute_s = _scale_timeouts(n_budget)
         print(
-            f"[top-k] {n_hypo} hypotheses → TOP_K={TOP_K} "
-            f"(min({TOP_K_MAX}, floor({n_hypo}×{TOP_K_PCT:.0%}))="
-            f"min({TOP_K_MAX},{_pct_val})={TOP_K})",
+            f"[timeouts] {n_budget} record(s) → agent step {agent_s}s, "
+            f"compute step {compute_s}s",
             file=sys.stderr,
         )
+        return records
 
     if args.smoke:
+        # Smoke is a print-and-stop: its selection is already persisted in the
+        # predictive-selection manifest, so it gets no driver log.
+        _announce_selection()
         asyncio.run(run_smoke(json_path))
         return 0
 
     assert pkl_path is not None  # enforced above unless smoke returned
 
-    # GUARD 1: --pkl full stem must match the dominant dataset_cache_<stem>.pkl
-    # reference in the run JSON.  The stem encodes brain id, mcl level, and
-    # add/sub suffix, so a mismatch means every reproduced number is on wrong data.
-    # Reuse the already-parsed records instead of reading the JSON a second time.
-    hits: Counter = Counter()
-    for _it in _records:
-        if not isinstance(_it, dict):
-            continue
-        _blob = f"{_it.get('code', '')}\n{_it.get('codeOutput', '')}"
-        for _m in _CACHE_STEM_RE.finditer(_blob):
-            hits[_m.group(1)] += 1
-    json_stem = hits.most_common(1)[0][0] if hits else None
-    json_tally = dict(hits)
-    pkl_stem_val = _pkl_stem(pkl_path)
-    if json_stem is None:
-        parser.error(
-            f"No concrete dataset_cache_<stem>.pkl reference found in "
-            f"{json_path.name}. Cannot verify --pkl matches the origin dataset.")
-    if pkl_stem_val is None:
-        parser.error(
-            f"--pkl {pkl_path.name} does not follow the "
-            f"dataset_cache_<stem>.pkl naming convention.")
-    if pkl_stem_val != json_stem:
-        parser.error(
-            f"Dataset MISMATCH: the run JSON references "
-            f"dataset_cache_{json_stem}.pkl (tally: {json_tally}) but --pkl is "
-            f"dataset_cache_{pkl_stem_val}.pkl. Pass "
-            f"--pkl dataset_cache_{json_stem}.pkl.")
-    print(f"[dataset-check] OK: --pkl matches JSON origin ({pkl_stem_val})",
-          file=sys.stderr)
+    # A full run is hours long across several agent turns and compute
+    # subprocesses, so everything from here on is tee'd to a file: the dataset
+    # guards (including a fatal mismatch), step progress, each step's final reply,
+    # the compute children's live output, and validation WARNINGs.
+    log_txt = args.log_txt or driver_log_path(json_path)
+    log_txt = log_txt if log_txt.is_absolute() else (PROJECT_ROOT / log_txt).resolve()
 
-    # GUARD 2: --extra-pkl files must share the same mcl level and add/sub suffix
-    # as --pkl.  Extra datasets are expected to be DIFFERENT brains (the
-    # extrapolation set), but must use identical processing parameters.
-    if extra_pkl_paths:
-        pkl_gran = _pkl_granularity(pkl_path)
-        if pkl_gran is None:
+    with driver_log(log_txt):
+        _records = _announce_selection()
+
+        # GUARD 1: --pkl full stem must match the dominant dataset_cache_<stem>.pkl
+        # reference in the run JSON.  The stem encodes brain id, mcl level, and
+        # add/sub suffix, so a mismatch means every reproduced number is on wrong data.
+        # Reuse the already-parsed records instead of reading the JSON a second time.
+        hits: Counter = Counter()
+        for _it in _records:
+            if not isinstance(_it, dict):
+                continue
+            _blob = f"{_it.get('code', '')}\n{_it.get('codeOutput', '')}"
+            for _m in _CACHE_STEM_RE.finditer(_blob):
+                hits[_m.group(1)] += 1
+        json_stem = hits.most_common(1)[0][0] if hits else None
+        json_tally = dict(hits)
+        pkl_stem_val = _pkl_stem(pkl_path)
+        if json_stem is None:
             parser.error(
-                f"Could not parse mcl level / add|sub suffix from "
-                f"--pkl {pkl_path.name}.")
-        for ep in extra_pkl_paths:
-            ep_gran = _pkl_granularity(ep)
-            if ep_gran is None:
+                f"No concrete dataset_cache_<stem>.pkl reference found in "
+                f"{json_path.name}. Cannot verify --pkl matches the origin dataset.")
+        if pkl_stem_val is None:
+            parser.error(
+                f"--pkl {pkl_path.name} does not follow the "
+                f"dataset_cache_<stem>.pkl naming convention.")
+        if pkl_stem_val != json_stem:
+            parser.error(
+                f"Dataset MISMATCH: the run JSON references "
+                f"dataset_cache_{json_stem}.pkl (tally: {json_tally}) but --pkl is "
+                f"dataset_cache_{pkl_stem_val}.pkl. Pass "
+                f"--pkl dataset_cache_{json_stem}.pkl.")
+        print(f"[dataset-check] OK: --pkl matches JSON origin ({pkl_stem_val})",
+              file=sys.stderr)
+
+        # GUARD 2: --extra-pkl files must share the same mcl level and add/sub suffix
+        # as --pkl.  Extra datasets are expected to be DIFFERENT brains (the
+        # extrapolation set), but must use identical processing parameters.
+        if extra_pkl_paths:
+            pkl_gran = _pkl_granularity(pkl_path)
+            if pkl_gran is None:
                 parser.error(
                     f"Could not parse mcl level / add|sub suffix from "
-                    f"--extra-pkl {ep.name}.")
-            if ep_gran != pkl_gran:
-                mcl_p, suf_p = pkl_gran
-                mcl_e, suf_e = ep_gran
-                parser.error(
-                    f"Granularity MISMATCH: --pkl uses mcl{mcl_p}_{suf_p} but "
-                    f"--extra-pkl {ep.name} uses mcl{mcl_e}_{suf_e}. "
-                    f"Extra datasets must share the same mcl level and suffix.")
-        mcl_ok, suf_ok = pkl_gran
-        print(
-            f"[granularity-check] OK: all --extra-pkl files match --pkl "
-            f"(mcl{mcl_ok}_{suf_ok})",
-            file=sys.stderr,
+                    f"--pkl {pkl_path.name}.")
+            for ep in extra_pkl_paths:
+                ep_gran = _pkl_granularity(ep)
+                if ep_gran is None:
+                    parser.error(
+                        f"Could not parse mcl level / add|sub suffix from "
+                        f"--extra-pkl {ep.name}.")
+                if ep_gran != pkl_gran:
+                    mcl_p, suf_p = pkl_gran
+                    mcl_e, suf_e = ep_gran
+                    parser.error(
+                        f"Granularity MISMATCH: --pkl uses mcl{mcl_p}_{suf_p} but "
+                        f"--extra-pkl {ep.name} uses mcl{mcl_e}_{suf_e}. "
+                        f"Extra datasets must share the same mcl level and suffix.")
+            mcl_ok, suf_ok = pkl_gran
+            print(
+                f"[granularity-check] OK: all --extra-pkl files match --pkl "
+                f"(mcl{mcl_ok}_{suf_ok})",
+                file=sys.stderr,
+            )
+
+        asyncio.run(
+            run_workflow(
+                json_path,
+                pkl_path,
+                extra_pkl_paths,
+            )
         )
 
-    asyncio.run(
-        run_workflow(
-            json_path,
-            pkl_path,
-            extra_pkl_paths,
-        )
-    )
+    log(f"Driver console log → {_rel_to_root(log_txt)}")
     return 0
 
 

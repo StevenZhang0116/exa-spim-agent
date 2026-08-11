@@ -68,29 +68,44 @@ Usage (paths relative to the ``exa-spim-agent/`` project root)
     #   (agent edits autodiscovery/RUN.rerun/hypo_<id>.py loading sections)
     python agentic/rerun_experiments.py autodiscovery/RUN.json --pkl DATA.pkl \
         --top 20 --code-dir autodiscovery/RUN.rerun
+    # Selective loading-fix rerun; unchanged records are merged from the first pass:
+    python agentic/rerun_experiments.py autodiscovery/RUN.json --pkl DATA.pkl \
+        --code-dir autodiscovery/RUN.rerun --only-changed \
+        --base-results autodiscovery/RUN.reproduce-raw.json
     # Extrapolate: run the reproduced code on OTHER datasets to test generalization
     python agentic/rerun_experiments.py autodiscovery/RUN.json --pkl DATA.pkl \
         --code-dir autodiscovery/RUN.rerun \
+        --extra-only --origin-results autodiscovery/RUN.reproduce.json \
         --extra-pkl OTHER1.pkl --extra-pkl OTHER2.pkl
     # Corrected tests: re-measure the flagged hypotheses with the right test
     python agentic/rerun_experiments.py autodiscovery/RUN.json --pkl DATA.pkl \
-        --code-dir autodiscovery/RUN.rerun --corrected-dir autodiscovery/RUN.fixed
+        --code-dir autodiscovery/RUN.rerun --corrected-dir autodiscovery/RUN.fixed \
+        --only-corrected
 
 Extrapolation (generalization to other datasets)
 ------------------------------------------------
 The dataset a hypothesis was generated on is the ORIGIN pkl (``--pkl``). Pass
 one or more OTHER datasets via ``--extra-pkl`` (repeatable) to test whether each
-finding GENERALIZES: the SAME code that ran on the origin (the revised code from
-``--code-dir`` when present, else the recorded code) is executed again with the
-load redirected to each extra pkl. All pkls are assumed to share the same
-payload structure (same keys). Each result then carries an ``extrapolations``
-list — one entry per extra pkl with its own fresh output — so the agent can
-compare the conclusion across datasets and judge generalization.
+finding GENERALIZES. In workflow use, ``--extra-only --origin-results`` reuses
+the completed origin result and executes the SAME code only on each extra pkl.
+All pkls are assumed to share the same payload structure (same keys). Each
+result then carries an ``extrapolations`` list — one entry per extra pkl with
+its own fresh output — so the agent can compare datasets without recomputing the
+origin.
+
+Every code×dataset execution can be persisted with ``--checkpoint``. Its key
+includes the source-run hash, record id, exact code hash, dataset identity,
+timeout, runner version, Python, and scientific-package versions. A changed
+input invalidates only the affected work item; completed matching items resume
+without execution.
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
+import hashlib
+import importlib.metadata
 import json
 import os
 import re
@@ -111,6 +126,146 @@ from rank_by_surprise import (  # noqa: E402
 
 # Every ``*.pkl`` filename literal a recorded script might open.
 _PKL_LITERAL = re.compile(r"""["']([^"']*?\.pkl)["']""")
+_UNUSABLE_OUTPUT_RE = re.compile(
+    r"(?:^|\n)\s*(?:no dataset(?: files?)? found|dataset not found|"
+    r"could not find (?:a )?dataset|record has no ['\"]code['\"] to execute)"
+    r"[.!]?\s*(?:\n|$)",
+    re.IGNORECASE,
+)
+_CHECKPOINT_SCHEMA_VERSION = 1
+_RUNNER_VERSION = "work-items-v1"
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def code_sha256(code: str) -> str:
+    """Stable identity for the exact experiment code being executed."""
+    return _sha256_text(code or "")
+
+
+def file_fingerprint(path: Path) -> dict:
+    """Cheap dataset identity suitable for invalidating local checkpoints.
+
+    Dataset pkls can be many GB, so hashing their full contents on every resume
+    would itself be expensive.  A resolved path plus size and nanosecond mtime
+    detects replacement/editing while keeping resume startup constant-time.
+    """
+    resolved = path.resolve()
+    stat = resolved.stat()
+    return {
+        "path": str(resolved),
+        "size": stat.st_size,
+        "mtime_ns": stat.st_mtime_ns,
+    }
+
+
+def result_usability(run: dict) -> tuple[str, str | None]:
+    """Separate process success from whether an experiment produced a result."""
+    if run.get("timed_out"):
+        return "UNUSABLE", "timeout"
+    if run.get("exitcode") != 0:
+        return "UNUSABLE", "nonzero-exit"
+    stdout = str(run.get("stdout") or "")
+    if not stdout.strip():
+        return "UNUSABLE", "empty-output"
+    if _UNUSABLE_OUTPUT_RE.search(stdout):
+        return "UNUSABLE", "dataset-loading"
+    return "USABLE", None
+
+
+def _atomic_write_json(path: Path, payload: dict) -> None:
+    """Atomically replace a checkpoint so interruption never truncates it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _load_checkpoint(path: Path | None) -> dict:
+    if path is None or not path.is_file():
+        return {"schema_version": _CHECKPOINT_SCHEMA_VERSION, "work_items": {}}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"schema_version": _CHECKPOINT_SCHEMA_VERSION, "work_items": {}}
+    if (
+        payload.get("schema_version") != _CHECKPOINT_SCHEMA_VERSION
+        or not isinstance(payload.get("work_items"), dict)
+    ):
+        return {"schema_version": _CHECKPOINT_SCHEMA_VERSION, "work_items": {}}
+    return payload
+
+
+@functools.lru_cache(maxsize=1)
+def _environment_fingerprint() -> dict:
+    packages = {}
+    for name in ("numpy", "pandas", "scipy", "statsmodels", "scikit-learn", "networkx"):
+        try:
+            packages[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            packages[name] = None
+    return {
+        "python": {"executable": sys.executable, "version": sys.version},
+        "packages": packages,
+    }
+
+
+def _work_key(
+    *, run_sha256: str, record_id, code_hash: str, dataset: Path, timeout: int
+) -> str:
+    identity = {
+        "runner_version": _RUNNER_VERSION,
+        "environment": _environment_fingerprint(),
+        "run_sha256": run_sha256,
+        "record_id": str(record_id),
+        "code_sha256": code_hash,
+        "dataset": file_fingerprint(dataset),
+        "timeout": timeout,
+    }
+    return _sha256_text(json.dumps(identity, sort_keys=True, separators=(",", ":")))
+
+
+def _run_work_item(
+    code: str,
+    dataset: Path,
+    timeout: int,
+    *,
+    run_sha256: str,
+    record_id,
+    checkpoint: dict,
+    checkpoint_path: Path | None,
+) -> tuple[dict, bool]:
+    """Run or reuse one code×dataset work item; persist immediately on success."""
+    key = _work_key(
+        run_sha256=run_sha256,
+        record_id=record_id,
+        code_hash=code_sha256(code),
+        dataset=dataset,
+        timeout=timeout,
+    )
+    cached = checkpoint["work_items"].get(key)
+    if isinstance(cached, dict) and isinstance(cached.get("run"), dict):
+        return cached["run"], True
+    run = rerun_one(code, dataset, timeout)
+    checkpoint["work_items"][key] = {
+        "record_id": record_id,
+        "code_sha256": code_sha256(code),
+        "dataset": file_fingerprint(dataset),
+        "run": run,
+    }
+    if checkpoint_path is not None:
+        _atomic_write_json(checkpoint_path, checkpoint)
+    return run, False
 
 
 def pkl_basenames(code: str) -> list[str]:
@@ -200,6 +355,7 @@ def export_scripts(ranked: list[dict], pkl: Path, export_dir: Path) -> dict:
                 "hypothesis": (r.get("hypothesis") or "").strip(),
                 "pkl_basenames_in_code": pkl_basenames(code),
                 "has_code": bool(code.strip()),
+                "recorded_code_sha256": code_sha256(code),
             }
         )
     (export_dir / "MANIFEST.json").write_text(
@@ -591,6 +747,48 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--only-changed",
+        action="store_true",
+        help=(
+            "Execute only records whose resolved --code-dir code differs from "
+            "the recorded code, then merge them into --base-results."
+        ),
+    )
+    parser.add_argument(
+        "--only-corrected",
+        action="store_true",
+        help="Execute only records that have a non-empty script in --corrected-dir.",
+    )
+    parser.add_argument(
+        "--base-results",
+        type=Path,
+        default=None,
+        help="Complete prior result JSON used as the merge base for selective reruns.",
+    )
+    parser.add_argument(
+        "--extra-only",
+        action="store_true",
+        help=(
+            "Do not rerun the origin dataset; reuse --origin-results and execute "
+            "only the requested --extra-pkl work items."
+        ),
+    )
+    parser.add_argument(
+        "--origin-results",
+        type=Path,
+        default=None,
+        help="Final origin result JSON required by --extra-only.",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=None,
+        help=(
+            "Atomic per-work-item checkpoint. Matching code/dataset/config work "
+            "is reused after interruption."
+        ),
+    )
+    parser.add_argument(
         "--timeout",
         type=int,
         default=1800,
@@ -627,12 +825,38 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--export-dir cannot combine with --code-dir/--corrected-dir.")
     if args.export_dir is not None and args.extra_pkl:
         parser.error("--extra-pkl has no effect with --export-dir (export only).")
+    if args.only_changed and (args.code_dir is None or args.base_results is None):
+        parser.error("--only-changed requires --code-dir and --base-results.")
+    if args.only_corrected and args.corrected_dir is None:
+        parser.error("--only-corrected requires --corrected-dir.")
+    if args.only_changed and args.only_corrected:
+        parser.error("--only-changed and --only-corrected are mutually exclusive.")
+    if args.extra_only and (args.origin_results is None or not args.extra_pkl):
+        parser.error("--extra-only requires --origin-results and --extra-pkl.")
+    if args.extra_only and (args.only_changed or args.only_corrected or args.base_results):
+        parser.error("--extra-only cannot combine with selective origin rerun options.")
     pkl = args.pkl.resolve()
     extra_pkls = []
     for ep in args.extra_pkl:
         if not ep.is_file():
             parser.error(f"No such extra dataset pkl: {ep}")
         extra_pkls.append(ep.resolve())
+
+    def load_result_payload(path: Path | None, option: str) -> dict | None:
+        if path is None:
+            return None
+        if not path.is_file():
+            parser.error(f"{option} does not exist: {path}")
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            parser.error(f"Invalid {option} JSON: {exc}")
+        if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
+            parser.error(f"{option} must contain a results list.")
+        return payload
+
+    base_payload = load_result_payload(args.base_results, "--base-results")
+    origin_payload = load_result_payload(args.origin_results, "--origin-results")
 
     records = load_records(args.json_file)
     ranked, _, _excluded = rank_records(
@@ -643,6 +867,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.top is not None:
         ranked = ranked[: args.top]
+
+    run_sha256 = hashlib.sha256(args.json_file.read_bytes()).hexdigest()
+    expected_ids = [str(r.get("id")) for r in ranked]
+    if len(expected_ids) != len(set(expected_ids)):
+        parser.error("Selected records contain duplicate ids; cannot merge safely.")
+
+    def validate_prior_payload(payload: dict | None, option: str) -> None:
+        if payload is None:
+            return
+        if payload.get("run_sha256") != run_sha256:
+            parser.error(f"{option} was produced from a different run JSON.")
+        if payload.get("pkl_fingerprint") != file_fingerprint(pkl):
+            parser.error(f"{option} was produced from a different origin dataset.")
+        ids = [str(item.get("id")) for item in payload["results"]]
+        if len(ids) != len(set(ids)) or set(ids) != set(expected_ids):
+            parser.error(
+                f"{option} result ids do not exactly match the current selection."
+            )
+
+    validate_prior_payload(base_payload, "--base-results")
+    validate_prior_payload(origin_payload, "--origin-results")
 
     # Export mode: dump editable scripts for the agent to revise, then exit.
     if args.export_dir is not None:
@@ -686,23 +931,81 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     print(f"[rerun] preflight OK (numpy {detail})", file=sys.stderr, flush=True)
 
+    checkpoint_path = args.checkpoint.resolve() if args.checkpoint is not None else None
+    checkpoint = _load_checkpoint(checkpoint_path)
+    base_by_id = {
+        str(item.get("id")): item
+        for item in ((base_payload or {}).get("results") or [])
+    }
+    origin_by_id = {
+        str(item.get("id")): item
+        for item in ((origin_payload or {}).get("results") or [])
+    }
+
     results = []
-    n_ok = n_failed = n_timeout = n_env_failed = 0
-    n_revised = n_corrected = 0
+    n_executed = n_checkpoint_reused = n_base_reused = 0
+    selected_execution_ids = []
     for rank, r in enumerate(ranked, start=1):
         code, source = resolve_code(r, args.code_dir, args.corrected_dir)
-        if source == "revised":
-            n_revised += 1
-        elif source == "corrected":
-            n_corrected += 1
         rid = r.get("id")
+        rid_key = str(rid)
+        recorded_code = r.get("code") or ""
+        changed = code_sha256(code) != code_sha256(recorded_code)
+
+        should_execute = True
+        if args.only_changed:
+            should_execute = changed
+        elif args.only_corrected:
+            corrected = args.corrected_dir / hypo_filename(rid)
+            should_execute = corrected.is_file() and bool(
+                corrected.read_text(encoding="utf-8").strip()
+            )
+
+        if not should_execute:
+            if args.only_corrected:
+                continue
+            cached_result = base_by_id.get(rid_key)
+            if cached_result is None:
+                parser.error(
+                    f"--base-results is missing selected record id={rid}; "
+                    "cannot construct a complete merged result."
+                )
+            results.append(cached_result)
+            n_base_reused += 1
+            continue
+        selected_execution_ids.append(rid)
+
+        origin_result = origin_by_id.get(rid_key) if args.extra_only else None
+        if args.extra_only and origin_result is None:
+            parser.error(
+                f"--origin-results is missing selected record id={rid}; "
+                "cannot extrapolate without its origin result."
+            )
+        if args.extra_only and origin_result.get("executed_code_sha256") != code_sha256(code):
+            parser.error(
+                f"--origin-results code fingerprint for id={rid} does not match "
+                "the code selected for extrapolation."
+            )
         print(
-            f"[rerun {rank}/{len(ranked)}] id={rid} ({source}) …",
+            f"[rerun {rank}/{len(ranked)}] id={rid} ({source}) "
+            f"{'extra-only' if args.extra_only else 'origin'} …",
             file=sys.stderr,
             flush=True,
         )
         failure_kind = None  # None | "environment" | "analysis"
-        if not code.strip():
+        if args.extra_only:
+            run = {
+                "timed_out": bool(origin_result.get("rerun_timed_out")),
+                "exitcode": origin_result.get("rerun_exitcode"),
+                "stdout": origin_result.get("rerun_stdout") or "",
+                "stderr": origin_result.get("rerun_stderr") or "",
+                "runtime_ms": origin_result.get("rerun_runtime_ms") or 0,
+            }
+            usability = origin_result.get("result_status")
+            usability_reason = origin_result.get("result_failure_reason")
+            if usability not in {"USABLE", "UNUSABLE"}:
+                usability, usability_reason = result_usability(run)
+        elif not code.strip():
             run = {
                 "timed_out": False,
                 "exitcode": None,
@@ -712,45 +1015,74 @@ def main(argv: list[str] | None = None) -> int:
             }
             outcome = "NO-CODE"
             failure_kind = "analysis"
-            n_failed += 1
+            usability, usability_reason = "UNUSABLE", "no-code"
         else:
-            run = rerun_one(code, pkl, args.timeout)
+            run, reused = _run_work_item(
+                code,
+                pkl,
+                args.timeout,
+                run_sha256=run_sha256,
+                record_id=rid,
+                checkpoint=checkpoint,
+                checkpoint_path=checkpoint_path,
+            )
+            n_checkpoint_reused += int(reused)
+            n_executed += int(not reused)
+            usability, usability_reason = result_usability(run)
             if run["timed_out"]:
                 outcome = "TIMEOUT"
-                n_timeout += 1
-            elif run["exitcode"] == 0:
+            elif run["exitcode"] == 0 and usability == "USABLE":
                 outcome = "OK"
-                n_ok += 1
+            elif run["exitcode"] == 0:
+                outcome = f"UNUSABLE({usability_reason})"
+                failure_kind = (
+                    "data-loading" if usability_reason == "dataset-loading" else "analysis"
+                )
             else:
                 failure_kind = classify_failure(run["stderr"])
                 if failure_kind == "environment":
-                    n_env_failed += 1
                     outcome = f"ENV-FAILED(exit={run['exitcode']})"
                 else:
                     outcome = f"FAILED(exit={run['exitcode']})"
-                n_failed += 1
 
-        # Progress log after each hypothesis: outcome, this run's wall time, and
-        # the running tally so a long rerun is observable as it goes.
-        print(
-            f"[rerun {rank}/{len(ranked)}] id={rid} {outcome} "
-            f"in {run['runtime_ms'] / 1000:.0f}s "
-            f"(ok={n_ok} failed={n_failed} timeout={n_timeout})",
-            file=sys.stderr,
-            flush=True,
-        )
+        if not args.extra_only:
+            print(
+                f"[rerun {rank}/{len(ranked)}] id={rid} {outcome} "
+                f"in {run['runtime_ms'] / 1000:.0f}s",
+                file=sys.stderr,
+                flush=True,
+            )
 
         # Extrapolation: run the SAME code on each other dataset to test whether
         # the finding generalizes. Skip when the code didn't even run on origin
         # (no point — there's no analysis to carry over).
         extrapolations = []
-        if extra_pkls and code.strip():
+        if extra_pkls and code.strip() and usability == "USABLE":
             for ei, ep in enumerate(extra_pkls, start=1):
-                xrun = rerun_one(code, ep, args.timeout)
+                xrun, reused = _run_work_item(
+                    code,
+                    ep,
+                    args.timeout,
+                    run_sha256=run_sha256,
+                    record_id=rid,
+                    checkpoint=checkpoint,
+                    checkpoint_path=checkpoint_path,
+                )
+                n_checkpoint_reused += int(reused)
+                n_executed += int(not reused)
+                xusability, xreason = result_usability(xrun)
                 xoutcome = (
                     "TIMEOUT"
                     if xrun["timed_out"]
-                    else ("OK" if xrun["exitcode"] == 0 else f"FAILED(exit={xrun['exitcode']})")
+                    else (
+                        "OK"
+                        if xrun["exitcode"] == 0 and xusability == "USABLE"
+                        else (
+                            f"UNUSABLE({xreason})"
+                            if xrun["exitcode"] == 0
+                            else f"FAILED(exit={xrun['exitcode']})"
+                        )
+                    )
                 )
                 print(
                     f"[rerun {rank}/{len(ranked)}] id={rid} extrapolate "
@@ -766,13 +1098,18 @@ def main(argv: list[str] | None = None) -> int:
                         "exitcode": xrun["exitcode"],
                         "timed_out": xrun["timed_out"],
                         "runtime_ms": xrun["runtime_ms"],
+                        "result_status": xusability,
+                        "result_failure_reason": xreason,
                         "stdout": truncate(xrun["stdout"], args.max_output_chars),
                         "stderr": truncate(xrun["stderr"], args.max_output_chars),
                     }
                 )
 
-        results.append(
-            {
+        if args.extra_only:
+            result = dict(origin_result)
+            result["extrapolations"] = extrapolations
+        else:
+            result = {
                 "rank": rank,
                 "id": rid,
                 "status": r.get("status", ""),
@@ -787,12 +1124,26 @@ def main(argv: list[str] | None = None) -> int:
                 "rerun_exitcode": run["exitcode"],
                 "rerun_timed_out": run["timed_out"],
                 "rerun_failure_kind": failure_kind,
+                "result_status": usability,
+                "result_failure_reason": usability_reason,
                 "rerun_runtime_ms": run["runtime_ms"],
                 "rerun_stdout": truncate(run["stdout"], args.max_output_chars),
                 "rerun_stderr": truncate(run["stderr"], args.max_output_chars),
                 "extrapolations": extrapolations,
+                "recorded_code_sha256": code_sha256(recorded_code),
+                "executed_code_sha256": code_sha256(code),
+                "code_changed": changed,
             }
-        )
+        results.append(result)
+
+    n_ok = sum(1 for item in results if item.get("result_status") == "USABLE")
+    n_timeout = sum(1 for item in results if item.get("rerun_timed_out"))
+    n_env_failed = sum(
+        1 for item in results if item.get("rerun_failure_kind") == "environment"
+    )
+    n_failed = len(results) - n_ok - n_timeout
+    n_revised = sum(1 for item in results if item.get("code_source") == "revised")
+    n_corrected = sum(1 for item in results if item.get("code_source") == "corrected")
 
     payload = {
         "json_file": str(args.json_file),
@@ -809,6 +1160,15 @@ def main(argv: list[str] | None = None) -> int:
         "n_revised": n_revised,
         "n_corrected": n_corrected,
         "n_recorded": len(results) - n_revised - n_corrected,
+        "n_executed": n_executed,
+        "n_checkpoint_reused": n_checkpoint_reused,
+        "n_base_reused": n_base_reused,
+        "selected_execution_ids": selected_execution_ids,
+        "changed_ids": [item.get("id") for item in results if item.get("code_changed")],
+        "run_sha256": run_sha256,
+        "pkl_fingerprint": file_fingerprint(pkl),
+        "runner_version": _RUNNER_VERSION,
+        "extra_only": args.extra_only,
         "n_ok": n_ok,
         "n_failed": n_failed,
         "n_env_failed": n_env_failed,

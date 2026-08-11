@@ -251,6 +251,33 @@ def load_predictive_ids(path: Path) -> set[str]:
     return {str(value) for value in ids}
 
 
+def load_predictive_reasons(path: Path) -> dict[str, str]:
+    """Map each EXCLUDED hypothesis ID to the manifest's stated reason.
+
+    The report's Excluded appendix has to say WHY each candidate was dropped, but
+    the reason exists only in the selection manifest — so surface it here, in the
+    payload the summarizing agent already reads. Without this the agent has to
+    open the manifest itself, which nothing instructs it to do.
+
+    Best-effort by design: a missing or malformed manifest yields no reasons
+    rather than failing the ranking, since ``load_predictive_ids`` is what
+    actually gates the run.
+    """
+    try:
+        with path.open(encoding="utf-8-sig") as f:
+            payload = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    rows = payload.get("excluded") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return {}
+    reasons: dict[str, str] = {}
+    for row in rows:
+        if isinstance(row, dict) and row.get("id") is not None:
+            reasons[str(row["id"])] = str(row.get("reason", "")).strip()
+    return reasons
+
+
 def to_records(
     ranked: list[dict],
     *,
@@ -419,6 +446,11 @@ def main(argv: list[str] | None = None) -> int:
         )
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         parser.error(f"Invalid predictive manifest: {exc}")
+    predictive_reasons = (
+        load_predictive_reasons(args.predictive_manifest)
+        if args.predictive_manifest is not None
+        else {}
+    )
 
     files = resolve_paths(args.paths)
     if not files:
@@ -456,8 +488,21 @@ def main(argv: list[str] | None = None) -> int:
         "dropped": [
             {"run": r.get("_run", ""), "id": r.get("id")} for r in dropped
         ],
+        # Carries the manifest's `reason` in predictive mode so the report's
+        # Excluded appendix can name why each candidate was dropped without
+        # opening a second file. Absent for positive/both, where exclusion is a
+        # mechanical belief-direction test with no per-record rationale.
         "excluded_direction": [
-            {"run": r.get("_run", ""), "id": r.get("id")} for r in excluded
+            {
+                "run": r.get("_run", ""),
+                "id": r.get("id"),
+                **(
+                    {"reason": predictive_reasons[str(r.get("id"))]}
+                    if predictive_reasons.get(str(r.get("id")))
+                    else {}
+                ),
+            }
+            for r in excluded
         ],
         "surprise_magnitude_max": records[0]["surprise_magnitude"]
         if records

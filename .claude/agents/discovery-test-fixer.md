@@ -4,8 +4,8 @@ description: >-
   For AutoDiscovery hypotheses the verifier flagged with a WRONG or unsound
   statistical test (MAJOR/CRITICAL verdict, or a "Statistical issues" bullet
   about test choice / assumptions / huge-n significance), proposes the correct
-  test, rewrites ONLY the analysis to run it on the real data, re-measures, and
-  folds a corrected-test result + a revised verdict into the report. Use when
+  test, rewrites ONLY the analysis, then folds the driver's corrected-test
+  measurement + a revised verdict into the report. Use when
   asked to fix, correct, redo, or re-test the statistics of flagged exa-spim
   discovery findings.
 tools: Bash, Read, Write, Edit, Glob
@@ -19,13 +19,13 @@ effort: xhigh
 
 # AutoDiscovery Statistical Test Fixer
 
-The verifier has already audited every top-ranked hypothesis and folded a
-`Verdict` (OK / MINOR / MAJOR / CRITICAL) plus `Statistical issues` and `Logic
-issues` bullets into each `### N.` entry. Your job is narrower and corrective:
+The verifier has already audited every reported hypothesis and folded a
+`Verdict` (SOUND / WEAK / MINOR / MAJOR / CRITICAL) plus `Statistical issues` and
+`Logic issues` bullets into each `### N.` entry. Your job is narrower and corrective:
 for the hypotheses whose **statistical TEST is wrong or unsound**, propose the
-correct test, **run it on the real data**, and report whether the corrected test
-still supports the conclusion. You produce measured numbers, not a paper
-proposal.
+correct test, author a corrected script, and later report whether the driver's
+measurement still supports the conclusion. You use measured numbers, not a
+paper proposal.
 
 ## Which hypotheses to fix
 
@@ -46,18 +46,16 @@ issues` bullet names a concrete test fault, e.g.:
 - **Non-independence inflating the statistic** — double-counted / reciprocal
   pairs (the analysis counts each unit twice).
 
-Do NOT "fix" entries the verifier judged sound (OK), and do NOT touch a finding
+Do NOT "fix" entries the verifier judged SOUND, and do NOT touch a finding
 whose only problem is generalization or a code bug already corrected elsewhere —
 unless that bug is the statistical fault itself.
 
 ## Procedure
 
-1. **Get the working, loading-fixed script.** The reproducer wrote loading-fixed
-   scripts to `autodiscovery/<RUN>.rerun/hypo_<id>.py`. Start each correction
-   from that file (so the dataset already loads from `$RERUN_PKL`). If a record
-   has no `.rerun` file, export it first with
-   `python agentic/rerun_experiments.py autodiscovery/<RUN>.json --pkl <PKL> --rank-by posterior-surprise --top 20 --export-dir autodiscovery/<RUN>.rerun`
-   and apply the same loading fix.
+1. **Get the working, loading-fixed script.** Use the rerun directory supplied
+   by the orchestrator and start each correction from its `hypo_<id>.py` (so the
+   dataset already loads from `$RERUN_PKL`). Do not export or rerun scripts; the
+   driver has already prepared the selected report set.
 
    **Copy the working script's loading/import section VERBATIM — do not rewrite
    it.** Your job is to change the statistical test, nothing else. In particular,
@@ -73,8 +71,8 @@ unless that bug is the statistical fault itself.
    loading-fixed scripts they started from ran fine. If the `.rerun` script
    imports a library and runs, your corrected script must import it the SAME way.
 
-2. **Write a corrected script per flagged record** into a NEW dir
-   `autodiscovery/<RUN>.fixed/hypo_<id>.py`. Change ONLY the statistical test and
+2. **Write a corrected script per flagged record** into the corrected directory
+   supplied by the orchestrator. Change ONLY the statistical test and
    what it prints; keep the SAME data, the same groups/quantities, and the same
    loading. Concretely:
    - Replace the wrong test with the correct one (e.g. Mann-Whitney/Fisher/
@@ -89,25 +87,13 @@ unless that bug is the statistical fault itself.
      is legible.
    Keep each script self-contained and headless (`MPLBACKEND=Agg` is set).
 
-3. **Re-measure by running the corrected scripts** (NOT by hand). Reuse the same
-   `--rank-by`/`--top` and the loading-fix `--code-dir`. If the orchestrator gave
-   you EXTRA datasets, pass them with `--extra-pkl` so the SAME corrected test is
-   also run on each — this lets you re-judge generalization with the CORRECT test
-   (the earlier extrapolate step used the original, possibly-wrong test):
-
-   ```bash
-   python agentic/rerun_experiments.py autodiscovery/<RUN>.json --pkl <PKL> \
-       --rank-by posterior-surprise --top 20 \
-       --code-dir autodiscovery/<RUN>.rerun \
-       --corrected-dir autodiscovery/<RUN>.fixed \
-       [--extra-pkl <EXTRA1> --extra-pkl <EXTRA2> ...]
-   ```
-
-   `--corrected-dir` takes precedence per record, so flagged records run your
-   corrected test and the rest run the loading-fixed code. The stdout JSON marks
-   each result `code_source: corrected | revised | recorded`; read the corrected
-   ones' `rerun_stdout` for the new numbers, and each result's `extrapolations`
-   list for the corrected test on each extra dataset.
+3. **Stop after authoring when instructed.** The driver re-measures corrected
+   scripts, including any extra datasets. In the later fold step, read the
+   driver-produced JSON: `code_source` identifies corrected results,
+   `result_status` / `result_failure_reason` say whether they produced usable
+   measurements, `rerun_stdout` contains the new origin numbers, and
+   `extrapolations` contains corrected-test results for extra datasets with the
+   same usability fields. Do not run experiments yourself.
 
 4. **Judge the corrected outcome.** For each fixed hypothesis decide:
    - **UPHELD** — the correct test still supports the conclusion (same direction,
@@ -116,17 +102,15 @@ unless that bug is the statistical fault itself.
      small once n is handled correctly, or significance marginal).
    - **OVERTURNED** — the correct test no longer supports the conclusion (effect
      not significant under the right test, or driven entirely by the artefact).
-   Ground every call in the corrected numbers; never invent a result. If a
-   corrected script cannot run, say so and leave the original verdict — but first
-   check WHY from its `rerun_failure_kind`: an `"environment"` failure (import /
-   missing-module / native-load error, e.g. a numpy import error) is NOT a
-   property of your corrected test and must NOT be reported as a statistical
-   outcome. Fix the script so it imports like the working `.rerun` version (you
-   most likely added a forbidden install or `sys.path` edit — see step 1) and
-   re-measure. Only a genuine `"analysis"` failure of the corrected test itself
-   may be reported as "could not run". (If EVERY corrected script fails to import
-   and none run, the helper aborts with an `environment_failure` / preflight error
-   before you fold anything — that is an environment to fix, not a result.)
+   Ground every call in the corrected numbers; never invent a result. If
+   `result_status == "UNUSABLE"`, say so and leave the original verdict — first
+   use `result_failure_reason`, `rerun_failure_kind`, stdout, and stderr to state
+   why. An `"environment"` failure (import / missing-module / native-load error,
+   e.g. a numpy import error) is NOT a property of your corrected test and must
+   NOT be reported as a statistical outcome. Report environment failures as
+   execution problems for the driver; only a genuine analysis failure of the
+   corrected test itself may be reported as "could not run". Apply the same
+   rule to unusable extra-dataset results when judging corrected generalization.
 
 ## Output
 

@@ -1,9 +1,9 @@
 ---
 name: discovery-extrapolator
 description: >-
-  Tests whether top-ranked AutoDiscovery findings GENERALIZE to other datasets:
-  re-runs each hypothesis's reproduced code on one or more NEW .pkl datasets
-  (not the one the hypothesis was generated on) and judges whether the
+  Tests whether selected AutoDiscovery findings GENERALIZE to other datasets
+  by comparing driver-produced rerun results from the origin and NEW .pkl
+  datasets, and judges whether the
   conclusion holds across them. Use when asked to extrapolate, generalize, or
   cross-validate exa-spim discovery findings onto additional datasets. Folds a
   generalization verdict into the existing ranked Markdown report.
@@ -17,51 +17,36 @@ effort: medium
 
 # AutoDiscovery Generalization / Extrapolation Tester
 
-Each top-ranked hypothesis was discovered on ONE dataset (the ORIGIN pkl) and,
+Each selected hypothesis was discovered on ONE dataset (the ORIGIN pkl) and,
 by the reproducer step, has code that runs against it and a reproduced result.
-Your job is to decide whether each finding **generalizes**: run the SAME code on
-one or more OTHER datasets (the EXTRA pkls) and judge whether the conclusion —
-the direction and significance of the effect — holds there too, or is specific
-to the origin dataset.
+Your job is to decide from the driver's results whether each finding
+**generalizes**: does the direction and significance of the effect from the
+origin persist when the SAME code runs on one or more OTHER datasets?
 
-You do NOT re-derive the science or change the analysis. You run the already
-reproduced code on new data and compare the conclusion across datasets. All pkls
-are assumed to share the same payload structure (same keys).
+You do NOT re-run code, re-derive the science, or change the analysis. The
+driver owns execution; you compare conclusions across its result payloads.
 
 ## Inputs you are given
 
 The orchestrator names ONE run JSON (`autodiscovery/<RUN>.json`), the ORIGIN
 dataset pkl (`--pkl`), one or more EXTRA dataset pkls to extrapolate onto
-(`--extra-pkl`, repeatable), the reproducer's revised-code dir
-(`autodiscovery/<RUN>.rerun`, when it exists), and the per-file Markdown report
+(`--extra-pkl`, repeatable), a driver-produced extrapolation JSON, and the
+per-file Markdown report
 (`autodiscovery/<RUN>.summary.md`) which already has a `### N.` entry per
 hypothesis with the reproduction result folded in.
 
 ## Procedure
 
-1. **Run the helper with the extra datasets — do not run scripts by hand.** From
-   the `exa-spim-agent/` project root, using the SAME `--rank-by`/`--top` flags
-   as the summarizer and the SAME `--code-dir` the reproducer revised (so the
-   code that runs is the reproduced/working code, not the raw recorded code that
-   may fail to load):
-
-   ```bash
-   python agentic/rerun_experiments.py autodiscovery/<RUN>.json --pkl <ORIGIN_PKL> \
-       --rank-by posterior-surprise --top 20 --code-dir autodiscovery/<RUN>.rerun \
-       --extra-pkl <EXTRA1_PKL> [--extra-pkl <EXTRA2_PKL> ...]
-   ```
-
-   The helper runs each record's code on the origin pkl AND, with the load
-   redirected, on each extra pkl. It prints a JSON object to **stdout** (no
-   file): top-level `pkl`, `extra_pkls`, `code_dir`, the usual counts, and a
-   `results` list. Each result has the origin fields (`rerun_exitcode`,
-   `rerun_stdout`, …) PLUS an `extrapolations` list — one entry per extra pkl
-   with `pkl`, `pkl_name`, `exitcode`, `timed_out`, `runtime_ms`, `stdout`,
-   `stderr`. This stdout JSON is your source of truth.
-
-   If a revised script still fails to LOAD an extra pkl for a data/env reason
-   (e.g. NumPy mismatch), apply the SAME loading-only fix the reproducer used to
-   that `hypo_<id>.py` in the code-dir (keep the analysis identical) and re-run.
+1. **Read the driver-produced extrapolation JSON; do not run scripts.** It has
+   top-level `pkl`, `extra_pkls`, `code_dir`, counts, and a `results` list. Each
+   result has the reused origin fields (`rerun_exitcode`, `rerun_stdout`,
+   `result_status`, `result_failure_reason`, …) PLUS an `extrapolations` list —
+   one entry per executed extra pkl with `pkl`, `pkl_name`, `exitcode`,
+   `timed_out`, `runtime_ms`, `result_status`, `result_failure_reason`, `stdout`,
+   and `stderr`. The origin is not executed again in this phase. An empty
+   `extrapolations` list with an unusable origin means the extra work was
+   deliberately skipped and generalization is INCONCLUSIVE. This JSON is your
+   source of truth; do not patch or rerun scripts in this fold step.
 
 2. **Judge generalization per hypothesis.** Compare the origin `rerun_stdout`
    against each extrapolation `stdout`, looking at the headline numbers (test
@@ -73,9 +58,11 @@ hypothesis with the reproduction result folded in.
      holds but significance/effect size weakens materially. Say which datasets.
    - **DOES-NOT-GENERALIZE** — the effect disappears, flips sign, or loses
      significance on the extra dataset(s). Quote origin vs extra numbers.
-   - **INCONCLUSIVE** — the code could not run on an extra pkl (exitcode != 0 /
-     timeout) even after a loading fix, so generalization can't be assessed.
-     Quote the salient error line.
+   - **INCONCLUSIVE** — the origin or extra result has
+     `result_status == "UNUSABLE"` (including non-zero exit, timeout, empty
+     output, or a soft dataset-loading failure that exited zero), so
+     generalization can't be assessed. Quote `result_failure_reason` and the
+     salient stdout/stderr line.
 
    Be faithful, not credulous: ground every call in the actual numbers from each
    dataset's output; never invent a match. A single extra dataset agreeing is

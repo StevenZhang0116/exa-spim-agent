@@ -42,12 +42,13 @@ first.
 ## Procedure
 
 1. **Rank deterministically — do not eyeball the JSON.** Run the helper from
-   the `exa-spim-agent/` project root, using exactly the command (with its
-   `--rank-by` / `--top` flags) that the orchestrator instruction gives you.
+   the `exa-spim-agent/` project root, using exactly the command and selection
+   flags (`--rank-by`, `--direction`, optional `--top`/predictive manifest) that
+   the orchestrator instruction gives you.
    With no path argument it ingests every `autodiscovery/*.json`:
 
    ```bash
-   python agentic/rank_by_surprise.py [--rank-by surprise|posterior-surprise] [--top K]
+   python agentic/rank_by_surprise.py [SELECTION FLAGS]
    ```
 
    To restrict to named files, pass them explicitly:
@@ -66,8 +67,9 @@ first.
    first. When `--top K` is given, the helper has ALREADY truncated `records` to
    the K top-ranked hypotheses — your report must contain exactly those and no
    more. The payload also carries `source_files`, `per_file_counts`, `rank_by`,
-   `n_total`, `n_ranked`, `n_returned`, `n_dropped_missing_surprisal`,
-   `dropped`, the surprise-magnitude range, and `priority_score_max`. That
+   `direction_filter`, `n_total`, `n_ranked`, `n_returned`,
+   `n_dropped_missing_surprisal`, `n_excluded_direction`, `dropped`, the
+   surprise-magnitude range, and `priority_score_max`. That
    stdout JSON is your source of truth for ordering and field values — read it
    straight from the command output. Each record includes `run` (which export
    it came from), `surprisal`, `surprise_magnitude`, `priority_score`,
@@ -94,17 +96,25 @@ first.
 
 ## Output
 
-Write the combined workflow Markdown report to
-`autodiscovery/all-runs.summary.md`. This first step creates the ranked
-scientific summary; the later verifier step will append or replace the
-`## Statistical Verification and Logic Audit` section in the same file. Include:
+Write the Markdown report to the path the orchestrator names in your instruction
+(`autodiscovery/<RUN>.summary.md`, one report per run export) — use that path,
+never a hardcoded one. This first step creates the ranked scientific summary;
+later steps fold their own verdicts into the SAME file and append their own
+`— Summary` sections (`## Reproduction — Summary`, `## Generalization — Summary`,
+`## Statistical Verification — Summary`, `## Statistical Test Corrections —
+Summary`). Include:
 
-- A short header: the source files and per-file hypothesis counts, the ranking
-  key used (`rank_by`), how many hypotheses were ranked (`n_ranked`) and how
-  many this report keeps (`n_returned` — when a `--top K` was applied, state
-  that the report shows the top K of `n_ranked`), the surprise-magnitude range,
-  and a one-paragraph synthesis of the headline takeaways across the kept
-  records (the 2–3 highest-priority belief flips and any cross-cutting theme).
+You own exactly two top-level headings, and later steps anchor their own sections
+to these titles — write them **verbatim**, and do not invent an alternative like
+`## Synthesis`:
+
+1. `## Header` — the source files and per-file hypothesis counts, the ranking
+   key used (`rank_by`), how many hypotheses were ranked (`n_ranked`) and how
+   many this report keeps (`n_returned` — when a `--top K` was applied, state
+   that the report shows the top K of `n_ranked`), the surprise-magnitude range,
+   and a one-paragraph synthesis of the headline takeaways across the kept
+   records (the 2–3 highest-priority belief flips and any cross-cutting theme).
+2. `## Ranked Conclusions (highest priority first)` — the ranked entries below.
 - A **ranked list** in the helper's order (highest-priority first when
   `rank_by` is `posterior-surprise`, most surprising first otherwise), pooled
   across all runs, containing **only the records the helper returned** — never
@@ -131,14 +141,23 @@ scientific summary; the later verifier step will append or replace the
   sentence rather than cutting it off mid-word.
 
   Leave the per-entry fields above as the complete set you write. The later
-  verifier step appends its statistical-audit fields (`Test`, `Verdict`,
-  `Statistical issues`, `Logic issues`) to each entry in place — do not add
-  those yourself, but keep the `### N.` / bullet layout so the verifier can
-  extend each entry.
+  verifier step appends its statistical-audit fields (`Verdict`, `Test`,
+  `Statistical issues`, `Logic issues`, `Verdict rationale`) to each entry in
+  place — do not add those yourself, but keep the `### N.` / bullet layout so the
+  verifier can extend each entry.
 
-- If the helper reported dropped hypotheses (`n_dropped_missing_surprisal` > 0),
-  list their `dropped` (run + id) under a short "Excluded (no surprisal score)"
-  note so coverage is transparent.
+- A trailing **`## Excluded …` appendix**, which stays LAST in the file — every
+  later step inserts its own section *before* it. What goes in it depends on the
+  selection mode, and your instruction says which:
+  - **predictive** — one bullet per entry in the helper's `excluded_direction`
+    list (`n_excluded_direction` of them), each carrying an `id` and the selection
+    `reason`; quote the reason verbatim. Title it
+    `## Excluded (predictive-selection)`.
+  - **positive / both** — when `n_dropped_missing_surprisal` > 0, list the
+    `dropped` entries (run + id) under `## Excluded (no surprisal score)`.
+
+  Either way the appendix is what makes the kept set auditable against the full
+  export, so do not omit it.
 
 After writing the file, reply with the report path and a 3–5 bullet executive
 summary of the most surprising conclusions across all runs. Your final message

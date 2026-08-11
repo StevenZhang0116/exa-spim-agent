@@ -133,6 +133,10 @@ class DiscoverySmokeTests(unittest.TestCase):
                 self.assertEqual(
                     manifest["source_sha256"], workflow._source_sha256(run_json)
                 )
+                self.assertEqual(
+                    manifest["one_line_summaries"],
+                    output.getvalue().strip().splitlines(),
+                )
 
                 async def fail_if_called(client, step):
                     raise AssertionError("cached predictive selection was not reused")
@@ -143,6 +147,11 @@ class DiscoverySmokeTests(unittest.TestCase):
                     cached_output
                 ), contextlib.redirect_stderr(io.StringIO()):
                     asyncio.run(workflow.run_smoke(run_json))
+                cached_manifest = json.loads(manifest_path.read_text())
+                self.assertEqual(
+                    cached_manifest["one_line_summaries"],
+                    cached_output.getvalue().strip().splitlines(),
+                )
                 manifest_rel = workflow._rel_to_root(manifest_path)
                 self.assertTrue(
                     workflow._predictive_manifest_is_current(
@@ -166,6 +175,32 @@ class DiscoverySmokeTests(unittest.TestCase):
         self.assertEqual({line.split(":", 1)[0] for line in lines}, {"ID 1", "ID 2"})
         self.assertEqual(cached_output.getvalue(), output.getvalue())
         self.assertIsNone(workflow.PREDICTIVE_MANIFEST)
+
+    def test_compute_steps_use_selective_and_extra_only_work_items(self) -> None:
+        workflow.DIRECTION = "both"
+        workflow.TOP_K = 2
+        steps = workflow.build_steps(
+            "autodiscovery/run.json",
+            "cache/origin.pkl",
+            "autodiscovery/run.summary.md",
+            ["cache/extra-a.pkl", "cache/extra-b.pkl"],
+        )
+        by_name = {step["name"]: step for step in steps}
+
+        remeasure = by_name["reproduce-remeasure"]
+        self.assertIn("--only-changed", remeasure["argv"])
+        self.assertIn("--base-results", remeasure["argv"])
+        self.assertIn("--checkpoint", remeasure["argv"])
+        self.assertNotIn("skip_if_no_marker", remeasure)
+
+        extrapolate = by_name["extrapolate-run"]
+        self.assertIn("--extra-only", extrapolate["argv"])
+        self.assertIn("--origin-results", extrapolate["argv"])
+        self.assertEqual(extrapolate["argv"].count("--extra-pkl"), 2)
+
+        corrected = by_name["fix-tests-measure"]
+        self.assertIn("--only-corrected", corrected["argv"])
+        self.assertEqual(workflow.COMPUTE_TIMEOUT_S, 43200)
 
 
 if __name__ == "__main__":

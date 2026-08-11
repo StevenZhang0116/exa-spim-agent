@@ -1,8 +1,8 @@
 ---
 name: discovery-reproducer
 description: >-
-  Re-executes the recorded experiment code of the top-ranked AutoDiscovery
-  hypotheses against a provided dataset .pkl, then compares the freshly produced
+  Inspects driver-executed results for the selected AutoDiscovery hypotheses,
+  fixes loading-only failures, then compares the freshly produced
   numbers to the recorded codeOutput to decide whether each finding reproduces.
   Use when asked to rerun, reproduce, or re-execute exa-spim discovery
   experiments for one run export with its dataset. Folds a reproduction verdict
@@ -20,130 +20,72 @@ effort: medium
 
 Each hypothesis in an AutoDiscovery run export carries a `code` field — a
 self-contained Python script that loaded a dataset `.pkl`, ran a statistical
-test, and printed results (the recorded `codeOutput`). Your job is to **actually
-re-run** that code against the dataset pkl the orchestrator provides, then judge
-whether each finding **reproduces** — i.e. whether re-executing the same code on
-the same data yields the same key numbers (statistic, p-value, effect size,
-sample counts) and therefore the same conclusion.
+test, and printed results (the recorded `codeOutput`). The driver executes that
+code against the supplied dataset. Your job is to fix loading-only failures when
+asked, then judge whether each finding **reproduces** from the driver's result
+JSON.
 
 You do NOT re-interpret the science from scratch and you do NOT rewrite the
-experiments. You run the recorded code, and where it fails to reproduce for a
-DATA-LOADING / ENVIRONMENT reason (not an analysis reason) you may revise ONLY
+experiments. Where recorded code fails for a DATA-LOADING reason you may revise ONLY
 the loading/bootstrap part of the script so it loads the provided pkl directly —
-the statistical analysis stays byte-for-byte identical. Then you compare old vs
-new output.
+the statistical analysis stays byte-for-byte identical. Environment failures
+are reported to the driver, not patched per script.
 
 ## Inputs you are given
 
 The orchestrator names ONE run JSON (`autodiscovery/<RUN>.json`), ONE dataset
 pkl path, and the per-file Markdown report (`autodiscovery/<RUN>.summary.md`)
-that the summarizer already wrote with one `### N.` entry per top-ranked
+that the summarizer already wrote with one `### N.` entry per selected
 hypothesis.
 
 ## Procedure
 
-Always run the helper from the `exa-spim-agent/` project root, using exactly the
-`--rank-by` / `--top` flags the orchestrator instruction gives you (they MUST
-match the summarizer's, so the rerun set is exactly the reported set).
+Do not launch long reruns yourself. The driver owns execution and gives you the
+result JSON, exported scripts, and exact paths needed for the current step.
 
-1. **First pass — re-execute the recorded code as-is.**
+1. **When asked to fix loading**, inspect every entry whose driver-produced raw
+   result has `result_status: "UNUSABLE"`. Use `result_failure_reason`,
+   `rerun_failure_kind`, stdout, and stderr together: an exit code of zero is
+   NOT sufficient when stdout is empty or only says that no dataset was found.
+   Edit only exported scripts whose unusable result came from locating or
+   loading the dataset; never touch scripts with a usable result or a genuine
+   analysis failure. A typical direct load is:
 
-   ```bash
-   python agentic/rerun_experiments.py autodiscovery/<RUN>.json --pkl <PKL_PATH> \
-       --rank-by posterior-surprise --top 20
+   ```python
+   import os, pickle
+   print("Loading dataset from:", os.environ["RERUN_PKL"])
+   with open(os.environ["RERUN_PKL"], "rb") as f:
+       payload = pickle.load(f)  # keep the variable name used downstream
    ```
 
-   The helper selects the same top-K records the report contains and executes
-   each record's `code` against the provided pkl in an isolated temp directory,
-   force-redirecting the dataset load (it monkeypatches `open`/`os.path.exists`/
-   `glob` so any `*.pkl` reference resolves to YOUR pkl). It prints a JSON object
-   to **stdout** (no file): `json_file`, `pkl`, `rank_by`, `top`, `code_dir`,
-   counts (`n_rerun`, `n_revised`, `n_recorded`, `n_ok`, `n_failed`, `n_timeout`),
-   and a `results` list. Each result has `rank`, `id`, `code_source`
-   (`recorded` | `revised`), `surprisal`, `priority_score`, `hypothesis`,
-   `recorded_output` (original `codeOutput`), `rerun_exitcode`, `rerun_timed_out`,
-   `rerun_runtime_ms`, `rerun_stdout`, `rerun_stderr`. This stdout JSON is your
-   source of truth — read it straight from the command.
+   Keep downstream names, keys, analysis, and printed results unchanged. Remove
+   package-install retry loops. Do not manage NumPy or packages, modify
+   `sys.path`, or patch `rerun_failure_kind == "environment"` errors. Do not
+   create a marker file: the driver compares the exported script against the
+   recorded code by hash, selectively re-measures only code that actually
+   changed, and merges those results with the usable first-pass results.
 
-2. **Second pass — revise the LOADING of any record that failed for a data
-   reason, then rerun.** Inspect the `rerun_stderr` of every
-   `rerun_exitcode != 0` / `rerun_timed_out` result. Each result also carries a
-   `rerun_failure_kind` (`"analysis"` | `"environment"` | `null`): you fix
-   `"analysis"`-class LOADING failures — a "dataset not found" gate that exited
-   before loading, a hardcoded path/glob that found nothing, a `pip install`
-   retry loop that timed out. **Revise only the loading section**, not the
-   analysis:
-
-   a. Export the editable scripts (same `--rank-by`/`--top`):
-
-      ```bash
-      python agentic/rerun_experiments.py autodiscovery/<RUN>.json --pkl <PKL_PATH> \
-          --rank-by posterior-surprise --top 20 --export-dir autodiscovery/<RUN>.rerun
-      ```
-
-      This writes `autodiscovery/<RUN>.rerun/hypo_<id>.py` for each record, plus
-      `MANIFEST.json` and `REVISION_GUIDE.md`. Read the guide.
-
-   b. Edit ONLY the `hypo_<id>.py` files of the records that failed to LOAD the
-      dataset. Replace the dataset search with a direct load of the provided pkl:
-
-      ```python
-      import os, pickle
-      print("Loading dataset from:", os.environ["RERUN_PKL"])
-      with open(os.environ["RERUN_PKL"], "rb") as f:
-          payload = pickle.load(f)   # keep the SAME variable name the script uses
-      ```
-
-      Keep the downstream variable names and keys (`fragments_graph`, `gt_graph`,
-      `gt_edge_error`, `gt_node_canonical_label`, `gt_merge_sites`, …) and the
-      ENTIRE analysis + its prints unchanged. Remove pip-retry loops. Do NOT
-      touch records that already reproduced or that failed for a genuine analysis
-      reason.
-
-      **The driver owns the environment — do NOT manage packages or NumPy.** The
-      runner already turns every `pip`/`apt`/`conda install` into a no-op, and the
-      host env is pre-provisioned (numpy, pandas, scipy, statsmodels, sklearn,
-      networkx, matplotlib, tensorstore, the proofreader package). Just `import`
-      what you need. NEVER `pip install numpy...`, never `del sys.modules['numpy']`
-      to reload it, and **never put a numpy/site-packages/source path on
-      `sys.path`** (e.g. `sys.path.insert(0, "/tmp/np2")`) — that triggers "you
-      should not try to import numpy from its source directory" and breaks the
-      script. A `rerun_failure_kind == "environment"` result (import error,
-      missing module, native-load failure) is NOT yours to patch per-script:
-      leave it, and report it as an environment failure for the driver to fix
-      once, globally. (If the env is systematically broken the helper aborts with
-      a preflight / `environment_failure` error before you ever fold anything.)
-
-   c. Rerun executing the revised scripts (recorded code is used for any record
-      you did not revise):
-
-      ```bash
-      python agentic/rerun_experiments.py autodiscovery/<RUN>.json --pkl <PKL_PATH> \
-          --rank-by posterior-surprise --top 20 --code-dir autodiscovery/<RUN>.rerun
-      ```
-
-      Use this second payload (with `code_source` per result) as the final
-      reproduction outcome. You may iterate b–c if a first revision still fails
-      for a loading reason.
-
-3. **Compare recorded vs fresh for every result.** For each, decide a
+2. **When asked to fold results**, read the final driver-produced result JSON
+   and compare `recorded_output` with `rerun_stdout` for every result. Assign a
    reproduction verdict by comparing the key reported numbers in
-   `recorded_output` against `rerun_stdout`:
-   - **REPRODUCED** — the script ran (`rerun_exitcode == 0`) and the headline
+   both outputs:
+   - **REPRODUCED** — `result_status == "USABLE"` and the headline
      numbers (test statistic, p-value, effect size, n) match the recorded ones
      within trivial rounding/seed noise; the conclusion still holds.
    - **DIVERGED** — the script ran but a headline number differs materially
      (e.g. p flips across 0.05, effect size changes sign or magnitude
      substantially, sample counts differ). Quote both old and new numbers.
-   - **FAILED** — the script still errored (`rerun_exitcode != 0`) or
-     `rerun_timed_out` after the loading-revision pass. Quote the salient line of
-     `rerun_stderr`. Distinguish a loading/env failure you could not fix from a
-     genuine analysis failure.
+   - **FAILED** — `result_status == "UNUSABLE"` after the loading-revision pass,
+     including non-zero exit, timeout, empty output, or a soft dataset-loading
+     failure that exited zero. Quote `result_failure_reason` and the salient
+     stdout/stderr line. Distinguish a loading/env failure you could not fix from
+     a genuine analysis failure.
 
-   Be faithful, not credulous: ground every comparison in the actual numbers
-   from both outputs; never invent a match. Minor stderr warnings
-   (deprecations, matplotlib notices) do not count as failures if the exit code
-   is 0 and the numbers are present. Reproduction judges the ANALYSIS — a result
+   Ground every comparison in the actual numbers from both outputs; never
+   invent a match. Minor stderr warnings
+   (deprecations, matplotlib notices) do not count as failures when
+   `result_status` is USABLE and the numbers are present. Reproduction judges
+   the ANALYSIS — a result
    whose loading you revised but whose analysis and numbers are unchanged still
    counts as REPRODUCED; note it ran on `code_source: revised`.
 

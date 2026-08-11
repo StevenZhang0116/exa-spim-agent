@@ -13,7 +13,7 @@ after the label):
 
 * ``- **Reproduction:** REPRODUCED | DIVERGED | FAILED``
 * ``- **Generalization:** GENERALIZES | PARTIAL | DOES-NOT-GENERALIZE | INCONCLUSIVE``
-* ``- **Verdict:** OK | MINOR | MAJOR | CRITICAL``  (or SOUND | WEAK | FLAWED)  → "Statistics"
+* ``- **Verdict:** SOUND | WEAK | MINOR | MAJOR | CRITICAL``  → "Statistics"
 * ``- **Post-correction verdict:** UPHELD | WEAKENED | OVERTURNED`` (fix-tests)
 * ``- **Corrected generalization:** GENERALIZES | PARTIAL | DOES-NOT-GENERALIZE``
   (fix-tests, only when extra datasets were run)
@@ -52,18 +52,24 @@ GENERALIZATION = {
     "does-not-generalize": 0.0,
     "inconclusive": float("nan"),
 }
-# Statistics quality comes from the verifier's Verdict bullet. Two vocabularies
-# appear in practice: OK/MINOR/MAJOR/CRITICAL (severity of issues) and
-# SOUND/WEAK/FLAWED. CRITICAL is the most severe issue tier (worse than MAJOR),
-# so it maps to 0.0 — without it CRITICAL entries would render as a neutral "n/a"
-# cell, hiding the worst findings rather than flagging them.
+# Statistics quality comes from the verifier's Verdict bullet. The live vocabulary
+# is the single 5-level ladder the workflow's verify step mandates, ordered here
+# best -> worst exactly as that ladder reads:
+#   SOUND | WEAK | MINOR | MAJOR | CRITICAL
+# These scores must follow that order. They previously did not — `minor` sat at
+# 0.66 above `weak` at 0.5, a leftover of scoring two SEPARATE vocabularies
+# (OK/MINOR/MAJOR/CRITICAL and SOUND/WEAK/FLAWED) that were later merged into one
+# ladder. That made a WEAK entry render worse than a MINOR one, contradicting the
+# report it was drawn from.
 STATISTICS = {
-    "ok": 1.0,
     "sound": 1.0,
-    "minor": 0.66,
-    "weak": 0.5,
-    "major": 0.33,
+    "weak": 0.75,
+    "minor": 0.5,
+    "major": 0.25,
     "critical": 0.0,
+    # Legacy aliases from the two pre-merge vocabularies. No report in
+    # autodiscovery/ uses either, but an old one elsewhere still parses.
+    "ok": 1.0,
     "flawed": 0.0,
 }
 # fix-tests outcome for hypotheses whose statistical test was corrected and

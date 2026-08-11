@@ -39,13 +39,14 @@ its statistic, p-value, sample sizes), `review` (the loop's own audit), `code`
 
 Prefer the ranking helper's SLICE over the raw export. When the orchestrator
 gives you a `rank_by_surprise.py … --include-code` command, run it and read its
-stdout JSON: it already contains ONLY the reported top-K records, each with the
+stdout JSON: it already contains ONLY the records selected for the report, each with the
 recorded `code`, `codeOutput`, `analysis` and `review` (code/codeOutput
 middle-truncated to keep the payload small). Audit from that — do NOT load the
-full multi-MB `autodiscovery/<RUN>.json`, which holds ~250 records when only ~20
-are reported (reading it wastes the bulk of your context on records you will
-never audit). Only fall back to the raw export if a specific record's truncated
-`code` cut off the exact line you need to judge the test.
+full multi-MB `autodiscovery/<RUN>.json`. An export holds every hypothesis the
+discovery loop ever tested (50–150 per run to date) while the report keeps only
+the selected subset, so reading the raw file spends your context on records you
+will never audit. Only fall back to the raw export if a specific record's
+truncated `code` cut off the exact line you need to judge the test.
 
 You judge **only from what each record already contains** — the recorded
 `code`, its `codeOutput`, the `analysis`, and the `review`. **Do not re-run any
@@ -88,8 +89,10 @@ conclusion.
    - **Belief update consistency.** Does the `prior`→`posterior` shift and the
      `surprisal` sign match what the evidence actually supports?
 
-3. **Multiple comparisons (run-wide, do once).** ~250 hypotheses were each
-   tested at α≈0.05. By chance alone ~12 "significant" results are expected.
+3. **Multiple comparisons (run-wide, do once).** Every hypothesis in the export
+   was tested at α≈0.05, so with N tested (`n_total` in the helper's output)
+   roughly 0.05·N "significant" results are expected by chance alone — state the
+   number for THIS run rather than a remembered one.
    Assess whether any family-wise / FDR correction was applied, and flag
    borderline-significant findings (e.g. 0.001 < p < 0.05) that may not survive
    correction. Compute how many findings would remain after a
@@ -99,17 +102,33 @@ conclusion.
 
 Ground every finding in the record (quote the test, the p-value, the n, the
 conclusion sentence). Never invent numbers. Where the experiment is sound, say
-so plainly — don't manufacture doubt. Assign each hypothesis a verdict:
-**SOUND** / **WEAK** (defensible but caveated: underpowered, uncorrected,
-effect-size concern) / **FLAWED** (a logical or statistical error materially
-undermines the conclusion).
+so plainly — don't manufacture doubt. Assign each hypothesis one verdict from
+this **5-level** ladder:
+
+- **SOUND** — the test fits the data, its assumptions hold, and the conclusion
+  follows.
+- **WEAK** — defensible but caveated: underpowered, uncorrected for multiplicity,
+  or an effect size too small to matter.
+- **MINOR** — a real flaw that does not decide the outcome; the conclusion
+  survives with a stated caveat.
+- **MAJOR** — a fault that materially undermines the conclusion as written; a
+  reader should not trust the finding as stated.
+- **CRITICAL** — the result is an artifact of how it was measured; the finding
+  does not stand at all.
+
+Use these exact tokens. The downstream `discovery-test-fixer` step keys off
+**MAJOR/CRITICAL** (plus any MINOR whose `Statistical issues` bullet names a
+concrete test fault), so a verdict outside this ladder silently removes a
+hypothesis from the corrective phase.
 
 ## Output
 
-Update the combined Markdown report at `autodiscovery/all-runs.summary.md`
-**in place**. Read the existing file first. The `discovery-summarizer` already
-wrote a ranked entry for every hypothesis under "Ranked findings (most
-surprising first)", one per `### N. (Surprise X.XXX) …` block. Your audit must
+Update the per-run Markdown report **in place** — the orchestrator names its
+exact path in your instruction (`autodiscovery/<RUN>.summary.md`, one report per
+run export); use that path, never a hardcoded one. Read the existing file first.
+The `discovery-summarizer` already wrote a ranked entry for every hypothesis
+under "Ranked Conclusions (highest priority first)", one per
+`### N. (Priority X.XXX · Surprise X.XXX) …` block. Your audit must
 be folded **into the same entry** for each hypothesis — do NOT write a separate
 verification section that repeats the hypotheses. The reader should see the
 summary and its statistical verdict together in one place.
@@ -118,7 +137,7 @@ For each `### N.` entry, append these bullets after the existing
 `- **Caveats:**` bullet (keep the summarizer's bullets intact):
 
 ```markdown
-- **Verdict:** SOUND | WEAK | FLAWED
+- **Verdict:** SOUND | WEAK | MINOR | MAJOR | CRITICAL
 - **Test:** <named test, statistic, p-value, n — grounded in the record>
 - **Statistical issues:** <test choice / assumptions / power / effect size, or "none">
 - **Logic issues:** <induction/deduction errors, or "none">
@@ -128,23 +147,27 @@ For each `### N.` entry, append these bullets after the existing
 Write every field complete — never truncate with `…` or `...`; quote the test,
 p-value, n, and conclusion sentence from the record.
 
-Then add **one** new run-wide section at the end of the file (the only audit
-content that is genuinely cross-hypothesis):
+Then add **one** new run-wide section (the only audit content that is genuinely
+cross-hypothesis). Your instruction carries a `PLACEMENT:` rule with the report's
+canonical top-level order — follow it rather than any position remembered from a
+previous report, and never reorder sections already in the file:
 
 ```markdown
-## Statistical Verification — Run-wide Summary
+## Statistical Verification — Summary
 ```
+
+Use that heading verbatim: the driver checks for it to confirm this step ran.
 
 It must contain:
 
 - How many hypotheses were audited and the verdict breakdown
-  (SOUND/WEAK/FLAWED counts).
+  (SOUND/WEAK/MINOR/MAJOR/CRITICAL counts).
 - A short **"Multiple comparisons"** subsection with the FDR analysis: how many
   of the reported p-values survive Benjamini–Hochberg control, and which
   borderline (0.001 < p < 0.05) headline findings would not.
 - A one-paragraph synthesis of the most serious problems (the discoveries a
   scientist should *not* trust), cross-referenced to entry number / surprise.
 
-After updating the combined file, reply with the report path
-(`autodiscovery/all-runs.summary.md`) and a 3–5 bullet executive summary of the
-most serious problems found. Your final message is the deliverable.
+After updating the report, reply with the path you wrote and a 3–5 bullet
+executive summary of the most serious problems found. Your final message is the
+deliverable.
