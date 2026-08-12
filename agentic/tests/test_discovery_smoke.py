@@ -10,6 +10,7 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -35,6 +36,11 @@ def _load_workflow_module():
 
 
 workflow = _load_workflow_module()
+
+
+class _TtyInput(io.StringIO):
+    def isatty(self) -> bool:
+        return True
 
 
 def _records() -> list[dict]:
@@ -86,6 +92,100 @@ class DiscoverySmokeTests(unittest.TestCase):
             output.getvalue().strip(),
             "ID 1: Positive feature with wrapped text.",
         )
+
+    def test_rerun_manifest_must_match_selection_and_scripts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            old_root = workflow.PROJECT_ROOT
+            workflow.PROJECT_ROOT = root
+            try:
+                rerun_dir = root / "run.rerun"
+                rerun_dir.mkdir()
+                (rerun_dir / "hypo_1.py").write_text("print(1)")
+                (rerun_dir / "MANIFEST.json").write_text(json.dumps({
+                    "records": [{"id": 1}],
+                }))
+                selection = root / "selection.json"
+                selection.write_text(json.dumps({"selected_ids": [1]}))
+
+                self.assertTrue(workflow._rerun_manifest_matches_selection(
+                    "run.rerun", "selection.json"
+                ))
+                selection.write_text(json.dumps({"selected_ids": [2]}))
+                self.assertFalse(workflow._rerun_manifest_matches_selection(
+                    "run.rerun", "selection.json"
+                ))
+            finally:
+                workflow.PROJECT_ROOT = old_root
+
+    def test_prior_artifact_survey_reports_mismatch_and_old_analysis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            old_root = workflow.PROJECT_ROOT
+            workflow.PROJECT_ROOT = root
+            try:
+                run_json = root / "run.json"
+                run_json.write_text(json.dumps([
+                    {"id": 1}, {"id": 2},
+                ]))
+                (root / "run.summary.md").write_text("old report")
+                (root / "run.json.predictive.reproduce.json").write_text("{}")
+                rerun_dir = root / "run.json.predictive.rerun"
+                rerun_dir.mkdir()
+                (rerun_dir / "hypo_1.py").write_text("print(1)")
+                (rerun_dir / "MANIFEST.json").write_text(json.dumps({
+                    "records": [{"id": 1}],
+                }))
+                fixed_dir = root / "run.json.predictive.fixed"
+                fixed_dir.mkdir()
+                (fixed_dir / "hypo_2.py").write_text("print(2)")
+                selection_path = root / "run.predictive-selection.json"
+                selection_path.write_text(json.dumps({
+                    "criterion": "predictive",
+                    "selected_ids": [2],
+                    "excluded": [{"id": 1, "reason": "not predictive"}],
+                    "source_sha256": workflow._source_sha256(run_json),
+                    "policy_version": workflow.PREDICTIVE_POLICY_VERSION,
+                }))
+
+                findings = workflow.survey_prior_artifacts(run_json, "predictive")
+                by_path = {path: reason for path, reason in findings}
+
+                self.assertIn(root / "run.summary.md", by_path)
+                self.assertIn(root / "run.json.predictive.reproduce.json", by_path)
+                self.assertIn(rerun_dir, by_path)
+                self.assertIn(fixed_dir, by_path)
+                self.assertIn(rerun_dir / "MANIFEST.json", by_path)
+                self.assertIn("STALE/MISMATCHED", by_path[rerun_dir / "MANIFEST.json"])
+                self.assertNotIn(selection_path, by_path)
+            finally:
+                workflow.PROJECT_ROOT = old_root
+
+    def test_prior_artifact_confirmation_requires_explicit_yes(self) -> None:
+        findings = [(Path("old.json"), "previous measured-analysis JSON")]
+
+        with (
+            mock.patch.object(workflow.sys, "stdin", _TtyInput("y\n")),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            workflow.confirm_prior_artifacts(findings, assume_yes=False)
+
+        with (
+            mock.patch.object(workflow.sys, "stdin", _TtyInput("n\n")),
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaisesRegex(SystemExit, "left untouched"),
+        ):
+            workflow.confirm_prior_artifacts(findings, assume_yes=False)
+
+        with (
+            mock.patch.object(workflow.sys, "stdin", io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+            self.assertRaisesRegex(SystemExit, "--yes-stale"),
+        ):
+            workflow.confirm_prior_artifacts(findings, assume_yes=False)
+
+        with contextlib.redirect_stderr(io.StringIO()):
+            workflow.confirm_prior_artifacts(findings, assume_yes=True)
 
     def test_predictive_smoke_saves_and_reuses_selection_manifest(self) -> None:
         class FakeClient:
@@ -187,6 +287,12 @@ class DiscoverySmokeTests(unittest.TestCase):
         )
         by_name = {step["name"]: step for step in steps}
 
+        export = by_name["reproduce-export"]
+        self.assertEqual(
+            export["skip_if_scripts_match_selection"],
+            workflow.PREDICTIVE_MANIFEST,
+        )
+
         remeasure = by_name["reproduce-remeasure"]
         self.assertIn("--only-changed", remeasure["argv"])
         self.assertIn("--base-results", remeasure["argv"])
@@ -200,7 +306,12 @@ class DiscoverySmokeTests(unittest.TestCase):
 
         corrected = by_name["fix-tests-measure"]
         self.assertIn("--only-corrected", corrected["argv"])
-        self.assertEqual(workflow.COMPUTE_TIMEOUT_S, 43200)
+        self.assertEqual(
+            by_name["translate-report"]["timeout_s"],
+            workflow.TRANSLATE_STEP_TIMEOUT_S,
+        )
+        self.assertEqual(workflow.TRANSLATE_STEP_TIMEOUT_S, 7200)
+        self.assertEqual(workflow.COMPUTE_TIMEOUT_S, 86400)
 
 
 if __name__ == "__main__":

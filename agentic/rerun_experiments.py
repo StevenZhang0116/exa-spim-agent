@@ -338,6 +338,14 @@ def export_scripts(ranked: list[dict], pkl: Path, export_dir: Path) -> dict:
     export_dir.mkdir(parents=True, exist_ok=True)
     (export_dir / "REVISION_GUIDE.md").write_text(_REVISION_GUIDE, encoding="utf-8")
 
+    # An export directory represents exactly this selection. Remove only the
+    # workflow-owned hypothesis scripts that are no longer selected; otherwise a
+    # changed predictive manifest leaves loose stale code beside the new manifest.
+    selected_names = {hypo_filename(record.get("id")) for record in ranked}
+    for old_script in export_dir.glob("hypo_*.py"):
+        if old_script.name not in selected_names:
+            old_script.unlink()
+
     manifest = []
     for rank, r in enumerate(ranked, start=1):
         rid = r.get("id")

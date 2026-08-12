@@ -48,7 +48,7 @@ Generalization → Statistical Verification → Statistical Test Corrections →
 Excluded). ``## Excluded`` is the trailing appendix, so each step inserts before
 it. ``_scale_timeouts`` sizes agent turns from the hypothesis count, because
 predictive mode removed the top-K that the old flat budget assumed. Compute
-steps have a fixed 12-hour budget for large experiment reruns.
+steps have a fixed 24-hour budget for large experiment reruns.
 
 A full (non-smoke) run also tees its entire console output to
 ``<RUN>.json[.predictive].workflow.log.txt`` beside the export (override with
@@ -57,6 +57,12 @@ subagent tool call, each step's final reply, the compute subprocesses' live
 ``[rerun k/N]`` output, validation WARNINGs, and any fatal diagnostic. It is
 flushed as it goes and closed with an ``# OK/FAILED after Ns`` footer, so a log
 with no footer means the process was killed rather than finished.
+
+Before that log can be overwritten or any workflow step begins, the driver
+surveys reports, result JSONs, checkpoints, rerun/fixed scripts, selection state,
+and the previous log. If prior or likely stale artifacts exist, an interactive
+run requires explicit y/n confirmation. Batch runs abort unless the reviewed
+invocation includes ``--yes-stale``.
 
 ``RANK_BY`` controls ordering. Positive/both modes keep a percentage-based
 top-K. Predictive mode removes only explicit exclusions and keeps every
@@ -254,7 +260,7 @@ DRIVER_LOG_SUFFIX: str = ".workflow.log.txt"
 # --- Timeout budgets ---------------------------------------------------------
 # Agent budgets scale with how many hypotheses the report carries, because the
 # summarize step authors one full entry per record in a single turn. Compute
-# steps use a fixed 12-hour budget: rerun_experiments.py executes one script per
+# steps use a fixed 24-hour budget: rerun_experiments.py executes one script per
 # record (each with its own 1800-second cap), and large predictive runs can take
 # substantially longer than the old record-count estimate allowed.
 AGENT_STEP_BASE_S: int = 600        # 10 min of fixed overhead per agent turn
@@ -262,7 +268,8 @@ AGENT_STEP_PER_RECORD_S: int = 30   # + writing/folding one entry
 AGENT_STEP_CEILING_S: int = 3600    # 1 h — a hung session must still abort
 
 AGENT_STEP_TIMEOUT_S: int = 900     # overridden at startup; see _scale_timeouts()
-COMPUTE_TIMEOUT_S: int = 43200      # 12 h per compute step
+TRANSLATE_STEP_TIMEOUT_S: int = 7200  # 2 h for full-report localization
+COMPUTE_TIMEOUT_S: int = 86400      # 24 h per compute step
 
 
 def _scale_timeouts(n_records: int) -> tuple[int, int]:
@@ -716,11 +723,12 @@ def build_steps(
             "kind": "compute",
             # Export editable hypo_<id>.py scripts to rerun_dir_rel so the
             # fix-loading agent can edit them directly — no subprocess inside
-            # an agent turn. Skipped when scripts already exist (resume case)
-            # to avoid overwriting loading-fix edits from a prior run.
+            # an agent turn. Resume preserves existing edits only while the
+            # exported MANIFEST/files still match the predictive selection.
             "argv": rerun_argv(json_rel, pkl_rel, export_dir_rel=rerun_dir_rel),
             "out": None,
             "skip_if_scripts_exist_in": rerun_dir_rel,
+            "skip_if_scripts_match_selection": PREDICTIVE_MANIFEST,
         },
         {
             "name": "reproduce-fix-loading",
@@ -1007,6 +1015,7 @@ def build_steps(
             "name": "translate-report",
             "phase": "translate",
             "kind": "agent",
+            "timeout_s": TRANSLATE_STEP_TIMEOUT_S,
             "expects_file": summary_zh_rel,
             "instruction": (
                 "Use the discovery-translator subagent to produce a faithful "
@@ -1096,18 +1105,21 @@ async def run_step(client: ClaudeSDKClient, step: dict[str, object]) -> str:
     builds), so its values are heterogeneous — ``instruction`` is a str, but
     siblings hold argv lists, ``None``, and skip flags.
 
-    Wraps ``_run_step_inner`` with ``AGENT_STEP_TIMEOUT_S`` so a hung SDK turn
-    aborts loudly rather than blocking the workflow indefinitely.
+    Wraps ``_run_step_inner`` with the step's optional ``timeout_s`` override,
+    falling back to ``AGENT_STEP_TIMEOUT_S``. This lets full-report translation
+    have a larger budget without weakening the guard on every other agent turn.
     """
+    timeout_s = int(step.get("timeout_s", AGENT_STEP_TIMEOUT_S))
     try:
         return await asyncio.wait_for(
             _run_step_inner(client, step),
-            timeout=AGENT_STEP_TIMEOUT_S,
+            timeout=timeout_s,
         )
     except asyncio.TimeoutError:
         raise SystemExit(
-            f"Agent step '{step['name']}' timed out after {AGENT_STEP_TIMEOUT_S}s. "
-            "Aborting — increase AGENT_STEP_TIMEOUT_S if the step legitimately needs more time."
+            f"Agent step '{step['name']}' timed out after {timeout_s}s. "
+            "Aborting — increase this step's timeout_s (or the default "
+            "AGENT_STEP_TIMEOUT_S) if it legitimately needs more time."
         )
 
 
@@ -1165,6 +1177,35 @@ def _has_hypo_scripts(dir_rel: str) -> bool:
     """
     d = PROJECT_ROOT / dir_rel
     return d.is_dir() and any(d.glob("hypo_*.py"))
+
+
+def _rerun_manifest_matches_selection(dir_rel: str, selection_rel: str) -> bool:
+    """Whether an exported rerun directory contains exactly the selected ids."""
+    try:
+        rerun_manifest = json.loads(
+            (PROJECT_ROOT / dir_rel / "MANIFEST.json").read_text()
+        )
+        selection = json.loads((PROJECT_ROOT / selection_rel).read_text())
+        records = rerun_manifest.get("records")
+        selected_ids = selection.get("selected_ids")
+        if not isinstance(records, list) or not isinstance(selected_ids, list):
+            return False
+        rerun_ids = [
+            record.get("id") if isinstance(record, dict) else None
+            for record in records
+        ]
+        if None in rerun_ids or len(rerun_ids) != len(set(rerun_ids)):
+            return False
+        if len(selected_ids) != len(set(selected_ids)):
+            return False
+        if set(rerun_ids) != set(selected_ids):
+            return False
+        return all(
+            (PROJECT_ROOT / dir_rel / f"hypo_{hypothesis_id}.py").is_file()
+            for hypothesis_id in selected_ids
+        )
+    except (OSError, TypeError, ValueError):
+        return False
 
 
 def _source_sha256(source_path: Path) -> str:
@@ -1257,14 +1298,118 @@ def _predictive_manifest_is_current(manifest_rel: str, source_rel: str) -> bool:
     return True
 
 
+def survey_prior_artifacts(json_path: Path, direction: str) -> list[tuple[Path, str]]:
+    """Describe prior-run artifacts that could be reused or folded accidentally.
+
+    This is deliberately read-only and conservative. Checkpoints are listed as
+    validated caches rather than called stale: ``rerun_experiments.py`` verifies
+    their source/code/data fingerprints before reuse. Reports, result JSONs and
+    editable scripts can influence agent decisions, so a human sees them before
+    the driver overwrites its log or starts any workflow step.
+    """
+    scope = ".predictive" if direction == "predictive" else ""
+    findings: list[tuple[Path, str]] = []
+
+    def add(path: Path, reason: str) -> None:
+        if path.exists():
+            findings.append((path, reason))
+
+    add(json_path.with_suffix(".summary.md"), "existing analysis report")
+    add(json_path.with_suffix(".summary.zh.md"), "existing translated report")
+    prior_log = json_path.with_name(
+        f"{json_path.name}{scope}{DRIVER_LOG_SUFFIX}"
+    )
+    add(prior_log, "previous workflow log; the default path will be overwritten")
+
+    result_suffixes = (
+        "reproduce-raw.json", "reproduce.json", "extrapolate.json", "corrected.json"
+    )
+    for suffix in result_suffixes:
+        result_path = json_path.with_name(f"{json_path.name}{scope}.{suffix}")
+        add(result_path, "previous measured-analysis JSON")
+        add(
+            result_path.with_name(f"{result_path.name}.checkpoint.json"),
+            "prior compute checkpoint; fingerprint-validated before reuse",
+        )
+
+    rerun_dir = json_path.with_name(f"{json_path.name}{scope}.rerun")
+    fixed_dir = json_path.with_name(f"{json_path.name}{scope}.fixed")
+    if _has_hypo_scripts(_rel_to_root(rerun_dir)):
+        findings.append((rerun_dir, "editable rerun scripts from a previous invocation"))
+    if _has_hypo_scripts(_rel_to_root(fixed_dir)):
+        findings.append((fixed_dir, "corrected-analysis scripts from a previous invocation"))
+
+    if direction == "predictive":
+        selection_path = predictive_manifest_path(json_path)
+        if selection_path.exists():
+            selection_rel = _rel_to_root(selection_path)
+            source_rel = _rel_to_root(json_path)
+            if not _predictive_manifest_is_current(selection_rel, source_rel):
+                findings.append((
+                    selection_path,
+                    "STALE predictive selection (source hash, policy, or schema changed)",
+                ))
+
+            if rerun_dir.is_dir() and not _rerun_manifest_matches_selection(
+                _rel_to_root(rerun_dir), selection_rel
+            ):
+                findings.append((
+                    rerun_dir / "MANIFEST.json",
+                    "STALE/MISMATCHED rerun manifest or selected script set",
+                ))
+
+    # Keep one entry per concrete path, preferring the later/more-specific reason.
+    deduplicated: dict[Path, str] = {}
+    for path, reason in findings:
+        deduplicated[path] = reason
+    return sorted(deduplicated.items(), key=lambda item: item[0].as_posix())
+
+
+def confirm_prior_artifacts(
+    findings: list[tuple[Path, str]], *, assume_yes: bool
+) -> None:
+    """Require explicit y/n confirmation before a run can reuse prior artifacts."""
+    if not findings:
+        return
+
+    print("\nWARNING: prior workflow artifacts were found:", file=sys.stderr)
+    for path, reason in findings:
+        print(f"  - {_rel_to_root(path)}: {reason}", file=sys.stderr)
+    print(
+        "These files may be reused, refreshed, overwritten, or folded into this "
+        "run. Review the list before proceeding.",
+        file=sys.stderr,
+    )
+
+    if assume_yes:
+        print("[stale-artifact-check] proceeding via --yes-stale", file=sys.stderr)
+        return
+    if not sys.stdin.isatty():
+        raise SystemExit(
+            "Prior workflow artifacts require human confirmation, but stdin is "
+            "not a terminal. Re-run interactively or pass --yes-stale after review."
+        )
+
+    while True:
+        print("Proceed with these existing artifacts? [y/n]: ", end="", file=sys.stderr, flush=True)
+        answer = sys.stdin.readline().strip().lower()
+        if answer in {"y", "yes"}:
+            print("[stale-artifact-check] confirmed by user", file=sys.stderr)
+            return
+        if answer in {"n", "no"}:
+            raise SystemExit("Aborted — existing workflow artifacts were left untouched.")
+        print("Please answer y or n.", file=sys.stderr)
+
+
 def run_compute_step(step: dict[str, object]) -> None:
     """Execute one ``kind == "compute"`` step in the driver (no agent involved).
 
     Honors skip rules so a resume reuses expensive results and the common path
     stays cheap. Checked in order:
     - ``skip_if_scripts_exist_in``: skip (without overwriting) when the target
-      dir already holds hypo_*.py scripts — used by the export step so a resume
-      never clobbers loading-fix edits from a prior run.
+      dir already holds hypo_*.py scripts. Predictive exports additionally use
+      ``skip_if_scripts_match_selection``: a stale/missing MANIFEST or script
+      forces a refresh instead of silently reusing the wrong hypothesis set.
     - ``skip_if_no_scripts_in``: if the preceding agent wrote no hypo_<id>.py
       there, this run would have no work, so skip it.
     - all result-producing steps enter the helper, which cheaply reuses its
@@ -1280,9 +1425,17 @@ def run_compute_step(step: dict[str, object]) -> None:
     # 1) Scripts already on disk — skip export to avoid clobbering edits.
     skip_exist = step.get("skip_if_scripts_exist_in")
     if skip_exist and _has_hypo_scripts(str(skip_exist)):
-        log(f"  [compute] skipped (scripts already in {skip_exist}; "
-            "not overwriting).")
-        return
+        selection = step.get("skip_if_scripts_match_selection")
+        if not selection or _rerun_manifest_matches_selection(
+            str(skip_exist), str(selection)
+        ):
+            log(f"  [compute] skipped (scripts already in {skip_exist}; "
+                "not overwriting).")
+            return
+        log(
+            f"  [compute] {skip_exist} does not match {selection}; refreshing "
+            "the export and removing stale workflow-owned hypo_*.py files."
+        )
     # 2) Nothing for the preceding agent to have fixed/corrected → skip the run.
     skip_dir = step.get("skip_if_no_scripts_in")
     if skip_dir and not _has_hypo_scripts(str(skip_dir)):
@@ -1578,6 +1731,15 @@ def main() -> int:
             "already persisted in the predictive-selection manifest."
         ),
     )
+    parser.add_argument(
+        "--yes-stale",
+        action="store_true",
+        help=(
+            "Proceed non-interactively after printing the prior/stale artifact "
+            "survey. Use only after reviewing the listed files; without this "
+            "flag, findings require an interactive y/n confirmation."
+        ),
+    )
     args = parser.parse_args()
 
     def _resolve_existing(p: Path, what: str) -> Path:
@@ -1672,6 +1834,9 @@ def main() -> int:
         return 0
 
     assert pkl_path is not None  # enforced above unless smoke returned
+
+    prior_artifacts = survey_prior_artifacts(json_path, DIRECTION)
+    confirm_prior_artifacts(prior_artifacts, assume_yes=args.yes_stale)
 
     # A full run is hours long across several agent turns and compute
     # subprocesses, so everything from here on is tee'd to a file: the dataset

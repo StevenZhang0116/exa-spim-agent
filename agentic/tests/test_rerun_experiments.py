@@ -68,6 +68,24 @@ def _prior_payload(run_json: Path, dataset: Path, results: list[dict]) -> dict:
 
 
 class RerunWorkItemTests(unittest.TestCase):
+    def test_export_scripts_removes_unselected_stale_scripts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            export_dir = root / "rerun"
+            export_dir.mkdir()
+            (export_dir / "hypo_9.py").write_text("stale")
+            (export_dir / "keep.txt").write_text("user file")
+
+            rerun.export_scripts(
+                [_record(1, "print('one')")], root / "data.pkl", export_dir
+            )
+
+            self.assertFalse((export_dir / "hypo_9.py").exists())
+            self.assertTrue((export_dir / "hypo_1.py").is_file())
+            self.assertEqual((export_dir / "keep.txt").read_text(), "user file")
+            manifest = json.loads((export_dir / "MANIFEST.json").read_text())
+            self.assertEqual([row["id"] for row in manifest["records"]], [1])
+
     def test_zero_exit_dataset_gate_is_unusable(self) -> None:
         status, reason = rerun.result_usability(
             {
