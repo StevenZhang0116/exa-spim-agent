@@ -28,9 +28,25 @@ What we assert / report (see the canonical vs cache mapping in
      the node-count rule).
   B. Per-neuron merge counts agree (cache sites grouped by neuron vs
      results.csv "# Merges", which equals merge_sites.csv rows per neuron).
-  C. Merge SITES localize to the same places (nearest-neighbour matching in µm;
-     recall + precision at a distance tolerance). This is the load-bearing check --
-     it confirms the cache is pointing at the same physical merges.
+  C. Merge SITES localize to the same places -- the load-bearing check, in three
+     parts that must be read separately:
+       C1. FRAME. Which coordinate frame is the cache's site xyz actually in? Every
+           candidate is scored by the residual against the canonical site of the
+           SAME segment, using both coordinate columns the CSV carries (World =
+           (x,y,z) µm, Voxel = (z,y,x) ints) and their reversals. Anything but the
+           documented World frame is a HARD failure: the cache computes every
+           distance in that same frame, so cable lengths, edge jumps and the walk's
+           own 50 µm / 6 µm thresholds are all affected, not just this comparison.
+       C2. PLACEMENT. For the segments both sides flagged, how far apart are the
+           sites -- matched WITHIN a segment id, so the pairing cannot drift onto
+           an unrelated site.
+       C3. COVERAGE. Global nearest-neighbour recall and precision at a tolerance:
+           does the cache have a site near each canonical one, and vice versa.
+     C2 and C3 fail independently. A frame bug breaks C2 for every segment at once;
+     missing detections break C3 while C2 stays clean. The earlier single global
+     nearest-neighbour test conflated them -- it could not tell "the coordinates
+     are wrong" from "the walk found fewer merges", because both show up as one
+     large median distance.
   D. Total "# Merges" agrees (len(gt_merge_sites) vs len(merge_sites.csv) vs
      results.csv["# Merges"].sum()).
 
@@ -144,8 +160,15 @@ def load_canonical_merges(metrics_dir, brain_id):
     -------
     dict with:
       "merge_sites_csv" -- path used
-      "sites"           -- list[{"segment_id", "gt_neuron", "xyz"=(x,y,z) µm}]
+      "sites"           -- list[{"segment_id", "gt_neuron",
+                                 "xyz"=(x,y,z) µm from the World column,
+                                 "voxel"=(z,y,x) ints from the Voxel column}]
       "results"         -- results.csv DataFrame indexed by neuron name (or None)
+
+    Both coordinate columns are kept, not just World. They are the same point in
+    two frames -- ``World = (Voxel[2], Voxel[1], Voxel[0]) * (0.748, 0.748, 1.0)``
+    on this data -- which lets ``infer_frame`` below identify which frame the cache
+    is actually in from the CSV alone, instead of guessing at a scale factor.
     """
     site_hits = sorted(
         glob.glob(os.path.join(metrics_dir, brain_id, "*", "merge_sites.csv"))
@@ -160,11 +183,13 @@ def load_canonical_merges(metrics_dir, brain_id):
     sites = []
     for _, row in raw.iterrows():
         world = ast.literal_eval(str(row["World"]))  # "(x, y, z)" µm -> tuple
+        voxel = ast.literal_eval(str(row["Voxel"]))  # "(z, y, x)" ints -> tuple
         sites.append(
             {
                 "segment_id": int(float(row["Segment_ID"])),
                 "gt_neuron": str(row["GroundTruth_ID"]),
                 "xyz": (float(world[0]), float(world[1]), float(world[2])),
+                "voxel": (float(voxel[0]), float(voxel[1]), float(voxel[2])),
             }
         )
 
@@ -274,55 +299,155 @@ def check_per_neuron_counts(rep, cache, canon):
     return df
 
 
-def _best_axis(cache_xyz, canon_xyz):
-    """
-    Sanity guard against a silent axis-convention mismatch. Both sources should
-    already be (x, y, z) µm, so identity should win; we compare the median
-    nearest-neighbour distance under identity vs a reversed (z, y, x) order and
-    warn loudly if reversed is dramatically better (which would mean a convention
-    bug upstream). Returns (label, canon_xyz_to_use).
-    """
-    from scipy.spatial import KDTree
+# The frames the cache's site xyz could plausibly be in, expressed as transforms of
+# the two columns the canonical CSV already carries. "world" is (x,y,z) µm, "voxel"
+# is (z,y,x) integer voxels; reversing either covers the axis-order mistake. The
+# contract -- what the package documents ``node_xyz`` to be -- is the first entry,
+# so anything else winning is a real convention bug and not a tolerance question.
+CANDIDATE_FRAMES = (
+    ("World (x,y,z) µm  [the documented contract]", "xyz", False),
+    ("World reversed (z,y,x) µm  [axis order only]", "xyz", True),
+    ("Voxel (z,y,x)  [axis order + anisotropy NOT applied]", "voxel", False),
+    ("Voxel reversed (x,y,z)  [anisotropy NOT applied]", "voxel", True),
+)
 
-    def median_nn(a, b):
-        if len(a) == 0 or len(b) == 0:
-            return float("inf")
-        d, _ = KDTree(b).query(a)
-        return float(np.median(d))
 
-    ident = median_nn(cache_xyz, canon_xyz)
-    rev = median_nn(cache_xyz, canon_xyz[:, ::-1])
-    if rev < ident / 2:
-        return "REVERSED (z,y,x) -- AXIS MISMATCH!", canon_xyz[:, ::-1], ident, rev
-    return "identity (x,y,z)", canon_xyz, ident, rev
+def _canon_points(canon, key, reverse):
+    """Canonical site coordinates in one candidate frame."""
+    pts = np.array([s[key] for s in canon["sites"]], dtype=float)
+    return pts[:, ::-1] if reverse else pts
+
+
+def _same_segment_distances(cache_sites, canon_sites, canon_pts):
+    """Distance from each cache site to the nearest canonical site OF THE SAME SEGMENT.
+
+    Restricting the pairing to a shared segment id is what makes the number mean
+    something. A global nearest-neighbour search can pair a cache site with an
+    unrelated canonical site that happens to sit closer, so "wrong coordinate
+    frame" and "found a different set of sites" both surface as one large median
+    distance -- indistinguishable, which is exactly the ambiguity this replaces.
+    Within a single segment the pairing is forced, so the residual is the frame
+    error and nothing else.
+
+    Returns (distances, n_segments_compared).
+    """
+    by_seg = defaultdict(list)
+    for k, s in enumerate(canon_sites):
+        by_seg[int(s["segment_id"])].append(canon_pts[k])
+
+    dists, segs = [], set()
+    for s in cache_sites:
+        cand = by_seg.get(int(s["segment_id"]))
+        if not cand:
+            continue
+        segs.add(int(s["segment_id"]))
+        p = np.asarray(s["xyz"], dtype=float)
+        dists.append(min(float(np.linalg.norm(p - c)) for c in cand))
+    return np.array(dists), len(segs)
+
+
+def infer_frame(rep, cache, canon):
+    """Identify which coordinate frame the cache's site xyz is actually in.
+
+    Scores every candidate frame by the same-segment residual and picks the
+    smallest. A frame other than the documented contract winning by a wide margin
+    is a hard failure: every distance the cache computes -- cable length, edge
+    jumps, the walk's own 50 µm / 6 µm thresholds -- is then being measured in that
+    other frame too, which is a much larger problem than this comparison.
+    """
+    print("     frame inference — median distance to the nearest canonical site")
+    print("     of the SAME segment, per candidate frame:")
+    scored = []
+    for label, key, rev in CANDIDATE_FRAMES:
+        d, n_seg = _same_segment_distances(
+            cache["merge_sites"], canon["sites"], _canon_points(canon, key, rev))
+        med = float(np.median(d)) if len(d) else float("inf")
+        scored.append({"label": label, "key": key, "reverse": rev,
+                       "median": med, "n_sites": len(d), "n_segments": n_seg})
+        print(f"       {label:<54} {med:>10.1f} µm  "
+              f"(n={len(d)} sites / {n_seg} segments)")
+
+    if all(np.isinf(s["median"]) for s in scored):
+        rep.check("cache and canonical share at least one merge segment", False,
+                  "no shared segment ids — cannot infer the frame")
+        return scored[0]
+
+    scored.sort(key=lambda s: s["median"])
+    best, contract = scored[0], next(s for s in scored if s["key"] == "xyz"
+                                     and not s["reverse"])
+    print(f"     -> best fit: {best['label'].strip()}")
+
+    ok = best is contract or best["median"] >= contract["median"] / 2
+    detail = (f"contract frame residual {contract['median']:.1f} µm"
+              if ok else
+              f"cache appears to be in '{best['label'].strip()}' "
+              f"({best['median']:.1f} µm) rather than the documented World (x,y,z) µm "
+              f"({contract['median']:.1f} µm)")
+    rep.check("cache site coordinates are in the documented (x,y,z) µm frame",
+              ok, detail)
+    if not ok and best["key"] == "voxel":
+        print("       The anisotropy is not applied: x and y are off by the 0.748 "
+              "µm/voxel\n       factor while z (1.0 µm/voxel) looks unchanged. Fix "
+              "the cache build or\n       convert on read — do NOT just reverse the "
+              "axes, that leaves the scale.")
+    return best
 
 
 def check_site_localization(rep, cache, canon, tol_um):
-    """C. Merge sites localize to the same physical places (the load-bearing check)."""
-    print("\nC. Merge-site localization (nearest-neighbour in µm)")
+    """C. Merge sites localize to the same physical places (the load-bearing check).
+
+    Reports two independent things that the old single nearest-neighbour test
+    conflated:
+
+      1. **Placement** — for the segments BOTH sides flagged, does the cache put the
+         site where canonical put it? Measured within a segment id, so the pairing
+         cannot drift onto an unrelated site.
+      2. **Coverage** — of all canonical sites, how many does the cache have one
+         near at all, and vice versa. This is where a detection difference shows up.
+
+    A frame error breaks (1) for every segment at once; missing detections break
+    (2) while leaving (1) clean. Seeing them separately is the difference between
+    "the coordinates are wrong" and "the walk found fewer merges".
+    """
+    print("\nC. Merge-site localization")
     from scipy.spatial import KDTree
 
     cache_xyz = np.array([s["xyz"] for s in cache["merge_sites"]], dtype=float)
-    canon_xyz = np.array([s["xyz"] for s in canon["sites"]], dtype=float)
 
-    if len(cache_xyz) == 0 or len(canon_xyz) == 0:
+    if len(cache_xyz) == 0 or len(canon["sites"]) == 0:
         rep.check(
             "both sides have merge sites to localize",
             False,
-            f"cache sites={len(cache_xyz)}, canonical sites={len(canon_xyz)}",
+            f"cache sites={len(cache_xyz)}, canonical sites={len(canon['sites'])}",
         )
         return None
 
-    # Axis sanity guard.
-    axis_label, canon_xyz_use, d_ident, d_rev = _best_axis(cache_xyz, canon_xyz)
-    print(f"     axis check: using {axis_label} "
-          f"(median NN dist identity={d_ident:.1f}µm, reversed={d_rev:.1f}µm)")
-    rep.check(
-        "coordinate axes aligned (identity, not reversed)",
-        "REVERSED" not in axis_label,
-        axis_label,
-    )
+    # 1. Which frame is the cache in? Hard-fails if it is not the documented one.
+    frame = infer_frame(rep, cache, canon)
+    canon_xyz_use = _canon_points(canon, frame["key"], frame["reverse"])
+    canon_xyz = np.array([s["xyz"] for s in canon["sites"]], dtype=float)
 
+    # 2. Placement, in whichever frame actually fits: are the shared segments'
+    #    sites in the same place? Reported in the resolved frame so a frame bug does
+    #    not hide a second, independent disagreement underneath it.
+    d_same, n_seg = _same_segment_distances(
+        cache["merge_sites"], canon["sites"], canon_xyz_use)
+    print(f"\n     placement (shared segments only, in the frame above): "
+          f"{len(d_same)} cache sites across {n_seg} segments")
+    if len(d_same):
+        print(f"       median {np.median(d_same):.1f}µm | "
+              f"p90 {np.percentile(d_same, 90):.1f}µm | max {d_same.max():.1f}µm")
+        for t in sorted({10.0, 25.0, tol_um, 100.0}):
+            print(f"       within {t:>5.0f}µm of the canonical site of the same "
+                  f"segment: {float((d_same <= t).mean()):5.1%}")
+        rep.check(
+            f"same-segment site placement median <= {tol_um:.0f}µm",
+            float(np.median(d_same)) <= tol_um,
+            f"median={np.median(d_same):.1f}µm over {n_seg} shared segments",
+            hard=False,
+        )
+
+    print("\n     coverage (all sites, nearest neighbour):")
     canon_tree = KDTree(canon_xyz_use)
     cache_tree = KDTree(cache_xyz)
 
@@ -354,7 +479,14 @@ def check_site_localization(rep, cache, canon, tol_um):
         f"site precision >= 0.8 @ {tol_um:.0f}µm (cache sites are real merges)",
         precision >= 0.8, f"precision={precision:.1%}", hard=False,
     )
-    return {"recall": recall, "precision": precision, "f1": f1}
+    if frame["key"] != "xyz" or frame["reverse"]:
+        print("     NOTE: the two numbers above were computed AFTER correcting the "
+              "frame, so\n     they measure detection agreement, not the coordinate "
+              "bug — that is the\n     hard failure reported above.")
+    return {"recall": recall, "precision": precision, "f1": f1,
+            "frame": frame,
+            "placement_median": float(np.median(d_same)) if len(d_same) else None,
+            "n_shared_segments": n_seg}
 
 
 def check_totals(rep, cache, canon):
