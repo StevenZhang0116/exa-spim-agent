@@ -66,6 +66,71 @@ sampling control points and interpreting precision.
 
 ## 2) Dataset schema
 
+### Environment and loading — run this first
+
+All later code blocks assume this block has run. Python 3.10 or newer is required.
+Check the package with `python -c "import agentic_neuron_proofreader"`. If that
+fails, install the official package and analysis dependencies:
+
+```bash
+python -m pip install "git+https://github.com/AllenInstitute/agentic-neuron-proofreader.git" numpy scipy networkx tensorstore matplotlib
+```
+
+Run from the delivery directory containing exactly one `_add.pkl`. Loading may use
+tens of GB of RAM, so process one cache at a time:
+
+```python
+import os
+import pickle
+from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
+from scipy.spatial import KDTree
+
+__import__("agentic_neuron_proofreader")  # registers SkeletonGraph pickle classes
+
+DELIVERY_DIR = Path.cwd()
+pkl_candidates = sorted(DELIVERY_DIR.glob("*_add.pkl"))
+if len(pkl_candidates) != 1:
+    raise RuntimeError(
+        "expected exactly one *_add.pkl in the delivery directory; "
+        f"found {len(pkl_candidates)}: {[p.name for p in pkl_candidates]}"
+    )
+PKL = pkl_candidates[0]
+with PKL.open("rb") as f:
+    payload = pickle.load(f)
+
+required = {
+    "fragments_graph", "gt_graph", "anisotropy", "min_cable_length",
+    "gt_node_canonical_label", "gt_edge_error",
+    "gt_merge_labels", "gt_merge_sites",
+}
+missing = required - payload.keys()
+if missing:
+    raise RuntimeError(f"not a complete _add.pkl; missing {sorted(missing)}")
+
+frag = payload["fragments_graph"]
+gt = payload["gt_graph"]
+node_label = np.asarray(payload["gt_node_canonical_label"])
+edge_error = np.asarray(payload["gt_edge_error"])
+merge_labels = {int(x) for x in np.asarray(payload["gt_merge_labels"])}
+merge_sites = list(payload["gt_merge_sites"])
+anisotropy = tuple(payload["anisotropy"])
+min_cable_length = int(payload["min_cable_length"])
+node_spacing = payload.get("node_spacing")
+gt_edges = list(gt.edges)
+
+if len(node_label) != gt.number_of_nodes():
+    raise RuntimeError("gt_node_canonical_label is not parallel to GT nodes")
+if len(edge_error) != len(gt_edges):
+    raise RuntimeError("gt_edge_error is not parallel to list(gt_graph.edges)")
+for site in merge_sites:
+    if not {"segment_id", "gt_neuron", "xyz"} <= site.keys():
+        raise RuntimeError(f"malformed gt_merge_sites record: {site}")
+print("Loaded:", PKL)
+```
+
 ### The two zones
 
 Every `_add.pkl` is one dict. In Phase 1 you read both zones together for
@@ -85,7 +150,7 @@ Full schema:
 | `anisotropy` | `tuple` | µm/voxel in (x, y, z) — read it, don't hard-code. |
 | `min_cable_length` | `int` | µm threshold; shorter fragments were dropped at build time. |
 | `node_spacing` | `int` | Target µm spacing between skeleton nodes — per cache (`5` for `mcl100`, `2` for `789202_mcl10`), and only a *target*: each irreducible edge is spline-resampled to `max(int(len/node_spacing), 5)` points, so short edges are denser. Node counts are therefore not proportional to µm. |
-| `img_path` | `str` | Public-S3 path of the raw fused image (no credentials needed). |
+| `img_path` | `str` | Raw fused-image path: public `s3://` or authenticated `gs://`. Image features are optional for a fragment-only detector; configure access as shown below before reading them. |
 | `segmentation_path` | `str` | Provenance only — private GCS, not readable here. |
 | `gt_node_canonical_label` | `np.ndarray (N_gt,) int64` | Predicted segment id at each GT node's voxel; `0` = unlabeled. |
 | `gt_edge_error` | `np.ndarray (E_gt,) uint8` | Per-GT-edge class: `0=correct, 1=split, 2=omit, 3=merged`. |
@@ -131,11 +196,12 @@ in Phase 1 and Phase 2 is computable from it (plus optionally the raw image).
 **Grouping nodes by component (use throughout):**
 
 ```python
-from collections import defaultdict
-
 comp_nodes = defaultdict(list)
+segment_nodes = defaultdict(list)
 for n in frag.nodes:
+    n = int(n)
     comp_nodes[int(frag.node_component_id[n])].append(n)
+    segment_nodes[int(frag.node_segment_id(n))].append(n)
 
 def comp_segment_id(comp_id):
     return int(frag.component_id_to_swc_id[comp_id].split(".")[0])
@@ -148,28 +214,39 @@ and at matched control points (negative class), then compare distributions acros
 topology, geometry, and image dimensions.
 
 **Positive samples — merge sites.** `gt_merge_sites` gives ground-truth merge
-locations directly. For each site, find the nearest fragment node:
+locations directly. Match the stored `segment_id` first and find the nearest node
+only within that segment. A global nearest-node query can select an unrelated segment
+passing nearby and is not a valid positive association:
 
 ```python
-import numpy as np
-from scipy.spatial import KDTree
-
-frag_xyz   = frag.node_xyz
-frag_nodes = list(frag.nodes)
-frag_tree  = KDTree(frag_xyz)
-
-def nearest_frag_node(xyz_um):
-    """Return (node_id, distance_um) of the fragment node nearest to xyz_um."""
-    d, i = frag_tree.query(xyz_um)
-    return frag_nodes[i], float(d)
+def nearest_node_in_segment(segment_id, xyz_um):
+    """Return nearest node/distance within the required predicted segment."""
+    nodes = segment_nodes.get(int(segment_id), [])
+    if not nodes:
+        return None, float("nan")
+    tree = KDTree(np.asarray(frag.node_xyz[nodes], dtype=float))
+    distance, local_index = tree.query(np.asarray(xyz_um, dtype=float))
+    return int(nodes[int(local_index)]), float(distance)
 
 positives = []
-for s in payload["gt_merge_sites"]:
-    node, dist = nearest_frag_node(s["xyz"])
+unmatched_sites = []
+for s in merge_sites:
+    node, dist = nearest_node_in_segment(s["segment_id"], s["xyz"])
+    if node is None:
+        unmatched_sites.append(s)
+        continue
     comp_id = int(frag.node_component_id[node])
     positives.append({"node": node, "comp_id": comp_id,
                       "xyz": s["xyz"], "label": 1,
-                      "segment_id": s["segment_id"]})
+                      "segment_id": int(s["segment_id"]),
+                      "match_distance_um": dist})
+
+if not positives:
+    raise RuntimeError(
+        "no GT merge site has a retained fragment skeleton for the same segment"
+    )
+print("matched / missing merge-site skeletons:",
+      len(positives), len(unmatched_sites))
 ```
 
 **Negative (control) samples.** Sample from the same fragment components that
@@ -178,13 +255,15 @@ the same components controls for the selection bias that large, complex componen
 are over-represented in the merge set.
 
 ```python
-def sample_controls(frag, comp_nodes, merge_sites, n_per_site=3, min_dist_um=50.0):
+def sample_controls(frag, comp_nodes, positives, merge_sites,
+                    n_per_site=3, min_dist_um=50.0):
+    if not merge_sites:
+        raise RuntimeError("cannot construct controls without gt_merge_sites")
     merge_xyzs = np.array([s["xyz"] for s in merge_sites])
     merge_tree = KDTree(merge_xyzs)
     controls = []
-    for site in merge_sites:
-        anchor, _ = nearest_frag_node(site["xyz"])
-        comp_id = int(frag.node_component_id[anchor])
+    for positive in positives:
+        comp_id = int(positive["comp_id"])
         count = 0
         for node in comp_nodes[comp_id]:
             if frag.degree[node] != 1:
@@ -199,7 +278,7 @@ def sample_controls(frag, comp_nodes, merge_sites, n_per_site=3, min_dist_um=50.
                     break
     return controls
 
-negatives   = sample_controls(frag, comp_nodes, payload["gt_merge_sites"])
+negatives   = sample_controls(frag, comp_nodes, positives, merge_sites)
 all_samples = positives + negatives
 ```
 
@@ -247,11 +326,33 @@ spatial extent are cheap prefilter signals — merged segments tend to span two 
 The raw fluorescence is what the UNet actually saw. Open it once before the loop:
 
 ```python
-import os
 from agentic_neuron_proofreader.utils import img_util
 
-os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
-image = img_util.TensorStoreImage(payload["img_path"])
+BUNDLED_GCP_CREDENTIALS = DELIVERY_DIR / "zihan_gcs_token.json"
+
+
+def configure_image_access(image_path):
+    """Configure anonymous S3 or bundled-credential GCS before image open."""
+    os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
+    if image_path.startswith("s3://"):
+        print("Image access: anonymous/public S3")
+        return
+    if not image_path.startswith("gs://"):
+        raise RuntimeError(f"unsupported image path scheme: {image_path}")
+    credentials = BUNDLED_GCP_CREDENTIALS.resolve()
+    if not credentials.is_file():
+        raise RuntimeError(
+            "private GCS image requires zihan_gcs_token.json beside the markdown "
+            f"and _add.pkl; looked at {credentials}. Fragment-only analysis may "
+            "continue, but image-feature claims may not."
+        )
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(credentials)
+    print(f"Image access: authenticated GCS ({credentials})")
+
+
+img_path = str(payload["img_path"])
+configure_image_access(img_path)
+image = img_util.TensorStoreImage(img_path)
 
 def xyz_to_voxel(xyz_um, anisotropy):
     """(x, y, z) µm -> (z, y, x) integer voxel."""
@@ -280,11 +381,6 @@ and orientation (processes crossing at a shallow angle are harder to separate).
 Define these once before any analysis or detection code:
 
 ```python
-import numpy as np
-from collections import defaultdict
-from scipy.spatial import KDTree
-
-
 def branch_direction(g, node, nbr, reach_um=15.0):
     """Unit vector from `node` outward along the branch that starts toward `nbr`."""
     prev, cur, acc = node, nbr, g.dist(node, nbr)
@@ -421,8 +517,6 @@ discriminating features. The starter code above is a geometric baseline.
 ### Scoring
 
 ```python
-import numpy as np
-
 def score(detections, payload, site_tol_um=30.0):
     key_labels  = set(int(x) for x in payload["gt_merge_labels"])
     key_sites   = payload["gt_merge_sites"]
@@ -461,35 +555,11 @@ positive *or* a true merge of untraced cells — GT cannot distinguish them. Com
 precision only over `pred_labels ∩ adjudicable`. Report
 `n_pred_labels − n_pred_adjudicable` separately as "flagged, unadjudicable."
 
-### Install and load
+### Loaded-cache scope
 
-Loading any `_add.pkl` requires `agentic_neuron_proofreader` on the Python path.
-
-> **Already installed?** `python -c "import agentic_neuron_proofreader"` — skip if
-> it succeeds.
-
-```bash
-git clone https://github.com/AllenInstitute/neuron-proofreader.git
-cd neuron-proofreader
-pip install -e .
-```
-
-**Python ≥ 3.9 required.** On Allen Institute HPC nodes activate `panda`
-(`conda activate panda`) — this satisfies all numpy/scipy binary-compatibility
-constraints. **Budget well over 20 GB RAM per cache**; load one brain at a time.
-
-```python
-import glob, os, pickle
-import agentic_neuron_proofreader  # noqa — registers SkeletonGraph for unpickling
-
-with open("cache/dataset_cache_794495_mcl100_add.pkl", "rb") as f:
-    payload = pickle.load(f)
-
-frag             = payload["fragments_graph"]
-anisotropy       = tuple(payload["anisotropy"])
-min_cable_length = int(payload["min_cable_length"])
-node_spacing     = payload.get("node_spacing")
-```
+The cache was loaded and validated at the start of this section. All Phase 2 code
+must receive only `frag`, `anisotropy`, `min_cable_length`, and explicitly permitted
+reconstruction inputs; answer-key objects remain scoring-only.
 
 ---
 
