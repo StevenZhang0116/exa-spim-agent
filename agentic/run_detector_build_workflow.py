@@ -44,6 +44,12 @@ context. Subagents live in ``.claude/agents/`` and are auto-discovered via
 
 The generated detector run additionally writes per-segment CSV scores, a JSON
 model-selection manifest, a fitted winner joblib, a run log and figures.
+After a successful run with figures, invoke
+``agentic/run_detector_result_analysis.py PATH`` to validate those artifacts and
+ask the ``detector-result-analyst`` subagent to write a grounded bilingual
+``RESULT_ANALYSIS.md``: complete English first, followed by a faithful complete
+Chinese translation. ``PATH`` may be the application directory or one nested
+completed run directory under it.
 
 The driver tees its own stdout+stderr — step progress, subagent tool calls, each
 step's final reply, and any fatal diagnostic — into the log as it goes rather
@@ -110,6 +116,10 @@ Then run the generated detector yourself, on a compute node:
         conda activate panda; \
         python autodiscovery-application/<RUN>/merge_site_detector.py \
             cache/dataset_cache_<brain>_mcl<N>_add.pkl"
+
+Then analyze that completed result directory:
+    python agentic/run_detector_result_analysis.py \
+        autodiscovery-application/<RUN>/runs/<COMPLETED-RESULT>
 """
 
 from __future__ import annotations

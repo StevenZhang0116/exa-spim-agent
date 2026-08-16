@@ -69,9 +69,10 @@ def write_readme_skeleton(
     cache = cache_hint or "cache/dataset_cache_<brain>_mcl<N>_add.pkl"
     content = f"""# Merge detector — `{Path(run_rel).stem}`
 
-> **Build status:** the detector code has been generated and checked without a
-> real dataset. It has **not** been run on a `_add.pkl`; this README contains no
-> measured model winner, performance metric, class count, or detector result.
+> **Build-time status:** when this README was generated, the detector had only
+> been checked without a real dataset. This immutable provenance block is not
+> updated by later detector runs. After a completed run with figures, generate
+> the measured result report with the command in `RUN_COMMANDS.md`.
 
 {DRIVER_BLOCK_START}
 
@@ -129,6 +130,9 @@ brain; it must not influence model or preprocessing selection.
 - `analysis_timing_<brain>.json` only for the profiling-only `--measuretime` run
 - `hypothesis_cost_report_<brain>.md` and
   `hypothesis_selection_template_<brain>.json` from the same profiling run
+- bilingual `RESULT_ANALYSIS.md` (complete English, then complete Chinese),
+  `result_analysis_evidence.json`, and `result_analysis_workflow.log.txt` after
+  separately invoking the result analyst
 
 Read undefined coverage first, then average precision and review-budget
 precision/recall, then held-out transfer; read ROC-AUC last. Training thresholds
@@ -522,6 +526,27 @@ output.
 
 Read undefined coverage first, then average precision and review-budget
 precision/recall, then held-out transfer, and ROC-AUC last.
+
+## Generate the bilingual result-analysis report
+
+Run this only after the detector has completed successfully **with figures**.
+The path argument may be the application directory itself or a nested completed
+run directory under it. The driver verifies the completion marker, JSON/CSV
+counts, saved fitted model, provenance hashes, and all training figures 01–07;
+then `detector-result-analyst` reads the immutable evidence manifest and every
+PNG without rerunning extraction or training. It writes the complete English
+analysis first and then a faithful complete Chinese translation.
+
+```bash
+python agentic/run_detector_result_analysis.py "$RUN_DIR"
+```
+
+It writes these files inside `$RUN_DIR`:
+
+- `result_analysis_evidence.json`: deterministic numeric evidence and hashes;
+- `RESULT_ANALYSIS.md`: full English analysis followed by its full Chinese
+  translation, with an immutable evidence block;
+- `result_analysis_workflow.log.txt`: agent execution and validation log.
 
 ## Reproducibility record
 

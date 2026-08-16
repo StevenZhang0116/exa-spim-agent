@@ -570,7 +570,8 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             )
 
             text = readme.read_text()
-            self.assertIn("has **not** been run", text)
+            self.assertIn("**Build-time status:**", text)
+            self.assertIn("not\n> updated by later detector runs", text)
             self.assertIn("average_precision", text)
             self.assertIn("merge_detector_<brain>.csv", text)
             self.assertIn("app/RUN_COMMANDS.md", text)
@@ -660,6 +661,11 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             self.assertNotIn("hand-authored selection. Omitting\nOmitting", text)
             self.assertIn("--mem=80G", text)
             self.assertIn("conda list --explicit", text)
+            self.assertIn("Generate the bilingual result-analysis report", text)
+            self.assertIn('run_detector_result_analysis.py "$RUN_DIR"', text)
+            self.assertIn("result_analysis_evidence.json", text)
+            self.assertIn("complete English", text)
+            self.assertIn("complete Chinese translation", text)
 
     @staticmethod
     def _valid_model_config(inventory_path: Path) -> dict:
