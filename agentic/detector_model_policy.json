@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "selection": {
+    "max_optional_models": 2,
+    "max_grid_combinations": 24,
+    "primary_metric": "average_precision",
+    "selection_rule": "one_standard_error",
+    "outer_folds": 5,
+    "inner_folds": 3,
+    "random_seed": 42,
+    "review_budget": 100,
+    "simplicity_order": [
+      "logistic_l2",
+      "logistic_elasticnet",
+      "spline_logistic",
+      "explainable_boosting",
+      "hist_gradient_boosting",
+      "extra_trees",
+      "random_forest",
+      "xgboost"
+    ]
+  },
+  "families": {
+    "logistic_l2": {
+      "required": true,
+      "native_nan": false,
+      "requires_package": null,
+      "parameters": {"C": "positive_number"}
+    },
+    "logistic_elasticnet": {
+      "required": true,
+      "native_nan": false,
+      "requires_package": null,
+      "parameters": {
+        "C": "positive_number",
+        "l1_ratio": "unit_interval"
+      }
+    },
+    "hist_gradient_boosting": {
+      "required": true,
+      "native_nan": true,
+      "requires_package": null,
+      "parameters": {
+        "learning_rate": "positive_number",
+        "max_depth": "nullable_positive_integer",
+        "max_leaf_nodes": "integer_min_2",
+        "min_samples_leaf": "positive_integer",
+        "l2_regularization": "nonnegative_number"
+      }
+    },
+    "spline_logistic": {
+      "required": false,
+      "native_nan": false,
+      "requires_package": null,
+      "parameters": {
+        "n_knots": "integer_min_2",
+        "degree": "positive_integer",
+        "C": "positive_number"
+      }
+    },
+    "explainable_boosting": {
+      "required": false,
+      "native_nan": true,
+      "requires_package": "interpret",
+      "parameters": {
+        "max_bins": "integer_min_2",
+        "interactions": "nonnegative_integer",
+        "learning_rate": "positive_number",
+        "max_rounds": "positive_integer",
+        "min_samples_leaf": "positive_integer"
+      }
+    },
+    "extra_trees": {
+      "required": false,
+      "native_nan": false,
+      "requires_package": null,
+      "parameters": {
+        "n_estimators": "positive_integer",
+        "max_depth": "nullable_positive_integer",
+        "min_samples_leaf": "positive_integer",
+        "max_features": "max_features"
+      }
+    },
+    "random_forest": {
+      "required": false,
+      "native_nan": false,
+      "requires_package": null,
+      "parameters": {
+        "n_estimators": "positive_integer",
+        "max_depth": "nullable_positive_integer",
+        "min_samples_leaf": "positive_integer",
+        "max_features": "max_features"
+      }
+    },
+    "xgboost": {
+      "required": false,
+      "native_nan": true,
+      "requires_package": "xgboost",
+      "parameters": {
+        "n_estimators": "positive_integer",
+        "max_depth": "positive_integer",
+        "learning_rate": "positive_number",
+        "min_child_weight": "nonnegative_number",
+        "subsample": "positive_unit_interval",
+        "colsample_bytree": "positive_unit_interval",
+        "reg_lambda": "nonnegative_number"
+      }
+    }
+  }
+}

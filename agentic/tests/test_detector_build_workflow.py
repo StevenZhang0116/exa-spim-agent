@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import hashlib
 import json
@@ -8,6 +9,8 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+
+from agentic.detector_build.assembly import assemble_detector
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -43,6 +46,621 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
     def tearDown(self) -> None:
         workflow.PROJECT_ROOT = self.old_root
 
+    def test_workflow_cost_summary_totals_reported_costs(self) -> None:
+        costs = workflow.WorkflowCostSummary()
+        for _ in range(5):
+            costs.start_turn()
+        costs.add(0.125)
+        costs.add("0.375")
+        costs.add(None)
+        costs.add(float("nan"))
+
+        self.assertEqual(costs.total_usd, 0.5)
+        self.assertEqual(costs.reported_turns, 2)
+        self.assertEqual(costs.unreported_turns, 2)
+        self.assertEqual(
+            costs.describe(),
+            "$0.5000 (2 reported turn(s), 2 completed turn(s) without a cost, "
+            "1 started turn(s) without a ResultMessage)",
+        )
+
+    def test_workflow_cost_summary_marks_missing_total_unavailable(self) -> None:
+        costs = workflow.WorkflowCostSummary()
+        costs.start_turn()
+        costs.add(None)
+
+        self.assertEqual(
+            costs.describe(),
+            "unavailable (0 reported turn(s), 1 completed turn(s) without a cost, "
+            "0 started turn(s) without a ResultMessage)",
+        )
+
+    def test_agent_session_connect_timeout_is_bounded(self) -> None:
+        class NeverConnects:
+            async def __aenter__(self):
+                await asyncio.Event().wait()
+
+            async def __aexit__(self, *_args):
+                return None
+
+        async def exercise() -> None:
+            with self.assertRaisesRegex(
+                SystemExit, "session did not open.*no workflow stage was started"
+            ):
+                async with workflow.open_agent_session(
+                    lambda **_kwargs: NeverConnects(),
+                    options=object(),
+                    connect_timeout_s=0.01,
+                ):
+                    self.fail("an unavailable SDK session was yielded")
+
+        asyncio.run(exercise())
+
+    def test_agent_session_closes_after_success(self) -> None:
+        events = []
+
+        class Client:
+            async def __aenter__(self):
+                events.append("open")
+                return self
+
+            async def __aexit__(self, *_args):
+                events.append("close")
+
+        async def exercise() -> None:
+            async with workflow.open_agent_session(
+                lambda **_kwargs: Client(),
+                options=object(),
+                connect_timeout_s=1,
+            ) as client:
+                self.assertIsInstance(client, Client)
+                events.append("use")
+
+        asyncio.run(exercise())
+        self.assertEqual(events, ["open", "use", "close"])
+
+    def test_detector_assembly_keeps_feature_and_runtime_ownership_separate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            template = root / "runtime.py.tmpl"
+            feature = root / "feature.py"
+            output = root / "detector.py"
+            template.write_text(
+                "# __DETECTOR_FEATURE_IMPLEMENTATION__\n"
+                "def main():\n    return extract_features({})\n"
+            )
+            feature.write_text(
+                "FEATURE_REGISTRY = [('x', 'segment', None, 1)]\n"
+                "ANALYSIS_TIMING_GROUPS = [{\n"
+                "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
+                "    'phase': 'segment', 'feature_names': ['x'],\n"
+                "}]\n"
+                "class SegmentAccumulator:\n    pass\n"
+                "def extract_features(payload, verbose=True, timing=None, "
+                "enabled_analysis_keys=None, profile_segment_limit=None):\n"
+                "    _ = profile_segment_limit\n"
+                "    def _analysis_enabled(key):\n"
+                "        return enabled_analysis_keys is None or key in enabled_analysis_keys\n"
+                "    selected = _analysis_enabled('hypo_1')\n"
+                "    if timing is not None:\n"
+                "        timing.start_phase('segment')\n"
+                "        timing.start_analysis('hypo_1')\n"
+                "    return FEATURE_REGISTRY\n"
+            )
+
+            assemble_detector(template, feature, output)
+
+            text = output.read_text()
+            self.assertIn("FEATURE_REGISTRY", text)
+            self.assertIn("def main", text)
+            self.assertNotIn("__DETECTOR_FEATURE_IMPLEMENTATION__", text)
+
+            feature.write_text(
+                feature.read_text() + "def run_detector():\n    pass\n"
+            )
+            with self.assertRaisesRegex(SystemExit, "runtime-owned.*run_detector"):
+                assemble_detector(template, feature, output)
+
+    def test_detector_assembly_rejects_every_template_owned_symbol(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            template = root / "runtime.py.tmpl"
+            feature = root / "feature.py"
+            output = root / "detector.py"
+            template.write_text(
+                "def load_payload(path):\n    return path\n"
+                "# __DETECTOR_FEATURE_IMPLEMENTATION__\n"
+            )
+            feature.write_text(
+                "FEATURE_REGISTRY = [('x', 'segment', None, 1)]\n"
+                "ANALYSIS_TIMING_GROUPS = [{\n"
+                "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
+                "    'phase': 'segment', 'feature_names': ['x'],\n"
+                "}]\n"
+                "class SegmentAccumulator:\n    pass\n"
+                "def load_payload(path):\n    return {'shadowed': path}\n"
+                "def extract_features(payload, verbose=True, timing=None, "
+                "enabled_analysis_keys=None, profile_segment_limit=None):\n"
+                "    _ = profile_segment_limit\n"
+                "    def _analysis_enabled(key):\n"
+                "        return enabled_analysis_keys is None or key in enabled_analysis_keys\n"
+                "    _analysis_enabled('hypo_1')\n"
+                "    if timing is not None:\n"
+                "        timing.start_phase('segment')\n"
+                "        timing.start_analysis('hypo_1')\n"
+                "    return FEATURE_REGISTRY\n"
+            )
+
+            with self.assertRaisesRegex(SystemExit, "runtime-owned.*load_payload"):
+                assemble_detector(template, feature, output)
+
+    def test_detector_assembly_rejects_incomplete_timing_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            template = root / "runtime.py.tmpl"
+            feature = root / "feature.py"
+            output = root / "detector.py"
+            template.write_text("# __DETECTOR_FEATURE_IMPLEMENTATION__\n")
+            feature.write_text(
+                "FEATURE_REGISTRY = [('x', 'segment'), ('y', 'segment')]\n"
+                "ANALYSIS_TIMING_GROUPS = [{\n"
+                "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
+                "    'phase': 'segment', 'feature_names': ['x'],\n"
+                "}]\n"
+                "class SegmentAccumulator:\n    pass\n"
+                "def extract_features(payload, verbose=True, timing=None, "
+                "enabled_analysis_keys=None, profile_segment_limit=None):\n"
+                "    _ = profile_segment_limit\n"
+                "    def _analysis_enabled(key):\n"
+                "        return enabled_analysis_keys is None or key in enabled_analysis_keys\n"
+                "    selected = _analysis_enabled('hypo_1')\n"
+                "    if timing is not None:\n"
+                "        timing.start_phase('segment')\n"
+                "        timing.start_analysis('hypo_1')\n"
+                "    return None\n"
+            )
+
+            with self.assertRaisesRegex(SystemExit, "timing coverage mismatch"):
+                assemble_detector(template, feature, output)
+
+    def test_measuretime_writes_cost_and_selection_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            feature = root / "feature.py"
+            detector = root / "detector.py"
+            inventory = root / "feature_inventory.json"
+            input_path = root / "dataset_cache_123456_mcl100_add.pkl"
+            inventory.write_text('{"schema_version": 2}\n')
+            input_path.write_bytes(b"placeholder")
+            feature.write_text(
+                "class FeatureSpec:\n"
+                "    def __init__(self, name):\n"
+                "        self.name = name\n"
+                "FEATURE_REGISTRY = [FeatureSpec('x')]\n"
+                "FEATURE_NAMES = [f.name for f in FEATURE_REGISTRY]\n"
+                "ANALYSIS_TIMING_GROUPS = [{\n"
+                "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
+                "    'phase': 'segment', 'feature_names': ['x'],\n"
+                "}]\n"
+                "class SegmentAccumulator:\n    pass\n"
+                "def extract_features(payload, verbose=True, timing=None, "
+                "enabled_analysis_keys=None, profile_segment_limit=None):\n"
+                "    _ = profile_segment_limit\n"
+                "    def _analysis_enabled(key):\n"
+                "        return enabled_analysis_keys is None or key in enabled_analysis_keys\n"
+                "    _analysis_enabled('hypo_1')\n"
+                "    phase = timing.start_phase('segment') if timing else None\n"
+                "    token = timing.start_analysis(\n"
+                "        'hypo_1', context={'segment_id': 1, 'nodes': 3}\n"
+                "    ) if timing else None\n"
+                "    if timing:\n"
+                "        timing.stop_analysis(token)\n"
+                "        timing.stop_phase(phase)\n"
+                "    return [1], np.array([0], dtype=np.int64), SegmentAccumulator()\n"
+            )
+            assemble_detector(workflow.RUNTIME_TEMPLATE_PATH, feature, detector)
+            spec = importlib.util.spec_from_file_location("measuretime_detector", detector)
+            module = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(module)
+            module.load_payload = lambda _path: {
+                "min_cable_length": 100,
+                "gt_node_canonical_label": module.np.array(
+                    [1], dtype=module.np.int64),
+                "gt_merge_labels": [],
+            }
+            module._collect_measuretime_versions = lambda: {"python": "test"}
+            args = types.SimpleNamespace(
+                pkl=str(input_path), test_pkl=None, out_csv=None,
+                exclude_empty=False, out_dir=str(root), inventory=str(inventory),
+                hypothesis_selection=None,
+                exclude_hypotheses=None,
+                measuretime_occurrences=3,
+            )
+
+            rc = module.run_measuretime(args, lambda _msg: None)
+
+            artifact = root / "analysis_timing_123456.json"
+            payload = json.loads(artifact.read_text())
+            self.assertEqual(rc, 0)
+            self.assertEqual(payload["status"], "complete")
+            self.assertEqual(payload["mode"], "measuretime")
+            self.assertEqual(payload["schema_version"], 2)
+            self.assertEqual(payload["analyses"][0]["eligible_calls"], 1)
+            self.assertTrue(payload["metadata"]["sampled"])
+            self.assertEqual(payload["metadata"]["profile_occurrence_limit"], 3)
+            self.assertEqual(payload["metadata"]["n_profiled_segments"], 1)
+            self.assertEqual(payload["metadata"]["profiled_segment_ids"], [1])
+            self.assertEqual(
+                payload["hypothesis_costs"][0][
+                    "estimated_removable_seconds_if_excluded_alone"
+                ],
+                payload["analyses"][0]["total_seconds"],
+            )
+            self.assertIn("feature_extraction", payload["wall_seconds"])
+            self.assertTrue((root / "hypothesis_cost_report_123456.md").exists())
+            selection_template = json.loads(
+                (root / "hypothesis_selection_template_123456.json").read_text()
+            )
+            self.assertEqual(selection_template["excluded_hypothesis_ids"], [])
+            self.assertFalse(any(root.glob("merge_detector_*.csv")))
+            self.assertFalse(any(root.glob("merge_detector_*.joblib")))
+            self.assertFalse(any(root.glob("model_selection_*.json")))
+
+            failed_dir = root / "failed"
+            failed_dir.mkdir()
+            args.out_dir = str(failed_dir)
+
+            def fail_extraction(*_args, **_kwargs):
+                raise RuntimeError("synthetic extraction failure")
+
+            module.extract_features = fail_extraction
+            with self.assertRaisesRegex(RuntimeError, "synthetic extraction failure"):
+                module.run_measuretime(args, lambda _msg: None)
+            failed_payload = json.loads(
+                (failed_dir / "analysis_timing_123456.json").read_text()
+            )
+            self.assertEqual(failed_payload["status"], "failed")
+            self.assertIn("synthetic extraction failure", failed_payload["error"])
+
+    def test_hypothesis_selection_rejects_partial_shared_unit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            selection = root / "selection.json"
+            groups = [
+                {"key": "shared", "hypothesis_ids": [1, 2],
+                 "phase": "chain", "feature_names": ["a", "b"]},
+                {"key": "hypo_3", "hypothesis_ids": [3],
+                 "phase": "segment", "feature_names": ["c"]},
+            ]
+            # The runtime loader is exercised from a minimally assembled module
+            # in the preceding test; here use the reviewed template's semantics
+            # through the current example module.
+            detector_path = (
+                Path(__file__).resolve().parents[2] / "autodiscovery-application" /
+                "merge-error-794495-mcl100_2026-08-04" /
+                "merge_site_detector.py"
+            )
+            spec = importlib.util.spec_from_file_location(
+                "selection_detector", detector_path)
+            module = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(module)
+            module.FEATURE_NAMES = ["a", "b", "c"]
+            selection.write_text(json.dumps({
+                "schema_version": 1,
+                "excluded_hypothesis_ids": [1],
+            }))
+            with self.assertRaisesRegex(ValueError, "partial exclusion"):
+                module.load_hypothesis_selection(str(selection), groups)
+            selection.write_text(json.dumps({
+                "schema_version": 1,
+                "excluded_hypothesis_ids": [1, 2],
+            }))
+            resolved = module.load_hypothesis_selection(str(selection), groups)
+            self.assertEqual(resolved["enabled_analysis_keys"], ["hypo_3"])
+            self.assertEqual(resolved["excluded_feature_names"], ["a", "b"])
+
+            direct = module.load_hypothesis_selection(
+                None, groups, excluded_hypothesis_ids=[1, 2])
+            self.assertEqual(direct["selection_source"], "manual_cli")
+            self.assertEqual(direct["excluded_hypothesis_ids"], [1, 2])
+            self.assertEqual(direct["enabled_analysis_keys"], ["hypo_3"])
+            self.assertIsNone(direct["path"])
+            with self.assertRaisesRegex(ValueError, "mutually exclusive"):
+                module.load_hypothesis_selection(
+                    str(selection), groups, excluded_hypothesis_ids=[1, 2])
+            with self.assertRaisesRegex(ValueError, "duplicates"):
+                module.load_hypothesis_selection(
+                    None, groups, excluded_hypothesis_ids=[3, 3])
+
+    def test_hypothesis_selection_validates_timing_provenance_and_reasons(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            detector_path = (
+                Path(__file__).resolve().parents[2] / "autodiscovery-application" /
+                "merge-error-794495-mcl100_2026-08-04" /
+                "merge_site_detector.py"
+            )
+            spec = importlib.util.spec_from_file_location(
+                "selection_provenance_detector", detector_path)
+            module = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(module)
+            module.FEATURE_NAMES = ["a", "b"]
+            groups = [
+                {"key": "hypo_1", "hypothesis_ids": [1],
+                 "phase": "edge", "feature_names": ["a"]},
+                {"key": "hypo_2", "hypothesis_ids": [2],
+                 "phase": "segment", "feature_names": ["b"]},
+            ]
+            timing = root / "analysis_timing.json"
+            timing.write_text(json.dumps({
+                "schema_version": 2,
+                "mode": "measuretime",
+                "status": "complete",
+                "metadata": {
+                    "detector_sha256": module._sha256_file(module.__file__),
+                    "feature_inventory_sha256": "a" * 64,
+                },
+            }))
+            selection = root / "selection.json"
+            selection.write_text(json.dumps({
+                "schema_version": 1,
+                "source_timing_artifact": str(timing),
+                "source_timing_sha256": module._sha256_file(str(timing)),
+                "excluded_hypothesis_ids": [1],
+                "reasons": {"1": "Too expensive after scientific review."},
+            }))
+
+            resolved = module.load_hypothesis_selection(str(selection), groups)
+            self.assertEqual(
+                resolved["source_timing_feature_inventory_sha256"], "a" * 64)
+            self.assertEqual(
+                resolved["reasons"], {"1": "Too expensive after scientific review."})
+
+            bad = json.loads(selection.read_text())
+            bad["source_timing_sha256"] = "0" * 64
+            selection.write_text(json.dumps(bad))
+            with self.assertRaisesRegex(ValueError, "source timing SHA-256"):
+                module.load_hypothesis_selection(str(selection), groups)
+
+    def test_current_detector_selection_skips_unselected_computation(self) -> None:
+        import networkx as nx
+        import numpy as np
+
+        detector_path = (
+            Path(__file__).resolve().parents[2] / "autodiscovery-application" /
+            "merge-error-794495-mcl100_2026-08-04" /
+            "merge_site_detector.py"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "current_selection_detector", detector_path)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+
+        parsed = module.build_arg_parser().parse_args(
+            ["dataset.pkl", "--exclude-hypotheses", "39", "6"])
+        self.assertEqual(parsed.exclude_hypotheses, [39, 6])
+        direct = module.load_hypothesis_selection(
+            None, module.ANALYSIS_TIMING_GROUPS,
+            excluded_hypothesis_ids=[39, 6])
+        self.assertEqual(direct["selection_source"], "manual_cli")
+        self.assertNotIn("hypo_39", direct["enabled_analysis_keys"])
+        self.assertNotIn("hypo_6", direct["enabled_analysis_keys"])
+        self.assertIn("max_bridge_radius_variance_ratio",
+                      direct["excluded_feature_names"])
+        self.assertIn("max_normalized_edge_betweenness_bridge",
+                      direct["excluded_feature_names"])
+
+        graph = nx.Graph()
+        graph.add_edges_from([(0, 1), (1, 2), (3, 4)])
+        graph.node_xyz = np.array([
+            [0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [5.0, 0.0, 0.0],
+            [0.0, 10.0, 0.0], [1.0, 10.0, 0.0],
+        ])
+        graph.node_radius = np.array([1.0, 1.0, 1.0, 1.0, 1.0])
+        graph.node_component_id = np.array([1, 1, 1, 2, 2])
+        graph.component_id_to_swc_id = {1: "1.0", 2: "2.0"}
+        payload = {
+            "fragments_graph": graph,
+            "gt_node_canonical_label": np.array([1, 1, 1, 2, 2]),
+            "gt_merge_labels": [],
+            "min_cable_length": 100,
+        }
+
+        _, _, default_acc = module.extract_features(payload, verbose=False)
+        all_keys = {group["key"] for group in module.ANALYSIS_TIMING_GROUPS}
+        _, _, explicit_all_acc = module.extract_features(
+            payload, verbose=False, enabled_analysis_keys=all_keys
+        )
+        self.assertTrue(default_acc.to_frame().equals(
+            explicit_all_acc.to_frame()
+        ))
+        sampled_ids, _, sampled_acc = module.extract_features(
+            payload, verbose=False, profile_segment_limit=1
+        )
+        self.assertEqual(sampled_ids, [1])
+        self.assertEqual(len(sampled_acc.to_frame()), 1)
+
+        original = module._get_max_ebc_contracted
+        module._get_max_ebc_contracted = lambda *_args: (_ for _ in ()).throw(
+            AssertionError("excluded component hypothesis executed")
+        )
+        try:
+            _, _, acc = module.extract_features(
+                payload, verbose=False, enabled_analysis_keys={"hypo_8"}
+            )
+        finally:
+            module._get_max_ebc_contracted = original
+        frame = acc.to_frame()
+        self.assertTrue(frame["max_euclidean_edge_jump_is_defined"].all())
+        for name in module.FEATURE_NAMES:
+            if name != "max_euclidean_edge_jump":
+                self.assertFalse(frame[name + "_is_defined"].any(), name)
+
+    def test_reviewed_runtime_template_owns_model_and_cli_contracts(self) -> None:
+        template = workflow.RUNTIME_TEMPLATE_PATH.read_text()
+        self.assertEqual(template.count("# __DETECTOR_FEATURE_IMPLEMENTATION__"), 1)
+        for symbol in (
+            "def validate_model_config", "def build_estimator",
+            "def run_nested_selection", "def run_smoke_test",
+            "def build_arg_parser", "def run_detector", "def run_measuretime",
+            "def load_hypothesis_selection", "class AnalysisTimingRecorder",
+            "def write_hypothesis_cost_artifacts", "def main",
+        ):
+            self.assertIn(symbol, template)
+        self.assertIn('ap.add_argument("--measuretime"', template)
+        self.assertIn('ap.add_argument("--measuretime-occurrences"', template)
+        self.assertIn('ap.add_argument("--exclude-hypotheses"', template)
+        self.assertIn('ap.add_argument("--hypothesis-selection"', template)
+        self.assertIn("--hypothesis-selection or\n    --exclude-hypotheses", template)
+        self.assertNotIn("--exclude-hypotheses 39 6", template)
+
+    def test_public_build_artifact_names_remain_compatible(self) -> None:
+        self.assertEqual(workflow.BUILD_ARTIFACT_NAMES, (
+            "feature_inventory.json",
+            "model_candidates.json",
+            "merge_site_detector.py",
+            "README.md",
+            "RUN_COMMANDS.md",
+            "detector_build_workflow.log.txt",
+        ))
+
+    def test_driver_readme_skeleton_preserves_public_document_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            inventory = root / "feature_inventory.json"
+            inventory.write_text(json.dumps({
+                "selection_manifest": None,
+                "hypotheses": [{
+                    "id": 1,
+                    "included": False,
+                    "feature_source_path": None,
+                    "features": [],
+                    "exclusion_reason": "Overturned.",
+                }],
+            }))
+            config = root / "model_candidates.json"
+            config.write_text(json.dumps({
+                "selection_basis": "Conservative baselines.",
+                "candidates": [{
+                    "name": "logistic_l2",
+                    "role": "baseline",
+                    "native_nan": False,
+                    "requires_package": None,
+                    "reason": "Linear baseline.",
+                }],
+            }))
+            readme = root / "README.md"
+
+            workflow.write_readme_skeleton(
+                readme,
+                run_rel="autodiscovery/run.json",
+                summary_rel="autodiscovery/run.summary.md",
+                inventory_path=inventory,
+                inventory_rel="app/feature_inventory.json",
+                model_config_path=config,
+                model_config_rel="app/model_candidates.json",
+                detector_rel="app/merge_site_detector.py",
+                run_commands_rel="app/RUN_COMMANDS.md",
+                cache_hint=None,
+                primary_metric="average_precision",
+            )
+
+            text = readme.read_text()
+            self.assertIn("has **not** been run", text)
+            self.assertIn("average_precision", text)
+            self.assertIn("merge_detector_<brain>.csv", text)
+            self.assertIn("app/RUN_COMMANDS.md", text)
+            block = workflow.read_driver_generated_block(readme)
+            self.assertIn("Feature and source mapping", block)
+            skeleton_sha = hashlib.sha256(readme.read_bytes()).hexdigest()
+            with self.assertRaisesRegex(SystemExit, "skeleton unchanged"):
+                workflow.validate_readme_enrichment(
+                    readme,
+                    expected_driver_block=block,
+                    skeleton_sha256=skeleton_sha,
+                )
+            readme.write_text(text + "\nReviewed feature semantics.\n")
+            workflow.validate_readme_enrichment(
+                readme,
+                expected_driver_block=block,
+                skeleton_sha256=skeleton_sha,
+            )
+
+    def test_driver_run_commands_are_bound_to_exact_artifact_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            app = root / "app"
+            app.mkdir()
+            detector = app / "merge_site_detector.py"
+            inventory = app / "feature_inventory.json"
+            config = app / "model_candidates.json"
+            policy = root / "detector_model_policy.json"
+            template = root / "detector_runtime.py.tmpl"
+            detector.write_text("print('detector')\n")
+            inventory.write_text('{"schema_version": 2}\n')
+            config.write_text('{"schema_version": 2}\n')
+            policy.write_text('{"schema_version": 1}\n')
+            template.write_text("# runtime\n")
+            commands = app / "RUN_COMMANDS.md"
+
+            workflow.write_run_commands(
+                commands,
+                project_root=root,
+                run_rel="autodiscovery/merge-error-794495-mcl100_run.json",
+                detector_path=detector,
+                detector_rel="app/merge_site_detector.py",
+                inventory_path=inventory,
+                inventory_rel="app/feature_inventory.json",
+                model_config_path=config,
+                model_config_rel="app/model_candidates.json",
+                model_policy_path=policy,
+                model_policy_rel="detector_model_policy.json",
+                runtime_template_path=template,
+                runtime_template_rel="detector_runtime.py.tmpl",
+                cache_hint="cache/dataset_cache_794495_mcl100_add.pkl",
+                agent_model="claude-test",
+                agent_effort="high",
+            )
+
+            text = commands.read_text()
+            self.assertIn(hashlib.sha256(detector.read_bytes()).hexdigest(), text)
+            self.assertIn(hashlib.sha256(inventory.read_bytes()).hexdigest(), text)
+            self.assertIn(hashlib.sha256(config.read_bytes()).hexdigest(), text)
+            self.assertIn("not\npurely deterministic", text)
+            self.assertIn("--synthetic-smoke-test", text)
+            self.assertIn("--measuretime-occurrences 3", text)
+            self.assertIn("observed sample costs", text)
+            self.assertIn("--nodelist=n169", text)
+            self.assertIn("dataset_cache_794495_mcl100_add.pkl", text)
+            self.assertIn("merge_detector_794495.csv", text)
+            self.assertIn("Monitor component extraction", text)
+            self.assertIn("feature:start", text)
+            self.assertIn("calls` and `total_s", text)
+            self.assertIn("Profile hypothesis computational cost", text)
+            self.assertIn("--measuretime", text)
+            self.assertIn("analysis_timing_${BRAIN}.json", text)
+            self.assertIn("hypothesis_cost_report_${BRAIN}.md", text)
+            self.assertIn("hypothesis_selection_template_${BRAIN}.json", text)
+            self.assertIn("--hypothesis-selection", text)
+            self.assertIn("EXCLUDE_IDS=()", text)
+            self.assertIn("Set EXCLUDE_IDS from the cost report", text)
+            self.assertNotIn("EXCLUDE_IDS=(<ID1> <ID2>)", text)
+            self.assertNotIn("39 6", text)
+            self.assertIn('runs/${BRAIN}-manual-exclusions', text)
+            self.assertIn(
+                'python "$DETECTOR" "$DATA_PKL" \\\n    --measuretime', text
+            )
+            self.assertIn(
+                '--exclude-hypotheses "${EXCLUDE_IDS[@]}" \\\n    --model-config', text
+            )
+            self.assertNotIn("hand-authored selection. Omitting\nOmitting", text)
+            self.assertIn("--mem=80G", text)
+            self.assertIn("conda list --explicit", text)
+
     @staticmethod
     def _valid_model_config(inventory_path: Path) -> dict:
         def candidate(name: str, role: str, grid: dict, *, native_nan=False,
@@ -57,9 +675,12 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             }
 
         return {
-            "schema_version": 1,
+            "schema_version": workflow.MODEL_CONFIG_SCHEMA_VERSION,
             "feature_inventory_sha256": hashlib.sha256(
                 inventory_path.read_bytes()
+            ).hexdigest(),
+            "model_policy_sha256": hashlib.sha256(
+                workflow.MODEL_POLICY_PATH.read_bytes()
             ).hexdigest(),
             "selection_basis": "Three conservative baselines plus one smooth model.",
             "candidates": [
@@ -70,7 +691,10 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 ),
                 candidate(
                     "hist_gradient_boosting", "baseline",
-                    {"max_leaf_nodes": [7, 15], "learning_rate": [0.03]},
+                    {
+                        "max_leaf_nodes": [7, 15], "max_depth": [None, 3],
+                        "learning_rate": [0.03],
+                    },
                     native_nan=True,
                 ),
                 candidate(
@@ -95,9 +719,11 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         if predictive:
             source_hash = hashlib.sha256(run_json.read_bytes()).hexdigest()
             (root / "run.predictive-selection.json").write_text(json.dumps({
+                "source_file": "run.json",
                 "criterion": "predictive",
                 "selected_ids": [1],
                 "source_sha256": source_hash,
+                "policy_version": workflow.PREDICTIVE_POLICY_VERSION,
             }))
         if fixed:
             fixed_dir = root / f"run.json{scope}.fixed"
@@ -125,6 +751,16 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             self.assertEqual(selection, root / "run.predictive-selection.json")
             self.assertEqual(selected_ids, [1])
 
+            context = workflow.resolve_run_context(run_json)
+            self.assertTrue(context.predictive)
+            self.assertEqual(context.selected_ids, (1,))
+            self.assertEqual(context.target.value, "legacy_unspecified")
+            protected = workflow.protected_source_paths(context)
+            self.assertIn(run_json, protected)
+            self.assertIn(rerun / "MANIFEST.json", protected)
+            self.assertIn(rerun / "hypo_1.py", protected)
+            self.assertIn(fixed / "hypo_1.py", protected)
+
     def test_resolve_inputs_allows_no_fixed_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -138,6 +774,37 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             self.assertIsNone(selection)
             self.assertEqual(selected_ids, [1])
 
+    def test_resolve_inputs_rejects_split_run_before_artifact_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow.PROJECT_ROOT = root
+            run_json = root / "split-error-794495-mcl100-run-2.json"
+            run_json.write_text("[]")
+
+            with self.assertRaisesRegex(
+                SystemExit,
+                r"split-error run.*builds merge detectors only.*gt_merge_labels",
+            ):
+                workflow.resolve_inputs(run_json)
+
+    def test_resolve_inputs_accepts_named_merge_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow.PROJECT_ROOT = root
+            generic_run = self._touch_inputs(root, predictive=False, fixed=False)
+            merge_run = root / "merge-error-794495-mcl100.json"
+            generic_run.rename(merge_run)
+            (root / "run.summary.md").rename(
+                root / "merge-error-794495-mcl100.summary.md"
+            )
+            (root / "run.json.rerun").rename(
+                root / "merge-error-794495-mcl100.json.rerun"
+            )
+
+            _, _, _, _, selected_ids = workflow.resolve_inputs(merge_run)
+
+            self.assertEqual(selected_ids, [1])
+
     def test_resolve_inputs_rejects_stale_predictive_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -149,6 +816,24 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             selection_path.write_text(json.dumps(selection))
 
             with self.assertRaisesRegex(SystemExit, "MANIFEST disagree"):
+                workflow.resolve_inputs(run_json)
+
+    def test_resolve_inputs_rejects_missing_corrected_results_before_build(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow.PROJECT_ROOT = root
+            run_json = self._touch_inputs(root, predictive=True, fixed=True)
+            (root / "run.summary.md").write_text(
+                "### 1. Corrected finding\n"
+                "- **ID:** 1\n"
+                "- **Reproduction:** REPRODUCED\n"
+                "- **Verdict:** SOUND\n"
+                "- **Post-correction verdict:** UPHELD\n"
+            )
+
+            with self.assertRaisesRegex(
+                SystemExit, "post-correction verdict.*corrected.json.*missing"
+            ):
                 workflow.resolve_inputs(run_json)
 
     def test_build_steps_require_source_audit_and_safe_exclusions(self) -> None:
@@ -171,24 +856,66 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             "inventory-features", "configure-models", "generate-detector",
             "verify-and-document",
         ])
+        generate_step = next(
+            step for step in steps if step["name"] == "generate-detector"
+        )
+        self.assertTrue(
+            generate_step["expects_file"].endswith("/.feature_implementation.py")
+        )
         self.assertIn("FAILED/UNUSABLE", inventory)
         self.assertIn("uncorrected CRITICAL", inventory)
         self.assertIn("feature_semantics_changed", inventory)
         self.assertIn("stale_fixed_ignored", inventory)
-        self.assertIn("schema_version=2", inventory)
+        self.assertIn("schema_version=1", inventory)
         self.assertIn("authoritative hypothesis set", inventory)
-        self.assertIn("feature_source_path", inventory)
-        self.assertIn("SHA-256", inventory)
-        self.assertIn("zero, one, or two", configure)
+        self.assertIn("Evidence transcription, paths, hashes", inventory)
+        self.assertIn("DRIVER responsibilities", inventory)
+        self.assertIn("Do not copy reproduction_status", inventory)
+        self.assertIn(".feature_semantics.json", inventory)
+        self.assertIn("strict inventory-v2 validator", inventory)
+        self.assertIn("display rank, NOT the hypothesis ID", inventory)
+        self.assertNotIn("all 11 executed corrected", inventory)
+        self.assertIn("ONLY the inventory-features semantic stage", inventory)
+        self.assertIn("ONLY the configure-models advice stage", configure)
+        self.assertIn(".model_advice.json", configure)
+        self.assertIn("driver will add role, native_nan", configure)
+        self.assertIn("ONLY the feature-implementation stage", generate)
+        self.assertIn("ONLY the verify-and-document stage", verify)
+        self.assertNotIn("matching SHA-256", inventory)
+        self.assertIn("zero through 2", configure)
         self.assertIn("Never write", configure)
-        self.assertIn("feature_inventory_sha256", configure)
-        self.assertIn("native_nan is", configure)
-        self.assertIn("--model-config", generate)
-        self.assertIn("Never eval", generate)
-        self.assertIn("parameter value types/ranges", generate)
+        self.assertIn("inventory hash", configure)
+        self.assertIn("policy hash", configure)
+        self.assertIn("detector_model_policy.json", configure)
+        self.assertIn("owns native-NaN declarations", configure)
         self.assertIn("feature_source_path", generate)
-        self.assertIn("Never silently fall back", generate)
+        self.assertIn("Never fall back", generate)
+        self.assertIn(".feature_implementation.py", generate)
+        self.assertIn("driver owns the reviewed runtime template", generate)
+        self.assertIn("Do not define validate_model_config", generate)
+        self.assertIn("weighted or unweighted", generate)
+        self.assertIn("does not retain custom SkeletonGraph", generate)
+        self.assertIn("ANALYSIS_TIMING_GROUPS", generate)
+        self.assertIn("cover every\nFEATURE_REGISTRY name exactly once", generate)
+        self.assertIn("runtime-provided\ntiming recorder around every analysis group", generate)
+        self.assertIn("enabled_analysis_keys=None", generate)
+        self.assertIn("profile_segment_limit=None", generate)
+        self.assertIn("default limit of\n3", generate)
+        self.assertIn("final-run selection unit", generate)
+        self.assertIn("does not make the final\ndecision automatically", generate)
+        self.assertIn("must not change feature math", generate)
+        self.assertIn("component traversal has flushed segment/component", verify)
+        self.assertIn("final per-feature cumulative timing/call-count", verify)
+        self.assertIn("schema-v2 timing JSON", verify)
+        self.assertIn("without audit, CV, fitting", verify)
+        self.assertIn("--hypothesis-selection", verify)
+        self.assertIn("does not choose exclusions automatically", verify)
+        self.assertIn("RUN_COMMANDS.md", generate)
+        self.assertIn("read-only", verify)
+        self.assertIn("driver-assembled", verify)
         self.assertIn("rerun-vs-fixed choice", verify)
+        self.assertIn("instance-bound", verify)
+        self.assertIn("without duplicating them", verify)
 
     def test_validate_model_config_accepts_bounded_allowlisted_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -199,6 +926,53 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             config_path = root / workflow.MODEL_CONFIG_NAME
             config_path.write_text(json.dumps(self._valid_model_config(inventory_path)))
 
+            workflow.validate_model_config(config_path, inventory_path)
+
+    def test_model_advice_compiles_mechanical_policy_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            inventory_path = root / "feature_inventory.json"
+            inventory_path.write_text('{"schema_version": 2}')
+            advice_path = root / ".model_advice.json"
+            advice_path.write_text(json.dumps({
+                "schema_version": 1,
+                "selection_basis": "Use conservative baselines only.",
+                "candidates": [
+                    {
+                        "name": "logistic_l2",
+                        "reason": "Stable linear baseline.",
+                        "grid": {"C": [0.1, 1.0]},
+                    },
+                    {
+                        "name": "logistic_elasticnet",
+                        "reason": "Sparse correlated-feature baseline.",
+                        "grid": {"C": [0.1], "l1_ratio": [0.5]},
+                    },
+                    {
+                        "name": "hist_gradient_boosting",
+                        "reason": "Native missingness and interactions baseline.",
+                        "grid": {"max_leaf_nodes": [7], "learning_rate": [0.03]},
+                    },
+                ],
+            }))
+            config_path = root / workflow.MODEL_CONFIG_NAME
+
+            workflow.compile_model_config(
+                advice_path,
+                config_path,
+                inventory_path,
+                workflow.MODEL_POLICY_PATH,
+                workflow.MODEL_POLICY_CONTRACT,
+                workflow.MODEL_CONFIG_SCHEMA_VERSION,
+                workflow.PROJECT_ROOT,
+            )
+
+            config = json.loads(config_path.read_text())
+            self.assertEqual(config["schema_version"], 2)
+            self.assertEqual(config["candidates"][0]["role"], "baseline")
+            self.assertFalse(config["candidates"][0]["native_nan"])
+            self.assertTrue(config["candidates"][2]["native_nan"])
+            self.assertIsNone(config["candidates"][2]["requires_package"])
             workflow.validate_model_config(config_path, inventory_path)
 
     def test_validate_model_config_rejects_missing_baseline_and_stale_hash(self) -> None:
@@ -286,6 +1060,49 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "disallowed family"):
                 workflow.validate_model_config(config_path, inventory_path)
 
+    def test_model_contract_accepts_hgb_depth_and_integer_ebm_interactions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow.PROJECT_ROOT = root
+            inventory_path = root / "feature_inventory.json"
+            inventory_path.write_text('{"schema_version": 2}')
+            config_path = root / workflow.MODEL_CONFIG_NAME
+            config = self._valid_model_config(inventory_path)
+            config["candidates"].append({
+                "name": "explainable_boosting",
+                "role": "optional",
+                "reason": "Model a bounded number of pairwise interactions.",
+                "grid": {
+                    "max_bins": [128],
+                    "interactions": [0, 5],
+                    "learning_rate": [0.01],
+                },
+                "native_nan": True,
+                "requires_package": "interpret",
+            })
+            config_path.write_text(json.dumps(config))
+            workflow.validate_model_config(config_path, inventory_path)
+
+            config["candidates"][-1]["grid"]["interactions"] = [-1, 0.5]
+            config_path.write_text(json.dumps(config))
+            with self.assertRaisesRegex(SystemExit, "interactions has invalid values"):
+                workflow.validate_model_config(config_path, inventory_path)
+
+    def test_model_policy_cannot_introduce_an_unreviewed_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            policy_path = Path(tmpdir) / "policy.json"
+            policy = json.loads(workflow.MODEL_POLICY_PATH.read_text())
+            policy["families"]["arbitrary_estimator"] = {
+                "required": False,
+                "native_nan": False,
+                "requires_package": None,
+                "parameters": {"C": "positive_number"},
+            }
+            policy["selection"]["simplicity_order"].append("arbitrary_estimator")
+            policy_path.write_text(json.dumps(policy))
+            with self.assertRaisesRegex(RuntimeError, "without reviewed safe adapters"):
+                workflow._load_model_policy(policy_path)
+
     def test_validate_inventory_checks_selected_source_hash(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -339,6 +1156,37 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 rerun,
                 None,
             )
+            inventory["selection_manifest"] = {
+                "path": "run.predictive-selection.json",
+                "sha256": "0" * 64,
+            }
+            inventory_path.write_text(json.dumps(inventory))
+            with self.assertRaisesRegex(
+                SystemExit,
+                r"expected 'run\.predictive-selection\.json'.*got .*dict",
+            ):
+                workflow.validate_inventory(
+                    inventory_path,
+                    [1],
+                    "run.predictive-selection.json",
+                    rerun,
+                    None,
+                )
+            inventory["selection_manifest"] = "run.predictive-selection.json"
+            inventory["hypotheses"][0]["corrected_result_status"] = "UPHELD"
+            inventory_path.write_text(json.dumps(inventory))
+            with self.assertRaisesRegex(
+                SystemExit,
+                "corrected_result_status describes execution/measurement",
+            ):
+                workflow.validate_inventory(
+                    inventory_path,
+                    [1],
+                    "run.predictive-selection.json",
+                    rerun,
+                    None,
+                )
+            inventory["hypotheses"][0]["corrected_result_status"] = None
             inventory["hypotheses"][0]["correction_scope"] = "unclear"
             inventory_path.write_text(json.dumps(inventory))
             with self.assertRaisesRegex(SystemExit, "cannot be included"):
@@ -360,6 +1208,280 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                     rerun,
                     None,
                 )
+
+    def test_validate_inventory_cross_checks_explicit_report_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow.PROJECT_ROOT = root
+            rerun = root / "run.json.predictive.rerun"
+            rerun.mkdir()
+            source = rerun / "hypo_23.py"
+            source.write_text("FEATURE = 1\n")
+            source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+            summary = root / "run.summary.md"
+            summary.write_text(
+                "### 2. Display rank is not the ID\n"
+                "- **Run:** run · **ID:** 23 · **Direction:** Negative\n"
+                "- **Reproduction:** REPRODUCED\n"
+                "- **Verdict:** MINOR\n"
+                "- **Post-correction verdict:** UPHELD — survives\n"
+            )
+            inventory_path = root / "feature_inventory.json"
+            inventory = {
+                "schema_version": 2,
+                "selection_manifest": None,
+                "selected_ids": [23],
+                "hypotheses": [{
+                    "id": 23,
+                    "included": False,
+                    "exclusion_reason": "Test fixture exclusion.",
+                    "reproduction_status": "REPRODUCED",
+                    "statistical_verdict": "MAJOR",
+                    "corrected_result_status": "USABLE",
+                    "post_correction_verdict": "UPHELD",
+                    "correction_scope": "unclear",
+                    "rerun_path": workflow._rel_to_root(source),
+                    "rerun_sha256": source_hash,
+                    "fixed_path": None,
+                    "fixed_sha256": None,
+                    "feature_source": None,
+                    "feature_source_path": None,
+                    "feature_source_sha256": None,
+                    "source_reason": "Correction source is unavailable.",
+                    "features": [],
+                }],
+            }
+            inventory_path.write_text(json.dumps(inventory))
+
+            with self.assertRaisesRegex(
+                SystemExit, "statistical_verdict.*same-ID report row"
+            ):
+                workflow.validate_inventory(
+                    inventory_path, [23], None, rerun, None, summary
+                )
+
+            inventory["hypotheses"][0]["statistical_verdict"] = "MINOR"
+            inventory_path.write_text(json.dumps(inventory))
+            workflow.validate_inventory(
+                inventory_path, [23], None, rerun, None, summary
+            )
+
+            corrected = root / "run.json.corrected.json"
+            corrected.write_text(json.dumps({
+                "code_dir": workflow._rel_to_root(rerun),
+                "corrected_dir": None,
+                "results": [{"id": 23, "result_status": "FAILED"}],
+            }))
+            with self.assertRaisesRegex(
+                SystemExit, "corrected_result_status.*corrected results"
+            ):
+                workflow.validate_inventory(
+                    inventory_path, [23], None, rerun, None, summary, corrected
+                )
+
+    def test_semantic_draft_compiles_to_compatible_inventory_v2(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow.PROJECT_ROOT = root
+            rerun = root / "run.json.rerun"
+            rerun.mkdir()
+            source = rerun / "hypo_1.py"
+            source.write_text("FEATURE = 1\n")
+            summary = root / "run.summary.md"
+            summary.write_text(
+                "### 8. Display rank\n"
+                "- **Run:** run · **ID:** 1 · **Direction:** Positive\n"
+                "- **Reproduction:** REPRODUCED\n"
+                "- **Verdict:** SOUND\n"
+            )
+            semantics = root / ".feature_semantics.json"
+            semantics.write_text(json.dumps({
+                "schema_version": 1,
+                "hypotheses": [{
+                    "id": 1,
+                    "included": True,
+                    "exclusion_reason": None,
+                    "correction_scope": "none",
+                    "feature_source": "rerun",
+                    "source_reason": "Original feature semantics are usable.",
+                    "features": [{
+                        "name": "feature",
+                        "quantity": "one",
+                        "constants": {},
+                        "aggregation": "segment",
+                        "reduction": "identity",
+                        "traversal_phase": "segment",
+                        "measurable_condition": "always",
+                        "historical_undefined_sentinel": None,
+                    }],
+                }],
+            }))
+            inventory_path = root / "feature_inventory.json"
+
+            workflow.compile_feature_inventory(
+                semantics,
+                inventory_path,
+                selected_ids=[1],
+                selection_manifest=None,
+                summary_path=summary,
+                corrected_results_path=None,
+                rerun_dir=rerun,
+                fixed_dir=None,
+                project_root=root,
+            )
+
+            inventory = json.loads(inventory_path.read_text())
+            self.assertEqual(set(inventory), {
+                "schema_version", "selection_manifest", "selected_ids",
+                "hypotheses",
+            })
+            row = inventory["hypotheses"][0]
+            self.assertEqual(row["reproduction_status"], "REPRODUCED")
+            self.assertEqual(row["statistical_verdict"], "SOUND")
+            self.assertEqual(row["feature_source_path"], "run.json.rerun/hypo_1.py")
+            self.assertEqual(row["feature_source_sha256"], hashlib.sha256(
+                source.read_bytes()
+            ).hexdigest())
+            workflow.validate_inventory(
+                inventory_path, [1], None, rerun, None, summary
+            )
+
+    def test_excluded_semantics_are_canonicalized_without_agent_retry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow.PROJECT_ROOT = root
+            rerun = root / "run.json.rerun"
+            fixed = root / "run.json.fixed"
+            rerun.mkdir()
+            fixed.mkdir()
+            (rerun / "hypo_5.py").write_text("FEATURE = 1\n")
+            (fixed / "hypo_5.py").write_text("FEATURE = 2\n")
+            summary = root / "run.summary.md"
+            summary.write_text(
+                "### 1. Excluded\n"
+                "- **Run:** run · **ID:** 5 · **Direction:** Negative\n"
+                "- **Reproduction:** REPRODUCED\n"
+                "- **Verdict:** CRITICAL\n"
+                "- **Post-correction verdict:** OVERTURNED — effect vanished\n"
+            )
+            corrected = root / "run.json.corrected.json"
+            corrected.write_text(json.dumps({
+                "code_dir": workflow._rel_to_root(rerun),
+                "corrected_dir": workflow._rel_to_root(fixed),
+                "results": [{"id": 5, "result_status": "USABLE"}],
+            }))
+            semantics = root / ".feature_semantics.json"
+            semantics.write_text(json.dumps({
+                "schema_version": 1,
+                "hypotheses": [{
+                    "id": 5,
+                    "included": False,
+                    "exclusion_reason": "Corrected result overturned the claim.",
+                    "correction_scope": "none",
+                    "feature_source": None,
+                    "source_reason": None,
+                    "features": [],
+                }],
+            }))
+            inventory_path = root / "feature_inventory.json"
+
+            workflow.compile_feature_inventory(
+                semantics,
+                inventory_path,
+                selected_ids=[5],
+                selection_manifest=None,
+                summary_path=summary,
+                corrected_results_path=corrected,
+                rerun_dir=rerun,
+                fixed_dir=fixed,
+                project_root=root,
+            )
+
+            row = json.loads(inventory_path.read_text())["hypotheses"][0]
+            self.assertEqual(row["correction_scope"], "unclear")
+            self.assertEqual(
+                row["source_reason"],
+                "Excluded: Corrected result overturned the claim.",
+            )
+            workflow.validate_inventory(
+                inventory_path, [5], None, rerun, fixed, summary, corrected
+            )
+
+    def test_manifest_rejects_id_filename_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "MANIFEST.json"
+            path.write_text(json.dumps({
+                "records": [{"id": 23, "file": "hypo_2.py"}],
+            }))
+            with self.assertRaisesRegex(SystemExit, "maps id 23"):
+                workflow._manifest_ids(path)
+
+    def test_validate_detector_source_and_immutable_artifact(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow.PROJECT_ROOT = root
+            detector = root / "detector.py"
+            detector.write_text("def main():\n    return 0\n")
+            workflow.validate_detector_source(detector)
+            original_hash = hashlib.sha256(detector.read_bytes()).hexdigest()
+            workflow.require_unchanged(detector, original_hash, "generate")
+            detector.write_text("def broken(:\n")
+            with self.assertRaisesRegex(SystemExit, "does not parse"):
+                workflow.validate_detector_source(detector)
+            with self.assertRaisesRegex(SystemExit, "modified validated"):
+                workflow.require_unchanged(detector, original_hash, "generate")
+
+    def test_driver_executes_help_and_synthetic_smoke_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            detector = root / "detector.py"
+            model_config = root / "model_candidates.json"
+            model_config.write_text(json.dumps({
+                "candidates": [{"name": "logistic_l2"}],
+            }))
+            detector.write_text(
+                "import argparse, json\n"
+                "p = argparse.ArgumentParser()\n"
+                "p.add_argument('pkl', nargs='?')\n"
+                "p.add_argument('--model-config')\n"
+                "p.add_argument('--measuretime', action='store_true')\n"
+                "p.add_argument('--measuretime-occurrences', type=int, default=3)\n"
+                "p.add_argument('--hypothesis-selection')\n"
+                "p.add_argument('--exclude-hypotheses', nargs='+', type=int)\n"
+                "p.add_argument('--synthetic-smoke-test', action='store_true')\n"
+                "args = p.parse_args()\n"
+                "if args.synthetic_smoke_test:\n"
+                "    assert args.pkl is None\n"
+                "    cfg = json.load(open(args.model_config))\n"
+                "    if cfg['candidates'][0]['name'].startswith('__'):\n"
+                "        p.error('unreviewed family')\n"
+                "    print('DETECTOR_SMOKE_OK')\n"
+            )
+
+            workflow.validate_detector_executable(detector, model_config)
+
+    def test_driver_rejects_smoke_without_success_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            detector = root / "detector.py"
+            model_config = root / "model_candidates.json"
+            model_config.write_text(json.dumps({
+                "candidates": [{"name": "logistic_l2"}],
+            }))
+            detector.write_text(
+                "import argparse\n"
+                "p = argparse.ArgumentParser()\n"
+                "p.add_argument('--model-config')\n"
+                "p.add_argument('--measuretime', action='store_true')\n"
+                "p.add_argument('--measuretime-occurrences', type=int, default=3)\n"
+                "p.add_argument('--hypothesis-selection')\n"
+                "p.add_argument('--exclude-hypotheses', nargs='+', type=int)\n"
+                "p.add_argument('--synthetic-smoke-test', action='store_true')\n"
+                "p.parse_args()\n"
+            )
+
+            with self.assertRaisesRegex(SystemExit, "required.*marker"):
+                workflow.validate_detector_executable(detector, model_config)
 
 
 if __name__ == "__main__":

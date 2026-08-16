@@ -11,8 +11,8 @@ the skeleton graph, evaluates several appropriately regularized tabular models
 under nested cross-validation, and fits the selected strategy to produce one
 score per segment.
 
-The motivation comes from the reports themselves: each hypothesis is a single
-feature, and the recurring caveat is that none is precise enough alone
+The motivation comes from the reports themselves: each hypothesis contributes
+one or more related features, and the recurring caveat is that none is precise enough alone
 ("high recall, ~8% precision — best used as one component of an ensemble").
 This workflow builds the combined feature table and selects a model for it.
 
@@ -20,9 +20,11 @@ THIS WORKFLOW IS CODE GENERATION ONLY, and it takes NO DATASET. Its inputs are
 the run export, the report beside it, the predictive-selection manifest when
 applicable, the ``.rerun/`` scripts, and optional ``.fixed/`` scripts. It
 cross-checks selection, rerun MANIFEST, inventory paths, and source hashes before
-generation. It never loads a cache and never runs
-what it writes: the pkl needs >20 GB RAM and minutes of graph traversal, so the
-operator runs the finished script themselves, on a compute node, with the data.
+generation. It never loads a cache; it runs only the generated CLI's no-data
+``--help`` and synthetic smoke modes. The pkl needs >20 GB RAM and may require
+hours of
+graph traversal, so the operator runs the finished script themselves on a
+compute node with the data.
 Hence a login node is fine for this. The origin dataset is recorded in the
 report, which is where the README's provenance comes from; the run command
 printed at the end guesses the cache path from the run name (``...-794495-mcl100``
@@ -37,6 +39,7 @@ context. Subagents live in ``.claude/agents/`` and are auto-discovered via
     feature_inventory.json            feature definition + defined condition
     model_candidates.json             validated model families + small grids
     README.md                         provenance, how to run, how to read it
+    RUN_COMMANDS.md                   commands bound to this detector's hashes
     detector_build_workflow.log.txt   this driver's console output (--log-txt)
 
 The generated detector run additionally writes per-segment CSV scores, a JSON
@@ -57,31 +60,31 @@ the prompt (required in batch jobs, which have no terminal); ``--keep-existing``
 writes into the folder as it stands, the older behaviour.
 
 The steps:
-  1. inventory-features  — read <RUN>.summary.md, each selected .rerun/hypo_<id>.py and
-                           matching .fixed/hypo_<id>.py when present; choose and
-                           record the authoritative feature source per id,
-                           and record for each returned hypothesis its feature
-                           name, the exact quantity computed, its aggregation
-                           unit, exact defined condition, and historical value
-                           used when undefined. Those conditions drive the audit.
-  2. configure-models    — write a validated model-candidate configuration. Three
-                           conservative baselines are mandatory; at most two
-                           inventory-justified extensions may be selected from a
-                           code-owned allowlist. No arbitrary estimator imports.
-  3. generate-detector   — write ONE consolidated CLI script: load the pkl once,
-                           group the features by the traversal each needs
-                           (edge / chain / junction / component / segment), keep
-                           every constant verbatim from the inventoried source, compare
-                           the configured allowlisted strategies with
-                           nested stratified CV, fit the selected strategy, and
-                           emit a CSV, selection manifest, log and key figures.
-  4. verify-and-document — check the script STATICALLY against the inventory and
+  1. inventory-features  — the agent reads <RUN>.summary.md, each selected
+                           .rerun/hypo_<id>.py and matching .fixed/hypo_<id>.py;
+                           it records only semantic judgments (source choice,
+                           feature math, aggregation and defined condition).
+                           The driver joins IDs, evidence, paths and hashes and
+                           compiles the public feature_inventory.json.
+  2. configure-models    — write a validated model-candidate configuration. A
+                           versioned declarative policy defines mandatory models,
+                           optional limits and parameter rules. No arbitrary
+                           estimator imports.
+  3. generate-detector   — the agent writes only the task-specific feature
+                           implementation. The driver AST-validates it and injects
+                           it into a reviewed runtime template that owns the CLI,
+                           model selection, outputs and smoke contract.
+  4. verify-and-document — enrich the factual README skeleton that the driver
+                           wrote after detector assembly; check the script against the inventory and
                            the inventoried rerun/fixed sources (every feature computed and fitted,
                            constants unchanged, defined flags consistent, no sandbox
-                           pip preamble, parses, --help works), fix what is wrong,
-                           and write README.md. No pkl, no results — the README
-                           says how to run it and in what order to read the
-                           numbers when they arrive.
+                           pip preamble, parses, --help works), report defects
+                           without editing the assembled detector, run
+                           driver-owned no-data CLI checks, and add semantic
+                           interpretation outside the immutable provenance block.
+                           No pkl, no results — README.md points to the driver-owned
+                           RUN_COMMANDS.md and says in what order to read the numbers
+                           when they arrive.
 
 The audit lives INSIDE the generated script because missing structure is a real
 predictor and a real confound. On ``merge-error-794495-mcl100_2026-08-04``, 6396
@@ -91,9 +94,10 @@ cross-validated ROC-AUC. Generated detectors therefore retain NaN, add explicit
 is_defined flags, report coverage by class, and let fold-local preprocessing or
 native-NaN models handle the numeric value.
 
-All four steps always run, and re-running the workflow simply regenerates the
-folder: the steps are minutes of one SDK session, not the hours the compute used
-to take, so partial-resume flags cost more in surface area than they save.
+A clean build runs all four steps. If inventory compilation rejects the hidden
+feature-semantics draft, `--keep-existing` can recover that draft only after
+rebuilding and strictly validating its public artifact, avoiding a repeated
+semantic agent turn.
 
 Usage (from the ``exa-spim-agent/`` project root; a login node is fine):
     conda activate panda
@@ -112,12 +116,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import hashlib
-import json
 import math
 import os
 import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -126,21 +127,112 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ClaudeAgentOptions,
-    ClaudeSDKClient,
-    ResultMessage,
-    TextBlock,
-)
-
-# ToolUseBlock is what gives us live progress (which tool/subagent is running).
-# Import defensively so a minor SDK version mismatch doesn't break the script.
-try:
-    from claude_agent_sdk import ToolUseBlock
-except ImportError:  # pragma: no cover - depends on installed SDK version
-    ToolUseBlock = ()  # type: ignore[assignment]
-
+try:  # package import (tests and ``python -m agentic...``)
+    from agentic.detector_build.agent_session import (
+        load_claude_sdk,
+        open_agent_session,
+    )
+    from agentic.detector_build.assembly import assemble_detector
+    from agentic.detector_build.contracts import (
+        BUILD_ARTIFACT_NAMES,
+        DETECTOR_NAME,
+        DRIVER_LOG_NAME,
+        FEATURE_INVENTORY_NAME,
+        FEATURE_IMPLEMENTATION_DRAFT_NAME,
+        FEATURE_SEMANTICS_DRAFT_NAME,
+        MODEL_ADVICE_DRAFT_NAME,
+        MODEL_CONFIG_NAME,
+        README_NAME,
+        RUN_COMMANDS_NAME,
+        RunContext,
+    )
+    from agentic.detector_build.inputs import (
+        corrected_status_by_id as _resolved_corrected_status_by_id,
+        integer_ids as _resolved_integer_ids,
+        load_json_object as _resolved_load_json_object,
+        manifest_ids as _resolved_manifest_ids,
+        origin_cache_hint as _resolved_origin_cache_hint,
+        protected_source_paths,
+        rel_to_root as _resolved_rel_to_root,
+        report_evidence_by_id as _resolved_report_evidence_by_id,
+        resolve_run_context as _resolve_run_context,
+        run_stem as _resolved_run_stem,
+        sha256 as _resolved_sha256,
+    )
+    from agentic.detector_build.inventory import compile_feature_inventory
+    from agentic.detector_build.documentation import (
+        read_driver_generated_block,
+        validate_readme_enrichment,
+        write_readme_skeleton,
+        write_run_commands,
+    )
+    from agentic.detector_build.model_policy import (
+        ModelPolicyContract,
+        compile_model_config,
+        load_model_policy as _resolved_load_model_policy,
+        valid_grid_value as _resolved_valid_grid_value,
+        validate_model_config as _resolved_validate_model_config,
+    )
+    from agentic.detector_build.verification import (
+        SMOKE_SUCCESS_MARKER,
+        validate_detector_executable_contract,
+        validate_detector_source as _validate_detector_source,
+    )
+except ModuleNotFoundError as exc:  # direct ``python agentic/run_....py``
+    if exc.name != "agentic":
+        raise
+    from detector_build.agent_session import (  # type: ignore[no-redef]
+        load_claude_sdk,
+        open_agent_session,
+    )
+    from detector_build.assembly import assemble_detector  # type: ignore[no-redef]
+    from detector_build.contracts import (  # type: ignore[no-redef]
+        BUILD_ARTIFACT_NAMES,
+        DETECTOR_NAME,
+        DRIVER_LOG_NAME,
+        FEATURE_INVENTORY_NAME,
+        FEATURE_IMPLEMENTATION_DRAFT_NAME,
+        FEATURE_SEMANTICS_DRAFT_NAME,
+        MODEL_ADVICE_DRAFT_NAME,
+        MODEL_CONFIG_NAME,
+        README_NAME,
+        RUN_COMMANDS_NAME,
+        RunContext,
+    )
+    from detector_build.inputs import (  # type: ignore[no-redef]
+        corrected_status_by_id as _resolved_corrected_status_by_id,
+        integer_ids as _resolved_integer_ids,
+        load_json_object as _resolved_load_json_object,
+        manifest_ids as _resolved_manifest_ids,
+        origin_cache_hint as _resolved_origin_cache_hint,
+        protected_source_paths,
+        rel_to_root as _resolved_rel_to_root,
+        report_evidence_by_id as _resolved_report_evidence_by_id,
+        resolve_run_context as _resolve_run_context,
+        run_stem as _resolved_run_stem,
+        sha256 as _resolved_sha256,
+    )
+    from detector_build.inventory import (  # type: ignore[no-redef]
+        compile_feature_inventory,
+    )
+    from detector_build.documentation import (  # type: ignore[no-redef]
+        read_driver_generated_block,
+        validate_readme_enrichment,
+        write_readme_skeleton,
+        write_run_commands,
+    )
+    from detector_build.model_policy import (  # type: ignore[no-redef]
+        ModelPolicyContract,
+        compile_model_config,
+        load_model_policy as _resolved_load_model_policy,
+        valid_grid_value as _resolved_valid_grid_value,
+        validate_model_config as _resolved_validate_model_config,
+    )
+    from detector_build.verification import (  # type: ignore[no-redef]
+        SMOKE_SUCCESS_MARKER,
+        validate_detector_executable_contract,
+        validate_detector_source as _validate_detector_source,
+    )
 
 # Project root = the directory that holds .claude/, agentic/, autodiscovery/.
 # agentic/run_detector_build_workflow.py -> parent.parent is the project root.
@@ -149,65 +241,107 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 # Applications live one subfolder per originating run.
 APPLICATION_DIR_REL = "autodiscovery-application"
 
-# The detector script the generate step writes — the deliverable of this workflow.
-DETECTOR_NAME = "merge_site_detector.py"
-MODEL_CONFIG_NAME = "model_candidates.json"
+MODEL_CONFIG_SCHEMA_VERSION = 2
+MODEL_POLICY_PATH = Path(__file__).resolve().with_name("detector_model_policy.json")
+RUNTIME_TEMPLATE_PATH = (
+    Path(__file__).resolve().parent
+    / "detector_build"
+    / "templates"
+    / "detector_runtime.py.tmpl"
+)
 
-# The agent may choose a bounded subset, but it cannot introduce executable
-# imports/class paths. These names and parameter surfaces are the security and
-# reproducibility boundary shared by the driver and generated detector.
-REQUIRED_MODEL_FAMILIES = frozenset({
-    "logistic_l2", "logistic_elasticnet", "hist_gradient_boosting",
-})
-OPTIONAL_MODEL_FAMILIES = frozenset({
-    "spline_logistic", "explainable_boosting", "extra_trees",
-    "random_forest", "xgboost",
-})
-ALLOWED_MODEL_FAMILIES = REQUIRED_MODEL_FAMILIES | OPTIONAL_MODEL_FAMILIES
+def _load_model_policy(path: Path) -> dict:
+    """Compatibility wrapper for the reusable policy loader."""
+    return _resolved_load_model_policy(path)
+
+
+MODEL_POLICY_CONTRACT = ModelPolicyContract.from_path(MODEL_POLICY_PATH)
+MODEL_POLICY = MODEL_POLICY_CONTRACT.payload
+MODEL_FAMILIES = MODEL_POLICY_CONTRACT.families
+ALLOWED_MODEL_FAMILIES = MODEL_POLICY_CONTRACT.allowed_families
+REQUIRED_MODEL_FAMILIES = MODEL_POLICY_CONTRACT.required_families
+OPTIONAL_MODEL_FAMILIES = ALLOWED_MODEL_FAMILIES - REQUIRED_MODEL_FAMILIES
+MODEL_PARAMETER_RULES = MODEL_POLICY_CONTRACT.parameter_rules
 MODEL_PARAMETER_ALLOWLIST = {
-    "logistic_l2": frozenset({"C"}),
-    "logistic_elasticnet": frozenset({"C", "l1_ratio"}),
-    "hist_gradient_boosting": frozenset({
-        "learning_rate", "max_leaf_nodes", "min_samples_leaf",
-        "l2_regularization",
-    }),
-    "spline_logistic": frozenset({"n_knots", "degree", "C"}),
-    "explainable_boosting": frozenset({
-        "max_bins", "learning_rate", "max_rounds", "min_samples_leaf",
-    }),
-    "extra_trees": frozenset({
-        "n_estimators", "max_depth", "min_samples_leaf", "max_features",
-    }),
-    "random_forest": frozenset({
-        "n_estimators", "max_depth", "min_samples_leaf", "max_features",
-    }),
-    "xgboost": frozenset({
-        "n_estimators", "max_depth", "learning_rate", "min_child_weight",
-        "subsample", "colsample_bytree", "reg_lambda",
-    }),
+    name: frozenset(rules) for name, rules in MODEL_PARAMETER_RULES.items()
 }
-MODEL_REQUIRED_PACKAGE = {
-    "explainable_boosting": "interpret",
-    "xgboost": "xgboost",
-}
-MODEL_NATIVE_NAN = {
-    "logistic_l2": False,
-    "logistic_elasticnet": False,
-    "hist_gradient_boosting": True,
-    "spline_logistic": False,
-    "explainable_boosting": True,
-    "extra_trees": False,
-    "random_forest": False,
-    "xgboost": True,
-}
-MAX_OPTIONAL_MODELS = 2
-MAX_GRID_COMBINATIONS = 24
+MODEL_REQUIRED_PACKAGE = MODEL_POLICY_CONTRACT.required_package
+MODEL_NATIVE_NAN = MODEL_POLICY_CONTRACT.native_nan
+MAX_OPTIONAL_MODELS = MODEL_POLICY["selection"]["max_optional_models"]
+MAX_GRID_COMBINATIONS = MODEL_POLICY["selection"]["max_grid_combinations"]
+MODEL_SIMPLICITY_ORDER = tuple(MODEL_POLICY["selection"]["simplicity_order"])
+PRIMARY_METRIC = MODEL_POLICY["selection"]["primary_metric"]
+SELECTION_RULE = MODEL_POLICY["selection"]["selection_rule"]
+OUTER_FOLDS = MODEL_POLICY["selection"]["outer_folds"]
+INNER_FOLDS = MODEL_POLICY["selection"]["inner_folds"]
+RANDOM_SEED = MODEL_POLICY["selection"]["random_seed"]
+DEFAULT_REVIEW_BUDGET = MODEL_POLICY["selection"]["review_budget"]
+PREDICTIVE_POLICY_VERSION = "exclusion-only-v1"
 
-# A step that hangs should fail loudly rather than stall the workflow forever.
-AGENT_STEP_TIMEOUT_S: int = 1800   # 30 min — the generate step writes a lot of code
+AGENT_MODEL = os.environ.get("DETECTOR_BUILD_AGENT_MODEL", "claude-opus-4-8")
+AGENT_EFFORT = os.environ.get("DETECTOR_BUILD_AGENT_EFFORT", "xhigh")
 
 
-DRIVER_LOG_NAME = "detector_build_workflow.log.txt"
+def _positive_timeout_from_environment(name: str, default: int) -> int:
+    raw = os.environ.get(name, str(default))
+    try:
+        timeout = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer.") from exc
+    if timeout < 1:
+        raise RuntimeError(f"{name} must be positive.")
+    return timeout
+
+
+# Detector construction can require one long turn to audit dozens of scripts.
+AGENT_STEP_TIMEOUT_S = _positive_timeout_from_environment(
+    "DETECTOR_BUILD_AGENT_TIMEOUT_S", 6 * 60 * 60
+)
+AGENT_CONNECT_TIMEOUT_S = _positive_timeout_from_environment(
+    "DETECTOR_BUILD_AGENT_CONNECT_TIMEOUT_S", 60
+)
+
+
+class WorkflowCostSummary:
+    """Accumulate the per-turn costs reported by the Claude SDK."""
+
+    def __init__(self) -> None:
+        self.total_usd = 0.0
+        self.started_turns = 0
+        self.reported_turns = 0
+        self.unreported_turns = 0
+
+    def start_turn(self) -> None:
+        self.started_turns += 1
+
+    def add(self, cost_usd: object) -> None:
+        if cost_usd is None:
+            self.unreported_turns += 1
+            return
+        try:
+            cost = float(cost_usd)
+        except (TypeError, ValueError):
+            self.unreported_turns += 1
+            return
+        if not math.isfinite(cost) or cost < 0:
+            self.unreported_turns += 1
+            return
+        self.total_usd += cost
+        self.reported_turns += 1
+
+    def describe(self) -> str:
+        unfinished_turns = max(
+            0,
+            self.started_turns - self.reported_turns - self.unreported_turns,
+        )
+        coverage = (
+            f"{self.reported_turns} reported turn(s), "
+            f"{self.unreported_turns} completed turn(s) without a cost, "
+            f"{unfinished_turns} started turn(s) without a ResultMessage"
+        )
+        if self.reported_turns == 0:
+            return f"unavailable ({coverage})"
+        return f"${self.total_usd:.4f} ({coverage})"
 
 
 def log(msg: str) -> None:
@@ -262,7 +396,7 @@ def describe_tool(block) -> str:
 
 def run_stem(run_json: Path) -> str:
     """``autodiscovery/foo.json`` -> ``foo`` — names the application subfolder."""
-    return run_json.name[: -len(".json")] if run_json.name.endswith(".json") else run_json.stem
+    return _resolved_run_stem(run_json)
 
 
 def origin_cache_hint(run_json: Path) -> str | None:
@@ -274,10 +408,7 @@ def origin_cache_hint(run_json: Path) -> str | None:
     itself, and older run exports (``ground-truth-error-annotations-...``) carry
     no brain id in the name at all.
     """
-    m = re.search(r"(\d{5,7})[-_]mcl(\d+)", run_stem(run_json))
-    if not m:
-        return None
-    return f"cache/dataset_cache_{m.group(1)}_mcl{m.group(2)}_add.pkl"
+    return _resolved_origin_cache_hint(run_json)
 
 
 def _rel_to_root(path: Path) -> str:
@@ -289,8 +420,7 @@ def _rel_to_root(path: Path) -> str:
     correct but unreadable and breaks the moment it is pasted from elsewhere, so
     fall back to the absolute path there.
     """
-    rel = Path(os.path.relpath(path, PROJECT_ROOT))
-    return path.as_posix() if rel.parts and rel.parts[0] == ".." else rel.as_posix()
+    return _resolved_rel_to_root(path, PROJECT_ROOT)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -305,12 +435,17 @@ def build_steps(
     selection_rel: str | None,
     selected_ids: list[int],
     out_dir_rel: str,
+    corrected_results_rel: str | None = None,
 ) -> list[dict]:
     """Build the model-selection detector workflow instructions."""
     detector_rel = f"{out_dir_rel}/{DETECTOR_NAME}"
-    inventory_rel = f"{out_dir_rel}/feature_inventory.json"
+    feature_impl_rel = f"{out_dir_rel}/{FEATURE_IMPLEMENTATION_DRAFT_NAME}"
+    inventory_rel = f"{out_dir_rel}/{FEATURE_INVENTORY_NAME}"
+    semantics_rel = f"{out_dir_rel}/{FEATURE_SEMANTICS_DRAFT_NAME}"
     model_config_rel = f"{out_dir_rel}/{MODEL_CONFIG_NAME}"
-    readme_rel = f"{out_dir_rel}/README.md"
+    model_advice_rel = f"{out_dir_rel}/{MODEL_ADVICE_DRAFT_NAME}"
+    readme_rel = f"{out_dir_rel}/{README_NAME}"
+    run_commands_rel = f"{out_dir_rel}/{RUN_COMMANDS_NAME}"
     fixed_note = (
         f"Corrected scripts are available under {fixed_rel}/."
         if fixed_rel is not None
@@ -328,11 +463,32 @@ def build_steps(
         else f"This legacy run has no predictive-selection file; the validated "
              f"rerun MANIFEST is authoritative: {selected_ids}."
     )
+    corrected_results_note = (
+        f"Read corrected execution statuses from {corrected_results_rel}; its "
+        "results[].result_status is authoritative for corrected_result_status."
+        if corrected_results_rel is not None
+        else "No corrected-results JSON is present; the driver therefore sets every "
+             "corrected_result_status to null. Input preflight rejects a selected "
+             "report row with a post-correction verdict when that JSON is missing."
+    )
+    required_models = ", ".join(sorted(REQUIRED_MODEL_FAMILIES))
+    optional_models = ", ".join(sorted(OPTIONAL_MODEL_FAMILIES))
+    native_nan_models = ", ".join(sorted(
+        name for name, enabled in MODEL_NATIVE_NAN.items() if enabled
+    ))
+    package_contract = ", ".join(
+        f'{name}="{package}"' for name, package in sorted(MODEL_REQUIRED_PACKAGE.items())
+    ) or "none"
+    parameter_contract = "\n".join(
+        f"- {name}: {', '.join(MODEL_PARAMETER_RULES[name])}"
+        for name in MODEL_SIMPLICITY_ORDER
+    )
+    policy_rel = _rel_to_root(MODEL_POLICY_PATH)
 
     return [
         {
             "name": "inventory-features",
-            "expects_file": inventory_rel,
+            "expects_file": semantics_rel,
             "instruction": f"""
 Use the discovery-detector-builder subagent to inventory the features of the
 finished AutoDiscovery run {run_rel}. Read the ranked report {summary_rel}, every
@@ -340,6 +496,7 @@ loading-fixed hypothesis script under {rerun_rel}/ as indexed by MANIFEST.json,
 any same-id corrected script, and markdowns/labeled_dataset_cache.md.
 {fixed_note}
 {selection_note}
+{corrected_results_note}
 Inventory exactly those ids: do not add an unselected script merely because it
 is present on disk, and do not omit a selected id.
 
@@ -368,193 +525,187 @@ feature_semantics_changed, or unclear:
   feature definition; exclude it rather than guessing.
 
 The scripts define feature math; the report defines evidence and verdicts.
+Match records ONLY by the original hypothesis ID printed in each report row's
+`**ID:**` field and in each script filename `hypo_<ID>.py`. The report's numbered
+`### <entry>.` heading is a display rank, NOT the hypothesis ID. Never transfer
+evidence from entry number N to hypothesis ID N unless the explicit `**ID:**` also
+equals N.
 
-Write {inventory_rel} with this exact versioned shape: a top-level object with
-schema_version=2, selection_manifest (path or null), selected_ids, and hypotheses
-(one object per selected id). Each hypothesis object records id, included,
-exclusion_reason, reproduction_status, statistical_verdict,
-corrected_result_status, post_correction_verdict, correction_scope (none|test_only|
-feature_semantics_changed|stale_fixed_ignored|unclear), rerun_path,
-rerun_sha256, fixed_path/fixed_sha256 (null when absent), feature_source
-(rerun|fixed|null), feature_source_path/feature_source_sha256 (null when
-excluded), source_reason, and features. `features` is a non-empty list for an
-included hypothesis and may hold multiple feature-column definitions; each item
-uses exactly these keys: name, quantity, constants, aggregation, reduction,
-traversal_phase, measurable_condition, historical_undefined_sentinel.
-Excluded hypotheses have null feature-source fields and an empty features list. Every included hypothesis
-has exactly one authoritative source path and matching SHA-256. The generated
-detector represents undefined as NaN plus an explicit <feature>_is_defined
-column. Report all exclusions and reasons. Do not load a pkl or invent results.
+Evidence transcription, paths, hashes, selection metadata, and final schema
+assembly are DRIVER responsibilities. Do not copy reproduction_status,
+statistical_verdict, corrected_result_status, post_correction_verdict,
+selection_manifest, selected_ids, source paths, or hashes into your artifact.
+Use that evidence only to make the semantic eligibility/source decision. This
+keeps your reasoning focused on what requires code understanding.
+
+Write the internal semantic draft {semantics_rel}. It has exactly two top-level
+keys: schema_version=1 and hypotheses. Write exactly one hypothesis row per
+authoritative selected id, in the supplied order. Each row has exactly: id,
+included, exclusion_reason, correction_scope (none|test_only|
+feature_semantics_changed|stale_fixed_ignored|unclear), feature_source
+(rerun|fixed|null), source_reason, and features. `features` is non-empty for an
+included hypothesis and empty for an excluded one. Each feature item has exactly:
+name, quantity, constants, aggregation, reduction, traversal_phase,
+measurable_condition, historical_undefined_sentinel. The driver will combine
+this draft with same-ID evidence and source hashes to write the public
+{inventory_rel}, then apply the strict inventory-v2 validator. Undefined values
+in the eventual detector are NaN plus an explicit <feature>_is_defined column.
+
+This turn is ONLY the inventory-features semantic stage. Write only
+{semantics_rel}; do not create or modify {inventory_rel}, the model configuration,
+detector, README, source scripts, or any helper file. Return immediately after
+the semantic draft is complete. Do not load a pkl or invent results.
 """.strip(),
         },
         {
             "name": "configure-models",
-            "expects_file": model_config_rel,
+            "expects_file": model_advice_rel,
             "instruction": f"""
-Use the discovery-detector-builder subagent to read {inventory_rel} and write
-{model_config_rel}. This is configuration, not executable Python.
+Use the discovery-detector-builder subagent to read {inventory_rel} and write an
+internal semantic model-advice draft at {model_advice_rel}. This is advice, not
+executable Python and not the public model configuration.
 
-Write a JSON object with schema_version=1, feature_inventory_sha256 equal to the
-current SHA-256 of {inventory_rel}, a non-empty selection_basis explaining the
-choice from feature semantics/coverage/missingness only, and candidates.
+Read the versioned model policy at {policy_rel}. Choose candidates from feature
+semantics, coverage and missingness only. Write exactly schema_version=1,
+selection_basis, and candidates. Each candidate contains exactly name, reason,
+and grid. The driver will add role, native_nan, requires_package, inventory hash,
+policy hash, and public schema version, then write and validate
+{model_config_rel}. Do not copy those mechanical fields into the draft.
 
-Always include these three role=baseline candidates: logistic_l2,
-logistic_elasticnet, and hist_gradient_boosting. You may add zero, one, or two
-role=optional candidates chosen only from: spline_logistic,
-explainable_boosting, extra_trees, random_forest, xgboost. Choose an extension
+Always include every role=baseline candidate in the versioned model policy:
+{required_models}. You may add zero through {MAX_OPTIONAL_MODELS} role=optional
+candidates chosen only from: {optional_models}. Choose an extension
 only when the inventory gives a concrete reason (for example smooth nonlinearity,
 interactions, or native-NaN behavior). Do not use observed model performance,
 outer-fold labels, or held-out data to choose the candidate list.
 
-Each candidate has exactly name, role, reason, grid, native_nan, and
-requires_package. `reason` is non-empty. `grid` maps allowed parameter names to
+Each candidate's `reason` is non-empty. `grid` maps allowed parameter names to
 small non-empty JSON-scalar lists and has at most {MAX_GRID_COMBINATIONS} Cartesian
 combinations. Numeric rates/C values must be finite and in their estimator's
 valid range; count/depth values must be positive integers (or documented null
 where allowed); max_features is null, sqrt/log2, a positive integer, or a
-fraction in (0, 1]. Keep grids conservative for sparse positives. native_nan is
-true only for hist_gradient_boosting, explainable_boosting, and xgboost.
-requires_package is null except explainable_boosting="interpret" and
-xgboost="xgboost". Never write
+fraction in (0, 1]. Keep grids conservative for sparse positives. The driver
+owns native-NaN declarations ({native_nan_models}) and optional dependencies
+({package_contract}).
+
+The exact permitted grid keys are:
+{parameter_contract}
+For explainable_boosting, interactions is a non-negative integer count. Never write
 a Python class path, module path, import statement, code string, callable, or
 arbitrary estimator name. The driver will reject missing baselines, more than
 {MAX_OPTIONAL_MODELS} extensions, unknown families/parameters, stale inventory
 hashes, and oversized grids before detector generation begins.
+
+This turn is ONLY the configure-models advice stage. Treat {inventory_rel} as
+read-only, write only {model_advice_rel}, do not write {model_config_rel}, start
+detector generation, or document results. Return immediately when the advice is
+complete.
 """.strip(),
         },
         {
             "name": "generate-detector",
-            "expects_file": detector_rel,
+            "expects_file": feature_impl_rel,
             "instruction": f"""
-Use the discovery-detector-builder subagent to generate {detector_rel} from
-{inventory_rel}, the already driver-validated {model_config_rel}, and
-{source_note}. For each included feature, read ONLY the
-inventory's feature_source_path and verify its SHA-256 before copying semantics.
-Never silently fall back from a missing/mismatched fixed source to rerun, or vice
-versa. Produce ONE self-contained
-CLI that extracts features once, compares several model strategies fairly, fits
-the selected strategy, and scores segments. Do not generate one script per model.
+Use the discovery-detector-builder subagent to write ONLY the task-specific
+feature implementation to {feature_impl_rel}. Read {inventory_rel} and, for each
+included feature, only its recorded feature_source_path after verifying the
+recorded SHA-256. Never fall back between rerun and fixed sources.
 
-DATA AND EXTRACTION CONTRACT
-- Accept a training _add.pkl positional argument and optional --test-pkl for a
-  different held-out brain.
-- Produce one row per adjudicable segment: non-zero canonical labels define the
-  universe; component_id_to_swc_id maps components to segment ids; is_merge is
-  membership in gt_merge_labels. Segments with no fragment component still get a
-  row.
-- Load each pkl once. Share edge, chain, junction, component and segment passes
-  across all features. Keep intermediate-only quantities out of MODEL_COLS.
-- Copy feature definitions and constants verbatim from each inventory-selected
-  feature source. Remove
-  their install and sandbox scaffolding. Prefer the real proofreader import and
-  use the mock SkeletonGraph unpickler only on ImportError.
-- Dictionary/set membership during extraction is the source of truth for whether
-  each feature was measurable. Emit an undefined numeric value as NaN and emit a
-  binary <feature>_is_defined column. A legitimate measured value equal to an old
-  sentinel such as 0, 1 or 180 remains is_defined=1. Never infer new missingness
-  by comparing numeric values with sentinels.
-- --exclude-empty drops only rows whose is_defined flags are all zero, and applies
-  identically to train and held-out data. Audit undefined shares overall and by
-  class, the all-undefined group, and single-feature AUC on defined rows.
+The driver owns the reviewed runtime template and will assemble the unchanged
+public {detector_rel}; do not write that file. Your fragment must define:
+- FEATURE_REGISTRY in inventory order;
+- ANALYSIS_TIMING_GROUPS, a literal list mapping stable timing-group keys to
+  positive hypothesis ids, actual traversal phase, and owned feature names;
+- SegmentAccumulator with explicit measured/definedness membership;
+- extract_features(payload, verbose=True, timing=None,
+  enabled_analysis_keys=None, profile_segment_limit=None), returning
+  adjudicable ids, merge labels, and the accumulator;
+- only geometry/data helpers directly needed by those definitions.
 
-CANDIDATE MODEL FACTORY
-- Accept --model-config PATH, defaulting to {MODEL_CONFIG_NAME} beside the
-  script. Validate schema version, inventory hash, required baselines, optional
-  count, family names, parameter names, parameter value types/ranges, native-NaN
-  declarations, dependency declarations, and the
-  {MAX_GRID_COMBINATIONS}-combination cap again at runtime.
-- Build only configured allowlisted families through explicit name branches.
-  Never eval configuration, dynamically import a configured path, or accept a
-  class/module path. The safe family implementations and complexity order live
-  in code; the JSON controls only allowlisted family inclusion and grid values.
-- Baseline implementations are balanced L2 logistic with fold-local mean
-  imputation/scaling; balanced elastic-net logistic with the same fold-local
-  preprocessing; and shallow regularized histogram gradient boosting receiving
-  raw NaNs plus flags. Implement configured extensions conservatively: spline
-  logistic, ExplainableBoostingClassifier, ExtraTreesClassifier,
-  RandomForestClassifier, or XGBClassifier according to the allowlisted name.
-- `interpret` and `xgboost` are optional dependencies and are never installed.
-  If a configured optional package is unavailable, record the candidate as
-  skipped and continue. Pin every seed. Add --n-jobs with a conservative default.
-  Record failures with tracebacks; never substitute a different estimator under
-  the same name.
+Copy feature math, constants, reductions, and measurable conditions from the
+inventoried sources. Share traversal passes, keep intermediate quantities out of
+FEATURE_REGISTRY, and emit NaN plus <feature>_is_defined for undefined values.
+Never infer missingness from historical numeric sentinels. Include adjudicable
+segments without fragment components and remove install/sandbox scaffolding.
+Preserve whether graph algorithms are weighted or unweighted; do not invent
+distance calculations or edge weights that the selected source does not use.
+An induced/copied `networkx.Graph` does not retain custom SkeletonGraph
+attributes such as `node_xyz`, `node_radius`, or component mappings. Helpers
+called with a plain subgraph must use topology only, receive the original
+fragment graph explicitly, or receive the required arrays explicitly.
 
-NESTED MODEL SELECTION — NO TEST-SET SELECTION
-- Average precision is the PRIMARY selection score. ROC-AUC, F1, precision@N and
-  recall@N are reports, not alternative objectives. Add --review-budget with a
-  default of 100 for the @N metrics.
-- Use fixed outer StratifiedKFold(5, shuffle=True, random_state=42). Within each
-  outer-training partition, use inner stratified CV to tune every family. Every
-  imputer, scaler, spline transform, class weight and hyperparameter choice must
-  be fitted from inner-training data only.
-- For each family, retain nested outer-fold predictions in
-  merge_probability_oof_<family>. Also execute the complete selection policy in
-  every outer fold: compare inner-CV AP and apply a one-standard-error rule,
-  choosing the simplest eligible configured family in this fixed order:
-  logistic_l2, logistic_elasticnet, spline_logistic, explainable_boosting,
-  hist_gradient_boosting, extra_trees, random_forest, xgboost. Store
-  those predictions as merge_probability_oof_selector and report family selection
-  frequencies. This evaluates the selection procedure rather than a result chosen
-  after looking at outer labels.
-- After nested evaluation, repeat the same inner search on ALL training rows,
-  apply the same one-standard-error rule, record the winning family and params,
-  and fit it on all training rows. --test-pkl must not influence family choice,
-  parameters, preprocessing, calibration or threshold.
-- Expose merge_probability_oof as the stored family OOF column corresponding to
-  the final full-data winner, for an aligned queue and threshold sweep. Explain
-  separately that merge_probability_oof_selector estimates the adaptive selection
-  policy. Use only OOF predictions for threshold choice and training top-N queues;
-  the final winner's in-sample score is reference-only.
+Make every extraction phase observable, profileable, and removable at the finest
+honest computation boundary. `ANALYSIS_TIMING_GROUPS` must cover every
+FEATURE_REGISTRY name exactly once and every hypothesis id must belong to exactly
+one group. FEATURE_REGISTRY owns only public feature names and inventory order;
+do not duplicate phase metadata there. ANALYSIS_TIMING_GROUPS is the sole owner
+of actual execution phase and selection-unit membership. Treat each group as a
+final-run selection unit. A group may own multiple
+hypotheses/features only when their computation is genuinely inseparable; record
+that shared group honestly instead of dividing or double-counting its time. Call the runtime-provided
+timing recorder around every analysis group in edge, junction, x-crossing, chain,
+component, and segment passes, and record wall time for every whole pass. Give
+eligible calls stable segment/component context and node/edge counts when
+available. The deterministic assembler rejects missing, duplicate, or unknown
+timing coverage; the runtime owns the bounded atomic timing artifact.
 
-OUTPUTS AND AUDIT TRAIL
-- Write merge_detector_<brain>.csv with ids, label, raw features, all is_defined
-  flags, every family OOF column, selector OOF, selected-winner OOF and final
-  in-sample score.
-- Write model_selection_<brain>.json containing the model-config path and
-  SHA-256, registry and grids,
-  skipped/failed candidates, dependency versions, seeds, per-fold inner choices,
-  per-family outer metrics, selector metrics, selection frequencies, final winner
-  and params, feature order and scope.
-- Save the fitted winner plus ordered schema as merge_detector_<brain>.joblib.
-  Loading it must not need the test brain or recompute preprocessing statistics.
-- Print prevalence, undefined audit, candidate comparison, selector performance,
-  final selection rationale, OOF threshold sweep and top-20 queue. Do not call
-  class-weighted outputs calibrated probabilities; call them scores unless an
-  independent calibration stage is genuinely implemented.
-- Produce headless figures: per-family OOF PR/ROC comparison; selected-winner
-  threshold/workload curves; score separation; raw feature ECDF/correlation;
-  undefined share by class; linear coefficients when applicable; and
-  model-agnostic permutation importance on validation or held-out data, never
-  tree impurity importance presented as generalization importance.
-- Tee stdout and stderr to merge_detector_<brain>.log.txt with argv, timestamp,
-  host, versions, success/failure and elapsed footer.
+Implement `_analysis_enabled(key)` from `enabled_analysis_keys`. With the default
+None, execute every group exactly as before. With an explicit set, do not execute
+the graph algorithms, array construction, clustering, traversal, or reductions
+owned by disabled groups; leave their public columns present as NaN with
+is_defined=False. Avoid expensive common preparation when none of its consumer
+groups is enabled. Shared groups are enabled or disabled as one unit. Selection
+must not change the adjudicable row universe, feature-column order, labels, return
+types, or all-enabled results.
 
-HELD-OUT BRAIN
-Load it only after releasing the training payload. Pass it through the already
-fitted winning pipeline; do not recompute test imputation or use test labels for
-selection. Apply the same scope and report AP, ROC-AUC, precision@N, recall@N,
-fixed-threshold performance and transfer gap. Warn on mcl mismatch. Clearly tag
-figures heldout-from-<train>.
+Implement `profile_segment_limit` as a profiling-only deterministic sample of at
+most that many component-bearing segments. Restrict every expensive edge, node,
+junction, chain, component, and segment computation to that sample; do not merely
+stop the timer while continuing full-data work. `None` must preserve the complete
+row universe and exact normal-run behavior. The runtime passes a default limit of
+3 for `--measuretime` and records the sampled ids and full-data counts.
 
-DO NOT RUN A REAL PKL: it needs >20 GB and belongs on a compute node. Statically
-parse the script, run --help, and run a small synthetic-frame smoke test of the
-selection code proving fold-local preprocessing handles NaNs, optional
-dependency-backed candidates can be skipped, every expected OOF column is
-filled exactly once, and held-out
-prediction does not mutate fitted preprocessing. Report the generated path and
-exact compute-node command.
+When `verbose=True`, additionally print flushed, machine-searchable start/done
+records for long segment/component work so the last durable line identifies the
+active feature if a run hangs or is killed. Instrumentation must use a monotonic
+clock and must not change feature math, traversal order, random state,
+definedness, rows, or returned values when all groups are enabled. Timing writes
+a ranked cost report and editable selection template; it does not make the final
+decision automatically. Combine removable cost with semantics-preserving
+optimization opportunities, coverage, redundancy, nested-OOF value, and held-out
+behavior when choosing exclusions.
+
+Do not define validate_model_config, validate_analysis_timing_groups,
+load_hypothesis_selection, AnalysisTimingRecorder,
+write_hypothesis_cost_artifacts, build_estimator, run_nested_selection,
+fit_final_winner, run_smoke_test, build_arg_parser, run_measuretime,
+run_detector, main, a
+__main__ block, output writers, plots, logging infrastructure, models, or CLI
+parsing. The required extraction progress may print through the runtime's tee but
+must not create or manage log files. Do not edit {inventory_rel},
+{model_config_rel}, {detector_rel}, README.md, or {run_commands_rel}. The
+driver will AST-validate the fragment, inject it into the reviewed template, and
+independently execute the assembled detector's no-data contract checks.
+
+This turn is ONLY the feature-implementation stage. Write only
+{feature_impl_rel} and return immediately after it parses.
 """.strip(),
         },
         {
             "name": "verify-and-document",
             "expects_file": readme_rel,
             "instruction": f"""
-Use the discovery-detector-builder subagent to verify {detector_rel} and write
-{readme_rel}. No real dataset has been run: do not invent a CSV, winning model,
-metrics or class counts. Obtain provenance from {summary_rel}, {inventory_rel}
-and {model_config_rel}, plus {source_note}.
+Use the discovery-detector-builder subagent to review {detector_rel} and
+{run_commands_rel} read-only and write {readme_rel}. The driver has already
+written its factual provenance, feature, model, command, and output skeleton
+there. Preserve the
+`BEGIN/END DRIVER-GENERATED PROVENANCE` block and add semantic interpretation,
+source/correction rationale, caveats, and fixes outside it. No real dataset has
+been run: do not invent a CSV, winning model, metrics or class counts. Obtain
+semantic context from {summary_rel}, {inventory_rel} and {model_config_rel}, plus
+{source_note}.
 
-VERIFY AND FIX BEFORE DOCUMENTING
+VERIFY READ-ONLY BEFORE DOCUMENTING
 1. Every inventory feature has one explicit feature_source_path whose current
    SHA-256 matches the inventory; the rerun-vs-fixed choice follows the recorded
    correction_scope and source_reason. Every included feature is genuinely
@@ -562,28 +713,66 @@ VERIFY AND FIX BEFORE DOCUMENTING
    reaches the frame and has an extraction-time binary is_defined flag. Undefined
    values are NaN; valid 0/1/180 values are not missing. --exclude-empty uses
    flags rather than sentinels.
+   Any plain induced/copied networkx graph is treated as topology-only: code
+   must not access SkeletonGraph-only arrays through it, and weighted versus
+   unweighted graph algorithms must match the selected source exactly.
+   With verbose extraction, component traversal has flushed segment/component
+   start/done progress (ordinals, ids, node/edge counts, elapsed time), flushed
+   start/done records around every component-pass feature or named shared group,
+   and a final per-feature cumulative timing/call-count summary. A costly feature
+   emits its start record before doing work, and timing instrumentation does not
+   change data traversal, random state, feature semantics, or return values.
+   ANALYSIS_TIMING_GROUPS covers every public feature exactly once, assigns every
+   hypothesis id to exactly one selectable computation unit, and maps it to its
+   actual pass. Shared groups are genuinely computationally inseparable. All
+   extraction passes call the runtime timing recorder. `--measuretime` profiles
+   only its small deterministic segment sample and writes the
+   schema-v2 timing JSON, ranked hypothesis cost report, and editable schema-v1
+   selection template, then exits without audit, CV, fitting, held-out scoring,
+   CSV, joblib, model-selection JSON, or figures. Per-hypothesis rows distinguish
+   exclusive cost from shared-unit cost and never claim that removing one member
+   saves a shared traversal. Sample-observed seconds are not a full-run duration
+   or projection.
+   `extract_features(..., enabled_analysis_keys=None)` runs all groups and matches
+   unfiltered extraction. An explicit enabled set skips disabled computation but
+   keeps its fixed columns undefined and preserves rows, labels, column order, and
+   return types. Both `--hypothesis-selection` and direct
+   `--exclude-hypotheses ID [ID ...]` reject unknown/duplicate ids, an empty
+   final selection, and partial shared groups; the JSON form additionally rejects
+   malformed reasons and inconsistent
+   measuretime provenance. When a generated selection supplies a source timing
+   path/hash, require a complete schema-v2 measuretime artifact produced by the
+   exact detector and current inventory. Train and held-out use the same resolved
+   selection, whose path/hash, timing provenance, reasons, and enabled/excluded
+   membership are saved in model JSON and joblib. Direct CLI exclusions are also
+   saved there with `selection_source=manual_cli`. Timing does not choose exclusions automatically.
 2. Statistical imputation, scaling and spline fitting live inside candidate
    pipelines. Remove any whole-dataset fill_mean or preprocessing before CV.
    Families declared native-NaN receive NaNs directly; every other family uses
    fold-local imputation.
 3. --model-config defaults beside the script and is revalidated before data
    loading. The registry contains exactly its validated allowlisted candidates,
-   including all three mandatory baselines and at most two optional families.
+   including every policy-required baseline and at most
+   {MAX_OPTIONAL_MODELS} optional families.
    Configuration cannot supply imports/classes/code. Names, implementations,
    grids, dependency declarations and fixed complexity order agree everywhere.
 4. Outer validation labels affect metrics only. Inner folds tune and select. The
    one-standard-error rule is correct, each outer row gets exactly one prediction
    per available family and selector, and --test-pkl cannot influence the final
    full-data winner.
-5. AP is primary. Queue and threshold sweep use the final winner's nested OOF,
+5. The policy-selected `{PRIMARY_METRIC}` is primary. Queue and threshold sweep
+   use the final winner's nested OOF,
    never in-sample scores. Held-out prediction reuses the fitted winner and cannot
    mutate preprocessing.
-6. The selection JSON explains why the model won; joblib carries pipeline and
+6. The model-selection JSON explains why the model won; joblib carries pipeline and
    ordered schema; CSV columns are unambiguous. Nonlinear models do not present
    impurity importance as validation importance.
 7. There is no install command, sys.path edit or sys.modules deletion. Each pkl
    loads once, caches release sequentially, Agg precedes pyplot, logging is
-   durable, parsing and --help work, and the synthetic smoke test passes.
+   durable, and the required `--synthetic-smoke-test` remains a no-data/no-output
+   mode that prints `{SMOKE_SUCCESS_MARKER}` only after its assertions pass. The
+   driver will independently run parsing, --help, and that smoke test after this
+   turn; do not claim success in lieu of executable checks.
 
 Then document every excluded hypothesis and the per-feature rerun/fixed source
 choice, plus provenance, feature mapping and defined conditions; why each model
@@ -591,26 +780,32 @@ is included, how to safely edit {MODEL_CONFIG_NAME}, and why arbitrary families
 require an explicit code review rather than a JSON class path; nested CV and the
 one-standard-error rule in plain language; the
 difference among family OOF, selector OOF, winner OOF, in-sample and held-out
-scores; output schemas; compute-node commands; optional dependency behavior; and a
+scores; output schemas; a concise reference to the compute-node commands in
+{run_commands_rel} without duplicating them; optional dependency behavior; and a
 reading order starting with coverage and AP, then review-budget precision/recall
 and cross-brain transfer, with ROC-AUC last. State that weighted classifier scores
 are not automatically calibrated probabilities. Preserve caveats about sparse
 positive labels, correlated features, discovery-stage feature-selection bias,
 uneven coverage, and segment-level rather than merge-site localization. Report
-fixes made and anything requiring a real compute-node run.
+defects found and anything requiring a real compute-node run.
+
+This turn is ONLY the verify-and-document stage. Treat {inventory_rel},
+{model_config_rel}, the driver-assembled {detector_rel}, and the instance-bound
+{run_commands_rel} as immutable. Report any defect instead of editing it, and write
+{readme_rel}; do not regenerate upstream artifacts or run against a pkl.
 """.strip(),
         },
     ]
 
 
-def build_options() -> ClaudeAgentOptions:
+def build_options():
     """Configure the SDK session for this project.
 
     ``setting_sources=["project"]`` is what makes the SDK auto-discover the
     filesystem subagents in ``.claude/agents/`` (incl. discovery-detector-builder)
     and project settings relative to ``cwd``.
     """
-    return ClaudeAgentOptions(
+    return load_claude_sdk().agent_options(
         cwd=str(PROJECT_ROOT),
         setting_sources=["project"],
         # The orchestrator delegates to the builder subagent (Task), which needs
@@ -618,12 +813,12 @@ def build_options() -> ClaudeAgentOptions:
         # the detector.
         allowed_tools=["Task", "Bash", "Read", "Write", "Edit", "Glob"],
         permission_mode="bypassPermissions",
-        # Pin Opus 4.8 explicitly so the model is not left to the ambient session
-        # default. The subagent is `model: inherit`, so it follows this too.
-        model="claude-opus-4-8",
-        # Lifting feature code across ten scripts without changing its semantics,
-        # then catching the imputation confounds, needs maximum reasoning effort.
-        env={**os.environ, "CLAUDE_EFFORT": "xhigh"},
+        # Defaults remain pinned for reproducibility; task-specific environment
+        # variables permit controlled upgrades without editing workflow logic.
+        model=AGENT_MODEL,
+        # CLAUDE_EFFORT is exported to hooks as status; it is not an input that
+        # configures reasoning. Use the SDK's native option.
+        effort=AGENT_EFFORT,
     )
 
 
@@ -631,26 +826,34 @@ def build_options() -> ClaudeAgentOptions:
 # Agent step / compute step
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def _run_step_inner(client: ClaudeSDKClient, step: dict, verbose: bool) -> str:
+async def _run_step_inner(
+    client: object,
+    step: dict,
+    verbose: bool,
+    costs: WorkflowCostSummary,
+) -> str:
     """Send one workflow step to the session and return its final text."""
+    sdk = load_claude_sdk()
+    costs.start_turn()
     await client.query(step["instruction"])
 
     chunks: list[str] = []
     n_tools = 0
     async for message in client.receive_response():
-        if isinstance(message, AssistantMessage):
+        if isinstance(message, sdk.assistant_message):
             for block in message.content:
-                if isinstance(block, TextBlock):
+                if isinstance(block, sdk.text_block):
                     chunks.append(block.text)
                     if verbose:
                         print(block.text, end="", flush=True)
-                elif ToolUseBlock and isinstance(block, ToolUseBlock):
+                elif sdk.tool_use_block and isinstance(block, sdk.tool_use_block):
                     n_tools += 1
                     log(f"  → {describe_tool(block)}")
-        elif isinstance(message, ResultMessage):
+        elif isinstance(message, sdk.result_message):
             if verbose:
                 print()  # newline after the streamed text
             cost = getattr(message, "total_cost_usd", None)
+            costs.add(cost)
             dur_ms = getattr(message, "duration_ms", None)
             parts = [f"{n_tools} tool call(s)"]
             if dur_ms is not None:
@@ -661,11 +864,16 @@ async def _run_step_inner(client: ClaudeSDKClient, step: dict, verbose: bool) ->
     return "".join(chunks)
 
 
-async def run_step(client: ClaudeSDKClient, step: dict, verbose: bool) -> str:
+async def run_step(
+    client: object,
+    step: dict,
+    verbose: bool,
+    costs: WorkflowCostSummary,
+) -> str:
     """``_run_step_inner`` with a hard timeout, so a hung step fails loudly."""
     try:
         return await asyncio.wait_for(
-            _run_step_inner(client, step, verbose),
+            _run_step_inner(client, step, verbose, costs),
             timeout=AGENT_STEP_TIMEOUT_S,
         )
     except asyncio.TimeoutError:
@@ -676,10 +884,12 @@ async def run_step(client: ClaudeSDKClient, step: dict, verbose: bool) -> str:
 
 # Files this workflow writes itself. Deleting one of these costs nothing, because
 # the run about to start puts it back.
-_REGENERATED = frozenset({
-    "feature_inventory.json", MODEL_CONFIG_NAME, DETECTOR_NAME, "README.md",
-    DRIVER_LOG_NAME,
-})
+_REGENERATED = frozenset((
+    *BUILD_ARTIFACT_NAMES,
+    FEATURE_SEMANTICS_DRAFT_NAME,
+    MODEL_ADVICE_DRAFT_NAME,
+    FEATURE_IMPLEMENTATION_DRAFT_NAME,
+))
 
 
 def _survey_out_dir(out_dir: Path) -> dict:
@@ -705,7 +915,12 @@ def _survey_out_dir(out_dir: Path) -> dict:
                 name.startswith("merge_detector_")
                 and (name.endswith(".csv") or name.endswith(".log.txt")
                      or name.endswith(".joblib"))) or (
-                name.startswith("model_selection_") and name.endswith(".json")):
+                name.startswith("model_selection_") and name.endswith(".json")) or (
+                name.startswith("analysis_timing_") and name.endswith(".json")) or (
+                name.startswith("hypothesis_cost_report_") and name.endswith(".md")) or (
+                name.startswith("hypothesis_selection_template_")
+                and name.endswith(".json")) or (
+                name.startswith("measuretime_") and name.endswith(".log.txt")):
             groups["rerunnable"].append((rel, size))
         else:
             groups["irreplaceable"].append((rel, size))
@@ -765,7 +980,7 @@ def confirm_and_clean(out_dir: Path, assume_yes: bool, keep_existing: bool):
     for key, why in (
         ("regenerated", "this workflow rewrites these anyway"),
         ("rerunnable", "recreated by running the generated detector again "
-                       "(compute node, minutes)"),
+                       "(compute node, potentially hours)"),
         ("irreplaceable", "NOT produced by this workflow — nothing here "
                           "recreates them"),
     ):
@@ -801,7 +1016,7 @@ def confirm_and_clean(out_dir: Path, assume_yes: bool, keep_existing: bool):
             "into it as it stands."
         )
 
-    print(f"\nType 'delete' to remove it and continue, anything else to abort: ",
+    print("\nType 'delete' to remove it and continue, anything else to abort: ",
           end="", flush=True)
     answer = sys.stdin.readline().strip()
     if answer != "delete":
@@ -828,80 +1043,44 @@ def validate_step_output(step: dict) -> None:
 
 
 def _load_json_object(path: Path, label: str) -> dict:
-    """Load a JSON object or fail with a path-specific diagnostic."""
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise SystemExit(f"Cannot read {label} {_rel_to_root(path)}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise SystemExit(f"{label.capitalize()} {_rel_to_root(path)} must be a JSON object.")
-    return value
+    """Compatibility wrapper around deterministic artifact loading."""
+    return _resolved_load_json_object(path, label, PROJECT_ROOT)
 
 
 def _integer_ids(value, label: str, path: Path) -> list[int]:
-    """Validate an ordered JSON list of unique integer hypothesis ids."""
-    if not isinstance(value, list) or not value:
-        raise SystemExit(f"{label} in {_rel_to_root(path)} must be a non-empty list.")
-    if any(isinstance(item, bool) or not isinstance(item, int) for item in value):
-        raise SystemExit(f"{label} in {_rel_to_root(path)} must contain only integers.")
-    if len(value) != len(set(value)):
-        raise SystemExit(f"{label} in {_rel_to_root(path)} contains duplicate ids.")
-    return value
+    """Compatibility wrapper around ordered ID validation."""
+    return _resolved_integer_ids(value, label, path, PROJECT_ROOT)
 
 
 def _manifest_ids(manifest_path: Path) -> list[int]:
-    """Return the exact id order recorded by a rerun MANIFEST.json."""
-    manifest = _load_json_object(manifest_path, "rerun manifest")
-    records = manifest.get("records")
-    if not isinstance(records, list) or not records:
-        raise SystemExit(
-            f"Rerun manifest {_rel_to_root(manifest_path)} has no non-empty records list."
-        )
-    ids = [record.get("id") if isinstance(record, dict) else None for record in records]
-    return _integer_ids(ids, "records[].id", manifest_path)
+    """Compatibility wrapper returning MANIFEST IDs in recorded order."""
+    return _resolved_manifest_ids(manifest_path, PROJECT_ROOT)
+
+
+def _report_evidence_by_id(summary_path: Path) -> dict[int, dict[str, str | None]]:
+    """Compatibility wrapper joining report evidence by explicit ID."""
+    return _resolved_report_evidence_by_id(summary_path, PROJECT_ROOT)
+
+
+def _corrected_status_by_id(
+    corrected_path: Path,
+    rerun_dir: Path,
+    fixed_dir: Path | None,
+) -> dict[int, str]:
+    """Compatibility wrapper for corrected execution-status evidence."""
+    return _resolved_corrected_status_by_id(
+        corrected_path, rerun_dir, fixed_dir, PROJECT_ROOT
+    )
 
 
 def _sha256(path: Path) -> str:
-    """Hash a source script without loading it all into memory."""
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    """Compatibility wrapper for streaming SHA-256."""
+    return _resolved_sha256(path)
 
 
-def _valid_model_grid_value(parameter: str, value) -> bool:
-    """Return whether one JSON scalar is meaningful for an allowed parameter."""
-    is_int = isinstance(value, int) and not isinstance(value, bool)
-    is_number = (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and (not isinstance(value, float) or math.isfinite(value))
-    )
-    if parameter in {"C", "learning_rate"}:
-        return is_number and value > 0
-    if parameter in {"l1_ratio", "subsample", "colsample_bytree"}:
-        return is_number and 0 <= value <= 1 and (
-            parameter == "l1_ratio" or value > 0
-        )
-    if parameter in {"l2_regularization", "min_child_weight", "reg_lambda"}:
-        return is_number and value >= 0
-    if parameter in {
-        "max_leaf_nodes", "min_samples_leaf", "n_knots", "degree", "max_bins",
-        "max_rounds", "n_estimators",
-    }:
-        minimum = 2 if parameter in {"max_leaf_nodes", "n_knots", "max_bins"} else 1
-        return is_int and value >= minimum
-    if parameter == "max_depth":
-        return value is None or (is_int and value >= 1)
-    if parameter == "max_features":
-        return (
-            value is None
-            or value in {"sqrt", "log2"}
-            or (is_int and value >= 1)
-            or (is_number and not is_int and 0 < value <= 1)
-        )
-    return False
+def _valid_model_grid_value(rule: str, value) -> bool:
+    """Compatibility wrapper for closed policy rules."""
+    return _resolved_valid_grid_value(rule, value)
 
 
 def _validate_model_contract_constants() -> None:
@@ -912,128 +1091,27 @@ def _validate_model_contract_constants() -> None:
         raise RuntimeError("MODEL_NATIVE_NAN is out of sync with model families.")
     if not set(MODEL_REQUIRED_PACKAGE) <= OPTIONAL_MODEL_FAMILIES:
         raise RuntimeError("Only optional model families may require extra packages.")
+    if set(MODEL_SIMPLICITY_ORDER) != ALLOWED_MODEL_FAMILIES:
+        raise RuntimeError("MODEL_SIMPLICITY_ORDER is out of sync with model families.")
 
 
-def validate_model_config(config_path: Path, inventory_path: Path) -> None:
-    """Reject stale or executable/oversized model configuration.
-
-    The generated script repeats this contract at runtime. Keeping the first
-    check in the orchestrator prevents a creative agent response from becoming
-    detector source in the following step.
-    """
+def validate_model_config(
+    config_path: Path,
+    inventory_path: Path,
+    policy_path: Path = MODEL_POLICY_PATH,
+) -> None:
+    """Reject stale, executable, or oversized model configuration."""
     _validate_model_contract_constants()
-    config = _load_json_object(config_path, "model candidate configuration")
-    top_level_fields = {
-        "schema_version", "feature_inventory_sha256", "selection_basis",
-        "candidates",
-    }
-    if set(config) != top_level_fields:
-        raise SystemExit(
-            "Model candidate configuration must contain exactly: "
-            + ", ".join(sorted(top_level_fields))
-        )
-    if config.get("schema_version") != 1:
-        raise SystemExit("Model candidate configuration must set schema_version to 1.")
-    if config.get("feature_inventory_sha256") != _sha256(inventory_path):
-        raise SystemExit(
-            "Model candidate configuration feature_inventory_sha256 is stale."
-        )
-    if not isinstance(config.get("selection_basis"), str) \
-            or not config["selection_basis"].strip():
-        raise SystemExit("Model candidate configuration needs a selection_basis.")
-    candidates = config.get("candidates")
-    if not isinstance(candidates, list):
-        raise SystemExit("Model candidate configuration candidates must be a list.")
-
-    required_fields = {
-        "name", "role", "reason", "grid", "native_nan", "requires_package",
-    }
-    names: list[str] = []
-    optional_count = 0
-    for index, candidate in enumerate(candidates):
-        if not isinstance(candidate, dict) or set(candidate) != required_fields:
-            raise SystemExit(
-                f"Model candidate {index} must contain exactly: "
-                + ", ".join(sorted(required_fields))
-            )
-        name = candidate["name"]
-        if not isinstance(name, str) or name not in ALLOWED_MODEL_FAMILIES:
-            raise SystemExit(f"Model candidate {index} has disallowed family {name!r}.")
-        if name in names:
-            raise SystemExit(f"Model candidate configuration duplicates {name}.")
-        names.append(name)
-
-        expected_role = (
-            "baseline" if name in REQUIRED_MODEL_FAMILIES else "optional"
-        )
-        if candidate["role"] != expected_role:
-            raise SystemExit(f"Model candidate {name} must have role={expected_role}.")
-        optional_count += expected_role == "optional"
-        if not isinstance(candidate["reason"], str) or not candidate["reason"].strip():
-            raise SystemExit(f"Model candidate {name} needs a non-empty reason.")
-        expected_native_nan = MODEL_NATIVE_NAN[name]
-        if candidate["native_nan"] is not expected_native_nan:
-            raise SystemExit(
-                f"Model candidate {name} native_nan must be "
-                f"{expected_native_nan}."
-            )
-        expected_package = MODEL_REQUIRED_PACKAGE.get(name)
-        if candidate["requires_package"] != expected_package:
-            raise SystemExit(
-                f"Model candidate {name} requires_package must be "
-                f"{expected_package!r}."
-            )
-
-        grid = candidate["grid"]
-        if not isinstance(grid, dict) or not grid:
-            raise SystemExit(f"Model candidate {name} grid must be a non-empty object.")
-        unknown = set(grid) - MODEL_PARAMETER_ALLOWLIST[name]
-        if unknown:
-            raise SystemExit(
-                f"Model candidate {name} has disallowed parameters: "
-                + ", ".join(sorted(unknown))
-            )
-        combinations = 1
-        for parameter, values in grid.items():
-            if not isinstance(values, list) or not values:
-                raise SystemExit(
-                    f"Model candidate {name} parameter {parameter} needs a "
-                    "non-empty list."
-                )
-            if any(isinstance(value, (dict, list)) for value in values):
-                raise SystemExit(
-                    f"Model candidate {name} parameter {parameter} values must "
-                    "be JSON scalars."
-                )
-            invalid_values = [
-                value for value in values
-                if not _valid_model_grid_value(parameter, value)
-            ]
-            if invalid_values:
-                raise SystemExit(
-                    f"Model candidate {name} parameter {parameter} has invalid "
-                    f"values: {invalid_values!r}."
-                )
-            combinations *= len(values)
-        if combinations > MAX_GRID_COMBINATIONS:
-            raise SystemExit(
-                f"Model candidate {name} grid has {combinations} combinations; "
-                f"maximum is {MAX_GRID_COMBINATIONS}."
-            )
-
-    missing = REQUIRED_MODEL_FAMILIES - set(names)
-    if missing:
-        raise SystemExit(
-            "Model candidate configuration is missing required baselines: "
-            + ", ".join(sorted(missing))
-        )
-    if optional_count > MAX_OPTIONAL_MODELS:
-        raise SystemExit(
-            f"Model candidate configuration has {optional_count} optional models; "
-            f"maximum is {MAX_OPTIONAL_MODELS}."
-        )
+    candidate_count, optional_count = _resolved_validate_model_config(
+        config_path,
+        inventory_path,
+        policy_path,
+        MODEL_POLICY_CONTRACT,
+        MODEL_CONFIG_SCHEMA_VERSION,
+        PROJECT_ROOT,
+    )
     log(
-        f"  OK: model configuration validated ({len(names)} candidates, "
+        f"  OK: model configuration validated ({candidate_count} candidates, "
         f"{optional_count} optional)."
     )
 
@@ -1044,14 +1122,27 @@ def validate_inventory(
     selection_rel: str | None,
     rerun_dir: Path,
     fixed_dir: Path | None,
+    summary_path: Path | None = None,
+    corrected_results_path: Path | None = None,
 ) -> None:
     """Enforce the v2 inventory and its per-hypothesis source provenance."""
     inventory = _load_json_object(inventory_path, "feature inventory")
+    top_level_fields = {
+        "schema_version", "selection_manifest", "selected_ids", "hypotheses",
+    }
+    if set(inventory) != top_level_fields:
+        raise SystemExit(
+            "Feature inventory must contain exactly: "
+            + ", ".join(sorted(top_level_fields))
+        )
     if inventory.get("schema_version") != 2:
         raise SystemExit("Feature inventory must set schema_version to 2.")
     if inventory.get("selection_manifest") != selection_rel:
+        actual_selection = inventory.get("selection_manifest")
         raise SystemExit(
-            "Feature inventory selection_manifest does not match the workflow input."
+            "Feature inventory selection_manifest must be exactly the workflow's "
+            f"path string (or null): expected {selection_rel!r}, got "
+            f"{actual_selection!r} ({type(actual_selection).__name__})."
         )
     inventory_ids = _integer_ids(
         inventory.get("selected_ids"), "selected_ids", inventory_path
@@ -1075,19 +1166,37 @@ def validate_inventory(
         "none", "test_only", "feature_semantics_changed",
         "stale_fixed_ignored", "unclear",
     }
+    allowed_reproduction_statuses = {
+        "REPRODUCED", "DIVERGED", "FAILED", "UNUSABLE",
+    }
+    allowed_statistical_verdicts = {
+        "SOUND", "WEAK", "MINOR", "MAJOR", "CRITICAL",
+    }
+    allowed_corrected_statuses = {None, "USABLE", "FAILED", "UNUSABLE"}
+    allowed_post_correction_verdicts = {
+        None, "UPHELD", "WEAKENED", "OVERTURNED",
+    }
     provenance_fields = (
         "exclusion_reason", "reproduction_status", "statistical_verdict",
         "corrected_result_status", "post_correction_verdict", "correction_scope", "rerun_path",
         "rerun_sha256", "fixed_path", "fixed_sha256", "feature_source",
         "feature_source_path", "feature_source_sha256", "source_reason", "features",
     )
+    row_fields = {"id", "included", *provenance_fields}
+    report_evidence = (
+        _report_evidence_by_id(summary_path) if summary_path is not None else None
+    )
+    corrected_statuses = (
+        _corrected_status_by_id(corrected_results_path, rerun_dir, fixed_dir)
+        if corrected_results_path is not None else None
+    )
+    feature_names: set[str] = set()
     for row in rows:
         hypothesis_id = row["id"]
-        missing = [field for field in provenance_fields if field not in row]
-        if missing:
+        if set(row) != row_fields:
             raise SystemExit(
-                f"Inventory hypothesis {hypothesis_id} is missing fields: "
-                + ", ".join(missing)
+                f"Inventory hypothesis {hypothesis_id} must contain exactly: "
+                + ", ".join(sorted(row_fields))
             )
         if not isinstance(row.get("included"), bool):
             raise SystemExit(f"Inventory hypothesis {hypothesis_id} included must be boolean.")
@@ -1095,6 +1204,69 @@ def validate_inventory(
             raise SystemExit(f"Inventory hypothesis {hypothesis_id} has invalid correction_scope.")
         if not isinstance(row["source_reason"], str) or not row["source_reason"].strip():
             raise SystemExit(f"Inventory hypothesis {hypothesis_id} needs a source_reason.")
+
+        reproduction_status = row["reproduction_status"]
+        if reproduction_status not in allowed_reproduction_statuses:
+            raise SystemExit(
+                f"Inventory hypothesis {hypothesis_id} reproduction_status must be "
+                f"one of {sorted(allowed_reproduction_statuses)}, got "
+                f"{reproduction_status!r}. Match by explicit hypothesis ID, not "
+                "report entry rank."
+            )
+        statistical_verdict = row["statistical_verdict"]
+        if statistical_verdict not in allowed_statistical_verdicts:
+            raise SystemExit(
+                f"Inventory hypothesis {hypothesis_id} statistical_verdict must be "
+                f"one of {sorted(allowed_statistical_verdicts)}, got "
+                f"{statistical_verdict!r}. Match by explicit hypothesis ID, not "
+                "report entry rank."
+            )
+        corrected_status = row["corrected_result_status"]
+        if corrected_status not in allowed_corrected_statuses:
+            raise SystemExit(
+                f"Inventory hypothesis {hypothesis_id} corrected_result_status "
+                "describes execution/measurement and must be USABLE, FAILED, "
+                f"UNUSABLE, or null; got {corrected_status!r}. Put "
+                "UPHELD/WEAKENED/OVERTURNED only in post_correction_verdict."
+            )
+        post_correction_verdict = row["post_correction_verdict"]
+        if post_correction_verdict not in allowed_post_correction_verdicts:
+            raise SystemExit(
+                f"Inventory hypothesis {hypothesis_id} post_correction_verdict "
+                "describes the scientific conclusion and must be UPHELD, WEAKENED, "
+                f"OVERTURNED, or null; got {post_correction_verdict!r}."
+            )
+        if report_evidence is not None:
+            expected = report_evidence.get(hypothesis_id)
+            if expected is None:
+                raise SystemExit(
+                    f"Finished report has no row with explicit hypothesis ID "
+                    f"{hypothesis_id}."
+                )
+            for field_name in (
+                "reproduction_status", "statistical_verdict",
+                "post_correction_verdict",
+            ):
+                if row[field_name] != expected[field_name]:
+                    raise SystemExit(
+                        f"Inventory hypothesis {hypothesis_id} {field_name} "
+                        f"does not match the same-ID report row: expected "
+                        f"{expected[field_name]!r}, got {row[field_name]!r}. "
+                        "Do not join report display rank to hypothesis ID."
+                    )
+        if post_correction_verdict is not None and corrected_status != "USABLE":
+            raise SystemExit(
+                f"Inventory hypothesis {hypothesis_id} has a post-correction "
+                "verdict without a USABLE corrected measurement."
+            )
+        if corrected_statuses is not None:
+            expected_corrected_status = corrected_statuses.get(hypothesis_id)
+            if corrected_status != expected_corrected_status:
+                raise SystemExit(
+                    f"Inventory hypothesis {hypothesis_id} corrected_result_status "
+                    f"does not match corrected results: expected "
+                    f"{expected_corrected_status!r}, got {corrected_status!r}."
+                )
 
         rerun_path = rerun_dir / f"hypo_{hypothesis_id}.py"
         if not rerun_path.is_file():
@@ -1125,6 +1297,19 @@ def validate_inventory(
                 f"Inventory hypothesis {hypothesis_id} correction_scope requires "
                 "a same-id fixed script."
             )
+        if row["correction_scope"] in {"none", "stale_fixed_ignored"} and (
+            corrected_status is not None or post_correction_verdict is not None
+        ):
+            raise SystemExit(
+                f"Inventory hypothesis {hypothesis_id} correction_scope "
+                f"{row['correction_scope']} requires null correction evidence."
+            )
+        if row["correction_scope"] in {"test_only", "feature_semantics_changed"} \
+                and (corrected_status != "USABLE" or post_correction_verdict is None):
+            raise SystemExit(
+                f"Inventory hypothesis {hypothesis_id} classified correction "
+                "requires a USABLE measurement and a post-correction verdict."
+            )
 
         if row["included"]:
             if row["exclusion_reason"] is not None:
@@ -1133,17 +1318,16 @@ def validate_inventory(
                 )
             if row["correction_scope"] == "unclear":
                 raise SystemExit(f"Unclear hypothesis {hypothesis_id} cannot be included.")
-            post_verdict = str(row["post_correction_verdict"]).upper()
-            corrected_status = str(row["corrected_result_status"]).upper()
+            post_verdict = str(post_correction_verdict).upper()
             if "OVERTURNED" in post_verdict:
                 raise SystemExit(f"Overturned hypothesis {hypothesis_id} cannot be included.")
-            reproduction_status = str(row["reproduction_status"]).upper()
+            reproduction_status = str(reproduction_status).upper()
             if any(status in reproduction_status for status in ("FAILED", "UNUSABLE")) \
                     and corrected_status != "USABLE":
                 raise SystemExit(
                     f"Failed/unusable hypothesis {hypothesis_id} needs a usable correction."
                 )
-            statistical_verdict = str(row["statistical_verdict"]).upper()
+            statistical_verdict = str(statistical_verdict).upper()
             if "CRITICAL" in statistical_verdict and not (
                 corrected_status == "USABLE"
                 and any(verdict in post_verdict for verdict in ("UPHELD", "WEAKENED"))
@@ -1195,11 +1379,36 @@ def validate_inventory(
                     raise SystemExit(
                         f"Inventory hypothesis {hypothesis_id} has a non-object feature."
                     )
-                missing_feature_fields = required_feature_fields - feature.keys()
-                if missing_feature_fields:
+                if set(feature) != required_feature_fields:
                     raise SystemExit(
-                        f"Inventory hypothesis {hypothesis_id} feature is missing: "
-                        + ", ".join(sorted(missing_feature_fields))
+                        f"Inventory hypothesis {hypothesis_id} feature must contain "
+                        "exactly: " + ", ".join(sorted(required_feature_fields))
+                    )
+                name = feature["name"]
+                if not isinstance(name, str) or not name.strip():
+                    raise SystemExit(
+                        f"Inventory hypothesis {hypothesis_id} has an empty feature name."
+                    )
+                if name in feature_names:
+                    raise SystemExit(f"Feature inventory duplicates feature name {name!r}.")
+                if name.endswith("_is_defined"):
+                    raise SystemExit(
+                        f"Feature name {name!r} collides with generated defined-flag columns."
+                    )
+                feature_names.add(name)
+                for field_name in (
+                    "quantity", "aggregation", "reduction", "traversal_phase",
+                    "measurable_condition",
+                ):
+                    if not isinstance(feature[field_name], str) or not feature[field_name].strip():
+                        raise SystemExit(
+                            f"Inventory hypothesis {hypothesis_id} feature {name!r} "
+                            f"needs a non-empty {field_name}."
+                        )
+                if not isinstance(feature["constants"], dict):
+                    raise SystemExit(
+                        f"Inventory hypothesis {hypothesis_id} feature {name!r} "
+                        "constants must be an object."
                     )
         else:
             if not isinstance(row["exclusion_reason"], str) or not row["exclusion_reason"].strip():
@@ -1220,115 +1429,60 @@ def validate_inventory(
     log(f"  OK: inventory v2 validated for {len(rows)} selected hypothesis ids.")
 
 
+def validate_detector_source(detector_path: Path) -> None:
+    """Compatibility wrapper for deterministic syntax validation."""
+    try:
+        _validate_detector_source(detector_path)
+    except SystemExit as exc:
+        # The reusable verifier reports absolute paths. Preserve the driver's
+        # concise project-relative diagnostic where possible.
+        raise SystemExit(str(exc).replace(str(detector_path), _rel_to_root(detector_path)))
+    log(f"  OK: {_rel_to_root(detector_path)} parses as Python.")
+
+
+def validate_detector_executable(
+    detector_path: Path,
+    model_config_path: Path,
+) -> None:
+    """Run the generated CLI's mandatory no-data contract checks."""
+    validate_detector_executable_contract(detector_path, model_config_path)
+    log(
+        f"  OK: {_rel_to_root(detector_path)} --help, synthetic smoke, "
+        f"invalid-config rejection, and no-output checks passed "
+        f"({SMOKE_SUCCESS_MARKER})."
+    )
+
+
+def require_unchanged(path: Path, expected_sha256: str, owner_step: str) -> None:
+    """Protect a validated upstream artifact from later agent turns."""
+    if not path.is_file() or _sha256(path) != expected_sha256:
+        raise SystemExit(
+            f"A later step modified validated {owner_step} artifact "
+            f"{_rel_to_root(path)}. Regenerate from a clean output directory."
+        )
+
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Workflow
 # ─────────────────────────────────────────────────────────────────────────────
 
+def resolve_run_context(run_json: Path) -> RunContext:
+    """Return the typed, fully checked input contract for one build."""
+    return _resolve_run_context(run_json, PROJECT_ROOT, PREDICTIVE_POLICY_VERSION)
+
+
 def resolve_inputs(
     run_json: Path,
 ) -> tuple[Path, Path, Path | None, Path | None, list[int]]:
-    """Locate and cross-check report, selection, rerun, and corrected sources.
-
-    Pure — it only stats and raises. Called from ``main`` BEFORE the output folder
-    can be deleted, so a missing report aborts while the folder is still intact;
-    ``run_workflow`` calls it again so it stays usable on its own.
-    """
-    stem = run_stem(run_json)
-    summary_path = run_json.with_name(f"{stem}.summary.md")
-    predictive_rerun_dir = run_json.with_name(
-        f"{run_json.name}.predictive.rerun"
-    )
-    legacy_rerun_dir = run_json.with_name(f"{run_json.name}.rerun")
-    predictive_fixed_dir = run_json.with_name(
-        f"{run_json.name}.predictive.fixed"
-    )
-    legacy_fixed_dir = run_json.with_name(f"{run_json.name}.fixed")
-    selection_path = run_json.with_name(
-        f"{run_stem(run_json)}.predictive-selection.json"
-    )
-    predictive_ready = predictive_rerun_dir.is_dir() and any(
-        predictive_rerun_dir.glob("hypo_*.py")
-    )
-    legacy_ready = legacy_rerun_dir.is_dir() and any(
-        legacy_rerun_dir.glob("hypo_*.py")
-    )
-    rerun_dir = predictive_rerun_dir if predictive_ready else legacy_rerun_dir
-    candidate_fixed_dir = (
-        predictive_fixed_dir if predictive_ready else legacy_fixed_dir
-    )
-    fixed_dir = (
-        candidate_fixed_dir
-        if candidate_fixed_dir.is_dir()
-        and any(candidate_fixed_dir.glob("hypo_*.py"))
-        else None
-    )
-
-    if not summary_path.is_file():
-        raise SystemExit(
-            f"No finished report at {_rel_to_root(summary_path)}. Run "
-            f"`python agentic/run_discovery_workflow.py {_rel_to_root(run_json)} "
-            f"--pkl {origin_cache_hint(run_json) or '<ORIGIN>_add.pkl'} "
-            "--direction predictive` first — this workflow builds on its output."
-        )
-    if not (predictive_ready or legacy_ready):
-        raise SystemExit(
-            "No loading-fixed scripts found. Expected predictive artifacts at "
-            f"{_rel_to_root(predictive_rerun_dir)} (or legacy artifacts at "
-            f"{_rel_to_root(legacy_rerun_dir)}). Run the discovery workflow with "
-            "--direction predictive first; detector feature definitions come from "
-            "those scripts, not from the report."
-        )
-    rerun_manifest_path = rerun_dir / "MANIFEST.json"
-    if not rerun_manifest_path.is_file():
-        raise SystemExit(
-            f"No rerun manifest at {_rel_to_root(rerun_manifest_path)}; refuse to "
-            "infer hypothesis membership from possibly stale loose scripts."
-        )
-    rerun_ids = _manifest_ids(rerun_manifest_path)
-
-    authoritative_selection = selection_path if predictive_ready else None
-    if predictive_ready:
-        if not selection_path.is_file():
-            raise SystemExit(
-                f"Predictive rerun sources require {_rel_to_root(selection_path)} "
-                "as the authoritative hypothesis selection."
-            )
-        selection = _load_json_object(selection_path, "predictive selection")
-        if selection.get("criterion") != "predictive":
-            raise SystemExit(
-                f"Predictive selection {_rel_to_root(selection_path)} has the "
-                "wrong criterion."
-            )
-        selected_ids = _integer_ids(
-            selection.get("selected_ids"), "selected_ids", selection_path
-        )
-        if selection.get("source_sha256") != _sha256(run_json):
-            raise SystemExit(
-                f"Predictive selection {_rel_to_root(selection_path)} is stale for "
-                f"{_rel_to_root(run_json)}; regenerate the discovery outputs."
-            )
-        selected_set, rerun_set = set(selected_ids), set(rerun_ids)
-        if selected_set != rerun_set:
-            raise SystemExit(
-                "Predictive selection and rerun MANIFEST disagree; refuse stale "
-                f"sources. Missing from MANIFEST: {sorted(selected_set - rerun_set)}; "
-                f"not selected: {sorted(rerun_set - selected_set)}. Regenerate the "
-                "predictive rerun artifacts before building a detector."
-            )
-    else:
-        selected_ids = rerun_ids
-
-    missing_scripts = [
-        hypothesis_id for hypothesis_id in selected_ids
-        if not (rerun_dir / f"hypo_{hypothesis_id}.py").is_file()
-    ]
-    if missing_scripts:
-        raise SystemExit(
-            f"Rerun MANIFEST selects ids with no script: {missing_scripts}."
-        )
+    """Backward-compatible tuple view of :func:`resolve_run_context`."""
+    context = resolve_run_context(run_json)
     return (
-        summary_path, rerun_dir, fixed_dir, authoritative_selection, selected_ids
+        context.summary_path,
+        context.rerun_dir,
+        context.fixed_dir,
+        context.selection_path,
+        list(context.selected_ids),
     )
 
 
@@ -1336,10 +1490,15 @@ async def run_workflow(
     run_json: Path,
     out_dir: Path,
     verbose: bool,
+    costs: WorkflowCostSummary,
 ) -> None:
-    summary_path, rerun_dir, fixed_dir, selection_path, selected_ids = resolve_inputs(
-        run_json
-    )
+    context = resolve_run_context(run_json)
+    summary_path = context.summary_path
+    rerun_dir = context.rerun_dir
+    fixed_dir = context.fixed_dir
+    selection_path = context.selection_path
+    selected_ids = list(context.selected_ids)
+    corrected_results_path = context.corrected_results_path
 
     steps = build_steps(
         run_rel=_rel_to_root(run_json),
@@ -1351,6 +1510,10 @@ async def run_workflow(
         ),
         selected_ids=selected_ids,
         out_dir_rel=_rel_to_root(out_dir),
+        corrected_results_rel=(
+            _rel_to_root(corrected_results_path)
+            if corrected_results_path is not None else None
+        ),
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1366,39 +1529,263 @@ async def run_workflow(
             else "No corrected feature-source directory was found."
         )
     )
+    log(
+        f"Agent configuration: model={AGENT_MODEL}, effort={AGENT_EFFORT}, "
+        f"connect timeout={AGENT_CONNECT_TIMEOUT_S}s, "
+        f"step timeout={AGENT_STEP_TIMEOUT_S}s."
+    )
     wf_start = time.monotonic()
+    policy_sha256 = _sha256(MODEL_POLICY_PATH)
+    runtime_template_sha256 = _sha256(RUNTIME_TEMPLATE_PATH)
+    protected_hashes = {
+        path: _sha256(path) for path in protected_source_paths(context)
+    }
+    inventory_sha256: str | None = None
+    model_config_sha256: str | None = None
+    detector_sha256: str | None = None
+    run_commands_sha256: str | None = None
+    readme_driver_block: str | None = None
+    readme_skeleton_sha256: str | None = None
 
-    async with ClaudeSDKClient(options=build_options()) as client:
+    # A failed deterministic compile leaves only its hidden agent draft.  That
+    # draft is expensive semantic work, while all public provenance is rebuilt
+    # and revalidated below.  Reuse it on --keep-existing recovery instead of
+    # paying for the same agent turn again.  Successful stages remove their
+    # drafts, so normal clean builds still execute every stage.
+    semantics_path = out_dir / FEATURE_SEMANTICS_DRAFT_NAME
+    if semantics_path.is_file():
+        inventory_path = out_dir / FEATURE_INVENTORY_NAME
+        compile_feature_inventory(
+            semantics_path,
+            inventory_path,
+            selected_ids=selected_ids,
+            selection_manifest=(
+                _rel_to_root(selection_path) if selection_path else None
+            ),
+            summary_path=summary_path,
+            corrected_results_path=corrected_results_path,
+            rerun_dir=rerun_dir,
+            fixed_dir=fixed_dir,
+            project_root=PROJECT_ROOT,
+        )
+        validate_inventory(
+            inventory_path,
+            selected_ids,
+            _rel_to_root(selection_path) if selection_path else None,
+            rerun_dir,
+            fixed_dir,
+            summary_path,
+            corrected_results_path,
+        )
+        inventory_sha256 = _sha256(inventory_path)
+        semantics_path.unlink()
+        steps = [step for step in steps if step["name"] != "inventory-features"]
+        log(
+            "Recovered the validated transient feature-semantics draft; "
+            "skipping the repeated inventory agent turn."
+        )
+
+    sdk = load_claude_sdk()
+    async with open_agent_session(
+        sdk.client,
+        options=build_options(),
+        connect_timeout_s=AGENT_CONNECT_TIMEOUT_S,
+    ) as client:
         log("SDK session opened.")
         for i, step in enumerate(steps, start=1):
             print(f"\n=== Step {i}/{len(steps)}: {step['name']} ===")
             log(f"Step {i}/{len(steps)} '{step['name']}' started.")
             step_start = time.monotonic()
-            final_text = await run_step(client, step, verbose)
+            final_text = await run_step(client, step, verbose, costs)
             log(
                 f"Step {i}/{len(steps)} '{step['name']}' done in "
                 f"{time.monotonic() - step_start:.0f}s."
             )
             validate_step_output(step)
-            if step["name"] == "inventory-features":
-                validate_inventory(
+            require_unchanged(
+                MODEL_POLICY_PATH,
+                policy_sha256,
+                "versioned model-policy",
+            )
+            require_unchanged(
+                RUNTIME_TEMPLATE_PATH,
+                runtime_template_sha256,
+                "reviewed detector runtime template",
+            )
+            for protected_path, protected_sha256 in protected_hashes.items():
+                require_unchanged(
+                    protected_path,
+                    protected_sha256,
+                    "discovery input",
+                )
+            if inventory_sha256 is not None:
+                require_unchanged(
                     out_dir / "feature_inventory.json",
+                    inventory_sha256,
+                    "inventory-features",
+                )
+            if model_config_sha256 is not None:
+                require_unchanged(
+                    out_dir / MODEL_CONFIG_NAME,
+                    model_config_sha256,
+                    "configure-models",
+                )
+            if detector_sha256 is not None:
+                require_unchanged(
+                    out_dir / DETECTOR_NAME,
+                    detector_sha256,
+                    "driver assembly",
+                )
+            if run_commands_sha256 is not None:
+                require_unchanged(
+                    out_dir / RUN_COMMANDS_NAME,
+                    run_commands_sha256,
+                    "driver run-command guide",
+                )
+            if step["name"] == "inventory-features":
+                semantics_path = out_dir / FEATURE_SEMANTICS_DRAFT_NAME
+                inventory_path = out_dir / FEATURE_INVENTORY_NAME
+                compile_feature_inventory(
+                    semantics_path,
+                    inventory_path,
+                    selected_ids=selected_ids,
+                    selection_manifest=(
+                        _rel_to_root(selection_path) if selection_path else None
+                    ),
+                    summary_path=summary_path,
+                    corrected_results_path=corrected_results_path,
+                    rerun_dir=rerun_dir,
+                    fixed_dir=fixed_dir,
+                    project_root=PROJECT_ROOT,
+                )
+                validate_inventory(
+                    inventory_path,
                     selected_ids,
                     _rel_to_root(selection_path) if selection_path else None,
                     rerun_dir,
                     fixed_dir,
+                    summary_path,
+                    corrected_results_path,
+                )
+                inventory_sha256 = _sha256(inventory_path)
+                semantics_path.unlink()
+                log(
+                    f"  Compiled agent semantic judgments into "
+                    f"{_rel_to_root(inventory_path)}; removed transient draft."
                 )
             elif step["name"] == "configure-models":
-                validate_model_config(
-                    out_dir / MODEL_CONFIG_NAME,
-                    out_dir / "feature_inventory.json",
+                advice_path = out_dir / MODEL_ADVICE_DRAFT_NAME
+                config_path = out_dir / MODEL_CONFIG_NAME
+                compile_model_config(
+                    advice_path,
+                    config_path,
+                    out_dir / FEATURE_INVENTORY_NAME,
+                    MODEL_POLICY_PATH,
+                    MODEL_POLICY_CONTRACT,
+                    MODEL_CONFIG_SCHEMA_VERSION,
+                    PROJECT_ROOT,
                 )
+                validate_model_config(
+                    config_path,
+                    out_dir / FEATURE_INVENTORY_NAME,
+                )
+                model_config_sha256 = _sha256(config_path)
+                advice_path.unlink()
+                log(
+                    f"  Compiled agent model advice into "
+                    f"{_rel_to_root(config_path)}; removed transient draft."
+                )
+            elif step["name"] in {"generate-detector", "verify-and-document"}:
+                detector_path = out_dir / DETECTOR_NAME
+                if step["name"] == "generate-detector":
+                    feature_path = out_dir / FEATURE_IMPLEMENTATION_DRAFT_NAME
+                    assemble_detector(
+                        RUNTIME_TEMPLATE_PATH,
+                        feature_path,
+                        detector_path,
+                    )
+                    feature_path.unlink()
+                    log(
+                        f"  Driver assembled {_rel_to_root(detector_path)} from "
+                        "the reviewed runtime template and validated feature fragment."
+                    )
+                validate_detector_source(detector_path)
+                validate_detector_executable(
+                    detector_path,
+                    out_dir / MODEL_CONFIG_NAME,
+                )
+                if step["name"] == "generate-detector":
+                    detector_sha256 = _sha256(detector_path)
+                    run_commands_path = out_dir / RUN_COMMANDS_NAME
+                    write_run_commands(
+                        run_commands_path,
+                        project_root=PROJECT_ROOT,
+                        run_rel=_rel_to_root(run_json),
+                        detector_path=detector_path,
+                        detector_rel=_rel_to_root(detector_path),
+                        inventory_path=out_dir / FEATURE_INVENTORY_NAME,
+                        inventory_rel=_rel_to_root(
+                            out_dir / FEATURE_INVENTORY_NAME
+                        ),
+                        model_config_path=out_dir / MODEL_CONFIG_NAME,
+                        model_config_rel=_rel_to_root(out_dir / MODEL_CONFIG_NAME),
+                        model_policy_path=MODEL_POLICY_PATH,
+                        model_policy_rel=_rel_to_root(MODEL_POLICY_PATH),
+                        runtime_template_path=RUNTIME_TEMPLATE_PATH,
+                        runtime_template_rel=_rel_to_root(RUNTIME_TEMPLATE_PATH),
+                        cache_hint=origin_cache_hint(run_json),
+                        agent_model=AGENT_MODEL,
+                        agent_effort=AGENT_EFFORT,
+                    )
+                    run_commands_sha256 = _sha256(run_commands_path)
+                    log(
+                        f"  Driver wrote instance-bound commands at "
+                        f"{_rel_to_root(run_commands_path)}."
+                    )
+                    readme_path = out_dir / README_NAME
+                    write_readme_skeleton(
+                        readme_path,
+                        run_rel=_rel_to_root(run_json),
+                        summary_rel=_rel_to_root(summary_path),
+                        inventory_path=out_dir / FEATURE_INVENTORY_NAME,
+                        inventory_rel=_rel_to_root(
+                            out_dir / FEATURE_INVENTORY_NAME
+                        ),
+                        model_config_path=out_dir / MODEL_CONFIG_NAME,
+                        model_config_rel=_rel_to_root(out_dir / MODEL_CONFIG_NAME),
+                        detector_rel=_rel_to_root(detector_path),
+                        run_commands_rel=_rel_to_root(run_commands_path),
+                        cache_hint=origin_cache_hint(run_json),
+                        primary_metric=PRIMARY_METRIC,
+                    )
+                    log(
+                        f"  Driver wrote factual README skeleton at "
+                        f"{_rel_to_root(readme_path)} for semantic review."
+                    )
+                    readme_driver_block = read_driver_generated_block(readme_path)
+                    readme_skeleton_sha256 = _sha256(readme_path)
+                elif readme_driver_block is None or readme_skeleton_sha256 is None:
+                    raise SystemExit("README skeleton validation state is missing.")
+                else:
+                    validate_readme_enrichment(
+                        out_dir / README_NAME,
+                        expected_driver_block=readme_driver_block,
+                        skeleton_sha256=readme_skeleton_sha256,
+                    )
             if not verbose:
                 print(final_text.strip())
 
-    log(f"Workflow complete in {time.monotonic() - wf_start:.0f}s.")
+    log(
+        f"Workflow complete in {time.monotonic() - wf_start:.0f}s; "
+        f"reported API cost: {costs.describe()}."
+    )
     print("\n=== Workflow complete ===")
     print(f"Generated code in {_rel_to_root(out_dir)}/")
+    if (out_dir / RUN_COMMANDS_NAME).is_file():
+        print(
+            f"Instance-bound smoke, compute-node, Slurm, and reproducibility "
+            f"commands: {_rel_to_root(out_dir / RUN_COMMANDS_NAME)}"
+        )
     detector_rel = f"{_rel_to_root(out_dir)}/{DETECTOR_NAME}"
     if (out_dir / DETECTOR_NAME).is_file():
         # End on the command, not on a summary: the detector is the deliverable
@@ -1456,6 +1843,8 @@ def main() -> int:
             "each subagent tool call, every step's final reply, and any fatal "
             "diagnostic — is tee'd there as well as to the terminal, flushed as "
             "it goes, so a workflow that dies mid-step still leaves a record. "
+            "The footer summarizes the SDK-reported API cost across all completed "
+            "step turns. "
             "Pass /dev/null to skip. The detector writes its own log when you "
             "run it later."
         ),
@@ -1519,6 +1908,7 @@ def main() -> int:
 
     orig_out, orig_err = sys.stdout, sys.stderr
     started = time.monotonic()
+    costs = WorkflowCostSummary()
     with log_txt.open("w", encoding="utf-8") as log_fh:
         # Header first: without the argv and the timestamp, a log of step output
         # and numbers cannot be tied back to the invocation that produced it.
@@ -1536,7 +1926,7 @@ def main() -> int:
         if clean_note:
             log(clean_note)
         try:
-            asyncio.run(run_workflow(run_json, out_dir, args.verbose))
+            asyncio.run(run_workflow(run_json, out_dir, args.verbose, costs))
             outcome = "OK"
         except SystemExit as exc:
             # Step failures raise SystemExit carrying the diagnostic as its
@@ -1559,6 +1949,7 @@ def main() -> int:
             log_fh.write(
                 f"\n# {outcome} after {time.monotonic() - started:.0f}s "
                 f"(ended {datetime.now():%Y-%m-%d %H:%M:%S})\n"
+                f"# reported API cost: {costs.describe()}\n"
             )
             log_fh.flush()
 
