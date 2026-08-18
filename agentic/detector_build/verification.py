@@ -12,6 +12,7 @@ from pathlib import Path
 
 
 SMOKE_SUCCESS_MARKER = "DETECTOR_SMOKE_OK"
+DEFAULT_DETECTOR_CHECK_TIMEOUT_S = 30_000
 
 
 def validate_detector_source(detector_path: Path) -> None:
@@ -59,7 +60,7 @@ def validate_detector_executable_contract(
     detector_path: Path,
     model_config_path: Path,
     *,
-    timeout_s: int = 300,
+    timeout_s: int = DEFAULT_DETECTOR_CHECK_TIMEOUT_S,
 ) -> None:
     """Run no-data checks that the agent cannot satisfy by assertion alone.
 

@@ -1,12 +1,12 @@
 #!/usr/bin/env python
-"""Merge-site detector for ExaSPIM segment adjudication.
+"""Target-aware detector for ExaSPIM merge/split adjudication.
 
 ONE self-contained CLI that:
   * loads an `_add.pkl` dataset cache once,
-  * extracts audited segment-level geometry features in shared traversal passes,
+  * extracts audited target-level geometry features in shared traversal passes,
   * compares several regularized/boosted model families with nested CV,
   * selects and fits the winning family with a leak-free one-standard-error rule,
-  * scores every adjudicable segment out-of-fold,
+  * scores every adjudicable target row out-of-fold,
   * optionally transfers the fitted pipeline to a different held-out brain,
   * profiles hypothesis cost on a small sample with --measuretime and exits pre-model, or
   * skips explicitly excluded computation with --hypothesis-selection or
@@ -74,12 +74,14 @@ EMBEDDED_MODEL_POLICY = {
             "native_nan": False,
             "requires_package": None,
             "parameters": {"C": "positive_number"},
+            "required_parameters": ("C",),
         },
         "logistic_elasticnet": {
             "required": True,
             "native_nan": False,
             "requires_package": None,
             "parameters": {"C": "positive_number", "l1_ratio": "unit_interval"},
+            "required_parameters": ("C", "l1_ratio"),
         },
         "hist_gradient_boosting": {
             "required": True,
@@ -92,6 +94,7 @@ EMBEDDED_MODEL_POLICY = {
                 "min_samples_leaf": "positive_integer",
                 "l2_regularization": "nonnegative_number",
             },
+            "required_parameters": (),
         },
         "spline_logistic": {
             "required": False,
@@ -102,6 +105,7 @@ EMBEDDED_MODEL_POLICY = {
                 "degree": "positive_integer",
                 "C": "positive_number",
             },
+            "required_parameters": ("n_knots", "degree", "C"),
         },
         "explainable_boosting": {
             "required": False,
@@ -114,6 +118,10 @@ EMBEDDED_MODEL_POLICY = {
                 "max_rounds": "positive_integer",
                 "min_samples_leaf": "positive_integer",
             },
+            "required_parameters": (
+                "max_bins", "interactions", "learning_rate", "max_rounds",
+                "min_samples_leaf",
+            ),
         },
         "extra_trees": {
             "required": False,
@@ -125,6 +133,7 @@ EMBEDDED_MODEL_POLICY = {
                 "min_samples_leaf": "positive_integer",
                 "max_features": "max_features",
             },
+            "required_parameters": ("n_estimators", "min_samples_leaf"),
         },
         "random_forest": {
             "required": False,
@@ -136,6 +145,7 @@ EMBEDDED_MODEL_POLICY = {
                 "min_samples_leaf": "positive_integer",
                 "max_features": "max_features",
             },
+            "required_parameters": ("n_estimators", "min_samples_leaf"),
         },
         "xgboost": {
             "required": False,
@@ -150,6 +160,11 @@ EMBEDDED_MODEL_POLICY = {
                 "colsample_bytree": "positive_unit_interval",
                 "reg_lambda": "nonnegative_number",
             },
+            "required_parameters": (
+                "n_estimators", "max_depth", "learning_rate",
+                "min_child_weight", "subsample", "colsample_bytree",
+                "reg_lambda",
+            ),
         },
     },
 }
@@ -323,6 +338,14 @@ def validate_model_config(cfg, inventory_sha256):
         if not isinstance(grid, dict):
             raise ValueError("family %r grid must be an object" % (name,))
         allowed_params = fam["parameters"]
+        missing_params = [
+            p for p in fam.get("required_parameters", ()) if p not in grid
+        ]
+        if missing_params:
+            raise ValueError(
+                "family %r grid is missing required parameter(s) %r "
+                "(build_estimator indexes them without a default)"
+                % (name, missing_params))
         for pname, pvals in grid.items():
             if pname not in allowed_params:
                 raise ValueError(
@@ -419,20 +442,7 @@ def mcl_from_payload(payload, pkl_path):
         return int(m.group(1)) if m else None
 
 
-def build_segment_universe(payload):
-    """One row per adjudicable segment.
-
-    Universe = non-zero canonical labels.  Components map to segments through the
-    part of component_id_to_swc_id before the '.'.  is_merge = membership in
-    gt_merge_labels.  A segment with no fragment component still gets a row.
-    """
-    node_label = np.asarray(payload["gt_node_canonical_label"])
-    adjudicable = sorted(int(x) for x in np.unique(node_label) if int(x) != 0)
-    gt_merge_labels = set(int(x) for x in payload["gt_merge_labels"])
-    is_merge = np.array(
-        [1 if s in gt_merge_labels else 0 for s in adjudicable], dtype=np.int64
-    )
-    return adjudicable, is_merge
+# __DETECTOR_TARGET_ADAPTER__
 
 
 def build_comp_to_seg(frag):
@@ -859,10 +869,10 @@ def write_hypothesis_cost_artifacts(timing_path, out_dir, brain):
     lines = [
         "# Hypothesis computational-cost report: %s" % brain,
         "",
-        "This is a small-sample profile (%s of %s adjudicable segments; limit %s). "
+        "This is a small-sample profile (%s of %s target rows; limit %s). "
         "Seconds are observed sample cost, not projected full-run savings." % (
-            timing.get("metadata", {}).get("n_profiled_segments", "?"),
-            timing.get("metadata", {}).get("n_total_adjudicable_segments", "?"),
+            timing.get("metadata", {}).get("n_profiled_rows", "?"),
+            timing.get("metadata", {}).get("n_total_rows", "?"),
             timing.get("metadata", {}).get("profile_occurrence_limit", "?")),
         "Use the ranking only as a rough computational-cost guide. It is not a "
         "measure of scientific or predictive value, and phase-level shared "
@@ -921,6 +931,17 @@ def write_hypothesis_cost_artifacts(timing_path, out_dir, brain):
 
 
 # __DETECTOR_FEATURE_IMPLEMENTATION__
+
+# FEATURE_REGISTRY is the feature fragment's public source of truth. Older
+# audited fragments also define FEATURE_NAMES; derive it here when absent so the
+# reviewed runtime does not depend on an undocumented duplicate declaration.
+try:
+    FEATURE_NAMES
+except NameError:
+    FEATURE_NAMES = [
+        feature.name if hasattr(feature, "name") else feature[0]
+        for feature in FEATURE_REGISTRY
+    ]
 
 # --------------------------------------------------------------------------- #
 # SAFE MODEL FACTORY.  Every family is built through an explicit, named branch. #
@@ -1001,12 +1022,12 @@ def build_estimator(family, params, native_nan_features_present=True):
     if family == "hist_gradient_boosting":
         from sklearn.ensemble import HistGradientBoostingClassifier
         return HistGradientBoostingClassifier(
-            learning_rate=float(params["learning_rate"]),
+            learning_rate=float(params.get("learning_rate", 0.1)),
             max_depth=(None if params.get("max_depth") is None
                        else int(params["max_depth"])),
-            max_leaf_nodes=int(params["max_leaf_nodes"]),
-            min_samples_leaf=int(params["min_samples_leaf"]),
-            l2_regularization=float(params["l2_regularization"]),
+            max_leaf_nodes=int(params.get("max_leaf_nodes", 31)),
+            min_samples_leaf=int(params.get("min_samples_leaf", 20)),
+            l2_regularization=float(params.get("l2_regularization", 0.0)),
             class_weight="balanced", random_state=seed)
 
     if family == "extra_trees":
@@ -1088,18 +1109,65 @@ def _score_matrix(estimator, X):
     return estimator.predict(X)
 
 
-def inner_cv_family(family, grid, X, y, inner_folds, seed):
+def _cv_splits(X, y, n_splits, seed, samples=None):
+    """Return ordinary stratified folds or conservative split-candidate folds.
+
+    For split rows, validation contains only pairs whose two segments are held
+    out together; training contains only pairs touching no held-out segment.
+    Boundary pairs are deliberately omitted.  Consequently split OOF coverage
+    can be below 100% and is reported explicitly instead of leaking a shared
+    segment across train and validation.
+    """
+    from sklearn.model_selection import StratifiedKFold
+
+    if DETECTOR_TARGET != "split_detection" or samples is None:
+        splitter = StratifiedKFold(
+            n_splits=n_splits, shuffle=True, random_state=seed)
+        return list(splitter.split(X, y))
+
+    segments = sorted({
+        int(sample[key]) for sample in samples
+        for key in ("segment_id_a", "segment_id_b")
+    })
+    if len(segments) < n_splits:
+        raise ValueError("too few distinct segments for segment-disjoint CV")
+    rng = np.random.RandomState(seed)
+    shuffled = np.asarray(segments, dtype=np.int64)
+    rng.shuffle(shuffled)
+    fold_of = {int(segment): int(index % n_splits)
+               for index, segment in enumerate(shuffled)}
+    splits = []
+    for fold in range(n_splits):
+        test = np.asarray([
+            i for i, sample in enumerate(samples)
+            if fold_of[int(sample["segment_id_a"])] == fold
+            and fold_of[int(sample["segment_id_b"])] == fold
+        ], dtype=int)
+        train = np.asarray([
+            i for i, sample in enumerate(samples)
+            if fold_of[int(sample["segment_id_a"])] != fold
+            and fold_of[int(sample["segment_id_b"])] != fold
+        ], dtype=int)
+        if (len(train) < 2 or len(test) < 2 or
+                len(np.unique(y[train])) < 2 or len(np.unique(y[test])) < 2):
+            raise ValueError(
+                "segment-disjoint CV fold %d lacks rows or both classes "
+                "(train=%d test=%d)" % (fold, len(train), len(test)))
+        splits.append((train, test))
+    return splits
+
+
+def inner_cv_family(family, grid, X, y, inner_folds, seed, samples=None):
     """3-fold inner CV over a family's grid.  Returns list of dicts:
     {params, mean_ap, std_ap, mean_se}."""
-    from sklearn.model_selection import StratifiedKFold
     from sklearn.metrics import average_precision_score
 
-    skf = StratifiedKFold(n_splits=inner_folds, shuffle=True, random_state=seed)
+    splits = _cv_splits(X, y, inner_folds, seed, samples=samples)
     results = []
     for params in iter_param_grid(grid):
         fold_ap = []
         ok = True
-        for tr, va in skf.split(X, y):
+        for tr, va in splits:
             try:
                 est = build_estimator(family, params)
                 est.fit(X[tr], y[tr])
@@ -1150,13 +1218,12 @@ def select_family_1se(family_scores, simplicity_order):
     return eligible[0] if eligible else gname
 
 
-def run_nested_selection(X, y, configured, policy, log):
+def run_nested_selection(X, y, configured, policy, log, samples=None):
     """Full nested CV.
 
     Returns dict with per-family OOF score arrays, selector OOF array, per-fold
     inner choices, selection frequencies, and per-family outer metrics.
     """
-    from sklearn.model_selection import StratifiedKFold
     from sklearn.metrics import average_precision_score, roc_auc_score
 
     sel = policy["selection"]
@@ -1172,16 +1239,19 @@ def run_nested_selection(X, y, configured, policy, log):
     per_fold = []
     selection_freq = defaultdict(int)
 
-    outer = StratifiedKFold(n_splits=outer_folds, shuffle=True,
-                            random_state=seed)
-    for k, (tr, te) in enumerate(outer.split(X, y)):
+    outer = _cv_splits(X, y, outer_folds, seed, samples=samples)
+    for k, (tr, te) in enumerate(outer):
         log("outer fold %d/%d (train=%d test=%d)"
             % (k + 1, outer_folds, len(tr), len(te)))
         fold_record = {"fold": k, "family_choice": {}, "selected_family": None}
         family_best = {}
         for f in families:
             grid = configured[f]["grid"]
-            results = inner_cv_family(f, grid, X[tr], y[tr], inner_folds, seed)
+            train_samples = ([samples[int(i)] for i in tr]
+                             if samples is not None else None)
+            results = inner_cv_family(
+                f, grid, X[tr], y[tr], inner_folds, seed,
+                samples=train_samples)
             choice = best_params_1se(results)
             if choice is None:
                 fold_record["family_choice"][f] = None
@@ -1250,7 +1320,7 @@ def run_nested_selection(X, y, configured, policy, log):
     }
 
 
-def fit_final_winner(X, y, configured, policy, log):
+def fit_final_winner(X, y, configured, policy, log, samples=None):
     """Repeat the same inner search on ALL rows, apply the one-standard-error
     rule with the policy simplicity order, fit the winner on all rows."""
     sel = policy["selection"]
@@ -1262,7 +1332,8 @@ def fit_final_winner(X, y, configured, policy, log):
     per_family_choice = {}
     for f in configured:
         grid = configured[f]["grid"]
-        results = inner_cv_family(f, grid, X, y, inner_folds, seed)
+        results = inner_cv_family(
+            f, grid, X, y, inner_folds, seed, samples=samples)
         choice = best_params_1se(results)
         if choice is None:
             continue
@@ -1287,14 +1358,15 @@ def fit_final_winner(X, y, configured, policy, log):
 # --------------------------------------------------------------------------- #
 def undefined_audit(df, y, log):
     n = len(y)
-    n_merge = int(np.sum(y == 1))
-    n_clean = int(np.sum(y == 0))
+    n_positive = int(np.sum(y == 1))
+    n_negative = int(np.sum(y == 0))
     print("\n==================== UNDEFINED / COVERAGE AUDIT ====================")
-    print("segments: %d  merges: %d  clean: %d  prevalence: %.4f"
-          % (n, n_merge, n_clean, n_merge / n if n else float("nan")))
+    print("%s: %d  positive (%s): %d  negative (%s): %d  prevalence: %.4f"
+          % (ROW_UNIT_PLURAL, n, POSITIVE_NAME, n_positive, NEGATIVE_NAME,
+             n_negative, n_positive / n if n else float("nan")))
 
     all_undef = np.ones(n, dtype=bool)
-    print("\nper-feature undefined share (overall / merges undefined):")
+    print("\nper-feature undefined share (overall / positives undefined):")
     for name in FEATURE_NAMES:
         fc = name + "_is_defined"
         if fc not in df.columns:
@@ -1302,19 +1374,20 @@ def undefined_audit(df, y, log):
         flag = df[fc].values.astype(bool)
         all_undef &= ~flag
         n_undef = int(np.sum(~flag))
-        n_undef_merge = int(np.sum((~flag) & (y == 1)))
+        n_undef_positive = int(np.sum((~flag) & (y == 1)))
         share = n_undef / n if n else float("nan")
-        share_m = (np.sum((~flag) & (y == 1)) / n_merge) if n_merge else float("nan")
-        print("  %-42s undef=%6d (%.3f)  undef&merge=%4d (%.3f of merges)"
-              % (name, n_undef, share, n_undef_merge, share_m))
+        share_p = ((np.sum((~flag) & (y == 1)) / n_positive)
+                   if n_positive else float("nan"))
+        print("  %-42s undef=%6d (%.3f)  undef&positive=%4d (%.3f of positives)"
+              % (name, n_undef, share, n_undef_positive, share_p))
 
     n_allundef = int(np.sum(all_undef))
-    n_allundef_merge = int(np.sum(all_undef & (y == 1)))
-    print("\nALL-UNDEFINED GROUP (every feature undefined): %d segments, "
-          "%d of them merges" % (n_allundef, n_allundef_merge))
-    if n_allundef > 0 and n_allundef_merge == 0:
-        print("  WARNING: a large all-undefined group with ZERO merges is the "
-              "classic confound — the model can score it trivially clean.")
+    n_allundef_positive = int(np.sum(all_undef & (y == 1)))
+    print("\nALL-UNDEFINED GROUP (every feature undefined): %d %s, "
+          "%d positives" % (n_allundef, ROW_UNIT_PLURAL, n_allundef_positive))
+    if n_allundef > 0 and n_allundef_positive == 0:
+        print("  WARNING: a large all-undefined group with ZERO positives is a "
+              "classic confound — the model can score it trivially negative.")
 
     print("\nsingle-feature AUC  (full set  vs  defined-subset):")
     print("  the DEFINED-SUBSET number is the honest one and should match the "
@@ -1334,10 +1407,16 @@ def undefined_audit(df, y, log):
               % (name, _fmt(full_auc), _fmt(sub_auc)))
     print("===================================================================\n")
     return {
-        "n_segments": n, "n_merge": n_merge, "prevalence":
-        (n_merge / n if n else None),
+        "row_unit": ROW_UNIT, "n_rows": n, "n_positive": n_positive,
+        "n_negative": n_negative, "prevalence":
+        (n_positive / n if n else None),
         "all_undefined_count": n_allundef,
-        "all_undefined_merges": n_allundef_merge,
+        "all_undefined_positives": n_allundef_positive,
+        # Legacy aliases keep downstream merge readers compatible.
+        "n_segments": n if DETECTOR_TARGET == "merge_detection" else None,
+        "n_merge": n_positive if DETECTOR_TARGET == "merge_detection" else None,
+        "all_undefined_merges": (
+            n_allundef_positive if DETECTOR_TARGET == "merge_detection" else None),
     }
 
 
@@ -1458,9 +1537,9 @@ def make_figures(fig_dir, prefix, df, y, nested, winner_oof, selector_oof,
         if m.sum() > 0:
             fig, ax = plt.subplots(figsize=(8, 5))
             ax.hist(winner_oof[m][y[m] == 0], bins=40, alpha=0.5,
-                    density=True, label="clean")
+                    density=True, label=NEGATIVE_NAME)
             ax.hist(winner_oof[m][y[m] == 1], bins=40, alpha=0.5,
-                    density=True, label="merge")
+                    density=True, label=POSITIVE_NAME)
             ax.set_xlabel("winner OOF score"); ax.set_ylabel("density")
             ax.set_title("score separation by class"); ax.legend()
             save(fig, 3, "score_by_class")
@@ -1505,47 +1584,203 @@ def make_figures(fig_dir, prefix, df, y, nested, winner_oof, selector_oof,
         mm = (y == 1)
         sh_m.append(1.0 - float(np.mean(flag[mm])) if mm.sum() else np.nan)
     xpos = np.arange(len(names))
-    ax.bar(xpos - 0.2, sh_all, width=0.4, label="all segments")
-    ax.bar(xpos + 0.2, sh_m, width=0.4, label="merges")
+    ax.bar(xpos - 0.2, sh_all, width=0.4, label="all rows")
+    ax.bar(xpos + 0.2, sh_m, width=0.4, label=POSITIVE_NAME)
     ax.set_xticks(xpos); ax.set_xticklabels(names, rotation=90, fontsize=5)
     ax.set_ylabel("undefined share"); ax.legend()
     ax.set_title("undefined share by class")
     save(fig, 5, "undefined_by_class")
 
-    # 06: linear coefficients (only when the winner is linear)
-    linear_families = {"logistic_l2", "logistic_elasticnet", "spline_logistic"}
-    if winner in linear_families:
-        try:
-            clf = final_est.named_steps["clf"] if hasattr(
-                final_est, "named_steps") else final_est
-            coef = np.ravel(clf.coef_)
-            if winner != "spline_logistic" and len(coef) == len(feature_order):
-                fig, ax = plt.subplots(figsize=(11, 6))
-                order = np.argsort(np.abs(coef))[::-1]
-                ax.bar(range(len(coef)), coef[order])
-                ax.set_xticks(range(len(coef)))
-                ax.set_xticklabels([feature_order[i] for i in order],
-                                   rotation=90, fontsize=5)
-                ax.set_title("linear coefficients (credit split across "
-                             "correlated features)")
-                save(fig, 6, "linear_coefficients")
-        except Exception:
-            pass
+    # 06: winner-aware model explanation. Linear models expose signed
+    # standardized coefficients; EBM exposes additive term importance and shape
+    # functions; tree models may expose native unsigned importance. A model
+    # without a reliable native summary falls back to validation permutation
+    # importance, using the same cached calculation as figure 07.
+    permutation_cache = {}
 
-    # 07: model-agnostic permutation importance on validation/held-out data
+    def validation_permutation():
+        if "result" in permutation_cache:
+            return permutation_cache["result"]
+        if "error" in permutation_cache:
+            raise permutation_cache["error"]
+        try:
+            from sklearn.inspection import permutation_importance
+            from sklearn.model_selection import train_test_split
+            Xdf = df[feature_order]
+            Xtr, Xva, ytr, yva = train_test_split(
+                Xdf.values, y, test_size=0.25, random_state=RANDOM_SEED,
+                stratify=y)
+            wp = winner_params if winner_params is not None \
+                else _winner_params_placeholder(nested, winner)
+            est = build_estimator(winner, wp)
+            est.fit(Xtr, ytr)
+            result = permutation_importance(
+                est, Xva, yva, n_repeats=5, random_state=RANDOM_SEED,
+                scoring="average_precision")
+            permutation_cache["result"] = result
+            return result
+        except Exception as exc:
+            permutation_cache["error"] = exc
+            raise
+
+    clf = final_est.named_steps["clf"] if hasattr(
+        final_est, "named_steps") else final_est
+    fig6_written = False
+
+    if winner in {"logistic_l2", "logistic_elasticnet"}:
+        try:
+            coef = np.ravel(clf.coef_)
+            if len(coef) != len(feature_order):
+                raise ValueError("coefficient count does not match feature count")
+            order = np.argsort(np.abs(coef))[::-1]
+            fig, ax = plt.subplots(figsize=(11, 7))
+            pos = np.arange(len(order))
+            ax.barh(pos, coef[order])
+            ax.set_yticks(pos)
+            ax.set_yticklabels([feature_order[i] for i in order], fontsize=6)
+            ax.invert_yaxis()
+            ax.axvline(0.0, color="black", linewidth=0.8)
+            ax.set_xlabel("standardized signed coefficient")
+            ax.set_title("winner model explanation: signed linear coefficients\n"
+                         "credit may split across correlated features")
+            save(fig, 6, "winner_model_explanation")
+            fig6_written = True
+        except Exception as exc:
+            if log:
+                log("linear winner explanation unavailable; using fallback: %r"
+                    % (exc,))
+
+    if not fig6_written and winner == "explainable_boosting":
+        try:
+            importance = np.asarray(clf.term_importances(), dtype=float)
+            term_features = list(clf.term_features_)
+
+            def ebm_term_name(index):
+                return " x ".join(
+                    feature_order[i] if 0 <= i < len(feature_order)
+                    else "feature_%d" % i
+                    for i in term_features[index])
+
+            finite = np.flatnonzero(np.isfinite(importance))
+            if finite.size == 0:
+                raise ValueError("EBM reported no finite term importance")
+            ranked = finite[np.argsort(importance[finite])[::-1]]
+            top_terms = ranked[:min(20, len(ranked))]
+            main_terms = [i for i in ranked if len(term_features[i]) == 1][:5]
+            n_shapes = max(1, len(main_terms))
+            fig = plt.figure(figsize=(17, max(7, 2.2 * n_shapes)))
+            grid = fig.add_gridspec(n_shapes, 2, width_ratios=[1.15, 1.85])
+            ax_imp = fig.add_subplot(grid[:, 0])
+            pos = np.arange(len(top_terms))
+            ax_imp.barh(pos, importance[top_terms])
+            ax_imp.set_yticks(pos)
+            ax_imp.set_yticklabels(
+                [ebm_term_name(i) for i in top_terms], fontsize=6)
+            ax_imp.invert_yaxis()
+            ax_imp.set_xlabel("mean absolute additive contribution")
+            ax_imp.set_title("EBM global term importance\n"
+                             "main effects and interactions; unsigned")
+
+            explanation = clf.explain_global()
+            if not main_terms:
+                ax_shape = fig.add_subplot(grid[:, 1])
+                ax_shape.text(0.5, 0.5, "No univariate EBM terms available",
+                              ha="center", va="center")
+                ax_shape.set_axis_off()
+            for row, term_index in enumerate(main_terms):
+                ax_shape = fig.add_subplot(grid[row, 1])
+                data = explanation.data(int(term_index))
+                scores = np.asarray(data["scores"], dtype=float).reshape(-1)
+                raw_names = list(data["names"])
+                x = None
+                try:
+                    numeric_names = np.asarray(raw_names, dtype=float)
+                    if (len(numeric_names) == len(scores) + 1 and
+                            np.all(np.isfinite(numeric_names))):
+                        x = (numeric_names[:-1] + numeric_names[1:]) / 2.0
+                    elif (len(numeric_names) == len(scores) and
+                          np.all(np.isfinite(numeric_names))):
+                        x = numeric_names
+                except (TypeError, ValueError):
+                    x = None
+                if x is None:
+                    x = np.arange(len(scores))
+                    if len(raw_names) == len(scores):
+                        shown = np.linspace(
+                            0, max(len(scores) - 1, 0),
+                            min(len(scores), 8), dtype=int)
+                        ax_shape.set_xticks(shown)
+                        ax_shape.set_xticklabels(
+                            [str(raw_names[i]) for i in shown],
+                            rotation=30, ha="right", fontsize=6)
+                ax_shape.plot(x, scores, linewidth=1.5)
+                lower = data.get("lower_bounds")
+                upper = data.get("upper_bounds")
+                if lower is not None and upper is not None:
+                    lower = np.asarray(lower, dtype=float).reshape(-1)
+                    upper = np.asarray(upper, dtype=float).reshape(-1)
+                    if len(lower) == len(x) and len(upper) == len(x):
+                        ax_shape.fill_between(x, lower, upper, alpha=0.18)
+                ax_shape.axhline(0.0, color="black", linewidth=0.7)
+                feature_index = term_features[term_index][0]
+                ax_shape.set_title(feature_order[feature_index], fontsize=8)
+                ax_shape.set_ylabel("additive score", fontsize=7)
+            fig.suptitle("winner model explanation: EBM terms and top shapes",
+                         fontsize=12)
+            save(fig, 6, "winner_model_explanation")
+            fig6_written = True
+        except Exception as exc:
+            if log:
+                log("EBM winner explanation unavailable; using fallback: %r"
+                    % (exc,))
+
+    if not fig6_written:
+        try:
+            native = np.asarray(clf.feature_importances_, dtype=float).reshape(-1)
+            if len(native) != len(feature_order):
+                raise ValueError("native importance count does not match features")
+            finite = np.flatnonzero(np.isfinite(native))
+            order = finite[np.argsort(native[finite])[::-1]][:25]
+            fig, ax = plt.subplots(figsize=(11, 7))
+            pos = np.arange(len(order))
+            ax.barh(pos, native[order])
+            ax.set_yticks(pos)
+            ax.set_yticklabels([feature_order[i] for i in order], fontsize=6)
+            ax.invert_yaxis()
+            ax.set_xlabel("native model-specific importance (unsigned)")
+            ax.set_title("winner model explanation: %s native importance\n"
+                         "values are not comparable across model families"
+                         % winner)
+            save(fig, 6, "winner_model_explanation")
+            fig6_written = True
+        except Exception as exc:
+            if log:
+                log("native winner explanation unavailable; using permutation "
+                    "fallback: %r" % (exc,))
+
+    if not fig6_written:
+        try:
+            r = validation_permutation()
+            order = np.argsort(r.importances_mean)[::-1]
+            fig, ax = plt.subplots(figsize=(11, 7))
+            pos = np.arange(len(order))
+            ax.barh(pos, r.importances_mean[order],
+                    xerr=r.importances_std[order])
+            ax.set_yticks(pos)
+            ax.set_yticklabels([feature_order[i] for i in order], fontsize=6)
+            ax.invert_yaxis()
+            ax.set_xlabel("validation AP decrease after permutation")
+            ax.set_title("winner model explanation: permutation fallback\n"
+                         "no reliable native global importance was available")
+            save(fig, 6, "winner_model_explanation")
+            fig6_written = True
+        except Exception as exc:
+            if log:
+                log("winner-explanation figure skipped: %r" % (exc,))
+
+    # 07: common model-agnostic permutation importance on validation data.
     try:
-        from sklearn.inspection import permutation_importance
-        from sklearn.model_selection import train_test_split
-        Xdf = df[feature_order]
-        Xtr, Xva, ytr, yva = train_test_split(
-            Xdf.values, y, test_size=0.25, random_state=RANDOM_SEED, stratify=y)
-        wp = winner_params if winner_params is not None \
-            else _winner_params_placeholder(nested, winner)
-        est = build_estimator(winner, wp)
-        est.fit(Xtr, ytr)
-        r = permutation_importance(est, Xva, yva, n_repeats=5,
-                                   random_state=RANDOM_SEED,
-                                   scoring="average_precision")
+        r = validation_permutation()
         fig, ax = plt.subplots(figsize=(11, 6))
         order = np.argsort(r.importances_mean)[::-1]
         ax.bar(range(len(feature_order)), r.importances_mean[order],
@@ -1563,8 +1798,10 @@ def make_figures(fig_dir, prefix, df, y, nested, winner_oof, selector_oof,
 
 
 def _winner_params_placeholder(nested, winner):
-    """Best-effort winner params from the last outer fold's choice (figure 07
-    trains its own split; this only needs a valid grid point)."""
+    """Best-effort winner params for figure 06 fallback and figure 07.
+
+    These figures train their own validation split and need one valid grid point.
+    """
     for rec in reversed(nested["per_fold"]):
         ch = rec["family_choice"].get(winner)
         if ch:
@@ -1611,6 +1848,17 @@ def run_smoke_test(config_path, inventory_sha256, log):
     cfg = load_and_validate_config(config_path, inventory_sha256)
     configured, skipped = assemble_configured(cfg, log)
     assert configured, "no configured families after availability filtering"
+    # This is a contract smoke test, not a performance/model-quality run. Test
+    # every available family while using one deterministic representative value
+    # per configured hyperparameter; the real run retains the complete grids.
+    smoke_configured = {}
+    for family, info in configured.items():
+        smoke_configured[family] = {
+            "grid": {name: [values[0]]
+                     for name, values in info["grid"].items()},
+            "role": info["role"],
+        }
+    log("synthetic smoke test: one grid point per available family")
 
     # small synthetic frame with NaNs and known missingness structure
     rng = np.random.RandomState(RANDOM_SEED)
@@ -1623,15 +1871,15 @@ def run_smoke_test(config_path, inventory_sha256, log):
     miss = rng.rand(n, p) < 0.3
     X = base.copy()
     X[miss] = np.nan
-    # an all-undefined group with zero merges
+    # an all-undefined group with zero positives
     allmiss_idx = np.where(y == 0)[0][:20]
     X[allmiss_idx, :] = np.nan
 
     policy = EMBEDDED_MODEL_POLICY
-    nested = run_nested_selection(X, y, configured, policy, log)
+    nested = run_nested_selection(X, y, smoke_configured, policy, log)
 
     # assert: every expected OOF column is filled exactly once per outer row
-    for f in configured:
+    for f in smoke_configured:
         col = nested["oof"][f]
         assert col.shape == (n,), "family %s OOF wrong shape" % f
         filled = np.sum(~np.isnan(col))
@@ -1643,13 +1891,14 @@ def run_smoke_test(config_path, inventory_sha256, log):
     # assert: fold-local preprocessing handles NaNs (a linear family produced
     # finite scores despite NaN inputs)
     lin = "logistic_l2"
-    assert lin in configured, "logistic_l2 must be configured"
+    assert lin in smoke_configured, "logistic_l2 must be configured"
     assert np.all(np.isfinite(nested["oof"][lin])), \
         "logistic_l2 produced non-finite OOF scores (NaN handling failed)"
 
     # fit final winner, then prove held-out prediction does NOT mutate the fitted
     # preprocessing (imputer statistics unchanged after scoring a second frame).
-    winner, win_params, est, _ = fit_final_winner(X, y, configured, policy, log)
+    winner, win_params, est, _ = fit_final_winner(
+        X, y, smoke_configured, policy, log)
     pre_state = _snapshot_preprocessing(est)
     X_test = rng.randn(50, p)
     X_test[rng.rand(50, p) < 0.4] = np.nan
@@ -1705,8 +1954,9 @@ def _states_equal(a, b):
 def build_arg_parser():
     here = os.path.dirname(os.path.abspath(__file__))
     ap = argparse.ArgumentParser(
-        description="ExaSPIM merge-site segment detector (extract once, "
-                    "compare families, score out-of-fold).")
+        description="ExaSPIM %s detector over %s (extract once, compare "
+                    "families, score out-of-fold)." %
+                    (DETECTOR_TARGET, ROW_UNIT_PLURAL))
     ap.add_argument("pkl", nargs="?", default=None,
                     help="training _add.pkl (positional). Omit only for "
                          "--synthetic-smoke-test.")
@@ -1719,8 +1969,8 @@ def build_arg_parser():
         here, "feature_inventory.json"),
         help="feature_inventory.json (for SHA cross-check).")
     ap.add_argument("--out-csv", default=None,
-                    help="feature/score CSV (default merge_detector_<brain>.csv "
-                         "beside the script).")
+                    help="feature/score CSV (default %s_<brain>.csv beside "
+                         "the script)." % OUTPUT_PREFIX)
     ap.add_argument("--out-dir", default=here,
                     help="directory for JSON/joblib/log outputs.")
     ap.add_argument("--fig-dir", default=None,
@@ -1734,10 +1984,10 @@ def build_arg_parser():
     ap.add_argument("--log-txt", default=None)
     ap.add_argument("--measuretime", action="store_true",
                     help="profile hypothesis computation cost on a small "
-                         "segment sample, write cost artifacts, and exit "
+                         "target-aware sample, write cost artifacts, and exit "
                          "before models.")
     ap.add_argument("--measuretime-occurrences", type=int, default=3,
-                    help="maximum component-bearing segments sampled by "
+                    help="maximum target-related occurrences sampled by "
                          "--measuretime (default: 3; must be positive).")
     ap.add_argument("--hypothesis-selection", default=None,
                     help="schema-v1 JSON selecting hypotheses to exclude from "
@@ -1756,31 +2006,37 @@ def _inventory_sha(inventory_path):
     return None
 
 
-def _drop_all_undefined(df, adjudicable, y):
+def _drop_all_undefined(df, samples, labels):
     flag_cols = [c for c in df.columns if c.endswith("_is_defined")]
     flags = df[flag_cols].values
     keep = flags.sum(axis=1) > 0
     return (df.loc[keep].reset_index(drop=True),
-            [s for s, k in zip(adjudicable, keep) if k],
-            y[keep], keep)
+            [sample for sample, retained in zip(samples, keep) if retained],
+            labels[keep], keep)
 
 
-def _apply_scope(feat_df, adjudicable, is_merge, exclude_empty, log):
+def _apply_scope(feat_df, samples, labels, exclude_empty, log):
     if not exclude_empty:
-        return feat_df, adjudicable, is_merge
-    df2, adj2, y2, _ = _drop_all_undefined(feat_df, adjudicable, is_merge)
+        return feat_df, samples, labels
+    df2, kept_samples, kept_labels, _ = _drop_all_undefined(
+        feat_df, samples, labels)
     log("--exclude-empty: dropped %d all-undefined rows (kept %d)"
-        % (len(adjudicable) - len(adj2), len(adj2)))
-    return df2, adj2, y2
+        % (len(samples) - len(kept_samples), len(kept_samples)))
+    return df2, kept_samples, kept_labels
 
 
-def _print_queue(adjudicable, is_merge, scores, budget, title):
-    order = np.argsort(-scores)
+def _print_queue(samples, labels, scores, budget, title):
+    scored = np.flatnonzero(np.isfinite(scores))
+    order = scored[np.argsort(-scores[scored])]
+    if len(scored) != len(scores):
+        print("\n%s: %d/%d rows have finite OOF scores; the queue excludes "
+              "unscored rows." % (title, len(scored), len(scores)))
     print("\n%s (top %d by score):" % (title, min(budget, len(order))))
-    print("  rank  segment_id     score  is_merge")
+    print("  rank  sample                                      score  %s" % LABEL_NAME)
     for rank, idx in enumerate(order[:budget], 1):
-        print("  %4d  %10d  %.5f  %d"
-              % (rank, adjudicable[idx], scores[idx], int(is_merge[idx])))
+        print("  %4d  %-42s  %.5f  %d"
+              % (rank, sample_display(samples[idx])[:42], scores[idx],
+                 int(labels[idx])))
         if rank >= 20:
             break
 
@@ -1833,7 +2089,7 @@ def run_measuretime(args, log):
         "top_slowest_limit": 20,
         "sampled": True,
         "profile_occurrence_limit": int(args.measuretime_occurrences),
-        "profile_sampling_method": "first_component_bearing_segments",
+        "profile_sampling_method": "first_target_related_occurrences",
         "cost_scope": "sample_observed_not_full_run",
     }
     recorder = AnalysisTimingRecorder(artifact, ANALYSIS_TIMING_GROUPS, metadata)
@@ -1847,26 +2103,35 @@ def run_measuretime(args, log):
             "payload_load", time.perf_counter() - started)
         recorder.update_metadata(min_cable_length=mcl_from_payload(payload, args.pkl))
 
-        total_adjudicable, total_is_merge = build_segment_universe(payload)
+        total_samples, total_labels = build_sample_universe(payload)
+        universe_audit = sample_universe_audit(payload, total_samples, total_labels)
         recorder.update_metadata(
-            n_total_adjudicable_segments=len(total_adjudicable),
-            n_total_merge_labels=int(np.sum(total_is_merge == 1)),
+            detector_target=DETECTOR_TARGET,
+            sample_universe_audit=universe_audit,
+            n_total_rows=len(total_samples),
+            n_total_positive_labels=int(np.sum(total_labels == 1)),
         )
-        log("measuretime: profiling at most %d component-bearing segments only"
+        log("measuretime: profiling at most %d target-related occurrences only"
             % args.measuretime_occurrences)
         started = time.perf_counter()
-        adjudicable, is_merge, _ = extract_features(
+        profiled_samples, profiled_labels, _ = extract_features(
             payload, verbose=True, timing=recorder,
             profile_segment_limit=args.measuretime_occurrences)
         recorder.record_wall_seconds(
             "feature_extraction", time.perf_counter() - started)
-        recorder.update_metadata(
-            n_adjudicable_segments=len(adjudicable),
-            n_merge_labels=int(np.sum(is_merge == 1)),
-            n_profiled_segments=len(adjudicable),
-            profiled_segment_ids=[int(x) for x in adjudicable],
+        profile_metadata = dict(
+            n_profiled_rows=len(profiled_samples),
+            n_profiled_positive_labels=int(np.sum(profiled_labels == 1)),
+            profiled_sample_ids=[sample_display(x) for x in profiled_samples],
             dependency_versions=_collect_measuretime_versions(),
         )
+        if DETECTOR_TARGET == "merge_detection":
+            # Keep the established merge timing keys for old report consumers.
+            profile_metadata.update(
+                n_profiled_segments=len(profiled_samples),
+                profiled_segment_ids=[int(x) for x in profiled_samples],
+            )
+        recorder.update_metadata(**profile_metadata)
         recorder.record_wall_seconds(
             "total", time.perf_counter() - total_started)
         recorder.finish()
@@ -1928,16 +2193,17 @@ def run_detector(args, log):
     log("loading training payload: %s" % args.pkl)
     payload = load_payload(args.pkl)
     train_mcl = mcl_from_payload(payload, args.pkl)
-    adjudicable, is_merge, acc = extract_features(
+    samples, labels, acc = extract_features(
         payload, verbose=True, enabled_analysis_keys=enabled_analysis_keys)
     feat_df = acc.to_frame()
-    # release the big payload before anything else
+    universe_audit = sample_universe_audit(payload, samples, labels)
+    # Release the big payload before model fitting.
     del payload
     gc.collect()
 
-    feat_df, adjudicable, is_merge = _apply_scope(
-        feat_df, adjudicable, is_merge, args.exclude_empty, log)
-    y = np.asarray(is_merge, dtype=np.int64)
+    feat_df, samples, labels = _apply_scope(
+        feat_df, samples, labels, args.exclude_empty, log)
+    y = np.asarray(labels, dtype=np.int64)
 
     audit = undefined_audit(feat_df, y, log)
 
@@ -1945,9 +2211,10 @@ def run_detector(args, log):
     log("running nested model selection (outer=%d inner=%d)"
         % (policy["selection"]["outer_folds"],
            policy["selection"]["inner_folds"]))
-    nested = run_nested_selection(X, y, configured, policy, log)
+    nested = run_nested_selection(
+        X, y, configured, policy, log, samples=samples)
 
-    print("\n==================== CANDIDATE COMPARISON ====================")
+    print("\n==================== MODEL FAMILY COMPARISON ====================")
     for f, m in nested["family_metrics"].items():
         print("  %-24s OOF AP=%s  OOF ROC-AUC=%s  (n=%d)"
               % (f, _fmt(m["oof_average_precision"]),
@@ -1959,7 +2226,7 @@ def run_detector(args, log):
     print("  selection frequency:", nested["selection_frequency"])
 
     winner, win_params, final_est, _ = fit_final_winner(
-        X, y, configured, policy, log)
+        X, y, configured, policy, log, samples=samples)
     print("\nFINAL WINNER: %s   params=%s" % (winner, win_params))
     print("  (chosen by one-standard-error rule in simplicity order %s)"
           % (policy["selection"]["simplicity_order"],))
@@ -1969,23 +2236,23 @@ def run_detector(args, log):
     in_sample = _score_matrix(final_est, X)  # reference-only
 
     # threshold sweep + review-budget metrics on winner OOF
-    _report_thresholds(y, winner_oof, args.review_budget)
-    _print_queue(adjudicable, is_merge, np.where(
+    _report_thresholds(y, winner_oof, args.review_budget, samples=samples)
+    _print_queue(samples, labels, np.where(
         np.isnan(winner_oof), -np.inf, winner_oof),
         args.review_budget, "TOP REVIEW QUEUE (winner OOF)")
 
     # ---- write CSV ---- #
     out_csv = args.out_csv or os.path.join(
-        args.out_dir, "merge_detector_%s.csv" % train_brain)
-    csv_df = pd.DataFrame({"segment_id": adjudicable, "is_merge": y})
+        args.out_dir, "%s_%s.csv" % (OUTPUT_PREFIX, train_brain))
+    csv_df = sample_output_frame(samples, y)
     for name in FEATURE_NAMES:
         csv_df[name] = feat_df[name].values
         csv_df[name + "_is_defined"] = feat_df[name + "_is_defined"].values
     for f in configured:
-        csv_df["merge_probability_oof_%s" % f] = nested["oof"][f]
-    csv_df["merge_probability_oof_selector"] = selector_oof
-    csv_df["merge_probability_oof"] = winner_oof
-    csv_df["merge_probability_in_sample"] = in_sample
+        csv_df["%s_oof_%s" % (SCORE_PREFIX, f)] = nested["oof"][f]
+    csv_df[SCORE_PREFIX + "_oof_selector"] = selector_oof
+    csv_df[SCORE_PREFIX + "_oof"] = winner_oof
+    csv_df[SCORE_PREFIX + "_in_sample"] = in_sample
     csv_df.to_csv(out_csv, index=False)
     log("wrote CSV: %s" % out_csv)
 
@@ -2000,6 +2267,10 @@ def run_detector(args, log):
     # ---- model-selection result JSON ---- #
     versions = _collect_versions()
     model_selection_record = {
+        "detector_target": DETECTOR_TARGET,
+        "row_unit": ROW_UNIT,
+        "label_name": LABEL_NAME,
+        "score_prefix": SCORE_PREFIX,
         "model_config_path": os.path.abspath(args.model_config),
         "model_config_sha256": config_sha,
         "model_policy_sha256": EMBEDDED_MODEL_POLICY_SHA256,
@@ -2022,6 +2293,7 @@ def run_detector(args, log):
         "all_feature_order": FEATURE_NAMES,
         "hypothesis_selection": hypothesis_selection,
         "audit": audit,
+        "sample_universe_audit": universe_audit,
         "heldout": heldout_report,
     }
     out_json = os.path.join(args.out_dir, "model_selection_%s.json" % train_brain)
@@ -2031,10 +2303,14 @@ def run_detector(args, log):
 
     # ---- joblib ---- #
     out_joblib = os.path.join(args.out_dir,
-                              "merge_detector_%s.joblib" % train_brain)
+                              "%s_%s.joblib" % (OUTPUT_PREFIX, train_brain))
     joblib.dump({"pipeline": final_est, "feature_order": model_feature_names,
                  "all_feature_order": FEATURE_NAMES,
                  "winner": winner, "params": win_params,
+                 "detector_target": DETECTOR_TARGET,
+                 "row_unit": ROW_UNIT,
+                 "label_name": LABEL_NAME,
+                 "score_prefix": SCORE_PREFIX,
                  "scope": scope,
                  "hypothesis_selection": hypothesis_selection}, out_joblib)
     log("wrote joblib: %s" % out_joblib)
@@ -2050,7 +2326,7 @@ def run_detector(args, log):
     return 0
 
 
-def _report_thresholds(y, oof, budget):
+def _report_thresholds(y, oof, budget, samples=None):
     from sklearn.metrics import average_precision_score, roc_auc_score
     m = ~np.isnan(oof)
     print("\n==================== OOF THRESHOLD / WORKLOAD ====================")
@@ -2072,8 +2348,16 @@ def _report_thresholds(y, oof, budget):
         if k > len(ys):
             continue
         tp = int(np.sum(ys[:k] == 1))
-        print("  @%-4d  precision=%.4f  recall=%.4f  merges_found=%d"
-              % (k, tp / k, tp / total_pos, tp))
+        merge_risk = None
+        if DETECTOR_TARGET == "split_detection" and samples is not None:
+            original_indices = np.flatnonzero(m)[order[:k]]
+            merge_risk = int(sum(
+                int(samples[int(i)].get("is_merge_creating", 0))
+                for i in original_indices))
+        suffix = ("  merge_creating_joins=%d" % merge_risk
+                  if merge_risk is not None else "")
+        print("  @%-4d  precision=%.4f  recall=%.4f  positives_found=%d%s"
+              % (k, tp / k, tp / total_pos, tp, suffix))
 
 
 def _run_heldout(args, final_est, winner, win_params, configured, policy,
@@ -2089,16 +2373,17 @@ def _run_heldout(args, final_est, winner, win_params, configured, policy,
         log("WARNING: mcl mismatch train=%s test=%s — the filter changes both "
             "the dataless fraction and the fill-factor gate." % (train_mcl,
                                                                  test_mcl))
-    adj_t, is_merge_t, acc_t = extract_features(
+    samples_t, labels_t, acc_t = extract_features(
         payload, verbose=True,
         enabled_analysis_keys=set(hypothesis_selection["enabled_analysis_keys"]))
     df_t = acc_t.to_frame()
+    heldout_universe_audit = sample_universe_audit(payload, samples_t, labels_t)
     del payload
     gc.collect()
 
-    df_t, adj_t, is_merge_t = _apply_scope(
-        df_t, adj_t, is_merge_t, args.exclude_empty, log)
-    y_t = np.asarray(is_merge_t, dtype=np.int64)
+    df_t, samples_t, labels_t = _apply_scope(
+        df_t, samples_t, labels_t, args.exclude_empty, log)
+    y_t = np.asarray(labels_t, dtype=np.int64)
 
     # test brain's own all-undefined share (context for the transfer gap)
     flag_cols = [c for c in df_t.columns if c.endswith("_is_defined")]
@@ -2137,8 +2422,9 @@ def _run_heldout(args, final_est, winner, win_params, configured, policy,
         "held_out_average_precision": ap_t if ok else None,
         "held_out_roc_auc": auc_t if ok else None,
         "test_all_undefined_share": all_undef_share,
-        "n_test_segments": int(len(y_t)),
-        "n_test_merges": int(np.sum(y_t == 1)),
+        "n_test_rows": int(len(y_t)),
+        "n_test_positive": int(np.sum(y_t == 1)),
+        "sample_universe_audit": heldout_universe_audit,
     }
 
     # held-out figures: ONLY 01, 02, 04 (03 is a training-fit property, 05-07
@@ -2205,7 +2491,7 @@ def main(argv=None):
     brain = brain_id_from_path(args.pkl)
     log_path = args.log_txt or os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
-        "merge_detector_%s.log.txt" % brain)
+        "%s_%s.log.txt" % (OUTPUT_PREFIX, brain))
     real_out, real_err = sys.stdout, sys.stderr
     fh = open(log_path, "a", buffering=1)
     sys.stdout = _Tee(real_out, fh)
@@ -2217,7 +2503,7 @@ def main(argv=None):
 
     ok = False
     try:
-        print("# merge_site_detector run")
+        print("# %s run (%s)" % (DETECTOR_FILENAME, DETECTOR_TARGET))
         print("# argv: %s" % " ".join(sys.argv))
         print("# start: %s" % time.strftime("%Y-%m-%d %H:%M:%S",
                                             time.localtime(start)))

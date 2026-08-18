@@ -24,6 +24,169 @@ SEMANTIC_ROW_FIELDS = {
     "features",
 }
 
+SEMANTIC_FEATURE_FIELDS = {
+    "name",
+    "quantity",
+    "constants",
+    "aggregation",
+    "reduction",
+    "traversal_phase",
+    "measurable_condition",
+    "historical_undefined_sentinel",
+}
+
+SEMANTIC_DRAFT_CONTRACT = """\
+The semantic draft is canonical JSON with exactly schema_version=1 and
+hypotheses. It contains one row per selected ID in the supplied order. Every row
+has exactly id, included, exclusion_reason, correction_scope, feature_source,
+source_reason, and features.
+
+Conditional invariants:
+- included=true: exclusion_reason MUST be JSON null (not an empty string),
+  feature_source is "rerun" or "fixed", source_reason is a non-empty string,
+  and features is non-empty.
+- included=false: exclusion_reason is a non-empty string, feature_source is JSON
+  null, source_reason is JSON null or a non-empty string, and features is an
+  empty list.
+- correction_scope is one of none, test_only, feature_semantics_changed,
+  stale_fixed_ignored, or unclear.
+- Every feature has exactly name, quantity, constants, aggregation, reduction,
+  traversal_phase, measurable_condition, and historical_undefined_sentinel.
+"""
+
+
+def canonicalize_semantic_draft(
+    semantics_path: Path,
+    project_root: Path,
+) -> list[str]:
+    """Canonicalize only representation changes with no semantic ambiguity."""
+    draft = load_json_object(
+        semantics_path, "feature semantics draft", project_root)
+    rows = draft.get("hypotheses")
+    if not isinstance(rows, list):
+        return []
+    changes: list[str] = []
+    for index, row in enumerate(rows):
+        if (isinstance(row, dict) and row.get("included") is True
+                and row.get("exclusion_reason") == ""):
+            row["exclusion_reason"] = None
+            changes.append(
+                f"hypotheses[{index}] id={row.get('id')} exclusion_reason: "
+                '"" -> null (included=true)'
+            )
+    if changes:
+        temporary = semantics_path.with_name(
+            f".{semantics_path.name}.canonicalize.tmp")
+        temporary.write_text(
+            json.dumps(draft, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(semantics_path)
+    return changes
+
+
+def validate_semantic_draft(
+    semantics_path: Path,
+    *,
+    selected_ids: list[int],
+    project_root: Path,
+) -> dict:
+    """Validate the agent-owned semantic schema before provenance compilation."""
+    draft = load_json_object(
+        semantics_path, "feature semantics draft", project_root)
+    if set(draft) != {"schema_version", "hypotheses"}:
+        raise SystemExit(
+            "Feature semantics draft must contain exactly schema_version and "
+            "hypotheses."
+        )
+    if draft.get("schema_version") != 1:
+        raise SystemExit("Feature semantics draft must set schema_version to 1.")
+    rows = draft.get("hypotheses")
+    if not isinstance(rows, list):
+        raise SystemExit("Feature semantics draft hypotheses must be a list.")
+    ids = [row.get("id") if isinstance(row, dict) else None for row in rows]
+    if ids != selected_ids:
+        raise SystemExit(
+            "Feature semantics draft must contain exactly one row per selected "
+            "hypothesis id, in selected_ids order."
+        )
+    allowed_scopes = {
+        "none", "test_only", "feature_semantics_changed",
+        "stale_fixed_ignored", "unclear",
+    }
+    feature_names: set[str] = set()
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict) or set(row) != SEMANTIC_ROW_FIELDS:
+            raise SystemExit(
+                f"Feature semantics row {index} must contain exactly: "
+                + ", ".join(sorted(SEMANTIC_ROW_FIELDS))
+            )
+        hypothesis_id = row["id"]
+        if not isinstance(row["included"], bool):
+            raise SystemExit(
+                f"Semantic hypothesis {hypothesis_id} included must be boolean.")
+        if row["correction_scope"] not in allowed_scopes:
+            raise SystemExit(
+                f"Semantic hypothesis {hypothesis_id} has invalid correction_scope.")
+        if row["included"]:
+            if (not isinstance(row["source_reason"], str)
+                    or not row["source_reason"].strip()):
+                raise SystemExit(
+                    f"Included hypothesis {hypothesis_id} needs a source_reason.")
+            if row["exclusion_reason"] is not None:
+                raise SystemExit(
+                    f"Included hypothesis {hypothesis_id} must have JSON null "
+                    "exclusion_reason, not an empty string."
+                )
+            if row["feature_source"] not in {"rerun", "fixed"}:
+                raise SystemExit(
+                    f"Included hypothesis {hypothesis_id} needs rerun/fixed "
+                    "feature_source."
+                )
+            if not isinstance(row["features"], list) or not row["features"]:
+                raise SystemExit(
+                    f"Included hypothesis {hypothesis_id} needs non-empty features."
+                )
+        else:
+            if (not isinstance(row["exclusion_reason"], str)
+                    or not row["exclusion_reason"].strip()):
+                raise SystemExit(
+                    f"Excluded hypothesis {hypothesis_id} needs a non-empty "
+                    "exclusion_reason."
+                )
+            if row["feature_source"] is not None:
+                raise SystemExit(
+                    f"Excluded hypothesis {hypothesis_id} must have null "
+                    "feature_source."
+                )
+            if row["source_reason"] is not None and (
+                not isinstance(row["source_reason"], str)
+                or not row["source_reason"].strip()
+            ):
+                raise SystemExit(
+                    f"Excluded hypothesis {hypothesis_id} source_reason must be "
+                    "JSON null or a non-empty string."
+                )
+            if row["features"] != []:
+                raise SystemExit(
+                    f"Excluded hypothesis {hypothesis_id} must have empty features."
+                )
+        for feature_index, feature in enumerate(row["features"]):
+            if not isinstance(feature, dict) or set(feature) != SEMANTIC_FEATURE_FIELDS:
+                raise SystemExit(
+                    f"Semantic hypothesis {hypothesis_id} feature {feature_index} "
+                    "must contain exactly: "
+                    + ", ".join(sorted(SEMANTIC_FEATURE_FIELDS))
+                )
+            name = feature["name"]
+            if not isinstance(name, str) or not name.strip():
+                raise SystemExit(
+                    f"Semantic hypothesis {hypothesis_id} has an empty feature name.")
+            if name in feature_names:
+                raise SystemExit(f"Semantic draft duplicates feature name {name!r}.")
+            feature_names.add(name)
+    return draft
+
 
 def compile_feature_inventory(
     semantics_path: Path,
@@ -36,31 +199,16 @@ def compile_feature_inventory(
     rerun_dir: Path,
     fixed_dir: Path | None,
     project_root: Path,
-) -> None:
+) -> list[str]:
     """Merge semantic judgments with deterministic same-ID provenance.
 
     The resulting on-disk schema is inventory v2 and is intentionally identical
     to the workflow's previous public output.  Only its construction changes.
     """
-    draft = load_json_object(semantics_path, "feature semantics draft", project_root)
-    if set(draft) != {"schema_version", "hypotheses"}:
-        raise SystemExit(
-            "Feature semantics draft must contain exactly schema_version and "
-            "hypotheses."
-        )
-    if draft.get("schema_version") != 1:
-        raise SystemExit("Feature semantics draft must set schema_version to 1.")
-    semantic_rows = draft.get("hypotheses")
-    if not isinstance(semantic_rows, list):
-        raise SystemExit("Feature semantics draft hypotheses must be a list.")
-    semantic_ids = [
-        row.get("id") if isinstance(row, dict) else None for row in semantic_rows
-    ]
-    if semantic_ids != selected_ids:
-        raise SystemExit(
-            "Feature semantics draft must contain exactly one row per selected "
-            "hypothesis id, in selected_ids order."
-        )
+    changes = canonicalize_semantic_draft(semantics_path, project_root)
+    draft = validate_semantic_draft(
+        semantics_path, selected_ids=selected_ids, project_root=project_root)
+    semantic_rows = draft["hypotheses"]
 
     evidence = report_evidence_by_id(summary_path, project_root)
     corrected_statuses = (
@@ -156,3 +304,4 @@ def compile_feature_inventory(
             f"Cannot compile feature inventory "
             f"{rel_to_root(inventory_path, project_root)}: {exc}"
         ) from exc
+    return changes

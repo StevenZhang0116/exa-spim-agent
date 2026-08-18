@@ -1,5 +1,5 @@
 """
-Generate a multi-feature merge detector from a finished AutoDiscovery run.
+Generate a multi-feature merge or split detector from a finished AutoDiscovery run.
 
 Where ``run_discovery_workflow.py`` DIGESTS one run export into a ranked
 ``<RUN>.summary.md`` report, this workflow goes one step further downstream: it
@@ -8,8 +8,8 @@ takes that finished report, the reproducer's loading-fixed hypothesis scripts
 test-fixer scripts under the matching ``.fixed/`` directory, and WRITES A DETECTOR — one
 script that computes every eligible selected hypothesis's features in shared passes over
 the skeleton graph, evaluates several appropriately regularized tabular models
-under nested cross-validation, and fits the selected strategy to produce one
-score per segment.
+under nested cross-validation, and fits the selected strategy to score one
+segment for merge runs or one candidate segment pair for split runs.
 
 The motivation comes from the reports themselves: each hypothesis contributes
 one or more related features, and the recurring caveat is that none is precise enough alone
@@ -35,14 +35,15 @@ context. Subagents live in ``.claude/agents/`` and are auto-discovered via
 ``setting_sources``. Deliverables land in
 ``autodiscovery-application/<RUN>/`` (one subfolder per originating run):
 
-    merge_site_detector.py            model comparison + selected detector
+    merge_site_detector.py or         target-specific model comparison + detector
+    split_site_detector.py
     feature_inventory.json            feature definition + defined condition
     model_candidates.json             validated model families + small grids
     README.md                         provenance, how to run, how to read it
     RUN_COMMANDS.md                   commands bound to this detector's hashes
     detector_build_workflow.log.txt   this driver's console output (--log-txt)
 
-The generated detector run additionally writes per-segment CSV scores, a JSON
+The generated detector run additionally writes target-row CSV scores, a JSON
 model-selection manifest, a fitted winner joblib, a run log and figures.
 After a successful run with figures, invoke
 ``agentic/run_detector_result_analysis.py PATH`` to validate those artifacts and
@@ -108,13 +109,13 @@ semantic agent turn.
 Usage (from the ``exa-spim-agent/`` project root; a login node is fine):
     conda activate panda
     python agentic/run_detector_build_workflow.py \
-        autodiscovery/merge-error-794495-mcl100_2026-08-04.json
+        autodiscovery/<merge-error-or-split-error-run>.json
 
 Then run the generated detector yourself, on a compute node:
     sbatch --mem=80G --wrap="\
         source /shared/utils.x86_64/anaconda3-2024.10/etc/profile.d/conda.sh; \
         conda activate panda; \
-        python autodiscovery-application/<RUN>/merge_site_detector.py \
+        python autodiscovery-application/<RUN>/<merge_or_split>_site_detector.py \
             cache/dataset_cache_<brain>_mcl<N>_add.pkl"
 
 Then analyze that completed result directory:
@@ -134,6 +135,7 @@ import subprocess
 import sys
 import time
 import traceback
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
@@ -145,7 +147,7 @@ try:  # package import (tests and ``python -m agentic...``)
     from agentic.detector_build.assembly import assemble_detector
     from agentic.detector_build.contracts import (
         BUILD_ARTIFACT_NAMES,
-        DETECTOR_NAME,
+        DetectorTarget,
         DRIVER_LOG_NAME,
         FEATURE_INVENTORY_NAME,
         FEATURE_IMPLEMENTATION_DRAFT_NAME,
@@ -155,6 +157,8 @@ try:  # package import (tests and ``python -m agentic...``)
         README_NAME,
         RUN_COMMANDS_NAME,
         RunContext,
+        build_artifact_names,
+        target_spec,
     )
     from agentic.detector_build.inputs import (
         corrected_status_by_id as _resolved_corrected_status_by_id,
@@ -169,7 +173,10 @@ try:  # package import (tests and ``python -m agentic...``)
         run_stem as _resolved_run_stem,
         sha256 as _resolved_sha256,
     )
-    from agentic.detector_build.inventory import compile_feature_inventory
+    from agentic.detector_build.inventory import (
+        SEMANTIC_DRAFT_CONTRACT,
+        compile_feature_inventory,
+    )
     from agentic.detector_build.documentation import (
         read_driver_generated_block,
         validate_readme_enrichment,
@@ -178,12 +185,14 @@ try:  # package import (tests and ``python -m agentic...``)
     )
     from agentic.detector_build.model_policy import (
         ModelPolicyContract,
+        REQUIRED_GRID_PARAMETERS,
         compile_model_config,
         load_model_policy as _resolved_load_model_policy,
         valid_grid_value as _resolved_valid_grid_value,
         validate_model_config as _resolved_validate_model_config,
     )
     from agentic.detector_build.verification import (
+        DEFAULT_DETECTOR_CHECK_TIMEOUT_S,
         SMOKE_SUCCESS_MARKER,
         validate_detector_executable_contract,
         validate_detector_source as _validate_detector_source,
@@ -198,7 +207,7 @@ except ModuleNotFoundError as exc:  # direct ``python agentic/run_....py``
     from detector_build.assembly import assemble_detector  # type: ignore[no-redef]
     from detector_build.contracts import (  # type: ignore[no-redef]
         BUILD_ARTIFACT_NAMES,
-        DETECTOR_NAME,
+        DetectorTarget,
         DRIVER_LOG_NAME,
         FEATURE_INVENTORY_NAME,
         FEATURE_IMPLEMENTATION_DRAFT_NAME,
@@ -208,6 +217,8 @@ except ModuleNotFoundError as exc:  # direct ``python agentic/run_....py``
         README_NAME,
         RUN_COMMANDS_NAME,
         RunContext,
+        build_artifact_names,
+        target_spec,
     )
     from detector_build.inputs import (  # type: ignore[no-redef]
         corrected_status_by_id as _resolved_corrected_status_by_id,
@@ -223,6 +234,7 @@ except ModuleNotFoundError as exc:  # direct ``python agentic/run_....py``
         sha256 as _resolved_sha256,
     )
     from detector_build.inventory import (  # type: ignore[no-redef]
+        SEMANTIC_DRAFT_CONTRACT,
         compile_feature_inventory,
     )
     from detector_build.documentation import (  # type: ignore[no-redef]
@@ -233,12 +245,14 @@ except ModuleNotFoundError as exc:  # direct ``python agentic/run_....py``
     )
     from detector_build.model_policy import (  # type: ignore[no-redef]
         ModelPolicyContract,
+        REQUIRED_GRID_PARAMETERS,
         compile_model_config,
         load_model_policy as _resolved_load_model_policy,
         valid_grid_value as _resolved_valid_grid_value,
         validate_model_config as _resolved_validate_model_config,
     )
     from detector_build.verification import (  # type: ignore[no-redef]
+        DEFAULT_DETECTOR_CHECK_TIMEOUT_S,
         SMOKE_SUCCESS_MARKER,
         validate_detector_executable_contract,
         validate_detector_source as _validate_detector_source,
@@ -258,6 +272,9 @@ RUNTIME_TEMPLATE_PATH = (
     / "detector_build"
     / "templates"
     / "detector_runtime.py.tmpl"
+)
+TARGET_RUNTIME_PATH = (
+    Path(__file__).resolve().parent / "detector_build" / "target_runtime.py"
 )
 
 def _load_model_policy(path: Path) -> dict:
@@ -310,34 +327,53 @@ AGENT_STEP_TIMEOUT_S = _positive_timeout_from_environment(
 AGENT_CONNECT_TIMEOUT_S = _positive_timeout_from_environment(
     "DETECTOR_BUILD_AGENT_CONNECT_TIMEOUT_S", 60
 )
+DETECTOR_CHECK_TIMEOUT_S = _positive_timeout_from_environment(
+    "DETECTOR_BUILD_CHECK_TIMEOUT_S", DEFAULT_DETECTOR_CHECK_TIMEOUT_S
+)
+MAX_AGENT_REPAIR_ATTEMPTS = 2
 
 
 class WorkflowCostSummary:
-    """Accumulate the per-turn costs reported by the Claude SDK."""
+    """Track the API cost the Claude SDK reports for this run.
+
+    ``ResultMessage.total_cost_usd`` is the *session-cumulative* cost, not the
+    price of the turn that just finished, so the run total is the latest
+    cumulative value per session — summing the raw reports across turns would
+    count every earlier turn once per later turn.
+    """
 
     def __init__(self) -> None:
-        self.total_usd = 0.0
         self.started_turns = 0
         self.reported_turns = 0
         self.unreported_turns = 0
+        self._session_usd: dict[object, float] = {}
+
+    @property
+    def total_usd(self) -> float:
+        return sum(self._session_usd.values())
 
     def start_turn(self) -> None:
         self.started_turns += 1
 
-    def add(self, cost_usd: object) -> None:
+    def add(self, cost_usd: object, session_id: object = None) -> float | None:
+        """Record one turn's report; return the increment it represents."""
         if cost_usd is None:
             self.unreported_turns += 1
-            return
+            return None
         try:
             cost = float(cost_usd)
         except (TypeError, ValueError):
             self.unreported_turns += 1
-            return
+            return None
         if not math.isfinite(cost) or cost < 0:
             self.unreported_turns += 1
-            return
-        self.total_usd += cost
+            return None
+        previous = self._session_usd.get(session_id, 0.0)
+        # Cumulative reports are non-decreasing; max() keeps the total intact
+        # if a stray out-of-order report ever arrives.
+        self._session_usd[session_id] = max(previous, cost)
         self.reported_turns += 1
+        return max(0.0, cost - previous)
 
     def describe(self) -> str:
         unfinished_turns = max(
@@ -446,9 +482,11 @@ def build_steps(
     selected_ids: list[int],
     out_dir_rel: str,
     corrected_results_rel: str | None = None,
+    target: DetectorTarget = DetectorTarget.MERGE,
 ) -> list[dict]:
     """Build the model-selection detector workflow instructions."""
-    detector_rel = f"{out_dir_rel}/{DETECTOR_NAME}"
+    spec = target_spec(target)
+    detector_rel = f"{out_dir_rel}/{spec.detector_name}"
     feature_impl_rel = f"{out_dir_rel}/{FEATURE_IMPLEMENTATION_DRAFT_NAME}"
     inventory_rel = f"{out_dir_rel}/{FEATURE_INVENTORY_NAME}"
     semantics_rel = f"{out_dir_rel}/{FEATURE_SEMANTICS_DRAFT_NAME}"
@@ -494,6 +532,86 @@ def build_steps(
         for name in MODEL_SIMPLICITY_ORDER
     )
     policy_rel = _rel_to_root(MODEL_POLICY_PATH)
+    runtime_template_rel = _rel_to_root(RUNTIME_TEMPLATE_PATH)
+    if spec.target is DetectorTarget.SPLIT:
+        target_inventory_note = f"""
+This is a split-detection run. The detector row unit is one canonical unordered
+candidate segment pair, not one segment and not one GT edge. Inventory endpoint,
+endpoint-pair, component-pair, and segment-pair quantities with their exact
+reduction to that row unit. The driver-owned candidate contract uses cross-segment
+fragment leaf pairs within {spec.candidate_radius_um:g} um, retains every endpoint occurrence for audited
+reductions, and uses the closest occurrence as the stable representative. Direct
+gt_edge_error==1 pairs and gap pairs flanking connected zero-label GT regions
+supply is_split only after candidate construction; labels and GT-only split
+metadata must never be features. Record any source detector arm whose candidate
+construction is incompatible with this fixed row universe as a limitation rather
+than silently changing the universe.
+""".strip()
+        extraction_contract = """
+- FeatureAccumulator with explicit measured/definedness membership;
+- extract_features(payload, verbose=True, timing=None,
+  enabled_analysis_keys=None, profile_segment_limit=None), returning canonical
+  candidate-pair records, is_split labels, and the accumulator;
+- endpoint/pair/component geometry helpers needed by those definitions.
+
+Use the runtime-provided build_sample_universe(payload) as the sole authority for
+candidate identity and labels. Do not derive a competing split key or candidate
+pool in the feature fragment. Aggregate endpoint-level values to the candidate
+segment-pair row exactly as recorded by the inventory. Each sample is a dict with
+candidate_id, segment_id_a, segment_id_b, endpoint_node_id_a,
+endpoint_node_id_b, gap_um, and occurrences; occurrences is the stable tuple of
+(node_a, node_b, gap_um) endpoint occurrences for that same unordered segment
+pair, sorted closest first. Runtime-only is_merge_creating and
+contains_known_merge_segment fields are also present strictly for output audit
+and must be ignored by feature extraction. FeatureAccumulator must preserve this exact sample
+order in to_frame(). GT-only fields (is_split,
+split_kind, GT neuron membership, merge-risk audit fields) may not enter
+FEATURE_REGISTRY or any feature computation.
+""".strip()
+        verification_scope = (
+            "candidate-pair-level rather than exact missing-voxel localization"
+        )
+        oof_verification = """
+Segment-disjoint split folds must never share either candidate segment between
+train and validation. Candidate rows whose two segments do not land together in
+a validation fold remain explicitly unscored (NaN), while each eligible row is
+scored once. Persist `n_scored`, report finite-score coverage, and exclude
+unscored rows from OOF queues/workload; recall on that queue is conditional on
+the OOF-scored subset, not the complete candidate universe.
+""".strip()
+        measuretime_scope = f"""
+For split measuretime, `profile_segment_limit` means a deterministic sample of
+at most that many component-bearing segment ids represented in candidate
+occurrences. Keep the complete driver-owned candidate universe and labels, but
+skip expensive feature computation outside the sampled segments and leave those
+feature cells undefined. Do not reinterpret the limit as a number of GT edges,
+positive split pairs, endpoint occurrences, or candidate rows. The reported
+seconds are observed on that bounded sample, not a full-run estimate.
+""".strip()
+    else:
+        target_inventory_note = """
+This is a merge-detection run. The detector row unit remains one adjudicable
+non-zero canonical segment; gt_merge_labels supplies is_merge and segments with
+no fragment component remain in the row universe.
+""".strip()
+        extraction_contract = """
+- SegmentAccumulator with explicit measured/definedness membership;
+- extract_features(payload, verbose=True, timing=None,
+  enabled_analysis_keys=None, profile_segment_limit=None), returning
+  adjudicable ids, merge labels, and the accumulator;
+- only geometry/data helpers directly needed by those definitions.
+""".strip()
+        verification_scope = "segment-level rather than merge-site localization"
+        oof_verification = """
+Every outer row receives exactly one prediction per available family and the
+selector; merge OOF coverage must be complete.
+""".strip()
+        measuretime_scope = """
+For merge measuretime, `profile_segment_limit` is the existing deterministic
+sample of component-bearing segment rows. Segments outside the sample remain in
+the row universe with profiled feature cells undefined. The reported seconds are
+observed sample costs, not a projection of the complete run.
+""".strip()
 
     return [
         {
@@ -509,6 +627,8 @@ any same-id corrected script, and markdowns/labeled_dataset_cache.md.
 {corrected_results_note}
 Inventory exactly those ids: do not add an unselected script merely because it
 is present on disk, and do not omit a selected id.
+
+{target_inventory_note}
 
 For each returned hypothesis, first determine whether it is eligible:
 - Exclude reproduction FAILED/UNUSABLE unless a later corrected run produced a
@@ -548,18 +668,20 @@ selection_manifest, selected_ids, source paths, or hashes into your artifact.
 Use that evidence only to make the semantic eligibility/source decision. This
 keeps your reasoning focused on what requires code understanding.
 
-Write the internal semantic draft {semantics_rel}. It has exactly two top-level
-keys: schema_version=1 and hypotheses. Write exactly one hypothesis row per
-authoritative selected id, in the supplied order. Each row has exactly: id,
-included, exclusion_reason, correction_scope (none|test_only|
-feature_semantics_changed|stale_fixed_ignored|unclear), feature_source
-(rerun|fixed|null), source_reason, and features. `features` is non-empty for an
-included hypothesis and empty for an excluded one. Each feature item has exactly:
-name, quantity, constants, aggregation, reduction, traversal_phase,
-measurable_condition, historical_undefined_sentinel. The driver will combine
-this draft with same-ID evidence and source hashes to write the public
+Write the internal semantic draft {semantics_rel}. It must obey this exact
+driver-owned contract:
+
+{SEMANTIC_DRAFT_CONTRACT}
+
+The driver will combine this draft with same-ID evidence and source hashes to write the public
 {inventory_rel}, then apply the strict inventory-v2 validator. Undefined values
 in the eventual detector are NaN plus an explicit <feature>_is_defined column.
+
+Before returning, run this narrow read-only self-check from the project root:
+python -m agentic.detector_build.draft_validation semantic --draft \
+  {semantics_rel} --run-json {run_rel}
+It must print DRAFT_VALIDATION_OK. If it reports a mismatch, repair the draft and
+run the same command again.
 
 This turn is ONLY the inventory-features semantic stage. Write only
 {semantics_rel}; do not create or modify {inventory_rel}, the model configuration,
@@ -606,6 +728,12 @@ arbitrary estimator name. The driver will reject missing baselines, more than
 {MAX_OPTIONAL_MODELS} extensions, unknown families/parameters, stale inventory
 hashes, and oversized grids before detector generation begins.
 
+Before returning, run this narrow read-only self-check from the project root:
+python -m agentic.detector_build.draft_validation model-advice --draft \
+  {model_advice_rel} --inventory {inventory_rel} --policy {policy_rel}
+It must print DRAFT_VALIDATION_OK. If it reports a mismatch, repair the draft and
+run the same command again.
+
 This turn is ONLY the configure-models advice stage. Treat {inventory_rel} as
 read-only, write only {model_advice_rel}, do not write {model_config_rel}, start
 detector generation, or document results. Return immediately when the advice is
@@ -621,22 +749,19 @@ feature implementation to {feature_impl_rel}. Read {inventory_rel} and, for each
 included feature, only its recorded feature_source_path after verifying the
 recorded SHA-256. Never fall back between rerun and fixed sources.
 
-The driver owns the reviewed runtime template and will assemble the unchanged
+The driver owns the reviewed runtime template plus target adapter and will assemble the unchanged
 public {detector_rel}; do not write that file. Your fragment must define:
 - FEATURE_REGISTRY in inventory order;
 - ANALYSIS_TIMING_GROUPS, a literal list mapping stable timing-group keys to
   positive hypothesis ids, actual traversal phase, and owned feature names;
-- SegmentAccumulator with explicit measured/definedness membership;
-- extract_features(payload, verbose=True, timing=None,
-  enabled_analysis_keys=None, profile_segment_limit=None), returning
-  adjudicable ids, merge labels, and the accumulator;
-- only geometry/data helpers directly needed by those definitions.
+{extraction_contract}
 
 Copy feature math, constants, reductions, and measurable conditions from the
 inventoried sources. Share traversal passes, keep intermediate quantities out of
 FEATURE_REGISTRY, and emit NaN plus <feature>_is_defined for undefined values.
-Never infer missingness from historical numeric sentinels. Include adjudicable
-segments without fragment components and remove install/sandbox scaffolding.
+Never infer missingness from historical numeric sentinels. Preserve the complete
+runtime-provided target row universe, leaving features undefined when their
+required fragment structure is absent, and remove install/sandbox scaffolding.
 Preserve whether graph algorithms are weighted or unweighted; do not invent
 distance calculations or edge weights that the selected source does not use.
 An induced/copied `networkx.Graph` does not retain custom SkeletonGraph
@@ -665,7 +790,7 @@ the graph algorithms, array construction, clustering, traversal, or reductions
 owned by disabled groups; leave their public columns present as NaN with
 is_defined=False. Avoid expensive common preparation when none of its consumer
 groups is enabled. Shared groups are enabled or disabled as one unit. Selection
-must not change the adjudicable row universe, feature-column order, labels, return
+must not change the target row universe, feature-column order, labels, return
 types, or all-enabled results.
 
 Implement `profile_segment_limit` as a profiling-only deterministic sample of at
@@ -674,6 +799,8 @@ junction, chain, component, and segment computation to that sample; do not merel
 stop the timer while continuing full-data work. `None` must preserve the complete
 row universe and exact normal-run behavior. The runtime passes a default limit of
 3 for `--measuretime` and records the sampled ids and full-data counts.
+
+{measuretime_scope}
 
 When `verbose=True`, additionally print flushed, machine-searchable start/done
 records for long segment/component work so the last durable line identifies the
@@ -696,6 +823,12 @@ must not create or manage log files. Do not edit {inventory_rel},
 {model_config_rel}, {detector_rel}, README.md, or {run_commands_rel}. The
 driver will AST-validate the fragment, inject it into the reviewed template, and
 independently execute the assembled detector's no-data contract checks.
+
+Before returning, run this narrow read-only self-check from the project root:
+python -m agentic.detector_build.draft_validation feature --draft \
+  {feature_impl_rel} --template {runtime_template_rel} --target {target.value}
+It must print DRAFT_VALIDATION_OK. If it reports a mismatch, repair the fragment
+and run the same command again.
 
 This turn is ONLY the feature-implementation stage. Write only
 {feature_impl_rel} and return immediately after it parses.
@@ -767,9 +900,8 @@ VERIFY READ-ONLY BEFORE DOCUMENTING
    Configuration cannot supply imports/classes/code. Names, implementations,
    grids, dependency declarations and fixed complexity order agree everywhere.
 4. Outer validation labels affect metrics only. Inner folds tune and select. The
-   one-standard-error rule is correct, each outer row gets exactly one prediction
-   per available family and selector, and --test-pkl cannot influence the final
-   full-data winner.
+   one-standard-error rule is correct. {oof_verification}
+   --test-pkl cannot influence the final full-data winner.
 5. The policy-selected `{PRIMARY_METRIC}` is primary. Queue and threshold sweep
    use the final winner's nested OOF,
    never in-sample scores. Held-out prediction reuses the fitted winner and cannot
@@ -796,7 +928,7 @@ reading order starting with coverage and AP, then review-budget precision/recall
 and cross-brain transfer, with ROC-AUC last. State that weighted classifier scores
 are not automatically calibrated probabilities. Preserve caveats about sparse
 positive labels, correlated features, discovery-stage feature-selection bias,
-uneven coverage, and segment-level rather than merge-site localization. Report
+uneven coverage, and {verification_scope}. Report
 defects found and anything requiring a real compute-node run.
 
 This turn is ONLY the verify-and-document stage. Treat {inventory_rel},
@@ -863,13 +995,16 @@ async def _run_step_inner(
             if verbose:
                 print()  # newline after the streamed text
             cost = getattr(message, "total_cost_usd", None)
-            costs.add(cost)
+            delta = costs.add(cost, getattr(message, "session_id", None))
             dur_ms = getattr(message, "duration_ms", None)
             parts = [f"{n_tools} tool call(s)"]
             if dur_ms is not None:
                 parts.append(f"{dur_ms / 1000:.0f}s")
-            if cost is not None:
-                parts.append(f"${cost:.4f}")
+            if delta is not None:
+                parts.append(
+                    f"${delta:.4f} this turn"
+                    f" (${float(cost):.4f} session cumulative)"
+                )
             log(f"  step turn finished — {', '.join(parts)}")
     return "".join(chunks)
 
@@ -892,10 +1027,64 @@ async def run_step(
         )
 
 
+async def finalize_step_with_repairs(
+    client: object,
+    step: dict,
+    finalize: Callable[[], None],
+    guard: Callable[[], None],
+    verbose: bool,
+    costs: WorkflowCostSummary,
+) -> None:
+    """Validate/compile one draft, with bounded repairs in the same session."""
+    for attempt in range(MAX_AGENT_REPAIR_ATTEMPTS + 1):
+        try:
+            validate_step_output(step)
+        except SystemExit as exc:
+            diagnostic = str(exc).strip() or repr(exc)
+        else:
+            # An out-of-scope write is a safety violation, not an artifact
+            # mismatch that the agent should attempt to repair.
+            guard()
+            try:
+                finalize()
+                return
+            except SystemExit as exc:
+                diagnostic = str(exc).strip() or repr(exc)
+
+        if attempt >= MAX_AGENT_REPAIR_ATTEMPTS:
+            raise SystemExit(diagnostic)
+        repair_number = attempt + 1
+        log(
+            f"  Driver rejected '{step['name']}' output; requesting repair "
+            f"{repair_number}/{MAX_AGENT_REPAIR_ATTEMPTS}: {diagnostic}"
+        )
+        repair_step = {
+            "name": f"{step['name']}-repair-{repair_number}",
+            "expects_file": step.get("expects_file"),
+            "instruction": f"""
+Continue the same detector-build task and repair ONLY
+{step.get('expects_file')}. The driver rejected the current artifact with this
+exact diagnostic:
+
+{diagnostic}
+
+Understand the underlying contract and make the smallest semantically correct
+change. Do not modify any other artifact, source, policy, template, README, or
+input. Re-run the narrow DRAFT_VALIDATION self-check from the original task when
+one was provided. Return immediately after the repaired artifact passes it; do
+not load a pkl or invent results.
+""".strip(),
+        }
+        repair_text = await run_step(client, repair_step, verbose, costs)
+        if not verbose:
+            print(repair_text.strip())
+
+
 # Files this workflow writes itself. Deleting one of these costs nothing, because
 # the run about to start puts it back.
 _REGENERATED = frozenset((
     *BUILD_ARTIFACT_NAMES,
+    *build_artifact_names(DetectorTarget.SPLIT),
     FEATURE_SEMANTICS_DRAFT_NAME,
     MODEL_ADVICE_DRAFT_NAME,
     FEATURE_IMPLEMENTATION_DRAFT_NAME,
@@ -922,7 +1111,7 @@ def _survey_out_dir(out_dir: Path) -> dict:
         if rel in _REGENERATED:
             groups["regenerated"].append((rel, size))
         elif rel.startswith("figures/") or (
-                name.startswith("merge_detector_")
+                name.startswith(("merge_detector_", "split_detector_"))
                 and (name.endswith(".csv") or name.endswith(".log.txt")
                      or name.endswith(".joblib"))) or (
                 name.startswith("model_selection_") and name.endswith(".json")) or (
@@ -1103,6 +1292,14 @@ def _validate_model_contract_constants() -> None:
         raise RuntimeError("Only optional model families may require extra packages.")
     if set(MODEL_SIMPLICITY_ORDER) != ALLOWED_MODEL_FAMILIES:
         raise RuntimeError("MODEL_SIMPLICITY_ORDER is out of sync with model families.")
+    if set(REQUIRED_GRID_PARAMETERS) != ALLOWED_MODEL_FAMILIES:
+        raise RuntimeError("REQUIRED_GRID_PARAMETERS is out of sync with model families.")
+    for family, required in REQUIRED_GRID_PARAMETERS.items():
+        if not required <= MODEL_PARAMETER_ALLOWLIST[family]:
+            raise RuntimeError(
+                f"REQUIRED_GRID_PARAMETERS for {family} names parameters "
+                "outside the policy allowlist."
+            )
 
 
 def validate_model_config(
@@ -1455,7 +1652,11 @@ def validate_detector_executable(
     model_config_path: Path,
 ) -> None:
     """Run the generated CLI's mandatory no-data contract checks."""
-    validate_detector_executable_contract(detector_path, model_config_path)
+    validate_detector_executable_contract(
+        detector_path,
+        model_config_path,
+        timeout_s=DETECTOR_CHECK_TIMEOUT_S,
+    )
     log(
         f"  OK: {_rel_to_root(detector_path)} --help, synthetic smoke, "
         f"invalid-config rejection, and no-output checks passed "
@@ -1503,6 +1704,7 @@ async def run_workflow(
     costs: WorkflowCostSummary,
 ) -> None:
     context = resolve_run_context(run_json)
+    spec = target_spec(context.target)
     summary_path = context.summary_path
     rerun_dir = context.rerun_dir
     fixed_dir = context.fixed_dir
@@ -1524,6 +1726,7 @@ async def run_workflow(
             _rel_to_root(corrected_results_path)
             if corrected_results_path is not None else None
         ),
+        target=context.target,
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1542,11 +1745,13 @@ async def run_workflow(
     log(
         f"Agent configuration: model={AGENT_MODEL}, effort={AGENT_EFFORT}, "
         f"connect timeout={AGENT_CONNECT_TIMEOUT_S}s, "
-        f"step timeout={AGENT_STEP_TIMEOUT_S}s."
+        f"step timeout={AGENT_STEP_TIMEOUT_S}s, "
+        f"detector check timeout={DETECTOR_CHECK_TIMEOUT_S}s."
     )
     wf_start = time.monotonic()
     policy_sha256 = _sha256(MODEL_POLICY_PATH)
     runtime_template_sha256 = _sha256(RUNTIME_TEMPLATE_PATH)
+    target_runtime_sha256 = _sha256(TARGET_RUNTIME_PATH)
     protected_hashes = {
         path: _sha256(path) for path in protected_source_paths(context)
     }
@@ -1557,43 +1762,237 @@ async def run_workflow(
     readme_driver_block: str | None = None
     readme_skeleton_sha256: str | None = None
 
-    # A failed deterministic compile leaves only its hidden agent draft.  That
-    # draft is expensive semantic work, while all public provenance is rebuilt
-    # and revalidated below.  Reuse it on --keep-existing recovery instead of
-    # paying for the same agent turn again.  Successful stages remove their
-    # drafts, so normal clean builds still execute every stage.
+    def guard_immutable_artifacts() -> None:
+        """Reject any agent write outside the artifact owned by its stage."""
+        require_unchanged(
+            MODEL_POLICY_PATH, policy_sha256, "versioned model-policy")
+        require_unchanged(
+            RUNTIME_TEMPLATE_PATH,
+            runtime_template_sha256,
+            "reviewed detector runtime template",
+        )
+        require_unchanged(
+            TARGET_RUNTIME_PATH,
+            target_runtime_sha256,
+            "reviewed detector target adapter",
+        )
+        for protected_path, protected_sha256 in protected_hashes.items():
+            require_unchanged(protected_path, protected_sha256, "discovery input")
+        if inventory_sha256 is not None:
+            require_unchanged(
+                out_dir / FEATURE_INVENTORY_NAME,
+                inventory_sha256,
+                "inventory-features",
+            )
+        if model_config_sha256 is not None:
+            require_unchanged(
+                out_dir / MODEL_CONFIG_NAME,
+                model_config_sha256,
+                "configure-models",
+            )
+        if detector_sha256 is not None:
+            require_unchanged(
+                out_dir / spec.detector_name,
+                detector_sha256,
+                "driver assembly",
+            )
+        if run_commands_sha256 is not None:
+            require_unchanged(
+                out_dir / RUN_COMMANDS_NAME,
+                run_commands_sha256,
+                "driver run-command guide",
+            )
+
+    def write_documentation_skeleton(detector_path: Path) -> None:
+        """Regenerate driver-owned commands and factual README foundation."""
+        nonlocal run_commands_sha256, readme_driver_block, readme_skeleton_sha256
+        run_commands_path = out_dir / RUN_COMMANDS_NAME
+        write_run_commands(
+            run_commands_path,
+            project_root=PROJECT_ROOT,
+            run_rel=_rel_to_root(run_json),
+            detector_path=detector_path,
+            detector_rel=_rel_to_root(detector_path),
+            inventory_path=out_dir / FEATURE_INVENTORY_NAME,
+            inventory_rel=_rel_to_root(out_dir / FEATURE_INVENTORY_NAME),
+            model_config_path=out_dir / MODEL_CONFIG_NAME,
+            model_config_rel=_rel_to_root(out_dir / MODEL_CONFIG_NAME),
+            model_policy_path=MODEL_POLICY_PATH,
+            model_policy_rel=_rel_to_root(MODEL_POLICY_PATH),
+            runtime_template_path=RUNTIME_TEMPLATE_PATH,
+            runtime_template_rel=_rel_to_root(RUNTIME_TEMPLATE_PATH),
+            cache_hint=origin_cache_hint(run_json),
+            agent_model=AGENT_MODEL,
+            agent_effort=AGENT_EFFORT,
+            target=context.target,
+        )
+        run_commands_sha256 = _sha256(run_commands_path)
+        log(
+            f"  Driver wrote instance-bound commands at "
+            f"{_rel_to_root(run_commands_path)}."
+        )
+        readme_path = out_dir / README_NAME
+        write_readme_skeleton(
+            readme_path,
+            run_rel=_rel_to_root(run_json),
+            summary_rel=_rel_to_root(summary_path),
+            inventory_path=out_dir / FEATURE_INVENTORY_NAME,
+            inventory_rel=_rel_to_root(out_dir / FEATURE_INVENTORY_NAME),
+            model_config_path=out_dir / MODEL_CONFIG_NAME,
+            model_config_rel=_rel_to_root(out_dir / MODEL_CONFIG_NAME),
+            detector_rel=_rel_to_root(detector_path),
+            run_commands_rel=_rel_to_root(run_commands_path),
+            cache_hint=origin_cache_hint(run_json),
+            primary_metric=PRIMARY_METRIC,
+            target=context.target,
+        )
+        log(
+            f"  Driver wrote factual README skeleton at "
+            f"{_rel_to_root(readme_path)} for semantic review."
+        )
+        readme_driver_block = read_driver_generated_block(readme_path)
+        readme_skeleton_sha256 = _sha256(readme_path)
+
+    # Drafts are transactional: a failed compile/check leaves the stage-owned
+    # hidden draft in place, while successful stages remove it. Revalidate a
+    # retained semantic draft on --keep-existing before paying for another
+    # agent turn; the same recovery pattern continues below for later stages.
     semantics_path = out_dir / FEATURE_SEMANTICS_DRAFT_NAME
     if semantics_path.is_file():
         inventory_path = out_dir / FEATURE_INVENTORY_NAME
-        compile_feature_inventory(
-            semantics_path,
-            inventory_path,
-            selected_ids=selected_ids,
-            selection_manifest=(
-                _rel_to_root(selection_path) if selection_path else None
-            ),
-            summary_path=summary_path,
-            corrected_results_path=corrected_results_path,
-            rerun_dir=rerun_dir,
-            fixed_dir=fixed_dir,
-            project_root=PROJECT_ROOT,
-        )
-        validate_inventory(
-            inventory_path,
-            selected_ids,
-            _rel_to_root(selection_path) if selection_path else None,
-            rerun_dir,
-            fixed_dir,
-            summary_path,
-            corrected_results_path,
-        )
-        inventory_sha256 = _sha256(inventory_path)
-        semantics_path.unlink()
-        steps = [step for step in steps if step["name"] != "inventory-features"]
-        log(
-            "Recovered the validated transient feature-semantics draft; "
-            "skipping the repeated inventory agent turn."
-        )
+        try:
+            canonical_changes = compile_feature_inventory(
+                semantics_path,
+                inventory_path,
+                selected_ids=selected_ids,
+                selection_manifest=(
+                    _rel_to_root(selection_path) if selection_path else None
+                ),
+                summary_path=summary_path,
+                corrected_results_path=corrected_results_path,
+                rerun_dir=rerun_dir,
+                fixed_dir=fixed_dir,
+                project_root=PROJECT_ROOT,
+            )
+            for change in canonical_changes:
+                log(f"  Canonicalized semantic draft: {change}")
+            validate_inventory(
+                inventory_path,
+                selected_ids,
+                _rel_to_root(selection_path) if selection_path else None,
+                rerun_dir,
+                fixed_dir,
+                summary_path,
+                corrected_results_path,
+            )
+        except SystemExit as exc:
+            log(
+                "Existing semantic draft is not recoverable deterministically; "
+                f"retaining it for the inventory agent to repair: {exc}"
+            )
+        else:
+            inventory_sha256 = _sha256(inventory_path)
+            semantics_path.unlink()
+            steps = [
+                step for step in steps if step["name"] != "inventory-features"
+            ]
+            log(
+                "Recovered the validated transient feature-semantics draft; "
+                "skipping the repeated inventory agent turn."
+            )
+
+    # Public artifacts are also resumable only after their complete driver-owned
+    # validation passes against the current inputs/policy. This avoids paying for
+    # already successful upstream agent stages after a later-stage interruption.
+    inventory_path = out_dir / FEATURE_INVENTORY_NAME
+    if (any(step["name"] == "inventory-features" for step in steps)
+            and not semantics_path.is_file() and inventory_path.is_file()):
+        try:
+            validate_inventory(
+                inventory_path,
+                selected_ids,
+                _rel_to_root(selection_path) if selection_path else None,
+                rerun_dir,
+                fixed_dir,
+                summary_path,
+                corrected_results_path,
+            )
+        except SystemExit as exc:
+            log(f"Existing feature inventory is stale; rebuilding it: {exc}")
+        else:
+            inventory_sha256 = _sha256(inventory_path)
+            steps = [
+                step for step in steps if step["name"] != "inventory-features"
+            ]
+            log("Recovered validated feature_inventory.json; skipping Step 1.")
+
+    advice_path = out_dir / MODEL_ADVICE_DRAFT_NAME
+    config_path = out_dir / MODEL_CONFIG_NAME
+    if inventory_sha256 is not None and advice_path.is_file():
+        try:
+            compile_model_config(
+                advice_path,
+                config_path,
+                inventory_path,
+                MODEL_POLICY_PATH,
+                MODEL_POLICY_CONTRACT,
+                MODEL_CONFIG_SCHEMA_VERSION,
+                PROJECT_ROOT,
+            )
+            validate_model_config(config_path, inventory_path)
+        except SystemExit as exc:
+            log(
+                "Existing model-advice draft needs agent repair; retaining it: "
+                f"{exc}"
+            )
+        else:
+            model_config_sha256 = _sha256(config_path)
+            advice_path.unlink()
+            steps = [
+                step for step in steps if step["name"] != "configure-models"
+            ]
+            log("Recovered validated model-advice draft; skipping Step 2.")
+    elif (inventory_sha256 is not None and config_path.is_file()
+          and any(step["name"] == "configure-models" for step in steps)):
+        try:
+            validate_model_config(config_path, inventory_path)
+        except SystemExit as exc:
+            log(f"Existing model configuration is stale; rebuilding it: {exc}")
+        else:
+            model_config_sha256 = _sha256(config_path)
+            steps = [
+                step for step in steps if step["name"] != "configure-models"
+            ]
+            log("Recovered validated model_candidates.json; skipping Step 2.")
+
+    feature_path = out_dir / FEATURE_IMPLEMENTATION_DRAFT_NAME
+    detector_path = out_dir / spec.detector_name
+    if model_config_sha256 is not None and feature_path.is_file():
+        try:
+            assemble_detector(
+                RUNTIME_TEMPLATE_PATH,
+                feature_path,
+                detector_path,
+                target=context.target,
+            )
+            validate_detector_source(detector_path)
+            validate_detector_executable(detector_path, config_path)
+        except SystemExit as exc:
+            log(
+                "Existing feature draft needs agent repair; retaining it: "
+                f"{exc}"
+            )
+        else:
+            detector_sha256 = _sha256(detector_path)
+            feature_path.unlink()
+            write_documentation_skeleton(detector_path)
+            steps = [
+                step for step in steps if step["name"] != "generate-detector"
+            ]
+            log(
+                "Recovered validated feature implementation and detector; "
+                "skipping Step 3."
+            )
 
     sdk = load_claude_sdk()
     async with open_agent_session(
@@ -1611,71 +2010,39 @@ async def run_workflow(
                 f"Step {i}/{len(steps)} '{step['name']}' done in "
                 f"{time.monotonic() - step_start:.0f}s."
             )
-            validate_step_output(step)
-            require_unchanged(
-                MODEL_POLICY_PATH,
-                policy_sha256,
-                "versioned model-policy",
-            )
-            require_unchanged(
-                RUNTIME_TEMPLATE_PATH,
-                runtime_template_sha256,
-                "reviewed detector runtime template",
-            )
-            for protected_path, protected_sha256 in protected_hashes.items():
-                require_unchanged(
-                    protected_path,
-                    protected_sha256,
-                    "discovery input",
-                )
-            if inventory_sha256 is not None:
-                require_unchanged(
-                    out_dir / "feature_inventory.json",
-                    inventory_sha256,
-                    "inventory-features",
-                )
-            if model_config_sha256 is not None:
-                require_unchanged(
-                    out_dir / MODEL_CONFIG_NAME,
-                    model_config_sha256,
-                    "configure-models",
-                )
-            if detector_sha256 is not None:
-                require_unchanged(
-                    out_dir / DETECTOR_NAME,
-                    detector_sha256,
-                    "driver assembly",
-                )
-            if run_commands_sha256 is not None:
-                require_unchanged(
-                    out_dir / RUN_COMMANDS_NAME,
-                    run_commands_sha256,
-                    "driver run-command guide",
-                )
             if step["name"] == "inventory-features":
                 semantics_path = out_dir / FEATURE_SEMANTICS_DRAFT_NAME
                 inventory_path = out_dir / FEATURE_INVENTORY_NAME
-                compile_feature_inventory(
-                    semantics_path,
-                    inventory_path,
-                    selected_ids=selected_ids,
-                    selection_manifest=(
-                        _rel_to_root(selection_path) if selection_path else None
-                    ),
-                    summary_path=summary_path,
-                    corrected_results_path=corrected_results_path,
-                    rerun_dir=rerun_dir,
-                    fixed_dir=fixed_dir,
-                    project_root=PROJECT_ROOT,
-                )
-                validate_inventory(
-                    inventory_path,
-                    selected_ids,
-                    _rel_to_root(selection_path) if selection_path else None,
-                    rerun_dir,
-                    fixed_dir,
-                    summary_path,
-                    corrected_results_path,
+
+                def finalize_inventory() -> None:
+                    canonical_changes = compile_feature_inventory(
+                        semantics_path,
+                        inventory_path,
+                        selected_ids=selected_ids,
+                        selection_manifest=(
+                            _rel_to_root(selection_path) if selection_path else None
+                        ),
+                        summary_path=summary_path,
+                        corrected_results_path=corrected_results_path,
+                        rerun_dir=rerun_dir,
+                        fixed_dir=fixed_dir,
+                        project_root=PROJECT_ROOT,
+                    )
+                    for change in canonical_changes:
+                        log(f"  Canonicalized semantic draft: {change}")
+                    validate_inventory(
+                        inventory_path,
+                        selected_ids,
+                        _rel_to_root(selection_path) if selection_path else None,
+                        rerun_dir,
+                        fixed_dir,
+                        summary_path,
+                        corrected_results_path,
+                    )
+
+                await finalize_step_with_repairs(
+                    client, step, finalize_inventory, guard_immutable_artifacts,
+                    verbose, costs,
                 )
                 inventory_sha256 = _sha256(inventory_path)
                 semantics_path.unlink()
@@ -1686,18 +2053,25 @@ async def run_workflow(
             elif step["name"] == "configure-models":
                 advice_path = out_dir / MODEL_ADVICE_DRAFT_NAME
                 config_path = out_dir / MODEL_CONFIG_NAME
-                compile_model_config(
-                    advice_path,
-                    config_path,
-                    out_dir / FEATURE_INVENTORY_NAME,
-                    MODEL_POLICY_PATH,
-                    MODEL_POLICY_CONTRACT,
-                    MODEL_CONFIG_SCHEMA_VERSION,
-                    PROJECT_ROOT,
-                )
-                validate_model_config(
-                    config_path,
-                    out_dir / FEATURE_INVENTORY_NAME,
+
+                def finalize_model_config() -> None:
+                    compile_model_config(
+                        advice_path,
+                        config_path,
+                        out_dir / FEATURE_INVENTORY_NAME,
+                        MODEL_POLICY_PATH,
+                        MODEL_POLICY_CONTRACT,
+                        MODEL_CONFIG_SCHEMA_VERSION,
+                        PROJECT_ROOT,
+                    )
+                    validate_model_config(
+                        config_path,
+                        out_dir / FEATURE_INVENTORY_NAME,
+                    )
+
+                await finalize_step_with_repairs(
+                    client, step, finalize_model_config,
+                    guard_immutable_artifacts, verbose, costs,
                 )
                 model_config_sha256 = _sha256(config_path)
                 advice_path.unlink()
@@ -1706,82 +2080,57 @@ async def run_workflow(
                     f"{_rel_to_root(config_path)}; removed transient draft."
                 )
             elif step["name"] in {"generate-detector", "verify-and-document"}:
-                detector_path = out_dir / DETECTOR_NAME
+                detector_path = out_dir / spec.detector_name
                 if step["name"] == "generate-detector":
                     feature_path = out_dir / FEATURE_IMPLEMENTATION_DRAFT_NAME
-                    assemble_detector(
-                        RUNTIME_TEMPLATE_PATH,
-                        feature_path,
-                        detector_path,
+
+                    def finalize_detector() -> None:
+                        assemble_detector(
+                            RUNTIME_TEMPLATE_PATH,
+                            feature_path,
+                            detector_path,
+                            target=context.target,
+                        )
+                        validate_detector_source(detector_path)
+                        validate_detector_executable(
+                            detector_path,
+                            out_dir / MODEL_CONFIG_NAME,
+                        )
+
+                    await finalize_step_with_repairs(
+                        client, step, finalize_detector,
+                        guard_immutable_artifacts, verbose, costs,
                     )
                     feature_path.unlink()
                     log(
                         f"  Driver assembled {_rel_to_root(detector_path)} from "
-                        "the reviewed runtime template and validated feature fragment."
+                        "the reviewed runtime template; source and no-data checks "
+                        "passed, then the transient feature draft was removed."
                     )
-                validate_detector_source(detector_path)
-                validate_detector_executable(
-                    detector_path,
-                    out_dir / MODEL_CONFIG_NAME,
-                )
+                else:
+                    def finalize_documentation() -> None:
+                        validate_detector_source(detector_path)
+                        validate_detector_executable(
+                            detector_path,
+                            out_dir / MODEL_CONFIG_NAME,
+                        )
+                        if (readme_driver_block is None
+                                or readme_skeleton_sha256 is None):
+                            raise SystemExit(
+                                "README skeleton validation state is missing.")
+                        validate_readme_enrichment(
+                            out_dir / README_NAME,
+                            expected_driver_block=readme_driver_block,
+                            skeleton_sha256=readme_skeleton_sha256,
+                        )
+
+                    await finalize_step_with_repairs(
+                        client, step, finalize_documentation,
+                        guard_immutable_artifacts, verbose, costs,
+                    )
                 if step["name"] == "generate-detector":
                     detector_sha256 = _sha256(detector_path)
-                    run_commands_path = out_dir / RUN_COMMANDS_NAME
-                    write_run_commands(
-                        run_commands_path,
-                        project_root=PROJECT_ROOT,
-                        run_rel=_rel_to_root(run_json),
-                        detector_path=detector_path,
-                        detector_rel=_rel_to_root(detector_path),
-                        inventory_path=out_dir / FEATURE_INVENTORY_NAME,
-                        inventory_rel=_rel_to_root(
-                            out_dir / FEATURE_INVENTORY_NAME
-                        ),
-                        model_config_path=out_dir / MODEL_CONFIG_NAME,
-                        model_config_rel=_rel_to_root(out_dir / MODEL_CONFIG_NAME),
-                        model_policy_path=MODEL_POLICY_PATH,
-                        model_policy_rel=_rel_to_root(MODEL_POLICY_PATH),
-                        runtime_template_path=RUNTIME_TEMPLATE_PATH,
-                        runtime_template_rel=_rel_to_root(RUNTIME_TEMPLATE_PATH),
-                        cache_hint=origin_cache_hint(run_json),
-                        agent_model=AGENT_MODEL,
-                        agent_effort=AGENT_EFFORT,
-                    )
-                    run_commands_sha256 = _sha256(run_commands_path)
-                    log(
-                        f"  Driver wrote instance-bound commands at "
-                        f"{_rel_to_root(run_commands_path)}."
-                    )
-                    readme_path = out_dir / README_NAME
-                    write_readme_skeleton(
-                        readme_path,
-                        run_rel=_rel_to_root(run_json),
-                        summary_rel=_rel_to_root(summary_path),
-                        inventory_path=out_dir / FEATURE_INVENTORY_NAME,
-                        inventory_rel=_rel_to_root(
-                            out_dir / FEATURE_INVENTORY_NAME
-                        ),
-                        model_config_path=out_dir / MODEL_CONFIG_NAME,
-                        model_config_rel=_rel_to_root(out_dir / MODEL_CONFIG_NAME),
-                        detector_rel=_rel_to_root(detector_path),
-                        run_commands_rel=_rel_to_root(run_commands_path),
-                        cache_hint=origin_cache_hint(run_json),
-                        primary_metric=PRIMARY_METRIC,
-                    )
-                    log(
-                        f"  Driver wrote factual README skeleton at "
-                        f"{_rel_to_root(readme_path)} for semantic review."
-                    )
-                    readme_driver_block = read_driver_generated_block(readme_path)
-                    readme_skeleton_sha256 = _sha256(readme_path)
-                elif readme_driver_block is None or readme_skeleton_sha256 is None:
-                    raise SystemExit("README skeleton validation state is missing.")
-                else:
-                    validate_readme_enrichment(
-                        out_dir / README_NAME,
-                        expected_driver_block=readme_driver_block,
-                        skeleton_sha256=readme_skeleton_sha256,
-                    )
+                    write_documentation_skeleton(detector_path)
             if not verbose:
                 print(final_text.strip())
 
@@ -1796,8 +2145,8 @@ async def run_workflow(
             f"Instance-bound smoke, compute-node, Slurm, and reproducibility "
             f"commands: {_rel_to_root(out_dir / RUN_COMMANDS_NAME)}"
         )
-    detector_rel = f"{_rel_to_root(out_dir)}/{DETECTOR_NAME}"
-    if (out_dir / DETECTOR_NAME).is_file():
+    detector_rel = f"{_rel_to_root(out_dir)}/{spec.detector_name}"
+    if (out_dir / spec.detector_name).is_file():
         # End on the command, not on a summary: the detector is the deliverable
         # and running it — on a compute node, with the data — is the next action.
         # The cache is a guess from the run name (this workflow was never told
@@ -1825,7 +2174,7 @@ def main() -> int:
         type=Path,
         help=(
             "The AutoDiscovery run export whose findings to build on, e.g. "
-            "autodiscovery/merge-error-794495-mcl100_2026-08-04.json. Its "
+            "autodiscovery/merge-error-...json or split-error-...json. Its "
             "<RUN>.summary.md report, predictive-selection manifest, and matching "
             "predictive rerun scripts must already exist and agree; a matching "
             "fixed directory is consumed when present (run "
@@ -1872,10 +2221,11 @@ def main() -> int:
         "--keep-existing",
         action="store_true",
         help=(
-            "Do not delete a pre-existing output folder — write into it as it "
-            "stands, the behaviour before deletion was added. Anything already "
-            "there survives, so run outputs from the previous detector will be "
-            "left beside the new script with nothing marking the mismatch."
+            "Do not delete a pre-existing output folder. Driver-generated build "
+            "stages are reused only after validation against current inputs, "
+            "policy, and hashes; retained invalid drafts are repaired by the "
+            "stage agent. Detector run outputs are preserved unchanged and may "
+            "therefore still belong to an older generated detector."
         ),
     )
     parser.add_argument(

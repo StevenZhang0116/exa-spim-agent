@@ -105,6 +105,65 @@ class DetectorResultAnalysisTests(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "not complete"):
             analysis.collect_evidence(result, application)
 
+    def test_collect_evidence_supports_split_candidate_rows(self) -> None:
+        application, result = self.make_completed_result()
+        (application / "merge_site_detector.py").unlink()
+        (application / "split_site_detector.py").write_text("# split detector\n")
+        model_path = result / "model_selection_123.json"
+        model = json.loads(model_path.read_text())
+        model.update({
+            "detector_target": "split_detection",
+            "row_unit": "candidate segment pair",
+            "label_name": "is_split",
+            "score_prefix": "split_probability",
+            "audit": {
+                "n_rows": 4,
+                "n_positive": 2,
+                "n_negative": 2,
+                "all_undefined_count": 0,
+                "all_undefined_positives": 0,
+            },
+            "sample_universe_audit": {
+                "n_reachable_truth_pairs": 3,
+                "n_candidate_truth_pairs": 2,
+                "candidate_recall_of_reachable": 2 / 3,
+            },
+        })
+        model_path.write_text(json.dumps(model))
+        (result / "merge_detector_123.csv").unlink()
+        (result / "merge_detector_123.joblib").rename(
+            result / "split_detector_123.joblib")
+        (result / "merge_detector_123.log.txt").rename(
+            result / "split_detector_123.log.txt")
+        (result / "split_detector_123.csv").write_text(
+            "candidate_id,segment_id_a,segment_id_b,is_split,"
+            "is_merge_creating,split_probability_oof\n"
+            "0,1,2,1,0,0.9\n"
+            "1,3,4,0,1,0.8\n"
+            "2,5,6,1,0,0.7\n"
+            "3,7,8,0,0,\n"
+        )
+
+        evidence = analysis.collect_evidence(result, application)
+
+        self.assertEqual(evidence["detector_target"], "split_detection")
+        self.assertEqual(evidence["csv_summary"]["n_positive"], 2)
+        self.assertEqual(evidence["csv_summary"]["n_oof_scored"], 3)
+        self.assertEqual(evidence["csv_summary"]["n_oof_unscored"], 1)
+        self.assertEqual(evidence["csv_summary"]["oof_coverage"], 0.75)
+        self.assertEqual(
+            evidence["csv_summary"]["review_workload"][0]["recall_scope"],
+            "oof_scored_rows",
+        )
+        self.assertEqual(
+            evidence["csv_summary"]["review_workload"][0]["merge_creating_joins"],
+            1,
+        )
+        self.assertTrue(any(
+            row["path"].endswith("split_site_detector.py")
+            for row in evidence["artifacts"]
+        ))
+
     def test_report_validation_preserves_evidence_and_mentions_every_figure(self) -> None:
         application, result = self.make_completed_result()
         evidence = analysis.collect_evidence(result, application)

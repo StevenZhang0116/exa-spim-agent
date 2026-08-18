@@ -207,13 +207,6 @@ def resolve_run_context(
 ) -> RunContext:
     """Resolve and cross-check every input before any destructive output action."""
     target = infer_target(run_json)
-    if target is DetectorTarget.SPLIT:
-        raise SystemExit(
-            f"{rel_to_root(run_json, project_root)} is a split-error run, but "
-            "run_detector_build_workflow.py currently builds merge detectors "
-            "only (its target is gt_merge_labels). Refusing to generate a "
-            "semantically incorrect merge detector from split hypotheses."
-        )
 
     stem = run_stem(run_json)
     summary_path = run_json.with_name(f"{stem}.summary.md")

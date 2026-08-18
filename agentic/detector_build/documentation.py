@@ -7,6 +7,7 @@ import re
 import shlex
 from pathlib import Path
 
+from .contracts import DetectorTarget, target_spec
 from .inputs import sha256
 
 
@@ -31,12 +32,14 @@ def write_readme_skeleton(
     run_commands_rel: str,
     cache_hint: str | None,
     primary_metric: str,
+    target: DetectorTarget = DetectorTarget.MERGE,
 ) -> None:
     """Write factual mechanical documentation before semantic agent review."""
     inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
     model_config = json.loads(model_config_path.read_text(encoding="utf-8"))
     rows = inventory["hypotheses"]
     candidates = model_config["candidates"]
+    spec = target_spec(target)
 
     feature_lines = [
         "| ID | Included | Source | Feature columns | Defined when / exclusion |",
@@ -67,7 +70,8 @@ def write_readme_skeleton(
         )
 
     cache = cache_hint or "cache/dataset_cache_<brain>_mcl<N>_add.pkl"
-    content = f"""# Merge detector — `{Path(run_rel).stem}`
+    title = "Merge detector" if spec.target is DetectorTarget.MERGE else "Split detector"
+    content = f"""# {title} — `{Path(run_rel).stem}`
 
 > **Build-time status:** when this README was generated, the detector had only
 > been checked without a real dataset. This immutable provenance block is not
@@ -108,7 +112,7 @@ automatically calibrated probabilities.
 ## Run on a compute node
 
 See `{run_commands_rel}` for hash checks, smoke tests, isolated output
-directories, n169/Slurm examples, held-out transfer, and environment capture.
+directories, n287/Slurm examples, held-out transfer, and environment capture.
 
 ```bash
 conda activate panda
@@ -122,10 +126,10 @@ brain; it must not influence model or preprocessing selection.
 
 ## Expected outputs
 
-- `merge_detector_<brain>.csv`
+- `{spec.output_prefix}_<brain>.csv`
 - `model_selection_<brain>.json`
-- `merge_detector_<brain>.joblib`
-- `merge_detector_<brain>.log.txt`
+- `{spec.output_prefix}_<brain>.joblib`
+- `{spec.output_prefix}_<brain>.log.txt`
 - `figures/`
 - `analysis_timing_<brain>.json` only for the profiling-only `--measuretime` run
 - `hypothesis_cost_report_<brain>.md` and
@@ -137,6 +141,10 @@ brain; it must not influence model or preprocessing selection.
 Read undefined coverage first, then average precision and review-budget
 precision/recall, then held-out transfer; read ROC-AUC last. Training thresholds
 and queues must use nested out-of-fold scores, never the final in-sample score.
+For split detectors, segment-disjoint folds can deliberately leave cross-fold
+candidate pairs without an OOF score. The CSV preserves those rows with NaN;
+queues exclude them, model metrics report `n_scored`, and OOF recall is
+conditional on the scored subset rather than the complete candidate universe.
 
 {DRIVER_BLOCK_END}
 
@@ -201,6 +209,7 @@ def write_run_commands(
     cache_hint: str | None,
     agent_model: str,
     agent_effort: str,
+    target: DetectorTarget = DetectorTarget.MERGE,
 ) -> None:
     """Write a deterministic runbook bound to one assembled detector instance.
 
@@ -212,6 +221,7 @@ def write_run_commands(
     brain_match = re.search(r"dataset_cache_(\d+)_", cache)
     brain = brain_match.group(1) if brain_match else "<brain>"
     app_dir = Path(detector_rel).parent.as_posix()
+    spec = target_spec(target)
 
     detector_sha = sha256(detector_path)
     inventory_sha = sha256(inventory_path)
@@ -257,7 +267,7 @@ cd {q_root}
 conda activate panda
 
 APP_DIR={q_app}
-DETECTOR="$APP_DIR/merge_site_detector.py"
+DETECTOR="$APP_DIR/{spec.detector_name}"
 INVENTORY="$APP_DIR/feature_inventory.json"
 MODEL_CONFIG="$APP_DIR/model_candidates.json"
 DATA_PKL={q_cache}
@@ -486,15 +496,15 @@ python "$DETECTOR" "$DATA_PKL" \\
     --n-jobs 2
 ```
 
-## Site-specific Slurm example for `n169` (edit for another cluster)
+## Site-specific Slurm example for `n287` (edit for another cluster)
 
 ```bash
-RUN_DIR="$APP_DIR/runs/${{BRAIN}}-n169"
+RUN_DIR="$APP_DIR/runs/${{BRAIN}}-n287"
 mkdir -p "$RUN_DIR"
 
 sbatch \\
     --partition=aibs_debug \\
-    --nodelist=n169 \\
+    --nodelist=n287 \\
     --mem=80G \\
     --cpus-per-task=2 \\
     --time=04:00:00 \\
@@ -526,6 +536,9 @@ output.
 
 Read undefined coverage first, then average precision and review-budget
 precision/recall, then held-out transfer, and ROC-AUC last.
+For split detectors, also read finite OOF coverage: segment-disjoint validation
+can leave cross-fold candidate rows unscored, and reported OOF workload recall
+is conditional on the scored subset.
 
 ## Generate the bilingual result-analysis report
 
@@ -561,6 +574,20 @@ python --version > "$RUN_DIR/python-version.txt"
 sha256sum "$DATA_PKL" > "$RUN_DIR/input-pkl.sha256"
 ```
 """
+    if spec.target is DetectorTarget.SPLIT:
+        # The command guide is deliberately generated from one reviewed body so
+        # hash/provenance and operational steps cannot drift between targets.
+        # Replace only task vocabulary; command structure remains identical.
+        content = content.replace("merge_detector_", "split_detector_")
+        content = content.replace("merge-detector", "split-detector")
+        content = content.replace(
+            "component-bearing segments (3 by default)",
+            "candidate-bearing segments (3 by default)",
+        )
+        content = content.replace(
+            "Each segment and component has start/done progress.",
+            "Each candidate-related segment/component has start/done progress.",
+        )
     temporary = commands_path.with_name(f".{commands_path.name}.tmp")
     temporary.write_text(content, encoding="utf-8")
     temporary.replace(commands_path)

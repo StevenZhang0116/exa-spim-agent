@@ -213,6 +213,30 @@ def valid_grid_value(rule: str, value) -> bool:
     return False
 
 
+# Grid parameters the assembled runtime's ``build_estimator`` indexes without a
+# default (``params["<name>"]`` in ``templates/detector_runtime.py.tmpl``). The
+# policy's parameter rules are an allowlist only, so a grid missing one of
+# these would pass allowlisting and then raise ``KeyError`` on every CV fold at
+# fit time — silently zeroing that family out of nested selection. Must match
+# the template's per-family ``required_parameters`` (a unit test compares them).
+REQUIRED_GRID_PARAMETERS: dict[str, frozenset[str]] = {
+    "logistic_l2": frozenset({"C"}),
+    "logistic_elasticnet": frozenset({"C", "l1_ratio"}),
+    "spline_logistic": frozenset({"n_knots", "degree", "C"}),
+    "hist_gradient_boosting": frozenset(),
+    "explainable_boosting": frozenset({
+        "max_bins", "interactions", "learning_rate", "max_rounds",
+        "min_samples_leaf",
+    }),
+    "extra_trees": frozenset({"n_estimators", "min_samples_leaf"}),
+    "random_forest": frozenset({"n_estimators", "min_samples_leaf"}),
+    "xgboost": frozenset({
+        "n_estimators", "max_depth", "learning_rate", "min_child_weight",
+        "subsample", "colsample_bytree", "reg_lambda",
+    }),
+}
+
+
 def validate_model_config(
     config_path: Path,
     inventory_path: Path,
@@ -306,6 +330,20 @@ def validate_model_config(
             raise SystemExit(
                 f"Model candidate {name} has disallowed parameters: "
                 + ", ".join(sorted(unknown))
+            )
+        required_parameters = REQUIRED_GRID_PARAMETERS.get(name)
+        if required_parameters is None:
+            raise SystemExit(
+                f"Model candidate {name} has no REQUIRED_GRID_PARAMETERS "
+                "entry; record the parameters its build_estimator branch "
+                "indexes without a default."
+            )
+        missing_parameters = required_parameters - set(grid)
+        if missing_parameters:
+            raise SystemExit(
+                f"Model candidate {name} grid is missing parameters the "
+                "assembled runtime requires: "
+                + ", ".join(sorted(missing_parameters))
             )
         combinations = 1
         for parameter, values in grid.items():

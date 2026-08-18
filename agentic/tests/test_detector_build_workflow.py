@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from agentic.detector_build.assembly import assemble_detector
+from agentic.detector_build.contracts import DetectorTarget
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -46,21 +47,27 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
     def tearDown(self) -> None:
         workflow.PROJECT_ROOT = self.old_root
 
-    def test_workflow_cost_summary_totals_reported_costs(self) -> None:
+    def test_detector_check_timeout_has_long_default(self) -> None:
+        self.assertEqual(workflow.DEFAULT_DETECTOR_CHECK_TIMEOUT_S, 30_000)
+
+    def test_workflow_cost_summary_totals_session_cumulative_costs(self) -> None:
         costs = workflow.WorkflowCostSummary()
-        for _ in range(5):
+        for _ in range(6):
             costs.start_turn()
-        costs.add(0.125)
-        costs.add("0.375")
-        costs.add(None)
-        costs.add(float("nan"))
+        # total_cost_usd reports are session-cumulative: later turns repeat
+        # earlier spend, so only the per-session latest value may be totalled.
+        self.assertEqual(costs.add(0.125, "session-a"), 0.125)
+        self.assertEqual(costs.add("0.375", "session-a"), 0.25)
+        self.assertIsNone(costs.add(None, "session-a"))
+        self.assertIsNone(costs.add(float("nan"), "session-a"))
+        self.assertEqual(costs.add(0.125, "session-b"), 0.125)
 
         self.assertEqual(costs.total_usd, 0.5)
-        self.assertEqual(costs.reported_turns, 2)
+        self.assertEqual(costs.reported_turns, 3)
         self.assertEqual(costs.unreported_turns, 2)
         self.assertEqual(
             costs.describe(),
-            "$0.5000 (2 reported turn(s), 2 completed turn(s) without a cost, "
+            "$0.5000 (3 reported turn(s), 2 completed turn(s) without a cost, "
             "1 started turn(s) without a ResultMessage)",
         )
 
@@ -160,6 +167,58 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(SystemExit, "runtime-owned.*run_detector"):
                 assemble_detector(template, feature, output)
+
+    def test_detector_assembly_injects_reviewed_split_adapter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            template = root / "runtime.py.tmpl"
+            feature = root / "feature.py"
+            output = root / "split_detector.py"
+            template.write_text(
+                "import numpy as np\n"
+                "from collections import defaultdict\n"
+                "def build_comp_to_seg(graph):\n    return {}\n"
+                "# __DETECTOR_TARGET_ADAPTER__\n"
+                "# __DETECTOR_FEATURE_IMPLEMENTATION__\n"
+            )
+            feature.write_text(
+                "FEATURE_REGISTRY = [('gap_um_feature', 'candidate_pair')]\n"
+                "ANALYSIS_TIMING_GROUPS = [{\n"
+                "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
+                "    'phase': 'candidate_pair',\n"
+                "    'feature_names': ['gap_um_feature'],\n"
+                "}]\n"
+                "class FeatureAccumulator:\n    pass\n"
+                "def extract_features(payload, verbose=True, timing=None, "
+                "enabled_analysis_keys=None, profile_segment_limit=None):\n"
+                "    _ = profile_segment_limit\n"
+                "    def _analysis_enabled(key):\n"
+                "        return enabled_analysis_keys is None or key in enabled_analysis_keys\n"
+                "    _analysis_enabled('hypo_1')\n"
+                "    if timing is not None:\n"
+                "        timing.start_phase('candidate_pair')\n"
+                "        timing.start_analysis('hypo_1')\n"
+                "    return build_sample_universe(payload)\n"
+            )
+
+            assemble_detector(
+                template, feature, output, target=DetectorTarget.SPLIT)
+
+            text = output.read_text()
+            self.assertIn("DETECTOR_TARGET = 'split_detection'", text)
+            self.assertIn("def _derive_split_truth", text)
+            self.assertIn("class FeatureAccumulator", text)
+
+            feature.write_text(
+                feature.read_text().replace(
+                    "return build_sample_universe(payload)",
+                    "_ = payload['gt_edge_error']\n"
+                    "    return build_sample_universe(payload)",
+                )
+            )
+            with self.assertRaisesRegex(SystemExit, "GT-only.*gt_edge_error"):
+                assemble_detector(
+                    template, feature, output, target=DetectorTarget.SPLIT)
 
     def test_detector_assembly_rejects_every_template_owned_symbol(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -503,6 +562,7 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
     def test_reviewed_runtime_template_owns_model_and_cli_contracts(self) -> None:
         template = workflow.RUNTIME_TEMPLATE_PATH.read_text()
         self.assertEqual(template.count("# __DETECTOR_FEATURE_IMPLEMENTATION__"), 1)
+        self.assertEqual(template.count("# __DETECTOR_TARGET_ADAPTER__"), 1)
         for symbol in (
             "def validate_model_config", "def build_estimator",
             "def run_nested_selection", "def run_smoke_test",
@@ -517,6 +577,109 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn('ap.add_argument("--hypothesis-selection"', template)
         self.assertIn("--hypothesis-selection or\n    --exclude-hypotheses", template)
         self.assertNotIn("--exclude-hypotheses 39 6", template)
+        self.assertIn('save(fig, 6, "winner_model_explanation")', template)
+        self.assertIn('winner == "explainable_boosting"', template)
+        self.assertIn("clf.term_importances()", template)
+        self.assertIn("clf.explain_global()", template)
+        self.assertIn("native model-specific importance", template)
+        self.assertIn("def validation_permutation():", template)
+        self.assertNotIn('save(fig, 6, "linear_coefficients")', template)
+
+    def test_split_runtime_passes_driver_owned_no_data_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            feature = root / "feature.py"
+            detector = root / "split_site_detector.py"
+            inventory = root / "feature_inventory.json"
+            model_config = root / "model_candidates.json"
+            inventory.write_text("{}\n")
+            model_config.write_text(json.dumps(self._valid_model_config(inventory)))
+            feature.write_text(
+                "FEATURE_REGISTRY = [('gap_um_feature', 'candidate_pair')]\n"
+                "ANALYSIS_TIMING_GROUPS = [{\n"
+                "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
+                "    'phase': 'candidate_pair',\n"
+                "    'feature_names': ['gap_um_feature'],\n"
+                "}]\n"
+                "class FeatureAccumulator:\n    pass\n"
+                "def extract_features(payload, verbose=True, timing=None, "
+                "enabled_analysis_keys=None, profile_segment_limit=None):\n"
+                "    _ = profile_segment_limit\n"
+                "    def _analysis_enabled(key):\n"
+                "        return enabled_analysis_keys is None or key in enabled_analysis_keys\n"
+                "    _analysis_enabled('hypo_1')\n"
+                "    if timing is not None:\n"
+                "        timing.start_phase('candidate_pair')\n"
+                "        timing.start_analysis('hypo_1')\n"
+                "    samples, labels = build_sample_universe(payload)\n"
+                "    return samples, labels, FeatureAccumulator()\n"
+            )
+            assemble_detector(
+                workflow.RUNTIME_TEMPLATE_PATH,
+                feature,
+                detector,
+                target=DetectorTarget.SPLIT,
+            )
+
+            workflow.validate_detector_executable(detector, model_config)
+
+    def test_current_detector_generates_ebm_winner_explanation(self) -> None:
+        try:
+            import interpret  # noqa: F401
+        except ImportError:
+            self.skipTest("optional interpret package is unavailable")
+        import numpy as np
+        import pandas as pd
+
+        detector_path = (
+            Path(__file__).resolve().parents[2] / "autodiscovery-application" /
+            "merge-error-794495-mcl100_2026-08-04" /
+            "merge_site_detector.py"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "ebm_figure_detector", detector_path)
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+
+        rng = np.random.default_rng(42)
+        feature_order = ["feature_a", "feature_b", "feature_c"]
+        values = rng.normal(size=(120, len(feature_order)))
+        y = ((values[:, 0] + values[:, 1] ** 2) > 0.8).astype(int)
+        frame = pd.DataFrame(values, columns=feature_order)
+        for name in feature_order:
+            frame[name + "_is_defined"] = True
+        params = {
+            "max_bins": 16,
+            "interactions": 1,
+            "learning_rate": 0.05,
+            "max_rounds": 20,
+            "min_samples_leaf": 2,
+        }
+        estimator = module.build_estimator("explainable_boosting", params)
+        estimator.fit(values, y)
+        scores = module._score_matrix(estimator, values)
+        nested = {
+            "oof": {"explainable_boosting": scores},
+            "per_fold": [{
+                "family_choice": {
+                    "explainable_boosting": {"params": params}
+                }
+            }],
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = module.make_figures(
+                tmpdir, "synthetic_full", frame, y, nested, scores, scores,
+                "explainable_boosting", estimator, feature_order,
+                winner_params=params,
+            )
+            names = {Path(path).name for path in paths}
+            self.assertIn(
+                "synthetic_full_06_winner_model_explanation.png", names
+            )
+            self.assertIn(
+                "synthetic_full_07_permutation_importance.png", names
+            )
 
     def test_public_build_artifact_names_remain_compatible(self) -> None:
         self.assertEqual(workflow.BUILD_ARTIFACT_NAMES, (
@@ -635,7 +798,7 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             self.assertIn("--synthetic-smoke-test", text)
             self.assertIn("--measuretime-occurrences 3", text)
             self.assertIn("observed sample costs", text)
-            self.assertIn("--nodelist=n169", text)
+            self.assertIn("--nodelist=n287", text)
             self.assertIn("dataset_cache_794495_mcl100_add.pkl", text)
             self.assertIn("merge_detector_794495.csv", text)
             self.assertIn("Monitor component extraction", text)
@@ -666,6 +829,82 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             self.assertIn("result_analysis_evidence.json", text)
             self.assertIn("complete English", text)
             self.assertIn("complete Chinese translation", text)
+
+    def test_split_documentation_uses_split_public_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            app = root / "app"
+            app.mkdir()
+            detector = app / "split_site_detector.py"
+            inventory = app / "feature_inventory.json"
+            config = app / "model_candidates.json"
+            policy = root / "detector_model_policy.json"
+            template = root / "detector_runtime.py.tmpl"
+            detector.write_text("# split detector\n")
+            inventory.write_text(json.dumps({
+                "selection_manifest": None,
+                "hypotheses": [{
+                    "id": 1, "included": False,
+                    "feature_source_path": None, "features": [],
+                    "exclusion_reason": "Excluded in test.",
+                }],
+            }))
+            config.write_text(json.dumps({
+                "selection_basis": "Conservative baseline.",
+                "candidates": [{
+                    "name": "logistic_l2", "role": "baseline",
+                    "native_nan": False, "requires_package": None,
+                    "reason": "Stable baseline.",
+                }],
+            }))
+            policy.write_text("{}\n")
+            template.write_text("# runtime\n")
+            readme = app / "README.md"
+            commands = app / "RUN_COMMANDS.md"
+
+            workflow.write_readme_skeleton(
+                readme,
+                run_rel="autodiscovery/split-error.json",
+                summary_rel="autodiscovery/split-error.summary.md",
+                inventory_path=inventory,
+                inventory_rel="app/feature_inventory.json",
+                model_config_path=config,
+                model_config_rel="app/model_candidates.json",
+                detector_rel="app/split_site_detector.py",
+                run_commands_rel="app/RUN_COMMANDS.md",
+                cache_hint=None,
+                primary_metric="average_precision",
+                target=DetectorTarget.SPLIT,
+            )
+            workflow.write_run_commands(
+                commands,
+                project_root=root,
+                run_rel="autodiscovery/split-error.json",
+                detector_path=detector,
+                detector_rel="app/split_site_detector.py",
+                inventory_path=inventory,
+                inventory_rel="app/feature_inventory.json",
+                model_config_path=config,
+                model_config_rel="app/model_candidates.json",
+                model_policy_path=policy,
+                model_policy_rel="detector_model_policy.json",
+                runtime_template_path=template,
+                runtime_template_rel="detector_runtime.py.tmpl",
+                cache_hint=None,
+                agent_model="test",
+                agent_effort="test",
+                target=DetectorTarget.SPLIT,
+            )
+
+            readme_text = readme.read_text()
+            commands_text = commands.read_text()
+            self.assertIn("# Split detector", readme_text)
+            self.assertIn("split_detector_<brain>.csv", readme_text)
+            self.assertIn('DETECTOR="$APP_DIR/split_site_detector.py"', commands_text)
+            self.assertIn("split_detector_", commands_text)
+            self.assertNotIn("merge_detector_", commands_text)
+            self.assertIn("--job-name=split-detector", commands_text)
+            self.assertIn("--nodelist=n287", commands_text)
 
     @staticmethod
     def _valid_model_config(inventory_path: Path) -> dict:
@@ -780,18 +1019,24 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             self.assertIsNone(selection)
             self.assertEqual(selected_ids, [1])
 
-    def test_resolve_inputs_rejects_split_run_before_artifact_resolution(self) -> None:
+    def test_resolve_inputs_accepts_named_split_run_with_split_target(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             workflow.PROJECT_ROOT = root
-            run_json = root / "split-error-794495-mcl100-run-2.json"
-            run_json.write_text("[]")
+            generic_run = self._touch_inputs(root, predictive=False, fixed=False)
+            split_run = root / "split-error-794495-mcl100-run-2.json"
+            generic_run.rename(split_run)
+            (root / "run.summary.md").rename(
+                root / "split-error-794495-mcl100-run-2.summary.md"
+            )
+            (root / "run.json.rerun").rename(
+                root / "split-error-794495-mcl100-run-2.json.rerun"
+            )
 
-            with self.assertRaisesRegex(
-                SystemExit,
-                r"split-error run.*builds merge detectors only.*gt_merge_labels",
-            ):
-                workflow.resolve_inputs(run_json)
+            context = workflow.resolve_run_context(split_run)
+
+            self.assertEqual(context.target.value, "split_detection")
+            self.assertEqual(context.selected_ids, (1,))
 
     def test_resolve_inputs_accepts_named_merge_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -879,6 +1124,13 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("Do not copy reproduction_status", inventory)
         self.assertIn(".feature_semantics.json", inventory)
         self.assertIn("strict inventory-v2 validator", inventory)
+        self.assertIn("MUST be JSON null (not an empty string)", inventory)
+        self.assertIn("draft_validation semantic", inventory)
+        self.assertIn("draft_validation model-advice", configure)
+        self.assertIn("draft_validation feature", generate)
+        self.assertEqual(
+            inventory.count("DRAFT_VALIDATION_OK"), 1,
+        )
         self.assertIn("display rank, NOT the hypothesis ID", inventory)
         self.assertNotIn("all 11 executed corrected", inventory)
         self.assertIn("ONLY the inventory-features semantic stage", inventory)
@@ -922,6 +1174,37 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("rerun-vs-fixed choice", verify)
         self.assertIn("instance-bound", verify)
         self.assertIn("without duplicating them", verify)
+
+    def test_build_steps_define_split_candidate_contract(self) -> None:
+        steps = workflow.build_steps(
+            run_rel="autodiscovery/split-error-run.json",
+            summary_rel="autodiscovery/split-error-run.summary.md",
+            rerun_rel="autodiscovery/split-error-run.json.predictive.rerun",
+            fixed_rel=None,
+            selection_rel="autodiscovery/split-error-run.predictive-selection.json",
+            selected_ids=[6, 39],
+            out_dir_rel="autodiscovery-application/split-error-run",
+            target=DetectorTarget.SPLIT,
+        )
+        by_name = {step["name"]: step for step in steps}
+        inventory = by_name["inventory-features"]["instruction"]
+        generate = by_name["generate-detector"]["instruction"]
+        verify = by_name["verify-and-document"]["instruction"]
+
+        self.assertTrue(
+            by_name["generate-detector"]["expects_file"].endswith(
+                "/.feature_implementation.py"))
+        self.assertIn("canonical unordered\ncandidate segment pair", inventory)
+        self.assertIn("within 30 um", inventory)
+        self.assertIn("FeatureAccumulator", generate)
+        self.assertIn("build_sample_universe(payload)", generate)
+        self.assertIn("must be ignored by feature extraction", generate)
+        self.assertIn("For split measuretime", generate)
+        self.assertIn("number of GT edges", generate)
+        self.assertIn("candidate-pair-level", verify)
+        self.assertIn("remain explicitly unscored (NaN)", verify)
+        self.assertIn("conditional on\nthe OOF-scored subset", verify)
+        self.assertIn("split_site_detector.py", verify)
 
     def test_validate_model_config_accepts_bounded_allowlisted_config(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1023,7 +1306,7 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                     "name": name,
                     "role": "optional",
                     "reason": "Test bounded extension count.",
-                    "grid": {"n_estimators": [100]},
+                    "grid": {"n_estimators": [100], "min_samples_leaf": [5]},
                     "native_nan": False,
                     "requires_package": None,
                 })
@@ -1082,6 +1365,8 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                     "max_bins": [128],
                     "interactions": [0, 5],
                     "learning_rate": [0.01],
+                    "max_rounds": [2000],
+                    "min_samples_leaf": [10],
                 },
                 "native_nan": True,
                 "requires_package": "interpret",
@@ -1093,6 +1378,60 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             config_path.write_text(json.dumps(config))
             with self.assertRaisesRegex(SystemExit, "interactions has invalid values"):
                 workflow.validate_model_config(config_path, inventory_path)
+
+    def test_validate_model_config_rejects_grid_missing_runtime_parameters(
+        self,
+    ) -> None:
+        # Regression: the split-error-794495 run shipped an EBM grid without
+        # max_rounds; build_estimator KeyErrored on every fold and the family
+        # silently filled 0 OOF rows. The allowlist alone cannot catch this.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow.PROJECT_ROOT = root
+            inventory_path = root / "feature_inventory.json"
+            inventory_path.write_text('{"schema_version": 2}')
+            config_path = root / workflow.MODEL_CONFIG_NAME
+            config = self._valid_model_config(inventory_path)
+            config["candidates"].append({
+                "name": "explainable_boosting",
+                "role": "optional",
+                "reason": "Exercise the missing-required-parameter guard.",
+                "grid": {
+                    "max_bins": [128],
+                    "interactions": [0, 5],
+                    "learning_rate": [0.01],
+                    "min_samples_leaf": [10],
+                },
+                "native_nan": True,
+                "requires_package": "interpret",
+            })
+            config_path.write_text(json.dumps(config))
+            with self.assertRaisesRegex(
+                SystemExit,
+                "missing parameters the assembled runtime requires: max_rounds",
+            ):
+                workflow.validate_model_config(config_path, inventory_path)
+
+    def test_required_grid_parameters_match_the_runtime_template(self) -> None:
+        import ast
+
+        template_tree = ast.parse(workflow.RUNTIME_TEMPLATE_PATH.read_text())
+        embedded = None
+        for node in template_tree.body:
+            if (isinstance(node, ast.Assign)
+                    and any(getattr(t, "id", None) == "EMBEDDED_MODEL_POLICY"
+                            for t in node.targets)):
+                embedded = ast.literal_eval(node.value)
+        self.assertIsNotNone(embedded, "template lost EMBEDDED_MODEL_POLICY")
+
+        template_required = {
+            name: frozenset(spec["required_parameters"])
+            for name, spec in embedded["families"].items()
+        }
+        self.assertEqual(template_required, dict(workflow.REQUIRED_GRID_PARAMETERS))
+        for name, required in workflow.REQUIRED_GRID_PARAMETERS.items():
+            self.assertLessEqual(
+                required, workflow.MODEL_PARAMETER_ALLOWLIST[name], name)
 
     def test_model_policy_cannot_introduce_an_unreviewed_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1351,6 +1690,104 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             workflow.validate_inventory(
                 inventory_path, [1], None, rerun, None, summary
             )
+
+    def test_included_empty_exclusion_reason_is_canonicalized_to_null(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow.PROJECT_ROOT = root
+            rerun = root / "run.json.rerun"
+            rerun.mkdir()
+            (rerun / "hypo_1.py").write_text("FEATURE = 1\n")
+            summary = root / "run.summary.md"
+            summary.write_text(
+                "### 1. Finding\n"
+                "- **Run:** run · **ID:** 1 · **Direction:** Positive\n"
+                "- **Reproduction:** REPRODUCED\n"
+                "- **Verdict:** SOUND\n"
+            )
+            semantics = root / ".feature_semantics.json"
+            semantics.write_text(json.dumps({
+                "schema_version": 1,
+                "hypotheses": [{
+                    "id": 1,
+                    "included": True,
+                    "exclusion_reason": "",
+                    "correction_scope": "none",
+                    "feature_source": "rerun",
+                    "source_reason": "Usable source.",
+                    "features": [{
+                        "name": "feature",
+                        "quantity": "one",
+                        "constants": {},
+                        "aggregation": "segment",
+                        "reduction": "identity",
+                        "traversal_phase": "segment",
+                        "measurable_condition": "always",
+                        "historical_undefined_sentinel": None,
+                    }],
+                }],
+            }))
+            inventory_path = root / "feature_inventory.json"
+
+            changes = workflow.compile_feature_inventory(
+                semantics,
+                inventory_path,
+                selected_ids=[1],
+                selection_manifest=None,
+                summary_path=summary,
+                corrected_results_path=None,
+                rerun_dir=rerun,
+                fixed_dir=None,
+                project_root=root,
+            )
+
+            self.assertEqual(len(changes), 1)
+            self.assertIsNone(json.loads(
+                semantics.read_text())["hypotheses"][0]["exclusion_reason"])
+            self.assertIsNone(json.loads(
+                inventory_path.read_text())["hypotheses"][0]["exclusion_reason"])
+
+    def test_finalize_step_repairs_rejected_draft_in_same_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow.PROJECT_ROOT = root
+            draft = root / "draft.json"
+            draft.write_text("bad")
+            original_run_step = workflow.run_step
+            calls = []
+
+            async def fake_run_step(_client, repair_step, _verbose, _costs):
+                calls.append(repair_step)
+                draft.write_text("good")
+                return "repaired"
+
+            def finalize() -> None:
+                if draft.read_text() != "good":
+                    raise SystemExit("draft must say good")
+
+            try:
+                workflow.run_step = fake_run_step
+                asyncio.run(workflow.finalize_step_with_repairs(
+                    object(),
+                    {"name": "stage", "expects_file": "draft.json"},
+                    finalize,
+                    lambda: None,
+                    False,
+                    workflow.WorkflowCostSummary(),
+                ))
+            finally:
+                workflow.run_step = original_run_step
+
+            self.assertEqual(len(calls), 1)
+            self.assertIn("draft must say good", calls[0]["instruction"])
+            self.assertEqual(calls[0]["name"], "stage-repair-1")
+
+    def test_synthetic_smoke_uses_one_grid_point_per_family(self) -> None:
+        template = (PROJECT_ROOT / "agentic" / "detector_build" / "templates"
+                    / "detector_runtime.py.tmpl").read_text()
+        self.assertIn("smoke_configured", template)
+        self.assertIn("values[0]", template)
+        self.assertIn("one grid point per available family", template)
 
     def test_excluded_semantics_are_canonicalized_without_agent_retry(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

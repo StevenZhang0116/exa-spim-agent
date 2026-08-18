@@ -5,6 +5,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from .contracts import DetectorTarget
+from .target_runtime import TARGET_ADAPTER_MARKER, target_adapter_source
+
 
 FEATURE_MARKER = "# __DETECTOR_FEATURE_IMPLEMENTATION__"
 REQUIRED_SYMBOLS = frozenset({
@@ -20,6 +23,22 @@ RUNTIME_OWNED_SYMBOLS = frozenset({
     "load_hypothesis_selection", "AnalysisTimingRecorder",
     "write_hypothesis_cost_artifacts", "_collect_measuretime_versions",
     "run_measuretime",
+    "DETECTOR_TARGET", "DETECTOR_FILENAME", "OUTPUT_PREFIX", "ROW_UNIT",
+    "ROW_UNIT_PLURAL", "LABEL_NAME", "POSITIVE_NAME", "NEGATIVE_NAME",
+    "SCORE_PREFIX", "CANDIDATE_MAX_DISTANCE_UM", "build_sample_universe",
+    "sample_output_frame", "sample_display", "sample_universe_audit",
+    "_derive_split_truth", "_gt_neuron_membership",
+})
+
+SPLIT_FEATURE_FORBIDDEN_PAYLOAD_KEYS = frozenset({
+    "gt_edge_error", "gt_graph", "gt_node_canonical_label", "gt_merge_labels",
+})
+SPLIT_FEATURE_FORBIDDEN_SAMPLE_KEYS = frozenset({
+    "is_split", "split_kind", "is_merge_creating",
+    "contains_known_merge_segment",
+})
+SPLIT_FEATURE_FORBIDDEN_RUNTIME_NAMES = frozenset({
+    "_derive_split_truth", "_gt_neuron_membership",
 })
 
 
@@ -206,9 +225,60 @@ def _validate_timing_contract(tree: ast.Module, path: Path) -> None:
         )
 
 
+def _literal_mapping_key(node: ast.AST) -> str | None:
+    """Return a literal key used by ``obj[key]`` or ``obj.get(key)``."""
+    if isinstance(node, ast.Subscript):
+        key = node.slice
+    elif (isinstance(node, ast.Call) and node.args
+          and isinstance(node.func, ast.Attribute)
+          and node.func.attr == "get"):
+        key = node.args[0]
+    else:
+        return None
+    if isinstance(key, ast.Constant) and isinstance(key.value, str):
+        return key.value
+    return None
+
+
+def _mapping_owner_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Subscript):
+        owner = node.value
+    elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        owner = node.func.value
+    else:
+        return None
+    return owner.id if isinstance(owner, ast.Name) else None
+
+
+def _validate_split_feature_no_gt_access(tree: ast.Module, path: Path) -> None:
+    """Reject direct split-label/audit access from generated feature math."""
+    violations: set[str] = set()
+    forbidden_sample_keys = SPLIT_FEATURE_FORBIDDEN_SAMPLE_KEYS
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Name)
+                and isinstance(node.ctx, ast.Load)
+                and node.id in SPLIT_FEATURE_FORBIDDEN_RUNTIME_NAMES):
+            violations.add(node.id)
+        key = _literal_mapping_key(node)
+        if key is None:
+            continue
+        owner = _mapping_owner_name(node)
+        if owner == "payload" and key in SPLIT_FEATURE_FORBIDDEN_PAYLOAD_KEYS:
+            violations.add(f"payload[{key!r}]")
+        elif key in forbidden_sample_keys:
+            violations.add(key)
+    if violations:
+        raise SystemExit(
+            f"Split feature implementation {path} reads GT-only label/audit "
+            "state: " + ", ".join(sorted(violations))
+        )
+
+
 def validate_feature_implementation(
     path: Path,
     runtime_owned_symbols: set[str] | frozenset[str] = RUNTIME_OWNED_SYMBOLS,
+    required_symbols: set[str] | frozenset[str] = REQUIRED_SYMBOLS,
+    target: DetectorTarget = DetectorTarget.MERGE,
 ) -> str:
     """Return a parsed feature fragment after enforcing its ownership boundary."""
     try:
@@ -225,17 +295,25 @@ def validate_feature_implementation(
         ):
             raise SystemExit("Feature implementation must not own a __main__ entry point.")
 
-    missing = sorted(REQUIRED_SYMBOLS - defined)
+    missing = sorted(set(required_symbols) - defined)
     if missing:
         raise SystemExit("Feature implementation is missing: " + ", ".join(missing))
     overlap = sorted(set(runtime_owned_symbols) & defined)
     if overlap:
         raise SystemExit("Feature implementation redefines runtime-owned symbols: " + ", ".join(overlap))
     _validate_timing_contract(tree, path)
+    if target is DetectorTarget.SPLIT:
+        _validate_split_feature_no_gt_access(tree, path)
     return source.rstrip() + "\n"
 
 
-def assemble_detector(template_path: Path, feature_path: Path, output_path: Path) -> None:
+def assemble_detector(
+    template_path: Path,
+    feature_path: Path,
+    output_path: Path,
+    *,
+    target: DetectorTarget = DetectorTarget.MERGE,
+) -> None:
     """Inject one validated feature fragment into the reviewed runtime template."""
     try:
         template = template_path.read_text(encoding="utf-8")
@@ -243,12 +321,26 @@ def assemble_detector(template_path: Path, feature_path: Path, output_path: Path
         raise SystemExit(f"Cannot read detector runtime template {template_path}: {exc}") from exc
     if template.count(FEATURE_MARKER) != 1:
         raise SystemExit("Detector runtime template must contain exactly one feature marker.")
+    adapter_markers = template.count(TARGET_ADAPTER_MARKER)
+    if adapter_markers > 1 or (
+            target is DetectorTarget.SPLIT and adapter_markers != 1):
+        raise SystemExit(
+            "Split detector runtime template must contain exactly one target "
+            "adapter marker (merge-only compatibility templates may omit it).")
     try:
         template_tree = ast.parse(template, filename=str(template_path))
     except SyntaxError as exc:
         raise SystemExit(f"Detector runtime template does not parse: {exc}") from exc
     runtime_owned = RUNTIME_OWNED_SYMBOLS | _top_level_defined_symbols(template_tree)
-    feature_source = validate_feature_implementation(feature_path, runtime_owned)
+    required_symbols = set(REQUIRED_SYMBOLS)
+    if target is DetectorTarget.SPLIT:
+        required_symbols.remove("SegmentAccumulator")
+        required_symbols.add("FeatureAccumulator")
+    feature_source = validate_feature_implementation(
+        feature_path, runtime_owned, required_symbols, target)
+    if adapter_markers:
+        template = template.replace(
+            TARGET_ADAPTER_MARKER, target_adapter_source(target).rstrip())
     assembled = template.replace(FEATURE_MARKER, feature_source)
     try:
         ast.parse(assembled, filename=str(output_path))

@@ -8,7 +8,8 @@ description: >-
   feature implementation per id, and lifts each eligible computation,
   consolidates them into ONE script with shared skeleton traversal passes, creates
   a constrained model configuration, compares its allowlisted families under nested validation,
-  and produces one per-segment score. Use when asked to build or apply a detector
+  and produces one output row per target row (segment for merge runs; candidate
+  segment pair for split runs). Use when asked to build or apply a detector
   / classifier / ensemble from exa-spim AutoDiscovery findings.
 tools: Bash, Read, Write, Edit, Glob
 # Lifting feature code out of many independent scripts without changing its
@@ -28,7 +29,7 @@ hypothesis. A hypothesis may also contribute more than one feature column.
 
 Your job is to supply audited feature semantics and feature code. The driver
 assembles them with its reviewed runtime into **one script with fair model
-selection and one score per segment.**
+selection and one score per target row.**
 
 The orchestrator invokes this agent once per stage. Execute only the stage named
 in the current request, write only the explicitly named stage artifact(s), treat
@@ -49,7 +50,7 @@ source selection must resolve those outcomes before combining features.
 | `<RERUN_DIR>/hypo_<id>.py` | loading-fixed reproduction code and the default feature-definition source |
 | `<RERUN_DIR>/MANIFEST.json` | the id → script mapping; use the path supplied by the orchestrator |
 | `<FIXED_DIR>/hypo_<id>.py` (optional) | corrected-test code; use it for detector feature math only when it changes feature/sample/aggregation semantics and its corrected measurement is usable |
-| `markdowns/labeled_dataset_cache.md` | the `_add.pkl` schema: `fragments_graph`, `gt_merge_labels`, `gt_node_canonical_label`, `node_xyz`, `node_radius`, `component_id_to_swc_id` |
+| `markdowns/labeled_dataset_cache.md` | the `_add.pkl` schema: `fragments_graph`, `gt_merge_labels`, `gt_node_canonical_label`, `gt_edge_error`, `gt_graph`, `node_xyz`, `node_radius`, `component_id_to_swc_id` |
 
 Read every returned hypothesis's `.rerun` script and every same-id `.fixed`
 script before writing anything. Do not reconstruct a feature from report prose:
@@ -133,18 +134,25 @@ them; only the policy-derived keys in the current prompt are permitted.
 
 Write only the hidden feature fragment named by the stage prompt. The
 orchestrator owns a reviewed, versioned runtime template and deterministically
-assembles the public self-contained `merge_site_detector.py`.
+assembles the public target-specific `merge_site_detector.py` or
+`split_site_detector.py`.
 
 The fragment owns feature semantics: geometry/data helpers, `FEATURE_REGISTRY`
-in inventory order, a literal `ANALYSIS_TIMING_GROUPS`, `SegmentAccumulator`, and
+in inventory order, a literal `ANALYSIS_TIMING_GROUPS`, the accumulator class
+required by the stage prompt, and
 `extract_features(payload, verbose=True, timing=None,
 enabled_analysis_keys=None, profile_segment_limit=None)`. Preserve the row universe, constants,
 aggregation, explicit measured membership and shared traversal rules below:
 
-- non-zero canonical labels are the adjudicable segment universe;
-- `component_id_to_swc_id` maps components to segment ids;
-- `gt_merge_labels` supplies labels;
-- segments without fragment components still get rows;
+- for merge runs, non-zero canonical labels are the adjudicable segment universe,
+  `gt_merge_labels` supplies labels, and segments without components keep rows;
+- for split runs, call the runtime-owned `build_sample_universe(payload)` and
+  use its canonical unordered candidate segment-pair rows and `is_split` labels;
+  never construct a competing candidate pool or split key in feature code;
+- `component_id_to_swc_id` maps components to segment ids in both targets;
+- split endpoint/component features reduce to candidate-pair rows exactly as
+  inventoried; GT-only labels, split kinds, neuron membership, and merge-risk
+  audit fields are forbidden predictors;
 - undefined values are NaN with explicit `<feature>_is_defined` flags;
 - historical numeric sentinels never determine missingness;
 - edge/chain/junction/component/segment passes are shared across features;
@@ -178,7 +186,7 @@ provenance, and profiling-only early exit.
 
 Implement `profile_segment_limit` as a deterministic profiling-only restriction
 to at most that many component-bearing segments. All expensive whole-graph and
-per-segment passes must operate only on nodes, edges, components, chains, and
+per-target passes must operate only on nodes, edges, components, chains, and
 junctions belonging to the sample. Do not run the full traversal and merely cap
 recording. `None` must retain the exact full-run row universe and behavior. The
 runtime uses a small default sample and reports observed sample cost, not projected
@@ -239,8 +247,8 @@ training-fold pipeline; native-NaN models receive NaNs directly.
 Have the script print, before the statistical fill destroys the evidence:
 
 1. The undefined share for each feature, split by class, and how many segments
-   are undefined for every feature with how many of those are merges. A large
-   all-undefined group with zero merges is the warning sign.
+   are undefined for every feature with how many of those are positives. A large
+   all-undefined group with zero positives is the warning sign.
 2. Each feature's single-feature AUC over the full set beside its AUC over the
    subset where it is genuinely defined. **The subset number is the one that
    should match the AUC the report recorded for that hypothesis** — the report's
@@ -279,19 +287,25 @@ reproducibility commands, but never edit or replace it.
   summarize the `conda activate panda` and compute-node requirements without
   duplicating its command blocks or sbatch template.
 - **Outputs** — what the CSV columns, model-selection JSON, fitted joblib, txt log and
-  each figure contain.
+  each figure contain. Figure 06 is winner-aware: signed standardized
+  coefficients for ordinary logistic winners, EBM global term importance plus
+  top univariate shape functions for an explainable-boosting winner, native
+  unsigned importance for compatible tree winners, and validation permutation
+  importance as a fallback. Figure 07 remains the common AP-scored validation
+  permutation importance across model families.
 - **How to read the results**, in this order, because the reverse order is how a
   confounded fit gets believed: the all-undefined group size and undefined share
   by class first; then each feature's full-set vs defined-subset AUC gap; then
   out-of-fold AP against the prevalence; and ROC-AUC last — at ~1 % prevalence it
   is the least informative of the four.
 - **Caveats** — the confound of step 4; that precision measured against sparse
-  ground truth is a **floor** (an unlabeled flagged segment whose geometry
-  matches the confirmed merges may be a real merge outside the traced neurons,
-  not a false positive); that linear coefficients split credit between
-  correlated features; discovery-stage selection bias; uneven feature coverage;
-  and that the output is
-  **segment-level, not site-level** — it says which segment is merged, not where.
+  ground truth is a **floor** (an unlabeled flagged row may be a real error
+  outside the traced neurons rather than a false positive); that linear coefficients split credit between
+  correlated features, while nonlinear global importance is generally unsigned
+  and not comparable across families; discovery-stage selection bias; uneven feature coverage;
+  and the target-specific localization limit: merge output is segment-level,
+  while split output ranks a candidate segment pair and representative endpoint
+  occurrence rather than identifying every missing voxel in the gap.
 
 If a later invocation *does* give you a finished run's log and CSV, fold the
 measured numbers in then — deflated scope first — and delete the not-yet-run

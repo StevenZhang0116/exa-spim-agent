@@ -30,6 +30,7 @@ import asyncio
 import csv
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -137,45 +138,120 @@ def _float(value: str, label: str) -> float:
         raise SystemExit(f"CSV has invalid {label}: {value!r}") from exc
 
 
-def summarize_csv(csv_path: Path, review_budgets: tuple[int, ...]) -> dict:
-    rows: list[tuple[float, str, int]] = []
+def _oof_score(value: str | None, label: str) -> float:
+    """Parse an OOF score, accepting blank/NaN as deliberately unscored."""
+    if value is None or not str(value).strip():
+        return float("nan")
+    parsed = _float(value, label)
+    if math.isinf(parsed):
+        raise SystemExit(f"CSV has infinite {label}: {value!r}")
+    return parsed
+
+
+def _result_contract(model: dict) -> dict:
+    target = model.get("detector_target") or "merge_detection"
+    if target == "split_detection":
+        return {
+            "target": target,
+            "output_prefix": "split_detector",
+            "detector_name": "split_site_detector.py",
+            "label": "is_split",
+            "score": "split_probability_oof",
+            "identity": ("candidate_id", "segment_id_a", "segment_id_b"),
+            "positive": "splits",
+            "negative": "non-split candidates",
+            "row_unit": "candidate segment pair",
+        }
+    if target != "merge_detection":
+        raise SystemExit(f"Unsupported detector_target in model JSON: {target!r}")
+    return {
+        "target": target,
+        "output_prefix": "merge_detector",
+        "detector_name": "merge_site_detector.py",
+        "label": "is_merge",
+        "score": "merge_probability_oof",
+        "identity": ("segment_id",),
+        "positive": "merges",
+        "negative": "clean segments",
+        "row_unit": "segment",
+    }
+
+
+def summarize_csv(
+    csv_path: Path,
+    review_budgets: tuple[int, ...],
+    contract: dict | None = None,
+) -> dict:
+    contract = contract or _result_contract({})
+    rows: list[tuple[float, str, int, int]] = []
     with csv_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
-        required = {"segment_id", "is_merge", "merge_probability_oof"}
+        required = set(contract["identity"]) | {contract["label"], contract["score"]}
         missing = sorted(required - set(reader.fieldnames or ()))
         if missing:
             raise SystemExit(f"CSV {csv_path} is missing required columns: {missing}")
         for row in reader:
-            label_raw = _float(row["is_merge"], "is_merge")
+            label_raw = _float(row[contract["label"]], contract["label"])
             if label_raw not in (0.0, 1.0):
-                raise SystemExit(f"CSV has non-binary is_merge: {label_raw!r}")
+                raise SystemExit(
+                    f"CSV has non-binary {contract['label']}: {label_raw!r}")
+            identity = ":".join(str(row[name]) for name in contract["identity"])
             rows.append((
-                _float(row["merge_probability_oof"], "merge_probability_oof"),
-                str(row["segment_id"]),
+                _oof_score(row[contract["score"]], contract["score"]),
+                identity,
                 int(label_raw),
+                int(_float(row.get("is_merge_creating", "0"),
+                           "is_merge_creating")),
             ))
     if not rows:
         raise SystemExit(f"CSV {csv_path} has no data rows.")
-    rows.sort(key=lambda item: (-item[0], item[1]))
-    n_merge = sum(item[2] for item in rows)
-    if n_merge == 0:
-        raise SystemExit(f"CSV {csv_path} has no positive merge rows.")
+    n_positive = sum(item[2] for item in rows)
+    if n_positive == 0:
+        raise SystemExit(f"CSV {csv_path} has no positive {contract['positive']} rows.")
+    scored_rows = [item for item in rows if math.isfinite(item[0])]
+    if not scored_rows:
+        raise SystemExit(f"CSV {csv_path} has no finite {contract['score']} values.")
+    if contract["target"] == "merge_detection" and len(scored_rows) != len(rows):
+        raise SystemExit(
+            f"Merge CSV {csv_path} unexpectedly has unscored OOF rows.")
+    scored_rows.sort(key=lambda item: (-item[0], item[1]))
+    n_scored_positive = sum(item[2] for item in scored_rows)
+    if n_scored_positive == 0:
+        raise SystemExit(
+            f"CSV {csv_path} has no positive rows with finite {contract['score']}.")
     workload = []
     for requested in review_budgets:
-        k = min(requested, len(rows))
-        found = sum(item[2] for item in rows[:k])
+        k = min(requested, len(scored_rows))
+        found = sum(item[2] for item in scored_rows[:k])
+        merge_creating = sum(item[3] for item in scored_rows[:k])
         workload.append({
             "requested_k": requested,
             "k": k,
-            "merges_found": found,
+            "positives_found": found,
+            "merges_found": found if contract["target"] == "merge_detection" else None,
             "precision": found / k,
-            "recall": found / n_merge,
+            "recall": found / n_scored_positive,
+            "recall_scope": "oof_scored_rows",
+            "merge_creating_joins": (
+                merge_creating if contract["target"] == "split_detection" else None),
         })
     return {
         "n_rows": len(rows),
-        "n_merge": n_merge,
-        "n_clean": len(rows) - n_merge,
-        "prevalence": n_merge / len(rows),
+        "row_unit": contract["row_unit"],
+        "n_positive": n_positive,
+        "n_negative": len(rows) - n_positive,
+        "n_oof_scored": len(scored_rows),
+        "n_oof_unscored": len(rows) - len(scored_rows),
+        "n_oof_scored_positive": n_scored_positive,
+        "oof_coverage": len(scored_rows) / len(rows),
+        "oof_scored_prevalence": n_scored_positive / len(scored_rows),
+        "positive_name": contract["positive"],
+        "negative_name": contract["negative"],
+        "score_column": contract["score"],
+        "n_merge": n_positive if contract["target"] == "merge_detection" else None,
+        "n_clean": (len(rows) - n_positive
+                    if contract["target"] == "merge_detection" else None),
+        "prevalence": n_positive / len(rows),
         "review_workload": workload,
     }
 
@@ -183,12 +259,14 @@ def summarize_csv(csv_path: Path, review_budgets: tuple[int, ...]) -> dict:
 def collect_evidence(result_dir: Path, application_dir: Path) -> dict:
     model_json_path = exactly_one(result_dir, "model_selection_*.json", "model-selection JSON")
     model = load_json_object(model_json_path)
+    contract = _result_contract(model)
     brain = str(model.get("train_brain") or "")
     if not brain:
         raise SystemExit(f"{model_json_path} has no train_brain.")
-    csv_path = result_dir / f"merge_detector_{brain}.csv"
-    joblib_path = result_dir / f"merge_detector_{brain}.joblib"
-    log_path = result_dir / f"merge_detector_{brain}.log.txt"
+    prefix = contract["output_prefix"]
+    csv_path = result_dir / f"{prefix}_{brain}.csv"
+    joblib_path = result_dir / f"{prefix}_{brain}.joblib"
+    log_path = result_dir / f"{prefix}_{brain}.log.txt"
     for path, label in ((csv_path, "detector CSV"), (joblib_path, "fitted joblib"),
                         (log_path, "detector log")):
         if not path.is_file():
@@ -214,12 +292,15 @@ def collect_evidence(result_dir: Path, application_dir: Path) -> dict:
             f"missing {missing_numbers} under {figures_dir}. Rerun without --no-figures."
         )
 
-    csv_summary = summarize_csv(csv_path, (50, 100, 200, 500))
+    csv_summary = summarize_csv(csv_path, (50, 100, 200, 500), contract)
     audit = model.get("audit") if isinstance(model.get("audit"), dict) else {}
-    if audit.get("n_segments") != csv_summary["n_rows"] or audit.get("n_merge") != csv_summary["n_merge"]:
+    audit_rows = audit.get("n_rows", audit.get("n_segments"))
+    audit_positive = audit.get("n_positive", audit.get("n_merge"))
+    if (audit_rows != csv_summary["n_rows"] or
+            audit_positive != csv_summary["n_positive"]):
         raise SystemExit("Model-selection audit counts do not match the detector CSV.")
 
-    detector_path = application_dir / "merge_site_detector.py"
+    detector_path = application_dir / contract["detector_name"]
     inventory_path = application_dir / "feature_inventory.json"
     model_config_path = application_dir / "model_candidates.json"
     model_policy_path = PROJECT_ROOT / "agentic" / "detector_model_policy.json"
@@ -255,6 +336,12 @@ def collect_evidence(result_dir: Path, application_dir: Path) -> dict:
 
     return {
         "schema_version": 1,
+        "detector_target": contract["target"],
+        "row_unit": contract["row_unit"],
+        "label_name": contract["label"],
+        "score_column": contract["score"],
+        "positive_name": contract["positive"],
+        "negative_name": contract["negative"],
         "result_dir": rel(result_dir),
         "application_dir": rel(application_dir),
         "brain": brain,
@@ -265,6 +352,7 @@ def collect_evidence(result_dir: Path, application_dir: Path) -> dict:
         "argv": argv_line.removeprefix("# argv: ") if argv_line else None,
         "csv_summary": csv_summary,
         "audit": audit,
+        "sample_universe_audit": model.get("sample_universe_audit"),
         "final_winner": model.get("final_winner"),
         "final_params": model.get("final_params"),
         "per_family_outer_metrics": per_family,
@@ -310,20 +398,28 @@ def _fmt(value: object, digits: int = 4) -> str:
 
 
 def write_report_skeleton(report_path: Path, evidence: dict, evidence_sha: str) -> str:
-    family_lines = ["| Model family | OOF AP | OOF ROC-AUC |", "|---|---:|---:|"]
+    family_lines = [
+        "| Model family | OOF rows | OOF AP | OOF ROC-AUC |",
+        "|---|---:|---:|---:|",
+    ]
     for family, metrics in sorted(evidence["per_family_outer_metrics"].items()):
         family_lines.append(
-            f"| `{family}` | {_fmt(metrics.get('oof_average_precision'))} | "
+            f"| `{family}` | {metrics.get('n_scored', '—')} | "
+            f"{_fmt(metrics.get('oof_average_precision'))} | "
             f"{_fmt(metrics.get('oof_roc_auc'))} |"
         )
+    split_result = evidence["detector_target"] == "split_detection"
     workload_lines = [
-        "| Review k | Merges found | Precision@k | Recall@k |",
-        "|---:|---:|---:|---:|",
+        (f"| Review k | {evidence['positive_name'].title()} found | Precision@k | "
+         "Recall@k within OOF-scored rows |" +
+         (" Merge-creating joins |" if split_result else "")),
+        "|---:|---:|---:|---:|" + ("---:|" if split_result else ""),
     ]
     for row in evidence["csv_summary"]["review_workload"]:
         workload_lines.append(
-            f"| {row['k']} | {row['merges_found']} | {_fmt(row['precision'])} | "
-            f"{_fmt(row['recall'])} |"
+            f"| {row['k']} | {row['positives_found']} | {_fmt(row['precision'])} | "
+            f"{_fmt(row['recall'])} |" +
+            (f" {row['merge_creating_joins']} |" if split_result else "")
         )
     figure_lines = "\n".join(
         f"- `{item['basename']}` — `{item['path']}` — SHA-256 `{item['sha256']}`"
@@ -346,10 +442,12 @@ def write_report_skeleton(report_path: Path, evidence: dict, evidence_sha: str) 
 - Evidence manifest: `{rel(report_path.parent / EVIDENCE_NAME)}`
 - Evidence SHA-256: `{evidence_sha}`
 - Run completion: `{evidence['completion_line']}`
+- Detector target / row unit: `{evidence['detector_target']}` / `{evidence['row_unit']}`
 - Brain / MCL / scope: `{evidence['brain']}` / `{evidence['train_mcl']}` / `{evidence['scope']}`
 - Final winner: `{evidence['final_winner']}` with `{json.dumps(evidence['final_params'], sort_keys=True)}`
-- Rows: {csv_summary['n_rows']}; merges: {csv_summary['n_merge']}; clean: {csv_summary['n_clean']}; prevalence: {_fmt(csv_summary['prevalence'])}
-- All features undefined: {audit.get('all_undefined_count', '—')}; merges in that group: {audit.get('all_undefined_merges', '—')}
+- Rows: {csv_summary['n_rows']}; positives ({evidence['positive_name']}): {csv_summary['n_positive']}; negatives ({evidence['negative_name']}): {csv_summary['n_negative']}; prevalence: {_fmt(csv_summary['prevalence'])}
+- Finite OOF scores: {csv_summary['n_oof_scored']} / {csv_summary['n_rows']} ({_fmt(csv_summary['oof_coverage'])}); unscored rows: {csv_summary['n_oof_unscored']}. Review-workload recall is conditional on the OOF-scored subset.
+- All features undefined: {audit.get('all_undefined_count', '—')}; positives in that group: {audit.get('all_undefined_positives', audit.get('all_undefined_merges', '—'))}
 - Convergence warnings in detector log: {evidence['convergence_warning_count']}
 - Held-out result present: {'yes' if evidence['heldout'] is not None else 'no'}
 - Training provenance records config/policy/inventory hashes, but does not record the input-pkl SHA-256 or detector SHA-256.
@@ -361,7 +459,7 @@ def write_report_skeleton(report_path: Path, evidence: dict, evidence_sha: str) 
 Selector metrics: `{json.dumps(evidence['selector_metrics'], sort_keys=True)}`  
 Selection frequency: `{json.dumps(evidence['selection_frequency'], sort_keys=True)}`
 
-### Deterministic review workload from `merge_probability_oof`
+### Deterministic review workload from `{evidence['score_column']}`
 
 {chr(10).join(workload_lines)}
 
