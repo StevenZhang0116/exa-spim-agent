@@ -109,6 +109,7 @@ import importlib.metadata
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -126,6 +127,18 @@ from rank_by_surprise import (  # noqa: E402
 
 # Every ``*.pkl`` filename literal a recorded script might open.
 _PKL_LITERAL = re.compile(r"""["']([^"']*?\.pkl)["']""")
+
+# GCS credential for cloud-image hypotheses. Recorded scripts follow the
+# AutoDiscovery delivery-dir convention: they look this file up BY NAME next to
+# the dataset pkl / in their cwd (or its parent) and export
+# GOOGLE_APPLICATION_CREDENTIALS themselves; tensorstore then opens that path
+# at the C++ level, bypassing the runner's Python ``open`` monkeypatch — so the
+# file must genuinely exist wherever a script computes it. ``rerun_one``
+# therefore links this token into each candidate location and presets the
+# standard env vars as a default for scripts that don't set them.
+GCS_TOKEN_PATH = (
+    Path(__file__).resolve().parent.parent / "configs" / "zihan_gcs_token.json"
+)
 _UNUSABLE_OUTPUT_RE = re.compile(
     r"(?:^|\n)\s*(?:no dataset(?: files?)? found|dataset not found|"
     r"could not find (?:a )?dataset|record has no ['\"]code['\"] to execute)"
@@ -302,6 +315,17 @@ You MAY change, near the top of each script:
   Keep the SAME variable name the rest of the script uses (e.g. `payload`,
   `data`) and the same downstream keys (`fragments_graph`, `gt_graph`,
   `gt_edge_error`, `gt_node_canonical_label`, `gt_merge_sites`, ...).
+- Cloud-image credentials are ALSO driver-owned: the runner presets
+  `GOOGLE_APPLICATION_CREDENTIALS` and `AWS_EC2_METADATA_DISABLED=true`, links
+  the GCS token under its conventional name (`zihan_gcs_token.json`) into the
+  script's cwd, the cwd's parent, and the pkl's directory, and exports its
+  absolute path as `$RERUN_GCS_TOKEN`. If a script's credential search still
+  fails, replace it with:
+
+      os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.environ["RERUN_GCS_TOKEN"]
+
+  Do NOT hardcode any other credential path and do NOT weaken the analysis to
+  avoid image access.
 
 The ENVIRONMENT is owned by the driver, NOT by your script. Do NOT manage
 packages or interpreters from inside the script:
@@ -527,6 +551,22 @@ runpy.run_path("experiment.py", run_name="__main__")
 '''
 
 
+def _link_gcs_token(dest_dir: Path, announce: bool = False) -> None:
+    """Expose the GCS token in ``dest_dir`` under its conventional name."""
+    dest = dest_dir / GCS_TOKEN_PATH.name
+    if dest.is_symlink() or dest.exists():
+        return
+    try:
+        dest.symlink_to(GCS_TOKEN_PATH)
+    except OSError:
+        try:
+            shutil.copy2(GCS_TOKEN_PATH, dest)
+        except OSError:
+            return  # best effort — the env-var default may still suffice
+    if announce:
+        print(f"[rerun] exposed GCS token at {dest}", file=sys.stderr, flush=True)
+
+
 def rerun_one(code: str, pkl: Path, timeout: int) -> dict:
     """Execute one record's recorded ``code``, forcing every pkl load to ``pkl``.
 
@@ -535,9 +575,20 @@ def rerun_one(code: str, pkl: Path, timeout: int) -> dict:
     ``glob.glob`` (and the ``pathlib`` equivalents) so the script's own
     path-finding always resolves to the provided dataset (passed via the
     ``RERUN_PKL`` env var) regardless of the hardcoded paths or globs it uses.
+
+    Cloud credentials get the same driver-owned treatment: when the repo token
+    at ``GCS_TOKEN_PATH`` exists, it is linked under its conventional name into
+    the script's cwd, the cwd's parent, and the pkl's directory (the places the
+    recorded delivery-dir conventions look), and the standard
+    ``GOOGLE_APPLICATION_CREDENTIALS`` / ``AWS_EC2_METADATA_DISABLED`` env vars
+    are preset so image-reading hypotheses can reach GCS / public S3.
     """
     with tempfile.TemporaryDirectory(prefix="rerun_") as tmp:
-        run = Path(tmp)
+        # The cwd is nested one level so scripts probing ``Path.cwd().parent``
+        # still land inside the disposable sandbox (where a token link can
+        # live) instead of the shared $TMPDIR.
+        run = Path(tmp) / "run"
+        run.mkdir()
         (run / "experiment.py").write_text(code, encoding="utf-8")
         (run / "_runner.py").write_text(_RUNNER, encoding="utf-8")
         start = time.monotonic()
@@ -546,6 +597,13 @@ def rerun_one(code: str, pkl: Path, timeout: int) -> dict:
             "MPLBACKEND": "Agg",  # headless plotting
             "RERUN_PKL": str(pkl),
         }
+        env.setdefault("AWS_EC2_METADATA_DISABLED", "true")
+        if GCS_TOKEN_PATH.is_file():
+            env.setdefault("GOOGLE_APPLICATION_CREDENTIALS", str(GCS_TOKEN_PATH))
+            env["RERUN_GCS_TOKEN"] = str(GCS_TOKEN_PATH)
+            _link_gcs_token(run)
+            _link_gcs_token(Path(tmp))
+            _link_gcs_token(pkl.parent, announce=True)
         try:
             proc = subprocess.run(
                 [sys.executable, "_runner.py"],

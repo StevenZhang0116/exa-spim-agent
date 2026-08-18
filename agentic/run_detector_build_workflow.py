@@ -581,12 +581,15 @@ the OOF-scored subset, not the complete candidate universe.
 """.strip()
         measuretime_scope = f"""
 For split measuretime, `profile_segment_limit` means a deterministic sample of
-at most that many component-bearing segment ids represented in candidate
-occurrences. Keep the complete driver-owned candidate universe and labels, but
-skip expensive feature computation outside the sampled segments and leave those
-feature cells undefined. Do not reinterpret the limit as a number of GT edges,
-positive split pairs, endpoint occurrences, or candidate rows. The reported
-seconds are observed on that bounded sample, not a full-run estimate.
+at most that many segment ids drawn from those that actually appear in the
+candidate pair universe (first-appearance order). Retain every candidate row in
+which EITHER segment of the pair is sampled, and restrict expensive feature
+computation to the retained rows' nodes/components. Do NOT require BOTH
+endpoints to be sampled: the row unit is a segment pair, so an AND filter
+almost always retains zero rows and empties the profile. Do not reinterpret the
+limit as a number of GT edges, positive split pairs, endpoint occurrences, or
+candidate rows. The reported seconds are observed on that bounded sample, not a
+full-run estimate.
 """.strip()
     else:
         target_inventory_note = """
@@ -722,7 +725,15 @@ owns native-NaN declarations ({native_nan_models}) and optional dependencies
 
 The exact permitted grid keys are:
 {parameter_contract}
-For explainable_boosting, interactions is a non-negative integer count. Never write
+For explainable_boosting, interactions is a non-negative integer count. Fitting
+cost must inform grid size: nested selection refits every grid point three times
+per outer fold across five outer folds plus a final all-rows search (~18x per
+grid point), and explainable_boosting is among the most expensive fits (minutes
+per fit on a ~100k-row universe). Keep its grid to AT MOST 4 combinations: pick
+ONE value each for max_bins, learning_rate, max_rounds, and min_samples_leaf
+(its internal early stopping makes a generous max_rounds harmless) and vary only
+the axis your inventory rationale actually names — typically interactions
+(e.g. [0, 5]). Never write
 a Python class path, module path, import statement, code string, callable, or
 arbitrary estimator name. The driver will reject missing baselines, more than
 {MAX_OPTIONAL_MODELS} extensions, unknown families/parameters, stale inventory

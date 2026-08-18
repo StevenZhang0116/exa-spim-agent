@@ -67,6 +67,68 @@ def _prior_payload(run_json: Path, dataset: Path, results: list[dict]) -> dict:
     }
 
 
+class RerunOneCredentialTests(unittest.TestCase):
+    _PROBE = (
+        "import json, os\n"
+        "from pathlib import Path\n"
+        "name = 'zihan_gcs_token.json'\n"
+        "print(json.dumps({\n"
+        "    'tok_env': os.environ.get('RERUN_GCS_TOKEN'),\n"
+        "    'gac': os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'),\n"
+        "    'aws': os.environ.get('AWS_EC2_METADATA_DISABLED'),\n"
+        "    'cwd_link': (Path.cwd() / name).is_file(),\n"
+        "    'parent_link': (Path.cwd().parent / name).is_file(),\n"
+        "    'pkl_link': (Path(os.environ['RERUN_PKL']).parent / name)"
+        ".is_file(),\n"
+        "}))\n"
+    )
+
+    def test_rerun_one_exposes_gcs_token_and_cloud_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            token = root / "zihan_gcs_token.json"
+            token.write_text("{}")
+            pkl_dir = root / "delivery"
+            pkl_dir.mkdir()
+            pkl = pkl_dir / "dataset_cache_test_add.pkl"
+            pkl.write_bytes(b"")
+            with mock.patch.dict(rerun.os.environ):
+                rerun.os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+                rerun.os.environ.pop("AWS_EC2_METADATA_DISABLED", None)
+                with mock.patch.object(rerun, "GCS_TOKEN_PATH", token):
+                    result = rerun.rerun_one(self._PROBE, pkl, timeout=120)
+            self.assertEqual(result["exitcode"], 0, result["stderr"])
+            probe = json.loads(result["stdout"])
+            self.assertEqual(probe["tok_env"], str(token))
+            self.assertEqual(probe["gac"], str(token))
+            self.assertEqual(probe["aws"], "true")
+            self.assertTrue(probe["cwd_link"])
+            self.assertTrue(probe["parent_link"])
+            self.assertTrue(probe["pkl_link"])
+            self.assertTrue((pkl_dir / token.name).is_symlink())
+
+    def test_rerun_one_without_token_still_disables_ec2_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pkl_dir = root / "delivery"
+            pkl_dir.mkdir()
+            pkl = pkl_dir / "dataset_cache_test_add.pkl"
+            pkl.write_bytes(b"")
+            missing = root / "zihan_gcs_token.json"  # never written
+            with mock.patch.dict(rerun.os.environ):
+                rerun.os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
+                rerun.os.environ.pop("AWS_EC2_METADATA_DISABLED", None)
+                with mock.patch.object(rerun, "GCS_TOKEN_PATH", missing):
+                    result = rerun.rerun_one(self._PROBE, pkl, timeout=120)
+            self.assertEqual(result["exitcode"], 0, result["stderr"])
+            probe = json.loads(result["stdout"])
+            self.assertIsNone(probe["tok_env"])
+            self.assertIsNone(probe["gac"])
+            self.assertEqual(probe["aws"], "true")
+            self.assertFalse(probe["pkl_link"])
+            self.assertFalse((pkl_dir / missing.name).exists())
+
+
 class RerunWorkItemTests(unittest.TestCase):
     def test_export_scripts_removes_unselected_stale_scripts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

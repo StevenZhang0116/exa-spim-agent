@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -312,6 +313,115 @@ class DiscoverySmokeTests(unittest.TestCase):
         )
         self.assertEqual(workflow.TRANSLATE_STEP_TIMEOUT_S, 7200)
         self.assertEqual(workflow.COMPUTE_TIMEOUT_S, 86400)
+
+        # Repair rounds 2..MAX sit between the first remeasure and the single
+        # fold, roll their merge through the same .reproduce.json, and carry
+        # the self-terminating skip/stall rules.
+        self.assertEqual(workflow.MAX_FIX_LOADING_ROUNDS, 3)
+        for round_no in range(2, workflow.MAX_FIX_LOADING_ROUNDS + 1):
+            fix = by_name[f"reproduce-fix-loading-{round_no}"]
+            self.assertEqual(fix["kind"], "agent")
+            self.assertTrue(fix["skip_if_stalled"])
+            self.assertTrue(
+                str(fix["skip_if_no_unusable_in"]).endswith(".reproduce.json")
+            )
+            repair = by_name[f"reproduce-remeasure-{round_no}"]
+            self.assertTrue(repair["skip_if_stalled"])
+            self.assertIn("--only-changed", repair["argv"])
+            base = repair["argv"][repair["argv"].index("--base-results") + 1]
+            self.assertEqual(base, repair["out"])  # rolling merge in place
+            self.assertEqual(
+                repair["stall_if_code_unchanged"],
+                {"code_dir": repair["argv"][repair["argv"].index("--code-dir") + 1],
+                 "results": repair["out"]},
+            )
+        names = [str(s["name"]) for s in steps]
+        self.assertLess(
+            names.index("reproduce-remeasure"),
+            names.index("reproduce-fix-loading-2"),
+        )
+        self.assertLess(
+            names.index(f"reproduce-remeasure-{workflow.MAX_FIX_LOADING_ROUNDS}"),
+            names.index("reproduce-fold"),
+        )
+
+    def test_repair_loop_helpers_detect_change_unusable_and_stall(self) -> None:
+        old_root = workflow.PROJECT_ROOT
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                workflow.PROJECT_ROOT = root
+                rerun = root / "run.json.rerun"
+                rerun.mkdir()
+                code = "print('x')\n"
+                code_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
+                (rerun / "hypo_1.py").write_text(code)
+                results_rel = "run.json.reproduce.json"
+                (root / results_rel).write_text(json.dumps({"results": [
+                    {
+                        "id": 1,
+                        "result_status": "UNUSABLE",
+                        "result_failure_reason": "nonzero-exit",
+                        "code_source": "revised",
+                        "rerun_stderr": "Traceback ...\nKeyError: 'gt_graph'",
+                        "recorded_code_sha256": "recorded-1",
+                        "executed_code_sha256": code_hash,
+                    },
+                    {
+                        "id": 2,
+                        "result_status": "USABLE",
+                        "recorded_code_sha256": "recorded-2",
+                        "executed_code_sha256": "recorded-2",
+                    },
+                ]}))
+
+                self.assertTrue(workflow._has_unusable_results(results_rel))
+                self.assertFalse(workflow._has_unusable_results("missing.json"))
+                # hypo_1 matches its executed hash; id 2 has no script and its
+                # recorded hash matches — nothing new to measure.
+                self.assertFalse(
+                    workflow._scripts_changed_since("run.json.rerun", results_rel)
+                )
+                # Unreadable results cannot prove convergence.
+                self.assertTrue(
+                    workflow._scripts_changed_since("run.json.rerun", "missing.json")
+                )
+
+                step = {
+                    "name": "reproduce-remeasure-2",
+                    "kind": "compute",
+                    "stall_if_code_unchanged": {
+                        "code_dir": "run.json.rerun",
+                        "results": results_rel,
+                    },
+                    "argv": ["python", "should-not-run"],
+                    "out": results_rel,
+                }
+                with mock.patch.object(
+                    workflow, "run_compute",
+                    side_effect=AssertionError("stalled round must not launch"),
+                ):
+                    self.assertEqual(workflow.run_compute_step(step), "stalled")
+
+                # After a real edit the same round measures again.
+                (rerun / "hypo_1.py").write_text(code + "# fixed\n")
+                self.assertTrue(
+                    workflow._scripts_changed_since("run.json.rerun", results_rel)
+                )
+                with mock.patch.object(workflow, "run_compute") as run_compute:
+                    self.assertEqual(workflow.run_compute_step(step), "ran")
+                    run_compute.assert_called_once()
+
+                # The failure digest surfaces id, reason, source, stderr tail.
+                digest = io.StringIO()
+                with contextlib.redirect_stderr(digest):
+                    workflow._log_failure_summary(results_rel, "reproduce-remeasure-2")
+                text = digest.getvalue()
+                self.assertIn("1 USABLE, 1 UNUSABLE", text)
+                self.assertIn("id 1: nonzero-exit (revised)", text)
+                self.assertIn("KeyError: 'gt_graph'", text)
+        finally:
+            workflow.PROJECT_ROOT = old_root
 
 
 if __name__ == "__main__":

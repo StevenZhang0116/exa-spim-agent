@@ -1157,26 +1157,42 @@ def _cv_splits(X, y, n_splits, seed, samples=None):
     return splits
 
 
-def inner_cv_family(family, grid, X, y, inner_folds, seed, samples=None):
+def inner_cv_family(family, grid, X, y, inner_folds, seed, samples=None,
+                    log=None):
     """3-fold inner CV over a family's grid.  Returns list of dicts:
-    {params, mean_ap, std_ap, mean_se}."""
+    {params, mean_ap, std_ap, mean_se}.
+
+    ``log`` (optional) gets one line per grid point with its mean AP and wall
+    time — the fits in here are the minutes-per-point bulk of nested selection,
+    and without these lines a whole outer fold is a silent hour. A failing grid
+    point logs the exception instead of vanishing: a family whose every point
+    fails would otherwise show up only as 0 scored OOF rows much later.
+    """
     from sklearn.metrics import average_precision_score
 
     splits = _cv_splits(X, y, inner_folds, seed, samples=samples)
+    grid_points = list(iter_param_grid(grid))
     results = []
-    for params in iter_param_grid(grid):
+    for point_i, params in enumerate(grid_points):
+        t_point = time.time()
         fold_ap = []
-        ok = True
+        error = None
         for tr, va in splits:
             try:
                 est = build_estimator(family, params)
                 est.fit(X[tr], y[tr])
                 sc = _score_matrix(est, X[va])
                 fold_ap.append(average_precision_score(y[va], sc))
-            except Exception:
-                ok = False
+            except Exception as exc:
+                error = exc
                 break
-        if not ok or not fold_ap:
+        if error is not None or not fold_ap:
+            if log is not None:
+                log("    %s grid %d/%d FAILED after %.1fs (%s: %s) params=%r"
+                    % (family, point_i + 1, len(grid_points),
+                       time.time() - t_point,
+                       type(error).__name__ if error is not None else "empty",
+                       error, params))
             continue
         fold_ap = np.asarray(fold_ap, dtype=float)
         results.append({
@@ -1185,6 +1201,10 @@ def inner_cv_family(family, grid, X, y, inner_folds, seed, samples=None):
             "std_ap": float(np.std(fold_ap, ddof=1)) if len(fold_ap) > 1 else 0.0,
             "n": len(fold_ap),
         })
+        if log is not None:
+            log("    %s grid %d/%d mean_ap=%.4f (%.1fs) params=%r"
+                % (family, point_i + 1, len(grid_points),
+                   results[-1]["mean_ap"], time.time() - t_point, params))
     return results
 
 
@@ -1249,11 +1269,16 @@ def run_nested_selection(X, y, configured, policy, log, samples=None):
             grid = configured[f]["grid"]
             train_samples = ([samples[int(i)] for i in tr]
                              if samples is not None else None)
+            log("  fold %d/%d %s: %d grid point(s) x %d inner fold(s)"
+                % (k + 1, outer_folds, f, _grid_size(grid), inner_folds))
+            t_family = time.time()
             results = inner_cv_family(
                 f, grid, X[tr], y[tr], inner_folds, seed,
-                samples=train_samples)
+                samples=train_samples, log=log)
             choice = best_params_1se(results)
             if choice is None:
+                log("  fold %d/%d %s: NO usable inner result after %.1fs"
+                    % (k + 1, outer_folds, f, time.time() - t_family))
                 fold_record["family_choice"][f] = None
                 continue
             fold_record["family_choice"][f] = {
@@ -1272,8 +1297,15 @@ def run_nested_selection(X, y, configured, policy, log, samples=None):
                 est = build_estimator(f, choice["params"])
                 est.fit(X[tr], y[tr])
                 oof[f][te] = _score_matrix(est, X[te])
-            except Exception:
-                pass
+                log("  fold %d/%d %s: done in %.1fs — inner mean AP %.4f, "
+                    "params=%r"
+                    % (k + 1, outer_folds, f, time.time() - t_family,
+                       choice["mean_ap"], choice["params"]))
+            except Exception as exc:
+                log("  fold %d/%d %s: outer refit FAILED after %.1fs "
+                    "(%s: %s) — no OOF scores from this fold"
+                    % (k + 1, outer_folds, f, time.time() - t_family,
+                       type(exc).__name__, exc))
         # selector: apply the full policy in this fold
         chosen = select_family_1se(family_best, simplicity)
         fold_record["selected_family"] = chosen
@@ -1332,11 +1364,18 @@ def fit_final_winner(X, y, configured, policy, log, samples=None):
     per_family_choice = {}
     for f in configured:
         grid = configured[f]["grid"]
+        log("final search %s: %d grid point(s) x %d inner fold(s) on all rows"
+            % (f, _grid_size(grid), inner_folds))
+        t_family = time.time()
         results = inner_cv_family(
-            f, grid, X, y, inner_folds, seed, samples=samples)
+            f, grid, X, y, inner_folds, seed, samples=samples, log=log)
         choice = best_params_1se(results)
         if choice is None:
+            log("final search %s: NO usable inner result after %.1fs"
+                % (f, time.time() - t_family))
             continue
+        log("final search %s: done in %.1fs — inner mean AP %.4f"
+            % (f, time.time() - t_family, choice["mean_ap"]))
         per_family_choice[f] = choice
         family_best[f] = {
             "mean_ap": choice["mean_ap"], "std_ap": choice["std_ap"],

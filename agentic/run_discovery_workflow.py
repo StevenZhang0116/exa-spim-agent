@@ -271,6 +271,15 @@ AGENT_STEP_TIMEOUT_S: int = 900     # overridden at startup; see _scale_timeouts
 TRANSLATE_STEP_TIMEOUT_S: int = 7200  # 2 h for full-report localization
 COMPUTE_TIMEOUT_S: int = 86400      # 24 h per compute step
 
+# The reproduce phase's fix-loading → remeasure pair runs up to this many
+# rounds. One revision often uncovers the next loading failure underneath (fix
+# the pkl load, then hit a credential gate), and with a single shot every
+# still-UNUSABLE hypothesis was permanently folded as FAILED. Rounds after the
+# first skip themselves as soon as nothing is UNUSABLE, and the loop ends the
+# moment a fix round changes no script (code-hash comparison, no dataset load),
+# so a converged or stalled loop costs no extra compute or agent turns.
+MAX_FIX_LOADING_ROUNDS: int = 3
+
 
 def _scale_timeouts(n_records: int) -> tuple[int, int]:
     """Size the agent budget from the hypothesis count and report both budgets.
@@ -638,7 +647,9 @@ def build_steps(
     verify / fix-tests / translate). ``json_rel`` is the run JSON to digest,
     ``pkl_rel`` the origin dataset,
     ``summary_rel`` the Markdown deliverable — all relative to the project root.
-    Order: summarize → reproduce (run→export→fix-loading→remeasure→fold) →
+    Order: summarize → reproduce (run→export→fix-loading→remeasure, repeated as
+    a repair loop up to ``MAX_FIX_LOADING_ROUNDS`` rounds that end early once no
+    result is UNUSABLE or a fix round changes no script, then a single fold) →
     [extrapolate (run→fold), only with ``extra_pkls_rel``] → verify →
     fix-tests (author→measure→fold) → translate. Translate is purely cosmetic and
     always runs last.
@@ -716,6 +727,7 @@ def build_steps(
                 json_rel, pkl_rel, checkpoint_rel=repro_raw_checkpoint_rel
             ),
             "out": repro_raw_rel,
+            "failure_summary": True,
         },
         {
             "name": "reproduce-export",
@@ -770,7 +782,75 @@ def build_steps(
                 checkpoint_rel=repro_checkpoint_rel,
             ),
             "out": repro_rel,
+            "failure_summary": True,
         },
+    ])
+
+    # Loading-repair rounds 2..MAX_FIX_LOADING_ROUNDS. One revision often only
+    # uncovers the next loading failure underneath, so the fix → remeasure pair
+    # repeats until nothing is UNUSABLE (the fix round skips itself), a round
+    # changes no script (the remeasure round detects the stall via code hashes
+    # and every later round skips), or the cap is reached. Folding stays a
+    # single step AFTER the loop so verdicts are judged once, on the converged
+    # results.
+    for round_no in range(2, MAX_FIX_LOADING_ROUNDS + 1):
+        steps.append(
+            {
+                "name": f"reproduce-fix-loading-{round_no}",
+                "phase": "reproduce",
+                "kind": "agent",
+                "skip_if_stalled": True,
+                "skip_if_no_unusable_in": repro_rel,
+                "instruction": (
+                    "Use the discovery-reproducer subagent for loading-repair "
+                    f"round {round_no}/{MAX_FIX_LOADING_ROUNDS}: some hypotheses "
+                    "are STILL UNUSABLE after the previous loading fix and "
+                    "re-measurement. Read the merged results JSON at "
+                    f"{repro_rel} (each result has `code_source` "
+                    "recorded|revised, `result_status`, `result_failure_reason`, "
+                    "`rerun_exitcode`, `rerun_stdout`, `rerun_stderr`). For "
+                    "every result still UNUSABLE for a DATA-LOADING / "
+                    "ENVIRONMENT reason — even when the script exited 0 — "
+                    "revise ONLY the loading/bootstrap of the failing "
+                    f"{rerun_dir_rel}/hypo_<id>.py (load the pkl directly from "
+                    "$RERUN_PKL, fix the NumPy version, drop pip-retry loops). "
+                    "A failing `code_source: revised` result means the PREVIOUS "
+                    "revision is itself suspect — re-read that script first "
+                    "instead of assuming the recorded code is at fault. Keep "
+                    "the ANALYSIS byte-for-byte identical; never weaken or stub "
+                    "an analysis to make it run, and do NOT touch scripts whose "
+                    "result is USABLE. If none of the remaining failures are "
+                    "loading/environment problems, change NOTHING and say so — "
+                    "the driver compares code hashes and ends the repair loop "
+                    "when a round changes no script. Report which ids you "
+                    "revised and why."
+                ),
+            }
+        )
+        steps.append(
+            {
+                "name": f"reproduce-remeasure-{round_no}",
+                "phase": "reproduce",
+                "kind": "compute",
+                "skip_if_stalled": True,
+                "stall_if_code_unchanged": {
+                    "code_dir": rerun_dir_rel,
+                    "results": repro_rel,
+                },
+                "failure_summary": True,
+                "argv": rerun_argv(
+                    json_rel,
+                    pkl_rel,
+                    code_dir_rel=rerun_dir_rel,
+                    base_results_rel=repro_rel,
+                    only_changed=True,
+                    checkpoint_rel=repro_checkpoint_rel,
+                ),
+                "out": repro_rel,
+            }
+        )
+
+    steps.append(
         {
             "name": "reproduce-fold",
             "phase": "reproduce",
@@ -793,8 +873,8 @@ def build_steps(
                 + layout_rule("## Reproduction — Summary")
                 + "Report the path and which findings did NOT reproduce."
             ),
-        },
-    ])
+        }
+    )
 
     # Optional extrapolation phase: only when other datasets were provided. The
     # driver runs the pre-exported (and loading-fixed where needed) scripts via
@@ -1179,6 +1259,79 @@ def _has_hypo_scripts(dir_rel: str) -> bool:
     return d.is_dir() and any(d.glob("hypo_*.py"))
 
 
+def _load_results(results_rel: str) -> list[dict]:
+    """The ``results`` list of a compute-output JSON, or [] when unreadable."""
+    try:
+        payload = json.loads((PROJECT_ROOT / results_rel).read_text())
+    except (OSError, ValueError):
+        return []
+    results = payload.get("results") if isinstance(payload, dict) else None
+    if not isinstance(results, list):
+        return []
+    return [r for r in results if isinstance(r, dict)]
+
+
+def _has_unusable_results(results_rel: str) -> bool:
+    """Whether any result in ``results_rel`` is still marked UNUSABLE."""
+    return any(
+        r.get("result_status") == "UNUSABLE" for r in _load_results(results_rel)
+    )
+
+
+def _scripts_changed_since(code_dir_rel: str, results_rel: str) -> bool:
+    """Whether any exported script differs from what ``results_rel`` measured.
+
+    Mirrors ``rerun_experiments.resolve_code``: a present, non-blank
+    ``hypo_<id>.py`` supplies the code (hash of its exact text), otherwise the
+    recorded code does (the result's ``recorded_code_sha256``). Comparing that
+    candidate against ``executed_code_sha256`` — without loading any dataset —
+    tells the repair loop whether re-measuring could produce anything new.
+    """
+    results = _load_results(results_rel)
+    if not results:
+        return True  # unreadable results cannot prove convergence — run.
+    for r in results:
+        safe = re.sub(r"[^0-9A-Za-z_.-]", "_", str(r.get("id")))
+        script = PROJECT_ROOT / code_dir_rel / f"hypo_{safe}.py"
+        candidate = r.get("recorded_code_sha256")
+        try:
+            text = script.read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        if text.strip():
+            candidate = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if candidate != r.get("executed_code_sha256"):
+            return True
+    return False
+
+
+def _log_failure_summary(results_rel: str, step_name: str) -> None:
+    """Per-id failure digest into the driver log after a measuring step.
+
+    The results JSON already records why each hypothesis is UNUSABLE; surfacing
+    that here means the log alone shows what the repair loop is still chasing
+    (and what it finally gave up on) without opening the artifact.
+    """
+    results = _load_results(results_rel)
+    unusable = [r for r in results if r.get("result_status") == "UNUSABLE"]
+    log(
+        f"  [results] {step_name}: {len(results) - len(unusable)} USABLE, "
+        f"{len(unusable)} UNUSABLE ({results_rel})."
+    )
+    for r in unusable:
+        stderr_tail = ""
+        for line in reversed(str(r.get("rerun_stderr") or "").splitlines()):
+            if line.strip():
+                stderr_tail = line.strip()[:200]
+                break
+        reason = r.get("result_failure_reason") or "unknown"
+        source = r.get("code_source") or "recorded"
+        log(
+            f"  [results]   id {r.get('id')}: {reason} ({source})"
+            + (f" — {stderr_tail}" if stderr_tail else "")
+        )
+
+
 def _rerun_manifest_matches_selection(dir_rel: str, selection_rel: str) -> bool:
     """Whether an exported rerun directory contains exactly the selected ids."""
     try:
@@ -1401,11 +1554,16 @@ def confirm_prior_artifacts(
         print("Please answer y or n.", file=sys.stderr)
 
 
-def run_compute_step(step: dict[str, object]) -> None:
+def run_compute_step(step: dict[str, object]) -> str:
     """Execute one ``kind == "compute"`` step in the driver (no agent involved).
 
     Honors skip rules so a resume reuses expensive results and the common path
     stays cheap. Checked in order:
+    - ``stall_if_code_unchanged``: a repair-round remeasure skips — and reports
+      the repair loop as stalled — when no exported script differs from the
+      code hashes its results JSON already measured (the preceding fix round
+      changed nothing). Checked driver-side so a stalled round never pays the
+      dataset load.
     - ``skip_if_scripts_exist_in``: skip (without overwriting) when the target
       dir already holds hypo_*.py scripts. Predictive exports additionally use
       ``skip_if_scripts_match_selection``: a stale/missing MANIFEST or script
@@ -1420,8 +1578,23 @@ def run_compute_step(step: dict[str, object]) -> None:
 
     Skip rules deliberately run before launching the helper so an empty corrected
     phase cannot make a fold step consume stale output from an earlier run.
+
+    Returns ``"ran"``, ``"skipped"``, or ``"stalled"`` so the step loop can end
+    a repair loop whose latest fix round produced no change.
     """
     out_rel = step.get("out")  # type: ignore[assignment]
+    # 0) Repair-round remeasure with nothing new to measure — mark the stall.
+    stall_spec = step.get("stall_if_code_unchanged")
+    if isinstance(stall_spec, dict):
+        code_dir = str(stall_spec["code_dir"])
+        results_rel = str(stall_spec["results"])
+        if not _scripts_changed_since(code_dir, results_rel):
+            log(
+                f"  [compute] skipped: no script in {code_dir} differs from the "
+                f"code hashes already measured in {results_rel} — the preceding "
+                "fix round changed nothing, so the repair loop ends here."
+            )
+            return "stalled"
     # 1) Scripts already on disk — skip export to avoid clobbering edits.
     skip_exist = step.get("skip_if_scripts_exist_in")
     if skip_exist and _has_hypo_scripts(str(skip_exist)):
@@ -1431,7 +1604,7 @@ def run_compute_step(step: dict[str, object]) -> None:
         ):
             log(f"  [compute] skipped (scripts already in {skip_exist}; "
                 "not overwriting).")
-            return
+            return "skipped"
         log(
             f"  [compute] {skip_exist} does not match {selection}; refreshing "
             "the export and removing stale workflow-owned hypo_*.py files."
@@ -1445,7 +1618,7 @@ def run_compute_step(step: dict[str, object]) -> None:
             log(f"  [compute] NOTE: {out_rel} on disk is from an EARLIER run "
                 "and is NOT part of this one; the fold step skips with this "
                 "step, so it will not be read.")
-        return
+        return "skipped"
     # 3) Select argv: use the no-code-dir fallback when the scripts dir is empty
     #    (e.g. reproduce phase was skipped) to avoid passing --code-dir to an
     #    empty directory whose behaviour is implicit in rerun_experiments.py.
@@ -1457,6 +1630,7 @@ def run_compute_step(step: dict[str, object]) -> None:
     else:
         argv = list(step["argv"])
     run_compute(argv, str(out_rel) if out_rel else None)
+    return "ran"
 
 
 def _print_smoke_selection(json_rel: str) -> list[str]:
@@ -1568,14 +1742,32 @@ async def run_workflow(
 
     async def _drive(client) -> None:
         log("SDK session opened.")
+        # Set when a repair-round remeasure finds its fix round changed no
+        # script: every later step carrying skip_if_stalled is then pointless
+        # (the same inputs would produce the same "nothing to fix" turn).
+        repair_stalled = False
         for i, step in enumerate(steps, start=1):
             name, kind = str(step["name"]), str(step["kind"])
             print(f"\n=== Step {i}/{len(steps)}: {name} [{kind}] ===")
             log(f"Step {i}/{len(steps)} '{name}' ({kind}) started.")
             step_start = time.monotonic()
+            if repair_stalled and step.get("skip_if_stalled"):
+                log(f"  skipped ('{name}'): an earlier repair round changed no "
+                    "script — the fix-loading loop already converged/stalled.")
+                continue
             if kind == "compute":
-                run_compute_step(step)
+                status = run_compute_step(step)
+                if status == "stalled":
+                    repair_stalled = True
+                elif status == "ran" and step.get("failure_summary"):
+                    _log_failure_summary(str(step["out"]), name)
             else:
+                # A repair fix round with nothing left to repair has no work.
+                no_unusable = step.get("skip_if_no_unusable_in")
+                if no_unusable and not _has_unusable_results(str(no_unusable)):
+                    log(f"  [agent] skipped ('{name}'): no UNUSABLE result in "
+                        f"{no_unusable} — nothing left for a repair round.")
+                    continue
                 # An agent fold step whose compute input was skipped has no work.
                 # Checked before skip_if_missing: an output file left by an
                 # earlier run can exist while THIS run's phase produced nothing.

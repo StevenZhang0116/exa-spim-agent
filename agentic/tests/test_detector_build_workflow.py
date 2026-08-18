@@ -584,6 +584,14 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("native model-specific importance", template)
         self.assertIn("def validation_permutation():", template)
         self.assertNotIn('save(fig, 6, "linear_coefficients")', template)
+        # Nested-selection progress logging: every grid point, every family
+        # (per outer fold and in the final all-rows search) must announce
+        # itself with a timing, and a failing fit must surface its exception —
+        # a silent `except: pass` here once hid a KeyError as 0/240 OOF rows.
+        self.assertIn("grid %d/%d mean_ap=%.4f (%.1fs)", template)
+        self.assertIn("grid %d/%d FAILED after %.1fs", template)
+        self.assertIn("outer refit FAILED after %.1fs", template)
+        self.assertIn("final search %s:", template)
 
     def test_split_runtime_passes_driver_owned_no_data_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1146,6 +1154,9 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("policy hash", configure)
         self.assertIn("detector_model_policy.json", configure)
         self.assertIn("owns native-NaN declarations", configure)
+        # Cost discipline for the most expensive family: the advice stage must
+        # cap the explainable_boosting grid instead of multiplying wall-clock.
+        self.assertIn("AT MOST 4 combinations", configure)
         self.assertIn("feature_source_path", generate)
         self.assertIn("Never fall back", generate)
         self.assertIn(".feature_implementation.py", generate)
@@ -1200,6 +1211,8 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("build_sample_universe(payload)", generate)
         self.assertIn("must be ignored by feature extraction", generate)
         self.assertIn("For split measuretime", generate)
+        self.assertIn("EITHER segment of the pair is sampled", generate)
+        self.assertIn("Do NOT require BOTH", generate)
         self.assertIn("number of GT edges", generate)
         self.assertIn("candidate-pair-level", verify)
         self.assertIn("remain explicitly unscored (NaN)", verify)
