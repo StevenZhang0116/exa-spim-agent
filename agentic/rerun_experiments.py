@@ -108,12 +108,14 @@ import hashlib
 import importlib.metadata
 import json
 import os
+import pickle
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from pathlib import Path
 
 # Reuse the exact ranking the summarizer uses so the rerun set matches the
@@ -139,6 +141,48 @@ _PKL_LITERAL = re.compile(r"""["']([^"']*?\.pkl)["']""")
 GCS_TOKEN_PATH = (
     Path(__file__).resolve().parent.parent / "configs" / "zihan_gcs_token.json"
 )
+
+# Resident-payload execution. Historically every script ran in a fresh
+# subprocess that re-deserialized the multi-GB dataset itself (~minutes per
+# script; 42 scripts ≈ hours of pure pickle.load). The driver now loads each
+# pkl ONCE and forks a child per script: copy-on-write shares the payload for
+# reads while keeping any in-place mutation private to that child — the same
+# isolation the subprocess gave, without the reload. ``--no-preload`` restores
+# the old behavior; non-POSIX platforms fall back automatically.
+_PRELOAD_ENABLED = hasattr(os, "fork")
+_PAYLOAD_CACHE: dict[str, object] = {}
+
+
+def _preload_payload(pkl: Path):
+    """Load (once) and cache a dataset payload; ``None`` disables the fork path."""
+    key = str(pkl.resolve())
+    if key in _PAYLOAD_CACHE:
+        return _PAYLOAD_CACHE[key]
+    start = time.monotonic()
+    print(f"[rerun] preloading dataset payload: {pkl}", file=sys.stderr, flush=True)
+    try:
+        import importlib
+        try:
+            importlib.import_module("agentic_neuron_proofreader")
+        except ImportError:
+            pass  # payloads without SkeletonGraph objects unpickle fine anyway
+        with open(pkl, "rb") as handle:
+            payload = pickle.load(handle)
+    except Exception as exc:
+        print(
+            f"[rerun] preload failed ({type(exc).__name__}: {exc}); falling "
+            "back to per-script subprocess loading.",
+            file=sys.stderr, flush=True,
+        )
+        _PAYLOAD_CACHE[key] = None
+        return None
+    print(
+        f"[rerun] payload resident in {time.monotonic() - start:.0f}s; scripts "
+        "now fork from it instead of re-deserializing per script.",
+        file=sys.stderr, flush=True,
+    )
+    _PAYLOAD_CACHE[key] = payload
+    return payload
 _UNUSABLE_OUTPUT_RE = re.compile(
     r"(?:^|\n)\s*(?:no dataset(?: files?)? found|dataset not found|"
     r"could not find (?:a )?dataset|record has no ['\"]code['\"] to execute)"
@@ -567,6 +611,224 @@ def _link_gcs_token(dest_dir: Path, announce: bool = False) -> None:
         print(f"[rerun] exposed GCS token at {dest}", file=sys.stderr, flush=True)
 
 
+def _apply_inprocess_patches(payload) -> None:
+    """Child-side twin of ``_RUNNER`` for the forked execution path.
+
+    Applies the same neutralizations and ``*.pkl`` redirections as the
+    subprocess runner (keep the two in sync), plus one preload shortcut:
+    ``pickle.load`` on any ``*.pkl``-named file returns the parent's resident
+    payload instead of deserializing the multi-GB cache again.
+    """
+    import builtins
+    import glob as glob_module
+    from pathlib import Path as _Path
+
+    pkl_path = os.environ["RERUN_PKL"]
+
+    def _is_install_cmd(a):
+        if isinstance(a, str):
+            s = a.split()
+        elif isinstance(a, (list, tuple)):
+            s = [str(x) for x in a]
+        else:
+            return False
+        if not s:
+            return False
+        prog = os.path.basename(s[0])
+        if prog.startswith("pip") and "install" in s:
+            return True
+        if "pip" in s and "install" in s:
+            return True
+        if prog in ("apt", "apt-get", "conda", "mamba", "sudo") and "install" in s:
+            return True
+        return False
+
+    orig_check_call = subprocess.check_call
+
+    def _check_call(a, *args, **kw):
+        if _is_install_cmd(a):
+            print("[runner] suppressed package install:", a,
+                  file=sys.stderr, flush=True)
+            return 0
+        return orig_check_call(a, *args, **kw)
+
+    subprocess.check_call = _check_call
+
+    orig_check_output = subprocess.check_output
+
+    def _check_output(a, *args, **kw):
+        if _is_install_cmd(a):
+            print("[runner] suppressed package install:", a,
+                  file=sys.stderr, flush=True)
+            return "" if (kw.get("text") or kw.get("encoding")) else b""
+        return orig_check_output(a, *args, **kw)
+
+    subprocess.check_output = _check_output
+
+    orig_run = subprocess.run
+
+    def _run(a, *args, **kw):
+        if _is_install_cmd(a):
+            print("[runner] suppressed package install:", a,
+                  file=sys.stderr, flush=True)
+            return subprocess.CompletedProcess(
+                a, 0, "" if kw.get("text") else b"", "" if kw.get("text") else b"")
+        return orig_run(a, *args, **kw)
+
+    subprocess.run = _run
+
+    orig_popen = subprocess.Popen
+
+    class _Popen(orig_popen):
+        def __init__(self, a, *args, **kw):
+            if _is_install_cmd(a):
+                print("[runner] suppressed package install:", a,
+                      file=sys.stderr, flush=True)
+                a = [sys.executable, "-c", "pass"]
+            super().__init__(a, *args, **kw)
+
+    subprocess.Popen = _Popen
+
+    def _is_pkl(x):
+        try:
+            s = os.fspath(x)
+        except TypeError:
+            return False
+        return isinstance(s, str) and s.endswith(".pkl")
+
+    orig_open = builtins.open
+
+    def _open(file, *a, **k):
+        return orig_open(pkl_path if _is_pkl(file) else file, *a, **k)
+
+    builtins.open = _open
+
+    orig_exists = os.path.exists
+    os.path.exists = lambda p: True if _is_pkl(p) else orig_exists(p)
+    orig_isfile = os.path.isfile
+    os.path.isfile = lambda p: True if _is_pkl(p) else orig_isfile(p)
+
+    orig_glob = glob_module.glob
+
+    def _glob(pathname, *a, **k):
+        if isinstance(pathname, str) and pathname.endswith(".pkl"):
+            return [pkl_path]
+        return orig_glob(pathname, *a, **k)
+
+    glob_module.glob = _glob
+
+    orig_p_exists, orig_p_isfile = _Path.exists, _Path.is_file
+    _Path.exists = lambda self: True if str(self).endswith(".pkl") else orig_p_exists(self)
+    _Path.is_file = lambda self: True if str(self).endswith(".pkl") else orig_p_isfile(self)
+
+    orig_pickle_load = pickle.load
+
+    def _pickle_load(file, *a, **k):
+        name = getattr(file, "name", "")
+        if isinstance(name, str) and name.endswith(".pkl"):
+            return payload
+        return orig_pickle_load(file, *a, **k)
+
+    pickle.load = _pickle_load
+
+
+def _run_forked(run_dir: Path, env: dict, timeout: int, payload) -> dict:
+    """Execute ``experiment.py`` in a forked child sharing the resident payload.
+
+    fork gives the child a copy-on-write view of the parent's memory: the
+    multi-GB payload is shared for reads and any in-place mutation stays
+    private to that child — the same isolation the per-script subprocess gave,
+    without a fresh deserialization per script. The child leads its own
+    session so a timeout kills its whole process group.
+    """
+    import signal
+
+    stdout_path = run_dir.parent / "stdout.txt"
+    stderr_path = run_dir.parent / "stderr.txt"
+    start = time.monotonic()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    pid = os.fork()
+    if pid == 0:  # child — must never return into the parent's control flow
+        exit_code = 1
+        try:
+            os.setsid()
+            out_fd = os.open(str(stdout_path),
+                             os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+            err_fd = os.open(str(stderr_path),
+                             os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
+            os.dup2(out_fd, 1)
+            os.dup2(err_fd, 2)
+            os.chdir(str(run_dir))
+            os.environ.clear()
+            os.environ.update(env)
+            sys.argv = ["experiment.py"]
+            _apply_inprocess_patches(payload)
+            import runpy
+            runpy.run_path("experiment.py", run_name="__main__")
+            exit_code = 0
+        except SystemExit as exc:
+            code = exc.code
+            if code in (None, 0):
+                exit_code = 0
+            else:
+                exit_code = code if isinstance(code, int) else 1
+        except BaseException:
+            traceback.print_exc()
+            exit_code = 1
+        finally:
+            try:
+                sys.stdout.flush()
+                sys.stderr.flush()
+            except Exception:
+                pass
+            os._exit(exit_code)
+
+    timed_out = False
+    exitcode = None
+    deadline = start + timeout
+    while True:
+        done_pid, status = os.waitpid(pid, os.WNOHANG)
+        if done_pid == pid:
+            if os.WIFEXITED(status):
+                exitcode = os.WEXITSTATUS(status)
+            elif os.WIFSIGNALED(status):
+                exitcode = -os.WTERMSIG(status)
+            break
+        if time.monotonic() >= deadline:
+            timed_out = True
+            try:
+                os.killpg(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+            break
+        time.sleep(0.05)
+
+    def _read(path: Path) -> str:
+        try:
+            return path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    stderr_text = _read(stderr_path)
+    if timed_out:
+        stderr_text += f"\n[rerun] timed out after {timeout}s"
+    return {
+        "timed_out": timed_out,
+        "exitcode": None if timed_out else exitcode,
+        "stdout": _read(stdout_path),
+        "stderr": stderr_text,
+        "runtime_ms": round((time.monotonic() - start) * 1000),
+    }
+
+
 def rerun_one(code: str, pkl: Path, timeout: int) -> dict:
     """Execute one record's recorded ``code``, forcing every pkl load to ``pkl``.
 
@@ -582,7 +844,14 @@ def rerun_one(code: str, pkl: Path, timeout: int) -> dict:
     recorded delivery-dir conventions look), and the standard
     ``GOOGLE_APPLICATION_CREDENTIALS`` / ``AWS_EC2_METADATA_DISABLED`` env vars
     are preset so image-reading hypotheses can reach GCS / public S3.
+
+    Execution strategy: when the payload preloads (POSIX, ``--no-preload`` not
+    given), the script runs in a forked child sharing the resident payload via
+    copy-on-write and ``pickle.load`` short-circuits to it — one dataset
+    deserialization per invocation instead of one per script. Otherwise it
+    falls back to the original fresh-subprocess-per-script path.
     """
+    payload = _preload_payload(pkl) if _PRELOAD_ENABLED else None
     with tempfile.TemporaryDirectory(prefix="rerun_") as tmp:
         # The cwd is nested one level so scripts probing ``Path.cwd().parent``
         # still land inside the disposable sandbox (where a token link can
@@ -590,8 +859,6 @@ def rerun_one(code: str, pkl: Path, timeout: int) -> dict:
         run = Path(tmp) / "run"
         run.mkdir()
         (run / "experiment.py").write_text(code, encoding="utf-8")
-        (run / "_runner.py").write_text(_RUNNER, encoding="utf-8")
-        start = time.monotonic()
         env = {
             **os.environ,
             "MPLBACKEND": "Agg",  # headless plotting
@@ -604,6 +871,10 @@ def rerun_one(code: str, pkl: Path, timeout: int) -> dict:
             _link_gcs_token(run)
             _link_gcs_token(Path(tmp))
             _link_gcs_token(pkl.parent, announce=True)
+        if payload is not None:
+            return _run_forked(run, env, timeout, payload)
+        (run / "_runner.py").write_text(_RUNNER, encoding="utf-8")
+        start = time.monotonic()
         try:
             proc = subprocess.run(
                 [sys.executable, "_runner.py"],
@@ -866,7 +1137,19 @@ def main(argv: list[str] | None = None) -> int:
         default=6000,
         help="Truncate each recorded/fresh output to this many chars.",
     )
+    parser.add_argument(
+        "--no-preload",
+        action="store_true",
+        help=(
+            "Disable the resident-payload fork runner and reload the pkl in a "
+            "fresh subprocess per script (slower; the pre-2026-08 behavior)."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    global _PRELOAD_ENABLED
+    if args.no_preload or not hasattr(os, "fork"):
+        _PRELOAD_ENABLED = False
 
     if args.direction == "predictive" and args.predictive_manifest is None:
         parser.error("--direction predictive requires --predictive-manifest PATH.")

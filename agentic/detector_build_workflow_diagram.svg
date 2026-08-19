@@ -1,0 +1,174 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1930" height="800" viewBox="0 0 1930 800" font-family="'Helvetica Neue',Arial,sans-serif">
+  <defs>
+    <marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1930" height="800" fill="#ffffff"/>
+
+  <text x="40" y="40" font-size="20" font-weight="700" fill="#0f172a">run_detector_build_workflow — step pipeline</text>
+  <text x="40" y="63" font-size="12" fill="#64748b">Finished discovery report → self-contained blind detector · agent stages propose hidden drafts, the driver validates, compiles, and owns every public artifact</text>
+
+  <!-- legend -->
+  <rect x="1390" y="30" width="26" height="16" rx="4" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="1422" y="43" font-size="11.5" fill="#334155">agent stage (writes a hidden draft)</text>
+  <rect x="1650" y="30" width="26" height="16" rx="4" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="1682" y="43" font-size="11.5" fill="#334155">driver step (deterministic)</text>
+
+  <!-- ===== inputs ===== -->
+  <rect x="40" y="92" width="280" height="150" rx="10" fill="#f1f5f9" stroke="#94a3b8"/>
+  <text x="54" y="114" font-size="12" font-weight="700" fill="#334155">Inputs</text>
+  <text x="54" y="136" font-size="10" fill="#475569">finished report &lt;RUN&gt;.summary.md</text>
+  <text x="54" y="152" font-size="10" fill="#475569">(+ predictive-selection manifest)</text>
+  <text x="54" y="168" font-size="10" fill="#475569">.rerun/ + .fixed/ hypothesis scripts</text>
+  <text x="54" y="184" font-size="10" fill="#475569">detector_model_policy.json</text>
+  <text x="54" y="200" font-size="10" fill="#475569">runtime template + target adapter</text>
+
+  <line x1="320" y1="156" x2="352" y2="156" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===== stage 1 ===== -->
+  <rect x="354" y="92" width="280" height="182" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="368" y="114" font-size="12.5" font-weight="700" fill="#334155">Stage 1 · inventory-features</text>
+
+  <rect x="370" y="126" width="248" height="60" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="382" y="143" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">inventory-features</text>
+  <text x="606" y="143" font-size="9.5" font-style="italic" fill="#3b82f6" text-anchor="end">agent</text>
+  <text x="382" y="159" font-size="10" fill="#475569">semantic judgments → draft</text>
+  <text x="382" y="173" font-size="10" fill="#475569">.feature_semantics.json</text>
+
+  <line x1="494" y1="186" x2="494" y2="198" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="370" y="200" width="248" height="60" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="382" y="217" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">validate + compile</text>
+  <text x="606" y="217" font-size="9.5" font-style="italic" fill="#16a34a" text-anchor="end">driver</text>
+  <text x="382" y="233" font-size="10" fill="#475569">inventory v2 checks →</text>
+  <text x="382" y="247" font-size="10" fill="#475569">feature_inventory.json</text>
+
+  <line x1="634" y1="156" x2="666" y2="156" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===== stage 2 ===== -->
+  <rect x="668" y="92" width="280" height="182" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="682" y="114" font-size="12.5" font-weight="700" fill="#334155">Stage 2 · configure-models</text>
+
+  <rect x="684" y="126" width="248" height="60" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="696" y="143" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">configure-models</text>
+  <text x="920" y="143" font-size="9.5" font-style="italic" fill="#3b82f6" text-anchor="end">agent</text>
+  <text x="696" y="159" font-size="10" fill="#475569">model advice → draft</text>
+  <text x="696" y="173" font-size="10" fill="#475569">.model_advice.json</text>
+
+  <line x1="808" y1="186" x2="808" y2="198" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="684" y="200" width="248" height="60" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="696" y="217" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">compile + validate</text>
+  <text x="920" y="217" font-size="9.5" font-style="italic" fill="#16a34a" text-anchor="end">driver</text>
+  <text x="696" y="233" font-size="10" fill="#475569">adds mechanical fields →</text>
+  <text x="696" y="247" font-size="10" fill="#475569">model_candidates.json</text>
+
+  <line x1="948" y1="156" x2="980" y2="156" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===== stage 3 ===== -->
+  <rect x="982" y="92" width="280" height="208" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="996" y="114" font-size="12.5" font-weight="700" fill="#334155">Stage 3 · generate-detector</text>
+
+  <rect x="998" y="126" width="248" height="60" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="1010" y="143" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">generate-detector</text>
+  <text x="1234" y="143" font-size="9.5" font-style="italic" fill="#3b82f6" text-anchor="end">agent</text>
+  <text x="1010" y="159" font-size="10" fill="#475569">feature code → draft</text>
+  <text x="1010" y="173" font-size="10" fill="#475569">.feature_implementation.py</text>
+
+  <line x1="1122" y1="186" x2="1122" y2="198" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="998" y="200" width="248" height="60" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="1010" y="217" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">assemble + smoke test</text>
+  <text x="1234" y="217" font-size="9.5" font-style="italic" fill="#16a34a" text-anchor="end">driver</text>
+  <text x="1010" y="233" font-size="10" fill="#475569">template + fragment →</text>
+  <text x="1010" y="247" font-size="10" fill="#475569">&lt;target&gt;_site_detector.py</text>
+
+  <path d="M 998 230 H 988 V 156 H 996" fill="none" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="998" y="286" font-size="9.5" fill="#475569">smoke reject → repair prompt, ≤ 2 attempts</text>
+
+  <line x1="1262" y1="156" x2="1294" y2="156" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===== stage 4 ===== -->
+  <rect x="1296" y="92" width="280" height="182" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="1310" y="114" font-size="12.5" font-weight="700" fill="#334155">Stage 4 · verify-and-document</text>
+
+  <rect x="1312" y="126" width="248" height="60" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="1324" y="143" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">verify-and-document</text>
+  <text x="1548" y="143" font-size="9.5" font-style="italic" fill="#3b82f6" text-anchor="end">agent</text>
+  <text x="1324" y="159" font-size="10" fill="#475569">enrich README.md</text>
+  <text x="1324" y="173" font-size="10" fill="#475569">(driver-validated enrichment)</text>
+
+  <line x1="1436" y1="186" x2="1436" y2="198" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="1312" y="200" width="248" height="60" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="1324" y="217" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">write_run_commands</text>
+  <text x="1548" y="217" font-size="9.5" font-style="italic" fill="#16a34a" text-anchor="end">driver</text>
+  <text x="1324" y="233" font-size="10" fill="#475569">hash-bound runbook →</text>
+  <text x="1324" y="247" font-size="10" fill="#475569">RUN_COMMANDS.md</text>
+
+  <line x1="1576" y1="156" x2="1608" y2="156" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===== deliverables + downstream ===== -->
+  <rect x="1610" y="92" width="286" height="150" rx="10" fill="#eef2ff" stroke="#6366f1"/>
+  <text x="1624" y="114" font-size="12" font-weight="700" fill="#3730a3">Deliverables (hash-bound)</text>
+  <text x="1624" y="136" font-size="10" fill="#374151">feature_inventory.json</text>
+  <text x="1624" y="152" font-size="10" fill="#374151">model_candidates.json</text>
+  <text x="1624" y="168" font-size="10" fill="#374151">&lt;target&gt;_site_detector.py (self-contained)</text>
+  <text x="1624" y="184" font-size="10" fill="#374151">README.md · RUN_COMMANDS.md</text>
+  <text x="1624" y="200" font-size="10" fill="#374151">detector_build_workflow.log.txt</text>
+
+  <line x1="1753" y1="242" x2="1753" y2="266" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="5 4" marker-end="url(#arr)"/>
+
+  <rect x="1610" y="268" width="286" height="120" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-dasharray="6 4"/>
+  <text x="1624" y="290" font-size="12" font-weight="700" fill="#64748b">Downstream (separate runs)</text>
+  <text x="1624" y="312" font-size="10" fill="#64748b">--measuretime → cost report →</text>
+  <text x="1624" y="328" font-size="10" fill="#64748b">full train (nested CV) → --test-pkl</text>
+  <text x="1624" y="344" font-size="10" fill="#64748b">run_detector_result_analysis.py</text>
+  <text x="1624" y="360" font-size="10" fill="#64748b">→ bilingual RESULT_ANALYSIS.md</text>
+
+  <!-- ===== bottom band: design notes ===== -->
+  <rect x="40" y="460" width="600" height="130" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="56" y="484" font-size="12" font-weight="700" fill="#334155">Resume / recovery</text>
+  <text x="56" y="506" font-size="10.5" fill="#475569">A public artifact that still validates skips its agent stage entirely;</text>
+  <text x="56" y="524" font-size="10.5" fill="#475569">hidden drafts are consumed when compiled. Rebuilding into a non-empty</text>
+  <text x="56" y="542" font-size="10.5" fill="#475569">directory asks for confirmation before touching anything.</text>
+  <text x="56" y="560" font-size="10.5" fill="#475569">Contract: the agent proposes; the driver owns every public artifact.</text>
+
+  <rect x="660" y="460" width="600" height="130" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="676" y="484" font-size="12" font-weight="700" fill="#334155">Grid-contract validation (Stage 2 + detector startup)</text>
+  <text x="676" y="506" font-size="10.5" fill="#475569">Grids must supply every parameter the runtime's build_estimator indexes</text>
+  <text x="676" y="524" font-size="10.5" fill="#475569">without a default (e.g. EBM max_rounds). Enforced by the validator and</text>
+  <text x="676" y="542" font-size="10.5" fill="#475569">again at detector startup, so a missing key fails loudly at configuration</text>
+  <text x="676" y="560" font-size="10.5" fill="#475569">time rather than as empty OOF scores deep inside the smoke test.</text>
+
+  <rect x="1280" y="460" width="616" height="130" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="1296" y="484" font-size="12" font-weight="700" fill="#334155">EBM grid cost cap (Stage 2 advice)</text>
+  <text x="1296" y="506" font-size="10.5" fill="#475569">explainable_boosting is capped at 4 grid combinations — each grid point</text>
+  <text x="1296" y="524" font-size="10.5" fill="#475569">is refit ~18× downstream (3 inner × 5 outer folds plus the final</text>
+  <text x="1296" y="542" font-size="10.5" fill="#475569">all-rows search), so grid size multiplies wall-clock directly.</text>
+
+  <rect x="40" y="610" width="600" height="130" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="56" y="634" font-size="12" font-weight="700" fill="#334155">Nested-selection progress logs (template)</text>
+  <text x="56" y="656" font-size="10.5" fill="#475569">Assembled detectors log every grid point, every family, and the final</text>
+  <text x="56" y="674" font-size="10.5" fill="#475569">all-rows search with wall time; a failing fit logs its exception instead</text>
+  <text x="56" y="692" font-size="10.5" fill="#475569">of disappearing, so long fits and broken configs are visible in the run</text>
+  <text x="56" y="710" font-size="10.5" fill="#475569">log as they happen.</text>
+
+  <rect x="660" y="610" width="600" height="130" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="676" y="634" font-size="12" font-weight="700" fill="#334155">Split measuretime sampling (template + spec)</text>
+  <text x="676" y="656" font-size="10.5" fill="#475569">Profiling keeps candidate rows where EITHER paired segment is sampled —</text>
+  <text x="676" y="674" font-size="10.5" fill="#475569">the split row unit is a segment pair, so requiring both endpoints in a</text>
+  <text x="676" y="692" font-size="10.5" fill="#475569">small sample would retain almost nothing. Segments are drawn from those</text>
+  <text x="676" y="710" font-size="10.5" fill="#475569">actually present in the candidate universe.</text>
+
+  <rect x="1280" y="610" width="616" height="130" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="1296" y="634" font-size="12" font-weight="700" fill="#334155">Cost accounting (driver)</text>
+  <text x="1296" y="656" font-size="10.5" fill="#475569">SDK total_cost_usd is session-cumulative; the driver keeps the latest</text>
+  <text x="1296" y="674" font-size="10.5" fill="#475569">value per session and logs per-turn increments, so the footer reports</text>
+  <text x="1296" y="692" font-size="10.5" fill="#475569">what the build actually cost.</text>
+
+  <text x="40" y="784" font-size="11" fill="#94a3b8">agentic/run_detector_build_workflow.py · 2026-08-18</text>
+</svg>

@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1930" height="820" viewBox="0 0 1930 820" font-family="'Helvetica Neue',Arial,sans-serif">
+  <defs>
+    <marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1930" height="820" fill="#ffffff"/>
+
+  <text x="40" y="40" font-size="20" font-weight="700" fill="#0f172a">run_discovery_workflow — step pipeline</text>
+  <text x="40" y="63" font-size="12" fill="#64748b">AutoDiscovery workflow: reproduce with a bounded loading-repair loop, generalize, audit, correct</text>
+
+  <!-- legend -->
+  <rect x="1390" y="30" width="26" height="16" rx="4" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="1422" y="43" font-size="11.5" fill="#334155">agent step (LLM subagent)</text>
+  <rect x="1620" y="30" width="26" height="16" rx="4" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="1652" y="43" font-size="11.5" fill="#334155">compute step (deterministic, driver-run)</text>
+
+  <!-- ===== phase 1: summarize ===== -->
+  <rect x="40" y="92" width="280" height="182" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="54" y="114" font-size="12.5" font-weight="700" fill="#334155">1 · summarize</text>
+
+  <rect x="56" y="126" width="248" height="60" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="68" y="143" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">select-predictive-hyp.</text>
+  <text x="292" y="143" font-size="9.5" font-style="italic" fill="#3b82f6" text-anchor="end">agent</text>
+  <text x="68" y="159" font-size="10" fill="#475569">exclusion-only pick →</text>
+  <text x="68" y="173" font-size="10" fill="#475569">.predictive-selection.json</text>
+
+  <line x1="180" y1="186" x2="180" y2="198" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="56" y="200" width="248" height="60" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="68" y="217" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">summarize-discoveries</text>
+  <text x="292" y="217" font-size="9.5" font-style="italic" fill="#3b82f6" text-anchor="end">agent</text>
+  <text x="68" y="233" font-size="10" fill="#475569">rank posterior×|surprisal| →</text>
+  <text x="68" y="247" font-size="10" fill="#475569">&lt;RUN&gt;.summary.md</text>
+
+  <line x1="320" y1="156" x2="352" y2="156" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===== phase 2: reproduce ===== -->
+  <rect x="354" y="92" width="288" height="474" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="368" y="114" font-size="12.5" font-weight="700" fill="#334155">2 · reproduce</text>
+
+  <rect x="370" y="126" width="256" height="60" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="382" y="143" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">reproduce-run</text>
+  <text x="614" y="143" font-size="9.5" font-style="italic" fill="#16a34a" text-anchor="end">compute</text>
+  <text x="382" y="159" font-size="10" fill="#475569">rerun recorded code as-is →</text>
+  <text x="382" y="173" font-size="10" fill="#475569">.reproduce-raw.json</text>
+
+  <line x1="498" y1="186" x2="498" y2="198" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="370" y="200" width="256" height="60" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="382" y="217" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">reproduce-export</text>
+  <text x="614" y="217" font-size="9.5" font-style="italic" fill="#16a34a" text-anchor="end">compute</text>
+  <text x="382" y="233" font-size="10" fill="#475569">editable .rerun/hypo_&lt;id&gt;.py</text>
+  <text x="382" y="247" font-size="10" fill="#475569">+ REVISION_GUIDE</text>
+
+  <line x1="498" y1="260" x2="498" y2="272" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- repair loop -->
+  <rect x="364" y="274" width="268" height="204" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-dasharray="6 3" stroke-width="1.5"/>
+  <text x="378" y="294" font-size="11" font-weight="700" fill="#334155">Repair loop · up to 3 rounds</text>
+
+  <rect x="380" y="302" width="236" height="60" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="392" y="319" font-size="11.5" font-weight="600" font-family="monospace" fill="#0f172a">reproduce-fix-loading[-r]</text>
+  <text x="604" y="319" font-size="9.5" font-style="italic" fill="#3b82f6" text-anchor="end">agent</text>
+  <text x="392" y="335" font-size="9.5" fill="#475569">fix loading/env only;</text>
+  <text x="392" y="348" font-size="9.5" fill="#475569">analysis byte-identical</text>
+
+  <line x1="498" y1="362" x2="498" y2="374" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="380" y="376" width="236" height="60" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="392" y="393" font-size="11.5" font-weight="600" font-family="monospace" fill="#0f172a">reproduce-remeasure[-r]</text>
+  <text x="604" y="393" font-size="9.5" font-style="italic" fill="#16a34a" text-anchor="end">compute</text>
+  <text x="392" y="409" font-size="9.5" fill="#475569">--only-changed rolling</text>
+  <text x="392" y="422" font-size="9.5" fill="#475569">merge → .reproduce.json</text>
+
+  <path d="M 380 406 H 372 V 332 H 378" fill="none" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <text x="380" y="452" font-size="9.5" fill="#475569">Exit: 1) no UNUSABLE left; 2) a round changed</text>
+  <text x="380" y="466" font-size="9.5" fill="#475569">no script (hash check, no pkl load); 3) cap 3</text>
+
+  <line x1="498" y1="478" x2="498" y2="490" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="370" y="492" width="256" height="60" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="382" y="509" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">reproduce-fold</text>
+  <text x="614" y="509" font-size="9.5" font-style="italic" fill="#3b82f6" text-anchor="end">agent</text>
+  <text x="382" y="525" font-size="10" fill="#475569">fold once → REPRODUCED /</text>
+  <text x="382" y="539" font-size="10" fill="#475569">DIVERGED / FAILED</text>
+
+  <line x1="642" y1="156" x2="672" y2="156" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===== phase 3: extrapolate ===== -->
+  <rect x="674" y="92" width="280" height="182" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-dasharray="6 4"/>
+  <text x="688" y="114" font-size="12.5" font-weight="700" fill="#334155">3 · extrapolate (--extra-pkl only)</text>
+
+  <rect x="690" y="126" width="248" height="60" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="702" y="143" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">extrapolate-run</text>
+  <text x="926" y="143" font-size="9.5" font-style="italic" fill="#16a34a" text-anchor="end">compute</text>
+  <text x="702" y="159" font-size="10" fill="#475569">reproduced scripts on extra</text>
+  <text x="702" y="173" font-size="10" fill="#475569">brains → .extrapolate.json</text>
+
+  <line x1="814" y1="186" x2="814" y2="198" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="690" y="200" width="248" height="60" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="702" y="217" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">extrapolate-fold</text>
+  <text x="926" y="217" font-size="9.5" font-style="italic" fill="#3b82f6" text-anchor="end">agent</text>
+  <text x="702" y="233" font-size="10" fill="#475569">GENERALIZES / PARTIAL / DOES-</text>
+  <text x="702" y="247" font-size="10" fill="#475569">NOT-GENERALIZE / INCONCLUSIVE</text>
+
+  <line x1="954" y1="156" x2="986" y2="156" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===== phase 4: verify ===== -->
+  <rect x="988" y="92" width="280" height="108" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="1002" y="114" font-size="12.5" font-weight="700" fill="#334155">4 · verify</text>
+
+  <rect x="1004" y="126" width="248" height="60" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="1016" y="143" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">verify-statistics-and-logic</text>
+  <text x="1240" y="159" font-size="9.5" font-style="italic" fill="#3b82f6" text-anchor="end">agent</text>
+  <text x="1016" y="159" font-size="10" fill="#475569">test choice / power / FDR →</text>
+  <text x="1016" y="173" font-size="10" fill="#475569">SOUND … CRITICAL</text>
+
+  <line x1="1268" y1="156" x2="1300" y2="156" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===== phase 5: fix-tests ===== -->
+  <rect x="1302" y="92" width="280" height="256" rx="10" fill="#f8fafc" stroke="#cbd5e1"/>
+  <text x="1316" y="114" font-size="12.5" font-weight="700" fill="#334155">5 · fix-tests</text>
+
+  <rect x="1318" y="126" width="248" height="60" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="1330" y="143" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">fix-tests-author</text>
+  <text x="1554" y="143" font-size="9.5" font-style="italic" fill="#3b82f6" text-anchor="end">agent</text>
+  <text x="1330" y="159" font-size="10" fill="#475569">corrected tests for MAJOR/</text>
+  <text x="1330" y="173" font-size="10" fill="#475569">CRITICAL → .fixed/</text>
+
+  <line x1="1442" y1="186" x2="1442" y2="198" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="1318" y="200" width="248" height="60" rx="8" fill="#dcfce7" stroke="#16a34a"/>
+  <text x="1330" y="217" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">fix-tests-measure</text>
+  <text x="1554" y="217" font-size="9.5" font-style="italic" fill="#16a34a" text-anchor="end">compute</text>
+  <text x="1330" y="233" font-size="10" fill="#475569">re-measure → .corrected.json</text>
+  <text x="1330" y="247" font-size="10" fill="#475569">(skip if .fixed/ empty)</text>
+
+  <line x1="1442" y1="260" x2="1442" y2="272" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="1318" y="274" width="248" height="60" rx="8" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="1330" y="291" font-size="12" font-weight="600" font-family="monospace" fill="#0f172a">fix-tests-fold</text>
+  <text x="1554" y="291" font-size="9.5" font-style="italic" fill="#3b82f6" text-anchor="end">agent</text>
+  <text x="1330" y="307" font-size="10" fill="#475569">before vs after → UPHELD /</text>
+  <text x="1330" y="321" font-size="10" fill="#475569">WEAKENED / OVERTURNED</text>
+
+  <line x1="1582" y1="156" x2="1614" y2="156" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ===== deliverable ===== -->
+  <text x="1624" y="150" font-size="11" font-weight="700" fill="#334155">Deliverable:</text>
+  <text x="1624" y="167" font-size="11" font-family="monospace" fill="#334155">&lt;RUN&gt;.summary.md</text>
+
+  <!-- ===== bottom band: design notes ===== -->
+  <line x1="440" y1="566" x2="240" y2="618" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4 3"/>
+  <line x1="520" y1="566" x2="860" y2="618" stroke="#94a3b8" stroke-width="1" stroke-dasharray="4 3"/>
+
+  <rect x="40" y="620" width="600" height="160" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="56" y="644" font-size="12" font-weight="700" fill="#334155">Failure digests in the driver log</text>
+  <text x="56" y="666" font-size="10.5" fill="#475569">After reproduce-run and every remeasure round, the log gets a per-id digest:</text>
+  <text x="56" y="684" font-size="10.5" fill="#475569">USABLE/UNUSABLE counts + reason (timeout / nonzero-exit / dataset-loading /</text>
+  <text x="56" y="702" font-size="10.5" fill="#475569">empty-output) + code source + stderr tail — the log alone tells what each</text>
+  <text x="56" y="720" font-size="10.5" fill="#475569">round was chasing and what was finally given up on. Environment-level</text>
+  <text x="56" y="738" font-size="10.5" fill="#475569">failures (broken imports) abort the whole run instead of entering the loop.</text>
+
+  <rect x="660" y="620" width="600" height="160" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="676" y="644" font-size="12" font-weight="700" fill="#334155">Repair-loop economics</text>
+  <text x="676" y="666" font-size="10.5" fill="#475569">Rounds ≥ 2 roll-merge into .reproduce.json and rerun only hash-changed</text>
+  <text x="676" y="684" font-size="10.5" fill="#475569">scripts; stall detection compares code hashes driver-side (no subprocess,</text>
+  <text x="676" y="702" font-size="10.5" fill="#475569">no dataset load). Each fix turn starts from a driver-embedded digest of the</text>
+  <text x="676" y="720" font-size="10.5" fill="#475569">failures, and a syntax gate compile-checks every changed script before any</text>
+  <text x="676" y="738" font-size="10.5" fill="#475569">re-measurement — a broken fix costs a free repair turn, not a dataset load.</text>
+
+  <rect x="1280" y="620" width="616" height="160" rx="8" fill="#f8fafc" stroke="#94a3b8"/>
+  <text x="1296" y="644" font-size="12" font-weight="700" fill="#334155">Execution model: resident payload + credentials (rerun_one)</text>
+  <text x="1296" y="666" font-size="10.5" fill="#475569">Each pkl is deserialized ONCE per invocation; every script runs in a forked</text>
+  <text x="1296" y="684" font-size="10.5" fill="#475569">child sharing it copy-on-write (pickle.load short-circuits to the resident</text>
+  <text x="1296" y="702" font-size="10.5" fill="#475569">object; in-place mutations stay private to the child). --no-preload restores</text>
+  <text x="1296" y="720" font-size="10.5" fill="#475569">fresh-subprocess-per-script. Credentials: AWS_EC2_METADATA_DISABLED=true,</text>
+  <text x="1296" y="738" font-size="10.5" fill="#475569">GOOGLE_APPLICATION_CREDENTIALS + $RERUN_GCS_TOKEN, token symlinked to the</text>
+  <text x="1296" y="756" font-size="10.5" fill="#475569">script cwd / its parent / the pkl's directory; $RERUN_PKL forces the dataset.</text>
+
+  <text x="40" y="806" font-size="11" fill="#94a3b8">agentic/run_discovery_workflow.py &amp; rerun_experiments.py · 2026-08-19</text>
+</svg>

@@ -3,9 +3,8 @@ Run the AutoDiscovery summarization workflow via the Claude Agent SDK.
 
 Processes ONE AutoDiscovery run export (a single JSON file) together with the
 dataset ``.pkl`` its experiments were run against, and produces a Markdown
-deliverable next to the input: ``<stem>.summary.md`` (plus a 简体中文
-``<stem>.summary.zh.md``). Subagents live in ``.claude/agents/`` and are
-auto-discovered via ``setting_sources``.
+deliverable next to the input: ``<stem>.summary.md``. Subagents live in
+``.claude/agents/`` and are auto-discovered via ``setting_sources``.
 
 Architecture — driver-owned compute, agents operate on artifacts
 ---------------------------------------------------------------
@@ -39,8 +38,6 @@ The PHASES, in order:
                    [compute] re-measure them (+extras) → [agent] fold
                    UPHELD/WEAKENED/OVERTURNED. (Compute+fold skipped if nothing
                    was flagged.)
-  6. translate   — [agent] faithful 简体中文 localization of the finished report.
-                   Pure localization (no re-analysis), so it ALWAYS runs last.
 
 Every step folds into ONE report whose top-level layout is fixed by
 ``REPORT_SECTION_ORDER`` (Header → Ranked Conclusions → Reproduction →
@@ -268,7 +265,6 @@ AGENT_STEP_PER_RECORD_S: int = 30   # + writing/folding one entry
 AGENT_STEP_CEILING_S: int = 3600    # 1 h — a hung session must still abort
 
 AGENT_STEP_TIMEOUT_S: int = 900     # overridden at startup; see _scale_timeouts()
-TRANSLATE_STEP_TIMEOUT_S: int = 7200  # 2 h for full-report localization
 COMPUTE_TIMEOUT_S: int = 86400      # 24 h per compute step
 
 # The reproduce phase's fix-loading → remeasure pair runs up to this many
@@ -548,17 +544,6 @@ def run_compute(argv: list[str], out_rel: str | None) -> None:
     log(f"  [compute] done in {dur:.0f}s.")
 
 
-def zh_path_for(summary_rel: str) -> str:
-    """The 简体中文 sibling path for a report: insert ``.zh`` before ``.md``.
-
-    ``foo.summary.md`` -> ``foo.summary.zh.md``. Used by the final translate
-    step so its output sits next to the English report.
-    """
-    if summary_rel.endswith(".md"):
-        return summary_rel[: -len(".md")] + ".zh.md"
-    return summary_rel + ".zh.md"
-
-
 # --- Canonical report layout -------------------------------------------------
 # Every fold step appends a file-wide "— Summary" section to the SAME report, and
 # each step used to describe its position only relative to its predecessor —
@@ -644,15 +629,14 @@ def build_steps(
       corrected scripts. It never owns a long experiment run.
 
     Each step carries a ``"phase"`` (summarize / reproduce / extrapolate /
-    verify / fix-tests / translate). ``json_rel`` is the run JSON to digest,
+    verify / fix-tests). ``json_rel`` is the run JSON to digest,
     ``pkl_rel`` the origin dataset,
     ``summary_rel`` the Markdown deliverable — all relative to the project root.
     Order: summarize → reproduce (run→export→fix-loading→remeasure, repeated as
     a repair loop up to ``MAX_FIX_LOADING_ROUNDS`` rounds that end early once no
     result is UNUSABLE or a fix round changes no script, then a single fold) →
     [extrapolate (run→fold), only with ``extra_pkls_rel``] → verify →
-    fix-tests (author→measure→fold) → translate. Translate is purely cosmetic and
-    always runs last.
+    fix-tests (author→measure→fold).
     """
     extra_pkls_rel = extra_pkls_rel or []
     scope_suffix = ".predictive" if DIRECTION == "predictive" else ""
@@ -746,6 +730,8 @@ def build_steps(
             "name": "reproduce-fix-loading",
             "phase": "reproduce",
             "kind": "agent",
+            "failure_brief": {"results": repro_raw_rel, "code_dir": rerun_dir_rel},
+            "syntax_check": {"code_dir": rerun_dir_rel, "results": repro_raw_rel},
             "instruction": (
                 "Use the discovery-reproducer subagent to FIX ONLY data-loading / "
                 "environment failures so the experiments can run — do NOT re-measure "
@@ -801,6 +787,8 @@ def build_steps(
                 "kind": "agent",
                 "skip_if_stalled": True,
                 "skip_if_no_unusable_in": repro_rel,
+                "failure_brief": {"results": repro_rel, "code_dir": rerun_dir_rel},
+                "syntax_check": {"code_dir": rerun_dir_rel, "results": repro_rel},
                 "instruction": (
                     "Use the discovery-reproducer subagent for loading-repair "
                     f"round {round_no}/{MAX_FIX_LOADING_ROUNDS}: some hypotheses "
@@ -1083,37 +1071,6 @@ def build_steps(
         }
     )
 
-    # Final, purely-cosmetic step: translate the finished report into 简体中文.
-    # It reads only the completed Markdown deliverable and writes a sibling
-    # .zh.md, so it has NO analytical dependency and must always run LAST — after
-    # every step above has folded its verdicts into the report. If more
-    # analytical steps are added, append them BEFORE this block so translate
-    # stays the final step.
-    summary_zh_rel = zh_path_for(summary_rel)
-    steps.append(
-        {
-            "name": "translate-report",
-            "phase": "translate",
-            "kind": "agent",
-            "timeout_s": TRANSLATE_STEP_TIMEOUT_S,
-            "expects_file": summary_zh_rel,
-            "instruction": (
-                "Use the discovery-translator subagent to produce a faithful "
-                f"简体中文 translation of the finished report at {summary_rel}, "
-                f"writing it to {summary_zh_rel}. This is a pure localization pass: "
-                "translate the prose and section/field labels but keep the EXACT "
-                "same structure, ordering, facts and verdicts, and copy ALL numbers "
-                "(p-values, coefficients, counts, ratios, CIs, scores, belief "
-                "probabilities) verbatim. Keep verbatim (do NOT translate) every "
-                "identifier, hypothesis id, run/dataset id, file path, code span, "
-                "metric/test name, unit, and verdict token (REPRODUCED, DIVERGED, "
-                "FAILED, GENERALIZES, DOES-NOT-GENERALIZE, PARTIAL, INCONCLUSIVE, "
-                "SOUND, WEAK, MINOR, MAJOR, CRITICAL, UPHELD, WEAKENED, "
-                "OVERTURNED). Do NOT re-run or re-judge "
-                "anything. Write exactly that one file and report its path."
-            ),
-        }
-    )
     return steps
 
 
@@ -1136,13 +1093,13 @@ def build_options() -> ClaudeAgentOptions:
         permission_mode="bypassPermissions",
         # Pin Opus 4.8 explicitly so the model is not left to the ambient session
         # default. Subagents with `model: inherit` follow this; agents that name a
-        # cheaper model in their frontmatter (e.g. the translator → sonnet) override it.
+        # cheaper model in their frontmatter override it.
         model="claude-opus-4-8",
         # Default reasoning effort for the ORCHESTRATOR turns (levels:
         # low|medium|high|xhigh|max). Per-subagent effort is set in each
         # .claude/agents/*.md frontmatter and takes precedence for that subagent's
         # turns — the mechanical fold agents run at medium, the analytical ones
-        # (summarize/verify/test-fixer) at xhigh, the translator at low. We set the
+        # (summarize/verify/test-fixer) at xhigh. We set the
         # session default via the SDK's native `effort` field, NOT the old
         # `CLAUDE_EFFORT` env var — that var is an OUTPUT the CLI exports to hooks
         # to report the active level, not an input it reads, so setting it did
@@ -1185,11 +1142,10 @@ async def run_step(client: ClaudeSDKClient, step: dict[str, object]) -> str:
     builds), so its values are heterogeneous — ``instruction`` is a str, but
     siblings hold argv lists, ``None``, and skip flags.
 
-    Wraps ``_run_step_inner`` with the step's optional ``timeout_s`` override,
-    falling back to ``AGENT_STEP_TIMEOUT_S``. This lets full-report translation
-    have a larger budget without weakening the guard on every other agent turn.
+    Wraps ``_run_step_inner`` in the ``AGENT_STEP_TIMEOUT_S`` guard so a hung
+    session aborts the run instead of stalling it forever.
     """
-    timeout_s = int(step.get("timeout_s", AGENT_STEP_TIMEOUT_S))
+    timeout_s = AGENT_STEP_TIMEOUT_S
     try:
         return await asyncio.wait_for(
             _run_step_inner(client, step),
@@ -1198,8 +1154,8 @@ async def run_step(client: ClaudeSDKClient, step: dict[str, object]) -> str:
     except asyncio.TimeoutError:
         raise SystemExit(
             f"Agent step '{step['name']}' timed out after {timeout_s}s. "
-            "Aborting — increase this step's timeout_s (or the default "
-            "AGENT_STEP_TIMEOUT_S) if it legitimately needs more time."
+            "Aborting — increase AGENT_STEP_TIMEOUT_S if it legitimately "
+            "needs more time."
         )
 
 
@@ -1211,7 +1167,8 @@ def _validate_step_output(step: dict, summary_path: Path) -> None:
     not abort the workflow (the agent may have legitimately phrased things
     differently) but logs a visible WARNING so the operator can inspect the file.
     ``"expects_file"`` checks that a separate output file exists (used by the
-    translate step, which writes a sibling .zh.md rather than editing the summary).
+    predictive-selection step, which writes a JSON manifest rather than editing
+    the summary).
     """
     expects = step.get("expects", [])
     expects_file = step.get("expects_file")
@@ -1330,6 +1287,82 @@ def _log_failure_summary(results_rel: str, step_name: str) -> None:
             f"  [results]   id {r.get('id')}: {reason} ({source})"
             + (f" — {stderr_tail}" if stderr_tail else "")
         )
+
+
+def _broken_changed_scripts(code_dir_rel: str, results_rel: str) -> list[str]:
+    """Compile-check every script that differs from what ``results_rel`` measured.
+
+    A syntax-broken loading fix would otherwise cost a full re-measurement run
+    (dataset load included) just to fail at import; this driver-side gate
+    catches it in milliseconds so the fix agent can repair it for free.
+    """
+    problems: list[str] = []
+    for r in _load_results(results_rel):
+        safe = re.sub(r"[^0-9A-Za-z_.-]", "_", str(r.get("id")))
+        script = PROJECT_ROOT / code_dir_rel / f"hypo_{safe}.py"
+        try:
+            text = script.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if not text.strip():
+            continue
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if digest == r.get("executed_code_sha256"):
+            continue  # unchanged since it was last measured — already ran once
+        try:
+            compile(text, str(script), "exec")
+        except SyntaxError as exc:
+            problems.append(f"{script.name} line {exc.lineno}: {exc.msg}")
+    return problems
+
+
+def _syntax_repair_instruction(problems: list[str], code_dir_rel: str) -> str:
+    """The follow-up prompt for a fix turn that left scripts unparseable."""
+    bullets = "\n".join(f"- {problem}" for problem in problems)
+    return (
+        "The driver compile-checked every script you changed BEFORE spending a "
+        "re-measurement run, and these do not parse:\n"
+        f"{bullets}\n"
+        f"Fix ONLY these syntax errors in place under {code_dir_rel}. Keep the "
+        "statistical analysis unchanged and do not touch any other script. "
+        "Report which files you repaired."
+    )
+
+
+def _failure_brief(results_rel: str, code_dir_rel: str, limit: int = 20) -> str:
+    """Digest of still-UNUSABLE results for embedding into a fix instruction.
+
+    The same facts live in the results JSON, but handing them to the agent up
+    front saves it a read-and-filter pass per repair round and anchors the turn
+    on the actual failures.
+    """
+    unusable = [
+        r for r in _load_results(results_rel)
+        if r.get("result_status") == "UNUSABLE"
+    ]
+    if not unusable:
+        return ""
+    lines = [
+        f"DRIVER DIGEST — {len(unusable)} UNUSABLE result(s) in {results_rel} "
+        f"(scripts in {code_dir_rel}; full stdout/stderr in the JSON):"
+    ]
+    for r in unusable[:limit]:
+        tail = ""
+        for line in reversed(str(r.get("rerun_stderr") or "").splitlines()):
+            if line.strip():
+                tail = line.strip()[:200]
+                break
+        reason = r.get("result_failure_reason") or "unknown"
+        source = r.get("code_source") or "recorded"
+        entry = f"- id {r.get('id')}: {reason} ({source})"
+        if tail:
+            entry += f" — {tail}"
+        lines.append(entry)
+    if len(unusable) > limit:
+        lines.append(
+            f"- … and {len(unusable) - limit} more; read the JSON for the rest."
+        )
+    return "\n".join(lines)
 
 
 def _rerun_manifest_matches_selection(dir_rel: str, selection_rel: str) -> bool:
@@ -1468,7 +1501,6 @@ def survey_prior_artifacts(json_path: Path, direction: str) -> list[tuple[Path, 
             findings.append((path, reason))
 
     add(json_path.with_suffix(".summary.md"), "existing analysis report")
-    add(json_path.with_suffix(".summary.zh.md"), "existing translated report")
     prior_log = json_path.with_name(
         f"{json_path.name}{scope}{DRIVER_LOG_SUFFIX}"
     )
@@ -1791,9 +1823,49 @@ async def run_workflow(
                         f"{step['expects_file']}."
                     )
                     continue
+                brief_spec = step.get("failure_brief")
+                if brief_spec:
+                    brief = _failure_brief(
+                        str(brief_spec["results"]), str(brief_spec["code_dir"])
+                    )
+                    if brief:
+                        step = {
+                            **step,
+                            "instruction": f"{step['instruction']}\n\n{brief}",
+                        }
                 final_text = await run_step(client, step)
                 print(final_text.strip())
                 _validate_step_output(step, summary_path)
+                # Syntax gate: a broken loading fix must not cost a full
+                # re-measurement run (dataset load included) to be discovered.
+                syntax_spec = step.get("syntax_check")
+                if syntax_spec:
+                    problems = _broken_changed_scripts(
+                        str(syntax_spec["code_dir"]), str(syntax_spec["results"])
+                    )
+                    if problems:
+                        log(
+                            f"  [syntax-gate] {len(problems)} changed script(s) "
+                            "do not compile; requesting an immediate fix before "
+                            "any re-measurement."
+                        )
+                        repair_step = {
+                            "name": f"{name}-syntax-repair",
+                            "instruction": _syntax_repair_instruction(
+                                problems, str(syntax_spec["code_dir"])
+                            ),
+                        }
+                        final_text = await run_step(client, repair_step)
+                        print(final_text.strip())
+                        problems = _broken_changed_scripts(
+                            str(syntax_spec["code_dir"]),
+                            str(syntax_spec["results"]),
+                        )
+                        if problems:
+                            raise SystemExit(
+                                "fix-loading left syntactically broken scripts "
+                                "after a repair turn: " + "; ".join(problems)
+                            )
                 manifest_source = step.get("validate_predictive_manifest_for")
                 if manifest_source:
                     _validate_predictive_manifest(

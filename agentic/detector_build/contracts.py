@@ -46,6 +46,12 @@ class TargetSpec:
     label_name: str
     positive_name: str
     negative_name: str
+    # Display plurals and CSV identity columns are part of the same public
+    # vocabulary: the result-analysis driver derives its evidence/report
+    # wording and CSV column contract from here instead of a local copy.
+    positive_plural: str
+    negative_plural: str
+    identity_columns: tuple[str, ...]
     score_prefix: str
     accumulator_name: str
     candidate_radius_um: float | None = None
@@ -61,6 +67,9 @@ _TARGET_SPECS = {
         label_name="is_merge",
         positive_name="merge",
         negative_name="clean",
+        positive_plural="merges",
+        negative_plural="clean segments",
+        identity_columns=("segment_id",),
         score_prefix="merge_probability",
         accumulator_name="SegmentAccumulator",
     ),
@@ -73,6 +82,9 @@ _TARGET_SPECS = {
         label_name="is_split",
         positive_name="split",
         negative_name="non-split candidate",
+        positive_plural="splits",
+        negative_plural="non-split candidates",
+        identity_columns=("candidate_id", "segment_id_a", "segment_id_b"),
         score_prefix="split_probability",
         accumulator_name="FeatureAccumulator",
         # The first supported split run uses nearby-endpoint candidate radii up

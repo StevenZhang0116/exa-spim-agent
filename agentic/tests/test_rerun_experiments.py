@@ -129,6 +129,88 @@ class RerunOneCredentialTests(unittest.TestCase):
             self.assertFalse((pkl_dir / missing.name).exists())
 
 
+class RerunForkedPreloadTests(unittest.TestCase):
+    def setUp(self) -> None:
+        if not hasattr(rerun.os, "fork"):
+            self.skipTest("fork is unavailable on this platform")
+
+    @staticmethod
+    def _dataset(root: Path) -> Path:
+        pkl = root / "dataset_cache_forktest_add.pkl"
+        pkl.write_bytes(rerun.pickle.dumps({"marker": 41, "mut": []}))
+        return pkl
+
+    def test_forked_run_uses_resident_payload_and_isolates_mutations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pkl = self._dataset(root)
+            resident = {"marker": 42, "mut": []}
+            code = (
+                "import os, pickle\n"
+                "with open(os.environ['RERUN_PKL'], 'rb') as f:\n"
+                "    p = pickle.load(f)\n"
+                "p['mut'].append(1)\n"
+                "print('marker', p['marker'], 'mut', len(p['mut']))\n"
+            )
+            with mock.patch.object(rerun, "_PRELOAD_ENABLED", True), \
+                    mock.patch.dict(rerun._PAYLOAD_CACHE,
+                                    {str(pkl.resolve()): resident}, clear=True):
+                first = rerun.rerun_one(code, pkl, timeout=60)
+                second = rerun.rerun_one(code, pkl, timeout=60)
+            self.assertEqual(first["exitcode"], 0, first["stderr"])
+            # marker 42 (resident), not 41 (on disk): pickle.load short-circuited.
+            self.assertIn("marker 42 mut 1", first["stdout"])
+            # The first child's mutation never reaches the parent or the second
+            # child: copy-on-write keeps each fork's payload private.
+            self.assertIn("marker 42 mut 1", second["stdout"])
+            self.assertEqual(resident["mut"], [])
+
+    def test_forked_run_times_out_and_kills_the_child(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pkl = self._dataset(root)
+            code = "import time\nprint('started', flush=True)\ntime.sleep(60)\n"
+            start = rerun.time.monotonic()
+            with mock.patch.object(rerun, "_PRELOAD_ENABLED", True), \
+                    mock.patch.dict(rerun._PAYLOAD_CACHE,
+                                    {str(pkl.resolve()): {}}, clear=True):
+                run = rerun.rerun_one(code, pkl, timeout=2)
+            self.assertTrue(run["timed_out"])
+            self.assertIsNone(run["exitcode"])
+            self.assertIn("started", run["stdout"])
+            self.assertIn("timed out after 2s", run["stderr"])
+            self.assertLess(rerun.time.monotonic() - start, 30)
+
+    def test_forked_run_reports_exception_and_exitcode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pkl = self._dataset(root)
+            with mock.patch.object(rerun, "_PRELOAD_ENABLED", True), \
+                    mock.patch.dict(rerun._PAYLOAD_CACHE,
+                                    {str(pkl.resolve()): {}}, clear=True):
+                run = rerun.rerun_one("raise RuntimeError('boom-fork')\n",
+                                      pkl, timeout=60)
+            self.assertEqual(run["exitcode"], 1)
+            self.assertFalse(run["timed_out"])
+            self.assertIn("boom-fork", run["stderr"])
+
+    def test_preload_failure_falls_back_to_subprocess_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pkl = root / "dataset_cache_broken_add.pkl"
+            pkl.write_bytes(b"")  # unpicklable — preload must fail gracefully
+            captured = io.StringIO()
+            with mock.patch.object(rerun, "_PRELOAD_ENABLED", True), \
+                    mock.patch.dict(rerun._PAYLOAD_CACHE, {}, clear=True), \
+                    contextlib.redirect_stderr(captured):
+                run = rerun.rerun_one("print('subprocess-ok')\n", pkl, timeout=60)
+                cached = rerun._PAYLOAD_CACHE.get(str(pkl.resolve()), "unset")
+            self.assertEqual(run["exitcode"], 0, run["stderr"])
+            self.assertIn("subprocess-ok", run["stdout"])
+            self.assertIn("preload failed", captured.getvalue())
+            self.assertIsNone(cached)  # failure is cached, so no retry storms
+
+
 class RerunWorkItemTests(unittest.TestCase):
     def test_export_scripts_removes_unselected_stale_scripts(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

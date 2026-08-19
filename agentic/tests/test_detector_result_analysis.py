@@ -178,6 +178,17 @@ class DetectorResultAnalysisTests(unittest.TestCase):
             skeleton.index(analysis.ENGLISH_REPORT_HEADING),
             skeleton.index(analysis.CHINESE_REPORT_HEADING),
         )
+        # The heading contract is now embedded in the skeleton itself: every
+        # required heading is pre-written, one placeholder per section, so the
+        # analyst never reproduces (or improvises) a title.
+        for heading in (*analysis.ENGLISH_SECTION_HEADINGS,
+                        *analysis.CHINESE_SECTION_HEADINGS):
+            self.assertIn(heading, skeleton)
+        self.assertEqual(
+            skeleton.count(analysis.REPORT_PLACEHOLDER),
+            len(analysis.ENGLISH_SECTION_HEADINGS)
+            + len(analysis.CHINESE_SECTION_HEADINGS),
+        )
 
         with self.assertRaisesRegex(SystemExit, "skeleton unchanged"):
             analysis.validate_agent_report(
@@ -188,24 +199,30 @@ class DetectorResultAnalysisTests(unittest.TestCase):
                 figure_basenames=[row["basename"] for row in evidence["figures"]],
             )
 
-        english = "\n\n".join(
-            f"{heading}\nGrounded interpretation."
-            for heading in analysis.ENGLISH_SECTION_HEADINGS
-        )
-        english += "\n" + "\n".join(
+        figures_english = "\n".join(
             f"- {figure['basename']}: inspected."
             for figure in evidence["figures"]
         )
-        chinese = "\n\n".join(
-            f"{heading}\n基于证据的对应翻译。"
-            for heading in analysis.CHINESE_SECTION_HEADINGS
-        )
-        chinese += "\n" + "\n".join(
+        figures_chinese = "\n".join(
             f"- {figure['basename']}：已检查。"
             for figure in evidence["figures"]
         )
-        completed = skeleton.replace(analysis.REPORT_PLACEHOLDER, english, 1)
-        completed = completed.replace(analysis.REPORT_PLACEHOLDER, chinese, 1)
+
+        def fill(part: str, section_texts: list[str]) -> str:
+            for text in section_texts:
+                part = part.replace(analysis.REPORT_PLACEHOLDER, text, 1)
+            return part
+
+        n_en = len(analysis.ENGLISH_SECTION_HEADINGS)
+        n_zh = len(analysis.CHINESE_SECTION_HEADINGS)
+        english_part, chinese_part = skeleton.split(analysis.CHINESE_REPORT_HEADING)
+        completed = (
+            fill(english_part,
+                 ["Grounded interpretation."] * (n_en - 1) + [figures_english])
+            + analysis.CHINESE_REPORT_HEADING
+            + fill(chinese_part,
+                   ["基于证据的对应翻译。"] * (n_zh - 1) + [figures_chinese])
+        )
         report_path.write_text(completed)
         analysis.validate_agent_report(
             report_path,
@@ -226,6 +243,51 @@ class DetectorResultAnalysisTests(unittest.TestCase):
                 evidence_sha=evidence_sha,
                 figure_basenames=[row["basename"] for row in evidence["figures"]],
             )
+
+        # A number present in only one language part is rejected; carrying it
+        # verbatim into the other part passes again.
+        numbered = completed.replace(
+            "Grounded interpretation.", "Grounded interpretation (AP 0.0736).", 1
+        )
+        report_path.write_text(numbered)
+        with self.assertRaisesRegex(SystemExit, "numeric mismatch"):
+            analysis.validate_agent_report(
+                report_path,
+                skeleton_sha=skeleton_sha,
+                expected_block=expected_block,
+                evidence_sha=evidence_sha,
+                figure_basenames=[row["basename"] for row in evidence["figures"]],
+            )
+        report_path.write_text(numbered.replace(
+            "基于证据的对应翻译。", "基于证据的对应翻译（AP 0.0736）。", 1
+        ))
+        analysis.validate_agent_report(
+            report_path,
+            skeleton_sha=skeleton_sha,
+            expected_block=expected_block,
+            evidence_sha=evidence_sha,
+            figure_basenames=[row["basename"] for row in evidence["figures"]],
+        )
+
+    def test_result_contract_derives_from_target_spec_and_matches_runtime(self) -> None:
+        repo_root = Path(__file__).resolve().parents[2]
+        source = (
+            repo_root / "agentic" / "detector_build" / "target_runtime.py"
+        ).read_text(encoding="utf-8")
+        for target, prefix in (
+            ("merge_detection", "merge_detector"),
+            ("split_detection", "split_detector"),
+        ):
+            contract = analysis._result_contract({"detector_target": target})
+            self.assertEqual(contract["output_prefix"], prefix)
+            self.assertEqual(contract["score"], contract["output_prefix"].split("_")[0] + "_probability_oof")
+            for column in contract["identity"]:
+                self.assertIn(f'"{column}"', source, column)
+        # contracts resolves legacy unnamed runs to the merge vocabulary.
+        legacy = analysis._result_contract({"detector_target": "legacy_unspecified"})
+        self.assertEqual(legacy["output_prefix"], "merge_detector")
+        with self.assertRaisesRegex(SystemExit, "Unsupported detector_target"):
+            analysis._result_contract({"detector_target": "omit_detection"})
 
 
 if __name__ == "__main__":

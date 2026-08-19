@@ -307,11 +307,9 @@ class DiscoverySmokeTests(unittest.TestCase):
 
         corrected = by_name["fix-tests-measure"]
         self.assertIn("--only-corrected", corrected["argv"])
-        self.assertEqual(
-            by_name["translate-report"]["timeout_s"],
-            workflow.TRANSLATE_STEP_TIMEOUT_S,
-        )
-        self.assertEqual(workflow.TRANSLATE_STEP_TIMEOUT_S, 7200)
+        # The translate step was removed: fix-tests-fold is now the last step.
+        self.assertNotIn("translate-report", by_name)
+        self.assertEqual(steps[-1]["name"], "fix-tests-fold")
         self.assertEqual(workflow.COMPUTE_TIMEOUT_S, 86400)
 
         # Repair rounds 2..MAX sit between the first remeasure and the single
@@ -344,6 +342,92 @@ class DiscoverySmokeTests(unittest.TestCase):
             names.index(f"reproduce-remeasure-{workflow.MAX_FIX_LOADING_ROUNDS}"),
             names.index("reproduce-fold"),
         )
+
+        # Every fix round carries the driver-side syntax gate and the embedded
+        # failure digest: round 1 baselines against the raw results, repair
+        # rounds against the rolling merged results.
+        first_fix = by_name["reproduce-fix-loading"]
+        self.assertTrue(
+            str(first_fix["syntax_check"]["results"]).endswith(".reproduce-raw.json")
+        )
+        self.assertTrue(
+            str(first_fix["failure_brief"]["results"]).endswith(".reproduce-raw.json")
+        )
+        for round_no in range(2, workflow.MAX_FIX_LOADING_ROUNDS + 1):
+            fix = by_name[f"reproduce-fix-loading-{round_no}"]
+            self.assertTrue(
+                str(fix["syntax_check"]["results"]).endswith(".reproduce.json")
+            )
+            self.assertTrue(
+                str(fix["failure_brief"]["results"]).endswith(".reproduce.json")
+            )
+
+    def test_syntax_gate_and_failure_brief_helpers(self) -> None:
+        old_root = workflow.PROJECT_ROOT
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                workflow.PROJECT_ROOT = root
+                rerun_dir = root / "run.json.rerun"
+                rerun_dir.mkdir()
+                unchanged_code = "print('old')\n"
+                (rerun_dir / "hypo_1.py").write_text("def broken(:\n")   # changed + broken
+                (rerun_dir / "hypo_2.py").write_text("print('fine')\n")  # changed + valid
+                (rerun_dir / "hypo_3.py").write_text(unchanged_code)      # unchanged
+                results_rel = "run.json.reproduce.json"
+                (root / results_rel).write_text(json.dumps({"results": [
+                    {
+                        "id": 1,
+                        "result_status": "UNUSABLE",
+                        "result_failure_reason": "dataset-loading",
+                        "code_source": "revised",
+                        "rerun_stderr": "Traceback ...\nFileNotFoundError: nope",
+                        "recorded_code_sha256": "r1",
+                        "executed_code_sha256": "e1",
+                    },
+                    {
+                        "id": 2,
+                        "result_status": "UNUSABLE",
+                        "result_failure_reason": "timeout",
+                        "code_source": "recorded",
+                        "rerun_stderr": "",
+                        "recorded_code_sha256": "r2",
+                        "executed_code_sha256": "e2",
+                    },
+                    {
+                        "id": 3,
+                        "result_status": "USABLE",
+                        "recorded_code_sha256": "r3",
+                        "executed_code_sha256": hashlib.sha256(
+                            unchanged_code.encode("utf-8")
+                        ).hexdigest(),
+                    },
+                ]}))
+
+                problems = workflow._broken_changed_scripts(
+                    "run.json.rerun", results_rel
+                )
+                self.assertEqual(len(problems), 1)
+                self.assertIn("hypo_1.py", problems[0])
+                repair = workflow._syntax_repair_instruction(
+                    problems, "run.json.rerun"
+                )
+                self.assertIn("hypo_1.py", repair)
+                self.assertIn("do not parse", repair)
+
+                brief = workflow._failure_brief(results_rel, "run.json.rerun")
+                self.assertIn("2 UNUSABLE result(s)", brief)
+                self.assertIn(
+                    "id 1: dataset-loading (revised) — FileNotFoundError: nope",
+                    brief,
+                )
+                self.assertIn("id 2: timeout (recorded)", brief)
+                self.assertNotIn("id 3", brief)
+                self.assertEqual(
+                    workflow._failure_brief("missing.json", "run.json.rerun"), ""
+                )
+        finally:
+            workflow.PROJECT_ROOT = old_root
 
     def test_repair_loop_helpers_detect_change_unusable_and_stall(self) -> None:
         old_root = workflow.PROJECT_ROOT
