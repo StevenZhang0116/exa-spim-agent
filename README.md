@@ -1,94 +1,113 @@
 # exa-spim-agent
 
-This code is based on [AllenInstitute/agentic-neuron-proofreader](https://github.com/AllenInstitute/agentic-neuron-proofreader) and [AllenNeuralDynamics/segmentation-skeleton-metrics](https://github.com/AllenNeuralDynamics/segmentation-skeleton-metrics).
+This repository builds labeled ExaSPIM skeleton caches and checks them against
+the official
+[`segmentation-skeleton-metrics`](https://github.com/AllenNeuralDynamics/segmentation-skeleton-metrics)
+results.
 
-## Pipeline overview
+## Pipeline
 
-The workflow turns raw ExaSPIM reconstructions into **labeled caches** — pickles
-holding the ground-truth and UNet skeleton graphs plus baked-in split/merge/omit
-error labels — that downstream tools (and agents) can load without any cloud
-access. Six steps, in order:
+```text
+same source brain + segmentation
+        |
+        +--> load_skeletons.ipynb --> base .pkl --> relabel_cache.py --> _add.pkl --+
+        |                                                                         |
+        +--> evaluate_skeleton_metrics.ipynb --> official results.csv ------------+
+                                                                                  |
+                                                                                  v
+                                                             verify_add_cache_metrics.ipynb
+```
 
-| # | File | What it does | Cloud? |
-|---|---|---|---|
-| 1 | `notebooks/load_skeletons.ipynb` | build the base cache (`*.pkl`) from source SWCs | yes (read) |
-| 2 | `notebooks/evaluate_skeleton_metrics.ipynb` | canonical scoring → `metrics_out/.../results.csv` | yes (read) |
-| 3 | `notebooks/compare_metrics_across_datasets.ipynb` | compare those metrics across brains | no |
-| 4 | `scripts/test_canonical_labeling.py` | **gate**: verify labeling matches the segmentation | yes (read) |
-| 5 | `scripts/relabel_cache.py` | bake the error labels into a new `*_add.pkl` | yes (read) |
-| 6 | `notebooks/verify_add_cache_metrics.ipynb` | confirm the `*_add.pkl` labels vs. canonical | no |
+Run the pipeline in the `panda` conda environment. Cloud-reading steps require
+GCS credentials in `configs/zihan_gcs_token.json`.
 
-Run from the `panda` conda environment. Steps that read from cloud storage need
-GCS credentials at `configs/zihan_gcs_token.json` and `AWS_EC2_METADATA_DISABLED=true`.
+### 1. Generate the base cache
 
-## Steps
+Open and run [`notebooks/load_skeletons.ipynb`](notebooks/load_skeletons.ipynb).
+Set `brain_id` and `min_cable_length` in the notebook.
 
-### 1. `notebooks/load_skeletons.ipynb` — build the base cache
-Reads the ground-truth and UNet-fragment SWCs for one brain from GCS, builds the
-two `SkeletonGraph` objects, and saves `cache/dataset_cache_<brain>_mcl<N>.pkl`
-(skeletons only — no error labels yet). The slow step (~15 min/brain). Run once
-per brain.
+It reads the GT and UNet-fragment SWCs, constructs two `SkeletonGraph` objects,
+and writes:
 
-### 2. `notebooks/evaluate_skeleton_metrics.ipynb` — canonical scoring
-Runs the full `segmentation-skeleton-metrics` evaluation on a brain by reading the
-dense segmentation, and writes `metrics_out/<brain>/<seg_id>/results.csv` (one row
-per GT neuron: splits, merges, % split/omit/merged edges, ERL, edge accuracy).
-This is the **canonical reference** every later step is checked against. Re-reads
-the SWCs from GCS; independent of the cache.
+```text
+cache/dataset_cache_<brain>_mcl<N>.pkl
+```
 
-### 3. `notebooks/compare_metrics_across_datasets.ipynb` — cross-brain comparison
-Loads every `results.csv` under `metrics_out/`, builds a per-brain summary table,
-and plots per-neuron metric distributions across brains. Pure analysis of step 2's
-outputs — no cloud, no cache. Run once several brains have been evaluated.
+This base cache contains skeletons but no baked-in error labels.
 
-### 4. `scripts/test_canonical_labeling.py` — labeling gate
-Verifies that reading the segmentation at each GT node's voxel reproduces the
-canonical labels. A fast **patch cross-check** confirms the voxel/axis convention
-(expect ~100% agreement); an optional whole-brain pass compares to `results.csv`.
-**Clear this gate before step 5** — it is what guarantees the baked-in labels are
-correct.
+### 2. Generate the official reference metrics
+
+Open and run
+[`notebooks/evaluate_skeleton_metrics.ipynb`](notebooks/evaluate_skeleton_metrics.ipynb)
+for the same brain and segmentation.
+
+It runs the official `segmentation-skeleton-metrics` package and writes:
+
+```text
+metrics_out/<brain>/<segmentation_id>/results.csv
+metrics_out/<brain>/<segmentation_id>/merge_sites.csv
+```
+
+This step is independent of the cache. It produces the canonical answers used
+to validate the labeled cache later.
+
+### 3. Generate the labeled `_add.pkl`
+
+Run from the repository root:
 
 ```bash
-cd scripts
-python test_canonical_labeling.py --brain 794495 --patch-only   # fast gate (~100%)
-python test_canonical_labeling.py --brain 794495                # + canonical compare
+python scripts/relabel_cache.py \
+  --cache-dir cache \
+  --brain 794495 \
+  --mcl 100
 ```
 
-### 5. `scripts/relabel_cache.py` — bake labels into `*_add.pkl`
-Reuses the graphs already in the base cache (no SWC rebuild), reads the
-segmentation once to label every GT node, classifies every GT edge, runs the
-geometric merge-detection walk, and writes a new
-`cache/dataset_cache_<brain>_mcl<N>_add.pkl` **alongside** the original (the base
-cache is left untouched). The `_add.pkl` then loads with no cloud access.
+To label every matching base cache, omit `--brain` and `--mcl`:
 
 ```bash
-cd scripts
-python relabel_cache.py --cache-dir ../cache --dry-run        # resolve paths only, no read
-python relabel_cache.py --cache-dir ../cache --brain 794495   # one brain
-python relabel_cache.py --cache-dir ../cache                  # all brains (~30 min each)
+python scripts/relabel_cache.py --cache-dir cache
 ```
 
-Added keys (also attached to `gt_graph`): `gt_node_canonical_label` (segment id
-per GT node, `0`=omit), `gt_edge_error` (`0=correct,1=split,2=omit,3=merged`),
-`gt_merge_labels`, `gt_merge_sites`. See
-[`markdowns/labeled_dataset_cache.md`](markdowns/labeled_dataset_cache.md) for the
-`_add.pkl` schema and how to read it.
+The script reads the dense segmentation, labels GT nodes and edges, identifies
+merge labels and sites, and writes a new file without modifying the base cache:
 
-### 6. `notebooks/verify_add_cache_metrics.ipynb` — verify the `_add.pkl`
-Loads an `_add.pkl`, rebuilds the per-neuron split/merge/omit statistics **from the
-baked-in labels alone** (no segmentation), and compares to the canonical
-`results.csv`. Splits, edge accuracy, and merged % track canonical closely; omit
-reads a touch higher (cache fragments are `min_cable_length`-filtered). Run after
-step 5 to confirm a freshly relabeled cache is sound.
-
-## Layout
-
+```text
+cache/dataset_cache_<brain>_mcl<N>_add.pkl
 ```
-exa-spim-agent/
-├── notebooks/        # load_skeletons, evaluate_skeleton_metrics,
-│                     # compare_metrics_across_datasets, verify_add_cache_metrics
-├── scripts/          # test_canonical_labeling.py, relabel_cache.py
-├── configs/          # zihan_gcs_token.json (GCS creds), image prefixes — gitignored
-├── metrics_out/      # canonical results.csv per brain (step 2) — gitignored
-└── cache/            # dataset_cache_<brain>_mcl<N>.pkl  (+ _add.pkl) — gitignored
+
+The added fields are:
+
+- `gt_node_canonical_label`
+- `gt_edge_error`
+- `gt_merge_labels`
+- `gt_merge_sites`
+
+See [`markdowns/labeled_dataset_cache.md`](markdowns/labeled_dataset_cache.md)
+for the complete schema.
+
+### 4. Verify the labeled cache
+
+Open and run
+[`notebooks/verify_add_cache_metrics.ipynb`](notebooks/verify_add_cache_metrics.ipynb).
+Set `BRAIN_ID` and `MINLEN` to match the `_add.pkl` generated in step 3.
+
+The notebook reconstructs per-neuron split, omit, merge, and edge-accuracy
+metrics using only the stored labels, then compares them with the official
+`results.csv` from step 2. It writes comparison tables and plots under:
+
+```text
+notebooks/verify_stats/
+```
+
+Expect close agreement, not byte-for-byte equality. Small differences remain
+because the cached graphs are resampled and the merge-site implementations have
+minor snapping and deduplication differences. For a detailed merge-site check,
+run [`notebooks/verify_add_cache_merge_info.py`](notebooks/verify_add_cache_merge_info.py).
+
+## Main outputs
+
+```text
+cache/                 base and labeled pickle files
+metrics_out/           official reference metrics
+notebooks/verify_stats cache-versus-reference comparisons
 ```
