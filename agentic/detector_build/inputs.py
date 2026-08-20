@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from pathlib import Path
 from .contracts import DetectorTarget, RunContext
 
@@ -190,6 +191,35 @@ def corrected_status_by_id(
     return statuses
 
 
+def unbacked_correction_verdicts(
+    report_evidence: dict[int, dict[str, str | None]],
+    corrected_statuses: dict[int, str],
+    hypothesis_ids,
+) -> list[tuple[int, str, str | None]]:
+    """Report verdicts with no USABLE corrected measurement behind them.
+
+    Returns ``(id, verdict token, corrected status or None)`` for every listed
+    hypothesis whose report row carries a post-correction verdict while the
+    corrected results record no USABLE measurement for that same ID (a missing
+    corrected entry — or a missing corrected JSON, when ``corrected_statuses``
+    is empty — reports the status as ``None``). This is the single definition
+    of "unbacked" shared by the input gate, the inventory compiler, and the
+    inventory validator, so reconciliation cannot drift between them.
+    """
+    offenders: list[tuple[int, str, str | None]] = []
+    for hypothesis_id in hypothesis_ids:
+        row = report_evidence.get(hypothesis_id)
+        if row is None:
+            continue
+        verdict = row.get("post_correction_verdict")
+        if verdict is None:
+            continue
+        status = corrected_statuses.get(hypothesis_id)
+        if status != "USABLE":
+            offenders.append((hypothesis_id, verdict, status))
+    return offenders
+
+
 def infer_target(run_json: Path) -> DetectorTarget:
     """Infer the legacy task type without changing the input artifact format."""
     stem = run_stem(run_json).lower()
@@ -204,8 +234,19 @@ def resolve_run_context(
     run_json: Path,
     project_root: Path,
     predictive_policy_version: str,
+    *,
+    reconcile_unbacked_verdicts: bool = False,
 ) -> RunContext:
-    """Resolve and cross-check every input before any destructive output action."""
+    """Resolve and cross-check every input before any destructive output action.
+
+    ``reconcile_unbacked_verdicts`` downgrades one class of inconsistency from a
+    hard abort to a warning: a report post-correction verdict with no USABLE
+    corrected measurement behind it (e.g. the discovery fold step wrote a
+    verdict for a corrected script that timed out). When set, such verdicts are
+    treated as null throughout the build — the correction is ignored and the
+    hypothesis is judged on its pre-correction evidence — and the affected ids
+    are recorded on the returned context.
+    """
     target = infer_target(run_json)
 
     stem = run_stem(run_json)
@@ -334,24 +375,45 @@ def resolve_run_context(
         if corrected_results_path is not None
         else {}
     )
-    for hypothesis_id in selected_ids:
-        row = report_evidence.get(hypothesis_id)
-        if row is None or row.get("post_correction_verdict") is None:
-            continue
-        if corrected_results_path is None:
-            raise SystemExit(
-                "Finished report records a post-correction verdict for selected "
-                f"hypothesis {hypothesis_id}, but "
-                f"{rel_to_root(corrected_candidate, project_root)} is missing. "
-                "Regenerate the corrected discovery outputs before building the "
-                "detector."
+    offenders = unbacked_correction_verdicts(
+        report_evidence, corrected_statuses, selected_ids
+    )
+    unbacked_ids: tuple[int, ...] = ()
+    if offenders:
+        remedy = (
+            "Regenerate the corrected discovery outputs before building the "
+            "detector, or rerun with --reconcile-unbacked-verdicts to treat "
+            "these verdicts as null (each such correction is then ignored and "
+            "its hypothesis judged on the pre-correction evidence alone)."
+        )
+        if not reconcile_unbacked_verdicts:
+            if corrected_results_path is None:
+                offending_ids = [hid for hid, _, _ in offenders]
+                raise SystemExit(
+                    "Finished report records a post-correction verdict for "
+                    f"selected hypothesis id(s) {offending_ids}, but "
+                    f"{rel_to_root(corrected_candidate, project_root)} is "
+                    f"missing. {remedy}"
+                )
+            detail = "; ".join(
+                f"id {hid}: report verdict {verdict!r} vs corrected result "
+                f"{status or 'ABSENT'}"
+                for hid, verdict, status in offenders
             )
-        if corrected_statuses.get(hypothesis_id) != "USABLE":
             raise SystemExit(
-                "Finished report records a post-correction verdict for selected "
-                f"hypothesis {hypothesis_id}, but corrected results do not record "
-                "a USABLE measurement for that same ID."
+                "Finished report records post-correction verdicts that "
+                "corrected results do not back with a USABLE measurement for "
+                f"the same ID: {detail}. {remedy}"
             )
+        for hid, verdict, status in offenders:
+            print(
+                f"[inputs] WARNING: post-correction verdict {verdict!r} for "
+                f"hypothesis {hid} has no USABLE corrected measurement "
+                f"(corrected result: {status or 'ABSENT'}); treating the "
+                "verdict as null and ignoring the correction.",
+                file=sys.stderr,
+            )
+        unbacked_ids = tuple(hid for hid, _, _ in offenders)
     return RunContext(
         target=target,
         run_json=run_json,
@@ -361,6 +423,7 @@ def resolve_run_context(
         selection_path=authoritative_selection,
         corrected_results_path=corrected_results_path,
         selected_ids=tuple(selected_ids),
+        unbacked_verdict_ids=unbacked_ids,
     )
 
 

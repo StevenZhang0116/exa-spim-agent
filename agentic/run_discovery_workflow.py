@@ -258,7 +258,7 @@ DRIVER_LOG_SUFFIX: str = ".workflow.log.txt"
 # Agent budgets scale with how many hypotheses the report carries, because the
 # summarize step authors one full entry per record in a single turn. Compute
 # steps use a fixed 24-hour budget: rerun_experiments.py executes one script per
-# record (each with its own 1800-second cap), and large predictive runs can take
+# record (each with its own 3600-second cap), and large predictive runs can take
 # substantially longer than the old record-count estimate allowed.
 AGENT_STEP_BASE_S: int = 600        # 10 min of fixed overhead per agent turn
 AGENT_STEP_PER_RECORD_S: int = 30   # + writing/folding one entry
@@ -1059,10 +1059,18 @@ def build_steps(
                     if extra_pkls_rel
                     else ""
                 )
-                + f". Read {summary_rel} and fold Corrected test / Corrected result "
+                + ". Assign a verdict ONLY where the corrected `result_status` is "
+                "USABLE. For a non-USABLE corrected result (FAILED/UNUSABLE, e.g. a "
+                "timeout), describe the failure in the 'Corrected result' bullet and "
+                "write NO 'Post-correction verdict' bullet at all — never "
+                "INCONCLUSIVE or any other substitute token: the detector-build "
+                "workflow rejects any verdict token that lacks a USABLE "
+                "measurement, and the entry's original verifier verdict stands. "
+                + f"Read {summary_rel} and fold Corrected test / Corrected result "
                 "/ Post-correction verdict"
                 + (" / Corrected generalization" if extra_pkls_rel else "")
-                + " bullets INTO each fixed entry in place (keep all prior bullets), "
+                + " bullets INTO each fixed entry in place (keep all prior bullets; "
+                "the verdict bullet only where allowed above), "
                 "plus one '## Statistical Test Corrections — Summary' section. "
                 + layout_rule("## Statistical Test Corrections — Summary")
                 + "Report the path and which findings changed under the "

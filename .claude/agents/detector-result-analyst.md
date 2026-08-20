@@ -36,12 +36,19 @@ orchestrator gives you exactly one result directory, one driver-generated
 - The Chinese part must faithfully translate the English part: keep the same
   claims, qualifications, ordering, numbers, figure coverage, and next actions.
   Do not add, remove, strengthen, or weaken a scientific claim during translation.
+  The driver validator cross-checks that the same free-standing numeric tokens
+  appear in both language parts and rejects the report on any mismatch, so copy
+  every number verbatim rather than reformatting or rounding it.
 - Keep model, metric, option, artifact, and feature identifiers verbatim in
   backticks in both languages.
 
 ## Required interpretation
 
-Write a compact but substantive English report with these exact sections:
+The skeleton already contains the exact required section headings in both
+languages, each followed by a placeholder. Fill EVERY placeholder in place; do
+NOT renumber, retitle, add, or remove any heading — validation compares heading
+text verbatim. The numbered list below describes what each pre-written section
+must contain:
 
 1. **Executive summary** — intended use, strongest result, and largest limitation.
 2. **Model comparison and selection** — AP first, ROC-AUC second; explain why the final winner
@@ -58,6 +65,12 @@ Write a compact but substantive English report with these exact sections:
    large all-undefined negative group can inflate same-dataset ROC-AUC. Note that
    excluded features can remain as all-NaN stable columns.
 6. **Feature interpretation** — first identify which explanation figure 06 uses.
+   For every feature you single out as important (top coefficients, EBM terms,
+   permutation importances), explain in plain language WHAT the feature
+   measures — its geometric/biological meaning and the hypothesis it came
+   from — never just the feature name. Read the application directory's
+   `feature_inventory.json` (read-only) as the authority for those meanings;
+   if a feature is missing from the inventory, say so instead of guessing.
    A linear coefficient sign is association, not causation, and correlated
    features split credit. EBM and tree global importances are unsigned and are
    not comparable across model families; an EBM shape is an additive model-score
@@ -68,9 +81,10 @@ Write a compact but substantive English report with these exact sections:
 7. **Limitations and next steps** — held-out status, skipped candidates, convergence warnings,
    `--exclude-empty` sensitivity, and cross-brain transfer as applicable.
 
-Then translate all seven completed sections into Chinese using the exact paired
-headings already present in the skeleton. Every figure basename must occur in
-both language parts, with equivalent interpretation.
+Then fill the seven pre-written Chinese sections as a faithful translation of
+the completed English ones, keeping the skeleton's Chinese headings verbatim.
+Every figure basename must occur in both language parts, with equivalent
+interpretation.
 
 Never claim deployment readiness from same-brain nested CV. Never claim a
 successful held-out test when `heldout` is null. If the evidence says detector

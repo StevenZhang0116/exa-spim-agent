@@ -102,10 +102,15 @@ unless that bug is the statistical fault itself.
      small once n is handled correctly, or significance marginal).
    - **OVERTURNED** — the correct test no longer supports the conclusion (effect
      not significant under the right test, or driven entirely by the artefact).
-   Ground every call in the corrected numbers; never invent a result. If
-   `result_status == "UNUSABLE"`, say so and leave the original verdict — first
-   use `result_failure_reason`, `rerun_failure_kind`, stdout, and stderr to state
-   why. An `"environment"` failure (import / missing-module / native-load error,
+   Ground every call in the corrected numbers; never invent a result. Assign a
+   verdict ONLY when the corrected `result_status == "USABLE"`. For any other
+   status (`UNUSABLE`/`FAILED`, e.g. a timeout), describe the failure in the
+   **Corrected result** bullet and write NO **Post-correction verdict** bullet at
+   all — never INCONCLUSIVE or any other substitute token: the detector-build
+   workflow rejects any verdict token that lacks a USABLE measurement, and the
+   entry's original verifier verdict already stands. Use
+   `result_failure_reason`, `rerun_failure_kind`, stdout, and stderr to state
+   why it failed. An `"environment"` failure (import / missing-module / native-load error,
    e.g. a numpy import error) is NOT a property of your corrected test and must
    NOT be reported as a statistical outcome. Report environment failures as
    execution problems for the driver; only a genuine analysis failure of the
@@ -121,7 +126,7 @@ prior bullets intact):
 ```markdown
 - **Corrected test:** <name of the right test + why the original was wrong>
 - **Corrected result:** <new statistic, p, effect size + CI vs the original numbers — quote both, or "could not run: <reason>">
-- **Post-correction verdict:** UPHELD | WEAKENED | OVERTURNED
+- **Post-correction verdict:** UPHELD | WEAKENED | OVERTURNED — <ONLY when the corrected result is USABLE; omit this whole bullet otherwise (never write INCONCLUSIVE or any substitute)>
 - **Corrected generalization:** GENERALIZES | PARTIAL | DOES-NOT-GENERALIZE | INCONCLUSIVE — <only when extra datasets were run, judged UNDER THE CORRECT TEST; start with the verdict word, then quote the corrected statistic/effect per extra dataset. Omit this whole bullet if no extra datasets were run>
 ```
 
@@ -134,7 +139,8 @@ Then add **one** run-wide section at the very end of the file:
 It must contain:
 
 - How many hypotheses were flagged for a test fix and the post-correction
-  breakdown (UPHELD / WEAKENED / OVERTURNED counts).
+  breakdown (UPHELD / WEAKENED / OVERTURNED counts, plus how many corrected
+  runs produced no usable measurement and therefore carry no verdict).
 - A short list of the OVERTURNED / WEAKENED findings, cross-referenced to entry
   number / id, each with the right test and the one-line reason the original
   test was wrong.

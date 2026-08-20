@@ -144,6 +144,10 @@ class RunContext:
     selection_path: Path | None
     corrected_results_path: Path | None
     selected_ids: tuple[int, ...]
+    # Hypothesis ids whose report post-correction verdict had no USABLE
+    # corrected measurement and was therefore treated as null. Non-empty only
+    # when the run was resolved with reconcile_unbacked_verdicts=True.
+    unbacked_verdict_ids: tuple[int, ...] = ()
 
     @property
     def predictive(self) -> bool:

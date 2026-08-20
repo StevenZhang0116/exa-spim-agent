@@ -1128,8 +1128,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--timeout",
         type=int,
-        default=1800,
-        help="Per-experiment timeout in seconds (default 1800 = 30 min).",
+        default=3600,
+        help="Per-experiment timeout in seconds (default 3600 = 60 min).",
     )
     parser.add_argument(
         "--max-output-chars",

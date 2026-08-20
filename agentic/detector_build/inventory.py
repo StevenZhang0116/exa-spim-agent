@@ -11,6 +11,7 @@ from .inputs import (
     rel_to_root,
     report_evidence_by_id,
     sha256,
+    unbacked_correction_verdicts,
 )
 
 
@@ -199,11 +200,17 @@ def compile_feature_inventory(
     rerun_dir: Path,
     fixed_dir: Path | None,
     project_root: Path,
+    reconcile_unbacked_verdicts: bool = False,
 ) -> list[str]:
     """Merge semantic judgments with deterministic same-ID provenance.
 
     The resulting on-disk schema is inventory v2 and is intentionally identical
     to the workflow's previous public output.  Only its construction changes.
+
+    ``reconcile_unbacked_verdicts`` mirrors the input gate's flag: a report
+    post-correction verdict with no USABLE corrected measurement is transcribed
+    as null, so the compiled inventory obeys the verdict-requires-measurement
+    invariant even when the report does not.
     """
     changes = canonicalize_semantic_draft(semantics_path, project_root)
     draft = validate_semantic_draft(
@@ -220,6 +227,16 @@ def compile_feature_inventory(
         )
         if corrected_results_path is not None
         else {}
+    )
+    unbacked_ids = (
+        {
+            hypothesis_id
+            for hypothesis_id, _, _ in unbacked_correction_verdicts(
+                evidence, corrected_statuses, [row["id"] for row in semantic_rows]
+            )
+        }
+        if reconcile_unbacked_verdicts
+        else set()
     )
     compiled_rows: list[dict] = []
     for row in semantic_rows:
@@ -269,7 +286,11 @@ def compile_feature_inventory(
             "reproduction_status": report_row["reproduction_status"],
             "statistical_verdict": report_row["statistical_verdict"],
             "corrected_result_status": corrected_statuses.get(hypothesis_id),
-            "post_correction_verdict": report_row["post_correction_verdict"],
+            "post_correction_verdict": (
+                None
+                if hypothesis_id in unbacked_ids
+                else report_row["post_correction_verdict"]
+            ),
             "correction_scope": correction_scope,
             "rerun_path": rel_to_root(rerun_path, project_root),
             "rerun_sha256": sha256(rerun_path),

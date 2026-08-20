@@ -54,8 +54,13 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.kind == "semantic":
+        # This narrow draft check must not enforce the unbacked-verdict policy:
+        # the driver already decided abort-vs-reconcile at startup, and an agent
+        # running this mid-build (under --reconcile-unbacked-verdicts) would
+        # otherwise wedge on an inconsistency unrelated to its draft.
         context = resolve_run_context(
-            _path(args.run_json), PROJECT_ROOT, PREDICTIVE_POLICY_VERSION)
+            _path(args.run_json), PROJECT_ROOT, PREDICTIVE_POLICY_VERSION,
+            reconcile_unbacked_verdicts=True)
         validate_semantic_draft(
             _path(args.draft),
             selected_ids=list(context.selected_ids),

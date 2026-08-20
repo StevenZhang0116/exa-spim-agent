@@ -1095,6 +1095,42 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             ):
                 workflow.resolve_inputs(run_json)
 
+            context = workflow.resolve_run_context(
+                run_json, reconcile_unbacked_verdicts=True
+            )
+            self.assertEqual(context.unbacked_verdict_ids, (1,))
+
+    def test_resolve_inputs_rejects_unbacked_post_correction_verdict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow.PROJECT_ROOT = root
+            run_json = self._touch_inputs(root, predictive=True, fixed=True)
+            (root / "run.summary.md").write_text(
+                "### 1. Corrected finding\n"
+                "- **ID:** 1\n"
+                "- **Reproduction:** DIVERGED\n"
+                "- **Verdict:** MAJOR\n"
+                "- **Post-correction verdict:** INCONCLUSIVE\n"
+            )
+            (root / "run.json.predictive.corrected.json").write_text(json.dumps({
+                "code_dir": "run.json.predictive.rerun",
+                "corrected_dir": "run.json.predictive.fixed",
+                "results": [{"id": 1, "result_status": "UNUSABLE"}],
+            }))
+
+            # Default: hard abort naming the id, both tokens, and the remedy flag.
+            with self.assertRaisesRegex(
+                SystemExit,
+                "id 1.*INCONCLUSIVE.*UNUSABLE.*--reconcile-unbacked-verdicts",
+            ):
+                workflow.resolve_inputs(run_json)
+
+            # Opt-in: the verdict is treated as null and the id is recorded.
+            context = workflow.resolve_run_context(
+                run_json, reconcile_unbacked_verdicts=True
+            )
+            self.assertEqual(context.unbacked_verdict_ids, (1,))
+
     def test_build_steps_require_source_audit_and_safe_exclusions(self) -> None:
         steps = workflow.build_steps(
             run_rel="autodiscovery/run.json",
@@ -1702,6 +1738,101 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             ).hexdigest())
             workflow.validate_inventory(
                 inventory_path, [1], None, rerun, None, summary
+            )
+
+    def test_reconciled_unbacked_verdict_compiles_null_and_validates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            workflow.PROJECT_ROOT = root
+            rerun = root / "run.json.rerun"
+            rerun.mkdir()
+            (rerun / "hypo_1.py").write_text("FEATURE = 1\n")
+            (rerun / "hypo_2.py").write_text("FEATURE = 2\n")
+            fixed = root / "run.json.fixed"
+            fixed.mkdir()
+            (fixed / "hypo_1.py").write_text("FEATURE = 1  # corrected\n")
+            summary = root / "run.summary.md"
+            summary.write_text(
+                "### 1. Unbacked correction\n"
+                "- **Run:** run · **ID:** 1 · **Direction:** Positive\n"
+                "- **Reproduction:** DIVERGED\n"
+                "- **Verdict:** MAJOR\n"
+                "- **Post-correction verdict:** INCONCLUSIVE\n"
+                "### 2. Clean finding\n"
+                "- **Run:** run · **ID:** 2 · **Direction:** Positive\n"
+                "- **Reproduction:** REPRODUCED\n"
+                "- **Verdict:** SOUND\n"
+            )
+            corrected = root / "run.json.corrected.json"
+            corrected.write_text(json.dumps({
+                "code_dir": "run.json.rerun",
+                "corrected_dir": "run.json.fixed",
+                "results": [{"id": 1, "result_status": "UNUSABLE"}],
+            }))
+            semantics = root / ".feature_semantics.json"
+            semantics.write_text(json.dumps({
+                "schema_version": 1,
+                "hypotheses": [
+                    {
+                        "id": 1,
+                        "included": False,
+                        "exclusion_reason": (
+                            "Corrected measurement unusable (timeout); the "
+                            "corrected feature definition cannot be validated."
+                        ),
+                        "correction_scope": "unclear",
+                        "feature_source": None,
+                        "source_reason": None,
+                        "features": [],
+                    },
+                    {
+                        "id": 2,
+                        "included": True,
+                        "exclusion_reason": None,
+                        "correction_scope": "none",
+                        "feature_source": "rerun",
+                        "source_reason": "Original feature semantics are usable.",
+                        "features": [{
+                            "name": "feature",
+                            "quantity": "one",
+                            "constants": {},
+                            "aggregation": "segment",
+                            "reduction": "identity",
+                            "traversal_phase": "segment",
+                            "measurable_condition": "always",
+                            "historical_undefined_sentinel": None,
+                        }],
+                    },
+                ],
+            }))
+            inventory_path = root / "feature_inventory.json"
+
+            workflow.compile_feature_inventory(
+                semantics,
+                inventory_path,
+                selected_ids=[1, 2],
+                selection_manifest=None,
+                summary_path=summary,
+                corrected_results_path=corrected,
+                rerun_dir=rerun,
+                fixed_dir=fixed,
+                project_root=root,
+                reconcile_unbacked_verdicts=True,
+            )
+
+            rows = json.loads(inventory_path.read_text())["hypotheses"]
+            self.assertIsNone(rows[0]["post_correction_verdict"])
+            self.assertEqual(rows[0]["corrected_result_status"], "UNUSABLE")
+
+            # The raw report still says INCONCLUSIVE, so validation only passes
+            # when it applies the same reconciliation as the compiler.
+            with self.assertRaisesRegex(SystemExit, "does not match"):
+                workflow.validate_inventory(
+                    inventory_path, [1, 2], None, rerun, fixed, summary, corrected
+                )
+            workflow.validate_inventory(
+                inventory_path, [1, 2], None, rerun, fixed, summary, corrected,
+                reconcile_unbacked_verdicts=True,
             )
 
     def test_included_empty_exclusion_reason_is_canonicalized_to_null(self) -> None:

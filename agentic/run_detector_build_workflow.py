@@ -172,6 +172,7 @@ try:  # package import (tests and ``python -m agentic...``)
         resolve_run_context as _resolve_run_context,
         run_stem as _resolved_run_stem,
         sha256 as _resolved_sha256,
+        unbacked_correction_verdicts as _resolved_unbacked_correction_verdicts,
     )
     from agentic.detector_build.inventory import (
         SEMANTIC_DRAFT_CONTRACT,
@@ -232,6 +233,7 @@ except ModuleNotFoundError as exc:  # direct ``python agentic/run_....py``
         resolve_run_context as _resolve_run_context,
         run_stem as _resolved_run_stem,
         sha256 as _resolved_sha256,
+        unbacked_correction_verdicts as _resolved_unbacked_correction_verdicts,
     )
     from detector_build.inventory import (  # type: ignore[no-redef]
         SEMANTIC_DRAFT_CONTRACT,
@@ -645,6 +647,11 @@ For every same-id pair, first require a matching corrected measurement/verdict
 in the report. A fixed file without that evidence is stale_fixed_ignored: record
 it, ignore it, and use rerun only if the hypothesis is otherwise eligible. A
 report correction whose fixed script is missing is unclear and must be excluded.
+A correction whose driver measurement exists but is not USABLE (its
+results[].result_status is FAILED/UNUSABLE, e.g. a timeout) backs no verdict —
+whatever verdict text the report may carry for it is void: classify that
+hypothesis unclear and exclude it rather than guessing which feature definition
+is safe.
 Otherwise compare both scripts and classify correction_scope as test_only,
 feature_semantics_changed, or unclear:
 - test_only means feature extraction, sample construction, aggregation,
@@ -1342,8 +1349,15 @@ def validate_inventory(
     fixed_dir: Path | None,
     summary_path: Path | None = None,
     corrected_results_path: Path | None = None,
+    reconcile_unbacked_verdicts: bool = False,
 ) -> None:
-    """Enforce the v2 inventory and its per-hypothesis source provenance."""
+    """Enforce the v2 inventory and its per-hypothesis source provenance.
+
+    ``reconcile_unbacked_verdicts`` mirrors the input gate's flag: report
+    post-correction verdicts with no USABLE corrected measurement are expected
+    to have been transcribed as null by the compiler, so the report-match check
+    compares against the same normalized value instead of the raw token.
+    """
     inventory = _load_json_object(inventory_path, "feature inventory")
     top_level_fields = {
         "schema_version", "selection_manifest", "selected_ids", "hypotheses",
@@ -1408,6 +1422,11 @@ def validate_inventory(
         _corrected_status_by_id(corrected_results_path, rerun_dir, fixed_dir)
         if corrected_results_path is not None else None
     )
+    if reconcile_unbacked_verdicts and report_evidence is not None:
+        for unbacked_id, _verdict, _status in _resolved_unbacked_correction_verdicts(
+            report_evidence, corrected_statuses or {}, list(report_evidence)
+        ):
+            report_evidence[unbacked_id]["post_correction_verdict"] = None
     feature_names: set[str] = set()
     for row in rows:
         hypothesis_id = row["id"]
@@ -1689,16 +1708,23 @@ def require_unchanged(path: Path, expected_sha256: str, owner_step: str) -> None
 # Workflow
 # ─────────────────────────────────────────────────────────────────────────────
 
-def resolve_run_context(run_json: Path) -> RunContext:
+def resolve_run_context(
+    run_json: Path, *, reconcile_unbacked_verdicts: bool = False
+) -> RunContext:
     """Return the typed, fully checked input contract for one build."""
-    return _resolve_run_context(run_json, PROJECT_ROOT, PREDICTIVE_POLICY_VERSION)
+    return _resolve_run_context(
+        run_json, PROJECT_ROOT, PREDICTIVE_POLICY_VERSION,
+        reconcile_unbacked_verdicts=reconcile_unbacked_verdicts,
+    )
 
 
 def resolve_inputs(
-    run_json: Path,
+    run_json: Path, *, reconcile_unbacked_verdicts: bool = False
 ) -> tuple[Path, Path, Path | None, Path | None, list[int]]:
     """Backward-compatible tuple view of :func:`resolve_run_context`."""
-    context = resolve_run_context(run_json)
+    context = resolve_run_context(
+        run_json, reconcile_unbacked_verdicts=reconcile_unbacked_verdicts
+    )
     return (
         context.summary_path,
         context.rerun_dir,
@@ -1713,8 +1739,18 @@ async def run_workflow(
     out_dir: Path,
     verbose: bool,
     costs: WorkflowCostSummary,
+    reconcile_unbacked_verdicts: bool = False,
 ) -> None:
-    context = resolve_run_context(run_json)
+    context = resolve_run_context(
+        run_json, reconcile_unbacked_verdicts=reconcile_unbacked_verdicts
+    )
+    if context.unbacked_verdict_ids:
+        log(
+            "Reconciled unbacked post-correction verdict(s) to null for "
+            f"hypothesis id(s) {list(context.unbacked_verdict_ids)}; these "
+            "corrections are ignored and the hypotheses judged on their "
+            "pre-correction evidence."
+        )
     spec = target_spec(context.target)
     summary_path = context.summary_path
     rerun_dir = context.rerun_dir
@@ -2038,6 +2074,7 @@ async def run_workflow(
                         rerun_dir=rerun_dir,
                         fixed_dir=fixed_dir,
                         project_root=PROJECT_ROOT,
+                        reconcile_unbacked_verdicts=reconcile_unbacked_verdicts,
                     )
                     for change in canonical_changes:
                         log(f"  Canonicalized semantic draft: {change}")
@@ -2049,6 +2086,7 @@ async def run_workflow(
                         fixed_dir,
                         summary_path,
                         corrected_results_path,
+                        reconcile_unbacked_verdicts=reconcile_unbacked_verdicts,
                     )
 
                 await finalize_step_with_repairs(
@@ -2240,6 +2278,22 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--reconcile-unbacked-verdicts",
+        action="store_true",
+        help=(
+            "Downgrade one input inconsistency from abort to warning: a report "
+            "post-correction verdict with no USABLE corrected measurement "
+            "behind it (e.g. the discovery fold step recorded a verdict for a "
+            "corrected script that timed out). Each such verdict is treated as "
+            "null — the correction is ignored and the hypothesis judged on its "
+            "pre-correction evidence — and every affected id is logged. The "
+            "default remains a hard abort, because an unbacked "
+            "UPHELD/WEAKENED/OVERTURNED can also mean the corrected results "
+            "JSON was regenerated after the report was folded; regenerating "
+            "the discovery outputs is the thorough fix."
+        ),
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Stream every assistant text block as it arrives.",
@@ -2263,7 +2317,10 @@ def main() -> int:
 
     # Validate the inputs BEFORE anything can be deleted: aborting on a missing
     # report AFTER wiping the output folder would be the worst of both outcomes.
-    resolve_inputs(run_json)
+    resolve_inputs(
+        run_json,
+        reconcile_unbacked_verdicts=args.reconcile_unbacked_verdicts,
+    )
 
     # Then the deletion, and note it runs before the tee is installed on purpose —
     # the driver log lives inside the folder being removed, so capturing this into
@@ -2297,7 +2354,10 @@ def main() -> int:
         if clean_note:
             log(clean_note)
         try:
-            asyncio.run(run_workflow(run_json, out_dir, args.verbose, costs))
+            asyncio.run(run_workflow(
+                run_json, out_dir, args.verbose, costs,
+                reconcile_unbacked_verdicts=args.reconcile_unbacked_verdicts,
+            ))
             outcome = "OK"
         except SystemExit as exc:
             # Step failures raise SystemExit carrying the diagnostic as its
