@@ -8,6 +8,11 @@ the dense segmentation volume are available. Everything needed to locate merge
 errors, align the data sources, authenticate image access, read the real image,
 construct controls, and evaluate image evidence is described below.
 
+This revision is written for **disciplined discovery**, not only for compliance. The
+schema and safety rules constrain *how* you work; a separate exploratory subset may
+suggest what to look for; and untouched confirmatory groups determine which
+associations survive. Do not satisfy novelty quotas by inventing arbitrary features.
+
 ---
 
 ## 1) Dataset context
@@ -531,10 +536,9 @@ The credential must grant `storage.objects.get` access to the bucket/object. Ver
 that the path exists without printing or copying the JSON contents; the contents must
 never be printed, embedded in generated code or reports, or committed. If the supplied
 JSON is absent or unreadable, stop and report the failure rather than searching
-unrelated machine paths, and never fall back to synthetic data when authentication
-fails. `segmentation_path` may also point to private GCS, but this task does not
-require opening the dense segmentation; authentication here is only for the actual
-`img_path` being read.
+unrelated machine paths. `segmentation_path` may also point to private GCS, but this
+task does not require opening the dense segmentation; authentication here is only for
+the actual `img_path` being read.
 
 The exact image path, physical and voxel centers, requested/returned shape, dtype,
 boundary margin, nonzero count, and intensity percentiles are mandatory evidence that
@@ -561,8 +565,7 @@ itself an artificial signal.
 Here **local** means a bounded 3-D voxel subvolume centered on one candidate site.
 `TensorStoreImage` makes the external image volume addressable, but the
 analysis must read only such bounded subvolumes. The complete voxel array inside each
-patch is available for 3-D measurement and slice inspection; an XY/XZ/YZ MIP is only
-a visualization and must not replace the 3-D data. Never materialize the whole brain.
+patch is available for 3-D measurement and slice inspection.
 
 `PATCH_SHAPE = (128, 128, 128)` is the fixed field for the first alignment audit and
 a reproducible single-scale baseline. It is **not** a requirement that all later
@@ -587,12 +590,13 @@ selected-scale and failure distributions by class. A larger field also fails the
 bounds check sooner, so re-check the margin for every scale rather than only for the
 smallest one.
 
-An image-adaptive rule remains image-only only when it uses the candidate coordinate
-and raw voxels. A field size or orientation chosen from GT radius/tangent, fragment
-geometry, segment ID, or error label is geometry-conditioned or multimodal and must be
-reported as such. Never resize a difficult positive manually after viewing it. Always
-compare an adaptive approach with the fixed single- or multiscale baseline so apparent
-gain cannot come merely from class-dependent field selection.
+The firewall applies to the field itself, not only to the predictors: a field size or
+orientation chosen from GT radius/tangent, fragment geometry, segment ID, or error
+label is geometry-conditioned or multimodal and must be reported as such, while a rule
+driven only by the candidate coordinate and raw voxels stays image-only. Never resize
+a difficult positive manually after viewing it. Always compare an adaptive approach
+with the fixed single- or multiscale baseline so apparent gain cannot come merely from
+class-dependent field selection.
 
 ### Extracting one aligned image–fragments–GT merge patch
 
@@ -750,7 +754,8 @@ them separately from primary GT-supported clean controls.
 
 ### Image evidence to measure
 
-Every image-only feature must be computed from the actual raw patch:
+Every image-only feature must be computed from the actual raw patch. The families
+below are **seeds, and are deliberately incomplete**:
 
 - center intensity relative to a surrounding shell and local background;
 - dark-gap width between bright ridges;
@@ -763,6 +768,14 @@ Every image-only feature must be computed from the actual raw patch:
 - local entropy, frequency content, blur, saturation, stripe, or tile-boundary
   artifacts;
 - stability of all signals across physical scales.
+
+Implement a compact subset as baselines, then target **3–5 mechanism-driven
+measurements** that add a new physical scale, directionality, interaction,
+representation, or falsifiable prediction. They may extend a family above; novelty
+means a new testable claim, not merely a new formula. For each, state why it should
+differ at a merge site **before** measuring it on the confirmatory subset. Do not
+search a large feature library and report only the best result. Fewer defensible
+measurements are preferable to padding the list with arbitrary ones.
 
 For a multiscale policy, compute each scale by the same declared procedure and retain
 the per-scale values before any cross-scale reduction. For an adaptive policy, treat
@@ -778,6 +791,166 @@ variation.
 Use physical microns rather than fixed isotropic voxel radii. Prefer robust
 within-patch normalization fitted identically across classes. Any learned threshold,
 normalization, embedding, or feature selection must be fit inside the training fold.
+
+### Validation and failure checks
+
+- Group train/validation folds by predicted `segment_id` and GT neuron so that sites
+  from the same merged structure cannot leak across train and validation.
+- If multiple caches exist, reserve whole brains for transfer tests. With one cache,
+  state that cross-brain transfer was not tested.
+- Report site-level and, when its denominator is adequate, segment-level results
+  separately; otherwise state the limitation.
+- Use average precision as the primary imbalanced metric; also report ROC-AUC,
+  effect sizes, and grouped bootstrap confidence intervals. Average precision measures
+  prediction, not understanding: also report every effect in interpretable physical
+  units, and never treat an AP improvement alone as confirmation of a mechanism.
+- Report results for node-count-supported and geometric-walk merge cases separately
+  when their provenance can be reconstructed; otherwise state that the cache exposes
+  only their union at segment level.
+- Report failed image reads, missing same-segment skeleton matches, matching-distance
+  distributions, and control exclusions by class.
+- Compare image-only, fragment-only, and combined models explicitly if geometry is
+  explored.
+- Freeze exploratory feature definitions before using confirmatory groups. Account
+  for the number of retained hypotheses with a declared family-wise procedure or FDR,
+  and report all retained tests rather than only significant ones.
+
+### Candidate mechanism-informed hypotheses
+
+A feature list produces shallow hypotheses; a mechanism-informed list produces
+testable ones. This observational cache can establish associations consistent with a
+mechanism, not causation by itself. "The dark gap is narrower at merge sites" is an
+observation. "Two processes closer than the
+PSF width in z cannot be separated, so merges concentrate where the approach is along
+z" is a hypothesis with a predicted geometry. Generate a hypothesis for each class
+whose required evidence is available, and label every retained hypothesis with its
+class and evidential status.
+
+| Class | What could cause a merge |
+|---|---|
+| Optical | anisotropic PSF — two processes separable in xy may be fused along z; scattering halo; depth-dependent blur |
+| Acquisition | tile seams and fusion weights that bridge a gap, saturation flooding a boundary, stripe artifacts, drift between tiles |
+| Biological | genuine contact or fasciculation, shallow-angle crossing, a neurite passing through dense neuropil or over a soma |
+| Algorithmic | the segmentation network's receptive field and threshold, an over-permissive agglomeration step, seeding failures inside a bright region |
+| Labeling | the node-count rule versus the geometric walk in `gt_merge_labels`, the merge-walk thresholds behind `gt_merge_sites`, sparse GT coverage that leaves a fusion unadjudicable |
+
+The last two classes are legitimate answers. If the pattern is produced by the label
+rule or by the reconstruction pipeline rather than by the fluorescence, that is a
+result, not a failed experiment.
+
+Before generating hypotheses, make an evidence-availability table with columns
+`mechanism_class`, `required_evidence`, `available_field_or_metadata`, and
+`test_status`. Distinguish `directly_testable`, `proxy_only`, and `not_testable`.
+Tile/fusion-weight claims require acquisition metadata; receptive-field or
+agglomeration claims require model/pipeline documentation; causal optical claims
+require suitable acquisition controls. Do not turn physical coordinates into tile
+metadata or an image association into causal evidence. An unavailable class is
+reported, not filled with speculation.
+
+### Generating and pruning hypotheses
+
+Diversity has to be produced **before** the converging steps. Control matching, grouped
+validation, and significance testing can only shrink a hypothesis set; none of them can
+widen it. Treat the following as a required stage with its own reported output, not as
+advice.
+
+**Separate exploration from confirmation before looking.** Construct connected sample
+groups so that any sites sharing a predicted `segment_id` or a GT neuron belong to the
+same group, then assign each group once to an exploratory or untouched confirmatory
+subset. Record the seed, proportions, and group IDs or hashes. If the sample is too
+small for a meaningful confirmatory subset, label the entire study exploratory and do
+not make confirmatory claims. Cross-validation inside the same observations does not
+undo feature-discovery leakage. Construct candidate and control tables before this
+split, then sample/match controls separately within each subset; never reuse one
+control across exploration and confirmation.
+
+**Look before you hypothesize, but only in exploration.** After the end-to-end audit
+passes and before batch feature extraction, render MIP triplets for up to 20 random
+merge sites, up to 20 same-segment sensitivity controls, and up to 20 matched clean
+controls from exploratory groups, inspected with class labels hidden wherever tooling
+allows. Use all available unique sites when a category has fewer than 20, report the
+count, and skip an absent category rather than duplicating or fabricating samples. Mix
+selected examples in a seeded random order under blind sample IDs and reveal their
+category only after the field notes are frozen.
+Write free-text field notes on what actually differs. Formalize
+hypotheses from those notes rather than from the feature families above, and list up
+to **three observations you could not yet quantify**. These are valuable because each
+names a measurement that may need to be invented; do not fabricate observations to
+reach a count.
+
+**Rotate the point of view.** Generate one independent round of hypotheses from each
+framing below, then merge and deduplicate. The framings map onto different mechanism
+classes, so they are meant not to overlap:
+
+1. *"If I were the segmentation network, when would I wrongly join these two things?"*
+2. *"If I were the microscope, where would I fail to resolve a true boundary?"*
+3. *"If I were the labeling pipeline, where would I record a merge that is not one, or
+   miss one that is?"*
+
+**Generate widely, then prune.** Target **12–20 candidate hypotheses** before
+confirmatory evaluation, then retain **4–6** nonredundant, testable hypotheses and keep
+discarded candidates in the report with a one-line reason each. If the available
+evidence supports fewer, retain fewer and explain why—never pad either list. When
+evidence permits, cover at least four
+mechanism classes; otherwise cover every testable class and explain the limitation.
+Retain at most two hypotheses from one class. Avoid redundant hypotheses that make the
+same prediction and fail under the same control; merge them or state what observation
+would distinguish them.
+
+**Declare a prior and a kill criterion.** For each retained hypothesis, write down
+before measuring: the predicted direction and rough magnitude, so that the result can
+be surprising; the most ordinary alternative explanation — absolute brightness,
+physical depth, local crowding, patch validity, segment size, or a label-rule
+artifact — and how it will be ruled out; and the kill criterion, the concrete
+measurement outcome that would end the hypothesis. Report the prior beside the
+measurement, and report the outcome for every retained hypothesis including the ones
+that were killed. A confirmed strong prior and a refuted strong prior are both results;
+an unstated prior makes neither possible.
+
+Use exploratory groups to define code, transformations, scales, directions, and any
+thresholds. Freeze them before confirmation. Apply the frozen measurements to the
+confirmatory groups once; do not revise a failed hypothesis and retest it on the same
+confirmatory observations. Any later revision starts a new exploratory cycle and must
+be labeled as such.
+
+### Units of analysis and representations
+
+The merge site is one unit among several, and each unit asks a different question.
+Report the site-level result and, when sample support permits, at least one second unit;
+state which unit and denominator each claim belongs to:
+
+- **per merge site** — what is locally different where the fusion happens;
+- **per predicted segment** — what distinguishes segments that accumulate many merges
+  from equally large segments that accumulate none;
+- **per GT neuron** — which traced neurons are repeatedly absorbed into foreign
+  segments;
+- **per z slab, per tile, or per region** — whether merges concentrate where the
+  acquisition, rather than the biology, changes.
+
+When the necessary data and sample size exist, use **at least one representation that
+is not a site-centered patch**. For example: raw
+intensity along the line connecting the two fused processes, profiled as a function of
+physical distance rather than reduced to a single contrast number; a per-tile or
+per-slab aggregate over many sites; or the joint distribution of separation and
+brightness rather than either alone. A conclusion that exists at only one unit and one
+representation is weaker than one that survives a change of both.
+
+### Discordant-case mining
+
+Once a candidate score exists, its most informative samples are the ones it gets wrong.
+Rank all samples by score and inspect both tails against the answer key:
+
+- locations that score like a merge on a segment absent from `gt_merge_labels`;
+- adjudicated merge sites that score like a clean control.
+
+Each discordant group may indicate a **possible** unadjudicated merge, two failure
+modes that the feature conflates, a confounder, or a refutation of the feature. Absence
+from `gt_merge_labels` is not proof of correctness, but neither is a high image score
+proof of a merge. Without independent proofreading or dense-segmentation evidence, do
+not relabel it; mark it `unresolved_requires_review`. Classify only to the level
+supported by evidence, show visual examples, and report counts by group. Do not drop
+discordant cases silently or tune the feature until they disappear — a feature adjusted
+until its own counterexamples vanish has been fitted to them.
 
 ### From characterization to GT-blind detection
 
@@ -808,25 +981,10 @@ For segment-level evaluation:
 Keep proposal recall separate from conditional image-scorer performance. A strong
 scorer cannot recover a true site the proposal generator never supplied.
 
-### Validation and failure checks
-
-- Group train/validation folds by predicted `segment_id` and GT neuron so that sites
-  from the same merged structure cannot leak across train and validation.
-- If multiple caches exist, reserve whole brains for transfer tests. With one cache,
-  state that cross-brain transfer was not tested.
-- Report site-level and segment-level results separately.
-- Use average precision as the primary imbalanced metric; also report ROC-AUC,
-  effect sizes, and grouped bootstrap confidence intervals.
-- Report results for node-count-supported and geometric-walk merge cases separately
-  when their provenance can be reconstructed; otherwise state that the cache exposes
-  only their union at segment level.
-- Report failed image reads, missing same-segment skeleton matches, matching-distance
-  distributions, and control exclusions by class.
-- Compare image-only, fragment-only, and combined models explicitly if geometry is
-  explored.
-- Never use `gt_merge_labels`, `gt_merge_sites`, `gt_edge_error`, or GT geometry as
-  predictor inputs to a claimed GT-blind detector.
-- Do not select a site tolerance after inspecting test-set performance.
+Two rules belong to this stage rather than to characterization: never use
+`gt_merge_labels`, `gt_merge_sites`, `gt_edge_error`, or GT geometry as predictor inputs
+to a claimed GT-blind detector, and do not select the site tolerance after inspecting
+test-set performance.
 
 ---
 
@@ -855,6 +1013,35 @@ The analysis must establish all of the following:
    adaptation was labeled multimodal.
 9. Validation grouped correlated samples by segment and GT neuron and respected the
    sparse-GT precision limitation.
+10. Exploration and confirmation were separated by connected segment/neuron groups
+    before visual inspection; the hypothesis ledger records candidates, discarded
+    candidates and why, priors, kill criteria, and all confirmatory outcomes—or
+    explicitly states that sample size permitted exploratory analysis only.
+11. The site-level result and every supportable secondary unit were reported; both
+    discordant score tails were inspected without unsupported relabeling.
+
+Beyond being correct, the result must be **diverse in kind**. A result is admissible in
+any of the shapes below, and a deflationary shape is worth as much as a positive one:
+
+- **(a) Signature** — an image quantity separates the classes and survives its declared
+  controls.
+- **(b) Taxonomy** — merge sites fall into k mechanistically distinct kinds. The
+  node-count versus geometric-walk provenance is one candidate partition; contact,
+  crossing, and soma-attachment geometry is another.
+- **(c) Dose–response or threshold** — the effect turns on at a stated physical scale, a
+  separation distance or a contrast ratio, reported in microns.
+- **(d) Interaction** — the effect exists only within a stated subpopulation, or
+  reverses between subpopulations.
+- **(e) Attribution** — the apparent signature is explained by a more ordinary variable:
+  absolute brightness, physical depth, local crowding, segment size, or an unequal
+  invalid-read rate between classes.
+- **(f) Answer-key critique** — the pattern is produced by the merge-labeling rule or by
+  its thresholds rather than by the fluorescence.
+- **(g) Null** — no image-only quantity separates the classes at the declared effect
+  size, stated together with the power the sample actually supports.
+
+Shapes (e), (f), and (g) are results to be reported, not runs to be repeated until they
+turn into (a).
 
 Begin with one end-to-end audit. Select one merge-site record and print its predicted
 segment ID, attributed GT neuron, same-segment fragment component and distance,
@@ -866,25 +1053,39 @@ Prefer a focused experiment sequence:
 
 1. Validate loading, merge semantics, segment matching, coordinate conversion, and
    real-image access.
-2. Establish intensity, dark-gap, and local-ridge image baselines.
-3. Test multiscale crossing, convergence, orientation, and bridge-continuity signals.
-4. Test crowding and acquisition-artifact explanations.
-5. Evaluate matched-control robustness and grouped generalization.
-6. Build a GT-blind candidate-and-score evaluation, keeping proposal recall separate
+2. Split connected segment/neuron groups before looking; use up to 20 unique
+   exploratory sites per available category, three framings, 12–20 candidates pruned
+   to 4–6 with priors and kill criteria, then freeze the retained measurements.
+3. Establish intensity, dark-gap, and local-ridge image baselines, and treat brightness,
+   depth, and segment size as confounders to be controlled rather than as features to be
+   beaten.
+4. Test multiscale crossing, convergence, orientation, and bridge-continuity signals,
+   reporting separations in microns rather than voxels.
+5. Test crowding; test acquisition-artifact explanations and per-tile or per-slab
+   aggregates only when their metadata and sample support are available.
+6. Report site-level and, when supported, segment-level results separately; repeat the
+   leading result at a second unit only when its denominator is adequate.
+7. Mine discordant cases in both score tails without relabeling unresolved cases.
+8. Evaluate matched-control robustness and grouped generalization.
+9. Build a GT-blind candidate-and-score evaluation, keeping proposal recall separate
    from image-scorer quality.
-7. If useful, measure fragment geometry's incremental contribution in a transparently
-   multimodal model.
+10. If useful, measure fragment geometry's incremental contribution in a transparently
+    multimodal model.
 
 The final report must start with the real-image and registration audit; define every
 feature exactly; report site-level and segment-level outcomes, uncertainty, invalid
 samples, and unadjudicable predictions; and show how the strongest image signal maps
 to the target predicted segment and GT context. State whether fragment information
-was used only for proposal/context or also as a predictor. Exclude any run that used
-replacement voxels, mismatched axes or patch extents, global-nearest rather than
-same-segment matching, or fragment/GT leakage into an image-only score.
+was used only for proposal/context or also as a predictor. It must also carry the
+hypothesis ledger: the candidates generated, the ones discarded and why, and for each
+tested hypothesis its prior, its kill criterion, and whether that criterion was met.
+Exclude any run that used replacement voxels, mismatched axes or patch extents,
+global-nearest rather than same-segment matching, or fragment/GT leakage into an
+image-only score.
 
 Do not claim a deployable whole-brain merge detector merely because GT-centered
 patches are separable. A deployable system additionally needs GT-blind proposal
-generation, calibrated image scoring, segment association, and repair-safety logic.
-The correct result at this stage is an image signature at adjudicated merge sites,
-with explicit evidence of its alignment to GT and predicted fragments/segments.
+generation, calibrated image scoring, segment association, and repair-safety logic. The
+correct result at this stage is whichever of the admissible shapes (a)–(g) the evidence
+actually supports, stated with explicit evidence of its alignment to GT and predicted
+fragments/segments — not an image signature assumed in advance.
