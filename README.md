@@ -10,7 +10,7 @@ results.
 ```text
 same source brain + segmentation
         |
-        +--> load_skeletons.ipynb --> base .pkl --> relabel_cache.py --> _add.pkl --+
+        +--> load_skeletons.py --> base .pkl --> relabel_cache.py --> _add.pkl -----+
         |                                                                         |
         +--> evaluate_skeleton_metrics.ipynb --> official results.csv ------------+
                                                                                   |
@@ -23,8 +23,12 @@ GCS credentials in `configs/zihan_gcs_token.json`.
 
 ### 1. Generate the base cache
 
-Open and run [`notebooks/load_skeletons.ipynb`](notebooks/load_skeletons.ipynb).
-Set `brain_id` and `min_cable_length` in the notebook.
+Run [`notebooks/load_skeletons.py`](notebooks/load_skeletons.py), selecting the
+brain and minimum cable length with command-line arguments, for example:
+
+```bash
+python notebooks/load_skeletons.py --brain-id 794495 --min-cable-length 10
+```
 
 It reads the GT and UNet-fragment SWCs, constructs two `SkeletonGraph` objects,
 and writes:
