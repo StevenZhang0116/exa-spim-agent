@@ -2,7 +2,7 @@
 """Load GT, fragments, and one real 128^3 raw-image patch for alignment checks.
 
 The default center is the midpoint of a real direct split edge
-(``gt_edge_error == 1``). Like ``load_skeletons.ipynb``, the script saves three
+(``gt_edge_error == 1``). Like ``load_skeletons.py``, the script saves three
 separate MIP figures: the raw image, local fragment/segment skeletons, and local
 GT skeletons. It intentionally does not save the raw patch or JSON metadata.
 
