@@ -32,12 +32,9 @@ proofreader_evolve/runs/
 proofreader_evolve/prepared_cache/*
 !proofreader_evolve/prepared_cache/README.md
 
-# Autodiscovery: ignore generated rerun/fix scripts and predictive manifests.
-autodiscovery/*.json.fixed/
-autodiscovery/*.json.rerun/
-autodiscovery/*.json.predictive.fixed/
-autodiscovery/*.json.predictive.rerun/
-autodiscovery/*.predictive-selection.json
+# Autodiscovery runs and detector-build application outputs are local artifacts.
+/autodiscovery/
+/autodiscovery-application/
 
 # Credentials and tokens
 *.json
