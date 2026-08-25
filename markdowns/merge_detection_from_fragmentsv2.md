@@ -22,8 +22,10 @@ Work proceeds in two phases that use the ground truth differently:
 > information** (`fragments_graph` and its geometry / topology, plus scalars and
 > optionally the raw image). It must **never** read `gt_graph`,
 > `gt_node_canonical_label`, `gt_edge_error`, `gt_merge_labels`, or `gt_merge_sites`
-> while deciding where a merge is. In Phase 1 you are explicitly allowed — and
-> expected — to read both zones together.
+> while deciding where a merge is. GT may shape the detector at **build time** —
+> feature choice, thresholds, trained weights all come out of Phase 1 — the rule
+> constrains its **runtime inputs** only. In Phase 1 you are explicitly allowed —
+> and expected — to read both zones together.
 
 ---
 
@@ -304,8 +306,9 @@ all_samples = positives + negatives
 
 ### Feature dimensions
 
-Extract features at each sample point across three dimensions. Treat these as a
-starting catalogue — explore the data for signals this doc did not anticipate.
+Extract features at each sample point across three dimensions. The tables are a
+starting catalogue, not a boundary: *Beyond the catalogue* below is reserved for
+the signals they miss, and finding one is worth more than computing all of these.
 
 Two different "within X µm" semantics appear below, and both are intentional:
 `frag.kdtree` queries are **Euclidean** balls (their hits can include nodes of
@@ -401,6 +404,43 @@ def read_patch(xyz_um, anisotropy, half_width=32):
 The most informative signals are proximity (two high-intensity regions very close
 with little dark gap), intensity similarity (both processes at similar brightness),
 and orientation (processes crossing at a shallow angle are harder to separate).
+
+#### Beyond the catalogue — open exploration
+
+The tables above share a bias worth naming: Dimensions 1–2 assume a merge
+**creates a junction** (degree ≥ 3, antiparallel branches, radius contrast at a
+branch point). Many merges do — but a tip-to-tip or tangential fusion can leave
+a plain degree-2 path with no branch point at all, and nothing in the tables
+would fire on it. Treat the catalogue as one archetype, not the definition, and
+spend real effort outside it. Families known to be under-covered:
+
+- **Path-level signals** — direction kinks, curvature spikes, or radius
+  discontinuities *along* a degree-2 run. `branch_direction(g, node, nbr)`
+  works at any node, not just junctions: at a degree-2 node the dot product of
+  its two outgoing directions measures the kink (−1 = straight, toward +1 =
+  hairpin).
+- **Component-level shape** — does the component decompose into two arbor-like
+  density clusters joined by a thin bridge? Node-density profiles, bbox aspect
+  ratio, spread of pairwise node distances.
+- **Cross-component context** — merges happen where processes crowd. Count
+  foreign-component nodes in an Euclidean ball (`frag.kdtree` hits filtered by
+  `node_component_id`), or measure how far a foreign skeleton runs parallel to
+  this one.
+- **Whatever the data shows you (Phase 1 only).** Look first, featurize second:
+  pull the local skeleton neighborhood and the raw-image patch at a few dozen
+  `gt_merge_sites` and matched controls, write down what visibly differs, then
+  encode those observations as features. A signature seen by eye and then
+  formalized beats a catalogue feature computed blind.
+- **Learned features.** Pooling many cheap descriptors and letting a trained
+  model (logistic regression, gradient boosting) expose which ones matter is a
+  legitimate Phase 1 instrument — so is training directly on raw patches. The
+  Phase 2 firewall constrains a model's **inputs**, not its origin.
+
+Freedom in generation demands strictness in confirmation. With a large candidate
+pool and only a few hundred sample points per brain, rank candidates by effect
+size (or per-feature AUC), correct for multiple comparisons across *everything
+you tried* (e.g. Benjamini–Hochberg), and distrust any signal that cannot
+survive a held-out split of sites — or better, a second brain's `_add.pkl`.
 
 ### Helper functions
 
@@ -542,7 +582,11 @@ detections = detect_merges(frag, anisotropy, min_cable_length)
 ```
 
 Replace or extend the logic above with whatever Phase 1 identified as the strongest
-discriminating features. The starter code above is a geometric baseline.
+discriminating features. The starter code above is a geometric baseline — one
+archetype (the antiparallel thick crossing), not the definition of a detectable
+merge. A detector keyed on path-level kinks, component shape, cross-component
+crowding, or a model trained on Phase 1 descriptors is equally valid: the
+firewall constrains the detector's **runtime inputs**, not its construction.
 
 ### Scoring
 
@@ -609,10 +653,16 @@ performance tells you how much of the merge signature is intrinsic to the
 reconstruction and how much only becomes visible in the raw fluorescence.
 
 The feature dimensions above are a floor, not a ceiling. The most useful outcome
-may be a merge signature that nobody wrote down here — a fluorescence proximity
-pattern, a radius discontinuity ratio, a cycle count, a multi-mode intensity
-histogram. Use the answer key freely in Phase 1 to check whether a candidate
-feature actually separates the two classes. The one non-negotiable is the Phase 2
-firewall: the final detector reads fragment features only, so its performance is a
-clean, unbiased measure of what the reconstruction alone reveals about the network's
-failure modes.
+may be a merge signature that nobody wrote down here — a path-level kink on a
+junction-free fusion, a two-arbor component shape, a foreign process running
+parallel for tens of microns, a fluorescence pattern visible only in the raw
+patches. *Beyond the catalogue* exists precisely because the tables'
+junction-centric archetype is known to be incomplete. Use the answer key freely
+in Phase 1 — look at merge sites before featurizing, screen large candidate
+pools with multiple-comparison correction, train models on descriptors or raw
+patches — and let what the data shows override what this document anticipated.
+The one non-negotiable is the Phase 2 firewall: the final detector's runtime
+inputs are fragment features only. Its same-brain score still inherits optimism
+from Phase 1 (the features were selected on this very GT), so read it as "the
+signal is recoverable from the reconstruction alone", and take the honest
+generalization number from a brain Phase 1 never saw.
