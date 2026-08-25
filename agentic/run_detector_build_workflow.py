@@ -869,6 +869,11 @@ public {detector_rel}; do not write that file. Your fragment must define:
   positive hypothesis ids, actual traversal phase, and owned feature names;
 {extraction_contract}
 
+On every control-flow path, `extract_features` must return exactly the
+three-item tuple `(row_records, labels, accumulator)`. Never return a DataFrame
+or call `accumulator.to_frame()` there; the reviewed runtime owns conversion to
+the feature frame. The deterministic assembler rejects any other return shape.
+
 Copy feature math, constants, reductions, and measurable conditions from the
 inventoried sources. Share traversal passes, keep intermediate quantities out of
 FEATURE_REGISTRY, and emit NaN plus <feature>_is_defined for undefined values.

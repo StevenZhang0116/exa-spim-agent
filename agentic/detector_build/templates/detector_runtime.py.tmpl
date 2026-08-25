@@ -2114,7 +2114,7 @@ def _inventory_sha(inventory_path):
 def _extract_features_runtime(payload, *, verbose=True, timing=None,
                               enabled_analysis_keys=None,
                               profile_segment_limit=None, image_workers=1):
-    """Call old or image-thread-aware feature fragments compatibly."""
+    """Call a feature fragment and enforce its runtime return contract."""
     kwargs = {
         "verbose": verbose,
         "timing": timing,
@@ -2123,7 +2123,32 @@ def _extract_features_runtime(payload, *, verbose=True, timing=None,
     }
     if "image_workers" in inspect.signature(extract_features).parameters:
         kwargs["image_workers"] = image_workers
-    return extract_features(payload, **kwargs)
+    result = extract_features(payload, **kwargs)
+    if not isinstance(result, tuple) or len(result) != 3:
+        raise TypeError(
+            "extract_features contract violation: expected exactly "
+            "(row_records, labels, accumulator), got %s" % type(result).__name__
+        )
+    samples, labels, accumulator = result
+    if not callable(getattr(accumulator, "to_frame", None)):
+        raise TypeError(
+            "extract_features contract violation: third item must be an "
+            "accumulator with callable to_frame()"
+        )
+    try:
+        n_samples = len(samples)
+        n_labels = len(labels)
+    except TypeError as exc:
+        raise TypeError(
+            "extract_features contract violation: row_records and labels must "
+            "be sized sequences"
+        ) from exc
+    if n_samples != n_labels:
+        raise ValueError(
+            "extract_features contract violation: row_records and labels have "
+            "different lengths (%d != %d)" % (n_samples, n_labels)
+        )
+    return samples, labels, accumulator
 
 
 def _drop_all_undefined(df, samples, labels):

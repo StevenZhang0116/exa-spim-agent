@@ -78,6 +78,124 @@ class DiscoverySmokeTests(unittest.TestCase):
         workflow.PROJECT_ROOT = PROJECT_ROOT
         workflow.PREDICTIVE_MANIFEST = None
 
+    def test_workflow_cost_summary_diffs_session_cumulative_costs(self) -> None:
+        costs = workflow.WorkflowCostSummary()
+        for _ in range(4):
+            costs.start_turn()
+        self.assertEqual(costs.add(1.25, "session-a"), 1.25)
+        self.assertEqual(costs.add(1.75, "session-a"), 0.5)
+        self.assertEqual(costs.add(0.4, "session-b"), 0.4)
+        self.assertIsNone(costs.add(None, "session-b"))
+        self.assertEqual(costs.total_usd, 2.15)
+        self.assertIn("$2.1500", costs.describe())
+
+    def test_usage_formatting_supports_sdk_key_styles(self) -> None:
+        self.assertEqual(
+            workflow._format_token_usage({
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "cache_read_input_tokens": 30,
+                "cache_creation_input_tokens": 40,
+            }),
+            "input=10, output=20, cache_read=30, cache_write=40",
+        )
+        formatted = workflow._format_model_usage({
+            "claude-sonnet": {
+                "inputTokens": 11,
+                "outputTokens": 22,
+                "cacheReadInputTokens": 33,
+                "cacheCreationInputTokens": 44,
+                "costUSD": 0.125,
+            },
+        })
+        self.assertEqual(
+            formatted,
+            "claude-sonnet (input=11, output=22, cache_read=33, "
+            "cache_write=44, cost=$0.1250)",
+        )
+
+    def test_run_step_uses_a_fresh_sdk_session_each_time(self) -> None:
+        class SessionClient:
+            def __init__(self) -> None:
+                self.queries = []
+
+            async def query(self, prompt, session_id="default"):
+                self.queries.append((prompt, session_id))
+
+            async def receive_response(self):
+                if False:
+                    yield None
+
+        client = SessionClient()
+        workflow.WORKFLOW_COSTS.reset()
+        asyncio.run(workflow.run_step(client, {
+            "name": "first stage",
+            "instruction": "first prompt",
+        }))
+        asyncio.run(workflow.run_step(client, {
+            "name": "second/stage",
+            "instruction": "second prompt",
+        }))
+
+        self.assertEqual([prompt for prompt, _ in client.queries], [
+            "first prompt", "second prompt",
+        ])
+        session_ids = [session_id for _, session_id in client.queries]
+        self.assertEqual(len(set(session_ids)), 2)
+        self.assertTrue(session_ids[0].startswith("discovery-first-stage-"))
+        self.assertTrue(session_ids[1].startswith("discovery-second-stage-"))
+        self.assertNotIn("default", session_ids)
+
+    def test_mechanical_stages_use_opus_at_medium_effort(self) -> None:
+        workflow.DIRECTION = "predictive"
+        workflow.TOP_K = None
+        workflow.PREDICTIVE_MANIFEST = "autodiscovery/selection.json"
+        steps = {
+            step["name"]: step
+            for step in workflow.build_steps(
+                "autodiscovery/split-error-test.json",
+                "cache/dataset_cache_1_mcl100_add.pkl",
+                "autodiscovery/split-error-test.summary.md",
+                ["cache/dataset_cache_2_mcl100_add.pkl"],
+            )
+        }
+        self.assertIn(
+            "discovery-predictive-selector",
+            steps["select-predictive-hypotheses"]["instruction"],
+        )
+        self.assertIn(
+            "discovery-feature-applicability-labeler",
+            steps["label-split-feature-applicability"]["instruction"],
+        )
+        self.assertIn(
+            "discovery-test-fixer",
+            steps["fix-tests-author"]["instruction"],
+        )
+        self.assertIn(
+            "discovery-test-result-folder",
+            steps["fix-tests-fold"]["instruction"],
+        )
+
+        for name in (
+            "discovery-reproducer.md",
+            "discovery-extrapolator.md",
+            "discovery-predictive-selector.md",
+            "discovery-feature-applicability-labeler.md",
+            "discovery-test-result-folder.md",
+        ):
+            frontmatter = (PROJECT_ROOT / ".claude" / "agents" / name).read_text()
+            self.assertIn("model: inherit", frontmatter)
+            self.assertIn("effort: medium", frontmatter)
+
+        driver = (PROJECT_ROOT / "agentic" / "run_discovery_workflow.py").read_text()
+        self.assertIn('model="claude-opus-4-8"', driver)
+
+        statistical_author = (
+            PROJECT_ROOT / ".claude" / "agents" / "discovery-test-fixer.md"
+        ).read_text()
+        self.assertIn("model: inherit", statistical_author)
+        self.assertIn("effort: xhigh", statistical_author)
+
     def test_split_workflow_appends_source_bound_feature_label_stage(self) -> None:
         workflow.DIRECTION = "predictive"
         workflow.PREDICTIVE_MANIFEST = (
@@ -138,6 +256,90 @@ class DiscoverySmokeTests(unittest.TestCase):
                 self.assertFalse(workflow._rerun_manifest_matches_selection(
                     "run.rerun", "selection.json"
                 ))
+            finally:
+                workflow.PROJECT_ROOT = old_root
+
+    def test_split_label_inputs_use_selection_order_not_manifest_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            old_root = workflow.PROJECT_ROOT
+            workflow.PROJECT_ROOT = root
+            try:
+                run_json = root / "split-error-run.json"
+                run_json.write_text(json.dumps([{"id": 1}, {"id": 2}]))
+                rerun_dir = root / "split-error-run.json.predictive.rerun"
+                rerun_dir.mkdir()
+                for hypothesis_id in (1, 2):
+                    (rerun_dir / f"hypo_{hypothesis_id}.py").write_text(
+                        f"VALUE = {hypothesis_id}\n"
+                    )
+                (rerun_dir / "MANIFEST.json").write_text(json.dumps({
+                    "records": [{"id": 2}, {"id": 1}],
+                }))
+                workflow.predictive_manifest_path(run_json).write_text(json.dumps({
+                    "selected_ids": [1, 2],
+                    "excluded": [],
+                }))
+
+                selected_ids, resolved_rerun, fixed = (
+                    workflow._resolve_split_label_inputs(run_json)
+                )
+
+                self.assertEqual(selected_ids, [1, 2])
+                self.assertEqual(resolved_rerun, rerun_dir)
+                self.assertIsNone(fixed)
+            finally:
+                workflow.PROJECT_ROOT = old_root
+
+    def test_labels_only_compiles_existing_draft_without_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            old_root = workflow.PROJECT_ROOT
+            workflow.PROJECT_ROOT = root
+            try:
+                run_json = root / "split-error-run.json"
+                run_json.write_text(json.dumps([{"id": 1}, {"id": 2}]))
+                rerun_dir = root / "split-error-run.json.predictive.rerun"
+                rerun_dir.mkdir()
+                for hypothesis_id in (1, 2):
+                    (rerun_dir / f"hypo_{hypothesis_id}.py").write_text(
+                        f"VALUE = {hypothesis_id}\n"
+                    )
+                (rerun_dir / "MANIFEST.json").write_text(json.dumps({
+                    "records": [{"id": 2}, {"id": 1}],
+                }))
+                workflow.predictive_manifest_path(run_json).write_text(json.dumps({
+                    "selected_ids": [1, 2],
+                    "excluded": [],
+                }))
+                draft = workflow.split_applicability_draft_path(run_json)
+                draft.write_text(json.dumps({
+                    "schema_version": 1,
+                    "records": [
+                        {
+                            "id": hypothesis_id,
+                            "source": "rerun",
+                            "node_role_requirement": "no_tip_requirement",
+                            "reason": "The feature is defined for any node pair.",
+                        }
+                        for hypothesis_id in (1, 2)
+                    ],
+                }))
+
+                with mock.patch.object(
+                    workflow,
+                    "run_step",
+                    side_effect=AssertionError("agent should not run"),
+                ):
+                    asyncio.run(workflow.run_split_feature_labeling_only(run_json))
+
+                output = workflow.split_applicability_path(run_json)
+                payload = json.loads(output.read_text())
+                self.assertEqual(payload["selected_ids"], [1, 2])
+                self.assertEqual(
+                    [record["id"] for record in payload["records"]], [1, 2]
+                )
+                self.assertFalse(draft.exists())
             finally:
                 workflow.PROJECT_ROOT = old_root
 

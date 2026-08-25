@@ -91,6 +91,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -100,6 +101,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -367,6 +369,7 @@ def driver_log_path(json_path: Path) -> Path:
 def predictive_selection_instruction(json_rel: str, manifest_rel: str) -> str:
     """Instruction shared by full and smoke predictive selection."""
     return (
+        "Use the discovery-predictive-selector subagent. "
         f"Read every hypothesis in the single AutoDiscovery export at {json_rel} "
         "using an EXCLUSION-ONLY policy for downstream detector candidates. "
         "START with every hypothesis and ignore whether its belief-shift "
@@ -662,7 +665,7 @@ def split_feature_label_step(
             "output": output_rel,
         },
         "instruction": f"""
-Use the discovery-detector-builder subagent to classify the node-role requirement
+Use the discovery-feature-applicability-labeler subagent to classify the node-role requirement
 of every available selected split-feature source. This is a small semantic
 annotation step; do not run experiments, load a pkl, edit a hypothesis script,
 or change the report.
@@ -1129,7 +1132,7 @@ def build_steps(
             "skip_if_missing": corrected_rel,
             "expects": ["Statistical Test Corrections — Summary"],
             "instruction": (
-                "Use the discovery-test-fixer subagent to fold CORRECTED-test "
+                "Use the discovery-test-result-folder subagent to fold CORRECTED-test "
                 "verdicts into the report. The driver has re-measured the corrected "
                 f"scripts; read the results JSON at {corrected_rel} and use the "
                 f"`code_source: corrected` results and their `result_status` / "
@@ -1206,9 +1209,127 @@ def build_options() -> ClaudeAgentOptions:
     )
 
 
-async def _run_step_inner(client: ClaudeSDKClient, step: dict[str, object]) -> str:
+class WorkflowCostSummary:
+    """Track turn cost without double-counting session-cumulative reports."""
+
+    def __init__(self) -> None:
+        self.started_turns = 0
+        self.reported_turns = 0
+        self.unreported_turns = 0
+        self._session_usd: dict[object, float] = {}
+
+    @property
+    def total_usd(self) -> float:
+        return sum(self._session_usd.values())
+
+    def reset(self) -> None:
+        self.__init__()
+
+    def start_turn(self) -> None:
+        self.started_turns += 1
+
+    def add(self, cost_usd: object, session_id: object = None) -> float | None:
+        """Record one SDK cost report and return this turn's increment."""
+        if cost_usd is None:
+            self.unreported_turns += 1
+            return None
+        try:
+            cost = float(cost_usd)
+        except (TypeError, ValueError):
+            self.unreported_turns += 1
+            return None
+        if not math.isfinite(cost) or cost < 0:
+            self.unreported_turns += 1
+            return None
+        previous = self._session_usd.get(session_id, 0.0)
+        self._session_usd[session_id] = max(previous, cost)
+        self.reported_turns += 1
+        return max(0.0, cost - previous)
+
+    def describe(self) -> str:
+        unfinished = max(
+            0,
+            self.started_turns - self.reported_turns - self.unreported_turns,
+        )
+        coverage = (
+            f"{self.reported_turns} reported turn(s), "
+            f"{self.unreported_turns} completed turn(s) without a cost, "
+            f"{unfinished} started turn(s) without a ResultMessage"
+        )
+        if self.reported_turns == 0:
+            return f"unavailable ({coverage})"
+        return f"${self.total_usd:.4f} ({coverage})"
+
+
+WORKFLOW_COSTS = WorkflowCostSummary()
+
+
+def _first_usage_value(usage: dict[str, object], *keys: str) -> object | None:
+    for key in keys:
+        if key in usage:
+            return usage[key]
+    return None
+
+
+def _format_token_usage(usage: object) -> str | None:
+    """Compact the SDK's snake_case or camelCase token counters for logs."""
+    if not isinstance(usage, dict):
+        return None
+    fields = (
+        ("input", ("input_tokens", "inputTokens")),
+        ("output", ("output_tokens", "outputTokens")),
+        ("cache_read", ("cache_read_input_tokens", "cacheReadInputTokens")),
+        (
+            "cache_write",
+            ("cache_creation_input_tokens", "cacheCreationInputTokens"),
+        ),
+    )
+    parts = []
+    for label, keys in fields:
+        value = _first_usage_value(usage, *keys)
+        if value is not None:
+            parts.append(f"{label}={value}")
+    return ", ".join(parts) if parts else None
+
+
+def _format_model_usage(model_usage: object) -> str | None:
+    """Return per-model token and cost details from one SDK result."""
+    if not isinstance(model_usage, dict):
+        return None
+    models = []
+    for model, details in sorted(model_usage.items(), key=lambda item: str(item[0])):
+        if not isinstance(details, dict):
+            models.append(f"{model}: {details}")
+            continue
+        parts = []
+        token_usage = _format_token_usage(details)
+        if token_usage:
+            parts.append(token_usage)
+        cost = _first_usage_value(details, "cost_usd", "costUSD")
+        if cost is not None:
+            try:
+                parts.append(f"cost=${float(cost):.4f}")
+            except (TypeError, ValueError):
+                parts.append(f"cost={cost}")
+        models.append(f"{model} ({', '.join(parts) or 'usage unavailable'})")
+    return "; ".join(models) if models else None
+
+
+def _new_step_session_id(step_name: str) -> str:
+    """Return a unique readable SDK session id for one isolated agent turn."""
+    safe_name = re.sub(r"[^A-Za-z0-9_-]+", "-", step_name).strip("-")
+    return f"discovery-{safe_name[:48] or 'step'}-{uuid.uuid4().hex}"
+
+
+async def _run_step_inner(
+    client: ClaudeSDKClient,
+    step: dict[str, object],
+    session_id: str,
+) -> str:
     """Core logic for one agent step — called by run_step inside a timeout guard."""
-    await client.query(str(step["instruction"]))
+    WORKFLOW_COSTS.start_turn()
+    log(f"  [session] {step['name']}: {session_id}")
+    await client.query(str(step["instruction"]), session_id=session_id)
 
     chunks: list[str] = []
     n_tools = 0
@@ -1222,30 +1343,46 @@ async def _run_step_inner(client: ClaudeSDKClient, step: dict[str, object]) -> s
                     log(f"  → {describe_tool(block)}")
         elif isinstance(message, ResultMessage):
             cost = getattr(message, "total_cost_usd", None)
+            delta = WORKFLOW_COSTS.add(
+                cost, getattr(message, "session_id", None)
+            )
             dur_ms = getattr(message, "duration_ms", None)
             parts = [f"{n_tools} tool call(s)"]
             if dur_ms is not None:
                 parts.append(f"{dur_ms / 1000:.0f}s")
-            if cost is not None:
-                parts.append(f"${cost:.4f}")
+            if delta is not None:
+                parts.append(
+                    f"${delta:.4f} this turn "
+                    f"(${float(cost):.4f} session cumulative)"
+                )
             log(f"  step turn finished — {', '.join(parts)}")
+            usage = _format_token_usage(getattr(message, "usage", None))
+            if usage:
+                log(f"  [usage] {step['name']}: {usage}")
+            models = _format_model_usage(getattr(message, "model_usage", None))
+            if models:
+                log(f"  [model-usage] {step['name']}: {models}")
     return "".join(chunks)
 
 
 async def run_step(client: ClaudeSDKClient, step: dict[str, object]) -> str:
-    """Send one workflow step to the session and return its final text.
+    """Send one workflow step in an isolated SDK session and return its text.
 
     ``step`` is one entry from ``build_steps`` (plus the lighter dict ``run_smoke``
     builds), so its values are heterogeneous — ``instruction`` is a str, but
     siblings hold argv lists, ``None``, and skip flags.
 
-    Wraps ``_run_step_inner`` in the ``AGENT_STEP_TIMEOUT_S`` guard so a hung
-    session aborts the run instead of stalling it forever.
+    The client transport is shared, but every call receives a fresh logical
+    session id, so a later stage cannot inherit an earlier stage's conversation.
+    Files remain the sole cross-stage state. Wraps ``_run_step_inner`` in the
+    ``AGENT_STEP_TIMEOUT_S`` guard so a hung session aborts the run instead of
+    stalling it forever.
     """
     timeout_s = AGENT_STEP_TIMEOUT_S
+    session_id = _new_step_session_id(str(step["name"]))
     try:
         return await asyncio.wait_for(
-            _run_step_inner(client, step),
+            _run_step_inner(client, step, session_id),
             timeout=timeout_s,
         )
     except asyncio.TimeoutError:
@@ -1340,10 +1477,23 @@ def _resolve_split_label_inputs(
         )
         selected_payload = json.loads(selection.read_text(encoding="utf-8"))
         selected_ids = selected_payload["selected_ids"]
-        if selected_ids != rerun_ids:
+        if (
+            not selected_ids
+            or any(
+                isinstance(value, bool) or not isinstance(value, int)
+                for value in selected_ids
+            )
+            or len(selected_ids) != len(set(selected_ids))
+        ):
             raise SystemExit(
-                "Predictive selection order must match rerun MANIFEST order before "
-                "split feature applicability can be labeled."
+                "Split feature labeling requires unique integer selected IDs."
+            )
+        if set(selected_ids) != set(rerun_ids):
+            missing = sorted(set(selected_ids) - set(rerun_ids))
+            extra = sorted(set(rerun_ids) - set(selected_ids))
+            raise SystemExit(
+                "Predictive selection and rerun MANIFEST must contain the same "
+                f"hypothesis IDs; missing from rerun={missing}, extra in rerun={extra}."
             )
         fixed_candidate = run_json.with_name(
             f"{run_json.name}.predictive.fixed"
@@ -1386,6 +1536,23 @@ def _compile_split_label_step(spec: dict[str, object]) -> None:
         f"  [validate] compiled source-bound split feature applicability at "
         f"{_rel_to_root(output)}."
     )
+
+
+def _compile_existing_split_label_draft(spec: dict[str, object]) -> bool:
+    """Compile a valid draft left by an interrupted run before relabeling."""
+    draft = PROJECT_ROOT / str(spec["draft"])
+    if not draft.is_file():
+        return False
+    try:
+        _compile_split_label_step(spec)
+    except SystemExit as exc:
+        log(
+            f"  [agent] existing split applicability draft is stale or invalid; "
+            f"relabeling: {exc}"
+        )
+        return False
+    log("  [agent] reused and compiled the existing split applicability draft.")
+    return True
 
 
 def _has_hypo_scripts(dir_rel: str) -> bool:
@@ -1906,6 +2073,7 @@ def _save_smoke_summaries(manifest_rel: str, summaries: list[str]) -> None:
 
 async def run_smoke(json_path: Path) -> None:
     """Select, print, and stop without running the discovery workflow."""
+    WORKFLOW_COSTS.reset()
     global PREDICTIVE_MANIFEST
     json_rel = _rel_to_root(json_path)
 
@@ -1936,6 +2104,7 @@ async def run_smoke(json_path: Path) -> None:
 
 async def run_split_feature_labeling_only(json_path: Path) -> None:
     """Backfill/refresh applicability metadata without rerunning discovery."""
+    WORKFLOW_COSTS.reset()
     if not _is_split_run(json_path):
         raise SystemExit("--split-feature-labels-only requires a split-error run.")
     selected_ids, rerun_dir, fixed_dir = _resolve_split_label_inputs(json_path)
@@ -1972,6 +2141,10 @@ async def run_split_feature_labeling_only(json_path: Path) -> None:
         _rel_to_root(rerun_dir),
         _rel_to_root(fixed_candidate),
     )
+    if _compile_existing_split_label_draft(
+        dict(step["compile_split_applicability"])
+    ):
+        return
     async with ClaudeSDKClient(options=build_options()) as client:
         final_text = await run_step(client, step)
         print(final_text.strip())
@@ -1984,6 +2157,7 @@ async def run_workflow(
     pkl_path: Path,
     extra_pkl_paths: list[Path],
 ) -> None:
+    WORKFLOW_COSTS.reset()
     global PREDICTIVE_MANIFEST
     options = build_options()
     # Paths handed to the agent are relative to PROJECT_ROOT (the session cwd).
@@ -2005,12 +2179,14 @@ async def run_workflow(
         f"[{', '.join(str(s['name']) for s in steps)}]."
     )
     wf_start = time.monotonic()
+    # Reuse one transport connection; run_step assigns every agent turn a fresh
+    # logical SDK session so only filesystem artifacts carry state across stages.
     client_cm = ClaudeSDKClient(options=options)
 
     summary_path = PROJECT_ROOT / summary_rel
 
     async def _drive(client) -> None:
-        log("SDK session opened.")
+        log("SDK transport opened; agent turns use isolated sessions.")
         # Set when a repair-round remeasure finds its fix round changed no
         # script: every later step carrying skip_if_stalled is then pointless
         # (the same inputs would produce the same "nothing to fix" turn).
@@ -2089,6 +2265,8 @@ async def run_workflow(
                                 f"applicability {spec_dict['output']}."
                             )
                             continue
+                    if _compile_existing_split_label_draft(spec_dict):
+                        continue
                 brief_spec = step.get("failure_brief")
                 if brief_spec:
                     brief = _failure_brief(
@@ -2150,7 +2328,10 @@ async def run_workflow(
 
     async with client_cm as client:
         await _drive(client)
-    log(f"Workflow complete in {time.monotonic() - wf_start:.0f}s.")
+    log(
+        f"Workflow complete in {time.monotonic() - wf_start:.0f}s; "
+        f"agent cost {WORKFLOW_COSTS.describe()}."
+    )
     print("\n=== Workflow complete ===")
 
 

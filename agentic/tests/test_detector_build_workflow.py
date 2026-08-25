@@ -166,7 +166,9 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
                 "    'phase': 'segment', 'feature_names': ['x'],\n"
                 "}]\n"
-                "class SegmentAccumulator:\n    pass\n"
+                "class SegmentAccumulator:\n"
+                "    def to_frame(self):\n"
+                "        return None\n"
                 "def extract_features(payload, verbose=True, timing=None, "
                 "enabled_analysis_keys=None, profile_segment_limit=None):\n"
                 "    _ = profile_segment_limit\n"
@@ -176,7 +178,7 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 "    if timing is not None:\n"
                 "        timing.start_phase('segment')\n"
                 "        timing.start_analysis('hypo_1')\n"
-                "    return FEATURE_REGISTRY\n"
+                "    return [], [], SegmentAccumulator()\n"
             )
 
             assemble_detector(template, feature, output)
@@ -191,6 +193,37 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(SystemExit, "runtime-owned.*run_detector"):
                 assemble_detector(template, feature, output)
+
+    def test_feature_fragment_rejects_non_triple_return_on_every_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            feature = Path(tmpdir) / "feature.py"
+            feature.write_text(
+                "FEATURE_REGISTRY = [('x',)]\n"
+                "ANALYSIS_TIMING_GROUPS = [{\n"
+                "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
+                "    'phase': 'segment', 'feature_names': ['x'],\n"
+                "}]\n"
+                "class SegmentAccumulator:\n"
+                "    def to_frame(self):\n"
+                "        return None\n"
+                "def extract_features(payload, verbose=True, timing=None, "
+                "enabled_analysis_keys=None, profile_segment_limit=None):\n"
+                "    _ = payload, verbose, profile_segment_limit\n"
+                "    def _analysis_enabled(key):\n"
+                "        return enabled_analysis_keys is None or key in enabled_analysis_keys\n"
+                "    _analysis_enabled('hypo_1')\n"
+                "    if timing is not None:\n"
+                "        timing.start_phase('segment')\n"
+                "        timing.start_analysis('hypo_1')\n"
+                "    if enabled_analysis_keys == set():\n"
+                "        return SegmentAccumulator().to_frame()\n"
+                "    return [], [], SegmentAccumulator()\n"
+            )
+
+            with self.assertRaisesRegex(
+                SystemExit, "three-item tuple.*Invalid return line"
+            ):
+                validate_feature_implementation(feature)
 
     def test_image_heavy_feature_fragment_requires_bounded_threads(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -275,7 +308,8 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 "    if timing is not None:\n"
                 "        timing.start_phase('candidate_pair')\n"
                 "        timing.start_analysis('hypo_1')\n"
-                "    return build_sample_universe(payload)\n"
+                "    samples, labels = build_sample_universe(payload)\n"
+                "    return samples, labels, FeatureAccumulator()\n"
             )
 
             assemble_detector(
@@ -300,9 +334,9 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
 
             feature.write_text(
                 feature.read_text().replace(
-                    "return build_sample_universe(payload)",
+                    "samples, labels = build_sample_universe(payload)",
                     "_ = payload['gt_edge_error']\n"
-                    "    return build_sample_universe(payload)",
+                    "    samples, labels = build_sample_universe(payload)",
                 )
             )
             with self.assertRaisesRegex(SystemExit, "GT-only.*gt_edge_error"):
@@ -391,7 +425,9 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
                 "    'phase': 'segment', 'feature_names': ['x'],\n"
                 "}]\n"
-                "class SegmentAccumulator:\n    pass\n"
+                "class SegmentAccumulator:\n"
+                "    def to_frame(self):\n"
+                "        return None\n"
                 "def extract_features(payload, verbose=True, timing=None, "
                 "enabled_analysis_keys=None, profile_segment_limit=None):\n"
                 "    _ = profile_segment_limit\n"
@@ -412,6 +448,15 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             module = importlib.util.module_from_spec(spec)
             assert spec.loader is not None
             spec.loader.exec_module(module)
+            generated_extract = module.extract_features
+            module.extract_features = lambda *_args, **_kwargs: module.np.empty(
+                (1, 4)
+            )
+            with self.assertRaisesRegex(
+                TypeError, "expected exactly.*row_records, labels, accumulator"
+            ):
+                module._extract_features_runtime({})
+            module.extract_features = generated_extract
             module.load_payload = lambda _path: {
                 "min_cable_length": 100,
                 "gt_node_canonical_label": module.np.array(

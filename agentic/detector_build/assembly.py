@@ -299,6 +299,57 @@ def _validate_timing_contract(tree: ast.Module, path: Path) -> None:
             f"gates: {missing_gates}."
         )
 
+    class _DirectReturnVisitor(ast.NodeVisitor):
+        """Collect returns owned by extract_features, excluding nested scopes."""
+
+        def __init__(self) -> None:
+            self.returns: list[ast.Return] = []
+
+        def visit_Return(self, node: ast.Return) -> None:  # noqa: N802
+            self.returns.append(node)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+            return
+
+        def visit_AsyncFunctionDef(  # noqa: N802
+            self, node: ast.AsyncFunctionDef
+        ) -> None:
+            return
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+            return
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+            return
+
+    return_visitor = _DirectReturnVisitor()
+    for statement in extract.body:
+        return_visitor.visit(statement)
+    if not return_visitor.returns:
+        raise SystemExit(
+            "extract_features must explicitly return exactly "
+            "(row_records, labels, accumulator)."
+        )
+    if not isinstance(extract.body[-1], ast.Return):
+        raise SystemExit(
+            "extract_features must end with an explicit return of exactly "
+            "(row_records, labels, accumulator), so no control-flow path can "
+            "fall through to None."
+        )
+    invalid_return_lines = [
+        node.lineno
+        for node in return_visitor.returns
+        if not isinstance(node.value, ast.Tuple) or len(node.value.elts) != 3
+    ]
+    if invalid_return_lines:
+        raise SystemExit(
+            "extract_features must return exactly the three-item tuple "
+            "(row_records, labels, accumulator) on every path; never return a "
+            "DataFrame or accumulator.to_frame(). Invalid return line(s): "
+            + ", ".join(str(line) for line in invalid_return_lines)
+            + "."
+        )
+
 
 def _literal_mapping_key(node: ast.AST) -> str | None:
     """Return a literal key used by ``obj[key]`` or ``obj.get(key)``."""
