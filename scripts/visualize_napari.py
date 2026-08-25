@@ -38,7 +38,7 @@ def load_dataset(brain_id="794495"):
     cache_path = f"../cache/dataset_cache_{brain_id}_mcl1000.pkl"
     if not os.path.exists(cache_path):
         print(f"Cache not found: {cache_path}")
-        print("Run load_skeletons.ipynb first to generate the cache.")
+        print("Run load_skeletons.py first to generate the cache.")
         sys.exit(1)
     dataset = BrainDataset.load_from_cache(cache_path)
     return dataset

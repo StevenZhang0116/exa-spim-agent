@@ -1,0 +1,26 @@
+# argv: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/agentic/run_split_candidate_result_analysis.py /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/notebooks/split_candidate_pool_sweep_outputs/mcl100_5f92a29e40d94a90
+# started: 2026-08-24 22:12:36
+# host: n286 python: 3.11.6
+[split-candidate-review] evidence sha256=db042a9af16ade8570cc105165f2bff6f5cac3b89d1651337bfe159f373e91c6
+[split-candidate-review] Agent
+[split-candidate-review] Read
+[split-candidate-review] Read
+[split-candidate-review] Read
+[split-candidate-review] Read
+[split-candidate-review] Read
+[split-candidate-review] Read
+[split-candidate-review] Read
+[split-candidate-review] Read
+[split-candidate-review] Edit
+[split-candidate-review] Edit
+[split-candidate-review] Edit
+[split-candidate-review] Edit
+[split-candidate-review] Edit
+[split-candidate-review] Edit
+[split-candidate-review] Edit
+[split-candidate-review] Read
+[split-candidate-review] Read
+[split-candidate-review] Grep
+[split-candidate-review] Bash
+[split-candidate-review] turn completed; session cost $0.9752
+# OK after 193.5s

@@ -1,0 +1,6 @@
+brain,n_reachable_truth_pairs,best_candidate_recall,fewest_candidates_at_best_recall,minimal_best_config_id
+789202,2903,0.9676197037547364,86575,tip_to_any_node|r=100|k=8
+794491,1827,0.9967159277504104,2667603,tip_to_any_node|r=80|k=8
+794493,1774,0.9971815107102592,1483054,tip_to_any_node|r=100|k=16
+794495,2236,0.9785330948121646,2042057,tip_to_any_node|r=100|k=16
+802449,6853,0.9801546767838902,3563644,tip_to_any_node|r=100|k=16

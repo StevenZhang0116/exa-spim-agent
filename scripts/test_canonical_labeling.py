@@ -123,7 +123,7 @@ def main():
     cache_path = os.path.join(args.cache_dir, f"dataset_cache_{args.brain}_mcl{args.mcl}.pkl")
     if not os.path.exists(cache_path):
         ap.error(f"cache not found: {cache_path}\n"
-                 f"  (check --brain / --mcl; build it via load_skeletons.ipynb if missing)")
+                 f"  (check --brain / --mcl; build it via load_skeletons.py if missing)")
     seg_path = segmentation_path_for(args.brain)
     print(f"brain {args.brain}")
     print(f"  cache:        {cache_path}")

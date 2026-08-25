@@ -32,12 +32,16 @@ proofreader_evolve/runs/
 proofreader_evolve/prepared_cache/*
 !proofreader_evolve/prepared_cache/README.md
 
-# Autodiscovery: ignore the generated .fixed and .rerun subfolders.
+# Autodiscovery: ignore generated rerun/fix scripts and predictive manifests.
 autodiscovery/*.json.fixed/
 autodiscovery/*.json.rerun/
+autodiscovery/*.json.predictive.fixed/
+autodiscovery/*.json.predictive.rerun/
+autodiscovery/*.predictive-selection.json
 
 # Credentials and tokens
 *.json
+!agentic/detector_model_policy.json
 zihan_gcs_token.json
 *.pem
 *.key
@@ -89,6 +93,7 @@ ENV/
 !.claude/settings.json
 .claude/settings.local.json
 .agents/
+CLAUDE.md
 
 # Large data files
 *.tif
@@ -101,3 +106,6 @@ ENV/
 *.bak
 *.log
 .cache/
+
+# Local workflow summary
+workflow_summary.tex

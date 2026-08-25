@@ -1,0 +1,22 @@
+# agentic/run_discovery_workflow.py autodiscovery/split-error-794495-mcl100-run-3_2026-08-24.json --pkl cache/dataset_cache_794495_mcl100_add.pkl --extra-pkl cache/dataset_cache_794493_mcl100_add.pkl --direction predictive
+# started 2026-08-25 01:18:56
+# host n286  python 3.11.6
+
+[direction] exclusion-only predictive candidates (no cutoff)
+[selection] 100 hypotheses → keep every candidate not explicitly excluded (no score/top-K cutoff)
+[timeouts] 100 record(s) → agent step 3600s, compute step 86400s
+[dataset-check] OK: --pkl matches JSON origin (794495_mcl100_add)
+[granularity-check] OK: all --extra-pkl files match --pkl (mcl100_add)
+[01:18:56] Starting workflow on autodiscovery/split-error-794495-mcl100-run-3_2026-08-24.json (pkl cache/dataset_cache_794495_mcl100_add.pkl, extrapolate onto 1 dataset(s)): 18 step(s), 7 driver-run compute [select-predictive-hypotheses, summarize-discoveries, reproduce-run, reproduce-export, reproduce-fix-loading, reproduce-remeasure, reproduce-fix-loading-2, reproduce-remeasure-2, reproduce-fix-loading-3, reproduce-remeasure-3, reproduce-fold, extrapolate-run, extrapolate-fold, verify-statistics-and-logic, fix-tests-author, fix-tests-measure, fix-tests-fold, label-split-feature-applicability].
+[01:18:57] SDK session opened.
+
+=== Step 1/18: select-predictive-hypotheses [agent] ===
+[01:18:57] Step 1/18 'select-predictive-hypotheses' (agent) started.
+[01:19:31]   → Bash: wc -c autodiscovery/split-error-794495-mcl100-run-3_2026-08-24.json && python -c "import json; d=jso…
+[01:19:53]   → Bash: python -c " import json d=json.load(open('autodiscovery/split-error-794495-mcl100-run-3_2026-08-24.j…
+[01:20:01]   → Bash: python -c " import json d=json.load(open('autodiscovery/split-error-794495-mcl100-run-3_2026-08-24.j…
+[01:20:16]   → Bash: python -c " import json d=json.load(open('autodiscovery/split-error-794495-mcl100-run-3_2026-08-24.j…
+[01:20:29]   → Bash: python -c " import json d=json.load(open('autodiscovery/split-error-794495-mcl100-run-3_2026-08-24.j…
+[01:20:36]   → Read: /tmp/hyp_dump.txt
+[01:20:49]   → Bash: python -c " import json, re d=json.load(open('autodiscovery/split-error-794495-mcl100-run-3_2026-08-…
+[01:20:56]   → Read: /tmp/hyp_clean.txt

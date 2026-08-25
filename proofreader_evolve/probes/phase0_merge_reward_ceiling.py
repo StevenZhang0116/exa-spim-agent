@@ -219,7 +219,7 @@ def _probe(args) -> int:
     if not os.path.exists(frag_cache):
         raise SystemExit(
             f"[{brain}] fragment cache not found: {frag_cache}\n"
-            f"  build it (notebooks/load_skeletons.ipynb, min_cable_length={args.mcl}) "
+            f"  build it (notebooks/load_skeletons.py, min_cable_length={args.mcl}) "
             f"or check --brain/--mcl.")
     print(f"[{brain}] loading fragment graph (mcl={args.mcl}): {frag_cache}")
     fragments_graph, _gt, _ = ds.load_cached_graphs(

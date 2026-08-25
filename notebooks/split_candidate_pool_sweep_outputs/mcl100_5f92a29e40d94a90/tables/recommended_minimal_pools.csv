@@ -1,0 +1,4 @@
+target_worst_brain_recall,status,config_id,mode,radius_um,per_anchor_k,per_anchor_k_value,global_cap,global_cap_value,min_recall,mean_recall,micro_recall,total_candidates,mean_prevalence
+0.8,meets_target,tip_to_any_node|r=20|k=2,tip_to_any_node,20.0,2,2,none,-1,0.807277628032345,0.8806083690980222,0.8677701795871413,1096426,0.03575329234753722
+0.9,meets_target,tip_to_any_node|r=50|k=2,tip_to_any_node,50.0,2,2,none,-1,0.9065588499550764,0.9481266741848176,0.9394772160797596,2793919,0.01810729738363392
+0.95,meets_target,tip_to_any_node|r=80|k=4,tip_to_any_node,80.0,4,4,none,-1,0.9523809523809524,0.9735254631734728,0.9698983830766281,5644623,0.01079195328352512

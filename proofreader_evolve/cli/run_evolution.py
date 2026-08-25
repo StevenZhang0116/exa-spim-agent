@@ -1109,7 +1109,7 @@ def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
     if not os.path.exists(cache_path):
         raise SystemExit(
             f"[{brain}] fragment cache not found: {cache_path}\n"
-            f"  (check --brain / --mcl; build it via notebooks/load_skeletons.ipynb "
+            f"  (check --brain / --mcl; build it via notebooks/load_skeletons.py "
             f"with min_cable_length={mcl} if missing)")
     log(f"[{brain}] Loading cached fragment graph (mcl={mcl}): {cache_path}")
     # Validate the cache CONTENTS against the requested brain + mcl, not just the

@@ -1,0 +1,822 @@
+# agentic/run_discovery_workflow.py autodiscovery/merge-error-794495-mcl100_2026-08-04.json --pkl cache/dataset_cache_794495_mcl100_add.pkl --extra-pkl cache/dataset_cache_794491_mcl100_add.pkl --direction predictive
+# started 2026-08-11 12:15:00
+# host n118  python 3.11.6
+
+[direction] exclusion-only predictive candidates (no cutoff)
+[selection] 50 hypotheses → keep every candidate not explicitly excluded (no score/top-K cutoff)
+[timeouts] 50 record(s) → agent step 2100s, compute step 86400s
+[dataset-check] OK: --pkl matches JSON origin (794495_mcl100_add)
+[granularity-check] OK: all --extra-pkl files match --pkl (mcl100_add)
+[12:15:00] Starting workflow on autodiscovery/merge-error-794495-mcl100_2026-08-04.json (pkl cache/dataset_cache_794495_mcl100_add.pkl, extrapolate onto 1 dataset(s)): 14 step(s), 5 driver-run compute [select-predictive-hypotheses, summarize-discoveries, reproduce-run, reproduce-export, reproduce-fix-loading, reproduce-remeasure, reproduce-fold, extrapolate-run, extrapolate-fold, verify-statistics-and-logic, fix-tests-author, fix-tests-measure, fix-tests-fold, translate-report].
+[12:15:01] SDK session opened.
+
+=== Step 1/14: select-predictive-hypotheses [agent] ===
+[12:15:01] Step 1/14 'select-predictive-hypotheses' (agent) started.
+[12:15:06]   → Bash: wc -c autodiscovery/merge-error-794495-mcl100_2026-08-04.json && echo "---" && python -c "import jso…
+[12:15:26]   → Bash: python -c " import json d=json.load(open('autodiscovery/merge-error-794495-mcl100_2026-08-04.json'))…
+[12:15:35]   → Bash: python -c " import json d=json.load(open('autodiscovery/merge-error-794495-mcl100_2026-08-04.json'))…
+[12:15:47]   → Bash: python -c " import json d=json.load(open('autodiscovery/merge-error-794495-mcl100_2026-08-04.json'))…
+[12:15:57]   → Bash: python -c " import json d=json.load(open('autodiscovery/merge-error-794495-mcl100_2026-08-04.json'))…
+[12:16:13]   → Bash: python -c " import json d=json.load(open('autodiscovery/merge-error-794495-mcl100_2026-08-04.json'))…
+[12:16:21]   → Read: /tmp/hyp_dump_part1.txt
+[12:16:27]   → Read: /tmp/hyp_dump_part1.txt
+[12:19:51]   → Glob: autodiscovery/*predictive-selection*.json
+[12:19:56]   → Grep
+[12:21:26]   → Bash: python - <<'PY' import json src = "autodiscovery/merge-error-794495-mcl100_2026-08-04.json" data = j…
+[12:21:37]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.predictive-selection.json
+[12:21:48]   step turn finished — 12 tool call(s), 407s, $1.6645
+I'll start by reading the AutoDiscovery export file to understand its structure and all the hypotheses.Item 24 is FAILED. Let me dump full detail for all hypotheses to a file so I can read them thoroughly.Let me read the rest of the file.I've now read all 50 hypotheses. Before finalizing the exclusion set, let me check the repo for any existing predictive-selection manifests and the ranker's predictive logic to calibrate the exclusion granularity.I've confirmed the manifest is my judgment call (the ranker just consumes `selected_ids` + `excluded` reasons), and CLAUDE.md documents that predictive mode keeps "42 of 50 on the 794495 mcl100 run" — this exact dataset. Having read all 50 hypotheses, I'll apply the exclusion-only policy: keep everything with any usable/weak/inverse/specialist signal, and exclude only the clearly dead cases.
+
+My 8 exclusions, each matching a stated criterion:
+- **24** — FAILED/timeout, no result (unavailable)
+- **28** — cyclic structures are 0% in both classes; skeletons are acyclic by construction (constant)
+- **43** — no soma detections in this cache; feature couldn't be evaluated (unavailable)
+- **42** — max edge betweenness is a pure component-size proxy; significance is a size artifact (confounder)
+- **33** — node-radius CV, ROC-AUC 0.4808 (worse than random), analysis says "discard" (approx. random)
+- **7** — leaf-node PCA isotropy, Welch p=0.316, no separation, no subgroup enrichment (approx. random)
+- **12** — edge-betweenness "dumbbell", p=0.4133, near-identical means, merge outliers absent (approx. random)
+- **38** — thin-bridge radius drop, F1/precision/recall=0, both classes identical at ~1.0 (non-discriminative)
+
+Let me write and validate the manifest.The manifest is written and validated. Let me display the final file.I read all 50 hypotheses in the export and applied the exclusion-only policy, writing the validated manifest.
+
+**Output:** `autodiscovery/merge-error-794495-mcl100_2026-08-04.predictive-selection.json`
+
+**Selected (42):** `1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 25, 26, 27, 29, 30, 31, 32, 34, 35, 36, 37, 39, 40, 41, 44, 45, 46, 47, 48, 49, 50`
+
+**Excluded (8)** — each matching a stated criterion, not merely weak/inverse/specialist:
+
+| ID | Category | Why |
+|----|----------|-----|
+| 24 | unavailable | Experiment FAILED (repeated timeout) — no result at all |
+| 28 | constant | Cyclic-structure feature = 0.0% in both classes; skeletons acyclic by construction |
+| 43 | unavailable | Multi-soma count — this cache has no soma detections, feature couldn't be evaluated |
+| 42 | confounder | Max edge betweenness is a pure component-size proxy; its significance is a size artifact |
+| 33 | approx. random | Node-radius CV, ROC-AUC 0.4808 (worse than random), analysis says "discard" |
+| 7 | approx. random | Leaf-node PCA isotropy, Welch p=0.316, no separation, no subgroup enrichment |
+| 12 | approx. random | Edge-betweenness "dumbbell", p=0.4133, near-identical means, merge outliers absent |
+| 38 | non-discriminative | Thin-bridge radius drop, F1/precision/recall=0, both classes identical at ~1.0 |
+
+Every ID 1–50 appears exactly once; IDs kept as their original `int` type; `selected_ids` is unique; valid JSON. This 42/8 split matches CLAUDE.md's documented expectation for the 794495 mcl100 run. Notably I **kept** inverse/weak/specialist features (e.g., 5, 17, 30 inverse; 21, 26, 41, 46 high-precision specialists; 9, 39, 48 weak-but-nonzero) rather than excluding them, per the policy. The driver will now append its source-hash and policy-version cache metadata.
+[12:21:48]   [validate] OK: output file autodiscovery/merge-error-794495-mcl100_2026-08-04.predictive-selection.json exists after 'select-predictive-hypotheses'.
+[12:21:48]   [validate] predictive manifest selected 42 of 50 hypotheses.
+[12:21:48] Step 1/14 'select-predictive-hypotheses' done in 407s.
+
+=== Step 2/14: summarize-discoveries [agent] ===
+[12:21:48] Step 2/14 'summarize-discoveries' (agent) started.
+[12:22:04]   → Agent
+[12:22:08]   → Bash: conda activate panda && python agentic/rank_by_surprise.py autodiscovery/merge-error-794495-mcl100_2…
+[12:22:19]   → Read: /home/zihan.zhang/.claude/projects/-allen-programs-mindscope-workgroups-auto-model-zihan-zhang-exaspim-agent-exa-spim-agent/ae1836bf-05b6-4420-94da-348930e2a7f9/tool-results/bsfgk3qnf.txt
+[12:22:35]   → Read: /home/zihan.zhang/.claude/projects/-allen-programs-mindscope-workgroups-auto-model-zihan-zhang-exaspim-agent-exa-spim-agent/ae1836bf-05b6-4420-94da-348930e2a7f9/tool-results/bsfgk3qnf.txt
+[12:22:40]   → Read: /home/zihan.zhang/.claude/projects/-allen-programs-mindscope-workgroups-auto-model-zihan-zhang-exaspim-agent-exa-spim-agent/ae1836bf-05b6-4420-94da-348930e2a7f9/tool-results/bsfgk3qnf.txt
+[12:22:45]   → Bash: ls -la /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/auto…
+[12:26:17]   → Write: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[12:26:39]   → Bash: echo "=== top-level headings ===" && grep -nE '^## ' autodiscovery/merge-error-794495-mcl100_2026-08…
+[12:26:56]   → Bash: source /shared/utils.x86_64/anaconda3-2024.10/etc/profile.d/conda.sh 2>/dev/null && conda activate p…
+[12:27:19]   → Bash: python - <<'PY' import re txt = open("autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md"…
+[12:27:32]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[12:27:41]   → Bash: python - <<'PY' import re txt = open("autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md"…
+[12:28:01]   step turn finished — 12 tool call(s), 373s, $3.4915
+I'll launch the discovery-summarizer subagent to digest the run export. Let me give it a complete, self-contained brief.The subagent reported success. Let me verify the actual output rather than trusting the summary — checking headings, counts, and structure.Headings are exact and there are 42 ranked entries. Now let me verify against the helper's actual output — the ranked IDs/order and the excluded appendix should match exactly what `rank_by_surprise.py` returns.The helper returns 42 ranked, 8 excluded. Now let me extract the report's ranked ID order and excluded-appendix IDs to confirm they match the helper exactly.The excluded set matches. My regex missed the original hypothesis IDs because entries are numbered by rank. Let me inspect the entry format to locate the original hypothesis IDs and verify ordering and priority values.The entries carry original IDs in a `**ID:** N` field. Let me re-extract using that pattern and confirm the exact ranking order matches the helper.Verified. The report is correct and faithful to the helper's output:
+
+**Path written:** `autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md`
+
+**Verification (all passed):**
+- Top-level headings are verbatim: `## Header`, `## Ranked Conclusions (highest priority first)`, `## Excluded (predictive-selection)`.
+- **42 ranked entries**, and their order matches the helper's `posterior-surprise` ranking *exactly* (41, 23, 19, 48, 1, 3, … 45, 15) — no additions, no omissions.
+- Priority scores are monotonically non-increasing (highest first), and each entry shows both `Priority` and `Surprise` magnitude.
+- The `## Excluded (predictive-selection)` appendix lists exactly the helper's 8 `excluded_direction` IDs {7, 12, 24, 28, 33, 38, 42, 43}, each with its verbatim reason.
+
+**Executive summary of highest-priority conclusions (high posterior × high surprise):**
+
+The top of the ranking is dominated by *confidently-held topological assumptions that the data refuted* (all negative surprisal, magnitudes 0.65–0.84):
+- **#1 (ID 41)** — X-crossings don't reliably flag merges: only 3 true positives of 98, F1 0.057.
+- **#2 (ID 23)** — high-degree-junction density per micron is near-useless (ROC-AUC 0.54; significance is a large-N artifact of zero-inflated data).
+- **#3 (ID 19)** — abrupt caliber step-changes along the diameter barely beat chance (AUC-PR 0.034).
+- **#4 (ID 48)** — extreme branching "micro-tangles" simply don't exist in this skeletonized dataset (0 predictions; largest flip, −0.844).
+
+The highest-**posterior** survivors that were strongly *confirmed* are all caliber-continuity / tortuosity features: degree-2 path tortuosity (ID 1, AUC 0.94), acute junction angles (ID 3, AUC 0.92), inverted-Rall radius asymmetry (IDs 4 & 49, AUC ~0.91), pseudo-diameter tortuosity (ID 20, AUC 0.93), and non-branching U-turn angles (ID 25, AUC 0.94). The cross-cutting lesson: merges are flagged by **geometric/caliber violations along cables**, not by topological hub/crossing structure — several betweenness/assortativity/bimodality hypotheses even behaved *opposite* to prediction. A recurring caveat is severe class imbalance (~98 merges vs ~9,525 clean), so most confirmed features validate as ensemble components rather than standalone detectors.
+[12:28:01]   [validate] OK: expected markers present after 'summarize-discoveries'.
+[12:28:01] Step 2/14 'summarize-discoveries' done in 373s.
+
+=== Step 3/14: reproduce-run [compute] ===
+[12:28:01] Step 3/14 'reproduce-run' (compute) started.
+[12:28:01]   [compute] python agentic/rerun_experiments.py autodiscovery/merge-error-794495-mcl100_2026-08-04.json --pkl cache/dataset_cache_794495_mcl100_add.pkl --rank-by posterior-surprise --direction predictive --predictive-manifest autodiscovery/merge-error-794495-mcl100_2026-08-04.predictive-selection.json --checkpoint autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.reproduce-raw.json.checkpoint.json
+[12:28:01]   [compute] → stdout JSON to autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.reproduce-raw.json
+[rerun] preflight OK (numpy 2.4.6)
+[rerun 1/42] id=41 (recorded) origin …
+[rerun 1/42] id=41 OK in 82s
+[rerun 2/42] id=23 (recorded) origin …
+[rerun 2/42] id=23 FAILED(exit=1) in 10s
+[rerun 3/42] id=19 (recorded) origin …
+[rerun 3/42] id=19 OK in 136s
+[rerun 4/42] id=48 (recorded) origin …
+[rerun 4/42] id=48 OK in 71s
+[rerun 5/42] id=1 (recorded) origin …
+[rerun 5/42] id=1 OK in 257s
+[rerun 6/42] id=3 (recorded) origin …
+[rerun 6/42] id=3 OK in 80s
+[rerun 7/42] id=4 (recorded) origin …
+[rerun 7/42] id=4 OK in 78s
+[rerun 8/42] id=8 (recorded) origin …
+[rerun 8/42] id=8 OK in 98s
+[rerun 9/42] id=13 (recorded) origin …
+[rerun 9/42] id=13 OK in 88s
+[rerun 10/42] id=16 (recorded) origin …
+[rerun 10/42] id=16 OK in 224s
+[rerun 11/42] id=20 (recorded) origin …
+[rerun 11/42] id=20 OK in 106s
+[rerun 12/42] id=29 (recorded) origin …
+[rerun 12/42] id=29 OK in 88s
+[rerun 13/42] id=50 (recorded) origin …
+[rerun 13/42] id=50 OK in 132s
+[rerun 14/42] id=30 (recorded) origin …
+[rerun 14/42] id=30 OK in 105s
+[rerun 15/42] id=21 (recorded) origin …
+[rerun 15/42] id=21 UNUSABLE(dataset-loading) in 10s
+[rerun 16/42] id=46 (recorded) origin …
+[rerun 16/42] id=46 OK in 68s
+[rerun 17/42] id=14 (recorded) origin …
+[rerun 17/42] id=14 OK in 147s
+[rerun 18/42] id=2 (recorded) origin …
+[rerun 18/42] id=2 UNUSABLE(dataset-loading) in 10s
+[rerun 19/42] id=18 (recorded) origin …
+[rerun 19/42] id=18 OK in 224s
+[rerun 20/42] id=35 (recorded) origin …
+[rerun 20/42] id=35 OK in 87s
+[rerun 21/42] id=31 (recorded) origin …
+[rerun 21/42] id=31 OK in 212s
+[rerun 22/42] id=36 (recorded) origin …
+[rerun 22/42] id=36 OK in 76s
+[rerun 23/42] id=49 (recorded) origin …
+[rerun 23/42] id=49 OK in 78s
+[rerun 24/42] id=5 (recorded) origin …
+[rerun 24/42] id=5 OK in 140s
+[rerun 25/42] id=10 (recorded) origin …
+[rerun 25/42] id=10 OK in 90s
+[rerun 26/42] id=17 (recorded) origin …
+[rerun 26/42] id=17 TIMEOUT in 1802s
+[rerun 27/42] id=39 (recorded) origin …
+[rerun 27/42] id=39 OK in 83s
+[rerun 28/42] id=40 (recorded) origin …
+[rerun 28/42] id=40 OK in 121s
+[rerun 29/42] id=44 (recorded) origin …
+[rerun 29/42] id=44 OK in 229s
+[rerun 30/42] id=9 (recorded) origin …
+[rerun 30/42] id=9 OK in 330s
+[rerun 31/42] id=27 (recorded) origin …
+[rerun 31/42] id=27 OK in 97s
+[rerun 32/42] id=6 (recorded) origin …
+[rerun 32/42] id=6 OK in 193s
+[rerun 33/42] id=32 (recorded) origin …
+[rerun 33/42] id=32 FAILED(exit=1) in 11s
+[rerun 34/42] id=25 (recorded) origin …
+[rerun 34/42] id=25 OK in 176s
+[rerun 35/42] id=37 (recorded) origin …
+[rerun 35/42] id=37 OK in 106s
+[rerun 36/42] id=26 (recorded) origin …
+[rerun 36/42] id=26 OK in 88s
+[rerun 37/42] id=47 (recorded) origin …
+[rerun 37/42] id=47 FAILED(exit=1) in 4s
+[rerun 38/42] id=11 (recorded) origin …
+[rerun 38/42] id=11 OK in 89s
+[rerun 39/42] id=22 (recorded) origin …
+[rerun 39/42] id=22 OK in 123s
+[rerun 40/42] id=34 (recorded) origin …
+[rerun 40/42] id=34 OK in 82s
+[rerun 41/42] id=45 (recorded) origin …
+[rerun 41/42] id=45 OK in 322s
+[rerun 42/42] id=15 (recorded) origin …
+[rerun 42/42] id=15 OK in 160s
+[14:20:04]   [compute] done in 6723s.
+[14:20:04] Step 3/14 'reproduce-run' done in 6723s.
+
+=== Step 4/14: reproduce-export [compute] ===
+[14:20:04] Step 4/14 'reproduce-export' (compute) started.
+[14:20:04]   [compute] python agentic/rerun_experiments.py autodiscovery/merge-error-794495-mcl100_2026-08-04.json --pkl cache/dataset_cache_794495_mcl100_add.pkl --rank-by posterior-surprise --direction predictive --predictive-manifest autodiscovery/merge-error-794495-mcl100_2026-08-04.predictive-selection.json --export-dir autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun
+[rerun] exported 42 script(s) to autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun
+{
+  "mode": "export",
+  "export_dir": "autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun",
+  "n_exported": 42,
+  "guide": "autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/REVISION_GUIDE.md",
+  "manifest": "autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/MANIFEST.json"
+}
+[14:20:05]   [compute] done in 1s.
+[14:20:05] Step 4/14 'reproduce-export' done in 1s.
+
+=== Step 5/14: reproduce-fix-loading [agent] ===
+[14:20:05] Step 5/14 'reproduce-fix-loading' (agent) started.
+[14:20:29]   → Agent
+[14:20:32]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.reproduce-raw.json
+[14:20:38]   → Bash: conda activate panda 2>/dev/null; python -c " import json p='autodiscovery/merge-error-794495-mcl100…
+[14:20:57]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent; python …
+[14:21:11]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_23.py
+[14:21:17]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/markdowns/labeled_dataset_cache.md
+[14:21:22]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_2.py
+[14:21:27]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_17.py
+[14:21:37]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent; python …
+[14:21:48]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_21.py
+[14:21:53]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_32.py
+[14:21:57]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_47.py
+[14:22:03]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent; grep -r…
+[14:22:21]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_2.py
+[14:22:28]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_21.py
+[14:22:43]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_23.py
+[14:22:52]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_32.py
+[14:22:59]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_47.py
+[14:23:04]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent; d="auto…
+[14:23:41]   → Bash: python - <<'PY' import json p="autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.re…
+[14:24:02]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent echo "==…
+[14:24:23]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent echo "==…
+[14:24:48]   step turn finished — 22 tool call(s), 283s, $5.7477
+I'll launch the discovery-reproducer subagent to fix only data-loading/environment failures. Let me first give it a self-contained brief with all the paths and constraints.The subagent edited 5 scripts and left hypo_17 (timeout). Let me independently verify against the raw results JSON — which records were actually unusable and for what reason — and confirm the edits touched only loading code.Independent classification confirms 6 unusable IDs: {2, 17, 21, 23, 32, 47}. Five are loading-related (dataset-loading / nonzero-exit) and one (17) is a timeout. The subagent fixed exactly the 5 loading ones and left 17. Let me verify the edits are loading-only and that 17 is genuinely an analysis timeout.The rerun dir is untracked (generated), so there's no committed original to diff against. I've confirmed all 5 edited scripts load from `$RERUN_PKL`. Let me confirm hypo_17 is genuinely an analysis timeout (its loader resolves the cache) and spot-check that the edited scripts retain their analysis code.Verification complete. The subagent did exactly the right scoped work.
+
+## Summary — loading fixes applied
+
+I independently confirmed against the raw results JSON (`n_ok=36, n_failed=5, n_timeout=1, n_env_failed=0`) that exactly **6 of 42** records were unusable, and the reproducer handled each correctly:
+
+**Fixed (5 — all data-loading / environment failures):**
+| id | Failure | Fix |
+|----|---------|-----|
+| **2** | `dataset-loading` — `os.walk("..")` found no pkl → printed "No dataset found", `sys.exit(0)` | loads `$RERUN_PKL` via its existing `CustomUnpickler` |
+| **21** | `dataset-loading` — same not-found gate → `return` | loads `$RERUN_PKL` |
+| **23** | `nonzero-exit` — broken unpickler referenced nonexistent `agentic_neuron_proofreader.SkeletonGraph` (AttributeError) | canonical recipe: `import agentic_neuron_proofreader` + `pickle.load($RERUN_PKL)` |
+| **32** | `nonzero-exit` — `find_dataset()` walked dirs, raised `FileNotFoundError` | `find_dataset()` returns `$RERUN_PKL` |
+| **47** | `nonzero-exit` — `rglob` found nothing → "No dataset files found", `sys.exit(1)` | loads `$RERUN_PKL` via its `SafeUnpickler` |
+
+All 5 edited scripts now read from `os.environ["RERUN_PKL"]` and retain their statistical analysis intact (Mann-Whitney / t-test / ROC-AUC / logit / F1 / silhouette markers all still present) — only the load/bootstrap preamble changed.
+
+**Correctly left untouched (1):**
+- **hypo_17** — `result_status=UNUSABLE`, reason `timeout` (`[rerun] timed out after 1800s`, exit `None`). Its glob (`cache/dataset_cache_*_add.pkl`) *does* resolve the origin cache, so this is a genuine compute timeout (KMeans + silhouette over every segment), not a loading gate. A loading revision can't fix it — out of scope for this step.
+
+**Left untouched (36):** all `USABLE` results — loaded and produced real measurements, regardless of finding strength.
+
+No marker file was created and no reports/JSON were edited. The driver will re-hash and selectively rerun only the 5 changed scripts on the next compute step.
+[14:24:48] Step 5/14 'reproduce-fix-loading' done in 283s.
+
+=== Step 6/14: reproduce-remeasure [compute] ===
+[14:24:48] Step 6/14 'reproduce-remeasure' (compute) started.
+[14:24:48]   [compute] python agentic/rerun_experiments.py autodiscovery/merge-error-794495-mcl100_2026-08-04.json --pkl cache/dataset_cache_794495_mcl100_add.pkl --rank-by posterior-surprise --direction predictive --predictive-manifest autodiscovery/merge-error-794495-mcl100_2026-08-04.predictive-selection.json --code-dir autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun --base-results autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.reproduce-raw.json --only-changed --checkpoint autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.reproduce.json.checkpoint.json
+[14:24:48]   [compute] → stdout JSON to autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.reproduce.json
+[rerun] preflight OK (numpy 2.4.6)
+[rerun 2/42] id=23 (revised) origin …
+[rerun 2/42] id=23 OK in 293s
+[rerun 15/42] id=21 (revised) origin …
+[rerun 15/42] id=21 OK in 98s
+[rerun 18/42] id=2 (revised) origin …
+[rerun 18/42] id=2 OK in 165s
+[rerun 33/42] id=32 (revised) origin …
+[rerun 33/42] id=32 OK in 83s
+[rerun 37/42] id=47 (revised) origin …
+[rerun 37/42] id=47 OK in 82s
+[14:36:55]   [compute] done in 728s.
+[14:36:55] Step 6/14 'reproduce-remeasure' done in 728s.
+
+=== Step 7/14: reproduce-fold [agent] ===
+[14:36:55] Step 7/14 'reproduce-fold' (agent) started.
+[14:37:22]   → Agent
+[14:37:26]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.reproduce.json
+[14:37:26]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[14:37:36]   → Bash: conda activate panda 2>/dev/null; python -c " import json d=json.load(open('autodiscovery/merge-erro…
+[14:37:50]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent; python3…
+[14:38:02]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent; python3…
+[14:38:17]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent; python3…
+[14:38:24]   → Bash: cd /tmp; for i in 41 23 19 48 1 3 4 8 13 16; do echo "############ ID $i ############"; cat cmp_$i.t…
+[14:38:32]   → Bash: cd /tmp; for i in 20 29 50 30 21 46 14 2 18 35; do echo "############ ID $i ############"; cat cmp_$…
+[14:38:40]   → Bash: cd /tmp; for i in 31 36 49 5 10 39 40 44 9 27; do echo "############ ID $i ############"; cat cmp_$i…
+[14:38:49]   → Bash: cd /tmp; for i in 6 32 25 37 26 47 11 22 34 45 15 17; do echo "############ ID $i ############"; cat…
+[14:39:58]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent; python3…
+[14:40:10]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent; python3…
+[14:40:20]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[14:40:27]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent; grep -n…
+[14:40:36]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent; sed -n …
+[14:40:59]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent echo "==…
+[14:41:20]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent python -…
+[14:41:34]   step turn finished — 18 tool call(s), 279s, $8.0421
+I'll launch the discovery-reproducer subagent to fold reproduction verdicts into the report. Let me give it a complete, self-contained brief.The subagent reports 41 REPRODUCED / 0 DIVERGED / 1 FAILED (id 17). Let me verify placement, section order, and that every entry got folded bullets.Section order is correct (Header → Ranked → Reproduction — Summary → Excluded last), and all 42 entries have both folded bullets. The raw token counts include summary-text mentions. Let me extract the actual per-entry verdict for each ID to confirm 41 REPRODUCED + 1 FAILED (id 17) with 0 entry-level DIVERGED.The fold is verified and correct.
+
+## Reproduction verdicts folded into the report
+
+**Path:** `autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md`
+
+**Verification (all passed):**
+- **Section order** is canonical: `## Header` → `## Ranked Conclusions (highest priority first)` → `## Reproduction — Summary` (newly inserted at the right position) → `## Excluded (predictive-selection)` (still last as the appendix). No prior sections reordered or re-titled.
+- All **42 ranked entries** received both a `**Reproduction:**` and a `**Rerun result:**` bullet folded in place (prior bullets preserved).
+- **Per-entry verdicts: 41 REPRODUCED · 0 DIVERGED · 1 FAILED** — matching the `## Reproduction — Summary` counts.
+- The 5 revised-loading records (ids 2, 21, 23, 32, 47) each carry the "revised / loading-only fix, analysis unchanged" note and all reproduced.
+
+**Findings that did NOT reproduce (1):**
+- **id 17** (entry #26, "Global spatial bimodality via K-Means is inverted") → **FAILED**: execution **timed out** at the 1800s budget (`result_failure_reason: timeout`, empty stdout), so the recorded Welch t=−3.1512, p=2.14e-03 could not be re-verified. This is a runtime/analysis timeout (KMeans + silhouette over every segment), **not** a loading or environment failure — a loading fix cannot address it.
+
+Everything else reproduced cleanly; ids 36 and 40 showed only 4th-significant-digit float/seed noise with unchanged direction and significance, so they remained REPRODUCED (not DIVERGED).
+[14:41:34]   [validate] OK: expected markers present after 'reproduce-fold'.
+[14:41:34] Step 7/14 'reproduce-fold' done in 279s.
+
+=== Step 8/14: extrapolate-run [compute] ===
+[14:41:34] Step 8/14 'extrapolate-run' (compute) started.
+[14:41:34]   [compute] python agentic/rerun_experiments.py autodiscovery/merge-error-794495-mcl100_2026-08-04.json --pkl cache/dataset_cache_794495_mcl100_add.pkl --rank-by posterior-surprise --direction predictive --predictive-manifest autodiscovery/merge-error-794495-mcl100_2026-08-04.predictive-selection.json --code-dir autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun --origin-results autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.reproduce.json --extra-only --checkpoint autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.extrapolate.json.checkpoint.json --extra-pkl cache/dataset_cache_794491_mcl100_add.pkl
+[14:41:34]   [compute] → stdout JSON to autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.extrapolate.json
+[rerun] preflight OK (numpy 2.4.6)
+[rerun 1/42] id=41 (revised) extra-only …
+[rerun 1/42] id=41 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 109s
+[rerun 2/42] id=23 (revised) extra-only …
+[rerun 2/42] id=23 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 420s
+[rerun 3/42] id=19 (revised) extra-only …
+[rerun 3/42] id=19 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 214s
+[rerun 4/42] id=48 (revised) extra-only …
+[rerun 4/42] id=48 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 112s
+[rerun 5/42] id=1 (revised) extra-only …
+[rerun 5/42] id=1 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 393s
+[rerun 6/42] id=3 (revised) extra-only …
+[rerun 6/42] id=3 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 137s
+[rerun 7/42] id=4 (revised) extra-only …
+[rerun 7/42] id=4 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 124s
+[rerun 8/42] id=8 (revised) extra-only …
+[rerun 8/42] id=8 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 146s
+[rerun 9/42] id=13 (revised) extra-only …
+[rerun 9/42] id=13 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 128s
+[rerun 10/42] id=16 (revised) extra-only …
+[rerun 10/42] id=16 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 388s
+[rerun 11/42] id=20 (revised) extra-only …
+[rerun 11/42] id=20 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 122s
+[rerun 12/42] id=29 (revised) extra-only …
+[rerun 12/42] id=29 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 130s
+[rerun 13/42] id=50 (revised) extra-only …
+[rerun 13/42] id=50 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 175s
+[rerun 14/42] id=30 (revised) extra-only …
+[rerun 14/42] id=30 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 147s
+[rerun 15/42] id=21 (revised) extra-only …
+[rerun 15/42] id=21 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 119s
+[rerun 16/42] id=46 (revised) extra-only …
+[rerun 16/42] id=46 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 103s
+[rerun 17/42] id=14 (revised) extra-only …
+[rerun 17/42] id=14 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 177s
+[rerun 18/42] id=2 (revised) extra-only …
+[rerun 18/42] id=2 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 221s
+[rerun 19/42] id=18 (revised) extra-only …
+[rerun 19/42] id=18 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 517s
+[rerun 20/42] id=35 (revised) extra-only …
+[rerun 20/42] id=35 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 118s
+[rerun 21/42] id=31 (revised) extra-only …
+[rerun 21/42] id=31 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 338s
+[rerun 22/42] id=36 (revised) extra-only …
+[rerun 22/42] id=36 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 105s
+[rerun 23/42] id=49 (revised) extra-only …
+[rerun 23/42] id=49 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 119s
+[rerun 24/42] id=5 (revised) extra-only …
+[rerun 24/42] id=5 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 161s
+[rerun 25/42] id=10 (revised) extra-only …
+[rerun 25/42] id=10 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 117s
+[rerun 26/42] id=17 (revised) extra-only …
+[rerun 27/42] id=39 (revised) extra-only …
+[rerun 27/42] id=39 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 130s
+[rerun 28/42] id=40 (revised) extra-only …
+[rerun 28/42] id=40 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 156s
+[rerun 29/42] id=44 (revised) extra-only …
+[rerun 29/42] id=44 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 301s
+[rerun 30/42] id=9 (revised) extra-only …
+[rerun 30/42] id=9 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 391s
+[rerun 31/42] id=27 (revised) extra-only …
+[rerun 31/42] id=27 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 133s
+[rerun 32/42] id=6 (revised) extra-only …
+[rerun 32/42] id=6 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 242s
+[rerun 33/42] id=32 (revised) extra-only …
+[rerun 33/42] id=32 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 118s
+[rerun 34/42] id=25 (revised) extra-only …
+[rerun 34/42] id=25 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 176s
+[rerun 35/42] id=37 (revised) extra-only …
+[rerun 35/42] id=37 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 141s
+[rerun 36/42] id=26 (revised) extra-only …
+[rerun 36/42] id=26 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 141s
+[rerun 37/42] id=47 (revised) extra-only …
+[rerun 37/42] id=47 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 151s
+[rerun 38/42] id=11 (revised) extra-only …
+[rerun 38/42] id=11 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 131s
+[rerun 39/42] id=22 (revised) extra-only …
+[rerun 39/42] id=22 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 175s
+[rerun 40/42] id=34 (revised) extra-only …
+[rerun 40/42] id=34 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 112s
+[rerun 41/42] id=45 (revised) extra-only …
+[rerun 41/42] id=45 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 493s
+[rerun 42/42] id=15 (revised) extra-only …
+[rerun 42/42] id=15 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 258s
+[16:56:31]   [compute] done in 8097s.
+[16:56:31] Step 8/14 'extrapolate-run' done in 8097s.
+
+=== Step 9/14: extrapolate-fold [agent] ===
+[16:56:31] Step 9/14 'extrapolate-fold' (agent) started.
+[16:57:00]   → Agent
+[16:57:04]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.extrapolate.json
+[16:57:04]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[16:57:12]   → Bash: source /shared/utils.x86_64/anaconda3-2024.10/etc/profile.d/conda.sh && conda activate panda && pyth…
+[16:57:33]   → Bash: source /shared/utils.x86_64/anaconda3-2024.10/etc/profile.d/conda.sh && conda activate panda 2>/dev/…
+[16:57:49]   → Bash: source /shared/utils.x86_64/anaconda3-2024.10/etc/profile.d/conda.sh && conda activate panda 2>/dev/…
+[16:57:59]   → Read: /tmp/extrap_dump.txt
+[16:58:02]   → Read: /tmp/extrap_dump.txt
+[16:58:50]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[16:58:57]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[16:59:03]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[16:59:08]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[16:59:17]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[16:59:24]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[16:59:31]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[16:59:38]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[16:59:44]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[16:59:50]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[16:59:56]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:00:02]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:00:08]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:00:14]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:00:20]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:00:26]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:00:33]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:00:40]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:00:46]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:00:54]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:00:59]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:01:05]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:01:11]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:01:17]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:01:23]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:01:43]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:01:49]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:01:57]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:02:03]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:02:10]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:02:15]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:02:21]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:02:27]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:02:33]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:02:40]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:02:45]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:02:52]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:03:01]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:03:06]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:03:11]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:03:19]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:03:29]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:03:52]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:03:57]   → Bash: grep -nE '^(## |### |- \*\*Generalization)' /allen/programs/mindscope/workgroups/auto-model/zihan.zh…
+[17:04:12]   → Bash: grep -cE '^- \*\*Generalization:\*\* GENERALIZES$' /allen/programs/mindscope/workgroups/auto-model/z…
+[17:04:46]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent echo "==…
+[17:05:01]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent python -…
+[17:05:23]   step turn finished — 55 tool call(s), 532s, $13.8889
+I'll launch the discovery-extrapolator subagent to fold generalization verdicts into the report. Let me give it a complete, self-contained brief.The subagent reports 36 GENERALIZES / 3 PARTIAL / 2 DOES-NOT-GENERALIZE / 1 INCONCLUSIVE. Let me verify placement, folding, and per-entry verdict counts.Section order and folding are correct. Let me confirm the per-entry generalization verdicts match the reported counts and the specific non-generalizing IDs.The generalization fold is verified and correct.
+
+## Generalization verdicts folded into the report
+
+**Path:** `autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md`
+
+**Verification (all passed):**
+- **Section order** is canonical: `## Header` → `## Ranked Conclusions …` → `## Reproduction — Summary` → `## Generalization — Summary` (newly inserted in the right slot) → `## Excluded (predictive-selection)` (still last). No prior sections reordered/re-titled; Reproduction bullets preserved (still 42).
+- All **42 entries** received both a `**Generalization:**` and an `**Across datasets:**` bullet (in-place, prior bullets kept).
+- **Per-entry verdicts match the summary exactly: 36 GENERALIZES · 3 PARTIAL · 2 DOES-NOT-GENERALIZE · 1 INCONCLUSIVE.**
+
+**Extra dataset tested:** `cache/dataset_cache_794491_mcl100_add.pkl` — a *different* brain (794491), same mcl100 level (single-replicate cross-brain check).
+
+**Findings that do NOT fully generalize (6):**
+- **id 5** — DOES-NOT-GENERALIZE: significant inverted radius-bimodality on 794495 (t=−5.62, p=1.2e-07) vanishes on 794491 (t=−0.87, p=0.386, n.s.).
+- **id 10** — DOES-NOT-GENERALIZE: origin's "no difference" volatility (p=0.216) flips to significant on 794491 (t=3.35, p=1.1e-03) — dataset-specific.
+- **id 14** — PARTIAL: bimodal-GMM signal same direction, still significant but attenuated (pseudo-R² 0.041→0.018).
+- **id 40** — PARTIAL: "dumbbell" EBC inversion keeps direction (clean > merged) but significance weakens (p=2.6e-07 → 0.034).
+- **id 45** — PARTIAL: distributional variance strengthens (t=2.71→4.39) but the detector collapses to 0 true positives (F1 0.15→0.00).
+- **id 17** — INCONCLUSIVE: origin rerun already timed out (unusable), extra run skipped, so no comparison possible.
+
+**Bottom line:** All top-priority caliber-continuity/tortuosity features generalize cleanly across brains (AUCs hold ~0.90–0.95), and all the negative/refuting verdicts (X-crossing family, assortativity inversion, weak bimodality detectors) stay refuted on 794491. Only the marginal bimodality/volatility signals (ids 5, 10, 14, 40, 45) are dataset-sensitive. Caveat: only one extra brain was tested, so agreement is single-replicate.
+[17:05:23]   [validate] OK: expected markers present after 'extrapolate-fold'.
+[17:05:23] Step 9/14 'extrapolate-fold' done in 532s.
+
+=== Step 10/14: verify-statistics-and-logic [agent] ===
+[17:05:23] Step 10/14 'verify-statistics-and-logic' (agent) started.
+[17:06:02]   → Agent
+[17:06:08]   → Bash: conda activate panda && python agentic/rank_by_surprise.py autodiscovery/merge-error-794495-mcl100_2…
+[17:06:24]   → Bash: python -c " import json with open('/tmp/audit_slice.json') as f: data = json.load(f) print('TYPE', t…
+[17:06:35]   → Bash: python -c " import json with open('/tmp/audit_slice.json') as f: data = json.load(f) print('n_total'…
+[17:06:44]   → Bash: python -c " import json with open('/tmp/audit_slice.json') as f: data = json.load(f) recs = data['re…
+[17:06:57]   → Bash: python << 'EOF' import json, os with open('/tmp/audit_slice.json') as f: data = json.load(f) recs = …
+[17:07:07]   → Bash: wc -l /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autod…
+[17:07:15]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:07:19]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:07:26]   → Bash: python << 'EOF' import json, re with open('/tmp/audit_slice.json') as f: data = json.load(f) recs = …
+[17:07:35]   → Read: /home/zihan.zhang/.claude/projects/-allen-programs-mindscope-workgroups-auto-model-zihan-zhang-exaspim-agent-exa-spim-agent/ae1836bf-05b6-4420-94da-348930e2a7f9/tool-results/b84ygohcr.txt
+[17:07:41]   → Bash: python << 'EOF' import json with open('/tmp/audit_slice.json') as f: data = json.load(f) recs = {r['…
+[17:07:59]   → Bash: python << 'EOF' from scipy import stats import numpy as np # ID 23: Mann-Whitney U=165317.0, n_merge…
+[17:08:23]   → Bash: python << 'EOF' from scipy import stats import numpy as np # The huge discrepancy: reported p 1.33e-…
+[17:08:58]   → Bash: python << 'EOF' # Build the headline p-value table for BH. Extract from analysis/codeOutput per reco…
+[17:09:13]   → Bash: python << 'EOF' import json with open('/tmp/audit_slice.json') as f: data = json.load(f) recs = {r['…
+[17:09:36]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:09:51]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:10:02]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:10:12]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:10:24]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:10:33]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:10:48]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:10:58]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:11:09]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:11:22]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:11:31]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:11:42]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:11:52]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:12:03]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:12:13]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:12:27]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:12:40]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:12:52]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:13:01]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:13:16]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:13:26]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:13:36]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:13:49]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:14:01]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:14:16]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:14:30]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:14:41]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:14:54]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:15:05]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:15:16]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:15:26]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:15:37]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:15:47]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:15:57]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:16:09]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:16:20]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:16:30]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:16:42]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:16:53]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:17:01]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:17:16]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:17:28]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:17:36]   → Bash: python << 'EOF' verdicts = { 41:'WEAK', 23:'MINOR', 19:'SOUND', 48:'WEAK', 1:'SOUND', 3:'SOUND', 4:'…
+[17:17:50]   → Bash: grep -n "^## Excluded (predictive-selection)" "/allen/programs/mindscope/workgroups/auto-model/zihan…
+[17:17:59]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:18:35]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:18:40]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent grep -n …
+[17:18:53]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent echo "In…
+[17:19:25]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent echo "==…
+[17:19:39]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent python -…
+[17:19:59]   step turn finished — 66 tool call(s), 876s, $20.3327
+I'll launch the discovery-verifier subagent to audit the statistics and reasoning, then fold the verdicts into the report. Let me give it a complete, self-contained brief.The verifier reports SOUND 15 · WEAK 14 · MINOR 10 · MAJOR 3 · CRITICAL 0. Let me verify placement, folding, and per-entry verdict counts.Placement and folding are correct. Let me confirm the per-entry verdict counts and the MAJOR ids match the reported breakdown.The statistical-verification audit is verified and correct.
+
+## Statistical verification folded into the report
+
+**Path:** `autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md`
+
+**Verification (all passed):**
+- **Section order** is canonical: `## Header` → `## Ranked Conclusions …` → `## Reproduction — Summary` → `## Generalization — Summary` → `## Statistical Verification — Summary` (newly inserted in the right slot, with a `### Benjamini–Hochberg FDR` subsection) → `## Excluded (predictive-selection)` (still last).
+- All **42 entries** got all five audit bullets (`Verdict`, `Test`, `Statistical issues`, `Logic issues`, `Verdict rationale`), and the prior Reproduction/Generalization bullets are preserved (still 42 each).
+- **Per-entry verdicts match the summary exactly: SOUND 15 · WEAK 14 · MINOR 10 · MAJOR 3 · CRITICAL 0.** MAJOR ids = {5, 10, 17}.
+
+**Most serious problems found (the 3 MAJOR):**
+- **id 5** — significant inverted radius-bimodality (Welch p=1.21e-07) is a dataset-specific artifact: DOES-NOT-GENERALIZE (vanishes on 794491, p=0.386).
+- **id 10** — "failed-to-reject ≠ null-is-true" fallacy: concluded "cannot separate merges" from a non-significant Welch t (p=0.2157) — the *only* headline p that FAILS BH — and the second brain overturns it (794491 p=1.13e-03, same direction, significant).
+- **id 17** — reproduction FAILED (execution timeout, empty stdout); recorded Welch p=2.14e-03 is unverifiable and generalization is INCONCLUSIVE, so the inverted claim rests on an unusable run.
+
+**Concrete test faults flagged at MINOR (also consumed by the fix-tests step):** ids 2, 23, 35 (headline p is a zero-inflation/large-N tie artifact where AUC≈0.5 → use Fisher/proportion test), 29, 37, 45 (parametric t on heavy-tailed/zero-inflated data → use Mann-Whitney/count model), 11 (quasi-separation inflates Wald p → Firth), 16 (unadjusted single-covariate logistic + overreach), 18 (K-Means silhouette −1.0 default contaminates comparison), 39 (relaxed thresholds shift the evaluable population).
+
+**BH-FDR outcome:** Of 25 records with a usable headline p-value (17 report only AUC/PR/F1 and are not p-testable), **24 of 25 survive Benjamini–Hochberg at q=0.05**; the sole failure is **id 10 (p=0.2157)**. Critical caveat noted in the report: BH survival is necessary but not sufficient — the extreme survivors **ids 23 (p≈1.3e-24), 35 (p≈1.4e-75), and 2 (p≈2.4e-10)** survive only because their p-values are zero-inflation tie artifacts (true effect is at-chance, AUC≈0.51–0.54), so those significant p-values should be disregarded rather than read as real effects.
+[17:19:59]   [validate] OK: expected markers present after 'verify-statistics-and-logic'.
+[17:19:59] Step 10/14 'verify-statistics-and-logic' done in 876s.
+
+=== Step 11/14: fix-tests-author [agent] ===
+[17:19:59] Step 11/14 'fix-tests-author' (agent) started.
+[17:20:28]   → Agent
+[17:20:31]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:20:35]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:20:39]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[17:20:45]   → Bash: ls -la /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/auto…
+[17:20:57]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_5.py
+[17:21:04]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/REVISION_GUIDE.md
+[17:21:12]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_23.py
+[17:21:22]   → Bash: ls -la /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/auto…
+[17:21:32]   → Bash: grep -n "RERUN_PKL\|symlink\|dataset_cache\|os.symlink\|\.\./\|cwd" agentic/rerun_experiments.py | h…
+[17:21:43]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/agentic/rerun_experiments.py
+[17:21:52]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_10.py
+[17:21:56]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_17.py
+[17:22:06]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_2.py
+[17:22:14]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_29.py
+[17:22:19]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_35.py
+[17:22:25]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_11.py
+[17:22:35]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_16.py
+[17:22:41]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_18.py
+[17:22:50]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_37.py
+[17:22:56]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_39.py
+[17:23:07]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_45.py
+[17:23:33]   → Bash: mkdir -p /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/au…
+[17:24:19]   → Write: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.fixed/hypo_5.py
+[17:25:00]   → Write: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.fixed/hypo_10.py
+[17:25:38]   → Write: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.fixed/hypo_23.py
+[17:26:20]   → Write: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.fixed/hypo_35.py
+[17:27:00]   → Write: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.fixed/hypo_2.py
+[17:27:42]   → Write: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.fixed/hypo_29.py
+[17:28:21]   → Write: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.fixed/hypo_37.py
+[17:28:59]   → Write: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.fixed/hypo_45.py
+[17:29:40]   → Write: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.fixed/hypo_18.py
+[17:31:36]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_11.py
+[17:31:37]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun/hypo_16.py
+[17:32:33]   → Write: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.fixed/hypo_11.py
+[17:33:25]   → Write: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.fixed/hypo_16.py
+[17:33:29]   → Bash: ls -1 /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autod…
+[17:34:18]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent FIXED=au…
+[17:34:59]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent FIXED=au…
+[17:35:26]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent FIXED=au…
+[17:37:35]   step turn finished — 40 tool call(s), 1056s, $28.3029
+I'll launch the discovery-test-fixer subagent to author corrected scripts for the flagged hypotheses. Let me give it a complete, self-contained brief.The subagent authored 11 corrected scripts and skipped 17 and 39 with reasons. Let me verify the `.predictive.fixed/` directory contents, that each compiles, and that they preserve the `$RERUN_PKL` loading and add corrected inference — without executing them.All 11 compile and contain corrected tests + effect sizes + CIs + original-number comments; the rerun originals are untouched. Most fixed scripts don't reference `$RERUN_PKL` — that's expected for the 9 recorded-passthrough ids (they were USABLE and load via their own glob logic). But I want to confirm their loading blocks were genuinely copied from the working reruns so re-measurement won't break. Let me verify the loading mechanism in each.The loading blocks are copied verbatim from the USABLE reruns (same globs that already resolved the origin cache during the reproduce phase), so re-measurement will load identically. Let me do one content spot-check to confirm the substance of a fix — hypo_23 (the zero-inflation tie-artifact that should become Fisher's exact).Task 7 is complete. The discovery-test-fixer subagent authored **11 corrected-test scripts** into `autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.fixed/` — no re-measurement, no report fold (both deferred to later steps, per your instruction).
+
+**Corrected scripts written (id → wrong test → right test):**
+
+| ID | Original (flagged) test | Corrected test |
+|---|---|---|
+| 2 | MWU on a presence indicator (huge-n tie artifact) | **Fisher's exact** on 2×2 + odds ratio w/ Haldane–Anscombe CI |
+| 5 | Welch *t* on heavy-tailed data | **Mann–Whitney U** + Cliff's δ (bootstrap CI) |
+| 10 | "failed to reject ⇒ null true" fallacy | **MWU** one/two-sided + Cliff's δ + AUC bootstrap CI |
+| 11 | Quasi-separated logistic regression | **L2-penalized / Firth-like logit** + LR tests + per-1-SD OR bootstrap CI |
+| 16 | Unadjusted single-covariate logit (size confound) | **Size-adjusted multivariable logistic** + LR test + OR CI |
+| 18 | Contaminated silhouette (−1.0 default fill) | restrict to measured + **MWU** + Cliff's δ + AUC bootstrap CI |
+| 23 | MWU on presence indicator (tie artifact) | **Fisher's exact** + OR/Haldane CI |
+| 29 | Welch *t* on zero-inflated data | **MWU** + Cliff's δ + 10k-**permutation** p |
+| 35 | MWU on presence indicator (tie artifact) | **Fisher's exact** + scoped MWU + Cliff's δ |
+| 37 | Welch *t* on heavy-tailed data | **MWU** + Cliff's δ (AUC preserved) |
+| 45 | Welch *t* on skewed variance | **MWU** + Cliff's δ (detector P/R/F1 preserved) |
+
+**Deliberately NOT fixed:**
+- **id 17** — MAJOR verdict, but its only fault is a 1800 s compute timeout (KMeans+silhouette), not a wrong statistical test. No test to correct.
+- **id 39** — MINOR, and the issue is a threshold/plot cosmetic, not a test fault.
+
+**Verification I ran independently:** all 11 files present and compile clean; each contains the corrected-test call, an effect-size computation, a CI, and a header comment echoing the original recorded numbers; loading blocks copied verbatim from the working reruns (ids 2, 23 use `$RERUN_PKL`; the other 9 reuse the glob that already resolved the origin cache in the reproduce phase); the `.predictive.rerun/` originals and all reports/JSONs are untouched.
+
+The next phase in the pipeline — the driver re-measuring `.predictive.fixed/` into `.corrected.json`, then folding UPHELD/WEAKENED/OVERTURNED verdicts into a `## Statistical Test Corrections — Summary` section — is ready to go whenever you want it, but I've held off since you scoped this step to authoring only.
+[17:37:35] Step 11/14 'fix-tests-author' done in 1056s.
+
+=== Step 12/14: fix-tests-measure [compute] ===
+[17:37:35] Step 12/14 'fix-tests-measure' (compute) started.
+[17:37:35]   [compute] python agentic/rerun_experiments.py autodiscovery/merge-error-794495-mcl100_2026-08-04.json --pkl cache/dataset_cache_794495_mcl100_add.pkl --rank-by posterior-surprise --direction predictive --predictive-manifest autodiscovery/merge-error-794495-mcl100_2026-08-04.predictive-selection.json --code-dir autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.rerun --corrected-dir autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.fixed --only-corrected --checkpoint autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.corrected.json.checkpoint.json --extra-pkl cache/dataset_cache_794491_mcl100_add.pkl
+[17:37:35]   [compute] → stdout JSON to autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.corrected.json
+[rerun] preflight OK (numpy 2.4.6)
+[rerun 2/42] id=23 (corrected) origin …
+[rerun 2/42] id=23 OK in 261s
+[rerun 2/42] id=23 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 384s
+[rerun 10/42] id=16 (corrected) origin …
+[rerun 10/42] id=16 OK in 219s
+[rerun 10/42] id=16 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 377s
+[rerun 12/42] id=29 (corrected) origin …
+[rerun 12/42] id=29 OK in 91s
+[rerun 12/42] id=29 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 127s
+[rerun 18/42] id=2 (corrected) origin …
+[rerun 18/42] id=2 OK in 160s
+[rerun 18/42] id=2 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 219s
+[rerun 19/42] id=18 (corrected) origin …
+[rerun 19/42] id=18 OK in 219s
+[rerun 19/42] id=18 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 518s
+[rerun 20/42] id=35 (corrected) origin …
+[rerun 20/42] id=35 OK in 85s
+[rerun 20/42] id=35 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 122s
+[rerun 24/42] id=5 (corrected) origin …
+[rerun 24/42] id=5 OK in 143s
+[rerun 24/42] id=5 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 163s
+[rerun 25/42] id=10 (corrected) origin …
+[rerun 25/42] id=10 OK in 95s
+[rerun 25/42] id=10 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 128s
+[rerun 35/42] id=37 (corrected) origin …
+[rerun 35/42] id=37 OK in 113s
+[rerun 35/42] id=37 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 152s
+[rerun 38/42] id=11 (corrected) origin …
+[rerun 38/42] id=11 OK in 108s
+[rerun 38/42] id=11 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 161s
+[rerun 41/42] id=45 (corrected) origin …
+[rerun 41/42] id=45 OK in 317s
+[rerun 41/42] id=45 extrapolate 1/1 dataset_cache_794491_mcl100_add.pkl OK in 495s
+[18:55:18]   [compute] done in 4663s.
+[18:55:18] Step 12/14 'fix-tests-measure' done in 4663s.
+
+=== Step 13/14: fix-tests-fold [agent] ===
+[18:55:18] Step 13/14 'fix-tests-fold' (agent) started.
+[18:55:25]   → Bash: ls -la autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.corrected.json autodiscove…
+[18:55:28]   → Bash: python -c " import json d=json.load(open('autodiscovery/merge-error-794495-mcl100_2026-08-04.json.pr…
+[18:55:44]   → Bash: python -c " import json d=json.load(open('autodiscovery/merge-error-794495-mcl100_2026-08-04.json.pr…
+[18:56:27]   → Agent
+[18:56:31]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.corrected.json
+[18:56:32]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[18:56:36]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.json.predictive.corrected.json
+[18:56:40]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[18:56:43]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[18:56:49]   → Bash: grep -n "^### \|^## Excluded\|^## Statistical" "/allen/programs/mindscope/workgroups/auto-model/ziha…
+[18:57:11]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[18:57:15]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[18:58:22]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[18:58:33]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[18:58:43]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[18:58:53]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[18:59:04]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[18:59:17]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[18:59:27]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[18:59:37]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[18:59:46]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[18:59:59]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[19:00:10]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[19:00:50]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[19:00:55]   → Bash: grep -n "^## " "/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-a…
+[19:01:07]   → Bash: grep -c "\*\*Corrected test:\*\*\|\*\*Corrected result:\*\*\|\*\*Post-correction verdict:\*\*\|\*\*C…
+[19:01:43]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent echo "==…
+[19:02:10]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent echo "==…
+[19:03:00]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent echo "==…
+[19:03:41]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[19:03:50]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[19:04:06]   step turn finished — 31 tool call(s), 528s, $31.7405
+I'll first verify the corrected results JSON exists and check its structure, then delegate the fold to the discovery-test-fixer subagent.The corrected.json has all 11 corrected results. Let me quickly inspect the per-result field structure so I can brief the subagent accurately.All 11 corrected results are USABLE, each with one extrapolation onto 794491 (also USABLE). Now I'll delegate the fold to the discovery-test-fixer subagent with a fully self-contained brief.The subagent reported completion. Let me independently verify the fold before reporting to you.Section order and counts are correct. Let me confirm the four bullets land on the correct 11 ids and glance at the new section body.The fold is structurally perfect: canonical order (new section at line 755, between Statistical Verification and Excluded-last), 4 bullets × exactly the 11 corrected ids, 8 UPHELD / 3 OVERTURNED / 0 WEAKENED, each with a per-dataset generalization call. But the new section's opening "scope & tally" sentence has an internal counting inconsistency I want to check against the actual verification verdicts before I sign off.The subagent's fold is structurally flawless, but the new section's opening "Scope & tally" sentence has a genuine counting error. Ground truth from the verification section: among the 11 corrected ids there are **2 MAJOR (5, 10)** and **9 MINOR**, and the verifier actually flagged **3 MAJOR (5, 10, 17) + 10 MINOR** = 13 test-fault entries, of which **two** were left uncorrected — id 17 (MAJOR, load timeout) *and* id 39 (MINOR, relaxed threshold/failed plot, not a test choice). The subagent wrote "flagged 11 hypotheses … 3 MAJOR + 8 MINOR" and mentioned only id 17's exclusion, which is arithmetically impossible (11 − 1 ≠ 11) and omits id 39. Let me fix just that sentence.The corrected-test verdicts are folded into the report and independently verified.
+
+**Report:** `autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md`
+
+**Placement (verified):** the new `## Statistical Test Corrections — Summary` sits at the canonical position — after `## Statistical Verification — Summary`, before `## Excluded (predictive-selection)`, which remains the last section. No existing section was reordered or re-titled.
+
+**Per-entry fold (verified):** all four bullets — *Corrected test / Corrected result / Post-correction verdict / Corrected generalization* — were added to exactly the 11 corrected ids (2, 5, 10, 11, 16, 18, 23, 29, 35, 37, 45), keeping every prior bullet. 44 new bullets = 4 × 11.
+
+**Tally:** UPHELD 8 · WEAKENED 0 · OVERTURNED 3.
+
+**Findings that CHANGED under the correct test (all OVERTURNED):**
+- **id 10** (radius volatility) — the "cannot separate merges" claim was a failed-to-reject fallacy from Welch p=0.216. Corrected MWU on origin merely straddles null (Cliff's δ 0.049, CI [−0.050, 0.156]) — "no evidence," not "no effect" — while 794491 shows a real positive effect (δ 0.202, CI [0.089, 0.303], p=6.8e-04). The negative conclusion collapses.
+- **id 16** (terminal-branch tortuosity) — unadjusted logit (z=7.27, OR 1.74) was a size confound (corr 0.65). Size-adjusted, tortuosity's independent effect is null on both brains (LR p=0.893, OR 0.985, CI [0.783, 1.238]).
+- **id 5** (radius bimodality) — the "significant inverted" Welch t (p=1.21e-07) does not survive MWU (p=0.325, δ −0.056, CI [−0.145, 0.031]); sign even flips on 794491. Parametric/tie artifact.
+
+**Robust (UPHELD):** the zero-inflation trio (23, 2, 35) hold as their *negative* readings — Fisher's exact replaces the bogus e-24/e-10/e-75 p-values and confirms rare presence enrichment with <10% recall (id 35's ratio metric itself null, p=0.173); the count features 29 & 45 got *stronger* under MWU (δ 0.48, 0.81); id 11's quasi-separated logit survives penalization; 18 & 37 keep their moderate signals.
+
+**One factual fix I made after verifying:** the subagent's opening "Scope & tally" sentence mis-counted ("flagged 11 … 3 MAJOR + 8 MINOR" and named only id 17 as excluded). Ground truth from the verification section is 3 MAJOR + 10 MINOR = 13 flagged, with **two** left uncorrected — id 17 (MAJOR, load timeout) and id 39 (MINOR, relaxed threshold/failed plot, not a test fault) — leaving the 11 corrected (2 MAJOR + 9 MINOR). I edited that one sentence to match; all numbers, tables, and verdicts elsewhere in the section were already correct.
+[19:04:06]   [validate] OK: expected markers present after 'fix-tests-fold'.
+[19:04:06] Step 13/14 'fix-tests-fold' done in 528s.
+
+=== Step 14/14: translate-report [agent] ===
+[19:04:06] Step 14/14 'translate-report' (agent) started.
+[19:04:30]   → Agent
+[19:04:32]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[19:04:36]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[19:04:40]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[19:43:56]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent echo "==…
+[19:44:25]   → ToolSearch
+[19:44:28]   → ToolSearch
+[19:45:27]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent echo "==…
+[19:46:59]   → Agent
+[19:47:03]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[19:49:00]   → Write: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.zh.md
+[19:49:05]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[19:50:32]   → Bash: cat >> /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/auto…
+[19:50:45]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[19:52:36]   → Bash: cat >> /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/auto…
+[19:52:49]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[19:55:17]   → Bash: cat >> /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/auto…
+[19:55:31]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[19:57:50]   → Bash: cat >> /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/auto…
+[19:58:06]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[20:00:10]   → Bash: cat >> /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/auto…
+[20:00:28]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[20:02:50]   → Bash: cat >> /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/auto…
+[20:03:10]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[20:04:03]   → Bash: cat >> /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/auto…
+[20:04:18]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[20:05:49]   → Bash: cat >> /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/auto…
+[20:06:05]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.md
+[20:07:10]   → Bash: cat >> /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/auto…
+[20:07:30]   → Bash: TARGET=/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/auto…
+[20:07:56]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent ZH=autod…
+[20:08:16]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent SRC=auto…
+[20:08:45]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent ZH=autod…
+[20:09:06]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.zh.md
+[20:09:09]   → Read: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.zh.md
+[20:09:13]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.zh.md
+[20:09:17]   → Edit: /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent/autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.zh.md
+[20:09:29]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent SRC=auto…
+[20:10:16]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent python3 …
+[20:10:56]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent SRC=auto…
+[20:11:44]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent SRC=auto…
+[20:13:15]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent python3 …
+[20:14:07]   → Bash: cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent SRC=auto…
+[20:14:52]   step turn finished — 43 tool call(s), 4246s, $39.6015
+I'll delegate this localization pass to the discovery-translator subagent with a self-contained brief.The subagent hit an output-token limit. Let me check whether it actually wrote the target file and how complete it is versus the source.The zh file was never written — the subagent exceeded the 32000-token single-response limit, almost certainly by trying to emit the entire 792-line / 136 KB translated file in one Write. I'll resume that same translator agent but force it to build the file incrementally so no single turn is too large. Let me load the SendMessage tool.SendMessage isn't available in my toolset, so I can't resume the failed agent — I'll launch a fresh discovery-translator with an explicit, mechanical chunking protocol that prevents the single-response output-token blowup that killed the last run. First let me map the source's structure so I can hand the agent concrete chunk boundaries.I have the full structure: 792 lines, 43 `###` entries, 7 `##` sections. The prior run failed purely because it tried to emit ~40k tokens of translated file in a single write, blowing the 32000-token per-response cap. I'll relaunch the translator with a strict chunk-and-append protocol keyed to concrete source line ranges, so no single response is ever too large.The chunked run succeeded. Let me independently verify the translated file matches the source's structure, preserves all numbers/tokens verbatim, and is complete.Structure, `##`/`###` counts, `**ID:**` fields, and every verdict token match — except **FAILED** (zh=4 vs src=6). Two `FAILED` occurrences are missing in the translation. Let me locate them to see whether a verdict token got localized (which must be fixed) or whether it was prose usage.Both missing occurrences are the uppercase token `FAILED` used in prose ("The reproduction FAILED …" at src line 433, and "reproduction FAILED …" at src line 725). Line 427's standalone verdict bullet was correctly preserved; these two were localized instead. Since the instruction is to keep the token `FAILED` verbatim everywhere, I'll restore them. Let me see how the zh rendered those two lines.Both rendered the token as "复现**失败**". I'll restore the verbatim `FAILED` token in each (keeping the surrounding Chinese prose), matching the source's literal use of the uppercase verdict word.Now let me confirm the FAILED token count now matches and do a final numeric-fidelity spot-check on dense values across the two files.FAILED is now 6=6. The numeric multiset is essentially identical (src 2925 vs zh 2928 occurrences); the handful of single-digit diffs (`3`→`-3`, `10`, `8`, `9`, `525`) look like tokenizer artifacts from en-dash/hyphen and phrasing adjacency, not corrupted data. Let me confirm by diffing only the *data-bearing* tokens (decimals and scientific notation), which are the actual measurements.**Data fidelity is perfect** where it matters most: every decimal and scientific-notation value (p-values, AUCs, CIs, odds ratios, Cliff's deltas, F1s, coefficients) matches the source exactly — `data-bearing distinct: src=637 zh=637`, `total: 1507=1507`, with **NONE** differing in either direction.
+
+The only discrepancy is cosmetic-but-real: the translator inserted thousands separators into large **integer counts** — e.g. source `9525` became `9,525`, `10080`→`10,080`, `1004`→`1,004`. The user explicitly required counts copied *verbatim* with no reformatting, so I'll normalize those back. Let me enumerate every digit-comma-digit token in the zh file and confirm each maps to a source integer.Most comma-forms map cleanly to a bare integer in the source (translator added separators to `9525`, `9623`, `808903`, etc.). But four bare forms — `1004`, `110200`, `1900`, `2091` — are **absent** from the source, which could mean either the source already used a comma there, or the translator altered a digit. I must investigate these before touching anything, since a changed digit would be a real data error.Important correction to my earlier assumption: the **source itself uses comma-separated numbers** (`9,525` ×21, `3,129` ×14, `1,004` ×2, `110,200` ×1, etc.) in its prose bullets, while using bare forms (`9525`) in its machine-generated bullets. The translator did **not** systematically add separators — it mirrored the source's own mixed style almost exactly. The comma histograms are identical except **one** `9,525` (zh 22 vs src 21). All four "suspicious" tokens (`1,004`, `110,200`, `1,900`, `2,091`) exist verbatim in the source.
+
+Since both files are exactly 792 lines with headings at identical line numbers, the translation is line-aligned. Let me do the decisive check: compare every line's comma-normalized numeric content, src vs zh, to catch any real digit-level difference.58 lines differ, but scanning them they're all one of two benign classes: (a) **phrase reordering** — Chinese word order moves numbers within a line (same multiset), and (b) **hyphens in compounds** — English `degree-4`, `degree-2`, `degree-3`, `k=2` make my regex read `-4`/`-2`/`-3`, while Chinese renders `4 度`/`2 度` as `4`/`2`. Real negative statistics kept their signs (e.g. line 432 `t=-3.1512` preserved). But three lines deserve a direct look to be certain no real negative sign was dropped: **235** (`-0.5`→`0.5`), **254** (`-180`→`180`), and **334** (extra `8`,`10`).All three confirmed benign:
+- **line 235** — `sub-0.5 AUC` (hyphen) → `AUC < 0.5`; no negative value existed. The real `−0.8` dot-product elsewhere is preserved.
+- **line 254** — `near-180°` (hyphen) → `近乎 180°`; the actual `< −0.8` threshold is kept verbatim in both.
+- **line 334** — the translator added a correct clarifying parenthetical `（8 融合/10 干净）`; those counts (8 merged / 10 clean junction-bearing segments) are stated elsewhere in the same entry, so it's accurate, not corruption.
+
+Verification is complete. Here's the final status.
+
+## Chinese translation delivered — `autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.zh.md`
+
+**What happened:** the first translator run died on the 32000-token per-response cap (it tried to emit the whole 136 KB file in one write and wrote nothing). I relaunched the `discovery-translator` subagent with a strict 10-chunk append protocol keyed to concrete source line ranges, which completed cleanly.
+
+**Independent fidelity audit (zh vs. source):**
+- **Structure:** 792 lines, 7 `##` sections in the exact canonical order (`## 排除项（预测性筛选）` last), 43 `###` headings, 42 `**ID:**` fields — all match the source.
+- **Data values — perfect:** every decimal and scientific-notation measurement (p-values, AUCs, CIs, odds ratios, Cliff's deltas, F1/precision/recall, coefficients, belief probabilities) is byte-identical — `data-bearing distinct 637=637`, `total 1507=1507`, **zero** differences in either direction. A line-aligned, comma/sign-normalized sweep found **no** altered digit anywhere.
+- **Verdict tokens — perfect:** all 15 tokens match counts exactly (REPRODUCED 42, GENERALIZES 45, SOUND 19, MINOR 25, MAJOR 14, UPHELD 19, OVERTURNED 8, WEAKENED 1, … ).
+- **Identifiers/paths/metric names:** kept verbatim (`794495`, `794491`, `mcl100`, `_add`, `Mann-Whitney U`, `Fisher's exact`, `Benjamini–Hochberg`, `k=24`/`m=25`, `q=0.05`, etc.).
+
+**One fix I applied after the run:** the token `FAILED` had been localized to `复现失败` in two prose sentences (entry 26's Statistical-issues bullet and the Verification-summary line for id 17). I restored the verbatim `FAILED` token in both, so `FAILED` now matches 6=6.
+
+The 58 line-level "diffs" flagged by the sweep were all benign: Chinese phrase reordering (same numbers, different order) and hyphen-in-compound artifacts (`degree-4`→`4 度`, `sub-0.5`→`< 0.5`). No statistic lost a sign, and no value was rounded or changed. The file is a faithful, complete localization.
+[20:14:52]   [validate] OK: output file autodiscovery/merge-error-794495-mcl100_2026-08-04.summary.zh.md exists after 'translate-report'.
+[20:14:52] Step 14/14 'translate-report' done in 4246s.
+[20:14:52] Workflow complete in 28792s.
+
+=== Workflow complete ===
+
+# OK after 28792s (ended 2026-08-11 20:14:52)

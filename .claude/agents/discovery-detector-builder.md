@@ -50,6 +50,7 @@ source selection must resolve those outcomes before combining features.
 | `<RERUN_DIR>/hypo_<id>.py` | loading-fixed reproduction code and the default feature-definition source |
 | `<RERUN_DIR>/MANIFEST.json` | the id → script mapping; use the path supplied by the orchestrator |
 | `<FIXED_DIR>/hypo_<id>.py` (optional) | corrected-test code; use it for detector feature math only when it changes feature/sample/aggregation semantics and its corrected measurement is usable |
+| `<RUN>.split-feature-applicability.json` (split build) | source-bound minimum node-role requirements; match the selected source by hypothesis id and SHA-256 |
 | `markdowns/labeled_dataset_cache.md` | the `_add.pkl` schema: `fragments_graph`, `gt_merge_labels`, `gt_node_canonical_label`, `gt_edge_error`, `gt_graph`, `node_xyz`, `node_radius`, `component_id_to_swc_id` |
 
 Read every returned hypothesis's `.rerun` script and every same-id `.fixed`
@@ -86,6 +87,16 @@ is otherwise eligible. A report correction whose fixed script is missing is
 
 ## Procedure
 
+### 0. Label split source applicability when explicitly requested
+
+For the discovery workflow's split applicability stage, read each requested
+rerun source and each existing same-id fixed source, then classify only its
+minimum safe node-role requirement: `requires_both_tips`,
+`requires_tip_anchor`, `no_tip_requirement`, or `unclear`. These are feature
+preconditions, not candidate-generation policies. Write only the requested
+semantic draft; the driver adds paths and hashes. Do not edit sources, load a
+dataset, or start detector construction.
+
 ### 1. Inventory the features
 
 Write only the semantic draft requested by the current stage prompt. Spend your
@@ -99,8 +110,9 @@ records `name`, `quantity`, `constants`, `aggregation`, `reduction`,
 
 Do not transcribe evidence statuses, paths, hashes, selection metadata, or the
 public inventory schema. Those are mechanical provenance: the driver joins them
-by explicit hypothesis ID and compiles the semantic draft into the same public
-`feature_inventory.json` schema v2 used downstream. This separation is
+by explicit hypothesis ID and compiles the semantic draft into public inventory
+v2 for merge or v3 for split. Split v3 copies the exact selected source's
+validated `node_role_requirement` into each feature. This separation is
 deliberate—use report evidence to make the scientific decision, but do not spend
 agent reasoning copying it into fields that deterministic code owns.
 
@@ -149,6 +161,10 @@ aggregation, explicit measured membership and shared traversal rules below:
 - for split runs, call the runtime-owned `build_sample_universe(payload)` and
   use its canonical unordered candidate segment-pair rows and `is_split` labels;
   never construct a competing candidate pool or split key in feature code;
+- for each split feature, call runtime-owned
+  `compatible_occurrences(sample, node_role_requirement)` before endpoint math;
+  if it returns no occurrence, keep the candidate row and leave that feature
+  NaN with `is_defined=False` rather than shrinking the candidate universe;
 - `component_id_to_swc_id` maps components to segment ids in both targets;
 - split endpoint/component features reduce to candidate-pair rows exactly as
   inventoried; GT-only labels, split kinds, neuron membership, and merge-risk

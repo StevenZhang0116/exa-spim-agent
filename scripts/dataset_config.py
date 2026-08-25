@@ -5,7 +5,7 @@ Resolves per-brain paths from the files in ``configs/``:
 - ``segmentation_datasets.rtf`` -> brain_id -> segmentation_id
 - ``exaspim_image_prefixes.json`` -> brain_id -> image prefix
 
-These were originally inlined in ``load_skeletons.ipynb``; they live here so
+These were originally inlined in ``load_skeletons.py``; they live here so
 other notebooks can reuse them via::
 
     import sys; sys.path.insert(0, "../scripts")

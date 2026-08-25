@@ -118,7 +118,8 @@ def resolve_img_path(args: argparse.Namespace) -> str:
     with open(args.image_prefix_config) as f:
         img_prefixes = json.load(f)
     try:
-        return img_prefixes[args.brain_id]
+        img_prefix = str(img_prefixes[args.brain_id]).rstrip("/")
+        return f"{img_prefix}/0"
     except KeyError as exc:
         raise KeyError(
             f"No image path for brain_id={args.brain_id!r} in "

@@ -2,7 +2,7 @@
 Data access for the proofreader evolution loop.
 
 Everything here is built on the *cached* ``BrainDataset`` pickle produced by
-``notebooks/load_skeletons.ipynb`` (``cache/dataset_cache_<brain>_mcl<N>.pkl``),
+``notebooks/load_skeletons.py`` (``cache/dataset_cache_<brain>_mcl<N>.pkl``),
 so it loads in seconds rather than re-reading ~10k SWCs from GCS (~15 min).
 
 Two jobs:
