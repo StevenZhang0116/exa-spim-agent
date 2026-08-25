@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 from .assembly import assemble_detector
+from .candidate_policy import compile_candidate_policy, expected_mcl_from_run_path
 from .contracts import DetectorTarget
 from .inputs import resolve_run_context
 from .inventory import validate_semantic_draft
@@ -39,6 +40,12 @@ def main() -> int:
     semantic.add_argument("--draft", required=True)
     semantic.add_argument("--run-json", required=True)
 
+    candidate_policy = subparsers.add_parser("candidate-policy")
+    candidate_policy.add_argument("--draft", required=True)
+    candidate_policy.add_argument("--review", required=True)
+    candidate_policy.add_argument("--run-json", required=True)
+    candidate_policy.add_argument("--minimum-recall", required=True, type=float)
+
     advice = subparsers.add_parser("model-advice")
     advice.add_argument("--draft", required=True)
     advice.add_argument("--inventory", required=True)
@@ -51,6 +58,7 @@ def main() -> int:
         "--target", required=True,
         choices=(DetectorTarget.MERGE.value, DetectorTarget.SPLIT.value),
     )
+    feature.add_argument("--candidate-policy")
     args = parser.parse_args()
 
     if args.kind == "semantic":
@@ -66,6 +74,17 @@ def main() -> int:
             selected_ids=list(context.selected_ids),
             project_root=PROJECT_ROOT,
         )
+    elif args.kind == "candidate-policy":
+        run_json = _path(args.run_json)
+        with tempfile.TemporaryDirectory(prefix="candidate-policy-validation-") as tmpdir:
+            compile_candidate_policy(
+                _path(args.draft),
+                Path(tmpdir) / "split_candidate_policy.json",
+                _path(args.review),
+                minimum_recall=args.minimum_recall,
+                expected_mcl=expected_mcl_from_run_path(run_json),
+                project_root=PROJECT_ROOT,
+            )
     elif args.kind == "model-advice":
         policy_path = _path(args.policy)
         contract = ModelPolicyContract.from_path(policy_path)
@@ -80,11 +99,19 @@ def main() -> int:
                 MODEL_CONFIG_SCHEMA_VERSION, PROJECT_ROOT,
             )
     else:
+        target = DetectorTarget(args.target)
+        if target is DetectorTarget.SPLIT and not args.candidate_policy:
+            parser.error("split feature validation requires --candidate-policy")
+        if target is DetectorTarget.MERGE and args.candidate_policy:
+            parser.error("merge feature validation does not accept --candidate-policy")
         with tempfile.TemporaryDirectory(prefix="feature-draft-validation-") as tmpdir:
             assemble_detector(
                 _path(args.template), _path(args.draft),
                 Path(tmpdir) / "detector.py",
-                target=DetectorTarget(args.target),
+                target=target,
+                candidate_policy_path=(
+                    _path(args.candidate_policy) if args.candidate_policy else None
+                ),
             )
     print("DRAFT_VALIDATION_OK")
     return 0

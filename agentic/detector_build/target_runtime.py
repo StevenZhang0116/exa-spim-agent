@@ -13,7 +13,12 @@ from .contracts import DetectorTarget, target_spec
 TARGET_ADAPTER_MARKER = "# __DETECTOR_TARGET_ADAPTER__"
 
 
-def target_adapter_source(target: DetectorTarget) -> str:
+def target_adapter_source(
+    target: DetectorTarget,
+    *,
+    candidate_policy: dict | None = None,
+    candidate_policy_sha256: str | None = None,
+) -> str:
     spec = target_spec(target)
     common = f'''DETECTOR_TARGET = {spec.target.value!r}
 DETECTOR_FILENAME = {spec.detector_name!r}
@@ -26,11 +31,20 @@ NEGATIVE_NAME = {spec.negative_name!r}
 SCORE_PREFIX = {spec.score_prefix!r}
 '''
     if spec.target is DetectorTarget.SPLIT:
-        adapter = _SPLIT_ADAPTER.replace(
-            "CANDIDATE_MAX_DISTANCE_UM = 30.0",
-            f"CANDIDATE_MAX_DISTANCE_UM = {float(spec.candidate_radius_um)!r}",
-        )
-        return common + adapter
+        if candidate_policy is None or candidate_policy_sha256 is None:
+            raise ValueError(
+                "Split target adapters require a validated frozen candidate policy."
+            )
+        constants = f'''CANDIDATE_POLICY_CONFIG_ID = {candidate_policy["config_id"]!r}
+CANDIDATE_PAIRING_RULE = {candidate_policy["mode"]!r}
+CANDIDATE_MAX_DISTANCE_UM = {float(candidate_policy["radius_um"])!r}
+CANDIDATE_PER_ANCHOR_K = {candidate_policy["per_anchor_k"]!r}
+CANDIDATE_GLOBAL_CAP = {candidate_policy["global_cap"]!r}
+CANDIDATE_POLICY_SHA256 = {candidate_policy_sha256!r}
+'''
+        return common + constants + _SPLIT_ADAPTER
+    if candidate_policy is not None or candidate_policy_sha256 is not None:
+        raise ValueError("Merge target adapters do not accept a split candidate policy.")
     return common + _MERGE_ADAPTER
 
 
@@ -73,9 +87,6 @@ def sample_universe_audit(payload, samples, labels):
 
 
 _SPLIT_ADAPTER = r'''
-CANDIDATE_MAX_DISTANCE_UM = 30.0
-
-
 def _gt_neuron_membership(gt):
     """Stable GT-neuron key without assuming custom methods survived unpickling."""
     import networkx as nx
@@ -137,14 +148,43 @@ def _derive_split_truth(payload):
     return truth
 
 
+def compatible_occurrences(sample, node_role_requirement):
+    """Return occurrences on which one inventoried feature is defined.
+
+    Applicability affects feature missingness only. It never changes candidate
+    identity or removes a row from the runtime sample universe.
+    """
+    occurrences = tuple(sample.get("occurrences", ()))
+    if node_role_requirement == "no_tip_requirement":
+        return occurrences
+    if node_role_requirement == "requires_both_tips":
+        return tuple(
+            occurrence for occurrence in occurrences
+            if occurrence.get("node_role_a") == "tip"
+            and occurrence.get("node_role_b") == "tip"
+        )
+    if node_role_requirement == "requires_tip_anchor":
+        compatible = []
+        for occurrence in occurrences:
+            side = occurrence.get("anchor_side")
+            if side not in {"a", "b"}:
+                raise ValueError("split occurrence has invalid anchor_side %r" % side)
+            if occurrence.get("node_role_" + side) == "tip":
+                compatible.append(occurrence)
+        return tuple(compatible)
+    raise ValueError(
+        "unsupported split feature node_role_requirement %r"
+        % node_role_requirement
+    )
+
+
 def build_sample_universe(payload):
     """Build one deterministic row per unordered candidate segment pair.
 
-    All leaf-to-leaf endpoint occurrences within 30 um are retained in the
-    internal ``occurrences`` tuple for audited feature reductions.  The closest
-    occurrence (distance, then node ids) supplies the stable output location.
-    Candidate construction uses fragment geometry only; GT is consulted only
-    after the universe is frozen to attach is_split.
+    Candidate enumeration is completely determined by the frozen build-time
+    policy embedded above. Per-anchor k ranks distinct partner segments, not
+    partner nodes. Candidate construction uses fragment geometry only; GT is
+    consulted only after the universe is frozen to attach is_split.
     """
     from scipy.spatial import cKDTree
 
@@ -153,28 +193,101 @@ def build_sample_universe(payload):
         return cached
     frag = payload["fragments_graph"]
     comp_to_seg = build_comp_to_seg(frag)
-    leaves = sorted(int(n) for n, degree in frag.degree() if int(degree) == 1)
-    if len(leaves) < 2:
+    n_nodes = int(frag.number_of_nodes())
+    xyz = np.asarray(frag.node_xyz, dtype=float)
+    node_components = np.asarray(frag.node_component_id, dtype=np.int64)
+    if xyz.shape[0] != n_nodes or node_components.shape[0] != n_nodes:
+        raise ValueError(
+            "split candidate generation requires node_xyz and node_component_id "
+            "to align with contiguous graph node ids"
+        )
+    if n_nodes and (not frag.has_node(0) or not frag.has_node(n_nodes - 1)):
+        raise ValueError("split candidate generation requires node ids 0..N-1")
+    node_segments = np.fromiter(
+        (int(comp_to_seg.get(int(component), -1)) for component in node_components),
+        dtype=np.int64,
+        count=n_nodes,
+    )
+    degrees = np.fromiter(
+        (int(frag.degree(node)) for node in range(n_nodes)),
+        dtype=np.int64,
+        count=n_nodes,
+    )
+    tips = np.flatnonzero((degrees == 1) & (node_segments > 0)).astype(np.int64)
+    valid_nodes = np.flatnonzero(node_segments > 0).astype(np.int64)
+    if CANDIDATE_PAIRING_RULE == "tip_to_tip":
+        anchor_nodes = tips
+        partner_nodes = tips
+    elif CANDIDATE_PAIRING_RULE == "tip_to_any_node":
+        anchor_nodes = tips
+        partner_nodes = valid_nodes
+    elif CANDIDATE_PAIRING_RULE == "any_node_to_any_node":
+        anchor_nodes = valid_nodes
+        partner_nodes = valid_nodes
+    else:
+        raise ValueError(
+            "unsupported embedded split candidate pairing rule %r"
+            % CANDIDATE_PAIRING_RULE
+        )
+    if not len(anchor_nodes) or not len(partner_nodes):
         result = ([], np.asarray([], dtype=np.int64))
         payload["__detector_sample_universe_cache__"] = result
         return result
-    xyz = np.asarray(frag.node_xyz, dtype=float)
-    tree = cKDTree(xyz[leaves])
+
+    tree = cKDTree(xyz[partner_nodes], copy_data=False)
     grouped = defaultdict(list)
-    for i, j in sorted(tree.query_pairs(CANDIDATE_MAX_DISTANCE_UM)):
-        node_a, node_b = leaves[int(i)], leaves[int(j)]
-        comp_a = int(frag.node_component_id[node_a])
-        comp_b = int(frag.node_component_id[node_b])
-        if comp_a == comp_b:
-            continue
-        seg_a, seg_b = int(comp_to_seg[comp_a]), int(comp_to_seg[comp_b])
-        if seg_a == seg_b:
-            continue
-        if seg_b < seg_a:
-            seg_a, seg_b = seg_b, seg_a
-            node_a, node_b = node_b, node_a
-        distance = float(np.linalg.norm(xyz[node_a] - xyz[node_b]))
-        grouped[(seg_a, seg_b)].append((node_a, node_b, distance))
+    batch_size = 2000
+    for start in range(0, len(anchor_nodes), batch_size):
+        batch = anchor_nodes[start : start + batch_size]
+        neighbor_lists = tree.query_ball_point(
+            xyz[batch], r=CANDIDATE_MAX_DISTANCE_UM, workers=1
+        )
+        for anchor_node, neighbor_positions in zip(batch, neighbor_lists):
+            anchor_node = int(anchor_node)
+            anchor_segment = int(node_segments[anchor_node])
+            best_partner_by_segment = {}
+            for position in neighbor_positions:
+                partner_node = int(partner_nodes[int(position)])
+                partner_segment = int(node_segments[partner_node])
+                if partner_node == anchor_node or partner_segment == anchor_segment:
+                    continue
+                distance = float(np.linalg.norm(
+                    xyz[partner_node] - xyz[anchor_node]
+                ))
+                previous = best_partner_by_segment.get(partner_segment)
+                candidate = (distance, partner_node)
+                if previous is None or candidate < previous:
+                    best_partner_by_segment[partner_segment] = candidate
+
+            ranked = sorted(
+                (distance, partner_segment, partner_node)
+                for partner_segment, (distance, partner_node)
+                in best_partner_by_segment.items()
+            )
+            limit = (
+                len(ranked)
+                if CANDIDATE_PER_ANCHOR_K is None
+                else int(CANDIDATE_PER_ANCHOR_K)
+            )
+            for zero_rank, (distance, partner_segment, partner_node) in enumerate(
+                ranked[:limit]
+            ):
+                segment_a, segment_b = sorted((anchor_segment, partner_segment))
+                if anchor_segment == segment_a:
+                    node_a, node_b = anchor_node, partner_node
+                    anchor_side = "a"
+                else:
+                    node_a, node_b = partner_node, anchor_node
+                    anchor_side = "b"
+                grouped[(segment_a, segment_b)].append({
+                    "node_id_a": int(node_a),
+                    "node_id_b": int(node_b),
+                    "gap_um": float(distance),
+                    "anchor_side": anchor_side,
+                    "partner_rank": int(zero_rank + 1),
+                    "node_role_a": "tip" if int(degrees[node_a]) == 1 else "non_tip",
+                    "node_role_b": "tip" if int(degrees[node_b]) == 1 else "non_tip",
+                })
 
     truth_pairs = {pair for _, pair in _derive_split_truth(payload)}
     gt_labels = np.asarray(payload["gt_node_canonical_label"])
@@ -188,8 +301,14 @@ def build_sample_universe(payload):
     samples = []
     labels = []
     for candidate_index, pair in enumerate(sorted(grouped)):
-        occurrences = tuple(sorted(grouped[pair], key=lambda row: (row[2], row[0], row[1])))
-        node_a, node_b, distance = occurrences[0]
+        occurrences = tuple(sorted(
+            grouped[pair],
+            key=lambda row: (
+                row["gap_um"], row["node_id_a"], row["node_id_b"],
+                row["anchor_side"], row["partner_rank"],
+            ),
+        ))
+        representative = occurrences[0]
         neurons_a = segment_neurons.get(int(pair[0]), set())
         neurons_b = segment_neurons.get(int(pair[1]), set())
         merge_creating = bool(
@@ -198,9 +317,13 @@ def build_sample_universe(payload):
             "candidate_id": int(candidate_index),
             "segment_id_a": int(pair[0]),
             "segment_id_b": int(pair[1]),
-            "endpoint_node_id_a": int(node_a),
-            "endpoint_node_id_b": int(node_b),
-            "gap_um": float(distance),
+            "node_id_a": int(representative["node_id_a"]),
+            "node_id_b": int(representative["node_id_b"]),
+            "gap_um": float(representative["gap_um"]),
+            "anchor_side": representative["anchor_side"],
+            "partner_rank": int(representative["partner_rank"]),
+            "node_role_a": representative["node_role_a"],
+            "node_role_b": representative["node_role_b"],
             "is_merge_creating": int(merge_creating),
             "contains_known_merge_segment": int(
                 pair[0] in known_merge_segments or pair[1] in known_merge_segments),
@@ -217,13 +340,15 @@ def sample_output_frame(samples, labels):
     public = [
         {key: sample[key] for key in (
             "candidate_id", "segment_id_a", "segment_id_b",
-            "endpoint_node_id_a", "endpoint_node_id_b", "gap_um",
+            "node_id_a", "node_id_b", "gap_um", "anchor_side", "partner_rank",
+            "node_role_a", "node_role_b",
             "is_merge_creating", "contains_known_merge_segment")}
         for sample in samples
     ]
     frame = pd.DataFrame(public, columns=[
         "candidate_id", "segment_id_a", "segment_id_b",
-        "endpoint_node_id_a", "endpoint_node_id_b", "gap_um",
+        "node_id_a", "node_id_b", "gap_um", "anchor_side", "partner_rank",
+        "node_role_a", "node_role_b",
         "is_merge_creating", "contains_known_merge_segment"])
     frame[LABEL_NAME] = np.asarray(labels, dtype=np.int64)
     return frame
@@ -232,7 +357,7 @@ def sample_output_frame(samples, labels):
 def sample_display(sample):
     return "%s:%s (nodes %s:%s, gap %.3f um)" % (
         sample["segment_id_a"], sample["segment_id_b"],
-        sample["endpoint_node_id_a"], sample["endpoint_node_id_b"],
+        sample["node_id_a"], sample["node_id_b"],
         sample["gap_um"])
 
 
@@ -251,7 +376,12 @@ def sample_universe_audit(payload, samples, labels):
         kind_counts[kind] += 1
     return {
         "row_unit": ROW_UNIT,
+        "candidate_policy_config_id": CANDIDATE_POLICY_CONFIG_ID,
+        "candidate_policy_sha256": CANDIDATE_POLICY_SHA256,
+        "candidate_pairing_rule": CANDIDATE_PAIRING_RULE,
         "candidate_max_distance_um": CANDIDATE_MAX_DISTANCE_UM,
+        "candidate_per_anchor_k": CANDIDATE_PER_ANCHOR_K,
+        "candidate_global_cap": CANDIDATE_GLOBAL_CAP,
         "n_rows": int(len(samples)),
         "n_positive": int(np.sum(np.asarray(labels) == 1)),
         "n_negative": int(np.sum(np.asarray(labels) == 0)),

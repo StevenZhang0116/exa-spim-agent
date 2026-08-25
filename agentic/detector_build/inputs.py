@@ -14,6 +14,16 @@ import re
 import sys
 from pathlib import Path
 from .contracts import DetectorTarget, RunContext
+try:
+    from agentic.split_feature_applicability import (
+        artifact_path as split_applicability_path,
+        load_applicability,
+    )
+except ModuleNotFoundError:  # direct workflow-script import via detector_build
+    from split_feature_applicability import (  # type: ignore[no-redef]
+        artifact_path as split_applicability_path,
+        load_applicability,
+    )
 
 
 def run_stem(run_json: Path) -> str:
@@ -414,6 +424,26 @@ def resolve_run_context(
                 file=sys.stderr,
             )
         unbacked_ids = tuple(hid for hid, _, _ in offenders)
+    applicability_path: Path | None = None
+    if target is DetectorTarget.SPLIT:
+        applicability_path = split_applicability_path(run_json)
+        if not applicability_path.is_file():
+            raise SystemExit(
+                f"No split feature applicability artifact at "
+                f"{rel_to_root(applicability_path, project_root)}. Generate it "
+                "without rerunning experiments via `python "
+                f"agentic/run_discovery_workflow.py "
+                f"{rel_to_root(run_json, project_root)} "
+                "--split-feature-labels-only`."
+            )
+        load_applicability(
+            applicability_path,
+            run_json=run_json,
+            selected_ids=selected_ids,
+            rerun_dir=rerun_dir,
+            fixed_dir=fixed_dir,
+            project_root=project_root,
+        )
     return RunContext(
         target=target,
         run_json=run_json,
@@ -422,6 +452,7 @@ def resolve_run_context(
         fixed_dir=fixed_dir,
         selection_path=authoritative_selection,
         corrected_results_path=corrected_results_path,
+        split_feature_applicability_path=applicability_path,
         selected_ids=tuple(selected_ids),
         unbacked_verdict_ids=unbacked_ids,
     )
@@ -438,6 +469,8 @@ def protected_source_paths(context: RunContext) -> tuple[Path, ...]:
         paths.append(context.selection_path)
     if context.corrected_results_path is not None:
         paths.append(context.corrected_results_path)
+    if context.split_feature_applicability_path is not None:
+        paths.append(context.split_feature_applicability_path)
     paths.extend(
         context.rerun_dir / f"hypo_{hypothesis_id}.py"
         for hypothesis_id in context.selected_ids

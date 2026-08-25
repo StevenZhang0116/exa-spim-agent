@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" font-family="'Helvetica Neue',Arial,sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L11,6 L0,12 z" fill="#64748b"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+
+  <rect width="1920" height="1080" fill="#f8fafc"/>
+
+  <!-- Header -->
+  <text x="80" y="76" font-size="42" font-weight="700" fill="#0f172a">Split and merge detection pipelines</text>
+  <text x="80" y="116" font-size="22" fill="#64748b">A shared discovery-to-detector workflow with different detection units and recall semantics</text>
+
+  <rect x="1430" y="62" width="28" height="20" rx="5" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+  <text x="1470" y="79" font-size="17" fill="#334155">discovery / design</text>
+  <rect x="1660" y="62" width="28" height="20" rx="5" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="1700" y="79" font-size="17" fill="#334155">driver compute</text>
+
+  <!-- Shared framing -->
+  <rect x="260" y="146" width="1400" height="82" rx="18" fill="#eef2ff" stroke="#6366f1" stroke-width="2" filter="url(#shadow)"/>
+  <text x="960" y="180" font-size="23" font-weight="700" text-anchor="middle" fill="#3730a3">Task specification → AutoDiscovery → detector build → blind scoring</text>
+  <text x="960" y="208" font-size="17" text-anchor="middle" fill="#475569">The workflows share feature discovery and validation; they diverge when the detector defines what receives a score.</text>
+
+  <!-- Split lane -->
+  <rect x="60" y="266" width="1800" height="300" rx="22" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="60" y="266" width="230" height="300" rx="22" fill="#f1f5f9"/>
+  <circle cx="108" cy="318" r="25" fill="#0f172a"/>
+  <text x="108" y="326" font-size="22" font-weight="700" text-anchor="middle" fill="#ffffff">S</text>
+  <text x="148" y="326" font-size="27" font-weight="700" fill="#0f172a">Split</text>
+  <text x="90" y="370" font-size="18" font-weight="600" fill="#334155">Detection unit</text>
+  <text x="90" y="400" font-size="18" fill="#475569">segment relation</text>
+  <text x="90" y="428" font-size="18" fill="#475569">represented by a</text>
+  <text x="90" y="456" font-size="18" fill="#475569">tip-to-node pair</text>
+  <text x="90" y="518" font-size="15" fill="#64748b">A required join is not</text>
+  <text x="90" y="540" font-size="15" fill="#64748b">already a graph object.</text>
+
+  <rect x="320" y="310" width="300" height="200" rx="16" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+  <circle cx="354" cy="346" r="20" fill="#0f172a"/>
+  <text x="354" y="353" font-size="18" font-weight="700" text-anchor="middle" fill="#ffffff">1</text>
+  <text x="388" y="353" font-size="21" font-weight="700" fill="#1e3a8a">Discover evidence</text>
+  <text x="346" y="396" font-size="17" fill="#475569">Study truncation tips, terminals,</text>
+  <text x="346" y="424" font-size="17" fill="#475569">and pairwise relationships.</text>
+  <text x="346" y="466" font-size="16" fill="#64748b">Features remain open-ended.</text>
+
+  <line x1="620" y1="410" x2="660" y2="410" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <rect x="670" y="294" width="340" height="232" rx="16" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <circle cx="704" cy="330" r="20" fill="#0f172a"/>
+  <text x="704" y="337" font-size="18" font-weight="700" text-anchor="middle" fill="#ffffff">2</text>
+  <text x="738" y="337" font-size="21" font-weight="700" fill="#166534">Generate candidates</text>
+  <text x="696" y="378" font-size="17" font-weight="600" fill="#334155">GT-blind tip anchors</text>
+  <text x="696" y="408" font-size="17" fill="#475569">tip_to_tip</text>
+  <text x="696" y="436" font-size="17" fill="#475569">tip_to_any_node</text>
+  <text x="696" y="476" font-size="16" fill="#64748b">radius + per_anchor_k</text>
+  <text x="696" y="500" font-size="15" fill="#64748b">deduplicate segment pairs</text>
+
+  <line x1="1010" y1="410" x2="1050" y2="410" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <rect x="1060" y="310" width="300" height="200" rx="16" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <circle cx="1094" cy="346" r="20" fill="#0f172a"/>
+  <text x="1094" y="353" font-size="18" font-weight="700" text-anchor="middle" fill="#ffffff">3</text>
+  <text x="1128" y="353" font-size="21" font-weight="700" fill="#166534">Score candidate pairs</text>
+  <text x="1086" y="398" font-size="17" fill="#475569">Compute features and split score</text>
+  <text x="1086" y="426" font-size="17" fill="#475569">for enumerated pairs only.</text>
+  <text x="1086" y="470" font-size="16" fill="#64748b">Rank proposed joins.</text>
+
+  <line x1="1360" y1="410" x2="1400" y2="410" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <rect x="1410" y="294" width="410" height="232" rx="16" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
+  <circle cx="1444" cy="330" r="20" fill="#0f172a"/>
+  <text x="1444" y="337" font-size="18" font-weight="700" text-anchor="middle" fill="#ffffff">4</text>
+  <text x="1478" y="337" font-size="21" font-weight="700" fill="#3730a3">Evaluate two layers</text>
+  <text x="1436" y="378" font-size="17" font-weight="600" fill="#334155">Candidate coverage first</text>
+  <text x="1436" y="406" font-size="16" fill="#475569">reachable truth pairs in the pool</text>
+  <text x="1436" y="440" font-size="17" font-weight="600" fill="#334155">Scoring quality second</text>
+  <text x="1436" y="468" font-size="16" fill="#475569">recall conditional on the pool</text>
+  <text x="1436" y="500" font-size="15" fill="#64748b">also report workload + merge risk</text>
+
+  <rect x="650" y="536" width="870" height="56" rx="14" fill="#fff7ed" stroke="#f59e0b" stroke-width="2"/>
+  <text x="1085" y="571" font-size="17" font-weight="600" text-anchor="middle" fill="#92400e">Observed legacy setting · 30 µm tip-to-tip pool covered 63.75% of reachable truth pairs</text>
+
+  <!-- Merge lane -->
+  <rect x="60" y="620" width="1800" height="300" rx="22" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="60" y="620" width="230" height="300" rx="22" fill="#f1f5f9"/>
+  <circle cx="108" cy="672" r="25" fill="#0f172a"/>
+  <text x="108" y="680" font-size="22" font-weight="700" text-anchor="middle" fill="#ffffff">M</text>
+  <text x="148" y="680" font-size="27" font-weight="700" fill="#0f172a">Merge</text>
+  <text x="90" y="724" font-size="18" font-weight="600" fill="#334155">Detection unit</text>
+  <text x="90" y="754" font-size="18" fill="#475569">one existing</text>
+  <text x="90" y="782" font-size="18" fill="#475569">predicted segment</text>
+  <text x="90" y="844" font-size="15" fill="#64748b">The scored object already</text>
+  <text x="90" y="866" font-size="15" fill="#64748b">exists in reconstruction.</text>
+
+  <rect x="320" y="664" width="300" height="200" rx="16" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+  <circle cx="354" cy="700" r="20" fill="#0f172a"/>
+  <text x="354" y="707" font-size="18" font-weight="700" text-anchor="middle" fill="#ffffff">1</text>
+  <text x="388" y="707" font-size="21" font-weight="700" fill="#1e3a8a">Discover evidence</text>
+  <text x="346" y="750" font-size="17" fill="#475569">Study per-segment topology,</text>
+  <text x="346" y="778" font-size="17" fill="#475569">geometry, and definedness.</text>
+  <text x="346" y="820" font-size="16" fill="#64748b">One feature vector per segment.</text>
+
+  <line x1="620" y1="764" x2="660" y2="764" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <rect x="670" y="648" width="340" height="232" rx="16" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <circle cx="704" cy="684" r="20" fill="#0f172a"/>
+  <text x="704" y="691" font-size="18" font-weight="700" text-anchor="middle" fill="#ffffff">2</text>
+  <text x="738" y="691" font-size="21" font-weight="700" fill="#166534">Build row universe</text>
+  <text x="696" y="732" font-size="17" font-weight="600" fill="#334155">All GT-adjudicable segments</text>
+  <text x="696" y="762" font-size="16" fill="#475569">nonzero canonical labels</text>
+  <text x="696" y="798" font-size="17" fill="#475569">optional excludeempty scope</text>
+  <text x="696" y="834" font-size="15" fill="#64748b">no radius or pair enumeration</text>
+
+  <line x1="1010" y1="764" x2="1050" y2="764" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <rect x="1060" y="664" width="300" height="200" rx="16" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <circle cx="1094" cy="700" r="20" fill="#0f172a"/>
+  <text x="1094" y="707" font-size="18" font-weight="700" text-anchor="middle" fill="#ffffff">3</text>
+  <text x="1128" y="707" font-size="21" font-weight="700" fill="#166534">Score segments</text>
+  <text x="1086" y="752" font-size="17" fill="#475569">Compute merge probability for</text>
+  <text x="1086" y="780" font-size="17" fill="#475569">every retained segment row.</text>
+  <text x="1086" y="824" font-size="16" fill="#64748b">Rank the review queue.</text>
+
+  <line x1="1360" y1="764" x2="1400" y2="764" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <rect x="1410" y="648" width="410" height="232" rx="16" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
+  <circle cx="1444" cy="684" r="20" fill="#0f172a"/>
+  <text x="1444" y="691" font-size="18" font-weight="700" text-anchor="middle" fill="#ffffff">4</text>
+  <text x="1478" y="691" font-size="21" font-weight="700" fill="#3730a3">Evaluate review workload</text>
+  <text x="1436" y="734" font-size="17" font-weight="600" fill="#334155">Precision@k and recall@k</text>
+  <text x="1436" y="762" font-size="16" fill="#475569">within scored segment rows</text>
+  <text x="1436" y="800" font-size="17" font-weight="600" fill="#334155">Cross-brain transfer</text>
+  <text x="1436" y="828" font-size="16" fill="#475569">same frozen pipeline</text>
+  <text x="1436" y="856" font-size="15" fill="#64748b">feature applicability audited</text>
+
+  <rect x="604" y="890" width="960" height="56" rx="14" fill="#ecfdf5" stroke="#16a34a" stroke-width="2"/>
+  <text x="1084" y="925" font-size="17" font-weight="600" text-anchor="middle" fill="#166534">794495 run · 9,623 adjudicable → 3,227 scored; all 98 merges retained · top 500 found 67 (68.37%)</text>
+
+  <!-- Interpretation -->
+  <rect x="240" y="970" width="1440" height="76" rx="20" fill="#eef2ff" stroke="#6366f1" stroke-width="2" filter="url(#shadow)"/>
+  <text x="960" y="1002" font-size="21" font-weight="700" text-anchor="middle" fill="#3730a3">Read the recall numbers at the correct stage</text>
+  <text x="960" y="1031" font-size="17" text-anchor="middle" fill="#475569">Split: candidate coverage bounds downstream pair recall.  ·  Merge: top-k recall measures review workload; all known merges were present in the scored rows.</text>
+
+  <text x="80" y="1066" font-size="15" fill="#94a3b8">agentic/split_merge_detection_pipeline.svg</text>
+</svg>

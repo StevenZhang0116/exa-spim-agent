@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from .candidate_policy import load_runtime_candidate_policy
 from .contracts import DetectorTarget
 from .target_runtime import TARGET_ADAPTER_MARKER, target_adapter_source
 
@@ -22,10 +23,14 @@ RUNTIME_OWNED_SYMBOLS = frozenset({
     "validate_model_config", "validate_analysis_timing_groups",
     "load_hypothesis_selection", "AnalysisTimingRecorder",
     "write_hypothesis_cost_artifacts", "_collect_measuretime_versions",
-    "run_measuretime",
+    "run_measuretime", "_available_cpu_count", "_resolve_image_worker_count",
+    "_bounded_thread_map", "_extract_features_runtime",
     "DETECTOR_TARGET", "DETECTOR_FILENAME", "OUTPUT_PREFIX", "ROW_UNIT",
     "ROW_UNIT_PLURAL", "LABEL_NAME", "POSITIVE_NAME", "NEGATIVE_NAME",
-    "SCORE_PREFIX", "CANDIDATE_MAX_DISTANCE_UM", "build_sample_universe",
+    "SCORE_PREFIX", "CANDIDATE_POLICY_CONFIG_ID", "CANDIDATE_PAIRING_RULE",
+    "CANDIDATE_MAX_DISTANCE_UM", "CANDIDATE_PER_ANCHOR_K",
+    "CANDIDATE_GLOBAL_CAP", "CANDIDATE_POLICY_SHA256", "build_sample_universe",
+    "compatible_occurrences",
     "sample_output_frame", "sample_display", "sample_universe_audit",
     "_derive_split_truth", "_gt_neuron_membership",
 })
@@ -179,6 +184,76 @@ def _validate_timing_contract(tree: ast.Module, path: Path) -> None:
             or not isinstance(extract.args.defaults[profile_default_index], ast.Constant)
             or extract.args.defaults[profile_default_index].value is not None):
         raise SystemExit("extract_features profile_segment_limit must default to None.")
+
+    image_hypothesis_ids = {
+        hypothesis_id
+        for group in groups
+        if group["phase"] == "image_patch_pass"
+        for hypothesis_id in group["hypothesis_ids"]
+    }
+    image_heavy = len(image_hypothesis_ids) * 2 > len(hypothesis_owner)
+    if image_heavy:
+        if len(positional) < 6 or positional[5].arg != "image_workers":
+            raise SystemExit(
+                "Image-heavy extract_features must accept image_workers after "
+                "profile_segment_limit."
+            )
+        worker_default_index = 5 - default_start
+        if (worker_default_index < 0
+                or worker_default_index >= len(extract.args.defaults)
+                or not isinstance(
+                    extract.args.defaults[worker_default_index], ast.Constant)
+                or extract.args.defaults[worker_default_index].value != 1):
+            raise SystemExit(
+                "Image-heavy extract_features image_workers must default to 1."
+            )
+        called_names = {
+            node.func.id for node in ast.walk(extract)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        required_helpers = {
+            "_bounded_thread_map", "_resolve_image_worker_count"
+        }
+        if not required_helpers.issubset(called_names):
+            raise SystemExit(
+                "Image-heavy extract_features must use the runtime bounded "
+                "thread-map and automatic worker-count helpers."
+            )
+        accumulator_classes = [
+            node for node in tree.body
+            if isinstance(node, ast.ClassDef)
+            and node.name in {"FeatureAccumulator", "SegmentAccumulator"}
+        ]
+        for accumulator in accumulator_classes:
+            set_method = next(
+                (node for node in accumulator.body
+                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                 and node.name == "set"),
+                None,
+            )
+            lock_constructors = {
+                node.func.id
+                for node in ast.walk(accumulator)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in {"Lock", "RLock"}
+            } | {
+                node.func.attr
+                for node in ast.walk(accumulator)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"Lock", "RLock"}
+            }
+            set_uses_context_manager = set_method is not None and any(
+                isinstance(node, (ast.With, ast.AsyncWith))
+                for node in ast.walk(set_method)
+            )
+            if lock_constructors or set_uses_context_manager:
+                raise SystemExit(
+                    "Image-heavy accumulator set() must not acquire a shared "
+                    "per-feature write lock; give each row one worker owner or "
+                    "commit row-local results in the parent thread."
+                )
     if not any(
         isinstance(node, ast.Name)
         and node.id == "profile_segment_limit"
@@ -313,6 +388,7 @@ def assemble_detector(
     output_path: Path,
     *,
     target: DetectorTarget = DetectorTarget.MERGE,
+    candidate_policy_path: Path | None = None,
 ) -> None:
     """Inject one validated feature fragment into the reviewed runtime template."""
     try:
@@ -338,9 +414,27 @@ def assemble_detector(
         required_symbols.add("FeatureAccumulator")
     feature_source = validate_feature_implementation(
         feature_path, runtime_owned, required_symbols, target)
+    candidate_policy = None
+    candidate_policy_sha256 = None
+    if target is DetectorTarget.SPLIT:
+        if candidate_policy_path is None:
+            raise SystemExit(
+                "Split detector assembly requires split_candidate_policy.json."
+            )
+        candidate_policy, candidate_policy_sha256 = load_runtime_candidate_policy(
+            candidate_policy_path
+        )
+    elif candidate_policy_path is not None:
+        raise SystemExit("Merge detector assembly does not accept a split candidate policy.")
     if adapter_markers:
         template = template.replace(
-            TARGET_ADAPTER_MARKER, target_adapter_source(target).rstrip())
+            TARGET_ADAPTER_MARKER,
+            target_adapter_source(
+                target,
+                candidate_policy=candidate_policy,
+                candidate_policy_sha256=candidate_policy_sha256,
+            ).rstrip(),
+        )
     assembled = template.replace(FEATURE_MARKER, feature_source)
     try:
         ast.parse(assembled, filename=str(output_path))

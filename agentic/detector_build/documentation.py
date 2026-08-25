@@ -7,6 +7,7 @@ import re
 import shlex
 from pathlib import Path
 
+from .candidate_policy import load_runtime_candidate_policy
 from .contracts import DetectorTarget, target_spec
 from .inputs import sha256
 
@@ -33,6 +34,8 @@ def write_readme_skeleton(
     cache_hint: str | None,
     primary_metric: str,
     target: DetectorTarget = DetectorTarget.MERGE,
+    candidate_policy_path: Path | None = None,
+    candidate_policy_rel: str | None = None,
 ) -> None:
     """Write factual mechanical documentation before semantic agent review."""
     inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
@@ -40,6 +43,36 @@ def write_readme_skeleton(
     rows = inventory["hypotheses"]
     candidates = model_config["candidates"]
     spec = target_spec(target)
+    candidate_provenance = ""
+    candidate_section = ""
+    if spec.target is DetectorTarget.SPLIT:
+        if candidate_policy_path is None or candidate_policy_rel is None:
+            raise SystemExit("Split README generation requires the candidate policy.")
+        selected_policy, candidate_policy_sha = load_runtime_candidate_policy(
+            candidate_policy_path
+        )
+        candidate_provenance = (
+            f"- Split candidate policy: `{candidate_policy_rel}` "
+            f"(SHA-256 `{candidate_policy_sha}`)\n"
+            f"- Split feature applicability: "
+            f"`{inventory.get('split_feature_applicability')}` "
+            f"(SHA-256 "
+            f"`{inventory.get('split_feature_applicability_sha256')}`)"
+        )
+        candidate_section = f"""
+## Split candidate universe
+
+- Pairing rule: `{selected_policy['mode']}`
+- Maximum radius: `{selected_policy['radius_um']}` µm
+- Distinct partner segments retained per anchor: `{selected_policy['per_anchor_k']}`
+- Global cap: `{selected_policy['global_cap']}`
+- Configuration: `{selected_policy['config_id']}`
+
+The assembler embedded this exact policy and its artifact SHA-256 in the detector.
+Candidate generation is completed before GT-derived split labels are attached.
+""".strip()
+    elif candidate_policy_path is not None or candidate_policy_rel is not None:
+        raise SystemExit("Merge README generation does not accept a split candidate policy.")
 
     feature_lines = [
         "| ID | Included | Source | Feature columns | Defined when / exclusion |",
@@ -51,6 +84,13 @@ def write_readme_skeleton(
         conditions = "; ".join(
             str(feature.get("measurable_condition")) for feature in features
         ) or row.get("exclusion_reason") or "—"
+        requirements = sorted({
+            str(feature["node_role_requirement"])
+            for feature in features
+            if feature.get("node_role_requirement")
+        })
+        if requirements:
+            conditions = f"node roles: {', '.join(requirements)}; {conditions}"
         feature_lines.append(
             f"| {row['id']} | {'yes' if row['included'] else 'no'} | "
             f"{_cell(row.get('feature_source_path') or '—')} | {_cell(names)} | "
@@ -89,6 +129,9 @@ def write_readme_skeleton(
 - Generated detector: `{detector_rel}`
 - Instance-bound command guide: `{run_commands_rel}`
 - Selection manifest: `{inventory.get('selection_manifest')}`
+{candidate_provenance}
+
+{candidate_section}
 
 ## Feature and source mapping
 
@@ -210,6 +253,8 @@ def write_run_commands(
     agent_model: str,
     agent_effort: str,
     target: DetectorTarget = DetectorTarget.MERGE,
+    candidate_policy_path: Path | None = None,
+    candidate_policy_rel: str | None = None,
 ) -> None:
     """Write a deterministic runbook bound to one assembled detector instance.
 
@@ -228,6 +273,28 @@ def write_run_commands(
     model_config_sha = sha256(model_config_path)
     model_policy_sha = sha256(model_policy_path)
     runtime_template_sha = sha256(runtime_template_path)
+    candidate_policy_row = ""
+    candidate_policy_variable = ""
+    candidate_policy_check = ""
+    if spec.target is DetectorTarget.SPLIT:
+        if candidate_policy_path is None or candidate_policy_rel is None:
+            raise SystemExit("Split run-command generation requires the candidate policy.")
+        _, candidate_policy_sha = load_runtime_candidate_policy(candidate_policy_path)
+        candidate_policy_row = (
+            f"| Split candidate policy embedded at build time | "
+            f"`{candidate_policy_rel}` | `{candidate_policy_sha}` |"
+        )
+        candidate_policy_variable = (
+            f'CANDIDATE_POLICY="$APP_DIR/{Path(candidate_policy_rel).name}"'
+        )
+        candidate_policy_check = (
+            f"printf '%s  %s\\n' '{candidate_policy_sha}' "
+            '"$CANDIDATE_POLICY" | sha256sum --check'
+        )
+    elif candidate_policy_path is not None or candidate_policy_rel is not None:
+        raise SystemExit(
+            "Merge run-command generation does not accept a split candidate policy."
+        )
 
     q_root = shlex.quote(project_root.as_posix())
     q_app = shlex.quote(app_dir)
@@ -250,6 +317,7 @@ instance. Use the hashes here when reproducing or comparing this instance.
 | Model configuration | `{model_config_rel}` | `{model_config_sha}` |
 | Model policy used at build time | `{model_policy_rel}` | `{model_policy_sha}` |
 | Runtime template used at build time | `{runtime_template_rel}` | `{runtime_template_sha}` |
+{candidate_policy_row}
 
 - Origin run: `{run_rel}`
 - Agent model: `{agent_model}`
@@ -270,6 +338,7 @@ APP_DIR={q_app}
 DETECTOR="$APP_DIR/{spec.detector_name}"
 INVENTORY="$APP_DIR/feature_inventory.json"
 MODEL_CONFIG="$APP_DIR/model_candidates.json"
+{candidate_policy_variable}
 DATA_PKL={q_cache}
 BRAIN={q_brain}
 ```
@@ -283,10 +352,12 @@ before submitting a compute job.
 printf '%s  %s\\n' '{detector_sha}' "$DETECTOR" | sha256sum --check
 printf '%s  %s\\n' '{inventory_sha}' "$INVENTORY" | sha256sum --check
 printf '%s  %s\\n' '{model_config_sha}' "$MODEL_CONFIG" | sha256sum --check
+{candidate_policy_check}
 ```
 
-Keep the detector, inventory, and model configuration together. The runtime
-cross-checks the inventory hash recorded in the model configuration.
+Keep the detector, inventory, model configuration, and any listed split candidate
+policy together. The runtime cross-checks the inventory hash recorded in the
+model configuration; the detector source embeds the split policy fields and hash.
 
 ## No-data checks
 
@@ -408,7 +479,12 @@ original all-hypothesis behavior.
 
 Real ExaSPIM caches can require tens of GB and component traversal can take
 hours. Use a compute node, request at least 80 GB RAM unless a measured profile
-justifies less, and allow several hours.
+justifies less, and allow several hours. For an image-heavy generated detector,
+`--n-jobs N` controls the bounded `image_patch_pass` thread pool (`0` selects up
+to 8 workers automatically, `-1` uses every CPU reported as available, and `1`
+is the exact serial path). On Linux, “available” honors the process affinity or
+Slurm cpuset before falling back to the host CPU count. Graph-only and rare-image
+detectors keep serial extraction and ignore this worker setting.
 
 ```bash
 RUN_DIR="$APP_DIR/runs/${{BRAIN}}-default"

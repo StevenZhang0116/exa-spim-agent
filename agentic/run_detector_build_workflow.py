@@ -18,7 +18,9 @@ This workflow builds the combined feature table and selects a model for it.
 
 THIS WORKFLOW IS CODE GENERATION ONLY, and it takes NO DATASET. Its inputs are
 the run export, the report beside it, the predictive-selection manifest when
-applicable, the ``.rerun/`` scripts, and optional ``.fixed/`` scripts. It
+applicable, the ``.rerun/`` scripts, and optional ``.fixed/`` scripts. Split
+builds additionally require the source-bound
+``<RUN>.split-feature-applicability.json`` written by discovery. It
 cross-checks selection, rerun MANIFEST, inventory paths, and source hashes before
 generation. It never loads a cache; it runs only the generated CLI's no-data
 ``--help`` and synthetic smoke modes. The pkl needs >20 GB RAM and may require
@@ -37,6 +39,7 @@ context. Subagents live in ``.claude/agents/`` and are auto-discovered via
 
     merge_site_detector.py or         target-specific model comparison + detector
     split_site_detector.py
+    split_candidate_policy.json       split-only, evidence-validated policy choice
     feature_inventory.json            feature definition + defined condition
     model_candidates.json             validated model families + small grids
     README.md                         provenance, how to run, how to read it
@@ -66,13 +69,22 @@ uncommitted git paths, since an untracked file is gone for good. ``--yes`` skips
 the prompt (required in batch jobs, which have no terminal); ``--keep-existing``
 writes into the folder as it stands, the older behaviour.
 
-The steps:
+The steps (split builds first run the additional candidate-policy
+step described below; merge builds retain the established four-step sequence):
+  0. select-candidate-policy — for split builds only, an agent interprets a
+                           completed candidate-pool AI review. The driver checks
+                           hashes and structured evidence, independently minimizes
+                           candidate count subject to worst-brain recall >= 0.90,
+                           and freezes split_candidate_policy.json. Assembly then
+                           embeds that exact policy in the detector runtime.
   1. inventory-features  — the agent reads <RUN>.summary.md, each selected
                            .rerun/hypo_<id>.py and matching .fixed/hypo_<id>.py;
                            it records only semantic judgments (source choice,
                            feature math, aggregation and defined condition).
                            The driver joins IDs, evidence, paths and hashes and
-                           compiles the public feature_inventory.json.
+                           compiles the public feature_inventory.json. For split,
+                           it also joins the exact selected source SHA to its
+                           validated node-role requirement.
   2. configure-models    — write a validated model-candidate configuration. A
                            versioned declarative policy defines mandatory models,
                            optional limits and parameter rules. No arbitrary
@@ -80,7 +92,9 @@ The steps:
   3. generate-detector   — the agent writes only the task-specific feature
                            implementation. The driver AST-validates it and injects
                            it into a reviewed runtime template that owns the CLI,
-                           model selection, outputs and smoke contract.
+                           model selection, outputs and smoke contract. Split
+                           features use applicability guards without removing
+                           rows from the candidate universe.
   4. verify-and-document — enrich the factual README skeleton that the driver
                            wrote after detector assembly; check the script against the inventory and
                            the inventoried rerun/fixed sources (every feature computed and fitted,
@@ -101,10 +115,10 @@ cross-validated ROC-AUC. Generated detectors therefore retain NaN, add explicit
 is_defined flags, report coverage by class, and let fold-local preprocessing or
 native-NaN models handle the numeric value.
 
-A clean build runs all four steps. If inventory compilation rejects the hidden
-feature-semantics draft, `--keep-existing` can recover that draft only after
-rebuilding and strictly validating its public artifact, avoiding a repeated
-semantic agent turn.
+A clean merge build runs four steps and a clean split build runs the split-only
+policy step plus those four steps. If compilation rejects a hidden draft,
+`--keep-existing` can recover it only after rebuilding and strictly validating
+its public artifact, avoiding a repeated semantic agent turn.
 
 Usage (from the ``exa-spim-agent/`` project root; a login node is fine):
     conda activate panda
@@ -145,8 +159,18 @@ try:  # package import (tests and ``python -m agentic...``)
         open_agent_session,
     )
     from agentic.detector_build.assembly import assemble_detector
+    from agentic.detector_build.candidate_policy import (
+        OBJECTIVE_NAME as CANDIDATE_POLICY_OBJECTIVE_NAME,
+        candidate_policy_source_paths,
+        compile_candidate_policy,
+        expected_mcl_from_run_path,
+        validate_candidate_policy_sources,
+        validate_frozen_candidate_policy,
+    )
     from agentic.detector_build.contracts import (
         BUILD_ARTIFACT_NAMES,
+        CANDIDATE_POLICY_ADVICE_DRAFT_NAME,
+        CANDIDATE_POLICY_NAME,
         DetectorTarget,
         DRIVER_LOG_NAME,
         FEATURE_INVENTORY_NAME,
@@ -198,6 +222,7 @@ try:  # package import (tests and ``python -m agentic...``)
         validate_detector_executable_contract,
         validate_detector_source as _validate_detector_source,
     )
+    from agentic.split_feature_applicability import load_applicability
 except ModuleNotFoundError as exc:  # direct ``python agentic/run_....py``
     if exc.name != "agentic":
         raise
@@ -206,8 +231,18 @@ except ModuleNotFoundError as exc:  # direct ``python agentic/run_....py``
         open_agent_session,
     )
     from detector_build.assembly import assemble_detector  # type: ignore[no-redef]
+    from detector_build.candidate_policy import (  # type: ignore[no-redef]
+        OBJECTIVE_NAME as CANDIDATE_POLICY_OBJECTIVE_NAME,
+        candidate_policy_source_paths,
+        compile_candidate_policy,
+        expected_mcl_from_run_path,
+        validate_candidate_policy_sources,
+        validate_frozen_candidate_policy,
+    )
     from detector_build.contracts import (  # type: ignore[no-redef]
         BUILD_ARTIFACT_NAMES,
+        CANDIDATE_POLICY_ADVICE_DRAFT_NAME,
+        CANDIDATE_POLICY_NAME,
         DetectorTarget,
         DRIVER_LOG_NAME,
         FEATURE_INVENTORY_NAME,
@@ -259,6 +294,7 @@ except ModuleNotFoundError as exc:  # direct ``python agentic/run_....py``
         validate_detector_executable_contract,
         validate_detector_source as _validate_detector_source,
     )
+    from split_feature_applicability import load_applicability  # type: ignore[no-redef]
 
 # Project root = the directory that holds .claude/, agentic/, autodiscovery/.
 # agentic/run_detector_build_workflow.py -> parent.parent is the project root.
@@ -266,6 +302,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Applications live one subfolder per originating run.
 APPLICATION_DIR_REL = "autodiscovery-application"
+DEFAULT_SPLIT_CANDIDATE_REVIEW_REL = (
+    "notebooks/split_candidate_pool_sweep_outputs/"
+    "mcl100_5f92a29e40d94a90/AI_REVIEW.md"
+)
+DEFAULT_SPLIT_MIN_WORST_BRAIN_RECALL = 0.90
 
 MODEL_CONFIG_SCHEMA_VERSION = 2
 MODEL_POLICY_PATH = Path(__file__).resolve().with_name("detector_model_policy.json")
@@ -485,6 +526,11 @@ def build_steps(
     out_dir_rel: str,
     corrected_results_rel: str | None = None,
     target: DetectorTarget = DetectorTarget.MERGE,
+    candidate_review_rel: str | None = None,
+    candidate_policy_minimum_recall: float = (
+        DEFAULT_SPLIT_MIN_WORST_BRAIN_RECALL
+    ),
+    split_applicability_rel: str | None = None,
 ) -> list[dict]:
     """Build the model-selection detector workflow instructions."""
     spec = target_spec(target)
@@ -496,6 +542,14 @@ def build_steps(
     model_advice_rel = f"{out_dir_rel}/{MODEL_ADVICE_DRAFT_NAME}"
     readme_rel = f"{out_dir_rel}/{README_NAME}"
     run_commands_rel = f"{out_dir_rel}/{RUN_COMMANDS_NAME}"
+    candidate_policy_rel = f"{out_dir_rel}/{CANDIDATE_POLICY_NAME}"
+    candidate_advice_rel = (
+        f"{out_dir_rel}/{CANDIDATE_POLICY_ADVICE_DRAFT_NAME}"
+    )
+    feature_policy_validation_arg = (
+        f" --candidate-policy {candidate_policy_rel}"
+        if spec.target is DetectorTarget.SPLIT else ""
+    )
     fixed_note = (
         f"Corrected scripts are available under {fixed_rel}/."
         if fixed_rel is not None
@@ -536,43 +590,80 @@ def build_steps(
     policy_rel = _rel_to_root(MODEL_POLICY_PATH)
     runtime_template_rel = _rel_to_root(RUNTIME_TEMPLATE_PATH)
     if spec.target is DetectorTarget.SPLIT:
+        if split_applicability_rel is None:
+            raise ValueError("Split build steps require feature applicability metadata.")
         target_inventory_note = f"""
 This is a split-detection run. The detector row unit is one canonical unordered
-candidate segment pair, not one segment and not one GT edge. Inventory endpoint,
-endpoint-pair, component-pair, and segment-pair quantities with their exact
-reduction to that row unit. The driver-owned candidate contract uses cross-segment
-fragment leaf pairs within {spec.candidate_radius_um:g} um, retains every endpoint occurrence for audited
-reductions, and uses the closest occurrence as the stable representative. Direct
+candidate segment pair, not one segment and not one GT edge. Read the frozen,
+driver-validated candidate policy at {candidate_policy_rel}; its pairing rule,
+radius, per-anchor distinct-partner-segment quota, and null global cap define the
+exact runtime sample universe. Inventory node, node-pair, component-pair, and
+segment-pair quantities with their exact reduction to that row unit. Direct
 gt_edge_error==1 pairs and gap pairs flanking connected zero-label GT regions
 supply is_split only after candidate construction; labels and GT-only split
-metadata must never be features. Record any source detector arm whose candidate
-construction is incompatible with this fixed row universe as a limitation rather
-than silently changing the universe.
+metadata must never be features. Record any source detector arm whose feature
+semantics are incompatible with the selected universe as a limitation rather
+than silently changing either the policy or the feature definition.
+
+Read the source-bound node-role annotations at {split_applicability_rel}. Match
+the exact feature source selected below by hypothesis id and SHA-256. An
+`unclear` source must be excluded rather than guessed. The driver will copy each
+included source's validated requirement into every resulting inventory feature.
+The usable values are `requires_both_tips`, `requires_tip_anchor`, and
+`no_tip_requirement`.
 """.strip()
         extraction_contract = """
 - FeatureAccumulator with explicit measured/definedness membership;
 - extract_features(payload, verbose=True, timing=None,
-  enabled_analysis_keys=None, profile_segment_limit=None), returning canonical
-  candidate-pair records, is_split labels, and the accumulator;
+  enabled_analysis_keys=None, profile_segment_limit=None, image_workers=1),
+  returning canonical candidate-pair records, is_split labels, and the
+  accumulator;
 - endpoint/pair/component geometry helpers needed by those definitions.
 
 Use the runtime-provided build_sample_universe(payload) as the sole authority for
 candidate identity and labels. Do not derive a competing split key or candidate
 pool in the feature fragment. Aggregate endpoint-level values to the candidate
 segment-pair row exactly as recorded by the inventory. Each sample is a dict with
-candidate_id, segment_id_a, segment_id_b, endpoint_node_id_a,
-endpoint_node_id_b, gap_um, and occurrences; occurrences is the stable tuple of
-(node_a, node_b, gap_um) endpoint occurrences for that same unordered segment
-pair, sorted closest first. Runtime-only is_merge_creating and
+candidate_id, segment_id_a, segment_id_b, node_id_a, node_id_b, gap_um,
+anchor_side, partner_rank, node_role_a, node_role_b, and occurrences.
+`occurrences` is the stable closest-first tuple of dictionaries carrying those
+node/gap/anchor/rank/role fields for every policy-admitted occurrence of the same
+unordered segment pair. Under tip_to_any_node, only the anchor is guaranteed to
+be a degree-1 tip; the partner may be a tip, shaft, or branch node. Runtime-only
+is_merge_creating and
 contains_known_merge_segment fields are also present strictly for output audit
 and must be ignored by feature extraction. FeatureAccumulator must preserve this exact sample
 order in to_frame(). GT-only fields (is_split,
 split_kind, GT neuron membership, merge-risk audit fields) may not enter
 FEATURE_REGISTRY or any feature computation.
+
+For each inventory feature, obey its `node_role_requirement` using the
+runtime-provided compatible_occurrences(sample, requirement):
+- requires_both_tips uses only occurrences whose two nodes are tips;
+- requires_tip_anchor uses occurrences whose recorded anchor is a tip;
+- no_tip_requirement uses all occurrences.
+If no occurrence is compatible, retain the candidate row and leave that feature
+NaN with is_defined=False. Never filter the candidate universe down to the
+feature's applicability subset.
 """.strip()
         verification_scope = (
             "candidate-pair-level rather than exact missing-voxel localization"
         )
+        candidate_policy_generation_note = (
+            f"Read {candidate_policy_rel} as the immutable definition of the "
+            "runtime candidate universe. Do not copy or redefine its generator "
+            "logic in feature code."
+        )
+        candidate_policy_verification = f"""
+Confirm that the assembled detector embeds the exact config_id, pairing rule,
+radius, per-anchor k, null global cap, and SHA-256 from {candidate_policy_rel}.
+Confirm sample_universe_audit reports those same values. Treat the policy as
+immutable and report any mismatch rather than editing either artifact.
+Also verify every inventory `node_role_requirement` matches the exact selected
+source annotation in {split_applicability_rel}. Restrictive features must call
+compatible_occurrences before their endpoint math; absence of a compatible
+occurrence produces NaN/is_defined=False without deleting the candidate row.
+""".strip()
         oof_verification = """
 Segment-disjoint split folds must never share either candidate segment between
 train and validation. Candidate rows whose two segments do not land together in
@@ -602,11 +693,13 @@ no fragment component remain in the row universe.
         extraction_contract = """
 - SegmentAccumulator with explicit measured/definedness membership;
 - extract_features(payload, verbose=True, timing=None,
-  enabled_analysis_keys=None, profile_segment_limit=None), returning
-  adjudicable ids, merge labels, and the accumulator;
+  enabled_analysis_keys=None, profile_segment_limit=None, image_workers=1),
+  returning adjudicable ids, merge labels, and the accumulator;
 - only geometry/data helpers directly needed by those definitions.
 """.strip()
         verification_scope = "segment-level rather than merge-site localization"
+        candidate_policy_generation_note = ""
+        candidate_policy_verification = ""
         oof_verification = """
 Every outer row receives exactly one prediction per available family and the
 selector; merge OOF coverage must be complete.
@@ -618,7 +711,7 @@ the row universe with profiled feature cells undefined. The reported seconds are
 observed sample costs, not a projection of the complete run.
 """.strip()
 
-    return [
+    steps = [
         {
             "name": "inventory-features",
             "expects_file": semantics_rel,
@@ -684,7 +777,8 @@ driver-owned contract:
 {SEMANTIC_DRAFT_CONTRACT}
 
 The driver will combine this draft with same-ID evidence and source hashes to write the public
-{inventory_rel}, then apply the strict inventory-v2 validator. Undefined values
+{inventory_rel}, then apply the strict inventory-v2 validator for merge or the
+strict inventory-v3 validator for split. Undefined values
 in the eventual detector are NaN plus an explicit <feature>_is_defined column.
 
 Before returning, run this narrow read-only self-check from the project root:
@@ -766,6 +860,7 @@ Use the discovery-detector-builder subagent to write ONLY the task-specific
 feature implementation to {feature_impl_rel}. Read {inventory_rel} and, for each
 included feature, only its recorded feature_source_path after verifying the
 recorded SHA-256. Never fall back between rerun and fixed sources.
+{candidate_policy_generation_note}
 
 The driver owns the reviewed runtime template plus target adapter and will assemble the unchanged
 public {detector_rel}; do not write that file. Your fragment must define:
@@ -820,6 +915,37 @@ row universe and exact normal-run behavior. The runtime passes a default limit o
 
 {measuretime_scope}
 
+Choose image-patch concurrency mechanically from ANALYSIS_TIMING_GROUPS after
+the inventory has been implemented. Count included hypothesis ids (not feature
+columns): an id is image-derived when its actual phase reads the image and must
+use the exact phase name `image_patch_pass`. If image-derived ids are a strict
+majority of all included hypothesis ids, make the candidate/segment image pass
+thread-aware through `image_workers`:
+- `image_workers=1` is the exact serial path; `0` calls the runtime-provided
+  `_resolve_image_worker_count`, which caps automatic parallelism at 8; `-1`
+  uses every CPU available to the process, honoring `os.sched_getaffinity(0)`
+  (for example a Slurm cpuset) with `os.cpu_count()` as a fallback;
+- use the runtime-provided `_bounded_thread_map` so at most 2x workers futures
+  are queued and results are consumed in completion order, so a slow earlier
+  candidate cannot block replenishing the pool. Store results by stable row id
+  so the complete row/column/definedness output remains identical to the serial
+  path;
+- assign each candidate row to exactly one worker and do not read accumulator
+  arrays until the bounded thread map is fully drained. Write that exclusively
+  owned row directly, or return row-local updates for parent-thread commit;
+  never acquire a shared lock for every feature write and never let two workers
+  own the same candidate row;
+- share only read-only graph/image state. TensorStore patch reads may overlap,
+  but patch caches remain candidate-local and bounded;
+- force one image worker whenever `timing is not None`, because
+  AnalysisTimingRecorder intentionally attributes one active hypothesis at a
+  time; `--measuretime` must therefore remain comparable and deterministic;
+- print the resolved worker count in the image-pass start record.
+If image-derived ids are half or fewer—including graph-only runs and runs with
+only rare image access—keep the existing serial traversal. Still accept the
+`image_workers=1` argument for the runtime contract, but do not create a thread
+pool. Do not parallelize graph traversal merely because worker helpers exist.
+
 When `verbose=True`, additionally print flushed, machine-searchable start/done
 records for long segment/component work so the last durable line identifies the
 active feature if a run hangs or is killed. Instrumentation must use a monotonic
@@ -838,13 +964,14 @@ run_detector, main, a
 __main__ block, output writers, plots, logging infrastructure, models, or CLI
 parsing. The required extraction progress may print through the runtime's tee but
 must not create or manage log files. Do not edit {inventory_rel},
-{model_config_rel}, {detector_rel}, README.md, or {run_commands_rel}. The
+{model_config_rel}, {candidate_policy_rel}, {detector_rel}, README.md, or
+{run_commands_rel}. The
 driver will AST-validate the fragment, inject it into the reviewed template, and
 independently execute the assembled detector's no-data contract checks.
 
 Before returning, run this narrow read-only self-check from the project root:
 python -m agentic.detector_build.draft_validation feature --draft \
-  {feature_impl_rel} --template {runtime_template_rel} --target {target.value}
+  {feature_impl_rel} --template {runtime_template_rel} --target {target.value}{feature_policy_validation_arg}
 It must print DRAFT_VALIDATION_OK. If it reports a mismatch, repair the fragment
 and run the same command again.
 
@@ -865,6 +992,7 @@ source/correction rationale, caveats, and fixes outside it. No real dataset has
 been run: do not invent a CSV, winning model, metrics or class counts. Obtain
 semantic context from {summary_rel}, {inventory_rel} and {model_config_rel}, plus
 {source_note}.
+{candidate_policy_verification}
 
 VERIFY READ-ONLY BEFORE DOCUMENTING
 1. Every inventory feature has one explicit feature_source_path whose current
@@ -886,7 +1014,15 @@ VERIFY READ-ONLY BEFORE DOCUMENTING
    ANALYSIS_TIMING_GROUPS covers every public feature exactly once, assigns every
    hypothesis id to exactly one selectable computation unit, and maps it to its
    actual pass. Shared groups are genuinely computationally inseparable. All
-   extraction passes call the runtime timing recorder. `--measuretime` profiles
+   extraction passes call the runtime timing recorder. If `image_patch_pass`
+   owns a strict majority of included hypothesis ids, normal extraction uses
+   the runtime's bounded completion-order thread map, honors `--n-jobs` (-1 =
+   all available CPUs, 0 = auto capped at 8, 1 = serial), assigns each row to
+   one worker without a shared per-feature write lock, preserves stable output
+   placement by row id, and logs the worker count;
+   timing mode forces the identical serial path. If image ids are half or fewer,
+   extraction remains serial and does not create a thread pool.
+   `--measuretime` profiles
    only its small deterministic segment sample and writes the
    schema-v2 timing JSON, ranked hypothesis cost report, and editable schema-v1
    selection template, then exits without audit, CV, fitting, held-out scoring,
@@ -956,6 +1092,68 @@ This turn is ONLY the verify-and-document stage. Treat {inventory_rel},
 """.strip(),
         },
     ]
+    if spec.target is DetectorTarget.SPLIT:
+        if candidate_review_rel is None:
+            raise ValueError(
+                "Split detector builds require candidate_review_rel for the "
+                "candidate-policy advice stage."
+            )
+        policy_step = {
+            "name": "select-candidate-policy",
+            "expects_file": candidate_advice_rel,
+            "instruction": f"""
+Use the discovery-detector-builder subagent to read the completed split
+candidate-pool review {candidate_review_rel}. Also read its sibling
+ai_review_evidence.json and tables/cross_dataset_aggregate.csv so your
+explanation is tied to the structured sweep evidence.
+
+The driver-owned objective is fixed and must not be changed:
+- objective: {CANDIDATE_POLICY_OBJECTIVE_NAME}
+- minimum worst-brain candidate recall: {candidate_policy_minimum_recall:.12g}
+- tie-breaker: first total_candidates ascending, then config_id ascending
+
+Identify the configuration that satisfies the recall constraint with the fewest
+total candidates across the evaluated datasets. Explain the selected operating
+point, its recall/workload trade-off, the evidence scope, and the fact that
+candidate recall is a pre-scoring ceiling. Do not infer a different objective,
+average across away the worst brain, or treat candidate prevalence as classifier
+precision.
+
+Write ONLY the internal advice draft {candidate_advice_rel} with exactly this
+JSON shape:
+{{
+  "schema_version": 1,
+  "objective": {{
+    "name": "{CANDIDATE_POLICY_OBJECTIVE_NAME}",
+    "minimum_worst_brain_recall": {candidate_policy_minimum_recall:.12g},
+    "tie_breaker": ["total_candidates", "config_id"]
+  }},
+  "selected_config_id": "<mode|r=...|k=...>",
+  "explanation": "<non-empty evidence-grounded explanation>"
+}}
+
+The driver, not the agent, is authoritative: it will independently hash-check
+the review bundle, scan every row of cross_dataset_aggregate.csv, recompute the
+minimum-candidate eligible configuration, reject disagreement, and write the
+public {candidate_policy_rel}. Split detector assembly requires this exact
+artifact, embeds its SHA-256 and generator fields in the runtime, and refuses to
+fall back to a default candidate policy.
+
+Before returning, run this narrow read-only self-check from the project root:
+python -m agentic.detector_build.draft_validation candidate-policy --draft \
+  {candidate_advice_rel} --review {candidate_review_rel} --run-json {run_rel} \
+  --minimum-recall {candidate_policy_minimum_recall:.12g}
+It must print DRAFT_VALIDATION_OK. Repair the draft if needed.
+
+This turn is ONLY the select-candidate-policy advice stage. Treat the review,
+evidence, aggregate table, manifest, AutoDiscovery inputs, policies, templates,
+and existing outputs as read-only. Write only {candidate_advice_rel}; do not
+write {candidate_policy_rel}, feature inventory, model configuration, detector,
+README, or helper files. Do not load a pkl or run feature scoring.
+""".strip(),
+        }
+        steps.insert(0, policy_step)
+    return steps
 
 
 def build_options():
@@ -1103,6 +1301,7 @@ not load a pkl or invent results.
 _REGENERATED = frozenset((
     *BUILD_ARTIFACT_NAMES,
     *build_artifact_names(DetectorTarget.SPLIT),
+    CANDIDATE_POLICY_ADVICE_DRAFT_NAME,
     FEATURE_SEMANTICS_DRAFT_NAME,
     MODEL_ADVICE_DRAFT_NAME,
     FEATURE_IMPLEMENTATION_DRAFT_NAME,
@@ -1350,8 +1549,10 @@ def validate_inventory(
     summary_path: Path | None = None,
     corrected_results_path: Path | None = None,
     reconcile_unbacked_verdicts: bool = False,
+    split_applicability_path: Path | None = None,
+    run_json: Path | None = None,
 ) -> None:
-    """Enforce the v2 inventory and its per-hypothesis source provenance.
+    """Enforce inventory semantics and per-hypothesis source provenance.
 
     ``reconcile_unbacked_verdicts`` mirrors the input gate's flag: report
     post-correction verdicts with no USABLE corrected measurement are expected
@@ -1359,16 +1560,49 @@ def validate_inventory(
     compares against the same normalized value instead of the raw token.
     """
     inventory = _load_json_object(inventory_path, "feature inventory")
+    split_inventory = split_applicability_path is not None
+    if split_inventory != (run_json is not None):
+        raise SystemExit(
+            "Split inventory validation requires both applicability path and run JSON."
+        )
     top_level_fields = {
         "schema_version", "selection_manifest", "selected_ids", "hypotheses",
     }
+    applicability = None
+    if split_inventory:
+        top_level_fields.update({
+            "split_feature_applicability",
+            "split_feature_applicability_sha256",
+        })
     if set(inventory) != top_level_fields:
         raise SystemExit(
             "Feature inventory must contain exactly: "
             + ", ".join(sorted(top_level_fields))
         )
-    if inventory.get("schema_version") != 2:
-        raise SystemExit("Feature inventory must set schema_version to 2.")
+    expected_schema = 3 if split_inventory else 2
+    if inventory.get("schema_version") != expected_schema:
+        raise SystemExit(
+            f"Feature inventory must set schema_version to {expected_schema}."
+        )
+    if split_inventory:
+        assert split_applicability_path is not None and run_json is not None
+        expected_rel = _rel_to_root(split_applicability_path)
+        if inventory.get("split_feature_applicability") != expected_rel:
+            raise SystemExit(
+                "Feature inventory points to the wrong split applicability artifact."
+            )
+        if inventory.get("split_feature_applicability_sha256") != _sha256(
+            split_applicability_path
+        ):
+            raise SystemExit("Feature inventory split applicability SHA-256 is stale.")
+        applicability = load_applicability(
+            split_applicability_path,
+            run_json=run_json,
+            selected_ids=selected_ids,
+            rerun_dir=rerun_dir,
+            fixed_dir=fixed_dir,
+            project_root=PROJECT_ROOT,
+        )
     if inventory.get("selection_manifest") != selection_rel:
         actual_selection = inventory.get("selection_manifest")
         raise SystemExit(
@@ -1611,6 +1845,23 @@ def validate_inventory(
                 "traversal_phase", "measurable_condition",
                 "historical_undefined_sentinel",
             }
+            expected_requirement = None
+            if applicability is not None:
+                required_feature_fields.add("node_role_requirement")
+                annotation = applicability.get(
+                    (hypothesis_id, _sha256(expected_source))
+                )
+                if annotation is None:
+                    raise SystemExit(
+                        f"Inventory hypothesis {hypothesis_id} has no applicability "
+                        "record for its selected feature source."
+                    )
+                expected_requirement = annotation["node_role_requirement"]
+                if expected_requirement == "unclear":
+                    raise SystemExit(
+                        f"Inventory hypothesis {hypothesis_id} cannot include an "
+                        "unclear node-role requirement."
+                    )
             for feature in row["features"]:
                 if not isinstance(feature, dict):
                     raise SystemExit(
@@ -1620,6 +1871,13 @@ def validate_inventory(
                     raise SystemExit(
                         f"Inventory hypothesis {hypothesis_id} feature must contain "
                         "exactly: " + ", ".join(sorted(required_feature_fields))
+                    )
+                if expected_requirement is not None and feature.get(
+                    "node_role_requirement"
+                ) != expected_requirement:
+                    raise SystemExit(
+                        f"Inventory hypothesis {hypothesis_id} feature applicability "
+                        "does not match its exact selected source annotation."
                     )
                 name = feature["name"]
                 if not isinstance(name, str) or not name.strip():
@@ -1663,7 +1921,10 @@ def validate_inventory(
                     "features list."
                 )
 
-    log(f"  OK: inventory v2 validated for {len(rows)} selected hypothesis ids.")
+    log(
+        f"  OK: inventory v{expected_schema} validated for {len(rows)} "
+        "selected hypothesis ids."
+    )
 
 
 def validate_detector_source(detector_path: Path) -> None:
@@ -1740,6 +2001,10 @@ async def run_workflow(
     verbose: bool,
     costs: WorkflowCostSummary,
     reconcile_unbacked_verdicts: bool = False,
+    candidate_review_path: Path | None = None,
+    candidate_policy_minimum_recall: float = (
+        DEFAULT_SPLIT_MIN_WORST_BRAIN_RECALL
+    ),
 ) -> None:
     context = resolve_run_context(
         run_json, reconcile_unbacked_verdicts=reconcile_unbacked_verdicts
@@ -1752,12 +2017,25 @@ async def run_workflow(
             "pre-correction evidence."
         )
     spec = target_spec(context.target)
+    expected_candidate_mcl = expected_mcl_from_run_path(run_json)
+    if spec.target is DetectorTarget.SPLIT:
+        if candidate_review_path is None:
+            raise SystemExit(
+                "Split detector builds require a candidate-pool AI_REVIEW.md."
+            )
+        validate_candidate_policy_sources(
+            candidate_review_path,
+            minimum_recall=candidate_policy_minimum_recall,
+            expected_mcl=expected_candidate_mcl,
+            project_root=PROJECT_ROOT,
+        )
     summary_path = context.summary_path
     rerun_dir = context.rerun_dir
     fixed_dir = context.fixed_dir
     selection_path = context.selection_path
     selected_ids = list(context.selected_ids)
     corrected_results_path = context.corrected_results_path
+    split_applicability_path = context.split_feature_applicability_path
 
     steps = build_steps(
         run_rel=_rel_to_root(run_json),
@@ -1774,6 +2052,15 @@ async def run_workflow(
             if corrected_results_path is not None else None
         ),
         target=context.target,
+        candidate_review_rel=(
+            _rel_to_root(candidate_review_path)
+            if candidate_review_path is not None else None
+        ),
+        candidate_policy_minimum_recall=candidate_policy_minimum_recall,
+        split_applicability_rel=(
+            _rel_to_root(split_applicability_path)
+            if split_applicability_path is not None else None
+        ),
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1795,6 +2082,14 @@ async def run_workflow(
         f"step timeout={AGENT_STEP_TIMEOUT_S}s, "
         f"detector check timeout={DETECTOR_CHECK_TIMEOUT_S}s."
     )
+    if spec.target is DetectorTarget.SPLIT:
+        log(
+            "Split candidate-policy selection: source="
+            f"{_rel_to_root(candidate_review_path)}, objective="
+            f"{CANDIDATE_POLICY_OBJECTIVE_NAME}, minimum worst-brain recall="
+            f"{candidate_policy_minimum_recall:.12g}; the frozen selection is "
+            "required by split detector assembly."
+        )
     wf_start = time.monotonic()
     policy_sha256 = _sha256(MODEL_POLICY_PATH)
     runtime_template_sha256 = _sha256(RUNTIME_TEMPLATE_PATH)
@@ -1802,6 +2097,10 @@ async def run_workflow(
     protected_hashes = {
         path: _sha256(path) for path in protected_source_paths(context)
     }
+    if spec.target is DetectorTarget.SPLIT:
+        for path in candidate_policy_source_paths(candidate_review_path):
+            protected_hashes[path] = _sha256(path)
+    candidate_policy_sha256: str | None = None
     inventory_sha256: str | None = None
     model_config_sha256: str | None = None
     detector_sha256: str | None = None
@@ -1825,6 +2124,12 @@ async def run_workflow(
         )
         for protected_path, protected_sha256 in protected_hashes.items():
             require_unchanged(protected_path, protected_sha256, "discovery input")
+        if candidate_policy_sha256 is not None:
+            require_unchanged(
+                out_dir / CANDIDATE_POLICY_NAME,
+                candidate_policy_sha256,
+                "select-candidate-policy",
+            )
         if inventory_sha256 is not None:
             require_unchanged(
                 out_dir / FEATURE_INVENTORY_NAME,
@@ -1872,6 +2177,14 @@ async def run_workflow(
             agent_model=AGENT_MODEL,
             agent_effort=AGENT_EFFORT,
             target=context.target,
+            candidate_policy_path=(
+                out_dir / CANDIDATE_POLICY_NAME
+                if spec.target is DetectorTarget.SPLIT else None
+            ),
+            candidate_policy_rel=(
+                _rel_to_root(out_dir / CANDIDATE_POLICY_NAME)
+                if spec.target is DetectorTarget.SPLIT else None
+            ),
         )
         run_commands_sha256 = _sha256(run_commands_path)
         log(
@@ -1892,6 +2205,14 @@ async def run_workflow(
             cache_hint=origin_cache_hint(run_json),
             primary_metric=PRIMARY_METRIC,
             target=context.target,
+            candidate_policy_path=(
+                out_dir / CANDIDATE_POLICY_NAME
+                if spec.target is DetectorTarget.SPLIT else None
+            ),
+            candidate_policy_rel=(
+                _rel_to_root(out_dir / CANDIDATE_POLICY_NAME)
+                if spec.target is DetectorTarget.SPLIT else None
+            ),
         )
         log(
             f"  Driver wrote factual README skeleton at "
@@ -1899,6 +2220,71 @@ async def run_workflow(
         )
         readme_driver_block = read_driver_generated_block(readme_path)
         readme_skeleton_sha256 = _sha256(readme_path)
+
+    # Candidate-policy advice follows the same transactional pattern as feature
+    # and model drafts; the resulting public artifact is mandatory assembly input.
+    candidate_advice_path = out_dir / CANDIDATE_POLICY_ADVICE_DRAFT_NAME
+    candidate_policy_path = out_dir / CANDIDATE_POLICY_NAME
+    if spec.target is DetectorTarget.SPLIT:
+        if candidate_policy_path.is_file():
+            try:
+                validate_frozen_candidate_policy(
+                    candidate_policy_path,
+                    candidate_review_path,
+                    minimum_recall=candidate_policy_minimum_recall,
+                    expected_mcl=expected_candidate_mcl,
+                    project_root=PROJECT_ROOT,
+                )
+            except SystemExit as exc:
+                log(f"Existing split candidate policy is stale; rebuilding it: {exc}")
+            else:
+                candidate_policy_sha256 = _sha256(candidate_policy_path)
+                if candidate_advice_path.is_file():
+                    candidate_advice_path.unlink()
+                steps = [
+                    step for step in steps
+                    if step["name"] != "select-candidate-policy"
+                ]
+                log(
+                    "Recovered validated split_candidate_policy.json; "
+                    "skipping candidate-policy agent turn."
+                )
+        if (
+            candidate_policy_sha256 is None
+            and candidate_advice_path.is_file()
+        ):
+            try:
+                compile_candidate_policy(
+                    candidate_advice_path,
+                    candidate_policy_path,
+                    candidate_review_path,
+                    minimum_recall=candidate_policy_minimum_recall,
+                    expected_mcl=expected_candidate_mcl,
+                    project_root=PROJECT_ROOT,
+                )
+                validate_frozen_candidate_policy(
+                    candidate_policy_path,
+                    candidate_review_path,
+                    minimum_recall=candidate_policy_minimum_recall,
+                    expected_mcl=expected_candidate_mcl,
+                    project_root=PROJECT_ROOT,
+                )
+            except SystemExit as exc:
+                log(
+                    "Existing candidate-policy advice is not recoverable "
+                    f"deterministically; retaining it for agent repair: {exc}"
+                )
+            else:
+                candidate_policy_sha256 = _sha256(candidate_policy_path)
+                candidate_advice_path.unlink()
+                steps = [
+                    step for step in steps
+                    if step["name"] != "select-candidate-policy"
+                ]
+                log(
+                    "Recovered validated candidate-policy advice and froze "
+                    "split_candidate_policy.json; skipping repeated agent turn."
+                )
 
     # Drafts are transactional: a failed compile/check leaves the stage-owned
     # hidden draft in place, while successful stages remove it. Revalidate a
@@ -1920,6 +2306,8 @@ async def run_workflow(
                 rerun_dir=rerun_dir,
                 fixed_dir=fixed_dir,
                 project_root=PROJECT_ROOT,
+                split_applicability_path=split_applicability_path,
+                run_json=(run_json if split_applicability_path is not None else None),
             )
             for change in canonical_changes:
                 log(f"  Canonicalized semantic draft: {change}")
@@ -1931,6 +2319,8 @@ async def run_workflow(
                 fixed_dir,
                 summary_path,
                 corrected_results_path,
+                split_applicability_path=split_applicability_path,
+                run_json=(run_json if split_applicability_path is not None else None),
             )
         except SystemExit as exc:
             log(
@@ -1963,6 +2353,8 @@ async def run_workflow(
                 fixed_dir,
                 summary_path,
                 corrected_results_path,
+                split_applicability_path=split_applicability_path,
+                run_json=(run_json if split_applicability_path is not None else None),
             )
         except SystemExit as exc:
             log(f"Existing feature inventory is stale; rebuilding it: {exc}")
@@ -2021,6 +2413,10 @@ async def run_workflow(
                 feature_path,
                 detector_path,
                 target=context.target,
+                candidate_policy_path=(
+                    candidate_policy_path
+                    if spec.target is DetectorTarget.SPLIT else None
+                ),
             )
             validate_detector_source(detector_path)
             validate_detector_executable(detector_path, config_path)
@@ -2057,7 +2453,46 @@ async def run_workflow(
                 f"Step {i}/{len(steps)} '{step['name']}' done in "
                 f"{time.monotonic() - step_start:.0f}s."
             )
-            if step["name"] == "inventory-features":
+            if step["name"] == "select-candidate-policy":
+                candidate_advice_path = (
+                    out_dir / CANDIDATE_POLICY_ADVICE_DRAFT_NAME
+                )
+                candidate_policy_path = out_dir / CANDIDATE_POLICY_NAME
+
+                def finalize_candidate_policy() -> None:
+                    compile_candidate_policy(
+                        candidate_advice_path,
+                        candidate_policy_path,
+                        candidate_review_path,
+                        minimum_recall=candidate_policy_minimum_recall,
+                        expected_mcl=expected_candidate_mcl,
+                        project_root=PROJECT_ROOT,
+                    )
+                    validate_frozen_candidate_policy(
+                        candidate_policy_path,
+                        candidate_review_path,
+                        minimum_recall=candidate_policy_minimum_recall,
+                        expected_mcl=expected_candidate_mcl,
+                        project_root=PROJECT_ROOT,
+                    )
+
+                await finalize_step_with_repairs(
+                    client,
+                    step,
+                    finalize_candidate_policy,
+                    guard_immutable_artifacts,
+                    verbose,
+                    costs,
+                )
+                candidate_policy_sha256 = _sha256(candidate_policy_path)
+                candidate_advice_path.unlink()
+                log(
+                    "  Driver independently validated the candidate sweep and "
+                    f"froze {_rel_to_root(candidate_policy_path)}; removed "
+                    "transient agent advice. Split assembly will require and "
+                    "embed this exact policy."
+                )
+            elif step["name"] == "inventory-features":
                 semantics_path = out_dir / FEATURE_SEMANTICS_DRAFT_NAME
                 inventory_path = out_dir / FEATURE_INVENTORY_NAME
 
@@ -2075,6 +2510,10 @@ async def run_workflow(
                         fixed_dir=fixed_dir,
                         project_root=PROJECT_ROOT,
                         reconcile_unbacked_verdicts=reconcile_unbacked_verdicts,
+                        split_applicability_path=split_applicability_path,
+                        run_json=(
+                            run_json if split_applicability_path is not None else None
+                        ),
                     )
                     for change in canonical_changes:
                         log(f"  Canonicalized semantic draft: {change}")
@@ -2087,6 +2526,10 @@ async def run_workflow(
                         summary_path,
                         corrected_results_path,
                         reconcile_unbacked_verdicts=reconcile_unbacked_verdicts,
+                        split_applicability_path=split_applicability_path,
+                        run_json=(
+                            run_json if split_applicability_path is not None else None
+                        ),
                     )
 
                 await finalize_step_with_repairs(
@@ -2139,6 +2582,10 @@ async def run_workflow(
                             feature_path,
                             detector_path,
                             target=context.target,
+                            candidate_policy_path=(
+                                candidate_policy_path
+                                if spec.target is DetectorTarget.SPLIT else None
+                            ),
                         )
                         validate_detector_source(detector_path)
                         validate_detector_executable(
@@ -2241,6 +2688,29 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--split-candidate-review",
+        type=Path,
+        default=Path(DEFAULT_SPLIT_CANDIDATE_REVIEW_REL),
+        metavar="AI_REVIEW.md",
+        help=(
+            "Completed candidate-pool AI review used only for split builds. "
+            "Its sibling evidence, manifest, and aggregate table are verified "
+            "before output cleanup. Default: "
+            f"{DEFAULT_SPLIT_CANDIDATE_REVIEW_REL}."
+        ),
+    )
+    parser.add_argument(
+        "--split-min-worst-brain-recall",
+        type=float,
+        default=DEFAULT_SPLIT_MIN_WORST_BRAIN_RECALL,
+        metavar="RECALL",
+        help=(
+            "Driver-owned split candidate-policy constraint in (0, 1]. The "
+            "selected policy minimizes total candidate count subject to every "
+            "evaluated brain meeting this recall. Default: 0.90."
+        ),
+    )
+    parser.add_argument(
         "--log-txt",
         type=Path,
         default=None,
@@ -2303,6 +2773,11 @@ def main() -> int:
     if args.yes and args.keep_existing:
         parser.error("--yes and --keep-existing contradict each other: one deletes "
                      "the existing folder, the other keeps it.")
+    if (
+        not math.isfinite(args.split_min_worst_brain_recall)
+        or not 0 < args.split_min_worst_brain_recall <= 1
+    ):
+        parser.error("--split-min-worst-brain-recall must be finite and in (0, 1].")
 
     def _resolve_existing(p: Path, what: str) -> Path:
         rp = p if p.is_absolute() else (PROJECT_ROOT / p).resolve()
@@ -2317,10 +2792,21 @@ def main() -> int:
 
     # Validate the inputs BEFORE anything can be deleted: aborting on a missing
     # report AFTER wiping the output folder would be the worst of both outcomes.
-    resolve_inputs(
+    context = resolve_run_context(
         run_json,
         reconcile_unbacked_verdicts=args.reconcile_unbacked_verdicts,
     )
+    candidate_review_path: Path | None = None
+    if target_spec(context.target).target is DetectorTarget.SPLIT:
+        candidate_review_path = _resolve_existing(
+            args.split_candidate_review, "split candidate-pool AI_REVIEW.md"
+        )
+        validate_candidate_policy_sources(
+            candidate_review_path,
+            minimum_recall=args.split_min_worst_brain_recall,
+            expected_mcl=expected_mcl_from_run_path(run_json),
+            project_root=PROJECT_ROOT,
+        )
 
     # Then the deletion, and note it runs before the tee is installed on purpose —
     # the driver log lives inside the folder being removed, so capturing this into
@@ -2357,6 +2843,10 @@ def main() -> int:
             asyncio.run(run_workflow(
                 run_json, out_dir, args.verbose, costs,
                 reconcile_unbacked_verdicts=args.reconcile_unbacked_verdicts,
+                candidate_review_path=candidate_review_path,
+                candidate_policy_minimum_recall=(
+                    args.split_min_worst_brain_recall
+                ),
             ))
             outcome = "OK"
         except SystemExit as exc:

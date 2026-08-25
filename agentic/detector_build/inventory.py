@@ -13,6 +13,10 @@ from .inputs import (
     sha256,
     unbacked_correction_verdicts,
 )
+try:
+    from agentic.split_feature_applicability import load_applicability
+except ModuleNotFoundError:  # direct workflow-script import via detector_build
+    from split_feature_applicability import load_applicability  # type: ignore[no-redef]
 
 
 SEMANTIC_ROW_FIELDS = {
@@ -201,11 +205,14 @@ def compile_feature_inventory(
     fixed_dir: Path | None,
     project_root: Path,
     reconcile_unbacked_verdicts: bool = False,
+    split_applicability_path: Path | None = None,
+    run_json: Path | None = None,
 ) -> list[str]:
     """Merge semantic judgments with deterministic same-ID provenance.
 
-    The resulting on-disk schema is inventory v2 and is intentionally identical
-    to the workflow's previous public output.  Only its construction changes.
+    Merge output remains inventory v2. Split output is v3 because every feature
+    carries a source-validated node_role_requirement and the top level records
+    the applicability artifact provenance.
 
     ``reconcile_unbacked_verdicts`` mirrors the input gate's flag: a report
     post-correction verdict with no USABLE corrected measurement is transcribed
@@ -216,6 +223,22 @@ def compile_feature_inventory(
     draft = validate_semantic_draft(
         semantics_path, selected_ids=selected_ids, project_root=project_root)
     semantic_rows = draft["hypotheses"]
+    if (split_applicability_path is None) != (run_json is None):
+        raise SystemExit(
+            "Split inventory compilation requires both applicability path and run JSON."
+        )
+    applicability = (
+        load_applicability(
+            split_applicability_path,
+            run_json=run_json,
+            selected_ids=selected_ids,
+            rerun_dir=rerun_dir,
+            fixed_dir=fixed_dir,
+            project_root=project_root,
+        )
+        if split_applicability_path is not None and run_json is not None
+        else None
+    )
 
     evidence = report_evidence_by_id(summary_path, project_root)
     corrected_statuses = (
@@ -279,6 +302,24 @@ def compile_feature_inventory(
         else:
             source_path = None
 
+        features = [dict(feature) for feature in row["features"]]
+        if included and applicability is not None:
+            assert source_path is not None
+            annotation = applicability.get((hypothesis_id, sha256(source_path)))
+            if annotation is None:
+                raise SystemExit(
+                    f"Included split hypothesis {hypothesis_id} has no applicability "
+                    "record for its selected feature source."
+                )
+            requirement = annotation["node_role_requirement"]
+            if requirement == "unclear":
+                raise SystemExit(
+                    f"Included split hypothesis {hypothesis_id} has unclear node-role "
+                    "requirements; exclude it rather than generating guessed feature code."
+                )
+            for feature in features:
+                feature["node_role_requirement"] = requirement
+
         compiled_rows.append({
             "id": hypothesis_id,
             "included": included,
@@ -304,15 +345,23 @@ def compile_feature_inventory(
             ),
             "feature_source_sha256": sha256(source_path) if source_path else None,
             "source_reason": source_reason,
-            "features": row["features"],
+            "features": features,
         })
 
     inventory = {
-        "schema_version": 2,
+        "schema_version": 3 if applicability is not None else 2,
         "selection_manifest": selection_manifest,
         "selected_ids": selected_ids,
         "hypotheses": compiled_rows,
     }
+    if applicability is not None:
+        assert split_applicability_path is not None
+        inventory["split_feature_applicability"] = rel_to_root(
+            split_applicability_path, project_root
+        )
+        inventory["split_feature_applicability_sha256"] = sha256(
+            split_applicability_path
+        )
     temporary = inventory_path.with_name(f".{inventory_path.name}.compile.tmp")
     try:
         temporary.write_text(

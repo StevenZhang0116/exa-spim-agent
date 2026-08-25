@@ -38,6 +38,9 @@ The PHASES, in order:
                    [compute] re-measure them (+extras) → [agent] fold
                    UPHELD/WEAKENED/OVERTURNED. (Compute+fold skipped if nothing
                    was flagged.)
+  6. feature-applicability — for split-error runs only, [agent] classifies the
+                   minimum node-role requirement of each exact rerun/fixed
+                   source → [driver] binds those judgments to source hashes.
 
 Every step folds into ONE report whose top-level layout is fixed by
 ``REPORT_SECTION_ORDER`` (Header → Ranked Conclusions → Reproduction →
@@ -100,6 +103,23 @@ import traceback
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
+
+try:
+    from agentic.split_feature_applicability import (
+        NODE_ROLE_REQUIREMENTS,
+        artifact_path as split_applicability_path,
+        compile_applicability,
+        draft_path as split_applicability_draft_path,
+        load_applicability,
+    )
+except ModuleNotFoundError:  # direct: python agentic/run_discovery_workflow.py
+    from split_feature_applicability import (  # type: ignore[no-redef]
+        NODE_ROLE_REQUIREMENTS,
+        artifact_path as split_applicability_path,
+        compile_applicability,
+        draft_path as split_applicability_draft_path,
+        load_applicability,
+    )
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -253,6 +273,13 @@ PREDICTIVE_POLICY_VERSION: str = "exclusion-only-v1"
 PREDICTIVE_MANIFEST_SUFFIX: str = ".predictive-selection.json"
 # Default name for this driver's captured console log (see driver_log_path).
 DRIVER_LOG_SUFFIX: str = ".workflow.log.txt"
+
+
+def _is_split_run(path: Path | str) -> bool:
+    stem = Path(path).name.lower()
+    return stem == "split-error.json" or stem.startswith(
+        ("split-error-", "split-error_")
+    )
 
 # --- Timeout budgets ---------------------------------------------------------
 # Agent budgets scale with how many hypotheses the report carries, because the
@@ -607,6 +634,63 @@ def excluded_rule() -> str:
         f"> 0), close the report with an '{EXCLUDED_SECTION} (no surprisal score)' "
         "appendix listing their run + id so coverage is transparent. "
     )
+
+
+def split_feature_label_step(
+    json_rel: str,
+    rerun_dir_rel: str,
+    fixed_dir_rel: str,
+) -> dict[str, object]:
+    """One source-semantic labeling turn shared by full and labels-only runs."""
+    run_path = PROJECT_ROOT / json_rel
+    draft_rel = _rel_to_root(split_applicability_draft_path(run_path))
+    output_rel = _rel_to_root(split_applicability_path(run_path))
+    requirements = ", ".join(sorted(NODE_ROLE_REQUIREMENTS))
+    order_source = (
+        f"authoritative selected_ids order in {PREDICTIVE_MANIFEST}"
+        if PREDICTIVE_MANIFEST is not None
+        else f"records order in {rerun_dir_rel}/MANIFEST.json"
+    )
+    return {
+        "name": "label-split-feature-applicability",
+        "phase": "feature-applicability",
+        "kind": "agent",
+        "expects_file": draft_rel,
+        "compile_split_applicability": {
+            "run": json_rel,
+            "draft": draft_rel,
+            "output": output_rel,
+        },
+        "instruction": f"""
+Use the discovery-detector-builder subagent to classify the node-role requirement
+of every available selected split-feature source. This is a small semantic
+annotation step; do not run experiments, load a pkl, edit a hypothesis script,
+or change the report.
+
+Use the {order_source}. For each id, read {rerun_dir_rel}/hypo_<id>.py. If a
+same-id source exists under {fixed_dir_rel}/, classify it as a separate `fixed`
+record immediately after the corresponding `rerun` record. Write only
+{draft_rel} as valid JSON with exactly schema_version=1 and records. Every
+record has exactly id, source, node_role_requirement, and reason. `source` is
+`rerun` or `fixed`. node_role_requirement must be one of: {requirements}.
+
+Classify the minimum node-role precondition of the feature quantities, not the
+candidate-generation policy:
+- requires_both_tips: the measurement needs both participating nodes to be
+  degree-1 tips, for example a two-terminal direction comparison;
+- requires_tip_anchor: the anchor must be a degree-1 tip but the partner may be
+  a tip, shaft, or branch node;
+- no_tip_requirement: the measurement is valid without either node being a tip;
+- unclear: the source mixes incompatible requirements or the minimum safe
+  requirement cannot be established without guessing.
+
+The categories are requirements, not mutually exclusive candidate pools. A
+requires_tip_anchor feature remains valid on the tip-tip subset. Give each row a
+short concrete reason grounded in its source math. Do not include paths, hashes,
+selected_ids, feature scores, or candidate-policy values; the driver owns those
+fields and will bind this draft to exact source SHA-256 values.
+""".strip(),
+    }
 
 
 def build_steps(
@@ -1079,6 +1163,11 @@ def build_steps(
         }
     )
 
+    if _is_split_run(json_rel):
+        steps.append(
+            split_feature_label_step(json_rel, rerun_dir_rel, fixed_dir_rel)
+        )
+
     return steps
 
 
@@ -1210,6 +1299,93 @@ def _rel_to_root(path: Path) -> str:
     plain ``relative_to`` would raise — ``os.path.relpath`` handles parent dirs.
     """
     return Path(os.path.relpath(path, PROJECT_ROOT)).as_posix()
+
+
+def _resolve_split_label_inputs(
+    run_json: Path,
+) -> tuple[list[int], Path, Path | None]:
+    """Resolve current selected sources without loading a dataset.
+
+    Predictive artifacts take precedence, matching detector-build input
+    resolution. Legacy rerun artifacts remain labelable for older completed
+    discovery runs.
+    """
+    predictive_rerun = run_json.with_name(f"{run_json.name}.predictive.rerun")
+    legacy_rerun = run_json.with_name(f"{run_json.name}.rerun")
+    predictive_ready = predictive_rerun.is_dir() and any(
+        predictive_rerun.glob("hypo_*.py")
+    )
+    rerun_dir = predictive_rerun if predictive_ready else legacy_rerun
+    manifest_path = rerun_dir / "MANIFEST.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        records = manifest["records"]
+        rerun_ids = [row["id"] for row in records]
+    except (OSError, KeyError, TypeError, ValueError) as exc:
+        raise SystemExit(
+            f"Cannot resolve split feature sources from "
+            f"{_rel_to_root(manifest_path)}: {exc}"
+        ) from exc
+    if (
+        not rerun_ids
+        or any(isinstance(value, bool) or not isinstance(value, int) for value in rerun_ids)
+        or len(rerun_ids) != len(set(rerun_ids))
+    ):
+        raise SystemExit("Split feature labeling requires unique integer rerun IDs.")
+
+    if predictive_ready:
+        selection = predictive_manifest_path(run_json)
+        _validate_predictive_manifest(
+            _rel_to_root(selection), _rel_to_root(run_json), log_success=False
+        )
+        selected_payload = json.loads(selection.read_text(encoding="utf-8"))
+        selected_ids = selected_payload["selected_ids"]
+        if selected_ids != rerun_ids:
+            raise SystemExit(
+                "Predictive selection order must match rerun MANIFEST order before "
+                "split feature applicability can be labeled."
+            )
+        fixed_candidate = run_json.with_name(
+            f"{run_json.name}.predictive.fixed"
+        )
+    else:
+        selected_ids = rerun_ids
+        fixed_candidate = run_json.with_name(f"{run_json.name}.fixed")
+    fixed_dir = (
+        fixed_candidate
+        if fixed_candidate.is_dir() and any(fixed_candidate.glob("hypo_*.py"))
+        else None
+    )
+    return selected_ids, rerun_dir, fixed_dir
+
+
+def _compile_split_label_step(spec: dict[str, object]) -> None:
+    run_json = PROJECT_ROOT / str(spec["run"])
+    selected_ids, rerun_dir, fixed_dir = _resolve_split_label_inputs(run_json)
+    draft = PROJECT_ROOT / str(spec["draft"])
+    output = PROJECT_ROOT / str(spec["output"])
+    compile_applicability(
+        draft,
+        output,
+        run_json=run_json,
+        selected_ids=selected_ids,
+        rerun_dir=rerun_dir,
+        fixed_dir=fixed_dir,
+        project_root=PROJECT_ROOT,
+    )
+    load_applicability(
+        output,
+        run_json=run_json,
+        selected_ids=selected_ids,
+        rerun_dir=rerun_dir,
+        fixed_dir=fixed_dir,
+        project_root=PROJECT_ROOT,
+    )
+    draft.unlink()
+    log(
+        f"  [validate] compiled source-bound split feature applicability at "
+        f"{_rel_to_root(output)}."
+    )
 
 
 def _has_hypo_scripts(dir_rel: str) -> bool:
@@ -1509,6 +1685,14 @@ def survey_prior_artifacts(json_path: Path, direction: str) -> list[tuple[Path, 
             findings.append((path, reason))
 
     add(json_path.with_suffix(".summary.md"), "existing analysis report")
+    add(
+        split_applicability_path(json_path),
+        "source-bound split feature applicability from a previous invocation",
+    )
+    add(
+        split_applicability_draft_path(json_path),
+        "unfinished split feature applicability draft",
+    )
     prior_log = json_path.with_name(
         f"{json_path.name}{scope}{DRIVER_LOG_SUFFIX}"
     )
@@ -1750,6 +1934,51 @@ async def run_smoke(json_path: Path) -> None:
         PREDICTIVE_MANIFEST = None
 
 
+async def run_split_feature_labeling_only(json_path: Path) -> None:
+    """Backfill/refresh applicability metadata without rerunning discovery."""
+    if not _is_split_run(json_path):
+        raise SystemExit("--split-feature-labels-only requires a split-error run.")
+    selected_ids, rerun_dir, fixed_dir = _resolve_split_label_inputs(json_path)
+    global PREDICTIVE_MANIFEST
+    PREDICTIVE_MANIFEST = (
+        _rel_to_root(predictive_manifest_path(json_path))
+        if ".predictive.rerun" in rerun_dir.name
+        else None
+    )
+    output = split_applicability_path(json_path)
+    if output.is_file():
+        try:
+            load_applicability(
+                output,
+                run_json=json_path,
+                selected_ids=selected_ids,
+                rerun_dir=rerun_dir,
+                fixed_dir=fixed_dir,
+                project_root=PROJECT_ROOT,
+            )
+        except SystemExit as exc:
+            log(f"Existing split feature applicability is stale; refreshing: {exc}")
+        else:
+            log(
+                f"Reusing current split feature applicability "
+                f"{_rel_to_root(output)}."
+            )
+            return
+    fixed_candidate = fixed_dir or json_path.with_name(
+        f"{json_path.name}{'.predictive' if PREDICTIVE_MANIFEST else ''}.fixed"
+    )
+    step = split_feature_label_step(
+        _rel_to_root(json_path),
+        _rel_to_root(rerun_dir),
+        _rel_to_root(fixed_candidate),
+    )
+    async with ClaudeSDKClient(options=build_options()) as client:
+        final_text = await run_step(client, step)
+        print(final_text.strip())
+    _validate_step_output(step, json_path.with_suffix(".summary.md"))
+    _compile_split_label_step(dict(step["compile_split_applicability"]))
+
+
 async def run_workflow(
     json_path: Path,
     pkl_path: Path,
@@ -1831,6 +2060,35 @@ async def run_workflow(
                         f"{step['expects_file']}."
                     )
                     continue
+                applicability_spec = step.get("compile_split_applicability")
+                if applicability_spec:
+                    spec_dict = dict(applicability_spec)
+                    run_for_labels = PROJECT_ROOT / str(spec_dict["run"])
+                    output_for_labels = PROJECT_ROOT / str(spec_dict["output"])
+                    if output_for_labels.is_file():
+                        try:
+                            ids, rerun_for_labels, fixed_for_labels = (
+                                _resolve_split_label_inputs(run_for_labels)
+                            )
+                            load_applicability(
+                                output_for_labels,
+                                run_json=run_for_labels,
+                                selected_ids=ids,
+                                rerun_dir=rerun_for_labels,
+                                fixed_dir=fixed_for_labels,
+                                project_root=PROJECT_ROOT,
+                            )
+                        except SystemExit as exc:
+                            log(
+                                f"  [agent] existing split applicability is stale; "
+                                f"refreshing: {exc}"
+                            )
+                        else:
+                            log(
+                                f"  [agent] reusing current split feature "
+                                f"applicability {spec_dict['output']}."
+                            )
+                            continue
                 brief_spec = step.get("failure_brief")
                 if brief_spec:
                     brief = _failure_brief(
@@ -1882,6 +2140,9 @@ async def run_workflow(
                     _stamp_predictive_manifest(
                         str(step["expects_file"]), str(manifest_source)
                     )
+                applicability_spec = step.get("compile_split_applicability")
+                if applicability_spec:
+                    _compile_split_label_step(dict(applicability_spec))
             log(
                 f"Step {i}/{len(steps)} '{name}' done in "
                 f"{time.monotonic() - step_start:.0f}s."
@@ -1963,7 +2224,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--direction",
-        required=True,
+        required=False,
         choices=["both", "positive", "predictive"],
         help=(
             "Which hypothesis directions to include in the report. "
@@ -1974,6 +2235,15 @@ def main() -> int:
             "'predictive' starts with every hypothesis, removes only explicit "
             "invalid/constant/non-predictive/confounded exclusions, and applies no "
             "score or top-K cutoff to the remaining candidates."
+        ),
+    )
+    parser.add_argument(
+        "--split-feature-labels-only",
+        action="store_true",
+        help=(
+            "For a completed split-error run, read existing selection/rerun/fixed "
+            "artifacts and generate the source-bound split feature applicability "
+            "JSON only. Does not require --pkl or rerun experiments."
         ),
     )
     parser.add_argument(
@@ -2021,9 +2291,17 @@ def main() -> int:
         return rp
 
     json_path = _resolve_existing(args.path, "run JSON file")
+    if args.direction is None and not args.split_feature_labels_only:
+        parser.error("--direction is required unless --split-feature-labels-only is used.")
+    if args.split_feature_labels_only and args.smoke:
+        parser.error("--split-feature-labels-only cannot be combined with --smoke.")
+    if args.split_feature_labels_only and (args.pkl is not None or args.extra_pkl):
+        parser.error(
+            "--split-feature-labels-only does not accept --pkl or --extra-pkl."
+        )
     if args.smoke and args.extra_pkl:
         parser.error("--smoke cannot be combined with --extra-pkl.")
-    if not args.smoke and args.pkl is None:
+    if not args.smoke and not args.split_feature_labels_only and args.pkl is None:
         parser.error("--pkl is required unless --smoke is used.")
     pkl_path = (
         _resolve_existing(args.pkl, "dataset pkl")
@@ -2037,7 +2315,11 @@ def main() -> int:
     )
 
     global DIRECTION
-    DIRECTION = args.direction
+    DIRECTION = args.direction or "predictive"
+
+    if args.split_feature_labels_only:
+        asyncio.run(run_split_feature_labeling_only(json_path))
+        return 0
 
     def _announce_selection() -> list:
         """Print the direction, resolve TOP_K, and return the parsed records.

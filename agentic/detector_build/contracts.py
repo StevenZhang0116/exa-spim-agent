@@ -20,6 +20,8 @@ RUN_COMMANDS_NAME = "RUN_COMMANDS.md"
 FEATURE_SEMANTICS_DRAFT_NAME = ".feature_semantics.json"
 MODEL_ADVICE_DRAFT_NAME = ".model_advice.json"
 FEATURE_IMPLEMENTATION_DRAFT_NAME = ".feature_implementation.py"
+CANDIDATE_POLICY_NAME = "split_candidate_policy.json"
+CANDIDATE_POLICY_ADVICE_DRAFT_NAME = ".candidate_policy_advice.json"
 
 class DetectorTarget(str, Enum):
     """The scientific label contract implemented by the generated runtime."""
@@ -54,7 +56,6 @@ class TargetSpec:
     identity_columns: tuple[str, ...]
     score_prefix: str
     accumulator_name: str
-    candidate_radius_um: float | None = None
 
 
 _TARGET_SPECS = {
@@ -87,10 +88,6 @@ _TARGET_SPECS = {
         identity_columns=("candidate_id", "segment_id_a", "segment_id_b"),
         score_prefix="split_probability",
         accumulator_name="FeatureAccumulator",
-        # The first supported split run uses nearby-endpoint candidate radii up
-        # to 30 um. Candidate generation is driver-owned and remains fixed when
-        # hypotheses are later excluded.
-        candidate_radius_um=30.0,
     ),
 }
 
@@ -122,7 +119,7 @@ BUILD_ARTIFACT_NAMES = (
 
 def build_artifact_names(target: DetectorTarget) -> tuple[str, ...]:
     spec = target_spec(target)
-    return (
+    common = (
         FEATURE_INVENTORY_NAME,
         MODEL_CONFIG_NAME,
         spec.detector_name,
@@ -130,6 +127,9 @@ def build_artifact_names(target: DetectorTarget) -> tuple[str, ...]:
         RUN_COMMANDS_NAME,
         DRIVER_LOG_NAME,
     )
+    if spec.target is DetectorTarget.SPLIT:
+        return (CANDIDATE_POLICY_NAME, *common)
+    return common
 
 
 @dataclass(frozen=True)
@@ -143,6 +143,7 @@ class RunContext:
     fixed_dir: Path | None
     selection_path: Path | None
     corrected_results_path: Path | None
+    split_feature_applicability_path: Path | None
     selected_ids: tuple[int, ...]
     # Hypothesis ids whose report post-correction verdict had no USABLE
     # corrected measurement and was therefore treated as null. Non-empty only

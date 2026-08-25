@@ -27,6 +27,7 @@ features are emitted as NaN with a companion `<feature>_is_defined` flag.
 import argparse
 import gc
 import hashlib
+import inspect
 import json
 import os
 import platform
@@ -35,8 +36,69 @@ import sys
 import time
 import traceback
 from collections import defaultdict
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 import numpy as np
+
+
+def _available_cpu_count():
+    """Return CPUs available to this process, honoring affinity when present."""
+    affinity = getattr(os, "sched_getaffinity", None)
+    if affinity is not None:
+        try:
+            count = len(affinity(0))
+            if count > 0:
+                return count
+        except (OSError, TypeError):
+            pass
+    return max(1, int(os.cpu_count() or 1))
+
+
+def _resolve_image_worker_count(requested):
+    """Resolve -1/all and 0/capped-auto image-worker conventions."""
+    requested = 0 if requested is None else int(requested)
+    if requested == -1:
+        return _available_cpu_count()
+    if requested == 0:
+        return min(8, _available_cpu_count())
+    if requested < -1:
+        raise ValueError(
+            "--n-jobs must be -1, zero, or a positive integer")
+    return requested
+
+
+def _bounded_thread_map(function, items, max_workers):
+    """Yield completed results with only O(max_workers) futures in memory.
+
+    Results intentionally arrive in completion order: a slow early item must
+    not prevent the pool from replenishing work for later completed items.
+    Callers that require stable output order must store results by row id.
+    """
+    max_workers = int(max_workers)
+    if max_workers <= 1:
+        for item in items:
+            yield function(item)
+        return
+
+    iterator = iter(items)
+    with ThreadPoolExecutor(max_workers=max_workers,
+                            thread_name_prefix="image-patch") as executor:
+        pending = set()
+        for _ in range(max_workers * 2):
+            try:
+                pending.add(executor.submit(function, next(iterator)))
+            except StopIteration:
+                break
+        while pending:
+            completed, pending = wait(
+                pending, return_when=FIRST_COMPLETED)
+            for future in completed:
+                result = future.result()
+                try:
+                    pending.add(executor.submit(function, next(iterator)))
+                except StopIteration:
+                    pass
+                yield result
 
 
 # --------------------------------------------------------------------------- #
@@ -2019,7 +2081,11 @@ def build_arg_parser():
                     help="drop rows whose is_defined flags are ALL zero "
                          "(applied identically to train and held-out).")
     ap.add_argument("--review-budget", type=int, default=100)
-    ap.add_argument("--n-jobs", type=int, default=1)
+    ap.add_argument(
+        "--n-jobs", type=int, default=0,
+        help="image-patch worker threads for image-heavy detectors "
+             "(-1 = all available CPUs; default: 0 = auto, capped at 8; "
+             "1 = serial extraction; ignored by sparse/non-image extraction).")
     ap.add_argument("--log-txt", default=None)
     ap.add_argument("--measuretime", action="store_true",
                     help="profile hypothesis computation cost on a small "
@@ -2043,6 +2109,21 @@ def _inventory_sha(inventory_path):
     if inventory_path and os.path.exists(inventory_path):
         return _sha256_file(inventory_path)
     return None
+
+
+def _extract_features_runtime(payload, *, verbose=True, timing=None,
+                              enabled_analysis_keys=None,
+                              profile_segment_limit=None, image_workers=1):
+    """Call old or image-thread-aware feature fragments compatibly."""
+    kwargs = {
+        "verbose": verbose,
+        "timing": timing,
+        "enabled_analysis_keys": enabled_analysis_keys,
+        "profile_segment_limit": profile_segment_limit,
+    }
+    if "image_workers" in inspect.signature(extract_features).parameters:
+        kwargs["image_workers"] = image_workers
+    return extract_features(payload, **kwargs)
 
 
 def _drop_all_undefined(df, samples, labels):
@@ -2153,9 +2234,10 @@ def run_measuretime(args, log):
         log("measuretime: profiling at most %d target-related occurrences only"
             % args.measuretime_occurrences)
         started = time.perf_counter()
-        profiled_samples, profiled_labels, _ = extract_features(
+        profiled_samples, profiled_labels, _ = _extract_features_runtime(
             payload, verbose=True, timing=recorder,
-            profile_segment_limit=args.measuretime_occurrences)
+            profile_segment_limit=args.measuretime_occurrences,
+            image_workers=1)
         recorder.record_wall_seconds(
             "feature_extraction", time.perf_counter() - started)
         profile_metadata = dict(
@@ -2232,8 +2314,9 @@ def run_detector(args, log):
     log("loading training payload: %s" % args.pkl)
     payload = load_payload(args.pkl)
     train_mcl = mcl_from_payload(payload, args.pkl)
-    samples, labels, acc = extract_features(
-        payload, verbose=True, enabled_analysis_keys=enabled_analysis_keys)
+    samples, labels, acc = _extract_features_runtime(
+        payload, verbose=True, enabled_analysis_keys=enabled_analysis_keys,
+        image_workers=args.n_jobs)
     feat_df = acc.to_frame()
     universe_audit = sample_universe_audit(payload, samples, labels)
     # Release the big payload before model fitting.
@@ -2412,9 +2495,10 @@ def _run_heldout(args, final_est, winner, win_params, configured, policy,
         log("WARNING: mcl mismatch train=%s test=%s — the filter changes both "
             "the dataless fraction and the fill-factor gate." % (train_mcl,
                                                                  test_mcl))
-    samples_t, labels_t, acc_t = extract_features(
+    samples_t, labels_t, acc_t = _extract_features_runtime(
         payload, verbose=True,
-        enabled_analysis_keys=set(hypothesis_selection["enabled_analysis_keys"]))
+        enabled_analysis_keys=set(hypothesis_selection["enabled_analysis_keys"]),
+        image_workers=args.n_jobs)
     df_t = acc_t.to_frame()
     heldout_universe_audit = sample_universe_audit(payload, samples_t, labels_t)
     del payload
@@ -2504,6 +2588,9 @@ def _json_default(o):
 def main(argv=None):
     parser = build_arg_parser()
     args = parser.parse_args(argv)
+
+    if args.n_jobs < -1:
+        parser.error("--n-jobs must be -1, zero, or a positive integer")
 
     if args.synthetic_smoke_test and (args.measuretime or
                                       args.hypothesis_selection or

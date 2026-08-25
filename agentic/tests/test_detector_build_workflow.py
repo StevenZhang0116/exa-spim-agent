@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import ast
 import asyncio
 import importlib.util
 import hashlib
 import json
 import sys
 import tempfile
+import threading
 import types
 import unittest
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
-from agentic.detector_build.assembly import assemble_detector
+from agentic.detector_build.assembly import (
+    assemble_detector,
+    validate_feature_implementation,
+)
+from agentic.detector_build.candidate_policy import APPLICATION_STATUS
 from agentic.detector_build.contracts import DetectorTarget
 
 
@@ -38,6 +45,23 @@ def _load_module():
 
 
 workflow = _load_module()
+
+
+def _write_split_candidate_policy(root: Path) -> Path:
+    path = root / "split_candidate_policy.json"
+    path.write_text(json.dumps({
+        "schema_version": 1,
+        "artifact_type": "split_candidate_policy_selection",
+        "application_status": APPLICATION_STATUS,
+        "selected_policy": {
+            "config_id": "tip_to_any_node|r=50|k=2",
+            "mode": "tip_to_any_node",
+            "radius_um": 50,
+            "per_anchor_k": 2,
+            "global_cap": None,
+        },
+    }))
+    return path
 
 
 class DetectorBuildWorkflowTests(unittest.TestCase):
@@ -168,12 +192,65 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "runtime-owned.*run_detector"):
                 assemble_detector(template, feature, output)
 
+    def test_image_heavy_feature_fragment_requires_bounded_threads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            feature = Path(tmpdir) / "feature.py"
+            serial_source = (
+                "FEATURE_REGISTRY = [('x',), ('y',)]\n"
+                "ANALYSIS_TIMING_GROUPS = [\n"
+                "    {'key': 'hypo_1', 'hypothesis_ids': [1], "
+                "'phase': 'image_patch_pass', 'feature_names': ['x']},\n"
+                "    {'key': 'hypo_2', 'hypothesis_ids': [2], "
+                "'phase': 'image_patch_pass', 'feature_names': ['y']},\n"
+                "]\n"
+                "class SegmentAccumulator:\n    pass\n"
+                "def extract_features(payload, verbose=True, timing=None, "
+                "enabled_analysis_keys=None, profile_segment_limit=None):\n"
+                "    _ = payload, verbose, profile_segment_limit\n"
+                "    def _analysis_enabled(key):\n"
+                "        return enabled_analysis_keys is None or key in enabled_analysis_keys\n"
+                "    _analysis_enabled('hypo_1')\n"
+                "    _analysis_enabled('hypo_2')\n"
+                "    if timing is not None:\n"
+                "        timing.start_phase('image_patch_pass')\n"
+                "        timing.start_analysis('hypo_1')\n"
+                "    return [], [], SegmentAccumulator()\n"
+            )
+            feature.write_text(serial_source)
+            with self.assertRaisesRegex(SystemExit, "must accept image_workers"):
+                validate_feature_implementation(feature)
+
+            threaded_source = serial_source.replace(
+                "profile_segment_limit=None):",
+                "profile_segment_limit=None, image_workers=1):",
+            ).replace(
+                "    _ = payload, verbose, profile_segment_limit\n",
+                "    _ = payload, verbose, profile_segment_limit\n"
+                "    workers = _resolve_image_worker_count(image_workers)\n"
+                "    list(_bounded_thread_map(lambda item: item, [], workers))\n",
+            )
+            feature.write_text(threaded_source)
+            validate_feature_implementation(feature)
+
+            locked_source = threaded_source.replace(
+                "class SegmentAccumulator:\n    pass\n",
+                "class SegmentAccumulator:\n"
+                "    def set(self, name, row_id, value):\n"
+                "        with self._lock:\n"
+                "            self.values[name][row_id] = value\n",
+            )
+            feature.write_text(locked_source)
+            with self.assertRaisesRegex(
+                    SystemExit, "must not acquire a shared"):
+                validate_feature_implementation(feature)
+
     def test_detector_assembly_injects_reviewed_split_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             template = root / "runtime.py.tmpl"
             feature = root / "feature.py"
             output = root / "split_detector.py"
+            candidate_policy = _write_split_candidate_policy(root)
             template.write_text(
                 "import numpy as np\n"
                 "from collections import defaultdict\n"
@@ -202,12 +279,24 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             )
 
             assemble_detector(
-                template, feature, output, target=DetectorTarget.SPLIT)
+                template, feature, output, target=DetectorTarget.SPLIT,
+                candidate_policy_path=candidate_policy)
 
             text = output.read_text()
             self.assertIn("DETECTOR_TARGET = 'split_detection'", text)
+            self.assertIn("CANDIDATE_PAIRING_RULE = 'tip_to_any_node'", text)
+            self.assertIn("CANDIDATE_MAX_DISTANCE_UM = 50.0", text)
+            self.assertIn("CANDIDATE_PER_ANCHOR_K = 2", text)
+            self.assertIn(
+                hashlib.sha256(candidate_policy.read_bytes()).hexdigest(), text
+            )
             self.assertIn("def _derive_split_truth", text)
             self.assertIn("class FeatureAccumulator", text)
+
+            with self.assertRaisesRegex(SystemExit, "requires split_candidate_policy"):
+                assemble_detector(
+                    template, feature, output, target=DetectorTarget.SPLIT
+                )
 
             feature.write_text(
                 feature.read_text().replace(
@@ -218,7 +307,8 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(SystemExit, "GT-only.*gt_edge_error"):
                 assemble_detector(
-                    template, feature, output, target=DetectorTarget.SPLIT)
+                    template, feature, output, target=DetectorTarget.SPLIT,
+                    candidate_policy_path=candidate_policy)
 
     def test_detector_assembly_rejects_every_template_owned_symbol(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -575,6 +665,16 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn('ap.add_argument("--measuretime-occurrences"', template)
         self.assertIn('ap.add_argument("--exclude-hypotheses"', template)
         self.assertIn('ap.add_argument("--hypothesis-selection"', template)
+        self.assertIn("def _bounded_thread_map", template)
+        self.assertIn("FIRST_COMPLETED", template)
+        self.assertIn("Results intentionally arrive in completion order", template)
+        self.assertNotIn("pending.popleft().result()", template)
+        self.assertIn("def _available_cpu_count", template)
+        self.assertIn("def _resolve_image_worker_count", template)
+        self.assertIn("def _extract_features_runtime", template)
+        self.assertIn("default=0", template)
+        self.assertIn("-1 = all available CPUs", template)
+        self.assertIn("args.n_jobs < -1", template)
         self.assertIn("--hypothesis-selection or\n    --exclude-hypotheses", template)
         self.assertNotIn("--exclude-hypotheses 39 6", template)
         self.assertIn('save(fig, 6, "winner_model_explanation")', template)
@@ -593,6 +693,65 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("outer refit FAILED after %.1fs", template)
         self.assertIn("final search %s:", template)
 
+    def test_runtime_image_worker_count_supports_all_cpus(self) -> None:
+        tree = ast.parse(workflow.RUNTIME_TEMPLATE_PATH.read_text())
+        worker_functions = [
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name in {
+                "_available_cpu_count", "_resolve_image_worker_count"
+            }
+        ]
+        namespace = {"os": types.SimpleNamespace(
+            sched_getaffinity=lambda _pid: set(range(12)),
+            cpu_count=lambda: 99,
+        )}
+        exec(compile(ast.Module(body=worker_functions, type_ignores=[]),
+                     "<worker-resolver>", "exec"), namespace)
+        resolve = namespace["_resolve_image_worker_count"]
+
+        self.assertEqual(resolve(-1), 12)
+        self.assertEqual(resolve(0), 8)
+        self.assertEqual(resolve(None), 8)
+        self.assertEqual(resolve(1), 1)
+        self.assertEqual(resolve(5), 5)
+        with self.assertRaisesRegex(ValueError, "must be -1"):
+            resolve(-2)
+
+        namespace["os"] = types.SimpleNamespace(cpu_count=lambda: 6)
+        self.assertEqual(resolve(-1), 6)
+        self.assertEqual(resolve(0), 6)
+
+    def test_runtime_bounded_thread_map_yields_completion_order(self) -> None:
+        tree = ast.parse(workflow.RUNTIME_TEMPLATE_PATH.read_text())
+        bounded_map = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef)
+            and node.name == "_bounded_thread_map"
+        )
+        namespace = {
+            "FIRST_COMPLETED": FIRST_COMPLETED,
+            "ThreadPoolExecutor": ThreadPoolExecutor,
+            "wait": wait,
+        }
+        exec(compile(ast.Module(body=[bounded_map], type_ignores=[]),
+                     "<bounded-thread-map>", "exec"), namespace)
+
+        release_first = threading.Event()
+
+        def work(item: int) -> int:
+            if item == 0:
+                release_first.wait(timeout=2.0)
+            return item
+
+        results = namespace["_bounded_thread_map"](work, range(6), 2)
+        try:
+            first_result = next(results)
+            self.assertNotEqual(first_result, 0)
+        finally:
+            release_first.set()
+        self.assertCountEqual([first_result, *list(results)], range(6))
+
     def test_split_runtime_passes_driver_owned_no_data_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -600,6 +759,7 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             detector = root / "split_site_detector.py"
             inventory = root / "feature_inventory.json"
             model_config = root / "model_candidates.json"
+            candidate_policy = _write_split_candidate_policy(root)
             inventory.write_text("{}\n")
             model_config.write_text(json.dumps(self._valid_model_config(inventory)))
             feature.write_text(
@@ -627,6 +787,7 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 feature,
                 detector,
                 target=DetectorTarget.SPLIT,
+                candidate_policy_path=candidate_policy,
             )
 
             workflow.validate_detector_executable(detector, model_config)
@@ -866,6 +1027,7 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 }],
             }))
             policy.write_text("{}\n")
+            candidate_policy = _write_split_candidate_policy(app)
             template.write_text("# runtime\n")
             readme = app / "README.md"
             commands = app / "RUN_COMMANDS.md"
@@ -883,6 +1045,8 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 cache_hint=None,
                 primary_metric="average_precision",
                 target=DetectorTarget.SPLIT,
+                candidate_policy_path=candidate_policy,
+                candidate_policy_rel="app/split_candidate_policy.json",
             )
             workflow.write_run_commands(
                 commands,
@@ -902,6 +1066,8 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 agent_model="test",
                 agent_effort="test",
                 target=DetectorTarget.SPLIT,
+                candidate_policy_path=candidate_policy,
+                candidate_policy_rel="app/split_candidate_policy.json",
             )
 
             readme_text = readme.read_text()
@@ -911,6 +1077,13 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             self.assertIn('DETECTOR="$APP_DIR/split_site_detector.py"', commands_text)
             self.assertIn("split_detector_", commands_text)
             self.assertNotIn("merge_detector_", commands_text)
+            self.assertIn("tip_to_any_node", readme_text)
+            self.assertIn("Maximum radius: `50`", readme_text)
+            self.assertIn("split_candidate_policy.json", commands_text)
+            self.assertIn(
+                hashlib.sha256(candidate_policy.read_bytes()).hexdigest(),
+                commands_text,
+            )
             self.assertIn("--job-name=split-detector", commands_text)
             self.assertIn("--nodelist=n287", commands_text)
 
@@ -1040,6 +1213,33 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             (root / "run.json.rerun").rename(
                 root / "split-error-794495-mcl100-run-2.json.rerun"
             )
+            rerun_source = (
+                root / "split-error-794495-mcl100-run-2.json.rerun" / "hypo_1.py"
+            )
+            applicability = (
+                root
+                / "split-error-794495-mcl100-run-2.split-feature-applicability.json"
+            )
+            applicability.write_text(json.dumps({
+                "schema_version": 1,
+                "source_run": "split-error-794495-mcl100-run-2.json",
+                "source_run_sha256": hashlib.sha256(
+                    split_run.read_bytes()
+                ).hexdigest(),
+                "selected_ids": [1],
+                "records": [{
+                    "id": 1,
+                    "source": "rerun",
+                    "source_path": (
+                        "split-error-794495-mcl100-run-2.json.rerun/hypo_1.py"
+                    ),
+                    "source_sha256": hashlib.sha256(
+                        rerun_source.read_bytes()
+                    ).hexdigest(),
+                    "node_role_requirement": "requires_tip_anchor",
+                    "reason": "Uses one terminal anchor and an arbitrary partner.",
+                }],
+            }))
 
             context = workflow.resolve_run_context(split_run)
 
@@ -1205,6 +1405,12 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("runtime-provided\ntiming recorder around every analysis group", generate)
         self.assertIn("enabled_analysis_keys=None", generate)
         self.assertIn("profile_segment_limit=None", generate)
+        self.assertIn("image_workers=1", generate)
+        self.assertIn("strict\nmajority", generate)
+        self.assertIn("_bounded_thread_map", generate)
+        self.assertIn("`-1`\n  uses every CPU", generate)
+        self.assertIn("force one image worker whenever `timing is not None`", generate)
+        self.assertIn("half or fewer", generate)
         self.assertIn("default limit of\n3", generate)
         self.assertIn("final-run selection unit", generate)
         self.assertIn("does not make the final\ndecision automatically", generate)
@@ -1212,6 +1418,9 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("component traversal has flushed segment/component", verify)
         self.assertIn("final per-feature cumulative timing/call-count", verify)
         self.assertIn("schema-v2 timing JSON", verify)
+        self.assertIn("bounded completion-order thread map", verify)
+        self.assertIn("never acquire a shared lock for every feature write", generate)
+        self.assertIn("without a shared per-feature write lock", verify)
         self.assertIn("without audit, CV, fitting", verify)
         self.assertIn("--hypothesis-selection", verify)
         self.assertIn("does not choose exclusions automatically", verify)
@@ -1232,19 +1441,48 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             selected_ids=[6, 39],
             out_dir_rel="autodiscovery-application/split-error-run",
             target=DetectorTarget.SPLIT,
+            candidate_review_rel=(
+                "notebooks/split_candidate_pool_sweep_outputs/fixture/AI_REVIEW.md"
+            ),
+            split_applicability_rel=(
+                "autodiscovery/split-error-run.split-feature-applicability.json"
+            ),
         )
         by_name = {step["name"]: step for step in steps}
+        policy = by_name["select-candidate-policy"]["instruction"]
         inventory = by_name["inventory-features"]["instruction"]
         generate = by_name["generate-detector"]["instruction"]
         verify = by_name["verify-and-document"]["instruction"]
 
+        self.assertEqual(
+            [step["name"] for step in steps],
+            [
+                "select-candidate-policy", "inventory-features",
+                "configure-models", "generate-detector", "verify-and-document",
+            ],
+        )
+        self.assertIn(
+            "minimum_candidate_count_subject_to_worst_brain_recall", policy
+        )
+        self.assertIn("minimum worst-brain candidate recall: 0.9", policy)
+        self.assertIn("cross_dataset_aggregate.csv", policy)
+        self.assertIn("independently hash-check", policy)
+        self.assertIn("requires this exact", policy)
+        self.assertIn("embeds its SHA-256", policy)
+        self.assertIn("draft_validation candidate-policy", policy)
+        self.assertIn("requires_both_tips", inventory)
+        self.assertIn("compatible_occurrences", generate)
+        self.assertIn("Never filter the candidate universe", generate)
         self.assertTrue(
             by_name["generate-detector"]["expects_file"].endswith(
                 "/.feature_implementation.py"))
         self.assertIn("canonical unordered\ncandidate segment pair", inventory)
-        self.assertIn("within 30 um", inventory)
+        self.assertIn("split_candidate_policy.json", inventory)
+        self.assertIn("per-anchor distinct-partner-segment quota", inventory)
         self.assertIn("FeatureAccumulator", generate)
         self.assertIn("build_sample_universe(payload)", generate)
+        self.assertIn("--candidate-policy", generate)
+        self.assertIn("only the anchor is guaranteed", generate)
         self.assertIn("must be ignored by feature extraction", generate)
         self.assertIn("For split measuretime", generate)
         self.assertIn("EITHER segment of the pair is sampled", generate)

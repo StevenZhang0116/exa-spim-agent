@@ -78,6 +78,28 @@ class DiscoverySmokeTests(unittest.TestCase):
         workflow.PROJECT_ROOT = PROJECT_ROOT
         workflow.PREDICTIVE_MANIFEST = None
 
+    def test_split_workflow_appends_source_bound_feature_label_stage(self) -> None:
+        workflow.DIRECTION = "predictive"
+        workflow.PREDICTIVE_MANIFEST = (
+            "autodiscovery/split-error-test.predictive-selection.json"
+        )
+        steps = workflow.build_steps(
+            "autodiscovery/split-error-test.json",
+            "cache/dataset_cache_1_mcl100_add.pkl",
+            "autodiscovery/split-error-test.summary.md",
+        )
+        label = steps[-1]
+        self.assertEqual(label["name"], "label-split-feature-applicability")
+        self.assertEqual(label["phase"], "feature-applicability")
+        self.assertIn("requires_both_tips", label["instruction"])
+        self.assertIn("requires_tip_anchor", label["instruction"])
+        self.assertIn("do not run experiments", label["instruction"])
+        self.assertTrue(
+            str(label["expects_file"]).endswith(
+                ".split-feature-applicability.draft.json"
+            )
+        )
+
     def test_positive_smoke_respects_top_k_and_prints_one_line(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             run_json = Path(tmpdir) / "run.json"
