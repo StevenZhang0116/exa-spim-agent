@@ -8,9 +8,8 @@ description: >-
   cross-validate exa-spim discovery findings onto additional datasets. Folds a
   generalization verdict into the existing ranked Markdown report.
 tools: Bash, Read, Write, Edit, Glob
-# Mechanical work: compare origin vs extra-dataset numbers and fold a
-# generalization verdict. No deep statistical reasoning, so medium effort is
-# enough (kept on the session's Opus for number-comparison reliability).
+# Mechanical, measured-result comparison with a fixed verdict vocabulary.
+# Inherit the driver's pinned Opus 4.8 model while using medium effort.
 model: inherit
 effort: medium
 ---

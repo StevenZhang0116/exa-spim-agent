@@ -124,10 +124,10 @@
   <text x="198" y="854" font-size="14" fill="#64748b">fixed before training</text>
   <rect x="500" y="810" width="470" height="76" rx="13" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
   <text x="735" y="840" font-size="17" font-weight="700" text-anchor="middle" fill="#166534">Required baselines · always included</text>
-  <text x="735" y="866" font-size="14" text-anchor="middle" fill="#334155">L2 · elastic-net · histogram gradient boosting</text>
+  <text x="735" y="866" font-size="14" text-anchor="middle" fill="#334155">L2 · histogram gradient boosting · XGBoost</text>
   <rect x="1010" y="810" width="710" height="76" rx="13" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
   <text x="1365" y="840" font-size="17" font-weight="700" text-anchor="middle" fill="#1e3a8a">Optional extensions · choose 0–2 with feature rationale</text>
-  <text x="1365" y="866" font-size="14" text-anchor="middle" fill="#334155">Spline · EBM · Extra Trees · Random Forest · XGBoost</text>
+  <text x="1365" y="866" font-size="14" text-anchor="middle" fill="#334155">Elastic-net · Spline · EBM · Extra Trees · Random Forest</text>
 
   <line x1="960" y1="906" x2="960" y2="928" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
 

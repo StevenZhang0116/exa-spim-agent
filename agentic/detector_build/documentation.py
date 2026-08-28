@@ -433,6 +433,7 @@ python "$DETECTOR" "$DATA_PKL" \\
     --out-csv "$RUN_DIR/merge_detector_${{BRAIN}}.csv" \\
     --log-txt "$RUN_DIR/merge_detector_${{BRAIN}}.log.txt" \\
     --n-jobs 2 \\
+    --model-jobs 4 \\
     --no-figures
 ```
 
@@ -461,6 +462,7 @@ python "$DETECTOR" "$DATA_PKL" \\
     --out-csv "$RUN_DIR/merge_detector_${{BRAIN}}.csv" \\
     --log-txt "$RUN_DIR/merge_detector_${{BRAIN}}.log.txt" \\
     --n-jobs 2 \\
+    --model-jobs 4 \\
     --no-figures
 ```
 
@@ -485,6 +487,10 @@ to 8 workers automatically, `-1` uses every CPU reported as available, and `1`
 is the exact serial path). On Linux, “available” honors the process affinity or
 Slurm cpuset before falling back to the host CPU count. Graph-only and rare-image
 detectors keep serial extraction and ignore this worker setting.
+`--model-jobs N` additionally parallelizes each tree/boosting estimator fit
+(random_forest, extra_trees, xgboost) with N threads. It changes wall-clock
+only: seeds, CV structure, scores, and model selection are bitwise identical to
+the serial default of 1. Match it to the CPUs actually granted to the job.
 
 ```bash
 RUN_DIR="$APP_DIR/runs/${{BRAIN}}-default"
@@ -497,6 +503,7 @@ python "$DETECTOR" "$DATA_PKL" \\
     --out-csv "$RUN_DIR/merge_detector_${{BRAIN}}.csv" \\
     --log-txt "$RUN_DIR/merge_detector_${{BRAIN}}.log.txt" \\
     --n-jobs 2 \\
+    --model-jobs 4 \\
     --no-figures
 ```
 
@@ -530,7 +537,8 @@ python "$DETECTOR" "$DATA_PKL" \\
     --out-csv "$RUN_DIR/merge_detector_${{BRAIN}}.csv" \\
     --log-txt "$RUN_DIR/merge_detector_${{BRAIN}}.log.txt" \\
     --fig-dir "$RUN_DIR/figures" \\
-    --n-jobs 2
+    --n-jobs 2 \\
+    --model-jobs 4
 ```
 
 ## `--exclude-empty` sensitivity run
@@ -549,6 +557,7 @@ python "$DETECTOR" "$DATA_PKL" \\
     --log-txt "$RUN_DIR/merge_detector_${{BRAIN}}_exclude_empty.log.txt" \\
     --exclude-empty \\
     --n-jobs 2 \\
+    --model-jobs 4 \\
     --no-figures
 ```
 
@@ -569,7 +578,8 @@ python "$DETECTOR" "$DATA_PKL" \\
     --out-csv "$RUN_DIR/merge_detector_${{BRAIN}}.csv" \\
     --log-txt "$RUN_DIR/merge_detector_${{BRAIN}}.log.txt" \\
     --fig-dir "$RUN_DIR/figures" \\
-    --n-jobs 2
+    --n-jobs 2 \\
+    --model-jobs 4
 ```
 
 ## Site-specific Slurm example for `n287` (edit for another cluster)
@@ -582,12 +592,12 @@ sbatch \\
     --partition=aibs_debug \\
     --nodelist=n287 \\
     --mem=80G \\
-    --cpus-per-task=2 \\
+    --cpus-per-task=4 \\
     --time=04:00:00 \\
     --job-name=merge-detector \\
     --output="$RUN_DIR/slurm-%j.out" \\
     --chdir={q_root} \\
-    --wrap="source /shared/utils.x86_64/anaconda3-2024.10/etc/profile.d/conda.sh && conda activate panda && python \\\"$DETECTOR\\\" \\\"$DATA_PKL\\\" --model-config \\\"$MODEL_CONFIG\\\" --inventory \\\"$INVENTORY\\\" --out-dir \\\"$RUN_DIR\\\" --out-csv \\\"$RUN_DIR/merge_detector_${{BRAIN}}.csv\\\" --log-txt \\\"$RUN_DIR/merge_detector_${{BRAIN}}.log.txt\\\" --n-jobs 2 --no-figures"
+    --wrap="source /shared/utils.x86_64/anaconda3-2024.10/etc/profile.d/conda.sh && conda activate panda && python \\\"$DETECTOR\\\" \\\"$DATA_PKL\\\" --model-config \\\"$MODEL_CONFIG\\\" --inventory \\\"$INVENTORY\\\" --out-dir \\\"$RUN_DIR\\\" --out-csv \\\"$RUN_DIR/merge_detector_${{BRAIN}}.csv\\\" --log-txt \\\"$RUN_DIR/merge_detector_${{BRAIN}}.log.txt\\\" --n-jobs 2 --model-jobs 4 --no-figures"
 ```
 
 Check status and follow the logs with:

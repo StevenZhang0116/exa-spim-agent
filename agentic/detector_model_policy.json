@@ -2,7 +2,7 @@
   "schema_version": 1,
   "selection": {
     "max_optional_models": 2,
-    "max_grid_combinations": 24,
+    "max_grid_combinations": 16,
     "primary_metric": "average_precision",
     "selection_rule": "one_standard_error",
     "outer_folds": 5,
@@ -28,7 +28,7 @@
       "parameters": {"C": "positive_number"}
     },
     "logistic_elasticnet": {
-      "required": true,
+      "required": false,
       "native_nan": false,
       "requires_package": null,
       "parameters": {
@@ -93,7 +93,7 @@
       }
     },
     "xgboost": {
-      "required": false,
+      "required": true,
       "native_nan": true,
       "requires_package": "xgboost",
       "parameters": {

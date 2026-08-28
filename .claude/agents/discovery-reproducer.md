@@ -8,10 +8,9 @@ description: >-
   experiments for one run export with its dataset. Folds a reproduction verdict
   into the existing ranked Markdown report.
 tools: Bash, Read, Write, Edit, Glob
-# Mechanical work: read the driver's compute JSON, compare fresh vs recorded
-# numbers, fix only data-loading, fold verdicts. No deep statistical reasoning,
-# so medium effort is enough (kept on the session's Opus for number-comparison
-# reliability rather than downgraded to a cheaper model).
+# Mechanical, driver-validated work: compare measured numbers, repair only
+# loading/bootstrap code, and fold fixed-token verdicts. Inherit the driver's
+# pinned Opus 4.8 model while using medium effort.
 model: inherit
 effort: medium
 ---

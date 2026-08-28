@@ -821,20 +821,35 @@ combinations. Numeric rates/C values must be finite and in their estimator's
 valid range; count/depth values must be positive integers (or documented null
 where allowed); max_features is null, sqrt/log2, a positive integer, or a
 fraction in (0, 1]. Keep grids conservative for sparse positives. The driver
-owns native-NaN declarations ({native_nan_models}) and optional dependencies
+owns native-NaN declarations ({native_nan_models}) and dependency declarations
 ({package_contract}).
 
 The exact permitted grid keys are:
 {parameter_contract}
 For explainable_boosting, interactions is a non-negative integer count. Fitting
-cost must inform grid size: nested selection refits every grid point three times
+cost must inform EVERY grid: nested selection refits every grid point three times
 per outer fold across five outer folds plus a final all-rows search (~18x per
-grid point), and explainable_boosting is among the most expensive fits (minutes
-per fit on a ~100k-row universe). Keep its grid to AT MOST 4 combinations: pick
-ONE value each for max_bins, learning_rate, max_rounds, and min_samples_leaf
-(its internal early stopping makes a generous max_rounds harmless) and vary only
-the axis your inventory rationale actually names — typically interactions
-(e.g. [0, 5]). Never write
+grid point), so total wall-clock scales with the SUM of all families' grid
+sizes times per-fit cost. Budget the whole candidate set to stay clearly under
+the {MAX_GRID_COMBINATIONS}-per-family cap rather than filling it: vary only
+1-2 hyperparameters per family with 2-3 well-spread values each (defaults from
+the literature are close to optimal for tabular data of this size) and pin the
+rest to one sensible value. Cheap linear families may use slightly larger grids
+than expensive boosted/ensemble families.
+- explainable_boosting is among the most expensive fits (minutes per fit on a
+  ~100k-row universe). Keep its grid to AT MOST 4 combinations: pick ONE value
+  each for max_bins, learning_rate, max_rounds, and min_samples_leaf (its
+  internal early stopping makes a generous max_rounds harmless) and vary only
+  the axis your inventory rationale actually names — typically interactions
+  (e.g. [0, 5]).
+- xgboost must list every required parameter, but keep it to AT MOST 8
+  combinations: pin subsample, colsample_bytree, and min_child_weight to one
+  value each, keep n_estimators moderate (a few hundred, not thousands), and
+  vary only max_depth and/or learning_rate (with reg_lambda as an optional
+  second axis).
+- random_forest / extra_trees, when chosen, need at most ~200-300 trees; do not
+  sweep n_estimators.
+Never write
 a Python class path, module path, import statement, code string, callable, or
 arbitrary estimator name. The driver will reject missing baselines, more than
 {MAX_OPTIONAL_MODELS} extensions, unknown families/parameters, stale inventory
@@ -1510,8 +1525,10 @@ def _validate_model_contract_constants() -> None:
         raise RuntimeError("MODEL_PARAMETER_ALLOWLIST is out of sync with model families.")
     if set(MODEL_NATIVE_NAN) != ALLOWED_MODEL_FAMILIES:
         raise RuntimeError("MODEL_NATIVE_NAN is out of sync with model families.")
-    if not set(MODEL_REQUIRED_PACKAGE) <= OPTIONAL_MODEL_FAMILIES:
-        raise RuntimeError("Only optional model families may require extra packages.")
+    # A required baseline (e.g. xgboost) may declare an extra package; the
+    # runtime then fails hard instead of silently skipping it when missing.
+    if not set(MODEL_REQUIRED_PACKAGE) <= ALLOWED_MODEL_FAMILIES:
+        raise RuntimeError("MODEL_REQUIRED_PACKAGE names unknown model families.")
     if set(MODEL_SIMPLICITY_ORDER) != ALLOWED_MODEL_FAMILIES:
         raise RuntimeError("MODEL_SIMPLICITY_ORDER is out of sync with model families.")
     if set(REQUIRED_GRID_PARAMETERS) != ALLOWED_MODEL_FAMILIES:

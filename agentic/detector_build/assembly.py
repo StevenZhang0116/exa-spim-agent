@@ -17,7 +17,7 @@ REQUIRED_SYMBOLS = frozenset({
 })
 RUNTIME_OWNED_SYMBOLS = frozenset({
     "EMBEDDED_MODEL_POLICY", "EMBEDDED_MODEL_POLICY_SHA256", "RANDOM_SEED",
-    "ALLOWED_FAMILIES", "NATIVE_NAN_FAMILIES",
+    "ALLOWED_FAMILIES", "NATIVE_NAN_FAMILIES", "MODEL_FIT_JOBS",
     "build_estimator", "run_nested_selection", "fit_final_winner",
     "run_smoke_test", "build_arg_parser", "run_detector", "main",
     "validate_model_config", "validate_analysis_timing_groups",

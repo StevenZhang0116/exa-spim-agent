@@ -103,7 +103,7 @@ def _bounded_thread_map(function, items, max_workers):
 
 # --------------------------------------------------------------------------- #
 # Embedded declarative model policy (SHA-256                                   #
-# 4aa9c7a9411f73438faeb74cb6459db084db4aabd82cfa9861328e32c9b22f3c).           #
+# c410b3c213eae37e578e7c48c007a8333dadc7f6550967f29c85277e0a82a1dd).           #
 # This embedded copy is the runtime trust anchor. The build driver validates   #
 # the on-disk policy; the deployed detector validates model_candidates.json    #
 # against this exact policy hash without requiring that policy file.           #
@@ -112,7 +112,7 @@ EMBEDDED_MODEL_POLICY = {
     "schema_version": 1,
     "selection": {
         "max_optional_models": 2,
-        "max_grid_combinations": 24,
+        "max_grid_combinations": 16,
         "primary_metric": "average_precision",
         "selection_rule": "one_standard_error",
         "outer_folds": 5,
@@ -139,7 +139,7 @@ EMBEDDED_MODEL_POLICY = {
             "required_parameters": ("C",),
         },
         "logistic_elasticnet": {
-            "required": True,
+            "required": False,
             "native_nan": False,
             "requires_package": None,
             "parameters": {"C": "positive_number", "l1_ratio": "unit_interval"},
@@ -210,7 +210,7 @@ EMBEDDED_MODEL_POLICY = {
             "required_parameters": ("n_estimators", "min_samples_leaf"),
         },
         "xgboost": {
-            "required": False,
+            "required": True,
             "native_nan": True,
             "requires_package": "xgboost",
             "parameters": {
@@ -231,7 +231,7 @@ EMBEDDED_MODEL_POLICY = {
     },
 }
 EMBEDDED_MODEL_POLICY_SHA256 = (
-    "4aa9c7a9411f73438faeb74cb6459db084db4aabd82cfa9861328e32c9b22f3c"
+    "c410b3c213eae37e578e7c48c007a8333dadc7f6550967f29c85277e0a82a1dd"
 )
 
 RANDOM_SEED = 42
@@ -1037,6 +1037,12 @@ def _logistic_regularization_kwargs(estimator_class, penalty, l1_ratio=None):
     return options
 
 
+# Intra-estimator fit threads for tree/boosting families (--model-jobs).
+# Parallelizes only tree construction/prediction inside one fit; seeds and
+# results are bitwise unchanged, so CV selection stays deterministic.
+MODEL_FIT_JOBS = 1
+
+
 def build_estimator(family, params, native_nan_features_present=True):
     """Return a fresh sklearn-compatible pipeline/estimator for `family` with
     `params`.  `params` keys are already validated against the policy."""
@@ -1102,7 +1108,8 @@ def build_estimator(family, params, native_nan_features_present=True):
                            else int(params["max_depth"])),
                 min_samples_leaf=int(params["min_samples_leaf"]),
                 max_features=params.get("max_features"),
-                class_weight="balanced", n_jobs=1, random_state=seed)),
+                class_weight="balanced", n_jobs=MODEL_FIT_JOBS,
+                random_state=seed)),
         ])
 
     if family == "random_forest":
@@ -1115,7 +1122,8 @@ def build_estimator(family, params, native_nan_features_present=True):
                            else int(params["max_depth"])),
                 min_samples_leaf=int(params["min_samples_leaf"]),
                 max_features=params.get("max_features"),
-                class_weight="balanced", n_jobs=1, random_state=seed)),
+                class_weight="balanced", n_jobs=MODEL_FIT_JOBS,
+                random_state=seed)),
         ])
 
     if family == "explainable_boosting":
@@ -1139,7 +1147,7 @@ def build_estimator(family, params, native_nan_features_present=True):
             colsample_bytree=float(params["colsample_bytree"]),
             reg_lambda=float(params["reg_lambda"]),
             tree_method="hist", eval_metric="aucpr",
-            random_state=seed, n_jobs=1)
+            random_state=seed, n_jobs=MODEL_FIT_JOBS)
 
     raise ValueError("unhandled family in build_estimator: %r" % (family,))
 
@@ -1920,20 +1928,29 @@ def load_and_validate_config(config_path, inventory_sha256):
     return cfg
 
 
-def assemble_configured(cfg, log):
+def assemble_configured(cfg, log, strict_required=True):
     """Return (configured, skipped).  configured maps family->{grid,...} for
     families whose optional dependency is importable; unavailable optional
-    families are recorded as skipped (never installed)."""
+    families are recorded as skipped (never installed).  A required baseline
+    with a missing package aborts a strict (real training) run; the no-data
+    smoke contract instead skips it so it can pass on login nodes."""
     configured = {}
     skipped = []
     for cand in cfg["candidates"]:
         name = cand["name"]
-        pkg = EMBEDDED_MODEL_POLICY["families"][name]["requires_package"]
+        fam = EMBEDDED_MODEL_POLICY["families"][name]
+        pkg = fam["requires_package"]
         if not _package_available(pkg):
+            if fam["required"] and strict_required:
+                raise RuntimeError(
+                    "required baseline %r needs package %r, which is not "
+                    "importable; install it rather than skipping a mandatory "
+                    "model" % (name, pkg))
             skipped.append({"family": name, "reason":
-                            "optional package %r unavailable" % (pkg,)})
-            log("SKIP family %s: optional package %r not importable"
-                % (name, pkg))
+                            "%s package %r unavailable"
+                            % ("required" if fam["required"] else "optional",
+                               pkg,)})
+            log("SKIP family %s: package %r not importable" % (name, pkg))
             continue
         configured[name] = {"grid": cand.get("grid", {}), "role": cand.get("role")}
     return configured, skipped
@@ -1947,7 +1964,7 @@ def assemble_configured(cfg, log):
 def run_smoke_test(config_path, inventory_sha256, log):
     log("synthetic smoke test: validating config %s" % config_path)
     cfg = load_and_validate_config(config_path, inventory_sha256)
-    configured, skipped = assemble_configured(cfg, log)
+    configured, skipped = assemble_configured(cfg, log, strict_required=False)
     assert configured, "no configured families after availability filtering"
     # This is a contract smoke test, not a performance/model-quality run. Test
     # every available family while using one deterministic representative value
@@ -2086,6 +2103,12 @@ def build_arg_parser():
         help="image-patch worker threads for image-heavy detectors "
              "(-1 = all available CPUs; default: 0 = auto, capped at 8; "
              "1 = serial extraction; ignored by sparse/non-image extraction).")
+    ap.add_argument(
+        "--model-jobs", type=int, default=1,
+        help="threads inside each tree/boosting estimator fit "
+             "(random_forest, extra_trees, xgboost; -1 = all available "
+             "CPUs; default 1 = serial). Does not change CV structure or "
+             "model selection.")
     ap.add_argument("--log-txt", default=None)
     ap.add_argument("--measuretime", action="store_true",
                     help="profile hypothesis computation cost on a small "
@@ -2616,6 +2639,11 @@ def main(argv=None):
 
     if args.n_jobs < -1:
         parser.error("--n-jobs must be -1, zero, or a positive integer")
+
+    if args.model_jobs < -1 or args.model_jobs == 0:
+        parser.error("--model-jobs must be -1 or a positive integer")
+    global MODEL_FIT_JOBS
+    MODEL_FIT_JOBS = args.model_jobs
 
     if args.synthetic_smoke_test and (args.measuretime or
                                       args.hypothesis_selection or

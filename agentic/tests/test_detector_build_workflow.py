@@ -1153,11 +1153,11 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             "model_policy_sha256": hashlib.sha256(
                 workflow.MODEL_POLICY_PATH.read_bytes()
             ).hexdigest(),
-            "selection_basis": "Three conservative baselines plus one smooth model.",
+            "selection_basis": "Three conservative baselines plus one sparse model.",
             "candidates": [
                 candidate("logistic_l2", "baseline", {"C": [0.1, 1.0]}),
                 candidate(
-                    "logistic_elasticnet", "baseline",
+                    "logistic_elasticnet", "optional",
                     {"C": [0.1, 1.0], "l1_ratio": [0.25, 0.75]},
                 ),
                 candidate(
@@ -1169,8 +1169,14 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                     native_nan=True,
                 ),
                 candidate(
-                    "spline_logistic", "optional",
-                    {"n_knots": [3, 4], "degree": [2], "C": [0.1, 1.0]},
+                    "xgboost", "baseline",
+                    {
+                        "n_estimators": [300], "max_depth": [3, 5],
+                        "learning_rate": [0.05, 0.1],
+                        "min_child_weight": [1.0], "subsample": [0.8],
+                        "colsample_bytree": [0.8], "reg_lambda": [1.0],
+                    },
+                    native_nan=True, requires_package="xgboost",
                 ),
             ],
         }
@@ -1573,6 +1579,16 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                         "name": "hist_gradient_boosting",
                         "reason": "Native missingness and interactions baseline.",
                         "grid": {"max_leaf_nodes": [7], "learning_rate": [0.03]},
+                    },
+                    {
+                        "name": "xgboost",
+                        "reason": "Regularized boosting baseline.",
+                        "grid": {
+                            "n_estimators": [300], "max_depth": [3],
+                            "learning_rate": [0.1], "min_child_weight": [1.0],
+                            "subsample": [0.8], "colsample_bytree": [0.8],
+                            "reg_lambda": [1.0],
+                        },
                     },
                 ],
             }))
