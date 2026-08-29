@@ -166,6 +166,10 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
                 "    'phase': 'segment', 'feature_names': ['x'],\n"
                 "}]\n"
+                "COMPUTATION_PLAN = [{\n"
+                "    'primitive': 'row_math', 'cost_class': 'constant',\n"
+                "    'bound': '', 'amortization': '', 'consumers': ['hypo_1'],\n"
+                "}]\n"
                 "class SegmentAccumulator:\n"
                 "    def to_frame(self):\n"
                 "        return None\n"
@@ -203,6 +207,10 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
                 "    'phase': 'segment', 'feature_names': ['x'],\n"
                 "}]\n"
+                "COMPUTATION_PLAN = [{\n"
+                "    'primitive': 'row_math', 'cost_class': 'constant',\n"
+                "    'bound': '', 'amortization': '', 'consumers': ['hypo_1'],\n"
+                "}]\n"
                 "class SegmentAccumulator:\n"
                 "    def to_frame(self):\n"
                 "        return None\n"
@@ -236,6 +244,11 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 "    {'key': 'hypo_2', 'hypothesis_ids': [2], "
                 "'phase': 'image_patch_pass', 'feature_names': ['y']},\n"
                 "]\n"
+                "COMPUTATION_PLAN = [{\n"
+                "    'primitive': 'row_math', 'cost_class': 'constant',\n"
+                "    'bound': '', 'amortization': '',\n"
+                "    'consumers': ['hypo_1', 'hypo_2'],\n"
+                "}]\n"
                 "class SegmentAccumulator:\n    pass\n"
                 "def extract_features(payload, verbose=True, timing=None, "
                 "enabled_analysis_keys=None, profile_segment_limit=None):\n"
@@ -277,6 +290,137 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                     SystemExit, "must not acquire a shared"):
                 validate_feature_implementation(feature)
 
+    def test_computation_plan_contract_rejections(self) -> None:
+        def source_with(plan_block: str) -> str:
+            return (
+                "FEATURE_REGISTRY = [('x',)]\n"
+                "ANALYSIS_TIMING_GROUPS = [{\n"
+                "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
+                "    'phase': 'segment', 'feature_names': ['x'],\n"
+                "}]\n"
+                + plan_block +
+                "class SegmentAccumulator:\n"
+                "    def to_frame(self):\n"
+                "        return None\n"
+                "def extract_features(payload, verbose=True, timing=None, "
+                "enabled_analysis_keys=None, profile_segment_limit=None):\n"
+                "    _ = payload, verbose, profile_segment_limit\n"
+                "    def _analysis_enabled(key):\n"
+                "        return enabled_analysis_keys is None or "
+                "key in enabled_analysis_keys\n"
+                "    _analysis_enabled('hypo_1')\n"
+                "    if timing is not None:\n"
+                "        timing.start_phase('segment')\n"
+                "        timing.start_analysis('hypo_1')\n"
+                "    return [], [], SegmentAccumulator()\n"
+            )
+
+        valid_plan = (
+            "COMPUTATION_PLAN = [{\n"
+            "    'primitive': 'row_math', 'cost_class': 'constant',\n"
+            "    'bound': '', 'amortization': '', 'consumers': ['hypo_1'],\n"
+            "}]\n"
+        )
+        cases = [
+            ("", "missing: COMPUTATION_PLAN"),
+            ("COMPUTATION_PLAN = build_plan()\n",
+             "non-literal COMPUTATION_PLAN"),
+            ("COMPUTATION_PLAN = []\n", "non-empty literal list"),
+            ("COMPUTATION_PLAN = [{'primitive': 'p'}]\n",
+             "exactly the keys"),
+            (valid_plan.replace("'constant'", "'quadratic'"),
+             "unknown cost_class"),
+            ("COMPUTATION_PLAN = [{\n"
+             "    'primitive': 'ball_scan', 'cost_class': 'density_scaled',\n"
+             "    'bound': '', 'amortization': 'memo by (segment, radius)',\n"
+             "    'consumers': ['hypo_1'],\n"
+             "}]\n",
+             "must declare a concrete bound"),
+            ("COMPUTATION_PLAN = [{\n"
+             "    'primitive': 'ball_scan', 'cost_class': 'density_scaled',\n"
+             "    'bound': 'radius 15um cutoff', 'amortization': 'unbounded',\n"
+             "    'consumers': ['hypo_1'],\n"
+             "}]\n",
+             "must declare how its cost is amortized"),
+            ("COMPUTATION_PLAN = [{\n"
+             "    'primitive': 'label_index', 'cost_class': 'global_scan',\n"
+             "    'bound': '', 'amortization': 'cached per segment',\n"
+             "    'consumers': ['hypo_1'],\n"
+             "}]\n",
+             "one-time pre-pass"),
+            (valid_plan.replace("['hypo_1']", "['nope']"),
+             "unknown analysis timing group keys"),
+            (valid_plan.replace("['hypo_1']", "['hypo_1', 'hypo_1']"),
+             "repeats consumers"),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            feature = Path(tmpdir) / "feature.py"
+            feature.write_text(source_with(valid_plan))
+            validate_feature_implementation(feature)
+            for plan_block, expected in cases:
+                with self.subTest(expected=expected):
+                    feature.write_text(source_with(plan_block))
+                    with self.assertRaisesRegex(SystemExit, expected):
+                        validate_feature_implementation(feature)
+
+        # Coverage: a timing group no primitive consumes is rejected.
+        two_group_source = (
+            "FEATURE_REGISTRY = [('x',), ('y',)]\n"
+            "ANALYSIS_TIMING_GROUPS = [\n"
+            "    {'key': 'hypo_1', 'hypothesis_ids': [1], "
+            "'phase': 'segment', 'feature_names': ['x']},\n"
+            "    {'key': 'hypo_2', 'hypothesis_ids': [2], "
+            "'phase': 'segment', 'feature_names': ['y']},\n"
+            "]\n"
+            + valid_plan +
+            "class SegmentAccumulator:\n"
+            "    def to_frame(self):\n"
+            "        return None\n"
+            "def extract_features(payload, verbose=True, timing=None, "
+            "enabled_analysis_keys=None, profile_segment_limit=None):\n"
+            "    _ = payload, verbose, profile_segment_limit\n"
+            "    def _analysis_enabled(key):\n"
+            "        return enabled_analysis_keys is None or "
+            "key in enabled_analysis_keys\n"
+            "    _analysis_enabled('hypo_1')\n"
+            "    _analysis_enabled('hypo_2')\n"
+            "    if timing is not None:\n"
+            "        timing.start_phase('segment')\n"
+            "        timing.start_analysis('hypo_1')\n"
+            "        timing.start_analysis('hypo_2')\n"
+            "    return [], [], SegmentAccumulator()\n"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            feature = Path(tmpdir) / "feature.py"
+            feature.write_text(two_group_source)
+            with self.assertRaisesRegex(SystemExit, "coverage mismatch"):
+                validate_feature_implementation(feature)
+
+        # A density_scaled plan requires the runtime _memoized helper in code.
+        density_plan = (
+            "COMPUTATION_PLAN = [{\n"
+            "    'primitive': 'ball_scan', 'cost_class': 'density_scaled',\n"
+            "    'bound': 'radius 15um cutoff',\n"
+            "    'amortization': 'memo by (segment, radius)',\n"
+            "    'consumers': ['hypo_1'],\n"
+            "}]\n"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            feature = Path(tmpdir) / "feature.py"
+            feature.write_text(source_with(density_plan))
+            with self.assertRaisesRegex(
+                SystemExit, "never calls the runtime _memoized helper"
+            ):
+                validate_feature_implementation(feature)
+            memoized_source = source_with(density_plan).replace(
+                "    _analysis_enabled('hypo_1')\n",
+                "    _analysis_enabled('hypo_1')\n"
+                "    cache = {}\n"
+                "    _memoized(cache, ('seg', 15.0), lambda: 0.0)\n",
+            )
+            feature.write_text(memoized_source)
+            validate_feature_implementation(feature)
+
     def test_detector_assembly_injects_reviewed_split_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -297,6 +441,10 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
                 "    'phase': 'candidate_pair',\n"
                 "    'feature_names': ['gap_um_feature'],\n"
+                "}]\n"
+                "COMPUTATION_PLAN = [{\n"
+                "    'primitive': 'row_math', 'cost_class': 'constant',\n"
+                "    'bound': '', 'amortization': '', 'consumers': ['hypo_1'],\n"
                 "}]\n"
                 "class FeatureAccumulator:\n    pass\n"
                 "def extract_features(payload, verbose=True, timing=None, "
@@ -360,6 +508,10 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
                 "    'phase': 'segment', 'feature_names': ['x'],\n"
                 "}]\n"
+                "COMPUTATION_PLAN = [{\n"
+                "    'primitive': 'row_math', 'cost_class': 'constant',\n"
+                "    'bound': '', 'amortization': '', 'consumers': ['hypo_1'],\n"
+                "}]\n"
                 "class SegmentAccumulator:\n    pass\n"
                 "def load_payload(path):\n    return {'shadowed': path}\n"
                 "def extract_features(payload, verbose=True, timing=None, "
@@ -389,6 +541,10 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 "ANALYSIS_TIMING_GROUPS = [{\n"
                 "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
                 "    'phase': 'segment', 'feature_names': ['x'],\n"
+                "}]\n"
+                "COMPUTATION_PLAN = [{\n"
+                "    'primitive': 'row_math', 'cost_class': 'constant',\n"
+                "    'bound': '', 'amortization': '', 'consumers': ['hypo_1'],\n"
                 "}]\n"
                 "class SegmentAccumulator:\n    pass\n"
                 "def extract_features(payload, verbose=True, timing=None, "
@@ -424,6 +580,10 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 "ANALYSIS_TIMING_GROUPS = [{\n"
                 "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
                 "    'phase': 'segment', 'feature_names': ['x'],\n"
+                "}]\n"
+                "COMPUTATION_PLAN = [{\n"
+                "    'primitive': 'row_math', 'cost_class': 'constant',\n"
+                "    'bound': '', 'amortization': '', 'consumers': ['hypo_1'],\n"
                 "}]\n"
                 "class SegmentAccumulator:\n"
                 "    def to_frame(self):\n"
@@ -716,6 +876,7 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertNotIn("pending.popleft().result()", template)
         self.assertIn("def _available_cpu_count", template)
         self.assertIn("def _resolve_image_worker_count", template)
+        self.assertIn("def _memoized", template)
         self.assertIn("def _extract_features_runtime", template)
         self.assertIn("default=0", template)
         self.assertIn("-1 = all available CPUs", template)
@@ -813,6 +974,10 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
                 "    'phase': 'candidate_pair',\n"
                 "    'feature_names': ['gap_um_feature'],\n"
+                "}]\n"
+                "COMPUTATION_PLAN = [{\n"
+                "    'primitive': 'row_math', 'cost_class': 'constant',\n"
+                "    'bound': '', 'amortization': '', 'consumers': ['hypo_1'],\n"
                 "}]\n"
                 "class FeatureAccumulator:\n    pass\n"
                 "def extract_features(payload, verbose=True, timing=None, "
@@ -1452,6 +1617,15 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("weighted or unweighted", generate)
         self.assertIn("does not retain custom SkeletonGraph", generate)
         self.assertIn("ANALYSIS_TIMING_GROUPS", generate)
+        self.assertIn("COMPUTATION_PLAN", generate)
+        self.assertIn("PLAN BEFORE IMPLEMENTING", generate)
+        self.assertIn("closed vocabulary", generate)
+        self.assertIn("instead of silently truncating", generate)
+        self.assertIn("density-stratified", generate)
+        self.assertIn("_memoized(cache, key, compute)", generate)
+        self.assertIn("COMPUTATION_PLAN matches the actual code", verify)
+        self.assertIn("runtime `_memoized` helper", verify)
+        self.assertIn("defect to report, not to silently fix", verify)
         self.assertIn("cover every\nFEATURE_REGISTRY name exactly once", generate)
         self.assertIn("runtime-provided\ntiming recorder around every analysis group", generate)
         self.assertIn("enabled_analysis_keys=None", generate)
@@ -1539,6 +1713,8 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("EITHER segment of the pair is sampled", generate)
         self.assertIn("Do NOT require BOTH", generate)
         self.assertIn("number of GT edges", generate)
+        self.assertIn("density-stratified", generate)
+        self.assertIn("makes the ranked cost report untrustworthy", generate)
         self.assertIn("candidate-pair-level", verify)
         self.assertIn("remain explicitly unscored (NaN)", verify)
         self.assertIn("conditional on\nthe OOF-scored subset", verify)

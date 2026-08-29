@@ -101,6 +101,21 @@ def _bounded_thread_map(function, items, max_workers):
                 yield result
 
 
+def _memoized(cache, key, compute):
+    """Return cache[key], computing and storing it once on first use.
+
+    The runtime memoization primitive backing COMPUTATION_PLAN amortization:
+    a primitive declared density_scaled (or amortized by memoization) must
+    route its expensive work through this helper so each declared key is
+    computed once, never once per consumer.
+    """
+    if key in cache:
+        return cache[key]
+    value = compute()
+    cache[key] = value
+    return value
+
+
 # --------------------------------------------------------------------------- #
 # Embedded declarative model policy (SHA-256                                   #
 # c410b3c213eae37e578e7c48c007a8333dadc7f6550967f29c85277e0a82a1dd).           #

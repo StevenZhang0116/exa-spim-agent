@@ -1,6 +1,0 @@
-brain,mode,radius_um,per_anchor_k,per_anchor_k_value,global_cap,global_cap_value,config_id,n_reachable_truth_pairs,n_candidate_pairs,n_candidate_truth_pairs,candidate_recall,n_reachable_direct_truth_pairs,n_candidate_direct_truth_pairs,direct_candidate_recall,n_reachable_gap_truth_pairs,n_candidate_gap_truth_pairs,gap_candidate_recall,candidate_prevalence,false_candidate_pairs
-789202,tip_to_tip,30.0,all,-1,none,-1,tip_to_tip|r=30|k=all,2927,16285,1994,0.6812435941236761,1398,1132,0.8097281831187411,1585,893,0.5634069400630914,0.1224439668406509,14291
-794491,tip_to_tip,30.0,all,-1,none,-1,tip_to_tip|r=30|k=all,1839,307979,912,0.4959216965742251,1194,566,0.474036850921273,745,373,0.5006711409395973,0.0029612408638251,307067
-794493,tip_to_tip,30.0,all,-1,none,-1,tip_to_tip|r=30|k=all,1774,110930,858,0.4836527621195039,1224,577,0.4714052287581699,661,313,0.4735249621785174,0.0077346074100784,110072
-794495,tip_to_tip,30.0,all,-1,none,-1,tip_to_tip|r=30|k=all,2226,153009,1419,0.637466307277628,1014,804,0.7928994082840237,1267,642,0.5067087608524072,0.0092739642766111,151590
-802449,tip_to_tip,30.0,all,-1,none,-1,tip_to_tip|r=30|k=all,6881,261646,4127,0.5997674756576079,3811,2763,0.7250065599580162,3237,1458,0.4504170528266913,0.015773220305298,257519

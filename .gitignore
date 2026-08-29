@@ -106,3 +106,7 @@ CLAUDE.md
 
 # Local workflow summary
 workflow_summary.tex
+
+# Notebook analysis artifacts
+notebooks/merge_diagnosis/
+notebooks/split_candidate_pool_sweep_outputs/

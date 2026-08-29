@@ -12,8 +12,17 @@ from .target_runtime import TARGET_ADAPTER_MARKER, target_adapter_source
 
 FEATURE_MARKER = "# __DETECTOR_FEATURE_IMPLEMENTATION__"
 REQUIRED_SYMBOLS = frozenset({
-    "FEATURE_REGISTRY", "ANALYSIS_TIMING_GROUPS", "SegmentAccumulator",
-    "extract_features",
+    "FEATURE_REGISTRY", "ANALYSIS_TIMING_GROUPS", "COMPUTATION_PLAN",
+    "SegmentAccumulator", "extract_features",
+})
+COMPUTATION_COST_CLASSES = frozenset({
+    "constant", "bounded_local", "density_scaled", "component_scaled",
+    "global_scan",
+})
+COST_CLASSES_REQUIRING_BOUND = frozenset({"density_scaled", "component_scaled"})
+COST_CLASSES_REQUIRING_AMORTIZATION = frozenset({"density_scaled", "global_scan"})
+_PLAN_PLACEHOLDER_DECLARATIONS = frozenset({
+    "", "none", "none required", "n/a", "na", "unbounded", "not required",
 })
 RUNTIME_OWNED_SYMBOLS = frozenset({
     "EMBEDDED_MODEL_POLICY", "EMBEDDED_MODEL_POLICY_SHA256", "RANDOM_SEED",
@@ -24,7 +33,7 @@ RUNTIME_OWNED_SYMBOLS = frozenset({
     "load_hypothesis_selection", "AnalysisTimingRecorder",
     "write_hypothesis_cost_artifacts", "_collect_measuretime_versions",
     "run_measuretime", "_available_cpu_count", "_resolve_image_worker_count",
-    "_bounded_thread_map", "_extract_features_runtime",
+    "_bounded_thread_map", "_memoized", "_extract_features_runtime",
     "DETECTOR_TARGET", "DETECTOR_FILENAME", "OUTPUT_PREFIX", "ROW_UNIT",
     "ROW_UNIT_PLURAL", "LABEL_NAME", "POSITIVE_NAME", "NEGATIVE_NAME",
     "SCORE_PREFIX", "CANDIDATE_POLICY_CONFIG_ID", "CANDIDATE_PAIRING_RULE",
@@ -97,7 +106,7 @@ def _feature_registry_names(tree: ast.Module, path: Path) -> list[str]:
     return names
 
 
-def _validate_timing_contract(tree: ast.Module, path: Path) -> None:
+def _validate_timing_contract(tree: ast.Module, path: Path) -> set[str]:
     feature_names = _feature_registry_names(tree, path)
     value = _assigned_value(tree, "ANALYSIS_TIMING_GROUPS")
     try:
@@ -155,7 +164,7 @@ def _validate_timing_contract(tree: ast.Module, path: Path) -> None:
         None,
     )
     if extract is None:
-        return
+        return keys
     positional = extract.args.args
     if len(positional) < 5 or [arg.arg for arg in positional[:5]] != [
         "payload", "verbose", "timing", "enabled_analysis_keys",
@@ -349,6 +358,116 @@ def _validate_timing_contract(tree: ast.Module, path: Path) -> None:
             + ", ".join(str(line) for line in invalid_return_lines)
             + "."
         )
+    return keys
+
+
+def _validate_computation_plan(
+    tree: ast.Module, path: Path, timing_group_keys: set[str]
+) -> None:
+    """Enforce the declared cost-discipline contract for feature computation."""
+    value = _assigned_value(tree, "COMPUTATION_PLAN")
+    try:
+        plan = ast.literal_eval(value) if value is not None else None
+    except (ValueError, TypeError, SyntaxError) as exc:
+        raise SystemExit(
+            f"Feature implementation {path} has non-literal COMPUTATION_PLAN."
+        ) from exc
+    if not isinstance(plan, list) or not plan:
+        raise SystemExit("COMPUTATION_PLAN must be a non-empty literal list.")
+    expected_keys = {"primitive", "cost_class", "bound", "amortization", "consumers"}
+    primitives: set[str] = set()
+    consumed: set[str] = set()
+    needs_memoized = False
+    for entry in plan:
+        if not isinstance(entry, dict) or set(entry) != expected_keys:
+            raise SystemExit(
+                "Each COMPUTATION_PLAN entry must be an object with exactly "
+                "the keys primitive, cost_class, bound, amortization, "
+                "consumers."
+            )
+        primitive = entry["primitive"]
+        if not isinstance(primitive, str) or not primitive or primitive in primitives:
+            raise SystemExit(
+                "COMPUTATION_PLAN primitive names must be unique non-empty "
+                "strings."
+            )
+        primitives.add(primitive)
+        cost_class = entry["cost_class"]
+        if cost_class not in COMPUTATION_COST_CLASSES:
+            raise SystemExit(
+                f"COMPUTATION_PLAN primitive {primitive!r} has unknown "
+                f"cost_class {cost_class!r}; allowed: "
+                + ", ".join(sorted(COMPUTATION_COST_CLASSES)) + "."
+            )
+        bound = entry["bound"]
+        amortization = entry["amortization"]
+        if not isinstance(bound, str) or not isinstance(amortization, str):
+            raise SystemExit(
+                f"COMPUTATION_PLAN primitive {primitive!r} bound and "
+                "amortization must be strings."
+            )
+        if (cost_class in COST_CLASSES_REQUIRING_BOUND
+                and bound.strip().lower() in _PLAN_PLACEHOLDER_DECLARATIONS):
+            raise SystemExit(
+                f"COMPUTATION_PLAN primitive {primitive!r} is {cost_class} and "
+                "must declare a concrete bound (cutoff, node cap, or per-"
+                "component memoization)."
+            )
+        if (cost_class in COST_CLASSES_REQUIRING_AMORTIZATION
+                and amortization.strip().lower() in _PLAN_PLACEHOLDER_DECLARATIONS):
+            raise SystemExit(
+                f"COMPUTATION_PLAN primitive {primitive!r} is {cost_class} and "
+                "must declare how its cost is amortized (memoization key or "
+                "one-time pre-pass)."
+            )
+        if (cost_class == "global_scan"
+                and "pre-pass" not in amortization.lower()
+                and "prepass" not in amortization.lower()):
+            raise SystemExit(
+                f"COMPUTATION_PLAN primitive {primitive!r} is global_scan and "
+                "its amortization must declare a one-time pre-pass; full-array "
+                "scans are forbidden on the per-row path."
+            )
+        if (cost_class == "density_scaled"
+                or "memo" in amortization.lower()
+                or "memo" in bound.lower()):
+            needs_memoized = True
+        consumers = entry["consumers"]
+        if (not isinstance(consumers, list) or not consumers
+                or any(not isinstance(x, str) or not x for x in consumers)):
+            raise SystemExit(
+                f"COMPUTATION_PLAN primitive {primitive!r} has invalid "
+                "consumers; expected a non-empty list of analysis timing "
+                "group keys."
+            )
+        if len(consumers) != len(set(consumers)):
+            raise SystemExit(
+                f"COMPUTATION_PLAN primitive {primitive!r} repeats consumers."
+            )
+        unknown = sorted(set(consumers) - timing_group_keys)
+        if unknown:
+            raise SystemExit(
+                f"COMPUTATION_PLAN primitive {primitive!r} consumers reference "
+                f"unknown analysis timing group keys: {unknown}."
+            )
+        consumed.update(consumers)
+    uncovered = sorted(timing_group_keys - consumed)
+    if uncovered:
+        raise SystemExit(
+            "COMPUTATION_PLAN coverage mismatch: analysis timing groups with "
+            f"no declared computation primitive: {uncovered}."
+        )
+    if needs_memoized and not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_memoized"
+        for node in ast.walk(tree)
+    ):
+        raise SystemExit(
+            "COMPUTATION_PLAN declares memoized amortization but the "
+            "implementation never calls the runtime _memoized helper; route "
+            "each declared memoization through _memoized(cache, key, compute)."
+        )
 
 
 def _literal_mapping_key(node: ast.AST) -> str | None:
@@ -427,7 +546,8 @@ def validate_feature_implementation(
     overlap = sorted(set(runtime_owned_symbols) & defined)
     if overlap:
         raise SystemExit("Feature implementation redefines runtime-owned symbols: " + ", ".join(overlap))
-    _validate_timing_contract(tree, path)
+    timing_group_keys = _validate_timing_contract(tree, path)
+    _validate_computation_plan(tree, path, timing_group_keys)
     if target is DetectorTarget.SPLIT:
         _validate_split_feature_no_gt_access(tree, path)
     return source.rstrip() + "\n"

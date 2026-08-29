@@ -682,7 +682,13 @@ endpoints to be sampled: the row unit is a segment pair, so an AND filter
 almost always retains zero rows and empties the profile. Do not reinterpret the
 limit as a number of GT edges, positive split pairs, endpoint occurrences, or
 candidate rows. The reported seconds are observed on that bounded sample, not a
-full-run estimate.
+full-run estimate. Draw the sample density-stratified, not first-N: rank the
+eligible segments by a cheap local-density proxy (for example fragment-node
+count within a fixed radius of the segment's anchor endpoint) and take the
+deterministic sample evenly across that ranking, so high-, mid-, and
+low-density regions are all represented. A sparse-only sample underestimates
+density_scaled and component_scaled primitive costs by orders of magnitude and
+makes the ranked cost report untrustworthy.
 """.strip()
     else:
         target_inventory_note = """
@@ -708,7 +714,12 @@ selector; merge OOF coverage must be complete.
 For merge measuretime, `profile_segment_limit` is the existing deterministic
 sample of component-bearing segment rows. Segments outside the sample remain in
 the row universe with profiled feature cells undefined. The reported seconds are
-observed sample costs, not a projection of the complete run.
+observed sample costs, not a projection of the complete run. Draw the sample
+density-stratified, not first-N: rank eligible segments by a cheap
+local-density proxy (for example fragment-node count near the segment) and take
+the deterministic sample evenly across that ranking, so high-, mid-, and
+low-density regions are all represented; a sparse-only sample underestimates
+density_scaled and component_scaled primitive costs by orders of magnitude.
 """.strip()
 
     steps = [
@@ -882,7 +893,61 @@ public {detector_rel}; do not write that file. Your fragment must define:
 - FEATURE_REGISTRY in inventory order;
 - ANALYSIS_TIMING_GROUPS, a literal list mapping stable timing-group keys to
   positive hypothesis ids, actual traversal phase, and owned feature names;
+- COMPUTATION_PLAN, the literal cost-discipline plan described below;
 {extraction_contract}
+
+PLAN BEFORE IMPLEMENTING. Before writing any feature code, enumerate the
+computational primitives the inventoried features require (for example "local
+neighborhood around an endpoint", "shortest-path distances within a bounded
+region", "per-component aggregate", "global clustering of all candidates",
+"read of a precomputed sample field"), classify each primitive's cost growth,
+and identify every case where two or more hypotheses need the same
+(primitive, parameters) result so they can share one implementation. Record
+the outcome as a top-level literal COMPUTATION_PLAN: a non-empty list of
+objects with exactly the keys primitive, cost_class, bound, amortization, and
+consumers. `primitive` is a unique short name; `consumers` lists the
+ANALYSIS_TIMING_GROUPS keys that use it (every timing group must be consumed by
+at least one primitive). `cost_class` uses exactly this closed vocabulary:
+- constant: reads precomputed row/sample fields or does O(1) arithmetic;
+- bounded_local: fixed-k lookups or walks with a hard step limit;
+- density_scaled: work grows with local point/node density (for example a
+  radius query feeding a subgraph or graph algorithm);
+- component_scaled: work grows with connected-component size;
+- global_scan: touches the full node/candidate arrays (full-array conditional
+  filtering, sorting, clustering).
+When unsure between two classes, declare the more expensive one; constraints
+only tighten with the class, so under-classifying removes protection.
+`bound` and `amortization` are honest declarations the driver checks for
+substance:
+- density_scaled and component_scaled primitives must declare a concrete bound
+  (a traversal/shortest-path cutoff, a neighborhood node cap, or per-component
+  memoization when the source semantics require the whole component);
+- density_scaled primitives must declare their amortization (the memoization
+  key covering all result-determining parameters);
+- global_scan primitives must declare a one-time pre-pass in `amortization`;
+  full-array scans are forbidden on the per-row path — build the index or
+  clustering once at startup and do per-row dict/array lookups only.
+These cost-discipline invariants bind the implementation, not just the plan:
+- compute-once: when several hypotheses need an identical (primitive,
+  parameters) result for the same row, route them through one memoized shared
+  helper; never re-execute semantically identical expensive work per consumer.
+  Use the runtime-provided `_memoized(cache, key, compute)` for every declared
+  memoization: keep one dict per primitive, key it by the declared
+  amortization key, and pass the expensive work as the compute callable. The
+  assembler mechanically rejects a plan that declares density_scaled or
+  memoized amortization when the implementation never calls `_memoized`;
+- boundedness: every graph traversal or shortest-path call carries an explicit
+  cutoff or node cap matching the declared bound;
+- pre-pass: any computation touching full-length arrays or the whole candidate
+  set runs once before the row loop and is reused via lookup.
+The optimizations reorganize computation only; they must not change feature
+numeric semantics. If a cutoff would truncate a quantity the selected source
+defines over a whole component, keep the source semantics, classify the
+primitive component_scaled, and amortize it with per-component memoization
+instead of silently truncating. The deterministic assembler rejects a missing
+or non-literal COMPUTATION_PLAN, unknown cost classes, missing bounds or
+amortization for the classes above, consumers naming unknown timing-group
+keys, and timing groups no primitive covers.
 
 On every control-flow path, `extract_features` must return exactly the
 three-item tuple `(row_records, labels, accumulator)`. Never return a DataFrame
@@ -968,7 +1033,15 @@ pool. Do not parallelize graph traversal merely because worker helpers exist.
 
 When `verbose=True`, additionally print flushed, machine-searchable start/done
 records for long segment/component work so the last durable line identifies the
-active feature if a run hangs or is killed. Instrumentation must use a monotonic
+active feature if a run hangs or is killed. Row-loop progress lines must use a
+FIXED absolute cadence of every 100 rows (plus the first row), never a
+percentage of the total: on a ~500k-row universe a percentage cadence goes
+silent for tens of minutes, which is indistinguishable from a hang. From the
+second progress line on, each line must also report monotonic elapsed seconds
+since the row loop started, the observed rows/second, and the estimated
+minutes remaining computed from that rate, so the operator can project total
+wall-clock from any single log line.
+Instrumentation must use a monotonic
 clock and must not change feature math, traversal order, random state,
 definedness, rows, or returned values when all groups are enabled. Timing writes
 a ranked cost report and editable selection template; it does not make the final
@@ -1034,7 +1107,17 @@ VERIFY READ-ONLY BEFORE DOCUMENTING
    ANALYSIS_TIMING_GROUPS covers every public feature exactly once, assigns every
    hypothesis id to exactly one selectable computation unit, and maps it to its
    actual pass. Shared groups are genuinely computationally inseparable. All
-   extraction passes call the runtime timing recorder. If `image_patch_pass`
+   extraction passes call the runtime timing recorder.
+   COMPUTATION_PLAN matches the actual code: each primitive declared shared by
+   multiple consumers has exactly one implementation and is memoized with the
+   declared key through the runtime `_memoized` helper (not a private cache
+   whose key omits a result-determining parameter) rather than re-executed per
+   consumer; each declared traversal
+   cutoff or node cap actually appears in the corresponding graph calls; each
+   global_scan primitive executes only in a one-time pre-pass, never inside the
+   per-row loop; and no per-row code performs full-array conditional scans or
+   unbounded shortest-path searches that the plan does not declare. A mismatch
+   between plan and code is a defect to report, not to silently fix. If `image_patch_pass`
    owns a strict majority of included hypothesis ids, normal extraction uses
    the runtime's bounded completion-order thread map, honors `--n-jobs` (-1 =
    all available CPUs, 0 = auto capped at 8, 1 = serial), assigns each row to
