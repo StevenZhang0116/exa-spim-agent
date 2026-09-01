@@ -914,7 +914,8 @@ at least one primitive). `cost_class` uses exactly this closed vocabulary:
   radius query feeding a subgraph or graph algorithm);
 - component_scaled: work grows with connected-component size;
 - global_scan: touches the full node/candidate arrays (full-array conditional
-  filtering, sorting, clustering).
+  filtering, sorting, clustering, or reductions such as min/max/sum/
+  flatnonzero) — even when the array itself was materialized by a pre-pass.
 When unsure between two classes, declare the more expensive one; constraints
 only tighten with the class, so under-classifying removes protection.
 `bound` and `amortization` are honest declarations the driver checks for
@@ -939,7 +940,11 @@ These cost-discipline invariants bind the implementation, not just the plan:
 - boundedness: every graph traversal or shortest-path call carries an explicit
   cutoff or node cap matching the declared bound;
 - pre-pass: any computation touching full-length arrays or the whole candidate
-  set runs once before the row loop and is reused via lookup.
+  set runs once before the row loop and is reused via lookup. The pre-pass must
+  materialize the DERIVED result each consumer needs (a scalar, a
+  per-component aggregate, an index), not merely the raw array: a per-row
+  `np.min(xyz[:, 2])` over a pre-pass-built array is still a per-row global
+  scan and belongs in the pre-pass as a stored scalar.
 The optimizations reorganize computation only; they must not change feature
 numeric semantics. If a cutoff would truncate a quantity the selected source
 defines over a whole component, keep the source semantics, classify the
@@ -1040,7 +1045,10 @@ silent for tens of minutes, which is indistinguishable from a hang. From the
 second progress line on, each line must also report monotonic elapsed seconds
 since the row loop started, the observed rows/second, and the estimated
 minutes remaining computed from that rate, so the operator can project total
-wall-clock from any single log line.
+wall-clock from any single log line. Every per-group summary line and
+per-phase done line must also include that group's or phase's monotonic
+elapsed seconds, so hot groups are visible in a plain run's log without
+--measuretime.
 Instrumentation must use a monotonic
 clock and must not change feature math, traversal order, random state,
 definedness, rows, or returned values when all groups are enabled. Timing writes
@@ -1115,8 +1123,16 @@ VERIFY READ-ONLY BEFORE DOCUMENTING
    consumer; each declared traversal
    cutoff or node cap actually appears in the corresponding graph calls; each
    global_scan primitive executes only in a one-time pre-pass, never inside the
-   per-row loop; and no per-row code performs full-array conditional scans or
-   unbounded shortest-path searches that the plan does not declare. A mismatch
+   per-row loop; and no per-row code performs full-array conditional scans,
+   full-array reductions of pre-pass-built arrays (for example a per-row
+   min/max over all node coordinates), or unbounded shortest-path searches
+   that the plan does not declare. Post-extraction diagnostics and figures
+   must also stay bounded on the full universe: any all-rows pairwise or
+   rank statistic must be row-subsampled to a fixed cap or be O(n log n)
+   (for example, scipy spearmanr with nan_policy="omit" on NaN-bearing data
+   silently routes to a masked-array pairwise path that takes hours at 500k
+   rows and must not appear; use pandas .corr(method="spearman") on a
+   capped row sample instead). A mismatch
    between plan and code is a defect to report, not to silently fix. If `image_patch_pass`
    owns a strict majority of included hypothesis ids, normal extraction uses
    the runtime's bounded completion-order thread map, honors `--n-jobs` (-1 =

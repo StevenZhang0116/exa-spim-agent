@@ -677,6 +677,106 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             self.assertEqual(failed_payload["status"], "failed")
             self.assertIn("synthetic extraction failure", failed_payload["error"])
 
+    def test_cost_report_flags_declared_vs_observed_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            feature = root / "feature.py"
+            detector = root / "detector.py"
+            feature.write_text(
+                "FEATURE_REGISTRY = [('x',)]\n"
+                "FEATURE_NAMES = ['x']\n"
+                "ANALYSIS_TIMING_GROUPS = [{\n"
+                "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
+                "    'phase': 'segment', 'feature_names': ['x'],\n"
+                "}]\n"
+                "COMPUTATION_PLAN = [{\n"
+                "    'primitive': 'row_math', 'cost_class': 'constant',\n"
+                "    'bound': '', 'amortization': '', 'consumers': ['hypo_1'],\n"
+                "}]\n"
+                "class SegmentAccumulator:\n"
+                "    def to_frame(self):\n"
+                "        return None\n"
+                "def extract_features(payload, verbose=True, timing=None, "
+                "enabled_analysis_keys=None, profile_segment_limit=None):\n"
+                "    _ = payload, verbose, profile_segment_limit\n"
+                "    def _analysis_enabled(key):\n"
+                "        return enabled_analysis_keys is None or "
+                "key in enabled_analysis_keys\n"
+                "    _analysis_enabled('hypo_1')\n"
+                "    if timing is not None:\n"
+                "        timing.start_phase('segment')\n"
+                "        timing.start_analysis('hypo_1')\n"
+                "    return [], [], SegmentAccumulator()\n"
+            )
+            assemble_detector(workflow.RUNTIME_TEMPLATE_PATH, feature, detector)
+            spec = importlib.util.spec_from_file_location(
+                "mismatch_detector", detector)
+            module = importlib.util.module_from_spec(spec)
+            assert spec.loader is not None
+            spec.loader.exec_module(module)
+
+            keys = ["hot"] + ["cheap_%d" % i for i in range(9)]
+
+            def timing_payload():
+                units = [{
+                    "key": key,
+                    "hypothesis_ids": [i + 1],
+                    "feature_names": ["f%d" % i],
+                    "phase": "segment",
+                    "shared": False,
+                    "estimated_removable_seconds": (
+                        982.0 if key == "hot" else 0.25),
+                    "cost_scope": "sample_observed_not_full_run",
+                    "eligible_calls": 10,
+                } for i, key in enumerate(keys)]
+                return {
+                    "selection_units": units,
+                    "analyses": [
+                        {"key": key, "considered_calls": 10} for key in keys],
+                    "metadata": {},
+                }
+
+            timing_path = root / "analysis_timing_777.json"
+            timing_path.write_text(json.dumps(timing_payload()))
+
+            # All-cheap declaration: the hot group must be flagged.
+            module.COMPUTATION_PLAN = [{
+                "primitive": "arrays", "cost_class": "global_scan",
+                "bound": "all node arrays",
+                "amortization": "one-time pre-pass",
+                "consumers": list(keys),
+            }]
+            report_path, _ = module.write_hypothesis_cost_artifacts(
+                str(timing_path), str(root), "777")
+            report = Path(report_path).read_text()
+            self.assertIn("DECLARED-vs-OBSERVED MISMATCH", report)
+            self.assertIn("`hot`", report)
+            self.assertNotIn("`cheap_0`", report.split("|")[0])
+
+            # Honest declaration: hot consumes a density_scaled primitive.
+            module.COMPUTATION_PLAN = [
+                {"primitive": "arrays", "cost_class": "global_scan",
+                 "bound": "all node arrays",
+                 "amortization": "one-time pre-pass",
+                 "consumers": [k for k in keys if k != "hot"]},
+                {"primitive": "ball", "cost_class": "density_scaled",
+                 "bound": "15um", "amortization": "memo by segment",
+                 "consumers": ["hot"]},
+            ]
+            report_path, _ = module.write_hypothesis_cost_artifacts(
+                str(timing_path), str(root), "777")
+            self.assertNotIn(
+                "DECLARED-vs-OBSERVED MISMATCH",
+                Path(report_path).read_text())
+
+            # Legacy fragment without a plan: section silently absent.
+            del module.COMPUTATION_PLAN
+            report_path, _ = module.write_hypothesis_cost_artifacts(
+                str(timing_path), str(root), "777")
+            self.assertNotIn(
+                "DECLARED-vs-OBSERVED MISMATCH",
+                Path(report_path).read_text())
+
     def test_hypothesis_selection_rejects_partial_shared_unit(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -898,6 +998,13 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("grid %d/%d FAILED after %.1fs", template)
         self.assertIn("outer refit FAILED after %.1fs", template)
         self.assertIn("final search %s:", template)
+        # Figure 04 correlation must stay bounded on the full universe:
+        # scipy spearmanr(nan_policy="omit") on NaN-bearing data routes to a
+        # masked-array pairwise path that once hung a 500k-row run for hours.
+        self.assertNotIn('spearmanr(mat, nan_policy="omit")', template)
+        self.assertNotIn("from scipy.stats import spearmanr", template)
+        self.assertIn('corr(method="spearman")', template)
+        self.assertIn("corr_df.sample(n=50000, random_state=RANDOM_SEED)", template)
 
     def test_runtime_image_worker_count_supports_all_cpus(self) -> None:
         tree = ast.parse(workflow.RUNTIME_TEMPLATE_PATH.read_text())
@@ -1623,7 +1730,9 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("instead of silently truncating", generate)
         self.assertIn("density-stratified", generate)
         self.assertIn("_memoized(cache, key, compute)", generate)
+        self.assertIn("not merely the raw array", generate)
         self.assertIn("COMPUTATION_PLAN matches the actual code", verify)
+        self.assertIn("full-array reductions of pre-pass-built arrays", verify)
         self.assertIn("runtime `_memoized` helper", verify)
         self.assertIn("defect to report, not to silently fix", verify)
         self.assertIn("cover every\nFEATURE_REGISTRY name exactly once", generate)
@@ -1639,6 +1748,7 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("default limit of\n3", generate)
         self.assertIn("final-run selection unit", generate)
         self.assertIn("does not make the final\ndecision automatically", generate)
+        self.assertIn("hot groups are visible", generate)
         self.assertIn("must not change feature math", generate)
         self.assertIn("component traversal has flushed segment/component", verify)
         self.assertIn("final per-feature cumulative timing/call-count", verify)

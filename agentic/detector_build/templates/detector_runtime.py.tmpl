@@ -934,6 +934,59 @@ class AnalysisTimingRecorder(object):
         self.last_checkpoint_perf = now
 
 
+def _declared_cheap_groups():
+    """Timing groups whose COMPUTATION_PLAN primitives all promise cheap
+    per-row work (constant/bounded_local, or global_scan amortized into a
+    pre-pass). None when no well-formed plan is present (legacy fragments)."""
+    plan = globals().get("COMPUTATION_PLAN")
+    if not isinstance(plan, list) or not plan:
+        return None
+    cheap_classes = {"constant", "bounded_local", "global_scan"}
+    consumed = {}
+    for entry in plan:
+        try:
+            cost_class = entry["cost_class"]
+            for key in entry["consumers"]:
+                consumed.setdefault(key, set()).add(cost_class)
+        except (TypeError, KeyError):
+            return None
+    return {
+        key for key, classes in consumed.items() if classes <= cheap_classes
+    }
+
+
+def _declared_vs_observed_mismatches(units):
+    """Declared-cheap units whose measured sample cost contradicts the plan.
+
+    The COMPUTATION_PLAN validator checks declaration structure only; a
+    consumer can still do undeclared full-array work per row (for example a
+    per-row min/max reduction of a pre-pass-built array). Cross-checking the
+    declared tier against observed seconds catches any such escape regardless
+    of mechanism. Report-only: exclusion decisions stay explicit and human.
+    """
+    declared_cheap = _declared_cheap_groups()
+    if not declared_cheap or not units:
+        return []
+    seconds = sorted(u["estimated_removable_seconds"] for u in units)
+    median = seconds[len(seconds) // 2]
+    threshold = max(20.0 * median, 1.0)
+    flagged = []
+    for unit in units:
+        observed = unit["estimated_removable_seconds"]
+        if unit["key"] in declared_cheap and observed > threshold:
+            ratio = observed / median if median > 0 else float("inf")
+            flagged.append(
+                "- `%s`: observed %.1fs on the profiling sample (%.0fx the "
+                "unit median %.3fs), yet every COMPUTATION_PLAN primitive it "
+                "consumes is declared constant/bounded_local/pre-pass-"
+                "amortized global_scan. The declaration promises cheap "
+                "per-row work; the measurement contradicts it. Audit this "
+                "group's per-row code for undeclared full-array work before "
+                "trusting the plan or this ranking."
+                % (unit["key"], observed, ratio, median))
+    return flagged
+
+
 def write_hypothesis_cost_artifacts(timing_path, out_dir, brain):
     """Write a ranked human report and an editable final-run selection file."""
     with open(timing_path, "r") as fh:
@@ -946,6 +999,17 @@ def write_hypothesis_cost_artifacts(timing_path, out_dir, brain):
     lines = [
         "# Hypothesis computational-cost report: %s" % brain,
         "",
+    ]
+    mismatches = _declared_vs_observed_mismatches(units)
+    if mismatches:
+        lines.extend([
+            "## DECLARED-vs-OBSERVED MISMATCH",
+            "",
+            "These selection units are declared cheap by COMPUTATION_PLAN but "
+            "measured expensive; the plan or the code is wrong:",
+            "",
+        ] + mismatches + [""])
+    lines.extend([
         "This is a small-sample profile (%s of %s target rows; limit %s). "
         "Seconds are observed sample cost, not projected full-run savings." % (
             timing.get("metadata", {}).get("n_profiled_rows", "?"),
@@ -958,7 +1022,7 @@ def write_hypothesis_cost_artifacts(timing_path, out_dir, brain):
         "| selection unit | hypothesis ids | phase | observed sample seconds | "
         "eligible / considered | features |",
         "|---|---:|---|---:|---:|---|",
-    ]
+    ])
     for unit in units:
         lines.append(
             "| %s | %s | %s | %.6f | %d / %d | %s |" % (
@@ -1669,7 +1733,6 @@ def make_figures(fig_dir, prefix, df, y, nested, winner_oof, selector_oof,
             save(fig, 3, "score_by_class")
 
     # 04: raw-feature ECDFs + Spearman correlation (both scopes get it)
-    from scipy.stats import spearmanr
     fig, (axa, axb) = plt.subplots(1, 2, figsize=(14, 6))
     show = feature_order[:8]
     for name in show:
@@ -1680,16 +1743,23 @@ def make_figures(fig_dir, prefix, df, y, nested, winner_oof, selector_oof,
             axa.plot(xs, np.linspace(0, 1, len(xs)), label=name)
     axa.set_title("raw-feature ECDFs (first 8)"); axa.legend(fontsize=6)
     axa.set_xlabel("value"); axa.set_ylabel("F(x)")
-    mat = df[feature_order].values.astype(float)
+    # NaN-aware Spearman via pandas pairwise-complete ranks. Do NOT use
+    # scipy spearmanr(nan_policy="omit"): with NaNs present it routes to a
+    # masked-array pairwise implementation that takes hours on a full
+    # universe (e.g. 500k rows x 85 features). Row-subsample so the figure
+    # cost stays bounded regardless of universe size.
+    corr_df = df[feature_order]
+    if len(corr_df) > 50000:
+        corr_df = corr_df.sample(n=50000, random_state=RANDOM_SEED)
     try:
-        corr, _ = spearmanr(mat, nan_policy="omit")
+        corr = corr_df.corr(method="spearman").values
         if np.ndim(corr) == 0:
             corr = np.array([[1.0]])
         im = axb.imshow(corr, vmin=-1, vmax=1, cmap="coolwarm")
         fig.colorbar(im, ax=axb)
     except Exception:
         pass
-    axb.set_title("feature Spearman correlation")
+    axb.set_title("feature Spearman correlation (<=50k row sample)")
     save(fig, 4, "feature_ecdf_corr")
 
     if heldout:
