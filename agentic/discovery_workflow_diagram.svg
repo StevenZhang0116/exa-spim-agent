@@ -103,12 +103,13 @@
   <text x="1264" y="306" font-size="22" font-weight="700" text-anchor="middle" fill="#ffffff">4</text>
   <text x="1304" y="306" font-size="26" font-weight="700" fill="#0f172a">Audit</text>
   <rect x="1248" y="370" width="224" height="174" rx="12" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
-  <text x="1270" y="410" font-size="19" font-weight="600" fill="#1e3a8a">Check statistics</text>
-  <text x="1270" y="445" font-size="17" fill="#475569">test choice</text>
-  <text x="1270" y="475" font-size="17" fill="#475569">effect size</text>
-  <text x="1270" y="505" font-size="17" fill="#475569">power and FDR</text>
-  <text x="1248" y="596" font-size="16" fill="#64748b">Flag material problems</text>
-  <text x="1248" y="622" font-size="16" fill="#64748b">for correction</text>
+  <text x="1270" y="404" font-size="19" font-weight="600" fill="#1e3a8a">Check statistics</text>
+  <text x="1270" y="436" font-size="17" fill="#475569">test choice</text>
+  <text x="1270" y="464" font-size="17" fill="#475569">effect size</text>
+  <text x="1270" y="492" font-size="17" fill="#475569">power and FDR</text>
+  <text x="1270" y="528" font-size="16" font-weight="600" fill="#9a3412">deployability: GT-blind?</text>
+  <text x="1248" y="596" font-size="16" fill="#64748b">Flag material problems +</text>
+  <text x="1248" y="622" font-size="16" fill="#64748b">GT-referencing features</text>
 
   <line x1="1500" y1="455" x2="1540" y2="455" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
 
@@ -150,7 +151,7 @@
   <text x="292" y="939" font-size="18" font-weight="700" fill="#3730a3">DISCOVERY OUTPUTS</text>
   <line x1="920" y1="920" x2="920" y2="988" stroke="#c7d2fe" stroke-width="2"/>
   <text x="578" y="969" font-size="23" font-weight="700" text-anchor="middle" fill="#3730a3">Final discovery report</text>
-  <text x="578" y="992" font-size="15" text-anchor="middle" fill="#475569">ranked findings · reproduction · transfer · audit verdicts</text>
+  <text x="578" y="992" font-size="15" text-anchor="middle" fill="#475569">ranked findings · reproduction · transfer · audit + deployability verdicts</text>
   <text x="1290" y="965" font-size="19" font-weight="700" text-anchor="middle" fill="#3730a3">split-feature-applicability.json</text>
   <text x="1290" y="990" font-size="15" text-anchor="middle" fill="#475569">split only · source-bound feature requirements</text>
 

@@ -56,11 +56,11 @@
   <text x="466" y="326" font-size="23" font-weight="700" fill="#0f172a">Feature inventory</text>
   <rect x="416" y="358" width="254" height="76" rx="11" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
   <text x="543" y="389" font-size="17" font-weight="600" text-anchor="middle" fill="#1e3a8a">Choose source + semantics</text>
-  <text x="543" y="414" font-size="14" text-anchor="middle" fill="#475569">including valid-use conditions</text>
+  <text x="543" y="414" font-size="14" text-anchor="middle" fill="#475569">valid-use + GT-deployability gates</text>
   <line x1="543" y1="434" x2="543" y2="458" stroke="#64748b" stroke-width="2.5" marker-end="url(#arrow)"/>
   <rect x="416" y="466" width="254" height="88" rx="11" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
   <text x="543" y="495" font-size="17" font-weight="600" text-anchor="middle" fill="#166534">Join ID + source SHA</text>
-  <text x="543" y="520" font-size="14" text-anchor="middle" fill="#475569">merge v2 · split v3</text>
+  <text x="543" y="520" font-size="14" text-anchor="middle" fill="#475569">GT-referencing rows hard-rejected</text>
   <text x="543" y="543" font-size="14" font-family="monospace" text-anchor="middle" fill="#334155">feature_inventory.json</text>
 
   <line x1="698" y1="429" x2="736" y2="429" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
@@ -86,11 +86,11 @@
   <rect x="1122" y="358" width="264" height="76" rx="11" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
   <text x="1254" y="384" font-size="17" font-weight="600" text-anchor="middle" fill="#1e3a8a">Plan costs, then implement</text>
   <text x="1254" y="404" font-size="13" text-anchor="middle" fill="#475569">COMPUTATION_PLAN + guarded features</text>
-  <text x="1254" y="422" font-size="13" text-anchor="middle" fill="#475569">from approved sources</text>
+  <text x="1254" y="422" font-size="13" text-anchor="middle" fill="#475569">GT-blind: runtime payload guard</text>
   <line x1="1254" y1="434" x2="1254" y2="458" stroke="#64748b" stroke-width="2.5" marker-end="url(#arrow)"/>
   <rect x="1122" y="466" width="264" height="88" rx="11" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
   <text x="1254" y="492" font-size="17" font-weight="600" text-anchor="middle" fill="#166534">Assemble + smoke test</text>
-  <text x="1254" y="513" font-size="12.5" text-anchor="middle" fill="#475569">rejects unbounded / unmemoized cost plans</text>
+  <text x="1254" y="513" font-size="12.5" text-anchor="middle" fill="#475569">rejects cost violations · GT-access lint</text>
   <text x="1254" y="536" font-size="14" font-family="monospace" text-anchor="middle" fill="#334155">*_site_detector.py</text>
 
   <line x1="1414" y1="429" x2="1452" y2="429" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
@@ -136,7 +136,7 @@
   <!-- Deliverables -->
   <rect x="250" y="936" width="1420" height="78" rx="20" fill="#eef2ff" stroke="#6366f1" stroke-width="2" filter="url(#shadow)"/>
   <text x="292" y="970" font-size="21" font-weight="700" fill="#3730a3">Build deliverables</text>
-  <text x="292" y="997" font-size="16" fill="#374151">candidate policy (split) · feature inventory · model configuration · self-contained detector · README + runbook</text>
+  <text x="292" y="997" font-size="16" fill="#374151">candidate policy (split) · feature inventory · model configuration · self-contained GT-blind detector (+ ascertainment audit) · README + runbook</text>
 
   <text x="80" y="1040" font-size="15" fill="#94a3b8">agentic/run_detector_build_workflow.py</text>
 </svg>

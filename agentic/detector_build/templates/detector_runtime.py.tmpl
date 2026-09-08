@@ -1544,6 +1544,105 @@ def fit_final_winner(X, y, configured, policy, log, samples=None):
 # AUDIT.  Printed BEFORE the statistical fill destroys the missingness         #
 # evidence.  Uses is_defined flags, never value-vs-sentinel comparisons.       #
 # --------------------------------------------------------------------------- #
+def ascertainment_audit(samples, y, winner_oof, feat_df, covs_by_display, log):
+    """Expose GT-ascertainment / size confounds in the fitted signal.
+
+    GT tracing is required to LABEL an error, so covariates like segment size or
+    GT-node coverage encode label availability rather than biology. A feature
+    (or the winner score itself) that mostly tracks such a covariate is riding
+    the ascertainment confound, not image/geometry evidence. This audit is
+    DIAGNOSTIC: it never excludes anything by itself — read it, then decide via
+    --exclude-hypotheses / hypothesis-selection whether a confounded feature
+    carries real independent signal. Covariates come from the runtime-owned
+    ``ascertainment_covariates`` (GT-reading by design; never model inputs).
+
+    Returns a JSON-ready dict (also printed): per covariate, Spearman vs label
+    and vs winner OOF score, quartile-stratified AP of the winner OOF, and the
+    features most correlated with the covariate.
+    """
+    if not covs_by_display:
+        return None
+    import pandas as pd
+    from sklearn.metrics import average_precision_score
+
+    cov_names = sorted(next(iter(covs_by_display.values())).keys())
+    cov_arrays = {}
+    for name in cov_names:
+        cov_arrays[name] = np.asarray(
+            [covs_by_display[sample_display(s)][name] for s in samples],
+            dtype=float)
+    y = np.asarray(y, dtype=np.int64)
+    oof = np.asarray(winner_oof, dtype=float)
+    oof_mask = np.isfinite(oof)
+    # Bound the correlation work like figure 04 does: rank correlations on a
+    # deterministic row sample, never the full 500k-row universe (scipy's
+    # spearmanr masked path is banned for the same reason — see the template
+    # contract test). Strata APs below still use every row.
+    n_rows = len(y)
+    if n_rows > 50000:
+        corr_rows = np.random.RandomState(RANDOM_SEED).choice(
+            n_rows, size=50000, replace=False)
+    else:
+        corr_rows = np.arange(n_rows)
+
+    def _spear(a, b):
+        a, b = a[corr_rows], b[corr_rows]
+        m = np.isfinite(a) & np.isfinite(b)
+        if int(m.sum()) < 30 or len(set(a[m])) < 2 or len(set(b[m])) < 2:
+            return None
+        rho = pd.Series(a[m]).corr(pd.Series(b[m]), method="spearman")
+        return None if not np.isfinite(rho) else float(rho)
+
+    print("\n==================== ASCERTAINMENT / CONFOUND AUDIT ====================")
+    print("covariates are GT/size AUDIT quantities (never features); a large "
+          "|rho| of the winner score, or a feature, with a covariate flags "
+          "confounded signal — judge features against this before trusting them")
+    report = {}
+    for name in cov_names:
+        cov = cov_arrays[name]
+        entry = {
+            "spearman_vs_label": _spear(cov, y.astype(float)),
+            # nan OOF rows (unscored) drop out inside _spear's finite mask
+            "spearman_vs_winner_oof": _spear(cov, oof),
+        }
+        # Quartile-stratified AP of the winner OOF: an AP that collapses inside
+        # covariate strata (vs the pooled AP) means ranking power came mostly
+        # from the covariate itself.
+        finite_cov = cov[np.isfinite(cov)]
+        strata = []
+        if len(finite_cov) >= 40:
+            edges = np.unique(np.nanquantile(cov, [0.25, 0.5, 0.75]))
+            bins = np.digitize(cov, edges)
+            for b in range(int(bins.max()) + 1):
+                m = (bins == b) & oof_mask & np.isfinite(cov)
+                n_bin, n_pos = int(m.sum()), int(y[m].sum())
+                ap = (float(average_precision_score(y[m], oof[m]))
+                      if n_pos and n_pos < n_bin else None)
+                strata.append({"stratum": int(b), "n": n_bin,
+                               "n_positive": n_pos, "winner_oof_ap": ap})
+        entry["winner_oof_ap_by_stratum"] = strata
+        # Features that mostly track this covariate (top by |Spearman|).
+        feature_rhos = []
+        for fname in FEATURE_NAMES:
+            rho = _spear(feat_df[fname].values.astype(float), cov)
+            if rho is not None:
+                feature_rhos.append((abs(rho), fname, rho))
+        feature_rhos.sort(reverse=True)
+        entry["most_correlated_features"] = [
+            {"feature": fname, "spearman": rho}
+            for _a, fname, rho in feature_rhos[:8]]
+        report[name] = entry
+        print("  %s: rho(label)=%s rho(winner_oof)=%s  strata AP: %s"
+              % (name, _fmt(entry["spearman_vs_label"]),
+                 _fmt(entry["spearman_vs_winner_oof"]),
+                 ["%s/%d+%d" % (_fmt(s["winner_oof_ap"]), s["n"], s["n_positive"])
+                  for s in strata]))
+        for item in entry["most_correlated_features"][:3]:
+            print("      tracks %-42s rho=%s"
+                  % (item["feature"], _fmt(item["spearman"])))
+    return report
+
+
 def undefined_audit(df, y, log):
     n = len(y)
     n_positive = int(np.sum(y == 1))
@@ -2115,6 +2214,39 @@ def run_smoke_test(config_path, inventory_sha256, log):
     for s in skipped:
         assert s["family"] in ALLOWED_FAMILIES
 
+    # blindness guard: feature math must be physically unable to read GT state.
+    fake_payload = {"fragments_graph": "FRAG", "gt_graph": object(),
+                    "gt_merge_labels": [1], "min_cable_length": 100}
+    fake_samples = [
+        {"segment_id_a": 1, "segment_id_b": 2, "node_id_a": 10, "node_id_b": 20,
+         "gap_um": 1.5, "is_merge_creating": 1,
+         "contains_known_merge_segment": 1, "occurrences": ()},
+    ]
+    view = _BlindPayloadView(fake_payload, fake_samples)
+    assert view["fragments_graph"] == "FRAG", "guard must pass non-GT keys through"
+    assert view.get("min_cable_length", 0) == 100
+    assert "gt_graph" not in view, "guard must report GT keys absent"
+    for gt_key in sorted(_GT_PAYLOAD_KEYS):
+        try:
+            view.get(gt_key)
+        except BlindnessViolation:
+            pass
+        else:
+            raise AssertionError("guard failed to block %r" % gt_key)
+    blind_samples, blind_labels = view["__detector_sample_universe_cache__"]
+    assert not np.any(blind_labels), "guard must zero the labels"
+    assert "is_merge_creating" not in blind_samples[0], \
+        "guard must strip GT audit fields from sample rows"
+    assert blind_samples[0]["gap_um"] == 1.5, \
+        "guard must keep real geometry fields in sample rows"
+    try:
+        view["gt_merge_labels"] = []
+    except BlindnessViolation:
+        pass
+    else:
+        raise AssertionError("guard must block GT key writes")
+    log("synthetic smoke test: blindness guard blocks GT reads/writes")
+
     # ensure NO output files were created by the smoke path
     print("DETECTOR_SMOKE_OK")
     return 0
@@ -2219,10 +2351,109 @@ def _inventory_sha(inventory_path):
     return None
 
 
+# --- blindness guard (extracted by tests; keep these sentinel comments) ---
+class BlindnessViolation(RuntimeError):
+    """A feature fragment tried to read GT-only payload state at extraction time."""
+
+
+# The answer-key payload keys no feature may read. Universe + label derivation
+# read them ONLY inside the runtime-owned target adapter (build_sample_universe /
+# _derive_split_truth), which runs BEFORE the fragment and outside the guard.
+_GT_PAYLOAD_KEYS = frozenset({
+    "gt_edge_error", "gt_graph", "gt_node_canonical_label", "gt_merge_labels",
+})
+# GT-derived audit/label fields stripped from sample rows handed to feature math.
+_SAMPLE_AUDIT_KEYS = frozenset({
+    "is_split", "split_kind", "is_merge_creating",
+    "contains_known_merge_segment", "is_merge",
+})
+
+
+def _blind_sample(sample):
+    """A sample row as feature math may see it: GT audit fields stripped."""
+    if isinstance(sample, dict):
+        return {k: v for k, v in sample.items() if k not in _SAMPLE_AUDIT_KEYS}
+    return sample
+
+
+class _BlindPayloadView(object):
+    """Runtime enforcement of the blind-feature contract.
+
+    Wraps the payload for the duration of ``extract_features`` so that:
+      * reading any GT payload key raises ``BlindnessViolation`` (a feature that
+        needs the answer key cannot run blind at inference — it must not train);
+      * ``key in payload`` reports GT keys ABSENT, so defensive fragment code
+        takes its no-GT branch instead of crashing;
+      * the sample-universe cache returns audit-stripped samples and ALL-ZERO
+        labels — the true labels are re-attached by ``_extract_features_runtime``
+        after extraction, so feature math can never condition on a label;
+      * every other key passes through unchanged (fragments graph, image state).
+    """
+
+    def __init__(self, payload, samples):
+        self._payload = payload
+        self._universe = ([_blind_sample(s) for s in samples],
+                          np.zeros(len(samples), dtype=np.int64))
+
+    def _resolve(self, key):
+        if key in _GT_PAYLOAD_KEYS:
+            raise BlindnessViolation(
+                "feature extraction read payload[%r]: features must be "
+                "computable from the fragments graph / image alone (GT is "
+                "reserved for the runtime's universe/label derivation)" % (key,))
+        if key == "__detector_sample_universe_cache__":
+            return True, self._universe
+        return False, None
+
+    def __getitem__(self, key):
+        hit, value = self._resolve(key)
+        return value if hit else self._payload[key]
+
+    def get(self, key, default=None):
+        hit, value = self._resolve(key)
+        if hit:
+            return value
+        return self._payload.get(key, default)
+
+    def __contains__(self, key):
+        if key in _GT_PAYLOAD_KEYS:
+            return False
+        return (key == "__detector_sample_universe_cache__"
+                or key in self._payload)
+
+    def __setitem__(self, key, value):
+        if key in _GT_PAYLOAD_KEYS or key == "__detector_sample_universe_cache__":
+            raise BlindnessViolation(
+                "feature extraction may not write payload[%r]" % (key,))
+        self._payload[key] = value
+
+    def keys(self):
+        return [k for k in self._payload.keys() if k not in _GT_PAYLOAD_KEYS]
+
+    def __iter__(self):
+        return iter(self.keys())
+
+    def __len__(self):
+        return len(self.keys())
+# --- end blindness guard ---
+
+
 def _extract_features_runtime(payload, *, verbose=True, timing=None,
                               enabled_analysis_keys=None,
                               profile_segment_limit=None, image_workers=1):
-    """Call a feature fragment and enforce its runtime return contract."""
+    """Call a feature fragment BLIND and enforce its runtime return contract.
+
+    The candidate universe and TRUE labels are derived here first (the only
+    sanctioned GT read, via the target adapter's ``build_sample_universe``);
+    the fragment then runs against a ``_BlindPayloadView`` whose GT keys raise,
+    whose sample rows carry no audit fields, and whose labels are all zeros.
+    After extraction the fragment's row identity/order is verified against the
+    runtime universe (via ``sample_display``) and the true labels are
+    re-attached — so feature math can never see the answer key, statically or
+    dynamically.
+    """
+    samples_true, labels_true = build_sample_universe(payload)
+    blind = _BlindPayloadView(payload, samples_true)
     kwargs = {
         "verbose": verbose,
         "timing": timing,
@@ -2231,7 +2462,7 @@ def _extract_features_runtime(payload, *, verbose=True, timing=None,
     }
     if "image_workers" in inspect.signature(extract_features).parameters:
         kwargs["image_workers"] = image_workers
-    result = extract_features(payload, **kwargs)
+    result = extract_features(blind, **kwargs)
     if not isinstance(result, tuple) or len(result) != 3:
         raise TypeError(
             "extract_features contract violation: expected exactly "
@@ -2256,7 +2487,31 @@ def _extract_features_runtime(payload, *, verbose=True, timing=None,
             "extract_features contract violation: row_records and labels have "
             "different lengths (%d != %d)" % (n_samples, n_labels)
         )
-    return samples, labels, accumulator
+    # Re-attach TRUE labels by row identity. Full runs must return the runtime
+    # universe exactly (same rows, same order); a profiling run
+    # (profile_segment_limit) may return a deterministic subset, so labels are
+    # looked up per row instead.
+    true_by_display = {}
+    for s, l in zip(samples_true, labels_true):
+        true_by_display[sample_display(s)] = int(l)
+    if len(true_by_display) != len(samples_true):
+        raise ValueError(
+            "sample_display is not unique over the runtime universe (%d displays "
+            "for %d rows) — label re-attachment would be ambiguous"
+            % (len(true_by_display), len(samples_true)))
+    if profile_segment_limit is None and n_samples != len(samples_true):
+        raise ValueError(
+            "extract_features contract violation: returned %d rows but the "
+            "runtime universe has %d" % (n_samples, len(samples_true)))
+    relabeled = np.zeros(n_samples, dtype=np.int64)
+    for pos, s in enumerate(samples):
+        display = sample_display(s)
+        if display not in true_by_display:
+            raise ValueError(
+                "extract_features contract violation: returned row %d (%s) is "
+                "not in the runtime sample universe" % (pos, display))
+        relabeled[pos] = true_by_display[display]
+    return samples, relabeled, accumulator
 
 
 def _drop_all_undefined(df, samples, labels):
@@ -2452,6 +2707,18 @@ def run_detector(args, log):
         image_workers=args.n_jobs)
     feat_df = acc.to_frame()
     universe_audit = sample_universe_audit(payload, samples, labels)
+    # Ascertainment covariates (GT/size; AUDIT-ONLY) must be captured while the
+    # payload is alive; keyed by row display so the exclude-empty scope filter
+    # below cannot desynchronize them from the surviving rows.
+    covs_by_display = {}
+    try:
+        _cov_raw = ascertainment_covariates(payload, samples)
+        for _i, _s in enumerate(samples):
+            covs_by_display[sample_display(_s)] = {
+                k: float(v[_i]) for k, v in _cov_raw.items()}
+    except Exception as exc:
+        log("[ascertainment] covariate computation failed: %r — audit skipped"
+            % (exc,))
     # Release the big payload before model fitting.
     del payload
     gc.collect()
@@ -2495,6 +2762,13 @@ def run_detector(args, log):
     _print_queue(samples, labels, np.where(
         np.isnan(winner_oof), -np.inf, winner_oof),
         args.review_budget, "TOP REVIEW QUEUE (winner OOF)")
+
+    try:
+        ascertainment = ascertainment_audit(
+            samples, y, winner_oof, feat_df, covs_by_display, log)
+    except Exception as exc:
+        log("[ascertainment] audit failed: %r — recorded as null" % (exc,))
+        ascertainment = None
 
     # ---- write CSV ---- #
     out_csv = args.out_csv or os.path.join(
@@ -2549,6 +2823,7 @@ def run_detector(args, log):
         "hypothesis_selection": hypothesis_selection,
         "audit": audit,
         "sample_universe_audit": universe_audit,
+        "ascertainment_audit": ascertainment,
         "heldout": heldout_report,
     }
     out_json = os.path.join(args.out_dir, "model_selection_%s.json" % train_brain)

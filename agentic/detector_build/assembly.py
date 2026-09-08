@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import builtins
+import symtable
 from pathlib import Path
 
 from .candidate_policy import load_runtime_candidate_policy
@@ -41,18 +43,28 @@ RUNTIME_OWNED_SYMBOLS = frozenset({
     "CANDIDATE_GLOBAL_CAP", "CANDIDATE_POLICY_SHA256", "build_sample_universe",
     "compatible_occurrences",
     "sample_output_frame", "sample_display", "sample_universe_audit",
+    "ascertainment_covariates",
     "_derive_split_truth", "_gt_neuron_membership",
 })
 
-SPLIT_FEATURE_FORBIDDEN_PAYLOAD_KEYS = frozenset({
+# GT payload keys no feature fragment may read, for EITHER target. These are the
+# answer key: a feature computed from them cannot run blind at inference. Labels /
+# universe derivation read them only inside the runtime-owned target adapter
+# (build_sample_universe / _derive_split_truth), never in feature math. This is
+# the static half of the blindness gate; the runtime half is the
+# _BlindPayloadView guard in the detector runtime template.
+FEATURE_FORBIDDEN_PAYLOAD_KEYS = frozenset({
     "gt_edge_error", "gt_graph", "gt_node_canonical_label", "gt_merge_labels",
 })
 SPLIT_FEATURE_FORBIDDEN_SAMPLE_KEYS = frozenset({
     "is_split", "split_kind", "is_merge_creating",
     "contains_known_merge_segment",
 })
-SPLIT_FEATURE_FORBIDDEN_RUNTIME_NAMES = frozenset({
-    "_derive_split_truth", "_gt_neuron_membership",
+MERGE_FEATURE_FORBIDDEN_SAMPLE_KEYS = frozenset({
+    "is_merge",
+})
+FEATURE_FORBIDDEN_RUNTIME_NAMES = frozenset({
+    "_derive_split_truth", "_gt_neuron_membership", "ascertainment_covariates",
 })
 
 
@@ -104,6 +116,92 @@ def _feature_registry_names(tree: ast.Module, path: Path) -> list[str]:
     if not names or len(names) != len(set(names)):
         raise SystemExit(f"Feature implementation {path} has empty/duplicate feature names.")
     return names
+
+
+def _validate_accumulator_registry_usage(tree: ast.Module, path: Path) -> None:
+    """Keep registry metadata tuples out of accumulator column keys."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name):
+            constructor = node.func.id
+        elif isinstance(node.func, ast.Attribute):
+            constructor = node.func.attr
+        else:
+            continue
+        if not constructor.endswith("Accumulator"):
+            continue
+        values = [*node.args, *(keyword.value for keyword in node.keywords)]
+        if any(
+            isinstance(value, ast.Name) and value.id == "FEATURE_REGISTRY"
+            for value in values
+        ):
+            raise SystemExit(
+                f"Feature implementation {path} passes FEATURE_REGISTRY to "
+                f"{constructor} on line {node.lineno}. Accumulators require "
+                "flat string FEATURE_NAMES; FEATURE_REGISTRY contains metadata "
+                "entries."
+            )
+
+
+def _scope_assignment_lines(
+    statements: list[ast.stmt], variable_name: str
+) -> list[int]:
+    """Find assignments in one function scope, including its control flow."""
+
+    class AssignmentVisitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.lines: list[int] = []
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            return
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+        def visit_Assign(self, node: ast.Assign) -> None:
+            if any(
+                isinstance(target, ast.Name) and target.id == variable_name
+                for target in node.targets
+            ):
+                self.lines.append(node.lineno)
+            self.generic_visit(node.value)
+
+        def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+            if isinstance(node.target, ast.Name) and node.target.id == variable_name:
+                self.lines.append(node.lineno)
+            if node.value is not None:
+                self.generic_visit(node.value)
+
+    visitor = AssignmentVisitor()
+    for statement in statements:
+        visitor.visit(statement)
+    return visitor.lines
+
+
+def _validate_image_patch_cache_scope(tree: ast.Module, path: Path) -> None:
+    """Reject image arrays retained by an extraction-wide patch cache."""
+    extract = next(
+        (
+            node for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "extract_features"
+        ),
+        None,
+    )
+    if extract is None:
+        return
+    outer_lines = _scope_assignment_lines(extract.body, "patch_cache")
+    if outer_lines:
+        raise SystemExit(
+            f"Feature implementation {path} creates extraction-wide patch_cache "
+            f"on line(s) {', '.join(str(line) for line in outer_lines)}. Image "
+            "patch arrays must be cached inside the per-row worker so they are "
+            "released after each row."
+        )
 
 
 def _validate_timing_contract(tree: ast.Module, path: Path) -> set[str]:
@@ -470,6 +568,350 @@ def _validate_computation_plan(
         )
 
 
+def _direct_function_definitions(owner: ast.AST) -> dict[str, ast.AST]:
+    """Return function definitions belonging to one lexical scope."""
+    definitions: dict[str, ast.AST] = {}
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+            definitions[node.name] = node
+
+        def visit_AsyncFunctionDef(  # noqa: N802
+            self, node: ast.AsyncFunctionDef
+        ) -> None:
+            definitions[node.name] = node
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+            return
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+            return
+
+    for statement in getattr(owner, "body", ()):
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            definitions[statement.name] = statement
+        else:
+            Visitor().visit(statement)
+    return definitions
+
+
+def _executed_nodes(statements: list[ast.stmt] | tuple[ast.stmt, ...]):
+    """Yield nodes executed by statements without entering nested callables."""
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.nodes: list[ast.AST] = []
+
+        def generic_visit(self, node: ast.AST) -> None:
+            self.nodes.append(node)
+            super().generic_visit(node)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+            self.nodes.append(node)
+
+        def visit_AsyncFunctionDef(  # noqa: N802
+            self, node: ast.AsyncFunctionDef
+        ) -> None:
+            self.nodes.append(node)
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+            self.nodes.append(node)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:  # noqa: N802
+            self.nodes.append(node)
+
+    visitor = Visitor()
+    for statement in statements:
+        visitor.visit(statement)
+    return visitor.nodes
+
+
+def _call_name(call: ast.Call) -> str | None:
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return None
+
+
+def _literal_expression(node: ast.AST) -> bool:
+    try:
+        ast.literal_eval(node)
+    except (ValueError, TypeError, SyntaxError):
+        return False
+    return True
+
+
+def _contains_full_universe_reference(node: ast.AST) -> bool:
+    full_names = {
+        "node_component", "node_components", "node_component_id",
+        "node_xyz", "node_radius", "all_nodes", "all_edges",
+    }
+    full_attributes = {"node_component_id", "node_xyz", "node_radius"}
+    found = False
+
+    class Visitor(ast.NodeVisitor):
+        def visit_Name(self, item: ast.Name) -> None:  # noqa: N802
+            nonlocal found
+            if item.id in full_names:
+                found = True
+
+        def visit_Attribute(self, item: ast.Attribute) -> None:  # noqa: N802
+            nonlocal found
+            if item.attr in full_attributes:
+                found = True
+            else:
+                self.generic_visit(item)
+
+        def visit_Call(self, item: ast.Call) -> None:  # noqa: N802
+            nonlocal found
+            if (isinstance(item.func, ast.Attribute)
+                    and item.func.attr in {"number_of_nodes", "number_of_edges"}
+                    and not item.args and not item.keywords):
+                found = True
+                return
+            self.generic_visit(item)
+
+        def visit_Subscript(self, item: ast.Subscript) -> None:  # noqa: N802
+            # A scalar/indexed row is local even when its backing array is
+            # universe-sized. A full slice still represents the whole array.
+            full_slice = (
+                isinstance(item.slice, ast.Slice)
+                and item.slice.lower is None
+                and item.slice.upper is None
+                and item.slice.step is None
+            ) or (
+                isinstance(item.slice, ast.Constant)
+                and item.slice.value is Ellipsis
+            )
+            if full_slice:
+                self.visit(item.value)
+            else:
+                self.visit(item.slice)
+
+    Visitor().visit(node)
+    return found
+
+
+def _row_path_violation(nodes: list[ast.AST]) -> tuple[int, str] | None:
+    """Return the first high-confidence setup/global operation in row work."""
+    index_builders = {
+        "KDTree", "cKDTree", "BallTree", "NearestNeighbors",
+        "KMeans", "MiniBatchKMeans", "GaussianMixture",
+    }
+    global_reductions = {
+        "amin", "amax", "argmin", "argmax", "min", "max", "sum",
+        "mean", "median", "percentile", "quantile", "sort", "argsort",
+        "where", "flatnonzero", "unique",
+    }
+    unbounded_graph_calls = {
+        "all_pairs_shortest_path", "all_pairs_dijkstra",
+        "floyd_warshall", "shortest_path", "shortest_path_length",
+        "single_source_shortest_path", "single_source_shortest_path_length",
+        "single_source_dijkstra", "single_source_dijkstra_path_length",
+    }
+
+    for node in nodes:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            return node.lineno, "import/module initialization"
+        if isinstance(node, (ast.For, ast.AsyncFor)):
+            if _contains_full_universe_reference(node.iter):
+                return node.lineno, "full-universe iteration"
+        if isinstance(node, ast.comprehension):
+            if _contains_full_universe_reference(node.iter):
+                return getattr(node, "lineno", 0), "full-universe comprehension"
+        if not isinstance(node, ast.Call):
+            continue
+        name = _call_name(node)
+        if (name in index_builders
+                and any(_contains_full_universe_reference(arg) for arg in node.args)):
+            return node.lineno, f"full-universe {name} index/model construction"
+        if (name in global_reductions
+                and any(_contains_full_universe_reference(arg) for arg in node.args)):
+            return node.lineno, f"full-universe {name} operation"
+        if (name in {"array", "asarray", "fromiter"}
+                and any(_contains_full_universe_reference(arg) for arg in node.args)):
+            return node.lineno, f"full-universe {name} materialization"
+        if name in unbounded_graph_calls:
+            keywords = {keyword.arg for keyword in node.keywords}
+            if "cutoff" not in keywords and "node_cap" not in keywords:
+                return node.lineno, f"unbounded graph call {name}"
+    return None
+
+
+def _validate_row_path_cost(tree: ast.Module, path: Path) -> None:
+    """Reject setup/global work reachable from timing-instrumented row loops.
+
+    COMPUTATION_PLAN is a useful declaration but cannot prove complexity. This
+    check follows generated local helpers and callbacks from loops that perform
+    timed analysis work. A whole-universe computation hidden behind memoization
+    by row or component is still rejected. A constant-key memoized helper is
+    permitted only when the same helper is explicitly warmed before row work.
+    """
+    extract = next(
+        (node for node in tree.body
+         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+         and node.name == "extract_features"),
+        None,
+    )
+    if extract is None:
+        return
+
+    module_defs = _direct_function_definitions(tree)
+    extract_defs = _direct_function_definitions(extract)
+    all_defs = list(module_defs.values()) + list(extract_defs.values())
+
+    starter_names: set[str] = set()
+    calls_by_name: dict[str, set[str]] = {}
+    for function in all_defs:
+        executed = _executed_nodes(tuple(function.body))
+        calls = {
+            name for node in executed
+            if isinstance(node, ast.Call) and (name := _call_name(node))
+        }
+        calls_by_name[function.name] = calls
+        if "start_analysis" in calls:
+            starter_names.add(function.name)
+    changed = True
+    while changed:
+        changed = False
+        for name, calls in calls_by_name.items():
+            if name not in starter_names and calls & starter_names:
+                starter_names.add(name)
+                changed = True
+
+    class MainLoopVisitor(ast.NodeVisitor):
+        def __init__(self) -> None:
+            self.loops: list[ast.AST] = []
+
+        def _visit_loop(self, node: ast.AST) -> None:
+            executed = _executed_nodes(tuple(getattr(node, "body", ())))
+            calls = {
+                name for item in executed
+                if isinstance(item, ast.Call) and (name := _call_name(item))
+            }
+            if "start_analysis" in calls or calls & starter_names:
+                self.loops.append(node)
+            self.generic_visit(node)
+
+        def visit_For(self, node: ast.For) -> None:  # noqa: N802
+            self._visit_loop(node)
+
+        def visit_AsyncFor(self, node: ast.AsyncFor) -> None:  # noqa: N802
+            self._visit_loop(node)
+
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+            return
+
+        def visit_AsyncFunctionDef(  # noqa: N802
+            self, node: ast.AsyncFunctionDef
+        ) -> None:
+            return
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:  # noqa: N802
+            return
+
+    loop_visitor = MainLoopVisitor()
+    for statement in extract.body:
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        loop_visitor.visit(statement)
+    if not loop_visitor.loops:
+        return
+
+    row_loop_ids = {id(loop) for loop in loop_visitor.loops}
+    parent: dict[int, ast.AST] = {}
+    for node in ast.walk(extract):
+        for child in ast.iter_child_nodes(node):
+            parent[id(child)] = node
+
+    def inside_row_loop(node: ast.AST) -> bool:
+        current: ast.AST | None = node
+        while current is not None:
+            if id(current) in row_loop_ids:
+                return True
+            current = parent.get(id(current))
+        return False
+
+    first_row_line = min(loop.lineno for loop in loop_visitor.loops)
+    prewarmed_names: set[str] = set()
+    for node in _executed_nodes(tuple(extract.body)):
+        if (isinstance(node, ast.Call) and node.lineno < first_row_line
+                and not inside_row_loop(node)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in extract_defs):
+            prewarmed_names.add(node.func.id)
+
+    def resolve(owner: ast.AST, name: str) -> ast.AST | None:
+        local = _direct_function_definitions(owner)
+        return local.get(name) or extract_defs.get(name) or module_defs.get(name)
+
+    def callback_nodes(owner: ast.AST, call: ast.Call) -> list[ast.AST]:
+        name = _call_name(call)
+        positions: tuple[int, ...] = ()
+        if name == "_memoized" and len(call.args) >= 3:
+            if (getattr(owner, "name", None) in prewarmed_names
+                    and _literal_expression(call.args[1])):
+                return []
+            positions = (2,)
+        elif name == "_bounded_thread_map" and call.args:
+            positions = (0,)
+        callbacks: list[ast.AST] = []
+        for position in positions:
+            callback = call.args[position]
+            if isinstance(callback, ast.Name):
+                definition = resolve(owner, callback.id)
+                if definition is not None:
+                    callbacks.append(definition)
+            elif isinstance(callback, ast.Lambda):
+                callbacks.append(callback)
+        return callbacks
+
+    queue: list[tuple[ast.AST, list[ast.stmt] | tuple[ast.stmt, ...], list[str]]] = []
+    for loop in loop_visitor.loops:
+        queue.append((extract, tuple(loop.body), [f"row loop line {loop.lineno}"]))
+    for node in _executed_nodes(tuple(extract.body)):
+        if isinstance(node, ast.Call) and _call_name(node) == "_bounded_thread_map":
+            for callback in callback_nodes(extract, node):
+                body = ([ast.Expr(value=callback.body)] if isinstance(callback, ast.Lambda)
+                        else tuple(callback.body))
+                queue.append((callback, body, [getattr(callback, "name", "lambda")]))
+
+    seen: set[tuple[int, tuple[int, ...]]] = set()
+    while queue:
+        owner, statements, chain = queue.pop(0)
+        marker = (id(owner), tuple(id(statement) for statement in statements))
+        if marker in seen:
+            continue
+        seen.add(marker)
+        executed = _executed_nodes(statements)
+        violation = _row_path_violation(executed)
+        if violation is not None:
+            line, operation = violation
+            raise SystemExit(
+                f"Feature implementation {path} has setup/global work reachable "
+                f"from per-row analysis: {operation} on line {line}; call path "
+                f"{' -> '.join(chain)}. Move whole-universe work before the "
+                "timed row loop and materialize the derived lookup. Memoizing a "
+                "whole-universe scan by row/component key is not sufficient."
+            )
+        for node in executed:
+            if not isinstance(node, ast.Call):
+                continue
+            name = _call_name(node)
+            if isinstance(node.func, ast.Name) and name:
+                definition = resolve(owner, name)
+                if definition is not None:
+                    queue.append((definition, tuple(definition.body), [*chain, name]))
+            for callback in callback_nodes(owner, node):
+                body = ([ast.Expr(value=callback.body)] if isinstance(callback, ast.Lambda)
+                        else tuple(callback.body))
+                queue.append((
+                    callback, body,
+                    [*chain, getattr(callback, "name", "lambda")],
+                ))
+
+
 def _literal_mapping_key(node: ast.AST) -> str | None:
     """Return a literal key used by ``obj[key]`` or ``obj.get(key)``."""
     if isinstance(node, ast.Subscript):
@@ -495,27 +937,97 @@ def _mapping_owner_name(node: ast.AST) -> str | None:
     return owner.id if isinstance(owner, ast.Name) else None
 
 
-def _validate_split_feature_no_gt_access(tree: ast.Module, path: Path) -> None:
-    """Reject direct split-label/audit access from generated feature math."""
+def _validate_feature_no_gt_access(tree: ast.Module, path: Path,
+                                   target: DetectorTarget) -> None:
+    """Reject direct GT/label/audit access from generated feature math.
+
+    Applies to BOTH targets. The merge image-only-v2 build (2026-08-21) is the
+    cautionary tale: this gate used to run for split only, so a merge fragment
+    shipped ``fragment_to_gt_distance`` (payload["gt_graph"] in feature math) and
+    that GT-ascertainment artifact became the model's dominant feature. Feature
+    fragments read candidate identity from build_sample_universe's cache and the
+    fragments graph/image only; every GT payload key access is a hard reject.
+    """
     violations: set[str] = set()
-    forbidden_sample_keys = SPLIT_FEATURE_FORBIDDEN_SAMPLE_KEYS
+    forbidden_sample_keys = (SPLIT_FEATURE_FORBIDDEN_SAMPLE_KEYS
+                             if target is DetectorTarget.SPLIT
+                             else MERGE_FEATURE_FORBIDDEN_SAMPLE_KEYS)
     for node in ast.walk(tree):
         if (isinstance(node, ast.Name)
                 and isinstance(node.ctx, ast.Load)
-                and node.id in SPLIT_FEATURE_FORBIDDEN_RUNTIME_NAMES):
+                and node.id in FEATURE_FORBIDDEN_RUNTIME_NAMES):
             violations.add(node.id)
         key = _literal_mapping_key(node)
         if key is None:
             continue
         owner = _mapping_owner_name(node)
-        if owner == "payload" and key in SPLIT_FEATURE_FORBIDDEN_PAYLOAD_KEYS:
-            violations.add(f"payload[{key!r}]")
+        if key in FEATURE_FORBIDDEN_PAYLOAD_KEYS:
+            # Forbid GT payload keys on ANY owner name, not just the literal
+            # ``payload`` variable — aliasing (p = payload; p["gt_graph"]) must
+            # not slip past the static gate.
+            violations.add(f"[{key!r}]" if owner is None else f"{owner}[{key!r}]")
         elif key in forbidden_sample_keys:
             violations.add(key)
     if violations:
         raise SystemExit(
-            f"Split feature implementation {path} reads GT-only label/audit "
-            "state: " + ", ".join(sorted(violations))
+            f"{target.value} feature implementation {path} reads GT-only "
+            "label/audit state: " + ", ".join(sorted(violations))
+        )
+
+
+_IMPLICIT_SCOPE_NAMES = frozenset({
+    "__name__", "__file__", "__doc__", "__package__", "__spec__",
+    "__loader__", "__builtins__", "__debug__", "__annotations__",
+    "__class__",
+})
+
+
+def _validate_assembled_name_resolution(source: str, path: Path) -> None:
+    """Reject assembled detectors referencing names no scope defines.
+
+    A leftover call to a renamed helper is a latent NameError that only
+    surfaces at runtime on code paths the smoke test may never execute.
+    """
+    table = symtable.symtable(source, str(path), "exec")
+    module_defined: set[str] = set()
+
+    def collect(scope: symtable.SymbolTable) -> None:
+        for symbol in scope.get_symbols():
+            if scope.get_type() == "module":
+                if symbol.is_assigned() or symbol.is_imported():
+                    module_defined.add(symbol.get_name())
+            elif symbol.is_declared_global() and symbol.is_assigned():
+                module_defined.add(symbol.get_name())
+        for child in scope.get_children():
+            collect(child)
+
+    collect(table)
+    unresolved: set[tuple[str, str]] = set()
+
+    def check(scope: symtable.SymbolTable) -> None:
+        for symbol in scope.get_symbols():
+            if not symbol.is_referenced():
+                continue
+            name = symbol.get_name()
+            if scope.get_type() == "module":
+                unbound = not (symbol.is_assigned() or symbol.is_imported())
+            else:
+                unbound = symbol.is_global()
+            if (unbound and name not in module_defined
+                    and not hasattr(builtins, name)
+                    and name not in _IMPLICIT_SCOPE_NAMES):
+                unresolved.add((scope.get_name(), name))
+        for child in scope.get_children():
+            check(child)
+
+    check(table)
+    if unresolved:
+        details = ", ".join(
+            f"{name} (in {scope})"
+            for scope, name in sorted(unresolved, key=lambda i: (i[1], i[0])))
+        raise SystemExit(
+            f"Assembled detector {path} references undefined names — a latent "
+            f"NameError on paths the smoke test may not reach: {details}."
         )
 
 
@@ -546,10 +1058,12 @@ def validate_feature_implementation(
     overlap = sorted(set(runtime_owned_symbols) & defined)
     if overlap:
         raise SystemExit("Feature implementation redefines runtime-owned symbols: " + ", ".join(overlap))
+    _validate_accumulator_registry_usage(tree, path)
+    _validate_image_patch_cache_scope(tree, path)
     timing_group_keys = _validate_timing_contract(tree, path)
     _validate_computation_plan(tree, path, timing_group_keys)
-    if target is DetectorTarget.SPLIT:
-        _validate_split_feature_no_gt_access(tree, path)
+    _validate_row_path_cost(tree, path)
+    _validate_feature_no_gt_access(tree, path, target)
     return source.rstrip() + "\n"
 
 
@@ -611,6 +1125,7 @@ def assemble_detector(
         ast.parse(assembled, filename=str(output_path))
     except SyntaxError as exc:
         raise SystemExit(f"Assembled detector does not parse: {exc}") from exc
+    _validate_assembled_name_resolution(assembled, output_path)
     temporary = output_path.with_name(f".{output_path.name}.assemble.tmp")
     temporary.write_text(assembled, encoding="utf-8")
     temporary.replace(output_path)

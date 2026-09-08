@@ -78,11 +78,18 @@ POST_CORRECTION = {"upheld": 1.0, "weakened": 0.5, "overturned": 0.0}
 # Generalization re-judged with the CORRECTED test (same vocabulary as the
 # original Generalization row). Only present on fixed records run with extras.
 CORRECTED_GENERALIZATION = GENERALIZATION
+# Blind-inference deployability from the verifier's Deployability bullet:
+# BLIND-COMPUTABLE (feature computable from fragments graph / image alone) vs
+# GT-REFERENCING (the feature quantity is measured against ground-truth state —
+# the detector-build workflow mechanically excludes these). Older reports have
+# no bullet -> NaN ("n/a").
+DEPLOYABILITY = {"blind-computable": 1.0, "gt-referencing": 0.0}
 
 ROWS = [
     ("Reproduction", "Reproduction", REPRODUCTION),
     ("Generalization", "Generalization", GENERALIZATION),
     ("Statistics", "Verdict", STATISTICS),
+    ("Deployability", "Deployability", DEPLOYABILITY),
     ("Post-correction", "Post-correction verdict", POST_CORRECTION),
     ("Corrected gen.", "Corrected generalization", CORRECTED_GENERALIZATION),
 ]

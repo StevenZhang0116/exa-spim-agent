@@ -131,8 +131,10 @@ def report_evidence_by_id(
             )
 
         def field(label: str) -> str | None:
+            # [A-Z-]+ admits hyphenated tokens (GT-REFERENCING, BLIND-COMPUTABLE)
+            # without changing what the plain single-word verdicts capture.
             match = re.search(
-                rf"(?m)^-\s+\*\*{re.escape(label)}:\*\*\s*([A-Z]+)",
+                rf"(?m)^-\s+\*\*{re.escape(label)}:\*\*\s*([A-Z][A-Z-]*)",
                 block,
             )
             return match.group(1) if match else None
@@ -141,6 +143,9 @@ def report_evidence_by_id(
             "reproduction_status": field("Reproduction"),
             "statistical_verdict": field("Verdict"),
             "post_correction_verdict": field("Post-correction verdict"),
+            # Verifier's blind-inference judgment (BLIND-COMPUTABLE |
+            # GT-REFERENCING); None on reports written before the token existed.
+            "deployability": field("Deployability"),
         }
     return evidence
 

@@ -83,6 +83,33 @@ def sample_universe_audit(payload, samples, labels):
         "n_positive": int(np.sum(np.asarray(labels) == 1)),
         "n_negative": int(np.sum(np.asarray(labels) == 0)),
     }
+
+
+def ascertainment_covariates(payload, samples):
+    """AUDIT-ONLY confound covariates per segment row (never model features).
+
+    GT tracing is required to LABEL a merge, so size/GT-coverage covariates
+    encode label availability; the ascertainment audit correlates them with
+    features and model scores to expose confounded "signal". Runtime-owned and
+    GT-reading by design — feature fragments never see these values.
+    """
+    frag = payload["fragments_graph"]
+    comp_to_seg = build_comp_to_seg(frag)
+    node_components = np.asarray(frag.node_component_id, dtype=np.int64)
+    seg_frag_nodes = {}
+    for comp, count in zip(*np.unique(node_components, return_counts=True)):
+        seg = int(comp_to_seg.get(int(comp), -1))
+        if seg > 0:
+            seg_frag_nodes[seg] = seg_frag_nodes.get(seg, 0) + int(count)
+    gt_label = np.asarray(payload["gt_node_canonical_label"])
+    gt_ids, gt_counts = np.unique(gt_label[gt_label != 0], return_counts=True)
+    seg_gt_nodes = {int(s): int(c) for s, c in zip(gt_ids, gt_counts)}
+    return {
+        "segment_fragment_node_count": np.asarray(
+            [seg_frag_nodes.get(int(s), 0) for s in samples], dtype=float),
+        "segment_gt_node_count": np.asarray(
+            [seg_gt_nodes.get(int(s), 0) for s in samples], dtype=float),
+    }
 '''
 
 
@@ -396,5 +423,38 @@ def sample_universe_audit(payload, samples, labels):
         "candidate_recall_of_reachable": (
             float(len(candidate_pairs & reachable) / len(reachable)) if reachable else None),
         "truth_kind_counts": dict(kind_counts),
+    }
+
+
+def ascertainment_covariates(payload, samples):
+    """AUDIT-ONLY confound covariates per candidate-pair row (never features).
+
+    GT tracing is required to LABEL a split, so size/GT-coverage covariates
+    encode label availability; the ascertainment audit correlates them with
+    features and model scores to expose confounded "signal". Runtime-owned and
+    GT-reading by design — feature fragments never see these values.
+    """
+    frag = payload["fragments_graph"]
+    comp_to_seg = build_comp_to_seg(frag)
+    node_components = np.asarray(frag.node_component_id, dtype=np.int64)
+    seg_frag_nodes = {}
+    for comp, count in zip(*np.unique(node_components, return_counts=True)):
+        seg = int(comp_to_seg.get(int(comp), -1))
+        if seg > 0:
+            seg_frag_nodes[seg] = seg_frag_nodes.get(seg, 0) + int(count)
+    gt_label = np.asarray(payload["gt_node_canonical_label"])
+    gt_ids, gt_counts = np.unique(gt_label[gt_label != 0], return_counts=True)
+    seg_gt_nodes = {int(s): int(c) for s, c in zip(gt_ids, gt_counts)}
+
+    def _pair_min(counts, sample):
+        return float(min(counts.get(int(sample["segment_id_a"]), 0),
+                         counts.get(int(sample["segment_id_b"]), 0)))
+
+    return {
+        "gap_um": np.asarray([float(s["gap_um"]) for s in samples], dtype=float),
+        "min_segment_fragment_node_count": np.asarray(
+            [_pair_min(seg_frag_nodes, s) for s in samples], dtype=float),
+        "min_segment_gt_node_count": np.asarray(
+            [_pair_min(seg_gt_nodes, s) for s in samples], dtype=float),
     }
 '''

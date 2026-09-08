@@ -198,6 +198,55 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "runtime-owned.*run_detector"):
                 assemble_detector(template, feature, output)
 
+    def test_detector_assembly_rejects_undefined_name_references(self) -> None:
+        # Regression: a leftover call to a renamed helper (_run_group) passed
+        # assembly and only raised NameError at runtime mid-extraction.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            template = root / "runtime.py.tmpl"
+            feature = root / "feature.py"
+            output = root / "detector.py"
+            template.write_text(
+                "# __DETECTOR_FEATURE_IMPLEMENTATION__\n"
+                "def main():\n    return extract_features({})\n"
+            )
+            feature.write_text(
+                "FEATURE_REGISTRY = [('x', 'segment', None, 1)]\n"
+                "ANALYSIS_TIMING_GROUPS = [{\n"
+                "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
+                "    'phase': 'segment', 'feature_names': ['x'],\n"
+                "}]\n"
+                "COMPUTATION_PLAN = [{\n"
+                "    'primitive': 'row_math', 'cost_class': 'constant',\n"
+                "    'bound': '', 'amortization': '', 'consumers': ['hypo_1'],\n"
+                "}]\n"
+                "class SegmentAccumulator:\n"
+                "    def to_frame(self):\n"
+                "        return None\n"
+                "def _compute_row(run_group):\n"
+                "    run_group('hypo_1', True, None, lambda: None)\n"
+                "    _run_group('hypo_1', True, None, lambda: None)\n"
+                "def extract_features(payload, verbose=True, timing=None, "
+                "enabled_analysis_keys=None, profile_segment_limit=None):\n"
+                "    _ = payload, verbose, profile_segment_limit\n"
+                "    def _analysis_enabled(key):\n"
+                "        return enabled_analysis_keys is None or key in enabled_analysis_keys\n"
+                "    def run_group(key, eligible, context, body):\n"
+                "        if _analysis_enabled(key) and eligible:\n"
+                "            body()\n"
+                "    selected = _analysis_enabled('hypo_1')\n"
+                "    if timing is not None:\n"
+                "        timing.start_phase('segment')\n"
+                "        timing.start_analysis('hypo_1')\n"
+                "    _compute_row(run_group)\n"
+                "    return [], [], SegmentAccumulator()\n"
+            )
+
+            with self.assertRaisesRegex(
+                SystemExit, r"undefined names.*_run_group \(in _compute_row\)"
+            ):
+                assemble_detector(template, feature, output)
+
     def test_feature_fragment_rejects_non_triple_return_on_every_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             feature = Path(tmpdir) / "feature.py"
@@ -232,6 +281,49 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 SystemExit, "three-item tuple.*Invalid return line"
             ):
                 validate_feature_implementation(feature)
+
+    def test_feature_fragment_rejects_registry_as_accumulator_keys(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            feature = Path(tmpdir) / "feature.py"
+            source = (
+                "FEATURE_REGISTRY = [('x',)]\n"
+                "FEATURE_NAMES = ['x']\n"
+                "ANALYSIS_TIMING_GROUPS = [{\n"
+                "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
+                "    'phase': 'segment', 'feature_names': ['x'],\n"
+                "}]\n"
+                "COMPUTATION_PLAN = [{\n"
+                "    'primitive': 'row_math', 'cost_class': 'constant',\n"
+                "    'bound': '', 'amortization': '', 'consumers': ['hypo_1'],\n"
+                "}]\n"
+                "class SegmentAccumulator:\n"
+                "    pass\n"
+                "def extract_features(payload, verbose=True, timing=None, "
+                "enabled_analysis_keys=None, profile_segment_limit=None):\n"
+                "    _ = payload, verbose, profile_segment_limit\n"
+                "    def _analysis_enabled(key):\n"
+                "        return enabled_analysis_keys is None or key in enabled_analysis_keys\n"
+                "    _analysis_enabled('hypo_1')\n"
+                "    if timing is not None:\n"
+                "        timing.start_phase('segment')\n"
+                "        timing.start_analysis('hypo_1')\n"
+                "    accumulator = SegmentAccumulator(FEATURE_REGISTRY)\n"
+                "    return [], [], accumulator\n"
+            )
+            feature.write_text(source)
+
+            with self.assertRaisesRegex(
+                SystemExit, "Accumulators require flat string FEATURE_NAMES"
+            ):
+                validate_feature_implementation(feature)
+
+            feature.write_text(
+                source.replace(
+                    "SegmentAccumulator(FEATURE_REGISTRY)",
+                    "SegmentAccumulator(FEATURE_NAMES)",
+                )
+            )
+            validate_feature_implementation(feature)
 
     def test_image_heavy_feature_fragment_requires_bounded_threads(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -289,6 +381,69 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(
                     SystemExit, "must not acquire a shared"):
                 validate_feature_implementation(feature)
+
+    def test_image_patch_cache_must_be_row_local(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            feature = Path(tmpdir) / "feature.py"
+
+            def source_with(cache_setup: str) -> str:
+                return (
+                    "FEATURE_REGISTRY = [('x',)]\n"
+                    "ANALYSIS_TIMING_GROUPS = [{\n"
+                    "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
+                    "    'phase': 'image_patch_pass', 'feature_names': ['x'],\n"
+                    "}]\n"
+                    "COMPUTATION_PLAN = [{\n"
+                    "    'primitive': 'patch_read', 'cost_class': 'bounded_local',\n"
+                    "    'bound': 'one fixed patch', 'amortization': 'per row',\n"
+                    "    'consumers': ['hypo_1'],\n"
+                    "}]\n"
+                    "class SegmentAccumulator:\n    pass\n"
+                    "def extract_features(payload, verbose=True, timing=None, "
+                    "enabled_analysis_keys=None, profile_segment_limit=None, "
+                    "image_workers=1):\n"
+                    "    _ = payload, verbose, profile_segment_limit\n"
+                    "    def _analysis_enabled(key):\n"
+                    "        return enabled_analysis_keys is None or key in enabled_analysis_keys\n"
+                    "    _analysis_enabled('hypo_1')\n"
+                    "    if timing is not None:\n"
+                    "        timing.start_phase('image_patch_pass')\n"
+                    "        timing.start_analysis('hypo_1')\n"
+                    "    workers = _resolve_image_worker_count(image_workers)\n"
+                    "    def _cached_patch(patch_cache):\n"
+                    "        return _memoized(patch_cache, ('center', 'shape'), lambda: 1)\n"
+                    + cache_setup +
+                    "    list(_bounded_thread_map(_image_row, [0], workers))\n"
+                    "    return [], [], SegmentAccumulator()\n"
+                )
+
+            feature.write_text(source_with(
+                "    patch_cache = {}\n"
+                "    def _image_row(row_index):\n"
+                "        return row_index, _cached_patch(patch_cache)\n"
+            ))
+            with self.assertRaisesRegex(
+                SystemExit, "extraction-wide patch_cache"
+            ):
+                validate_feature_implementation(feature)
+
+            feature.write_text(source_with(
+                "    if payload:\n"
+                "        patch_cache = {}\n"
+                "    def _image_row(row_index):\n"
+                "        return row_index, _cached_patch(patch_cache)\n"
+            ))
+            with self.assertRaisesRegex(
+                SystemExit, "extraction-wide patch_cache"
+            ):
+                validate_feature_implementation(feature)
+
+            feature.write_text(source_with(
+                "    def _image_row(row_index):\n"
+                "        patch_cache = {}\n"
+                "        return row_index, _cached_patch(patch_cache)\n"
+            ))
+            validate_feature_implementation(feature)
 
     def test_computation_plan_contract_rejections(self) -> None:
         def source_with(plan_block: str) -> str:
@@ -419,6 +574,151 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 "    _memoized(cache, ('seg', 15.0), lambda: 0.0)\n",
             )
             feature.write_text(memoized_source)
+            validate_feature_implementation(feature)
+
+    def test_row_path_cost_validation_rejects_setup_and_global_work(self) -> None:
+        def source_with(helper: str, before_loop: str, row_body: str) -> str:
+            return (
+                "FEATURE_REGISTRY = [('x',)]\n"
+                "ANALYSIS_TIMING_GROUPS = [{\n"
+                "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
+                "    'phase': 'segment', 'feature_names': ['x'],\n"
+                "}]\n"
+                "COMPUTATION_PLAN = [{\n"
+                "    'primitive': 'component_value',\n"
+                "    'cost_class': 'component_scaled',\n"
+                "    'bound': 'one component, memoized by component id',\n"
+                "    'amortization': 'memoized by component id',\n"
+                "    'consumers': ['hypo_1'],\n"
+                "}]\n"
+                "class SegmentAccumulator:\n"
+                "    pass\n"
+                "def extract_features(payload, verbose=True, timing=None, "
+                "enabled_analysis_keys=None, profile_segment_limit=None):\n"
+                "    _ = verbose\n"
+                "    frag = payload['fragments_graph']\n"
+                "    node_component = frag.node_component_id\n"
+                "    cache = {}\n"
+                "    def _analysis_enabled(key):\n"
+                "        return enabled_analysis_keys is None or key in enabled_analysis_keys\n"
+                "    def _analysis_start(key):\n"
+                "        return timing.start_analysis(key) if timing is not None else None\n"
+                + helper
+                + "    rows = list(range(3))\n"
+                "    if profile_segment_limit is not None:\n"
+                "        rows = rows[:profile_segment_limit]\n"
+                "    phase = timing.start_phase('segment') if timing is not None else None\n"
+                + before_loop
+                + "    for row in rows:\n"
+                "        _analysis_enabled('hypo_1')\n"
+                "        _analysis_start('hypo_1')\n"
+                + row_body
+                + "    return rows, [0 for _ in rows], SegmentAccumulator()\n"
+            )
+
+        component_scan = (
+            "    def _component_mean(component_id):\n"
+            "        def compute():\n"
+            "            values = [\n"
+            "                n for n in range(int(frag.number_of_nodes()))\n"
+            "                if int(node_component[n]) == component_id\n"
+            "            ]\n"
+            "            return sum(values) / len(values) if values else 0.0\n"
+            "        return _memoized(cache, component_id, compute)\n"
+        )
+        lazy_global_index = (
+            "    def _node_index():\n"
+            "        def compute():\n"
+            "            return [n for n in range(int(frag.number_of_nodes()))]\n"
+            "        return _memoized(cache, 'all-nodes', compute)\n"
+        )
+
+        cases = [
+            (
+                source_with(component_scan, "", "        _component_mean(row)\n"),
+                "full-universe comprehension",
+            ),
+            (
+                source_with(lazy_global_index, "", "        _node_index()\n"),
+                "full-universe comprehension",
+            ),
+            (
+                source_with(
+                    "", "    _memoized(cache, 'noop', lambda: None)\n",
+                    "        from scipy.stats import linregress\n",
+                ),
+                "import/module initialization",
+            ),
+            (
+                source_with(
+                    "", "    _memoized(cache, 'noop', lambda: None)\n",
+                    "        tree = cKDTree(frag.node_xyz)\n",
+                ),
+                "full-universe cKDTree index/model construction",
+            ),
+            (
+                source_with(
+                    "", "    _memoized(cache, 'noop', lambda: None)\n",
+                    "        nx.shortest_path(frag, row, 0)\n",
+                ),
+                "unbounded graph call shortest_path",
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            feature = Path(tmpdir) / "feature.py"
+            for source, expected in cases:
+                with self.subTest(expected=expected):
+                    feature.write_text(source)
+                    with self.assertRaisesRegex(
+                        SystemExit, f"setup/global work.*{expected}"
+                    ):
+                        validate_feature_implementation(feature)
+
+    def test_row_path_cost_validation_accepts_materialized_prepasses(self) -> None:
+        source = (
+            "FEATURE_REGISTRY = [('x',)]\n"
+            "ANALYSIS_TIMING_GROUPS = [{\n"
+            "    'key': 'hypo_1', 'hypothesis_ids': [1],\n"
+            "    'phase': 'segment', 'feature_names': ['x'],\n"
+            "}]\n"
+            "COMPUTATION_PLAN = [{\n"
+            "    'primitive': 'node_index', 'cost_class': 'global_scan',\n"
+            "    'bound': 'all graph nodes',\n"
+            "    'amortization': 'one-time pre-pass',\n"
+            "    'consumers': ['hypo_1'],\n"
+            "}]\n"
+            "def _node_xyz(frag, node):\n"
+            "    return np.asarray(frag.node_xyz[node], dtype=float)\n"
+            "class SegmentAccumulator:\n"
+            "    pass\n"
+            "def extract_features(payload, verbose=True, timing=None, "
+            "enabled_analysis_keys=None, profile_segment_limit=None):\n"
+            "    _ = verbose\n"
+            "    frag = payload['fragments_graph']\n"
+            "    cache = {}\n"
+            "    def _analysis_enabled(key):\n"
+            "        return enabled_analysis_keys is None or key in enabled_analysis_keys\n"
+            "    def _analysis_start(key):\n"
+            "        return timing.start_analysis(key) if timing is not None else None\n"
+            "    def _node_index():\n"
+            "        def compute():\n"
+            "            return [n for n in range(int(frag.number_of_nodes()))]\n"
+            "        return _memoized(cache, 'all-nodes', compute)\n"
+            "    node_index = _node_index()\n"
+            "    rows = list(range(3))\n"
+            "    if profile_segment_limit is not None:\n"
+            "        rows = rows[:profile_segment_limit]\n"
+            "    phase = timing.start_phase('segment') if timing is not None else None\n"
+            "    for row in rows:\n"
+            "        _analysis_enabled('hypo_1')\n"
+            "        _analysis_start('hypo_1')\n"
+            "        value = _node_index()[row]\n"
+            "        xyz = _node_xyz(frag, row)\n"
+            "    return rows, [0 for _ in rows], SegmentAccumulator()\n"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            feature = Path(tmpdir) / "feature.py"
+            feature.write_text(source)
             validate_feature_implementation(feature)
 
     def test_detector_assembly_injects_reviewed_split_adapter(self) -> None:
@@ -615,7 +915,13 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 TypeError, "expected exactly.*row_records, labels, accumulator"
             ):
-                module._extract_features_runtime({})
+                # The runtime derives the universe (build_sample_universe) before
+                # calling the fragment; pre-seeding the cache keeps this a pure
+                # return-contract check without GT payload keys.
+                module._extract_features_runtime({
+                    "__detector_sample_universe_cache__": (
+                        [1], module.np.array([0], dtype=module.np.int64)),
+                })
             module.extract_features = generated_extract
             module.load_payload = lambda _path: {
                 "min_cable_length": 100,
@@ -1731,9 +2037,12 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("density-stratified", generate)
         self.assertIn("_memoized(cache, key, compute)", generate)
         self.assertIn("not merely the raw array", generate)
+        self.assertIn("follows local\nhelper and bounded-worker callbacks", generate)
+        self.assertIn("row_or_component_key", generate)
         self.assertIn("COMPUTATION_PLAN matches the actual code", verify)
         self.assertIn("full-array reductions of pre-pass-built arrays", verify)
         self.assertIn("runtime `_memoized` helper", verify)
+        self.assertIn("row-path violations are build-blocking", verify)
         self.assertIn("defect to report, not to silently fix", verify)
         self.assertIn("cover every\nFEATURE_REGISTRY name exactly once", generate)
         self.assertIn("runtime-provided\ntiming recorder around every analysis group", generate)

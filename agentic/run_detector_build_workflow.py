@@ -637,6 +637,17 @@ order in to_frame(). GT-only fields (is_split,
 split_kind, GT neuron membership, merge-risk audit fields) may not enter
 FEATURE_REGISTRY or any feature computation.
 
+BLINDNESS IS ENFORCED, NOT ADVISORY. At runtime your extract_features receives a
+_BlindPayloadView, not the raw payload: reading any GT key (gt_graph,
+gt_node_canonical_label, gt_merge_labels, gt_edge_error) raises
+BlindnessViolation and aborts the run; `"gt_..." in payload` reports False; the
+sample-universe cache hands you audit-stripped rows and ALL-ZERO labels, and the
+runtime re-attaches the true labels after extraction by row identity. So never
+read GT keys, never condition on a label value, and never branch on the audit
+fields — the assembler additionally rejects the fragment statically if any GT
+key literal appears in it. Features must be computable from the fragments graph
+and image state alone.
+
 For each inventory feature, obey its `node_role_requirement` using the
 runtime-provided compatible_occurrences(sample, requirement):
 - requires_both_tips uses only occurrences whose two nodes are tips;
@@ -693,8 +704,13 @@ makes the ranked cost report untrustworthy.
     else:
         target_inventory_note = """
 This is a merge-detection run. The detector row unit remains one adjudicable
-non-zero canonical segment; gt_merge_labels supplies is_merge and segments with
-no fragment component remain in the row universe.
+non-zero canonical segment; the RUNTIME's build_sample_universe derives that
+universe and its is_merge labels from GT (the only sanctioned GT consumer), and
+segments with no fragment component remain in the row universe. Feature math is
+blind: any hypothesis whose distinctive quantity is measured against GT tracings
+(a distance to the GT graph, a GT-node density, a deviation from a GT path) is
+NOT blind-computable — exclude it with that reason rather than inventorying it
+as a feature.
 """.strip()
         extraction_contract = """
 - SegmentAccumulator with explicit measured/definedness membership;
@@ -702,6 +718,23 @@ no fragment component remain in the row universe.
   enabled_analysis_keys=None, profile_segment_limit=None, image_workers=1),
   returning adjudicable ids, merge labels, and the accumulator;
 - only geometry/data helpers directly needed by those definitions.
+
+Read the segment universe and labels ONLY from the runtime-provided
+build_sample_universe(payload) (cached tuple of adjudicable segment ids and
+is_merge labels); never derive a competing universe from GT arrays.
+
+BLINDNESS IS ENFORCED, NOT ADVISORY. At runtime your extract_features receives a
+_BlindPayloadView, not the raw payload: reading any GT key (gt_graph,
+gt_node_canonical_label, gt_merge_labels, gt_edge_error) raises
+BlindnessViolation and aborts the run; `"gt_..." in payload` reports False; the
+sample-universe cache hands you ALL-ZERO labels, and the runtime re-attaches the
+true labels after extraction by row identity. A feature like a distance/density
+measured against GT tracings is therefore impossible to compute — and is exactly
+the ascertainment artifact this gate exists to stop (GT tracing is required to
+DETECT a merge, so GT-proximity encodes label availability, not biology). The
+assembler additionally rejects the fragment statically if any GT key literal
+appears in it. Features must be computable from the fragments graph and image
+state alone.
 """.strip()
         verification_scope = "segment-level rather than merge-site localization"
         candidate_policy_generation_note = ""
@@ -744,6 +777,15 @@ For each returned hypothesis, first determine whether it is eligible:
   usable measurement that repairs the relevant failure.
 - Exclude an uncorrected CRITICAL statistical verdict, an OVERTURNED corrected
   verdict, or a corrected result whose effect vanished.
+- Exclude any hypothesis whose report entry carries `Deployability:
+  GT-REFERENCING`, and any hypothesis whose feature quantity you find is
+  measured against GT state (distance/density to gt_graph, anything derived
+  from gt_node_canonical_label / gt_merge_labels / gt_edge_error, deviation
+  from a GT path) even when the report predates that token — such a feature is
+  not blind-computable and encodes label availability, not biology. The driver
+  independently rejects an inventory that includes a GT-REFERENCING row, and
+  the assembler/runtime reject GT access in feature code, so an inclusion here
+  only wastes the build.
 - Keep DIVERGED only with its divergence recorded explicitly; keep WEAK/MINOR
   because multivariate validation can still find independent signal.
 
@@ -945,6 +987,13 @@ These cost-discipline invariants bind the implementation, not just the plan:
   per-component aggregate, an index), not merely the raw array: a per-row
   `np.min(xyz[:, 2])` over a pre-pass-built array is still a per-row global
   scan and belongs in the pre-pass as a stored scalar.
+The assembler enforces this last boundary independently. It follows local
+helper and bounded-worker callbacks from timing-instrumented row loops and
+rejects whole-universe iteration/reduction/index construction, unbounded graph
+search, and imports reachable from that path. Wrapping such setup in
+`_memoized(cache, row_or_component_key, compute)` does not make it legal. A
+constant-key global cache may be read from row work only after the same helper
+has been explicitly warmed before row processing starts.
 The optimizations reorganize computation only; they must not change feature
 numeric semantics. If a cutoff would truncate a quantity the selected source
 defines over a whole component, keep the source semantics, classify the
@@ -953,6 +1002,12 @@ instead of silently truncating. The deterministic assembler rejects a missing
 or non-literal COMPUTATION_PLAN, unknown cost classes, missing bounds or
 amortization for the classes above, consumers naming unknown timing-group
 keys, and timing groups no primitive covers.
+
+Every name your fragment references must be defined by the fragment itself,
+the runtime template, or Python builtins. When you rename or restructure a
+helper, update every call site: the assembler statically rejects the assembled
+detector if any scope references an undefined name, because such leftovers are
+latent NameErrors on code paths the smoke test never executes.
 
 On every control-flow path, `extract_features` must return exactly the
 three-item tuple `(row_records, labels, accumulator)`. Never return a DataFrame
@@ -976,7 +1031,9 @@ Make every extraction phase observable, profileable, and removable at the finest
 honest computation boundary. `ANALYSIS_TIMING_GROUPS` must cover every
 FEATURE_REGISTRY name exactly once and every hypothesis id must belong to exactly
 one group. FEATURE_REGISTRY owns only public feature names and inventory order;
-do not duplicate phase metadata there. ANALYSIS_TIMING_GROUPS is the sole owner
+do not duplicate phase metadata there. Treat FEATURE_REGISTRY as metadata only:
+initialize accumulators with the runtime-derived flat string FEATURE_NAMES,
+never with FEATURE_REGISTRY itself. ANALYSIS_TIMING_GROUPS is the sole owner
 of actual execution phase and selection-unit membership. Treat each group as a
 final-run selection unit. A group may own multiple
 hypotheses/features only when their computation is genuinely inseparable; record
@@ -1026,7 +1083,9 @@ thread-aware through `image_workers`:
   never acquire a shared lock for every feature write and never let two workers
   own the same candidate row;
 - share only read-only graph/image state. TensorStore patch reads may overlap,
-  but patch caches remain candidate-local and bounded;
+  but patch caches remain candidate-local and bounded. Initialize `patch_cache = {{}}`
+  inside the per-row worker, never in `extract_features` scope, and do not retain
+  image arrays after that row returns;
 - force one image worker whenever `timing is not None`, because
   AnalysisTimingRecorder intentionally attributes one active hypothesis at a
   time; `--measuretime` must therefore remain comparable and deterministic;
@@ -1126,7 +1185,10 @@ VERIFY READ-ONLY BEFORE DOCUMENTING
    per-row loop; and no per-row code performs full-array conditional scans,
    full-array reductions of pre-pass-built arrays (for example a per-row
    min/max over all node coordinates), or unbounded shortest-path searches
-   that the plan does not declare. Post-extraction diagnostics and figures
+   that the plan does not declare. These row-path violations are build-blocking
+   and must be repaired before assembly; finding one in an assembled detector
+   is a deterministic-validator escape to document, not an accepted performance
+   caveat. Post-extraction diagnostics and figures
    must also stay bounded on the full universe: any all-rows pairwise or
    rank statistic must be row-subsampled to a fixed cap or be O(n log n)
    (for example, scipy spearmanr with nan_policy="omit" on NaN-bearing data
@@ -1846,6 +1908,21 @@ def validate_inventory(
                         f"{expected[field_name]!r}, got {row[field_name]!r}. "
                         "Do not join report display rank to hypothesis ID."
                     )
+            # Blindness gate (driver-enforced, not builder judgment): a report
+            # row the verifier marked GT-REFERENCING measures its feature
+            # against ground-truth state, so it cannot run blind at inference —
+            # including it would train on the answer key (the ascertainment
+            # artifact that dominated the merge image-only-v2 build). Reports
+            # written before the Deployability token carry None here and are
+            # not constrained.
+            if row["included"] and expected.get("deployability") == "GT-REFERENCING":
+                raise SystemExit(
+                    f"Inventory hypothesis {hypothesis_id} is included but the "
+                    "report's verifier marked it Deployability: GT-REFERENCING "
+                    "— its feature is measured against GT tracings and is not "
+                    "blind-computable. Exclude it (exclusion_reason: "
+                    "GT-referencing feature, not blind-computable)."
+                )
         if post_correction_verdict is not None and corrected_status != "USABLE":
             raise SystemExit(
                 f"Inventory hypothesis {hypothesis_id} has a post-correction "
