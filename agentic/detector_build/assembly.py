@@ -7,7 +7,10 @@ import builtins
 import symtable
 from pathlib import Path
 
-from .candidate_policy import load_runtime_candidate_policy
+from .candidate_policy import (
+    load_runtime_candidate_policy,
+    load_runtime_merge_candidate_policy,
+)
 from .contracts import DetectorTarget
 from .target_runtime import TARGET_ADAPTER_MARKER, target_adapter_source
 
@@ -40,11 +43,16 @@ RUNTIME_OWNED_SYMBOLS = frozenset({
     "ROW_UNIT_PLURAL", "LABEL_NAME", "POSITIVE_NAME", "NEGATIVE_NAME",
     "SCORE_PREFIX", "CANDIDATE_POLICY_CONFIG_ID", "CANDIDATE_PAIRING_RULE",
     "CANDIDATE_MAX_DISTANCE_UM", "CANDIDATE_PER_ANCHOR_K",
-    "CANDIDATE_GLOBAL_CAP", "CANDIDATE_POLICY_SHA256", "build_sample_universe",
+    "CANDIDATE_GLOBAL_CAP", "CANDIDATE_POLICY_SHA256",
+    "CANDIDATE_MODE", "CANDIDATE_NMS_UM", "CANDIDATE_CLAIM_RADIUS_UM",
+    "CANDIDATE_POSITIVE_LABEL_RADIUS_UM", "CANDIDATE_SITE_SNAP_MAX_UM",
+    "build_sample_universe",
     "compatible_occurrences",
     "sample_output_frame", "sample_display", "sample_universe_audit",
     "ascertainment_covariates",
     "_derive_split_truth", "_gt_neuron_membership",
+    "_merge_site_node_arrays", "_nms_kept_junctions",
+    "_site_distances_to_kept",
 })
 
 # GT payload keys no feature fragment may read, for EITHER target. These are the
@@ -55,6 +63,8 @@ RUNTIME_OWNED_SYMBOLS = frozenset({
 # _BlindPayloadView guard in the detector runtime template.
 FEATURE_FORBIDDEN_PAYLOAD_KEYS = frozenset({
     "gt_edge_error", "gt_graph", "gt_node_canonical_label", "gt_merge_labels",
+    "gt_merge_sites",
+    "__detector_universe_site_audit__",
 })
 SPLIT_FEATURE_FORBIDDEN_SAMPLE_KEYS = frozenset({
     "is_split", "split_kind", "is_merge_creating",
@@ -63,8 +73,12 @@ SPLIT_FEATURE_FORBIDDEN_SAMPLE_KEYS = frozenset({
 MERGE_FEATURE_FORBIDDEN_SAMPLE_KEYS = frozenset({
     "is_merge",
 })
+MERGE_SITE_FEATURE_FORBIDDEN_SAMPLE_KEYS = frozenset({
+    "is_merge_site", "distance_to_nearest_gt_site_um", "in_ambiguous_ring",
+})
 FEATURE_FORBIDDEN_RUNTIME_NAMES = frozenset({
     "_derive_split_truth", "_gt_neuron_membership", "ascertainment_covariates",
+    "_site_distances_to_kept",
 })
 
 
@@ -739,6 +753,71 @@ def _row_path_violation(nodes: list[ast.AST]) -> tuple[int, str] | None:
     return None
 
 
+_GRAPH_CONSTRUCTOR_NAMES = frozenset({
+    "Graph", "DiGraph", "MultiGraph", "MultiDiGraph",
+})
+_PER_ELEMENT_FORBIDDEN_ATTRS = frozenset({
+    "subgraph", "connected_components", "edge_betweenness_centrality",
+    "betweenness_centrality",
+}) | _GRAPH_CONSTRUCTOR_NAMES
+
+
+def _graph_element_iterator(iter_node: ast.AST) -> str | None:
+    """Return 'edges'/'nodes' when a for-loop iterates graph elements."""
+    for sub in ast.walk(iter_node):
+        if (isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+                and sub.func.attr in ("edges", "nodes")):
+            return sub.func.attr
+    return None
+
+
+def _validate_no_per_element_graph_rebuilds(tree: ast.Module, path: Path) -> None:
+    """Reject graph reconstruction / whole-graph algorithms per edge or node.
+
+    The cautionary tale is a generated merge-site fragment whose "tree fast
+    path" for edge betweenness copied the WHOLE component graph and re-ran
+    connected_components for EVERY edge — an O(E x (V+E)) blow-up that turned
+    a bounded per-component feature into hours per large component, even
+    though the declared bound (k-sampled betweenness) was honored on the
+    non-tree branch. An O(E)-iteration loop with an O(V+E) body defeats every
+    declared bound, so it is rejected statically: per-element quantities must
+    be derived in one pass (tree edge betweenness is subtree-size products
+    from a single DFS, exactly as the bounded discovery sources implement it).
+    """
+    violations: list[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.For):
+            continue
+        element = _graph_element_iterator(node.iter)
+        if element is None:
+            continue
+        for statement in node.body:
+            for inner in ast.walk(statement):
+                if not isinstance(inner, ast.Call):
+                    continue
+                func = inner.func
+                name = None
+                if (isinstance(func, ast.Attribute)
+                        and func.attr in _PER_ELEMENT_FORBIDDEN_ATTRS):
+                    name = func.attr
+                elif (isinstance(func, ast.Name)
+                        and func.id in _GRAPH_CONSTRUCTOR_NAMES):
+                    name = func.id
+                if name is not None:
+                    violations.append(
+                        f"{name} at line {inner.lineno} inside a "
+                        f"per-{element[:-1]} loop (line {node.lineno})"
+                    )
+    if violations:
+        raise SystemExit(
+            f"Feature implementation {path} rebuilds a graph or runs a "
+            "whole-graph algorithm inside a per-edge/per-node loop — a "
+            "quadratic blow-up that defeats every declared cost bound. "
+            "Derive per-element quantities in one pass instead: "
+            + "; ".join(sorted(violations))
+        )
+
+
 def _validate_row_path_cost(tree: ast.Module, path: Path) -> None:
     """Reject setup/global work reachable from timing-instrumented row loops.
 
@@ -949,9 +1028,12 @@ def _validate_feature_no_gt_access(tree: ast.Module, path: Path,
     fragments graph/image only; every GT payload key access is a hard reject.
     """
     violations: set[str] = set()
-    forbidden_sample_keys = (SPLIT_FEATURE_FORBIDDEN_SAMPLE_KEYS
-                             if target is DetectorTarget.SPLIT
-                             else MERGE_FEATURE_FORBIDDEN_SAMPLE_KEYS)
+    if target is DetectorTarget.SPLIT:
+        forbidden_sample_keys = SPLIT_FEATURE_FORBIDDEN_SAMPLE_KEYS
+    elif target is DetectorTarget.MERGE_SITE:
+        forbidden_sample_keys = MERGE_SITE_FEATURE_FORBIDDEN_SAMPLE_KEYS
+    else:
+        forbidden_sample_keys = MERGE_FEATURE_FORBIDDEN_SAMPLE_KEYS
     for node in ast.walk(tree):
         if (isinstance(node, ast.Name)
                 and isinstance(node.ctx, ast.Load)
@@ -1063,6 +1145,7 @@ def validate_feature_implementation(
     timing_group_keys = _validate_timing_contract(tree, path)
     _validate_computation_plan(tree, path, timing_group_keys)
     _validate_row_path_cost(tree, path)
+    _validate_no_per_element_graph_rebuilds(tree, path)
     _validate_feature_no_gt_access(tree, path, target)
     return source.rstrip() + "\n"
 
@@ -1083,18 +1166,20 @@ def assemble_detector(
     if template.count(FEATURE_MARKER) != 1:
         raise SystemExit("Detector runtime template must contain exactly one feature marker.")
     adapter_markers = template.count(TARGET_ADAPTER_MARKER)
+    policy_targets = (DetectorTarget.SPLIT, DetectorTarget.MERGE_SITE)
     if adapter_markers > 1 or (
-            target is DetectorTarget.SPLIT and adapter_markers != 1):
+            target in policy_targets and adapter_markers != 1):
         raise SystemExit(
-            "Split detector runtime template must contain exactly one target "
-            "adapter marker (merge-only compatibility templates may omit it).")
+            "Split/merge-site detector runtime templates must contain exactly "
+            "one target adapter marker (merge-only compatibility templates may "
+            "omit it).")
     try:
         template_tree = ast.parse(template, filename=str(template_path))
     except SyntaxError as exc:
         raise SystemExit(f"Detector runtime template does not parse: {exc}") from exc
     runtime_owned = RUNTIME_OWNED_SYMBOLS | _top_level_defined_symbols(template_tree)
     required_symbols = set(REQUIRED_SYMBOLS)
-    if target is DetectorTarget.SPLIT:
+    if target in policy_targets:
         required_symbols.remove("SegmentAccumulator")
         required_symbols.add("FeatureAccumulator")
     feature_source = validate_feature_implementation(
@@ -1109,8 +1194,16 @@ def assemble_detector(
         candidate_policy, candidate_policy_sha256 = load_runtime_candidate_policy(
             candidate_policy_path
         )
+    elif target is DetectorTarget.MERGE_SITE:
+        if candidate_policy_path is None:
+            raise SystemExit(
+                "Merge-site detector assembly requires merge_candidate_policy.json."
+            )
+        candidate_policy, candidate_policy_sha256 = (
+            load_runtime_merge_candidate_policy(candidate_policy_path)
+        )
     elif candidate_policy_path is not None:
-        raise SystemExit("Merge detector assembly does not accept a split candidate policy.")
+        raise SystemExit("Merge detector assembly does not accept a candidate policy.")
     if adapter_markers:
         template = template.replace(
             TARGET_ADAPTER_MARKER,

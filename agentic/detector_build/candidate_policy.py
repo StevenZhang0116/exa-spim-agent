@@ -20,6 +20,7 @@ from pathlib import Path
 from .contracts import (
     CANDIDATE_POLICY_ADVICE_DRAFT_NAME,
     CANDIDATE_POLICY_NAME,
+    MERGE_CANDIDATE_POLICY_NAME,
 )
 
 CANDIDATE_POLICY_SCHEMA_VERSION = 1
@@ -29,6 +30,19 @@ APPLICATION_STATUS = "selected_for_detector_runtime"
 SUPPORTED_RUNTIME_PAIRING_RULES = frozenset({
     "tip_to_tip", "tip_to_any_node", "any_node_to_any_node",
 })
+
+# --- merge-site (junction) candidate policy ---------------------------------
+# The merge candidate-pool sweep (notebooks/merge_candidate_pool_sweep.py)
+# already writes a DETERMINISTIC recommended_policy.json, so unlike the split
+# flow there is no agent advice stage: the driver validates the sweep bundle,
+# independently re-derives the argmin selection from the aggregate table, and
+# freezes merge_candidate_policy.json for assembly.
+MERGE_SITE_OBJECTIVE_NAME = (
+    "minimum_candidate_count_subject_to_worst_brain_site_recall"
+)
+MERGE_SITE_SOURCE_ARTIFACT_TYPE = "merge_candidate_policy_selection"
+MERGE_SITE_FROZEN_ARTIFACT_TYPE = "merge_site_candidate_policy_selection"
+SUPPORTED_MERGE_SITE_MODES = frozenset({"junction"})
 
 
 def _sha256(path: Path) -> str:
@@ -550,4 +564,409 @@ def validate_frozen_candidate_policy(
         "explanation"
     ].strip():
         raise SystemExit("Frozen split candidate policy explanation is empty.")
+    return policy
+
+
+# --------------------------------------------------------------------------- #
+# Merge-site (junction) candidate policy
+# --------------------------------------------------------------------------- #
+def merge_candidate_policy_source_paths(source_policy_path: Path) -> tuple[Path, ...]:
+    """The sweep-bundle files the merge-site policy validation reads."""
+    directory = source_policy_path.resolve().parent
+    return (
+        source_policy_path.resolve(),
+        directory / "artifact_manifest.json",
+        directory / "tables" / "cross_dataset_aggregate.csv",
+    )
+
+
+def _merge_positive_label_radius(value: object) -> float:
+    try:
+        radius = float(value)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("positive_label_radius_um must be numeric.") from exc
+    if not math.isfinite(radius) or radius <= 0:
+        raise SystemExit("positive_label_radius_um must be positive and finite.")
+    return radius
+
+
+def _read_merge_aggregate_rows(path: Path) -> list[dict]:
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+    except OSError as exc:
+        raise SystemExit(
+            f"Cannot read merge candidate aggregate table {path}: {exc}") from exc
+    required = {
+        "config_id", "mode", "nms_um", "claim_radius_um", "total_candidates",
+        "min_site_recall", "mean_site_recall", "micro_site_recall",
+        "min_label_recall", "n_brains",
+    }
+    if not rows:
+        raise SystemExit(f"Merge candidate aggregate table {path} is empty.")
+    missing = required - set(rows[0])
+    if missing:
+        raise SystemExit(
+            f"Merge candidate aggregate table {path} is missing columns "
+            f"{sorted(missing)}."
+        )
+    return rows
+
+
+def _parse_merge_selected_row(row: dict) -> dict:
+    try:
+        nms_um = float(row["nms_um"])
+        claim_radius = float(row["claim_radius_um"])
+        total_candidates = int(row["total_candidates"])
+        n_brains = int(row["n_brains"])
+        metrics = {
+            key: float(row[key])
+            for key in (
+                "min_site_recall", "mean_site_recall", "micro_site_recall",
+                "min_label_recall",
+            )
+        }
+    except (TypeError, ValueError, KeyError) as exc:
+        raise SystemExit(f"Invalid numeric merge candidate aggregate row: {row}") from exc
+    if (not math.isfinite(nms_um) or nms_um < 0
+            or not math.isfinite(claim_radius) or claim_radius <= 0
+            or total_candidates < 1 or n_brains < 1):
+        raise SystemExit(f"Invalid merge candidate aggregate row: {row}")
+    if any(
+        not math.isfinite(value) or not 0 <= value <= 1
+        for value in metrics.values()
+    ):
+        raise SystemExit(
+            f"Merge candidate aggregate metrics must be finite in [0, 1]: {row}")
+    mode = str(row["mode"]).strip()
+    if mode not in SUPPORTED_MERGE_SITE_MODES:
+        raise SystemExit(
+            f"Merge candidate aggregate row has unsupported mode {mode!r}.")
+    config_id = str(row["config_id"]).strip()
+    expected_config_id = f"{mode}|nms={nms_um:g}|r={claim_radius:g}"
+    if config_id != expected_config_id:
+        raise SystemExit(
+            "Merge candidate aggregate config_id is inconsistent with its "
+            f"policy columns: {config_id!r} != {expected_config_id!r}."
+        )
+    return {
+        "config_id": config_id,
+        "mode": mode,
+        "nms_um": int(nms_um) if nms_um.is_integer() else nms_um,
+        "claim_radius_um": (
+            int(claim_radius) if claim_radius.is_integer() else claim_radius),
+        "n_brains": n_brains,
+        "total_candidates": total_candidates,
+        **metrics,
+    }
+
+
+def _merge_deterministic_selection(
+    aggregate_path: Path, minimum_site_recall: float
+) -> dict:
+    eligible: list[dict] = []
+    for raw in _read_merge_aggregate_rows(aggregate_path):
+        parsed = _parse_merge_selected_row(raw)
+        if parsed["min_site_recall"] + 1e-12 >= minimum_site_recall:
+            eligible.append(parsed)
+    if not eligible:
+        raise SystemExit(
+            "No merge candidate configuration meets worst-brain site recall >= "
+            f"{minimum_site_recall:.6g}."
+        )
+    return min(eligible, key=lambda row: (row["total_candidates"], row["config_id"]))
+
+
+def _validated_merge_source_bundle(
+    source_policy_path: Path,
+    *,
+    minimum_site_recall: float,
+    expected_mcl: int | None,
+    project_root: Path,
+) -> tuple[dict, dict]:
+    minimum_site_recall = _finite_probability(
+        minimum_site_recall, "minimum worst-brain merge site recall"
+    )
+    source_policy_path, manifest_path, aggregate_path = (
+        merge_candidate_policy_source_paths(source_policy_path)
+    )
+    for path in (source_policy_path, manifest_path, aggregate_path):
+        if not path.is_file():
+            raise SystemExit(f"Missing merge candidate-policy source: {path}")
+
+    entries = _manifest_entries(manifest_path)
+    source_policy_sha = _require_manifest_hash(
+        entries, "recommended_policy.json", source_policy_path
+    )
+    aggregate_sha = _require_manifest_hash(
+        entries, "tables/cross_dataset_aggregate.csv", aggregate_path
+    )
+    source = _load_json(source_policy_path, "merge candidate sweep policy")
+    if source.get("artifact_type") != MERGE_SITE_SOURCE_ARTIFACT_TYPE:
+        raise SystemExit(
+            f"Merge candidate sweep policy {source_policy_path} has the wrong "
+            "artifact_type."
+        )
+    provenance_block = source.get("provenance")
+    if (not isinstance(provenance_block, dict)
+            or provenance_block.get("aggregate_sha256") != aggregate_sha):
+        raise SystemExit(
+            "Merge candidate sweep policy does not bind the current aggregate "
+            "table."
+        )
+    scope_block = source.get("evidence_scope")
+    if not isinstance(scope_block, dict):
+        raise SystemExit("Merge candidate sweep policy lacks evidence_scope.")
+    evidence_mcl = scope_block.get("mcl")
+    if not isinstance(evidence_mcl, int):
+        raise SystemExit("Merge candidate sweep policy needs an integer mcl.")
+    if expected_mcl is not None and evidence_mcl != expected_mcl:
+        raise SystemExit(
+            f"Merge candidate sweep evidence is mcl{evidence_mcl}, but the "
+            f"detector run name indicates mcl{expected_mcl}."
+        )
+    brains = scope_block.get("brains")
+    if (not isinstance(brains, list) or not brains
+            or any(not isinstance(brain, str) or not brain for brain in brains)):
+        raise SystemExit("Merge candidate sweep evidence needs a brains list.")
+
+    selected = _merge_deterministic_selection(aggregate_path, minimum_site_recall)
+    if selected["n_brains"] != len(brains):
+        raise SystemExit(
+            "Merge candidate sweep brain scope disagrees with the selected "
+            "aggregate row."
+        )
+    scope = {
+        "mcl": evidence_mcl,
+        "config_signature": scope_block.get("config_signature"),
+        "brains": brains,
+        "segment_detector_gating_evaluated": scope_block.get(
+            "segment_detector_gating_evaluated"
+        ),
+        "bridge_candidate_family_evaluated": scope_block.get(
+            "bridge_candidate_family_evaluated"
+        ),
+    }
+    structural_ceilings = source.get("structural_ceilings")
+    provenance = {
+        "source_policy_path": _relative(source_policy_path, project_root),
+        "source_policy_sha256": source_policy_sha,
+        "aggregate_path": _relative(aggregate_path, project_root),
+        "aggregate_sha256": aggregate_sha,
+        "manifest_path": _relative(manifest_path, project_root),
+        "manifest_sha256": _sha256(manifest_path),
+    }
+    return selected, {
+        "scope": scope,
+        "provenance": provenance,
+        "structural_ceilings": structural_ceilings,
+    }
+
+
+def validate_merge_candidate_policy_sources(
+    source_policy_path: Path,
+    *,
+    minimum_site_recall: float,
+    expected_mcl: int | None,
+    project_root: Path,
+) -> dict:
+    """Validate the merge sweep bundle before any output directory is deleted."""
+    selected, metadata = _validated_merge_source_bundle(
+        source_policy_path,
+        minimum_site_recall=minimum_site_recall,
+        expected_mcl=expected_mcl,
+        project_root=project_root,
+    )
+    return {"selected": selected, **metadata}
+
+
+def _merge_objective(minimum_site_recall: float,
+                     positive_label_radius_um: float) -> dict:
+    return {
+        "name": MERGE_SITE_OBJECTIVE_NAME,
+        "minimum_worst_brain_site_recall": minimum_site_recall,
+        "positive_label_radius_um": positive_label_radius_um,
+        "tie_breaker": ["total_candidates", "config_id"],
+    }
+
+
+def compile_merge_candidate_policy(
+    output_path: Path,
+    source_policy_path: Path,
+    *,
+    minimum_site_recall: float,
+    positive_label_radius_um: float,
+    expected_mcl: int | None,
+    project_root: Path,
+) -> dict:
+    """Freeze merge_candidate_policy.json from the validated sweep bundle.
+
+    The claim radius is the sweep's COVERAGE accounting tolerance; the tighter
+    driver-owned ``positive_label_radius_um`` defines the runtime's positive
+    training label so a far-fetched claim does not dilute site supervision.
+    """
+    positive_label_radius_um = _merge_positive_label_radius(
+        positive_label_radius_um)
+    selected, metadata = _validated_merge_source_bundle(
+        source_policy_path,
+        minimum_site_recall=minimum_site_recall,
+        expected_mcl=expected_mcl,
+        project_root=project_root,
+    )
+    if positive_label_radius_um > float(selected["claim_radius_um"]):
+        raise SystemExit(
+            "positive_label_radius_um must not exceed the selected claim "
+            f"radius {selected['claim_radius_um']} um."
+        )
+    policy = {
+        "schema_version": CANDIDATE_POLICY_SCHEMA_VERSION,
+        "artifact_type": MERGE_SITE_FROZEN_ARTIFACT_TYPE,
+        "application_status": APPLICATION_STATUS,
+        "objective": _merge_objective(
+            minimum_site_recall, positive_label_radius_um),
+        "selected_policy": {
+            "config_id": selected["config_id"],
+            "mode": selected["mode"],
+            "nms_um": selected["nms_um"],
+            "claim_radius_um": selected["claim_radius_um"],
+            "positive_label_radius_um": positive_label_radius_um,
+        },
+        "evidence_metrics": {
+            key: selected[key]
+            for key in (
+                "n_brains", "total_candidates", "min_site_recall",
+                "mean_site_recall", "micro_site_recall", "min_label_recall",
+            )
+        },
+        "evidence_scope": metadata["scope"],
+        "structural_ceilings": metadata["structural_ceilings"],
+        "provenance": metadata["provenance"],
+    }
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(policy, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return policy
+
+
+def _merge_runtime_policy_from_artifact(policy: dict, policy_path: Path) -> dict:
+    """Return the strictly validated merge-site generator fields to embed."""
+    if policy.get("schema_version") != CANDIDATE_POLICY_SCHEMA_VERSION:
+        raise SystemExit(
+            f"Merge candidate policy {policy_path} has a stale schema_version.")
+    if policy.get("artifact_type") != MERGE_SITE_FROZEN_ARTIFACT_TYPE:
+        raise SystemExit(
+            f"Merge candidate policy {policy_path} has the wrong artifact_type.")
+    if policy.get("application_status") != APPLICATION_STATUS:
+        raise SystemExit(
+            f"Merge candidate policy {policy_path} is not selected for "
+            "detector runtime."
+        )
+    selected = policy.get("selected_policy")
+    required = {
+        "config_id", "mode", "nms_um", "claim_radius_um",
+        "positive_label_radius_um",
+    }
+    if not isinstance(selected, dict) or set(selected) != required:
+        raise SystemExit(
+            f"Merge candidate policy {policy_path} selected_policy must "
+            f"contain exactly {sorted(required)}."
+        )
+    mode = selected.get("mode")
+    if mode not in SUPPORTED_MERGE_SITE_MODES:
+        raise SystemExit(
+            f"Merge candidate policy {policy_path} has unsupported runtime "
+            f"mode {mode!r}."
+        )
+    try:
+        nms_um = float(selected.get("nms_um"))
+        claim_radius = float(selected.get("claim_radius_um"))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            f"Merge candidate policy {policy_path} radii must be numeric."
+        ) from exc
+    if not math.isfinite(nms_um) or nms_um < 0:
+        raise SystemExit(
+            f"Merge candidate policy {policy_path} nms_um must be >= 0.")
+    if not math.isfinite(claim_radius) or claim_radius <= 0:
+        raise SystemExit(
+            f"Merge candidate policy {policy_path} claim_radius_um must be "
+            "positive."
+        )
+    label_radius = _merge_positive_label_radius(
+        selected.get("positive_label_radius_um"))
+    if label_radius > claim_radius:
+        raise SystemExit(
+            f"Merge candidate policy {policy_path} positive_label_radius_um "
+            "must not exceed claim_radius_um."
+        )
+    expected_id = f"{mode}|nms={nms_um:g}|r={claim_radius:g}"
+    if selected.get("config_id") != expected_id:
+        raise SystemExit(
+            f"Merge candidate policy {policy_path} config_id disagrees with "
+            f"its fields: {selected.get('config_id')!r} != {expected_id!r}."
+        )
+    return {
+        "config_id": expected_id,
+        "mode": mode,
+        "nms_um": int(nms_um) if nms_um.is_integer() else nms_um,
+        "claim_radius_um": (
+            int(claim_radius) if claim_radius.is_integer() else claim_radius),
+        "positive_label_radius_um": label_radius,
+    }
+
+
+def load_runtime_merge_candidate_policy(policy_path: Path) -> tuple[dict, str]:
+    """Load the exact merge-site policy fields and hash consumed by assembly."""
+    policy = _load_json(policy_path, "frozen merge candidate policy")
+    return (
+        _merge_runtime_policy_from_artifact(policy, policy_path),
+        _sha256(policy_path),
+    )
+
+
+def validate_frozen_merge_candidate_policy(
+    policy_path: Path,
+    source_policy_path: Path,
+    *,
+    minimum_site_recall: float,
+    positive_label_radius_um: float,
+    expected_mcl: int | None,
+    project_root: Path,
+) -> dict:
+    positive_label_radius_um = _merge_positive_label_radius(
+        positive_label_radius_um)
+    policy = _load_json(policy_path, "frozen merge candidate policy")
+    runtime_policy = _merge_runtime_policy_from_artifact(policy, policy_path)
+    selected, metadata = _validated_merge_source_bundle(
+        source_policy_path,
+        minimum_site_recall=minimum_site_recall,
+        expected_mcl=expected_mcl,
+        project_root=project_root,
+    )
+    if policy.get("objective") != _merge_objective(
+            minimum_site_recall, positive_label_radius_um):
+        raise SystemExit("Frozen merge candidate policy objective is stale.")
+    expected_selected = {
+        "config_id": selected["config_id"],
+        "mode": selected["mode"],
+        "nms_um": selected["nms_um"],
+        "claim_radius_um": selected["claim_radius_um"],
+        "positive_label_radius_um": positive_label_radius_um,
+    }
+    if runtime_policy != expected_selected:
+        raise SystemExit("Frozen merge candidate policy selection is stale.")
+    expected_metrics = {
+        key: selected[key]
+        for key in (
+            "n_brains", "total_candidates", "min_site_recall",
+            "mean_site_recall", "micro_site_recall", "min_label_recall",
+        )
+    }
+    if policy.get("evidence_metrics") != expected_metrics:
+        raise SystemExit("Frozen merge candidate policy metrics are stale.")
+    if policy.get("evidence_scope") != metadata["scope"]:
+        raise SystemExit("Frozen merge candidate policy evidence scope is stale.")
+    if policy.get("provenance") != metadata["provenance"]:
+        raise SystemExit("Frozen merge candidate policy provenance is stale.")
     return policy

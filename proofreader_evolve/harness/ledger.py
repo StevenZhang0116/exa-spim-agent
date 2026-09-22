@@ -35,6 +35,14 @@ class GenerationCost:
     cost_usd: float = 0.0                # agent $ (from ResultMessage if present)
     n_evaluations: int = 0               # how many evaluate() calls this gen
     human_interventions: int = 0         # # of human approvals/edits this gen
+    # --- multi-candidate generations (run_evolution --candidates-per-gen k > 1) ---
+    # Each generation may fan out k independent reviser candidates from the SAME
+    # parent, pre-screen them on the TRAIN side, and send only the winner to the
+    # held-out gate. Defaults describe the classic single-candidate generation.
+    n_candidates: int = 1                # revision candidates generated this gen
+    screen_winner: int = 0               # 1-based index of the train-screen winner
+                                         # (0 = single-candidate gen / no survivor)
+    screen_seconds: float = 0.0          # scorer time spent on the train-side screen
     # NOTE on naming: Edge Accuracy is a DIAGNOSTIC here, NOT the gate. The gate is
     # the split-repair score (see ``heldout_split_repair_score`` below and
     # ``parent_split_repair_score``). These two Edge-Accuracy fields are recorded for

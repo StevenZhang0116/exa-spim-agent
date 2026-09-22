@@ -25,17 +25,18 @@
   <circle cx="112" cy="198" r="22" fill="#0f172a"/>
   <text x="112" y="206" font-size="20" font-weight="700" text-anchor="middle" fill="#ffffff">0</text>
   <text x="150" y="193" font-size="22" font-weight="700" fill="#0f172a">Freeze candidate policy</text>
-  <text x="150" y="218" font-size="14" fill="#6d28d9">split only</text>
+  <text x="150" y="218" font-size="14" fill="#6d28d9">split · merge-site</text>
   <rect x="410" y="173" width="310" height="50" rx="10" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
-  <text x="565" y="204" font-size="16" font-weight="600" text-anchor="middle" fill="#1e3a8a">Agent interprets sweep review</text>
+  <text x="565" y="193" font-size="15" font-weight="600" text-anchor="middle" fill="#1e3a8a">split: agent interprets AI review</text>
+  <text x="565" y="213" font-size="13" text-anchor="middle" fill="#475569">merge-site: no agent turn</text>
   <line x1="720" y1="198" x2="778" y2="198" stroke="#64748b" stroke-width="2.5" marker-end="url(#arrow)"/>
   <rect x="786" y="173" width="410" height="50" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
-  <text x="991" y="195" font-size="16" font-weight="600" text-anchor="middle" fill="#166534">Driver validates evidence + objective</text>
-  <text x="991" y="215" font-size="13" text-anchor="middle" fill="#475569">minimum pool subject to worst-brain recall ≥ 0.90</text>
+  <text x="991" y="192" font-size="16" font-weight="600" text-anchor="middle" fill="#166534">Driver re-derives argmin from sweep evidence</text>
+  <text x="991" y="214" font-size="12.5" text-anchor="middle" fill="#475569">worst-brain recall ≥ 0.90 (split) · site recall ≥ 0.80 (merge)</text>
   <line x1="1196" y1="198" x2="1254" y2="198" stroke="#64748b" stroke-width="2.5" marker-end="url(#arrow)"/>
   <rect x="1262" y="173" width="522" height="50" rx="10" fill="#ede9fe" stroke="#8b5cf6" stroke-width="2"/>
-  <text x="1523" y="195" font-size="17" font-family="monospace" font-weight="700" text-anchor="middle" fill="#5b21b6">split_candidate_policy.json</text>
-  <text x="1523" y="216" font-size="13" text-anchor="middle" fill="#64748b">dynamic pairing mode · radius · per-anchor k</text>
+  <text x="1523" y="192" font-size="15" font-family="monospace" font-weight="700" text-anchor="middle" fill="#5b21b6">split_candidate_policy.json</text>
+  <text x="1523" y="214" font-size="15" font-family="monospace" font-weight="700" text-anchor="middle" fill="#5b21b6">merge_candidate_policy.json</text>
   <path d="M1523 223 V254 H1254 V266" fill="none" stroke="#8b5cf6" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#arrow)"/>
 
   <!-- Main pipeline -->
@@ -91,7 +92,7 @@
   <rect x="1122" y="466" width="264" height="88" rx="11" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
   <text x="1254" y="492" font-size="17" font-weight="600" text-anchor="middle" fill="#166534">Assemble + smoke test</text>
   <text x="1254" y="513" font-size="12.5" text-anchor="middle" fill="#475569">rejects cost violations · GT-access lint</text>
-  <text x="1254" y="536" font-size="14" font-family="monospace" text-anchor="middle" fill="#334155">*_site_detector.py</text>
+  <text x="1254" y="536" font-size="14" font-family="monospace" text-anchor="middle" fill="#334155">*_detector.py</text>
 
   <line x1="1414" y1="429" x2="1452" y2="429" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
 
@@ -110,14 +111,16 @@
   <!-- Independent split contracts -->
   <line x1="960" y1="584" x2="960" y2="610" stroke="#64748b" stroke-width="3" stroke-dasharray="8 6" marker-end="url(#arrow)"/>
   <rect x="160" y="618" width="1600" height="142" rx="22" fill="#ffffff" stroke="#8b5cf6" stroke-width="2" filter="url(#shadow)"/>
-  <text x="198" y="654" font-size="20" font-weight="700" fill="#5b21b6">SPLIT · TWO INDEPENDENT CONTRACTS</text>
+  <text x="198" y="654" font-size="20" font-weight="700" fill="#5b21b6">SPLIT &amp; MERGE-SITE · TWO INDEPENDENT CONTRACTS</text>
   <rect x="390" y="672" width="540" height="70" rx="13" fill="#ede9fe" stroke="#8b5cf6" stroke-width="2"/>
-  <text x="660" y="700" font-size="18" font-weight="700" text-anchor="middle" fill="#5b21b6">Candidate policy → row universe</text>
-  <text x="660" y="725" font-size="14" text-anchor="middle" fill="#475569">pairing mode · radius · k · GT-blind enumeration</text>
+  <text x="660" y="696" font-size="18" font-weight="700" text-anchor="middle" fill="#5b21b6">Candidate policy → row universe</text>
+  <text x="660" y="716" font-size="13" text-anchor="middle" fill="#475569">split: pairing mode · radius · k — GT-blind enumeration</text>
+  <text x="660" y="734" font-size="13" text-anchor="middle" fill="#475569">merge-site: junctions · segment NMS · claim + label radii</text>
   <text x="960" y="716" font-size="28" font-weight="700" text-anchor="middle" fill="#94a3b8">≠</text>
   <rect x="990" y="672" width="610" height="70" rx="13" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
-  <text x="1295" y="700" font-size="18" font-weight="700" text-anchor="middle" fill="#1e3a8a">Feature applicability → definedness</text>
-  <text x="1295" y="725" font-size="14" text-anchor="middle" fill="#475569">compatible occurrences only · no row deletion · else NaN + false</text>
+  <text x="1295" y="696" font-size="18" font-weight="700" text-anchor="middle" fill="#1e3a8a">Feature scoping → definedness</text>
+  <text x="1295" y="716" font-size="13" text-anchor="middle" fill="#475569">split: compatible occurrences only · no row deletion · else NaN + false</text>
+  <text x="1295" y="734" font-size="13" text-anchor="middle" fill="#475569">merge-site: junction-local re-anchor or segment-context broadcast</text>
 
   <!-- Allowlisted models -->
   <line x1="960" y1="760" x2="960" y2="782" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
@@ -136,7 +139,7 @@
   <!-- Deliverables -->
   <rect x="250" y="936" width="1420" height="78" rx="20" fill="#eef2ff" stroke="#6366f1" stroke-width="2" filter="url(#shadow)"/>
   <text x="292" y="970" font-size="21" font-weight="700" fill="#3730a3">Build deliverables</text>
-  <text x="292" y="997" font-size="16" fill="#374151">candidate policy (split) · feature inventory · model configuration · self-contained GT-blind detector (+ ascertainment audit) · README + runbook</text>
+  <text x="292" y="997" font-size="16" fill="#374151">candidate policy (split / merge-site) · feature inventory · model configuration · self-contained GT-blind detector (+ ascertainment audit) · README + runbook</text>
 
   <text x="80" y="1040" font-size="15" fill="#94a3b8">agentic/run_detector_build_workflow.py</text>
 </svg>

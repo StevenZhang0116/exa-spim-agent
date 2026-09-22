@@ -48,66 +48,19 @@ per generation for DIAGNOSIS; they are not the accept/reject bar.
   single real neuron is visible; the accept/reject decision remains the penalized
   fitness above.
 
-## Current criteria (Generation 0 — detector-prior two-phase seed)
+## Current criteria (Generation 0 — seed)
 
-The seed is a **two-phase, detector-prior** policy built for `--two-phase` runs
-(each iteration first repairs merge errors, then repairs split errors on the
-post-cut surface; `ctx["phase"]` names the pass).
-
-Its core signal is a pair of FROZEN AutoDiscovery-fitted models, read directly
-from their detector deliverable folders under `autodiscovery-application/`
-(one merge run + one split run; scores precomputed per brain into
-`feature_tables/<brain>/` — see its `meta.json` for the exact folders — and
-stamped onto sites by the harness):
-
-- `MergeSite.label_merge_score` — segment-level "this label fuses two neurons"
-  (it says WHICH label to cut; WHERE stays with the site's own cut geometry).
-- `SplitSite.split_score` — pair-level "these two labels are one broken neuron"
-  (the exact granularity of a `merge_labels` edit).
-
-Both are UNCALIBRATED ranking scores, so the seed thresholds on brain-relative
-QUANTILES (`ctx["feature_bank"].score_quantile(kind, q)`), never absolute values.
-`nan` = candidate unknown to the tables → geometry-only fallback.
-
-Pass 1 (merge repair): cut a label iff `label_merge_score` clears the
-`MERGE_CUT_QUANTILE` (0.99) quantile AND every geometric veto passes
-(`arms_reconverge` is not True; both arms ≥ `MERGE_MIN_ARM_CABLE_UM` (20 µm);
-`angle_deg` ≤ `MERGE_MAX_ANGLE_DEG` (140°) when defined), capped at
-`MERGE_TOPK_CUTS` (10) cuts per brain, best-scored first, one (sharpest-angle)
-site per label. A false cut costs `merge_penalty` correct repairs, so precision
-dominates the seed.
-
-Pass 2 (split repair): unify a pair iff `split_score` clears the
-`SPLIT_SCORE_QUANTILE` (0.995) quantile AND one cheap geometric agreement holds
-(`mutual_nearest` OR colinear continuation). Score-less candidates fall back to
-the proven conservative geometry rule: `gap_um <= GAP_THRESHOLD_UM` (4.0 µm) AND
-colinear (`cos >= MIN_COLINEAR_COS`, 0.94).
-
-The gate is parent-relative, so each generation must beat THIS seed (or the last
-accepted policy), not the no-edit floor. The pure-geometry control seed lives at
-`artifacts/seeds/geometric.py` (run it via `--start-from` for the control lineage).
-
-## Improvement levers, ranked (do not just retune the quantiles)
-
-1. **Decision-tree structure.** How the score combines with cheap geometry is the
-   seed's weakest guess: e.g. tiered acceptance (very high score alone; moderate
-   score + mutual_nearest + colinear; low score never), per-detector rules for
-   MergeSites ("branch" vs "bridge" vs "component" have different evidence), or
-   budget re-allocation between the two passes. Full 90/39-column feature rows are
-   available on demand (`ctx["feature_bank"].split_features(a, b)` /
-   `.merge_features(label)`) — the failure report's feature-attribution tables
-   show which columns separate this generation's mistakes.
-2. **Evidence the frozen models have never seen.** Both detectors are pure
-   geometry. The image reader (`ctx["read_image_patch"]`,
-   `gap_bridge_evidence` / `merge_cut_evidence`) is an ORTHOGONAL signal — use it
-   to break ties in the ambiguous score band instead of paying reads on clear
-   cases. New features you compute from `ctx["fragments_graph"]` count too.
-3. **Enumeration ceiling.** The models can only rank what the enumerator surfaces
-   (`ENUM_PARAMS`: `max_gap_um`, `split_per_tip_k`, `min_arm_cable_um`,
-   `split_image_rescue`, ...). The failure report's enumeration-ceiling section
-   shows the recall the stream itself forfeits. Note candidates beyond the
-   precomputed tables carry `split_score = nan` and fall to the geometric
-   fallback — widening enumeration trades model coverage for reach.
+The seed is a conservative **colinear split-repair** policy (NOT a no-op). For
+each SplitSite it emits a `merge_labels` edit only when BOTH:
+  1. the gap is small — `s.gap_um <= GAP_THRESHOLD_UM` (4.0 µm), and
+  2. the two fragments are colinear across the gap — a straight-line continuation
+     (`cos(angle) >= MIN_COLINEAR_COS`, 0.94 ≈ ≤20° bend).
+MergeSites are left alone (no `split_label`) — splitting is the riskier edit, left
+for the loop to add once it can measure the trade-off. This proposes a small,
+high-precision set of merges, so the score moves OFF the flat no-edit baseline
+(giving the loop a gradient) without the union-find mega-label blowup a naive
+"merge everything nearby" seed would cause. The gate is parent-relative, so each
+generation must beat THIS seed (or the last accepted policy), not the no-edit floor.
 
 ## Known failure modes to address (hypotheses for the loop)
 
@@ -185,14 +138,9 @@ set is noisy and precision is the bottleneck.
 
 ## Change log
 
-- **Gen 0 (detector-prior two-phase seed):** replaced the pure-geometry seed with
-  the frozen-detector-prior policy described above (quantile-thresholded
-  `label_merge_score` cuts in pass 1; quantile-thresholded `split_score` merges
-  with geometric guards + geometry-only fallback in pass 2). The old seed is
-  preserved at `artifacts/seeds/geometric.py` as the control lineage.
-- **(superseded) Gen 0:** seed was a conservative colinear split-repair policy —
-  `merge_labels` for SplitSites with `gap_um <= GAP_THRESHOLD_UM` (4.0 µm) AND
-  colinear continuation (`cos >= MIN_COLINEAR_COS`, 0.94); no `split_label`.
+- **Gen 0:** seed is a conservative colinear split-repair policy — `merge_labels`
+  for SplitSites with `gap_um <= GAP_THRESHOLD_UM` (4.0 µm) AND colinear
+  continuation (`cos >= MIN_COLINEAR_COS`, 0.94); no `split_label`.
 - **Harness:** `candidate_split_sites` broadened from tip-to-tip to
   tip-to-any-node (tip/shaft/branch) within `max_gap_um`; `SplitSite` carries
   `node_a` (always a tip) and `node_b` (the partner, any degree).

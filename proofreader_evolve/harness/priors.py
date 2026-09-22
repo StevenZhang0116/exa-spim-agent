@@ -4,14 +4,17 @@ the QUALIFYING findings to a generation, RANKED by discovery importance × relev
 to the current failure, so they can be INLINED into the failure report (Layer 1 of
 the priors overhaul).
 
-DORMANT (as of the priors rewind): run_evolution.py no longer calls this module.
-The evolution loop was rewound to the earlier design where the reviser is simply
-POINTED at the knowledge base and READS it itself (see ``_format_priors`` there) —
-the failure report inlines NO ranked menu, and there is no grounded/cited/rotation
-feedback loop. Everything below describes the (now inactive) inline-menu pipeline;
-it is retained intact so that path can be re-enabled by wiring ``build_report_section``
-back into the loop, but NONE of it runs today. Read the rest of this docstring as
-"what this module WOULD do if re-enabled", not as current behavior.
+CURRENT USE: run_evolution.py calls ONLY ``build_unranked_section`` (each
+generation, when a priors file is configured) to inline the full qualifying
+finding set — UNRANKED, priority shown, agent selects — into the failure report.
+
+DORMANT (as of the priors rewind): the RANKED-menu pipeline below
+(``relevance`` / ``ranking_score`` / ``rank_for_report`` / ``select_for_report`` /
+``render_section`` / ``build_report_section``) and the grounded/cited feedback
+helpers (``cited_findings`` / ``supported_citations``) are no longer wired into
+the loop. They are retained intact so the ranked-menu path can be re-enabled by
+wiring ``build_report_section`` back in; read those parts of this docstring as
+"what the module WOULD do if re-enabled", not as current behavior.
 
 Why inline instead of "go read the file":
   The old flow only POINTED the reviser at ``all-runs.combined.md`` and hoped it

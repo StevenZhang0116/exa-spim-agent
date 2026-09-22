@@ -112,6 +112,31 @@ only on strong, specific merge evidence.
    the policy never saw (raise `split_max_sites` to recover them). Do NOT keep
    micro-tuning thresholds against the MISSED bucket if the ceiling shows most of your
    remaining recall is unreachable without an `ENUM_PARAMS` change.
+4. **Frozen detector priors** (`harness.feature_bank`, when the brain has tables).
+   Two AutoDiscovery-fitted models score candidates on 129 validated geometric
+   features, and the harness stamps the scores onto sites before your policy runs:
+   - `SplitSite.split_score` — pair-level "these two labels are one broken neuron";
+   - `MergeSite.label_merge_score` — segment-level "this label fuses two neurons"
+     (it says WHICH label to cut, never WHERE — placement stays with the site).
+   Both are UNCALIBRATED ranking scores: threshold them by brain-relative quantile
+   (`ctx["feature_bank"].score_quantile("split"|"merge", q)`), never by absolute
+   value, and ALWAYS handle `nan` (= candidate outside the precomputed tables — fall
+   back to geometry there). Full 90/39-column feature rows are available on demand:
+   `ctx["feature_bank"].split_features(label_a, label_b)` / `.merge_features(label)`
+   — each returns `{column: value}` with `<column>_is_defined` flags; NaN = that
+   structure is absent on the candidate, itself informative. `ctx["feature_bank"]`
+   may be None (no tables): the policy must still work, degraded to geometry.
+   The failure report's `split_score` / `merge_score` columns show how the frozen
+   prior separates this generation's mistakes — use them to decide whether your next
+   lever is the score threshold, a guard AROUND the score, or evidence the frozen
+   models have never seen (the image reader; new geometry you compute from `ctx`).
+5. **Two-phase contract** (`ctx["phase"]`, on `--two-phase` runs). Your policy is
+   called TWICE per evaluation: first with `ctx["phase"] == "merge_repair"` (raw
+   brain; only your `split_label` edits are kept), then with `ctx["phase"] ==
+   "split_repair"` (SplitSites re-enumerated over the post-cut label surface, where
+   pseudo-labels look like `"L#a"`; only `merge_labels` edits are kept). Dispatch on
+   `ctx["phase"]` — never infer the pass from site counts. In single-pass runs
+   `ctx["phase"] == "single"` and both edit kinds are honored from one call.
 
 ## Your procedure
 
@@ -186,6 +211,11 @@ only on strong, specific merge evidence.
          crossing/tangle "how crowded is this gap" density cue, computed cheaply.
      Prefer these for any "what is near here" feature. Only reach for `node_xyz`
      directly for a single node you already have (`g.node_xyz[n]`), never for a scan.
+     Two ORIENTATION keys (see "Frozen detector priors" / "Two-phase contract"
+     above): `ctx["phase"]` — which pass this call is ("merge_repair" /
+     "split_repair" / "single") — and `ctx["feature_bank"]` — the frozen
+     detector-prior façade (or None): `.score_quantile(kind, q)`,
+     `.split_features(a, b)`, `.merge_features(label)`.
      The `ctx` dict also carries two SIGNALS beyond the graph topology:
        * `ctx["node_radius"]` — a numpy array (or None) of the estimated neurite
          RADIUS at each node, indexed by node id. Free (in memory, no I/O). Use it
@@ -262,7 +292,10 @@ only on strong, specific merge evidence.
      **`SplitSite` (`s.kind == "split"`)** — two nearby fragments with DIFFERENT
      labels (a neuron the segmentation broke apart). Repair = `merge_labels`.
      Fields: `.label_a`, `.label_b`, `.gap_um`, `.node_a`, `.node_b`, `.xyz_a`,
-     `.xyz_b`, and `.as_edit()` → `(label_a, label_b)` (the merge tuple).
+     `.xyz_b`, `.recip_rank_a`/`.recip_rank_b`/`.mutual_nearest` (reciprocal-
+     neighbor precision cue), `.split_score` (frozen split-detector prior — see
+     "Frozen detector priors" above; nan = pair not in the tables), and
+     `.as_edit()` → `(label_a, label_b)` (the merge tuple).
      **`.node_a`/`.node_b` are graph node ids** — use them directly with the graph
      API above (e.g. `g.neighbors(s.node_a)`, `g.rooted_subgraph(s.node_a, 20)`,
      `g.node_xyz[s.node_b]`) to build tangent-direction, endpoint-degree, and
@@ -305,6 +338,10 @@ only on strong, specific merge evidence.
              NaN (no shared vertex) — do NOT threshold on it; the disconnection plus
              both pieces being long IS the signal, and the seeds already sit at the
              contact, so these are often the safest splits.
+       * `.label_merge_score` — frozen merge-detector prior for this site's LABEL
+         (see "Frozen detector priors" above). Segment-level: all MergeSites on one
+         label share it; it says WHICH label to cut, and the site's own geometry
+         says WHERE. nan = label not in the tables — fall back to geometry.
        * `.seed_groups` — for an X-crossing (degree-4 branch) the detector may
          pre-group the arms into NEURITES: a list of `{suffix, xyz, node}` where the
          two arms that pass straight THROUGH the node share a suffix, so the cut
@@ -357,7 +394,12 @@ only on strong, specific merge evidence.
    loses `propose_edits`, and (b) runs the no-hardcode lint above and REVERTS if the
    source contains any failure-report label literal. So make sure your edit is
    syntactically valid Python, keeps the function defined, contains no hardcoded
-   segment ids, and does NOT import modules that may be absent.
+   segment ids, and does NOT import modules that may be absent. Always-safe imports:
+   the stdlib, `numpy`, and `proofreader_evolve.harness.feature_bank` (the frozen
+   detector-prior façade — though you rarely need to import it: the harness already
+   hands you the live instance as `ctx["feature_bank"]` and the scores as site
+   fields). Do NOT import sklearn/joblib/xgboost directly or load model files
+   yourself — the frozen models are managed by the harness, not the policy.
 
 ## Run isolation (hard rule)
 

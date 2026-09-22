@@ -6,7 +6,9 @@
       * an EXTENDED junction walk (150 um): finite = the 30-um bound was the
         artifact; inf = structurally junction-free at any useful scale;
       * ``segment_n_junction_nodes``: 0 = the whole segment is an unbranched
-        path (mcl pruning may have removed the arms -- check mcl10);
+        path. (The "mcl pruning removed the arms" hypothesis was REFUTED by the
+        mcl10 run: pure-path bridges are MORE prevalent at mcl10 (61/185) than
+        at mcl100 (34/148), so they are real structure, not a pruning artifact.);
       * geodesic distance to the nearest ENDPOINT (degree 1): merges at
         fragment ends are a different geometry than mid-shaft necks;
       * segment size, to compare against branch-site segments.

@@ -22,11 +22,13 @@ MODEL_ADVICE_DRAFT_NAME = ".model_advice.json"
 FEATURE_IMPLEMENTATION_DRAFT_NAME = ".feature_implementation.py"
 CANDIDATE_POLICY_NAME = "split_candidate_policy.json"
 CANDIDATE_POLICY_ADVICE_DRAFT_NAME = ".candidate_policy_advice.json"
+MERGE_CANDIDATE_POLICY_NAME = "merge_candidate_policy.json"
 
 class DetectorTarget(str, Enum):
     """The scientific label contract implemented by the generated runtime."""
 
     MERGE = "merge_detection"
+    MERGE_SITE = "merge_site_detection"
     SPLIT = "split_detection"
     LEGACY_UNSPECIFIED = "legacy_unspecified"
 
@@ -73,6 +75,25 @@ _TARGET_SPECS = {
         identity_columns=("segment_id",),
         score_prefix="merge_probability",
         accumulator_name="SegmentAccumulator",
+    ),
+    # Junction-site merge detection: one row per NMS-surviving degree>=3
+    # fragment node, enumerated by the frozen merge candidate policy. The
+    # established segment-level target above stays available (the proofreader
+    # scoring stack still consumes segment-level merge_site_detector.py).
+    DetectorTarget.MERGE_SITE: TargetSpec(
+        target=DetectorTarget.MERGE_SITE,
+        detector_name="merge_junction_detector.py",
+        output_prefix="merge_junction_detector",
+        row_unit="candidate junction site",
+        row_unit_plural="candidate junction sites",
+        label_name="is_merge_site",
+        positive_name="merge site",
+        negative_name="clean junction",
+        positive_plural="merge sites",
+        negative_plural="clean junctions",
+        identity_columns=("candidate_id", "node_id", "segment_id"),
+        score_prefix="merge_site_probability",
+        accumulator_name="FeatureAccumulator",
     ),
     DetectorTarget.SPLIT: TargetSpec(
         target=DetectorTarget.SPLIT,
@@ -129,6 +150,8 @@ def build_artifact_names(target: DetectorTarget) -> tuple[str, ...]:
     )
     if spec.target is DetectorTarget.SPLIT:
         return (CANDIDATE_POLICY_NAME, *common)
+    if spec.target is DetectorTarget.MERGE_SITE:
+        return (MERGE_CANDIDATE_POLICY_NAME, *common)
     return common
 
 

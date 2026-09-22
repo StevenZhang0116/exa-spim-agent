@@ -1259,20 +1259,50 @@ def _score_matrix(estimator, X):
 
 
 def _cv_splits(X, y, n_splits, seed, samples=None):
-    """Return ordinary stratified folds or conservative split-candidate folds.
+    """Return ordinary stratified folds or conservative segment-disjoint folds.
 
     For split rows, validation contains only pairs whose two segments are held
     out together; training contains only pairs touching no held-out segment.
     Boundary pairs are deliberately omitted.  Consequently split OOF coverage
     can be below 100% and is reported explicitly instead of leaking a shared
     segment across train and validation.
+
+    Merge-site rows carry ONE segment each, so the same segment-disjoint rule
+    partitions cleanly: every candidate lands in exactly one validation fold
+    (full OOF coverage) and no segment's junctions are shared between train
+    and validation.
     """
     from sklearn.model_selection import StratifiedKFold
 
-    if DETECTOR_TARGET != "split_detection" or samples is None:
+    if (DETECTOR_TARGET not in ("split_detection", "merge_site_detection")
+            or samples is None):
         splitter = StratifiedKFold(
             n_splits=n_splits, shuffle=True, random_state=seed)
         return list(splitter.split(X, y))
+
+    if DETECTOR_TARGET == "merge_site_detection":
+        segments = sorted({int(sample["segment_id"]) for sample in samples})
+        if len(segments) < n_splits:
+            raise ValueError("too few distinct segments for segment-disjoint CV")
+        rng = np.random.RandomState(seed)
+        shuffled = np.asarray(segments, dtype=np.int64)
+        rng.shuffle(shuffled)
+        fold_of = {int(segment): int(index % n_splits)
+                   for index, segment in enumerate(shuffled)}
+        splits = []
+        for fold in range(n_splits):
+            assignment = np.asarray([
+                fold_of[int(sample["segment_id"])] for sample in samples
+            ], dtype=int)
+            test = np.flatnonzero(assignment == fold)
+            train = np.flatnonzero(assignment != fold)
+            if (len(train) < 2 or len(test) < 2 or
+                    len(np.unique(y[train])) < 2 or len(np.unique(y[test])) < 2):
+                raise ValueError(
+                    "segment-disjoint CV fold %d lacks rows or both classes "
+                    "(train=%d test=%d)" % (fold, len(train), len(test)))
+            splits.append((train, test))
+        return splits
 
     segments = sorted({
         int(sample[key]) for sample in samples
@@ -2361,11 +2391,15 @@ class BlindnessViolation(RuntimeError):
 # _derive_split_truth), which runs BEFORE the fragment and outside the guard.
 _GT_PAYLOAD_KEYS = frozenset({
     "gt_edge_error", "gt_graph", "gt_node_canonical_label", "gt_merge_labels",
+    "gt_merge_sites",
+    # GT-derived runtime scratch (merge-site adapter's site-distance audit).
+    "__detector_universe_site_audit__",
 })
 # GT-derived audit/label fields stripped from sample rows handed to feature math.
 _SAMPLE_AUDIT_KEYS = frozenset({
     "is_split", "split_kind", "is_merge_creating",
     "contains_known_merge_segment", "is_merge",
+    "is_merge_site", "distance_to_nearest_gt_site_um", "in_ambiguous_ring",
 })
 
 

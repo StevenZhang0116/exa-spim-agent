@@ -43,8 +43,23 @@ CANDIDATE_GLOBAL_CAP = {candidate_policy["global_cap"]!r}
 CANDIDATE_POLICY_SHA256 = {candidate_policy_sha256!r}
 '''
         return common + constants + _SPLIT_ADAPTER
+    if spec.target is DetectorTarget.MERGE_SITE:
+        if candidate_policy is None or candidate_policy_sha256 is None:
+            raise ValueError(
+                "Merge-site target adapters require a validated frozen "
+                "candidate policy."
+            )
+        constants = f'''CANDIDATE_POLICY_CONFIG_ID = {candidate_policy["config_id"]!r}
+CANDIDATE_MODE = {candidate_policy["mode"]!r}
+CANDIDATE_NMS_UM = {float(candidate_policy["nms_um"])!r}
+CANDIDATE_CLAIM_RADIUS_UM = {float(candidate_policy["claim_radius_um"])!r}
+CANDIDATE_POSITIVE_LABEL_RADIUS_UM = {float(candidate_policy["positive_label_radius_um"])!r}
+CANDIDATE_SITE_SNAP_MAX_UM = 50.0
+CANDIDATE_POLICY_SHA256 = {candidate_policy_sha256!r}
+'''
+        return common + constants + _MERGE_SITE_ADAPTER
     if candidate_policy is not None or candidate_policy_sha256 is not None:
-        raise ValueError("Merge target adapters do not accept a split candidate policy.")
+        raise ValueError("Merge target adapters do not accept a candidate policy.")
     return common + _MERGE_ADAPTER
 
 
@@ -456,5 +471,255 @@ def ascertainment_covariates(payload, samples):
             [_pair_min(seg_frag_nodes, s) for s in samples], dtype=float),
         "min_segment_gt_node_count": np.asarray(
             [_pair_min(seg_gt_nodes, s) for s in samples], dtype=float),
+    }
+'''
+
+
+_MERGE_SITE_ADAPTER = r'''
+def _merge_site_node_arrays(payload):
+    """Contiguous per-node arrays candidate enumeration reads (GT-free)."""
+    frag = payload["fragments_graph"]
+    comp_to_seg = build_comp_to_seg(frag)
+    n_nodes = int(frag.number_of_nodes())
+    xyz = np.asarray(frag.node_xyz, dtype=float)
+    node_components = np.asarray(frag.node_component_id, dtype=np.int64)
+    if xyz.shape[0] != n_nodes or node_components.shape[0] != n_nodes:
+        raise ValueError(
+            "merge-site candidate generation requires node_xyz and "
+            "node_component_id to align with contiguous graph node ids"
+        )
+    if n_nodes and (not frag.has_node(0) or not frag.has_node(n_nodes - 1)):
+        raise ValueError("merge-site candidate generation requires node ids 0..N-1")
+    node_segments = np.fromiter(
+        (int(comp_to_seg.get(int(component), -1)) for component in node_components),
+        dtype=np.int64,
+        count=n_nodes,
+    )
+    degrees = np.fromiter(
+        (int(frag.degree(node)) for node in range(n_nodes)),
+        dtype=np.int64,
+        count=n_nodes,
+    )
+    return xyz, node_segments, degrees
+
+
+def _nms_kept_junctions(xyz, node_segments, degrees):
+    """Segment-scoped greedy NMS over degree>=3 nodes.
+
+    Deterministic order is (-degree, node id); a kept junction suppresses only
+    SAME-SEGMENT junctions within CANDIDATE_NMS_UM Euclidean, so a spatially
+    passing foreign arbor can never delete another segment's candidate. This
+    mirrors nms_keep_mask in notebooks/merge_candidate_pool_sweep.py — the
+    sweep that selected the embedded policy — and a parity test holds the two
+    implementations together.
+    """
+    junctions = np.flatnonzero((degrees >= 3) & (node_segments > 0))
+    kept = np.zeros(len(node_segments), dtype=bool)
+    if not len(junctions):
+        return junctions, kept
+    if CANDIDATE_NMS_UM <= 0:
+        kept[junctions] = True
+        return junctions, kept
+    from scipy.spatial import cKDTree
+
+    order = junctions[np.lexsort((junctions, -degrees[junctions]))]
+    position_of = {int(node): i for i, node in enumerate(junctions)}
+    tree = cKDTree(xyz[junctions], copy_data=False)
+    neighbor_lists = tree.query_ball_point(xyz[order], r=CANDIDATE_NMS_UM)
+    suppressed = np.zeros(len(junctions), dtype=bool)
+    for node, neighbors in zip(order, neighbor_lists):
+        node = int(node)
+        if suppressed[position_of[node]]:
+            continue
+        kept[node] = True
+        own_segment = node_segments[node]
+        for j in neighbors:
+            if node_segments[junctions[j]] == own_segment:
+                suppressed[j] = True
+    return junctions, kept
+
+
+def _site_distances_to_kept(payload, xyz, node_segments, kept):
+    """GT consumer: geodesic distances between merge sites and kept candidates.
+
+    Snaps each recorded gt_merge_site to its own segment's nearest node
+    (within CANDIDATE_SITE_SNAP_MAX_UM), then walks bounded Dijkstra over
+    cable length to CANDIDATE_CLAIM_RADIUS_UM. Returns the per-kept-candidate
+    minimum distance to any site plus site-side audit counts. Runs AFTER the
+    candidate universe is frozen; feature math never sees these values.
+    """
+    import heapq
+    from scipy.spatial import cKDTree
+
+    frag = payload["fragments_graph"]
+    sites = list(payload.get("gt_merge_sites") or [])
+    candidate_distance = {}
+    n_snapped = 0
+    site_min_distances = []
+    if sites:
+        tree = cKDTree(xyz, copy_data=False)
+        for site in sites:
+            segment_id = int(site["segment_id"])
+            point = np.asarray(site["xyz"], dtype=float)
+            neighbor_ids = np.asarray(
+                tree.query_ball_point(point, r=CANDIDATE_SITE_SNAP_MAX_UM),
+                dtype=np.int64,
+            )
+            own = neighbor_ids[node_segments[neighbor_ids] == segment_id] \
+                if len(neighbor_ids) else neighbor_ids
+            if not len(own):
+                site_min_distances.append(float("inf"))
+                continue
+            start = int(own[int(np.argmin(
+                np.linalg.norm(xyz[own] - point, axis=1)))])
+            n_snapped += 1
+            best = {start: 0.0}
+            heap = [(0.0, start)]
+            site_best = float("inf")
+            while heap:
+                distance, node = heapq.heappop(heap)
+                if distance > best.get(node, float("inf")):
+                    continue
+                if kept[node]:
+                    site_best = min(site_best, distance)
+                    previous = candidate_distance.get(node)
+                    if previous is None or distance < previous:
+                        candidate_distance[node] = distance
+                for neighbor in frag.neighbors(node):
+                    neighbor = int(neighbor)
+                    step = distance + float(
+                        np.linalg.norm(xyz[neighbor] - xyz[node]))
+                    if (step <= CANDIDATE_CLAIM_RADIUS_UM
+                            and step < best.get(neighbor, float("inf"))):
+                        best[neighbor] = step
+                        heapq.heappush(heap, (step, neighbor))
+            site_min_distances.append(site_best)
+    return candidate_distance, {
+        "n_sites": len(sites),
+        "n_sites_snapped": n_snapped,
+        "site_min_distances": site_min_distances,
+    }
+
+
+def build_sample_universe(payload):
+    """One deterministic row per NMS-surviving junction candidate.
+
+    Candidate enumeration is completely determined by the frozen build-time
+    policy embedded above and reads fragment geometry only; GT (gt_merge_sites)
+    is consulted only after the universe is frozen, to attach is_merge_site
+    (geodesic distance <= CANDIDATE_POSITIVE_LABEL_RADIUS_UM) and the
+    audit-only distance/ring fields.
+    """
+    cached = payload.get("__detector_sample_universe_cache__")
+    if cached is not None:
+        return cached
+    xyz, node_segments, degrees = _merge_site_node_arrays(payload)
+    junctions, kept = _nms_kept_junctions(xyz, node_segments, degrees)
+    kept_nodes = np.flatnonzero(kept)
+    candidate_distance, site_audit = _site_distances_to_kept(
+        payload, xyz, node_segments, kept)
+    samples = []
+    labels = []
+    for candidate_index, node in enumerate(int(n) for n in kept_nodes):
+        distance = candidate_distance.get(node, float("inf"))
+        positive = distance <= CANDIDATE_POSITIVE_LABEL_RADIUS_UM
+        samples.append({
+            "candidate_id": int(candidate_index),
+            "node_id": int(node),
+            "segment_id": int(node_segments[node]),
+            "degree": int(degrees[node]),
+            "x_um": float(xyz[node][0]),
+            "y_um": float(xyz[node][1]),
+            "z_um": float(xyz[node][2]),
+            "distance_to_nearest_gt_site_um": (
+                float(distance) if np.isfinite(distance) else float("nan")),
+            "in_ambiguous_ring": int(np.isfinite(distance) and not positive),
+        })
+        labels.append(int(positive))
+    payload["__detector_universe_site_audit__"] = {
+        **site_audit, "n_junctions_raw": int(len(junctions)),
+    }
+    result = (samples, np.asarray(labels, dtype=np.int64))
+    payload["__detector_sample_universe_cache__"] = result
+    return result
+
+
+def sample_output_frame(samples, labels):
+    import pandas as pd
+    columns = [
+        "candidate_id", "node_id", "segment_id", "degree",
+        "x_um", "y_um", "z_um",
+        "distance_to_nearest_gt_site_um", "in_ambiguous_ring",
+    ]
+    frame = pd.DataFrame(
+        [{key: sample[key] for key in columns} for sample in samples],
+        columns=columns,
+    )
+    frame[LABEL_NAME] = np.asarray(labels, dtype=np.int64)
+    return frame
+
+
+def sample_display(sample):
+    return "node %s (segment %s, degree %s)" % (
+        sample["node_id"], sample["segment_id"], sample["degree"])
+
+
+def sample_universe_audit(payload, samples, labels):
+    build_sample_universe(payload)
+    site_audit = dict(payload.get("__detector_universe_site_audit__") or {})
+    site_min = np.asarray(
+        site_audit.pop("site_min_distances", []), dtype=float)
+    n_sites = int(site_audit.get("n_sites", 0))
+    n_covered = int(np.sum(site_min <= CANDIDATE_CLAIM_RADIUS_UM)) if n_sites else 0
+    labels_array = np.asarray(labels)
+    return {
+        "row_unit": ROW_UNIT,
+        "candidate_policy_config_id": CANDIDATE_POLICY_CONFIG_ID,
+        "candidate_policy_sha256": CANDIDATE_POLICY_SHA256,
+        "candidate_mode": CANDIDATE_MODE,
+        "candidate_nms_um": CANDIDATE_NMS_UM,
+        "candidate_claim_radius_um": CANDIDATE_CLAIM_RADIUS_UM,
+        "candidate_positive_label_radius_um": CANDIDATE_POSITIVE_LABEL_RADIUS_UM,
+        "candidate_site_snap_max_um": CANDIDATE_SITE_SNAP_MAX_UM,
+        "n_rows": int(len(samples)),
+        "n_positive": int(np.sum(labels_array == 1)),
+        "n_negative": int(np.sum(labels_array == 0)),
+        "n_ambiguous_ring": int(sum(
+            int(sample["in_ambiguous_ring"]) for sample in samples)),
+        "n_junctions_raw": int(site_audit.get("n_junctions_raw", 0)),
+        "n_sites": n_sites,
+        "n_sites_snapped": int(site_audit.get("n_sites_snapped", 0)),
+        "n_sites_covered_at_claim_radius": n_covered,
+        "site_recall_at_claim_radius": (
+            float(n_covered / n_sites) if n_sites else None),
+    }
+
+
+def ascertainment_covariates(payload, samples):
+    """AUDIT-ONLY confound covariates per candidate row (never model features).
+
+    GT tracing is required to LABEL a merge site, so size/GT-coverage
+    covariates encode label availability; the ascertainment audit correlates
+    them with features and model scores to expose confounded "signal".
+    Runtime-owned and GT-reading by design — feature fragments never see these.
+    """
+    frag = payload["fragments_graph"]
+    comp_to_seg = build_comp_to_seg(frag)
+    node_components = np.asarray(frag.node_component_id, dtype=np.int64)
+    seg_frag_nodes = {}
+    for comp, count in zip(*np.unique(node_components, return_counts=True)):
+        seg = int(comp_to_seg.get(int(comp), -1))
+        if seg > 0:
+            seg_frag_nodes[seg] = seg_frag_nodes.get(seg, 0) + int(count)
+    gt_label = np.asarray(payload["gt_node_canonical_label"])
+    gt_ids, gt_counts = np.unique(gt_label[gt_label != 0], return_counts=True)
+    seg_gt_nodes = {int(s): int(c) for s, c in zip(gt_ids, gt_counts)}
+    return {
+        "segment_fragment_node_count": np.asarray(
+            [seg_frag_nodes.get(int(s["segment_id"]), 0) for s in samples],
+            dtype=float),
+        "segment_gt_node_count": np.asarray(
+            [seg_gt_nodes.get(int(s["segment_id"]), 0) for s in samples],
+            dtype=float),
     }
 '''

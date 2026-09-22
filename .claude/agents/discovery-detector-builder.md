@@ -186,7 +186,9 @@ the shared-pass design. `ANALYSIS_TIMING_GROUPS` is a literal list of unique key
 positive hypothesis ids, actual phase, and owned public feature names; together
 its groups cover `FEATURE_REGISTRY` exactly once and assign every hypothesis to
 exactly one selection unit. `FEATURE_REGISTRY` owns only public names and inventory
-order; do not put phase or selection ownership there. `ANALYSIS_TIMING_GROUPS` is
+order; do not put phase or selection ownership there. Treat it as metadata only:
+initialize accumulators with the runtime-derived flat string `FEATURE_NAMES`,
+never with `FEATURE_REGISTRY` itself. `ANALYSIS_TIMING_GROUPS` is
 the single authoritative phase/ownership mapping. Use a multi-hypothesis group only when its computation
 is genuinely inseparable, so time is not divided or duplicated. Call the runtime timing
 recorder around every group in every pass and around each whole pass. Include
@@ -227,6 +229,11 @@ order, random state, definedness, rows, or returned values when all groups are
 enabled. Timing informs an explicit later selection; it does not choose exclusions
 automatically. Evaluate removable cost together with semantics-equivalent
 optimization, scientific value, coverage, redundancy, and held-out evidence.
+
+For image extraction, initialize `patch_cache = {}` inside the per-row worker,
+never in `extract_features` scope. Features for one row may share its patches,
+but no NumPy image array may remain cached after that row returns; an
+extraction-wide patch cache grows with the dataset and is forbidden.
 
 Remove install and sandbox scaffolding. Do not implement or edit model
 configuration, estimators, nested CV, figures, output files, logging

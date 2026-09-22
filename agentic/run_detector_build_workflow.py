@@ -9,7 +9,9 @@ test-fixer scripts under the matching ``.fixed/`` directory, and WRITES A DETECT
 script that computes every eligible selected hypothesis's features in shared passes over
 the skeleton graph, evaluates several appropriately regularized tabular models
 under nested cross-validation, and fits the selected strategy to score one
-segment for merge runs or one candidate segment pair for split runs.
+candidate junction site for merge runs (the default; --merge-row-unit segment
+restores the established segment-level detector) or one candidate segment pair
+for split runs.
 
 The motivation comes from the reports themselves: each hypothesis contributes
 one or more related features, and the recurring caveat is that none is precise enough alone
@@ -37,9 +39,13 @@ context. Subagents live in ``.claude/agents/`` and are auto-discovered via
 ``setting_sources``. Deliverables land in
 ``autodiscovery-application/<RUN>/`` (one subfolder per originating run):
 
-    merge_site_detector.py or         target-specific model comparison + detector
-    split_site_detector.py
+    merge_junction_detector.py,       target-specific model comparison + detector
+    merge_site_detector.py or         (junction-site merge / segment-level merge /
+    split_site_detector.py             split)
     split_candidate_policy.json       split-only, evidence-validated policy choice
+    merge_candidate_policy.json       merge-site-only, frozen from the merge
+                                      candidate-pool sweep's deterministic
+                                      recommended_policy.json (no agent turn)
     feature_inventory.json            feature definition + defined condition
     model_candidates.json             validated model families + small grids
     README.md                         provenance, how to run, how to read it
@@ -70,13 +76,21 @@ the prompt (required in batch jobs, which have no terminal); ``--keep-existing``
 writes into the folder as it stands, the older behaviour.
 
 The steps (split builds first run the additional candidate-policy
-step described below; merge builds retain the established four-step sequence):
+step described below; merge builds retain the established four-step sequence,
+with merge-site builds freezing their policy driver-side before step 1):
   0. select-candidate-policy — for split builds only, an agent interprets a
                            completed candidate-pool AI review. The driver checks
                            hashes and structured evidence, independently minimizes
                            candidate count subject to worst-brain recall >= 0.90,
                            and freezes split_candidate_policy.json. Assembly then
                            embeds that exact policy in the detector runtime.
+                           Merge-site builds need no agent turn here: the merge
+                           candidate-pool sweep's recommended_policy.json is
+                           already deterministic, so the driver validates its
+                           bundle hashes, re-derives the argmin selection from
+                           the aggregate table (worst-brain SITE recall >= 0.80
+                           by default), and freezes merge_candidate_policy.json
+                           up front.
   1. inventory-features  — the agent reads <RUN>.summary.md, each selected
                            .rerun/hypo_<id>.py and matching .fixed/hypo_<id>.py;
                            it records only semantic judgments (source choice,
@@ -115,8 +129,9 @@ cross-validated ROC-AUC. Generated detectors therefore retain NaN, add explicit
 is_defined flags, report coverage by class, and let fold-local preprocessing or
 native-NaN models handle the numeric value.
 
-A clean merge build runs four steps and a clean split build runs the split-only
-policy step plus those four steps. If compilation rejects a hidden draft,
+A clean merge build (site or segment row unit) runs four agent steps and a
+clean split build runs the split-only policy step plus those four steps. If
+compilation rejects a hidden draft,
 `--keep-existing` can recover it only after rebuilding and strictly validating
 its public artifact, avoiding a repeated semantic agent turn.
 
@@ -141,6 +156,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import math
 import os
 import platform
@@ -161,16 +177,22 @@ try:  # package import (tests and ``python -m agentic...``)
     from agentic.detector_build.assembly import assemble_detector
     from agentic.detector_build.candidate_policy import (
         OBJECTIVE_NAME as CANDIDATE_POLICY_OBJECTIVE_NAME,
+        MERGE_SITE_OBJECTIVE_NAME as MERGE_CANDIDATE_POLICY_OBJECTIVE_NAME,
         candidate_policy_source_paths,
         compile_candidate_policy,
+        compile_merge_candidate_policy,
         expected_mcl_from_run_path,
+        merge_candidate_policy_source_paths,
         validate_candidate_policy_sources,
         validate_frozen_candidate_policy,
+        validate_frozen_merge_candidate_policy,
+        validate_merge_candidate_policy_sources,
     )
     from agentic.detector_build.contracts import (
         BUILD_ARTIFACT_NAMES,
         CANDIDATE_POLICY_ADVICE_DRAFT_NAME,
         CANDIDATE_POLICY_NAME,
+        MERGE_CANDIDATE_POLICY_NAME,
         DetectorTarget,
         DRIVER_LOG_NAME,
         FEATURE_INVENTORY_NAME,
@@ -233,16 +255,22 @@ except ModuleNotFoundError as exc:  # direct ``python agentic/run_....py``
     from detector_build.assembly import assemble_detector  # type: ignore[no-redef]
     from detector_build.candidate_policy import (  # type: ignore[no-redef]
         OBJECTIVE_NAME as CANDIDATE_POLICY_OBJECTIVE_NAME,
+        MERGE_SITE_OBJECTIVE_NAME as MERGE_CANDIDATE_POLICY_OBJECTIVE_NAME,
         candidate_policy_source_paths,
         compile_candidate_policy,
+        compile_merge_candidate_policy,
         expected_mcl_from_run_path,
+        merge_candidate_policy_source_paths,
         validate_candidate_policy_sources,
         validate_frozen_candidate_policy,
+        validate_frozen_merge_candidate_policy,
+        validate_merge_candidate_policy_sources,
     )
     from detector_build.contracts import (  # type: ignore[no-redef]
         BUILD_ARTIFACT_NAMES,
         CANDIDATE_POLICY_ADVICE_DRAFT_NAME,
         CANDIDATE_POLICY_NAME,
+        MERGE_CANDIDATE_POLICY_NAME,
         DetectorTarget,
         DRIVER_LOG_NAME,
         FEATURE_INVENTORY_NAME,
@@ -307,6 +335,16 @@ DEFAULT_SPLIT_CANDIDATE_REVIEW_REL = (
     "mcl100_5f92a29e40d94a90/AI_REVIEW.md"
 )
 DEFAULT_SPLIT_MIN_WORST_BRAIN_RECALL = 0.90
+# Merge-site builds consume the merge candidate-pool sweep's deterministic
+# recommended_policy.json (no agent advice stage). The claim radius bakes
+# coverage accounting; the driver-owned positive-label radius keeps training
+# positives tightly localized (see compile_merge_candidate_policy).
+DEFAULT_MERGE_CANDIDATE_POLICY_REL = (
+    "notebooks/merge_candidate_pool_sweep_outputs/"
+    "mcl100_dcbde4ab2a6f6c44/recommended_policy.json"
+)
+DEFAULT_MERGE_SITE_MIN_WORST_BRAIN_SITE_RECALL = 0.80
+DEFAULT_MERGE_SITE_POSITIVE_LABEL_RADIUS_UM = 20.0
 
 MODEL_CONFIG_SCHEMA_VERSION = 2
 MODEL_POLICY_PATH = Path(__file__).resolve().with_name("detector_model_policy.json")
@@ -531,6 +569,9 @@ def build_steps(
         DEFAULT_SPLIT_MIN_WORST_BRAIN_RECALL
     ),
     split_applicability_rel: str | None = None,
+    merge_positive_label_radius_um: float = (
+        DEFAULT_MERGE_SITE_POSITIVE_LABEL_RADIUS_UM
+    ),
 ) -> list[dict]:
     """Build the model-selection detector workflow instructions."""
     spec = target_spec(target)
@@ -542,13 +583,18 @@ def build_steps(
     model_advice_rel = f"{out_dir_rel}/{MODEL_ADVICE_DRAFT_NAME}"
     readme_rel = f"{out_dir_rel}/{README_NAME}"
     run_commands_rel = f"{out_dir_rel}/{RUN_COMMANDS_NAME}"
-    candidate_policy_rel = f"{out_dir_rel}/{CANDIDATE_POLICY_NAME}"
+    candidate_policy_rel = (
+        f"{out_dir_rel}/{MERGE_CANDIDATE_POLICY_NAME}"
+        if spec.target is DetectorTarget.MERGE_SITE
+        else f"{out_dir_rel}/{CANDIDATE_POLICY_NAME}"
+    )
     candidate_advice_rel = (
         f"{out_dir_rel}/{CANDIDATE_POLICY_ADVICE_DRAFT_NAME}"
     )
     feature_policy_validation_arg = (
         f" --candidate-policy {candidate_policy_rel}"
-        if spec.target is DetectorTarget.SPLIT else ""
+        if spec.target in (DetectorTarget.SPLIT, DetectorTarget.MERGE_SITE)
+        else ""
     )
     fixed_note = (
         f"Corrected scripts are available under {fixed_rel}/."
@@ -700,6 +746,103 @@ deterministic sample evenly across that ranking, so high-, mid-, and
 low-density regions are all represented. A sparse-only sample underestimates
 density_scaled and component_scaled primitive costs by orders of magnitude and
 makes the ranked cost report untrustworthy.
+""".strip()
+    elif spec.target is DetectorTarget.MERGE_SITE:
+        target_inventory_note = f"""
+This is a merge JUNCTION-SITE detection run. The detector row unit is one
+NMS-surviving degree>=3 fragment node (a candidate junction site), not one
+segment and not one GT merge site. Read the frozen, driver-validated candidate
+policy at {candidate_policy_rel}; its enumeration mode, segment-scoped NMS
+radius, claim radius, and positive-label radius define the exact runtime sample
+universe and labels — treat every one of those values as immutable. The
+RUNTIME's build_sample_universe enumerates candidates GT-blind and consults
+gt_merge_sites only afterwards to attach is_merge_site (geodesic distance <=
+the positive-label radius); candidates between the positive-label and claim
+radii are labeled negative and flagged in_ambiguous_ring for audit only.
+
+Anchor every inventoried feature honestly, and record the anchoring in the
+feature's measurable_condition text:
+- JUNCTION-LOCAL: the source math is defined on a bounded local neighborhood
+  (radius statistics near a point, local branch geometry, local density) —
+  re-anchor it at the candidate node with the source's own parameters, changing
+  the anchor only, never the math;
+- SEGMENT-CONTEXT: the source math is a whole-segment aggregate — keep the
+  exact source semantics, compute it once per segment, and broadcast it to that
+  segment's candidates (constant within a segment; localization must come from
+  junction-local features, so an inventory of ONLY segment-context features is
+  a defect to report);
+- a hypothesis whose distinctive quantity is measured against GT tracings
+  (distance to the GT graph, GT-node density, deviation from a GT path,
+  anything derived from gt_merge_sites) is NOT blind-computable — exclude it
+  with that reason rather than inventorying it.
+""".strip()
+        extraction_contract = """
+- FeatureAccumulator with explicit measured/definedness membership;
+- extract_features(payload, verbose=True, timing=None,
+  enabled_analysis_keys=None, profile_segment_limit=None, image_workers=1),
+  returning canonical candidate junction records, is_merge_site labels, and the
+  accumulator;
+- node-neighborhood/segment geometry helpers needed by those definitions.
+
+Use the runtime-provided build_sample_universe(payload) as the sole authority
+for candidate identity and labels. Do not enumerate junctions, re-run NMS, or
+derive a competing candidate set in the feature fragment. Each sample is a dict
+with candidate_id, node_id, segment_id, degree, x_um, y_um, z_um. Runtime-only
+distance_to_nearest_gt_site_um and in_ambiguous_ring fields are present
+strictly for output audit and must be ignored by feature extraction.
+FeatureAccumulator must preserve this exact sample order in to_frame().
+
+BLINDNESS IS ENFORCED, NOT ADVISORY. At runtime your extract_features receives
+a _BlindPayloadView, not the raw payload: reading any GT key (gt_graph,
+gt_node_canonical_label, gt_merge_labels, gt_edge_error, gt_merge_sites)
+raises BlindnessViolation and aborts the run; `"gt_..." in payload` reports
+False; the sample-universe cache hands you audit-stripped rows and ALL-ZERO
+labels, and the runtime re-attaches the true labels after extraction by row
+identity. So never read GT keys, never condition on a label value, and never
+branch on the audit fields — the assembler additionally rejects the fragment
+statically if any GT key literal appears in it. Features must be computable
+from the fragments graph and image state alone.
+""".strip()
+        verification_scope = (
+            "junction-site-level localization within the claim radius rather "
+            "than exact merged-voxel identification"
+        )
+        candidate_policy_generation_note = (
+            f"Read {candidate_policy_rel} as the immutable definition of the "
+            "runtime candidate universe and labels. Do not copy or redefine its "
+            "enumeration, NMS, or labeling logic in feature code."
+        )
+        candidate_policy_verification = f"""
+Confirm that the assembled detector embeds the exact config_id, enumeration
+mode, NMS radius, claim radius, positive-label radius, and SHA-256 from
+{candidate_policy_rel}. Confirm sample_universe_audit reports those same
+values plus the site-side coverage counts. Treat the policy as immutable and
+report any mismatch rather than editing either artifact. Also verify each
+inventory feature's recorded anchoring: JUNCTION-LOCAL features must be
+re-anchored at the candidate node without changing the source math, and
+SEGMENT-CONTEXT features must be computed once per segment and broadcast —
+flag as a defect an inventory whose included features are all segment-context.
+""".strip()
+        oof_verification = """
+Segment-disjoint merge-site folds must never share a segment between train and
+validation. Because each candidate row carries exactly one segment, the folds
+partition the universe cleanly: every row is scored exactly once and OOF
+coverage must be complete.
+""".strip()
+        measuretime_scope = """
+For merge-site measuretime, `profile_segment_limit` means a deterministic
+sample of at most that many segment ids drawn from those that actually appear
+in the candidate universe (first-appearance order). Retain every candidate row
+whose segment is sampled, and restrict expensive feature computation to the
+retained rows' nodes/components. Do not reinterpret the limit as a number of
+candidate rows, junctions, or GT sites. The reported seconds are observed on
+that bounded sample, not a full-run estimate. Draw the sample
+density-stratified, not first-N: rank the eligible segments by a cheap
+local-density proxy (for example fragment-node count within a fixed radius of
+the segment's first candidate) and take the deterministic sample evenly across
+that ranking, so high-, mid-, and low-density regions are all represented; a
+sparse-only sample underestimates density_scaled and component_scaled
+primitive costs by orders of magnitude.
 """.strip()
     else:
         target_inventory_note = """
@@ -987,6 +1130,18 @@ These cost-discipline invariants bind the implementation, not just the plan:
   per-component aggregate, an index), not merely the raw array: a per-row
   `np.min(xyz[:, 2])` over a pre-pass-built array is still a per-row global
   scan and belongs in the pre-pass as a stored scalar.
+- no per-element graph rebuilds: never construct or copy a graph
+  (nx.Graph(g), g.subgraph(...)) or run a whole-graph algorithm
+  (connected_components, betweenness) INSIDE a loop over that graph's edges
+  or nodes — an O(E)-iteration loop with an O(V+E) body is a quadratic
+  blow-up that defeats every declared bound, even inside a memoized
+  per-component pre-pass. Skeleton components are almost always trees, so a
+  "tree fast path" that removes each edge from a fresh graph copy is SLOWER
+  than the k-sampled algorithm it replaces; derive per-element quantities in
+  one pass instead (tree edge betweenness = subtree-size products from a
+  single rooted DFS, exactly as the bounded discovery sources implement it).
+  The assembler statically rejects graph construction and whole-graph
+  algorithms inside per-edge/per-node loops.
 The assembler enforces this last boundary independently. It follows local
 helper and bounded-worker callbacks from timing-instrumented row loops and
 rejects whole-universe iteration/reduction/index construction, unbounded graph
@@ -1482,6 +1637,7 @@ not load a pkl or invent results.
 _REGENERATED = frozenset((
     *BUILD_ARTIFACT_NAMES,
     *build_artifact_names(DetectorTarget.SPLIT),
+    *build_artifact_names(DetectorTarget.MERGE_SITE),
     CANDIDATE_POLICY_ADVICE_DRAFT_NAME,
     FEATURE_SEMANTICS_DRAFT_NAME,
     MODEL_ADVICE_DRAFT_NAME,
@@ -2203,10 +2359,24 @@ async def run_workflow(
     candidate_policy_minimum_recall: float = (
         DEFAULT_SPLIT_MIN_WORST_BRAIN_RECALL
     ),
+    merge_row_unit: str = "site",
+    merge_candidate_policy_source: Path | None = None,
+    merge_site_minimum_recall: float = (
+        DEFAULT_MERGE_SITE_MIN_WORST_BRAIN_SITE_RECALL
+    ),
+    merge_positive_label_radius_um: float = (
+        DEFAULT_MERGE_SITE_POSITIVE_LABEL_RADIUS_UM
+    ),
 ) -> None:
     context = resolve_run_context(
         run_json, reconcile_unbacked_verdicts=reconcile_unbacked_verdicts
     )
+    # Merge-error runs build the junction-site detector by default; the
+    # established segment-level target stays available via
+    # --merge-row-unit segment (the proofreader scoring stack still consumes
+    # segment-level merge_site_detector.py deliverables).
+    if context.target is DetectorTarget.MERGE and merge_row_unit == "site":
+        context = dataclasses.replace(context, target=DetectorTarget.MERGE_SITE)
     if context.unbacked_verdict_ids:
         log(
             "Reconciled unbacked post-correction verdict(s) to null for "
@@ -2216,6 +2386,11 @@ async def run_workflow(
         )
     spec = target_spec(context.target)
     expected_candidate_mcl = expected_mcl_from_run_path(run_json)
+    policy_artifact_name = (
+        MERGE_CANDIDATE_POLICY_NAME
+        if spec.target is DetectorTarget.MERGE_SITE
+        else CANDIDATE_POLICY_NAME
+    )
     if spec.target is DetectorTarget.SPLIT:
         if candidate_review_path is None:
             raise SystemExit(
@@ -2224,6 +2399,18 @@ async def run_workflow(
         validate_candidate_policy_sources(
             candidate_review_path,
             minimum_recall=candidate_policy_minimum_recall,
+            expected_mcl=expected_candidate_mcl,
+            project_root=PROJECT_ROOT,
+        )
+    elif spec.target is DetectorTarget.MERGE_SITE:
+        if merge_candidate_policy_source is None:
+            raise SystemExit(
+                "Merge-site detector builds require the merge candidate "
+                "sweep's recommended_policy.json."
+            )
+        validate_merge_candidate_policy_sources(
+            merge_candidate_policy_source,
+            minimum_site_recall=merge_site_minimum_recall,
             expected_mcl=expected_candidate_mcl,
             project_root=PROJECT_ROOT,
         )
@@ -2259,6 +2446,7 @@ async def run_workflow(
             _rel_to_root(split_applicability_path)
             if split_applicability_path is not None else None
         ),
+        merge_positive_label_radius_um=merge_positive_label_radius_um,
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -2288,6 +2476,15 @@ async def run_workflow(
             f"{candidate_policy_minimum_recall:.12g}; the frozen selection is "
             "required by split detector assembly."
         )
+    elif spec.target is DetectorTarget.MERGE_SITE:
+        log(
+            "Merge-site candidate-policy selection: source="
+            f"{_rel_to_root(merge_candidate_policy_source)}, objective="
+            f"{MERGE_CANDIDATE_POLICY_OBJECTIVE_NAME}, minimum worst-brain "
+            f"site recall={merge_site_minimum_recall:.12g}, positive-label "
+            f"radius={merge_positive_label_radius_um:.12g} um; the frozen "
+            "selection is required by merge-site detector assembly."
+        )
     wf_start = time.monotonic()
     policy_sha256 = _sha256(MODEL_POLICY_PATH)
     runtime_template_sha256 = _sha256(RUNTIME_TEMPLATE_PATH)
@@ -2298,6 +2495,10 @@ async def run_workflow(
     if spec.target is DetectorTarget.SPLIT:
         for path in candidate_policy_source_paths(candidate_review_path):
             protected_hashes[path] = _sha256(path)
+    elif spec.target is DetectorTarget.MERGE_SITE:
+        for path in merge_candidate_policy_source_paths(
+                merge_candidate_policy_source):
+            protected_hashes[path] = _sha256(path)
     candidate_policy_sha256: str | None = None
     inventory_sha256: str | None = None
     model_config_sha256: str | None = None
@@ -2305,6 +2506,34 @@ async def run_workflow(
     run_commands_sha256: str | None = None
     readme_driver_block: str | None = None
     readme_skeleton_sha256: str | None = None
+
+    if spec.target is DetectorTarget.MERGE_SITE:
+        # The merge sweep's selection is already deterministic, so there is no
+        # agent advice stage: the driver freezes the public policy up front and
+        # assembly requires this exact artifact.
+        merge_policy_path = out_dir / MERGE_CANDIDATE_POLICY_NAME
+        compile_merge_candidate_policy(
+            merge_policy_path,
+            merge_candidate_policy_source,
+            minimum_site_recall=merge_site_minimum_recall,
+            positive_label_radius_um=merge_positive_label_radius_um,
+            expected_mcl=expected_candidate_mcl,
+            project_root=PROJECT_ROOT,
+        )
+        validate_frozen_merge_candidate_policy(
+            merge_policy_path,
+            merge_candidate_policy_source,
+            minimum_site_recall=merge_site_minimum_recall,
+            positive_label_radius_um=merge_positive_label_radius_um,
+            expected_mcl=expected_candidate_mcl,
+            project_root=PROJECT_ROOT,
+        )
+        candidate_policy_sha256 = _sha256(merge_policy_path)
+        log(
+            "Driver validated the merge candidate sweep and froze "
+            f"{_rel_to_root(merge_policy_path)}; merge-site assembly will "
+            "require and embed this exact policy."
+        )
 
     def guard_immutable_artifacts() -> None:
         """Reject any agent write outside the artifact owned by its stage."""
@@ -2324,7 +2553,7 @@ async def run_workflow(
             require_unchanged(protected_path, protected_sha256, "discovery input")
         if candidate_policy_sha256 is not None:
             require_unchanged(
-                out_dir / CANDIDATE_POLICY_NAME,
+                out_dir / policy_artifact_name,
                 candidate_policy_sha256,
                 "select-candidate-policy",
             )
@@ -2376,12 +2605,14 @@ async def run_workflow(
             agent_effort=AGENT_EFFORT,
             target=context.target,
             candidate_policy_path=(
-                out_dir / CANDIDATE_POLICY_NAME
-                if spec.target is DetectorTarget.SPLIT else None
+                out_dir / policy_artifact_name
+                if spec.target in (DetectorTarget.SPLIT, DetectorTarget.MERGE_SITE)
+                else None
             ),
             candidate_policy_rel=(
-                _rel_to_root(out_dir / CANDIDATE_POLICY_NAME)
-                if spec.target is DetectorTarget.SPLIT else None
+                _rel_to_root(out_dir / policy_artifact_name)
+                if spec.target in (DetectorTarget.SPLIT, DetectorTarget.MERGE_SITE)
+                else None
             ),
         )
         run_commands_sha256 = _sha256(run_commands_path)
@@ -2404,12 +2635,14 @@ async def run_workflow(
             primary_metric=PRIMARY_METRIC,
             target=context.target,
             candidate_policy_path=(
-                out_dir / CANDIDATE_POLICY_NAME
-                if spec.target is DetectorTarget.SPLIT else None
+                out_dir / policy_artifact_name
+                if spec.target in (DetectorTarget.SPLIT, DetectorTarget.MERGE_SITE)
+                else None
             ),
             candidate_policy_rel=(
-                _rel_to_root(out_dir / CANDIDATE_POLICY_NAME)
-                if spec.target is DetectorTarget.SPLIT else None
+                _rel_to_root(out_dir / policy_artifact_name)
+                if spec.target in (DetectorTarget.SPLIT, DetectorTarget.MERGE_SITE)
+                else None
             ),
         )
         log(
@@ -2422,7 +2655,7 @@ async def run_workflow(
     # Candidate-policy advice follows the same transactional pattern as feature
     # and model drafts; the resulting public artifact is mandatory assembly input.
     candidate_advice_path = out_dir / CANDIDATE_POLICY_ADVICE_DRAFT_NAME
-    candidate_policy_path = out_dir / CANDIDATE_POLICY_NAME
+    candidate_policy_path = out_dir / policy_artifact_name
     if spec.target is DetectorTarget.SPLIT:
         if candidate_policy_path.is_file():
             try:
@@ -2613,7 +2846,9 @@ async def run_workflow(
                 target=context.target,
                 candidate_policy_path=(
                     candidate_policy_path
-                    if spec.target is DetectorTarget.SPLIT else None
+                    if spec.target in (DetectorTarget.SPLIT,
+                                       DetectorTarget.MERGE_SITE)
+                    else None
                 ),
             )
             validate_detector_source(detector_path)
@@ -2782,7 +3017,9 @@ async def run_workflow(
                             target=context.target,
                             candidate_policy_path=(
                                 candidate_policy_path
-                                if spec.target is DetectorTarget.SPLIT else None
+                                if spec.target in (DetectorTarget.SPLIT,
+                                                   DetectorTarget.MERGE_SITE)
+                                else None
                             ),
                         )
                         validate_detector_source(detector_path)
@@ -2909,6 +3146,53 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--merge-row-unit",
+        choices=("site", "segment"),
+        default="site",
+        help=(
+            "Row unit for merge-error runs. 'site' (default) builds the "
+            "junction-site detector (merge_junction_detector.py) from the "
+            "frozen merge candidate policy; 'segment' builds the established "
+            "segment-level detector (merge_site_detector.py) that the "
+            "proofreader scoring stack still consumes."
+        ),
+    )
+    parser.add_argument(
+        "--merge-candidate-policy",
+        type=Path,
+        default=Path(DEFAULT_MERGE_CANDIDATE_POLICY_REL),
+        metavar="recommended_policy.json",
+        help=(
+            "Merge candidate-pool sweep policy used only for merge-site "
+            "builds. Its sibling manifest and aggregate table are verified "
+            "before output cleanup. Default: "
+            f"{DEFAULT_MERGE_CANDIDATE_POLICY_REL}."
+        ),
+    )
+    parser.add_argument(
+        "--merge-min-worst-brain-site-recall",
+        type=float,
+        default=DEFAULT_MERGE_SITE_MIN_WORST_BRAIN_SITE_RECALL,
+        metavar="RECALL",
+        help=(
+            "Driver-owned merge-site candidate-policy constraint in (0, 1]. "
+            "The selected policy minimizes total candidate count subject to "
+            "every evaluated brain meeting this SITE recall. Default: 0.80."
+        ),
+    )
+    parser.add_argument(
+        "--merge-positive-label-radius-um",
+        type=float,
+        default=DEFAULT_MERGE_SITE_POSITIVE_LABEL_RADIUS_UM,
+        metavar="UM",
+        help=(
+            "Geodesic tolerance defining a POSITIVE merge-site training label "
+            "(candidate within this cable distance of a GT merge site). Must "
+            "not exceed the policy's claim radius; candidates between the two "
+            "are labeled negative and flagged in_ambiguous_ring. Default: 20."
+        ),
+    )
+    parser.add_argument(
         "--log-txt",
         type=Path,
         default=None,
@@ -2976,6 +3260,17 @@ def main() -> int:
         or not 0 < args.split_min_worst_brain_recall <= 1
     ):
         parser.error("--split-min-worst-brain-recall must be finite and in (0, 1].")
+    if (
+        not math.isfinite(args.merge_min_worst_brain_site_recall)
+        or not 0 < args.merge_min_worst_brain_site_recall <= 1
+    ):
+        parser.error(
+            "--merge-min-worst-brain-site-recall must be finite and in (0, 1].")
+    if (
+        not math.isfinite(args.merge_positive_label_radius_um)
+        or args.merge_positive_label_radius_um <= 0
+    ):
+        parser.error("--merge-positive-label-radius-um must be positive.")
 
     def _resolve_existing(p: Path, what: str) -> Path:
         rp = p if p.is_absolute() else (PROJECT_ROOT / p).resolve()
@@ -2994,14 +3289,33 @@ def main() -> int:
         run_json,
         reconcile_unbacked_verdicts=args.reconcile_unbacked_verdicts,
     )
+    effective_target = target_spec(context.target).target
+    # Only explicitly named merge-error runs upgrade to the site target;
+    # legacy unnamed runs keep the established segment-level behavior, matching
+    # the same guard inside run_workflow.
+    if (context.target is DetectorTarget.MERGE
+            and args.merge_row_unit == "site"):
+        effective_target = DetectorTarget.MERGE_SITE
     candidate_review_path: Path | None = None
-    if target_spec(context.target).target is DetectorTarget.SPLIT:
+    merge_candidate_policy_source: Path | None = None
+    if effective_target is DetectorTarget.SPLIT:
         candidate_review_path = _resolve_existing(
             args.split_candidate_review, "split candidate-pool AI_REVIEW.md"
         )
         validate_candidate_policy_sources(
             candidate_review_path,
             minimum_recall=args.split_min_worst_brain_recall,
+            expected_mcl=expected_mcl_from_run_path(run_json),
+            project_root=PROJECT_ROOT,
+        )
+    elif effective_target is DetectorTarget.MERGE_SITE:
+        merge_candidate_policy_source = _resolve_existing(
+            args.merge_candidate_policy,
+            "merge candidate-pool recommended_policy.json",
+        )
+        validate_merge_candidate_policy_sources(
+            merge_candidate_policy_source,
+            minimum_site_recall=args.merge_min_worst_brain_site_recall,
             expected_mcl=expected_mcl_from_run_path(run_json),
             project_root=PROJECT_ROOT,
         )
@@ -3044,6 +3358,14 @@ def main() -> int:
                 candidate_review_path=candidate_review_path,
                 candidate_policy_minimum_recall=(
                     args.split_min_worst_brain_recall
+                ),
+                merge_row_unit=args.merge_row_unit,
+                merge_candidate_policy_source=merge_candidate_policy_source,
+                merge_site_minimum_recall=(
+                    args.merge_min_worst_brain_site_recall
+                ),
+                merge_positive_label_radius_um=(
+                    args.merge_positive_label_radius_um
                 ),
             ))
             outcome = "OK"

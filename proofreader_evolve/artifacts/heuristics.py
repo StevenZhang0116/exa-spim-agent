@@ -5,152 +5,145 @@ THE EVOLVED PROGRAM (executable policy).  <-- the evolution loop edits THIS file
 candidate sites enumerated from the fragment graph, decide which proofreading edits
 to make. The harness feeds the returned edits to the scoring framework.
 
+TWO-PHASE OPERATION (this seed is built for ``--two-phase`` runs): each iteration
+first repairs MERGE errors, then repairs SPLIT errors on the post-edit surface.
+``ctx["phase"]`` says which pass this call is:
+
+  - ``"merge_repair"``  (pass 1): the stream holds the RAW brain's SplitSites AND
+    MergeSites; only ``split_label`` edits are kept by the harness. Decide which
+    fused labels to CUT.
+  - ``"split_repair"``  (pass 2): the fused labels were cut into pseudo-labels
+    (``L#a``/``L#b``) and SplitSites were RE-ENUMERATED over the post-split label
+    surface (a tip near one side of a just-split segment now sees that side as its
+    partner, not the whole tangle); only ``merge_labels`` edits are kept. Decide
+    which fragment pairs to UNIFY.
+  - ``"single"``: legacy one-pass mode; both edit kinds are honored.
+
+DETECTOR PRIORS (the seed's core signal — see ``harness/feature_bank.py``; exact
+model provenance in ``feature_tables/<brain>/meta.json``): two frozen
+AutoDiscovery-fitted models, read directly from their detector deliverable folders
+under ``autodiscovery-application/``, score candidates on 129 validated geometric
+features, and the harness stamps the scores onto sites:
+
+  - ``MergeSite.label_merge_score`` — how strongly the model believes this site's
+    raw LABEL fuses two neurons (segment-level: it says WHICH label to cut, never
+    WHERE; cut placement is the site's own job).
+  - ``SplitSite.split_score`` — how strongly the model believes this label PAIR is
+    one broken neuron (pair-level: the exact granularity of a merge_labels edit).
+
+  Both are UNCALIBRATED ranking scores; absolute values do not transfer across
+  brains, so this policy thresholds on brain-relative QUANTILES via
+  ``ctx["feature_bank"].score_quantile(kind, q)``. ``nan`` means "candidate not in
+  the precomputed table" (or no table at all): ALWAYS handle nan explicitly — this
+  seed falls back to pure-geometry rules there. Full 90/39-column feature rows are
+  available on demand: ``ctx["feature_bank"].split_features(label_a, label_b)`` /
+  ``.merge_features(label)`` (feature semantics are documented in the two detector
+  READMEs under ``autodiscovery-application/``).
+
 The candidate stream has TWO kinds of site (dispatch on ``site.kind``):
 
   - SplitSite  (kind == "split"): two nearby fragments with DIFFERENT labels — a
-    neuron that the segmentation broke into pieces. Valid repair = ``merge_labels``
-    (unify the two labels). Fields: ``label_a``, ``label_b``, ``gap_um``,
-    ``node_a``/``node_b`` (fragment-graph node ids), ``xyz_a``/``xyz_b``, and
-    ``alt_gaps`` (list — OTHER gaps between the SAME label pair; empty unless
-    ``ENUM_PARAMS["split_alt_per_pair"] > 1``). The site carries the CLOSEST gap;
-    ``alt_gaps`` holds the next-closest as dicts ``{gap_um, node_a, node_b, xyz_a,
-    xyz_b}``. Two fragments can touch in more than one place and the closest gap is
-    not always the most decisive (it may be a sideways graze while another gap is a
-    clean colinear continuation) — inspect ``alt_gaps`` to judge on the BEST evidence
-    point. It does NOT change the action: ``as_edit()`` still emits ONE
-    ``merge_labels(label_a, label_b)`` (one merge unifies the pair across all gaps).
-    Also: ``mutual_nearest`` (bool) / ``recip_rank_a`` / ``recip_rank_b`` — the
-    reciprocal-neighbor test. ``recip_rank_a`` is where the partner ranks among the
-    anchor tip's closest differently-labelled partners (1 = closest); ``recip_rank_b``
-    is the mirror from the partner's side; ``mutual_nearest`` is True iff BOTH are 1
-    (each endpoint is the other's #1 reconnection choice). A gap-independent PRECISION
-    cue: mutual-nearest pairs are far more likely ONE broken neuron than a tip grazing
-    an unrelated neurite that does not point back — gate risky (non-colinear / into-
-    shaft / caliber-mismatched) merges on it. From ``dataset.candidate_split_sites``.
+    neuron the segmentation broke into pieces. Valid repair = ``merge_labels``.
+    Fields: ``label_a``, ``label_b``, ``gap_um``, ``node_a``/``node_b``,
+    ``xyz_a``/``xyz_b``, ``alt_gaps`` (other gaps of the SAME pair),
+    ``recip_rank_a``/``recip_rank_b``/``mutual_nearest`` (reciprocal-neighbor
+    test: True iff each endpoint is the other's #1 reconnection choice — a strong
+    gap-independent precision cue), ``image_rescued``/``bridge_ratio``, and
+    ``split_score`` (frozen detector prior, above).
 
-  - MergeSite  (kind == "merge"): ONE label fused across two neurites —
-    two neurons the segmentation glued together. Valid repair = ``split_label``
-    (partition the label by location). Fields: ``label``, ``cut_node``/``cut_xyz``,
-    ``seed_a_node``/``seed_b_node``, ``seed_a_xyz``/``seed_b_xyz``, and advisory
-    features ``branch_degree``, ``angle_deg`` (~180° = one neuron passing straight;
-    sharper = more merge-like; NaN for the "component" detector), ``radius_ratio``
-    (>>1 = two different calibers fused), ``cable_a_um``/``cable_b_um``,
-    ``detector`` ("branch" | "bridge" | "component" — the topology that found it;
-    condition on it since each has different evidence), ``arms_reconverge``
-    (bool | None — True means the two arms RE-JOIN downstream, i.e. one neuron's
-    own branches / a loop: a STRONG signal NOT to cut; None when not computed), and
-    ``extra_seeds`` (list — third+ arm seeds for a degree>=4 crossing; non-empty
-    means ``as_edit()`` will cut the label into >2 sides). From
-    ``dataset.candidate_merge_sites``.
+  - MergeSite  (kind == "merge"): ONE label fused across two neurites — repair =
+    ``split_label``. Fields: ``label``, ``cut_node``/``cut_xyz``,
+    ``seed_a_node``/``seed_b_node``, ``seed_a_xyz``/``seed_b_xyz``,
+    ``branch_degree``, ``angle_deg`` (~180 = one neuron passing straight; sharper
+    = more merge-like; NaN for the "component" detector), ``radius_ratio``,
+    ``cable_a_um``/``cable_b_um``, ``detector`` ("branch"|"bridge"|"component" —
+    condition on it, each has different evidence), ``arms_reconverge`` (True =
+    the arms RE-JOIN downstream: one neuron's own branches/a loop — a STRONG
+    signal NOT to cut), ``extra_seeds``/``seed_groups`` (multi-arm cuts), and
+    ``label_merge_score`` (frozen detector prior, above).
 
-IMPORTANT: the stream mixes both kinds. NEVER assume a site is a SplitSite — a bare
-``s.label_a`` will AttributeError on a MergeSite. Always branch on
-``getattr(s, "kind", "split")`` first (see the dispatch skeleton below).
-
-The evolution loop works by:
-  1. running this policy on the TRAIN skeletons,
-  2. scoring the result with the real metric framework,
-  3. showing the agent where the policy was wrong (splits left unrepaired, merges
-     left uncorrected, or edits that hurt — see the failure report),
-  4. asking the agent to rewrite the body of ``propose_edits`` (and the companion
-     ``rules.md``) to do better,
-  5. keeping the rewrite ONLY if the held-out split-repair FITNESS improves —
-     ``fitness = (correct - false) - merge_penalty * false``, kept iff it beats
-     the parent by ``score_margin``. (Edge Accuracy is recorded for diagnosis but
-     is NOT the bar: it reads +0.000 for most real repairs, so it flat-lined.)
+IMPORTANT: the stream mixes both kinds. NEVER assume a site is a SplitSite — a
+bare ``s.label_a`` will AttributeError on a MergeSite. Always branch on
+``getattr(s, "kind", "split")`` first.
 
 Contract (keep the CALL signature stable so the harness can always call it):
     propose_edits(sites, ctx) -> list[edit]
 
-  sites : list[SplitSite | MergeSite]   # the unified candidate stream
-  ctx   : dict   # free-form context the harness provides, e.g.
-                 #   ctx["max_gap_um"], ctx["fragments_graph"],
-                 #   ctx["node_radius"], ctx["read_image_patch"] (may be None),
-                 #   ctx["n_split_sites"], ctx["n_merge_sites"],
-                 #   ctx["image_patch_shape"] — the IMAGE RECEPTIVE FIELD (z,y,x voxels)
-                 #     you may pass to any reader method's shape= arg, e.g.
-                 #     reader.gap_bridge_evidence(a, b, shape=ctx["image_patch_shape"]).
-                 #     Bigger = more context but a larger (slower/costlier) cloud read;
-                 #     each axis is clamped to 512. Tune per tier (tight for a clean
-                 #     micro-gap, wider to confirm a long faint bridge).
-  return: list of edits. Each edit is EITHER a legacy 2-tuple
-          ``(label_a, label_b)`` (treated as a merge) OR a typed dict:
-            {"kind": "merge_labels", "label_a": str, "label_b": str}      # repair split
-            {"kind": "split_label",  "label": str,                        # repair merge
+  sites : list[SplitSite | MergeSite]
+  ctx   : dict — keys this policy may use:
+            ctx["phase"]           "merge_repair" | "split_repair" | "single"
+            ctx["feature_bank"]    FeatureBank or None (scores/features/quantiles)
+            ctx["fragments_graph"], ctx["node_radius"], ctx["max_gap_um"],
+            ctx["enum_params"], ctx["n_split_sites"], ctx["n_merge_sites"],
+            ctx["split_geom"](site) -> dict of cheap GT-free geometry,
+            ctx["nodes_within"](xyz, r), ctx["foreign_labels_near"](xyz, r, excl),
+            ctx["read_image_patch"] (may be None), ctx["image_patch_shape"]
+  return: list of edits — legacy 2-tuples ``(label_a, label_b)`` (a merge) or
+          typed dicts:
+            {"kind": "merge_labels", "label_a": str, "label_b": str}
+            {"kind": "split_label",  "label": str,
              "seed_a_xyz": (x,y,z), "seed_b_xyz": (x,y,z)}
-            {"kind": "flag_review", "reason": str} / {"kind": "reject_candidate"}
-          The harness normalizes tuples and dicts uniformly (see
-          harness.edit_handler.normalize_edits), so they may be mixed.
-          A MergeSite's ``.as_edit()`` already returns the correct ``split_label``
-          dict, and a SplitSite's ``.as_edit()`` returns its ``(label_a, label_b)``
-          tuple — so ``site.as_edit()`` is the safe way to emit either.
+          ``site.as_edit()`` is the safe way to emit either kind.
 
-This seed version is a deliberate, conservative SPLIT-REPAIR policy: it merges two
-fragments only when their tips are BOTH very close AND colinear across the gap (the
-two cables continue in a straight line, the way one real neuron broken into pieces
-would). That proposes a small number of high-precision edits — enough to move the
-metric off the flat no-edit baseline and give the evolution loop a real gradient to
-climb — while staying conservative enough not to manufacture merges. The agent's
-job is to widen/sharpen this (and to add merge-repair via ``split_label``).
+SEED RATIONALE. Pass 1 cuts only labels the merge detector ranks at the very top
+of this brain's candidate distribution AND whose cut site passes every geometric
+veto (never cut re-converging arms; both arms substantial; branch angle not
+neuron-straight), capped at a small per-brain budget — a false cut costs
+``merge_penalty`` correct repairs, so precision dominates. Pass 2 unifies a pair
+when the split detector ranks it near the top AND a geometric guard agrees
+(mutual-nearest or colinear continuation); pairs the table does not know
+(score=nan — including brand-new pseudo-label pairs beyond the base-pair lookup)
+fall back to the proven conservative gap+colinearity rule. The agent's job is to
+improve this: retune the quantiles/budgets, restructure the decision tree, combine
+the score with cheap geometry or the image reader (``gap_bridge_evidence`` — an
+evidence source the frozen models have never seen), pull full feature rows from
+the bank, or widen enumeration via ENUM_PARAMS. Levers are ranked in rules.md.
 """
 
 from __future__ import annotations
+
+import math
 
 import numpy as np
 
 
 # --- Tunable parameters (the agent may rewrite these and the logic below) -----
-# A "merge everything within N µm" seed scores ~10 points BELOW baseline (it chains
-# thousands of pairs into brain-spanning mega-labels via union-find, manufacturing
-# merges and inflating per-neuron label counts). The fix is PRECISION: only unify a
-# pair when the geometry says it is almost certainly one neuron — a small gap AND a
-# straight-line (colinear) continuation across that gap. These defaults are
-# deliberately tight; the agent may loosen them once it can measure the trade-off.
-GAP_THRESHOLD_UM = 4.0      # max tip→partner distance (µm) to even consider a merge
-MIN_COLINEAR_COS = 0.94     # require ~>20° alignment: cos(angle) >= this (1.0 = perfectly straight)
-TANGENT_WALK_UM = 6.0       # how far to walk into each fragment to estimate its tip tangent
+# PASS 1 (merge repair). Quantiles are over THIS brain's candidate-label score
+# distribution (brain-relative; absolute scores do not transfer across brains).
+MERGE_CUT_QUANTILE = 0.99      # label_merge_score must clear this quantile
+MERGE_TOPK_CUTS = 10           # per-brain cut budget (labels), best-scored first
+MERGE_MIN_ARM_CABLE_UM = 20.0  # both arms of the cut must carry this much cable
+MERGE_MAX_ANGLE_DEG = 140.0    # veto near-straight (~180 deg) pass-throughs
+
+# PASS 2 (split repair). Score gate + geometric guard.
+SPLIT_SCORE_QUANTILE = 0.995   # split_score must clear this quantile AND a guard
+# Fallback rule for score-less candidates (no table / pair unknown): the proven
+# conservative geometry-only seed (small gap + colinear continuation).
+GAP_THRESHOLD_UM = 4.0
+MIN_COLINEAR_COS = 0.94
+TANGENT_WALK_UM = 6.0
 
 # --- Evolvable enumeration priors (optional) --------------------------------
 # ENUM_PARAMS controls WHAT THE POLICY EVEN SEES — the candidate stream the harness
 # enumerates — as opposed to the thresholds above, which decide what to ACCEPT among
-# what it sees. These were once hardcoded in the harness (a HARD prior the policy
-# could not move); defining them here makes them SOFT and evolvable. The harness
-# validates + CLAMPS every value to a safety rail (see dataset.ENUM_PARAM_SPEC) and
-# ignores unknown keys, so editing this can never crash the run. Any key omitted
-# falls back to the framework default — so the dict below is the identity (no change
-# from the historical behavior); the agent may widen/narrow it to surface different
-# candidates (e.g. raise max_gap_um to reach longer true gaps, lower
-# min_arm_cable_um to surface shorter merges, set tip_to_shaft=False for tip-to-tip
-# only). The resolved values in effect are visible at runtime in ctx["enum_params"].
+# what it sees. The harness validates + CLAMPS every value to a safety rail (see
+# dataset.ENUM_PARAM_SPEC) and ignores unknown keys. Any key omitted falls back to
+# the framework default. NOTE: the frozen detector score tables were precomputed
+# over a FIXED enumeration (see feature_tables/<brain>/meta.json) — widening
+# enumeration beyond it surfaces candidates whose split_score is nan (they fall to
+# the geometric fallback), it never crashes.
 ENUM_PARAMS = {
     "max_gap_um": 15.0,        # tip->partner search radius for split candidates (µm) [1..40]
     "tip_to_shaft": True,      # split partners may be shaft/branch nodes, not just tips
     "min_arm_cable_um": 10.0,  # both arms of a merge candidate must reach this (µm) [2..50]
     "seed_depth_um": 8.0,      # how deep to place each split seed into its arm (µm) [2..30]
     "max_per_label": 8,        # cap on merge candidates emitted per raw label [1..100]
-    # "split_max_sites": 5000, # GLOBAL cap on split candidates [100..50000]
-    # "split_per_tip_k": 4,    # PER-TIP quota: keep only each tip's k closest
-    #                          # differently-labelled partners BEFORE the global cap
-    #                          # [1..32]. Raise toward 32 to approximate the old
-    #                          # global-only stream; lower to concentrate the budget on
-    #                          # each tip's best partners so a dense region cannot
-    #                          # starve a sparse tip's single true partner.
-    # "split_image_rescue": 0, # IMAGE-GUIDED RESCUE [0..5000]: probe this many of the
-    #                          # FARTHEST dropped (truncated) pairs with
-    #                          # gap_bridge_evidence and re-add any with a bright
-    #                          # continuous bridge (raises the enumeration CEILING beyond
-    #                          # geometry — reaches far-gap splits the cap/max_gap_um
-    #                          # drop). Needs a live image reader; each probe is a few
-    #                          # cloud reads, so start small. Rescued sites carry
-    #                          # site.image_rescued=True and site.bridge_ratio.
-    # "split_image_rescue_min_bridge": 0.7,  # bridge_ratio floor to rescue [0..1]
-    # "merge_max_sites": 5000, # global cap on merge candidates [100..50000]
-    # "split_alt_per_pair": 1, # gaps kept per SplitSite label pair [1..10]. >1 attaches
-    #                          # the next-closest gaps as site.alt_gaps (extra evidence
-    #                          # points) WITHOUT adding sites or edits — useful when the
-    #                          # closest gap's geometry is poor but another gap between
-    #                          # the same pair is a clean colinear continuation. To use
-    #                          # it, also read site.alt_gaps in propose_edits.
+    # "split_max_sites": 5000,           # global cap on split candidates [100..50000]
+    # "split_per_tip_k": 4,              # per-tip partner quota [1..32]
+    # "split_image_rescue": 0,           # image-guided far-gap rescue [0..5000]
+    # "split_image_rescue_min_bridge": 0.7,
+    # "merge_max_sites": 5000,           # global cap on merge candidates [100..50000]
+    # "split_alt_per_pair": 1,           # gaps kept per SplitSite label pair [1..10]
 }
 
 
@@ -166,7 +159,6 @@ def _walk_tangent(g, start, max_um):
     xyz = g.node_xyz
     seg = g.node_segment_id(start)
     prev, cur = start, None
-    # first hop: any neighbor on the same fragment
     nbrs = [n for n in g.neighbors(start) if g.node_segment_id(n) == seg]
     if not nbrs:
         return None
@@ -189,15 +181,9 @@ def _is_colinear_split(g, s, min_cos):
 
     Builds three downstream-pointing unit vectors along the imagined repaired
     neuron  A_interior -> node_a -> node_b -> B_interior  and requires consecutive
-    pairs to be near-parallel:
-
-        v1 = direction arriving at the tip node_a   (fragment A, outward)
-        v2 = the gap bridge  node_a -> node_b
-        v3 = direction leaving node_b into fragment B (continuing the line)
-
-    Colinear  <=>  cos(v1, v2) >= min_cos AND cos(v2, v3) >= min_cos. This rejects
-    the common false positive where two unrelated neurites merely pass close by:
-    their tips point ACROSS the gap at an angle, not ALONG it.
+    pairs to be near-parallel. This rejects the common false positive where two
+    unrelated neurites merely pass close by: their tips point ACROSS the gap at an
+    angle, not ALONG it.
     """
     xyz = g.node_xyz
     a, b = s.node_a, s.node_b
@@ -211,8 +197,6 @@ def _is_colinear_split(g, s, min_cos):
     if v1 is None or float(np.dot(v1, v2)) < min_cos:
         return False
 
-    # v3: leave node_b into B along whichever same-fragment branch best continues
-    # v2 (node_b may be a branch/shaft, so it has several candidate directions).
     seg_b = g.node_segment_id(b)
     best = None
     for nbr in g.neighbors(b):
@@ -229,41 +213,104 @@ def _is_colinear_split(g, s, min_cos):
     return best is not None and best >= min_cos
 
 
-def propose_edits(sites, ctx) -> list:
-    """Decide which candidate sites to repair, returning a list of edits.
+def _propose_merge_repairs(sites, ctx) -> list:
+    """PASS 1: cut top-scored fused labels at their best-vetoed cut site.
 
-    SEED POLICY (conservative split-repair): for each SplitSite, emit a
-    ``merge_labels`` edit only when BOTH:
-      (1) the gap is small  (s.gap_um <= GAP_THRESHOLD_UM), and
-      (2) the two fragments are COLINEAR across the gap (a straight-line
-          continuation — see ``_is_colinear_split``).
-    MergeSites are left alone (no ``split_label``) — splitting is the riskier edit
-    and is left for the evolution loop to add once it can measure the trade-off.
+    Precision-first: a false cut costs ``merge_penalty`` correct repairs, so only
+    act when the frozen merge detector puts the label at the very top of THIS
+    brain's candidate distribution AND the site's own geometry does not veto.
+    """
+    bank = ctx.get("feature_bank")
+    if bank is None:
+        return []  # no prior => no cuts; evolution may add a geometry-only path
+    tau = bank.score_quantile("merge", MERGE_CUT_QUANTILE)
+    if math.isnan(tau):
+        return []
 
-    This proposes a small, high-precision set of merges, so the score moves OFF the
-    flat no-edit baseline (giving the loop a gradient) without the union-find
-    mega-label blowup a naive "merge everything nearby" seed causes. The agent's
-    job is to improve on it: tune the thresholds, add tangent/radius/continuity
-    features, gate with the image reader, or add merge-repair.
+    # Best cut site per label, geometric vetoes first.
+    best_site_by_label: dict = {}
+    for s in sites:
+        if getattr(s, "kind", "split") != "merge":
+            continue
+        score = getattr(s, "label_merge_score", float("nan"))
+        if math.isnan(score) or score < tau:
+            continue
+        if s.arms_reconverge is True:      # one neuron's own branches / a loop
+            continue
+        if min(s.cable_a_um, s.cable_b_um) < MERGE_MIN_ARM_CABLE_UM:
+            continue
+        angle = s.angle_deg
+        if angle is not None and not (isinstance(angle, float) and math.isnan(angle)):
+            if float(angle) > MERGE_MAX_ANGLE_DEG:   # near-straight pass-through
+                continue
+        cur = best_site_by_label.get(s.label)
+        # Prefer the sharpest (most merge-like) adjudicable angle; angle-less
+        # detectors (bridge/component) rank after angled branch sites.
+        key = float(angle) if (angle is not None and not math.isnan(float(angle))) \
+            else float("inf")
+        if cur is None or key < cur[0]:
+            best_site_by_label[s.label] = (key, score, s)
 
-    Returns a list of edits — legacy (label_a, label_b) tuples or typed dicts; see
-    the module docstring. An empty list means "make no changes".
+    ranked = sorted(best_site_by_label.values(), key=lambda t: -t[1])
+    edits = []
+    for _key, _score, site in ranked[:MERGE_TOPK_CUTS]:
+        try:
+            edits.append(site.as_edit())   # split_label dict (multi-seed aware)
+        except Exception:
+            continue
+    return edits
+
+
+def _propose_split_repairs(sites, ctx) -> list:
+    """PASS 2 (post-split surface): unify top-scored pairs, guard with geometry.
+
+    Score path: split_score above this brain's SPLIT_SCORE_QUANTILE AND a
+    geometric guard (mutual-nearest or colinear continuation). Fallback path for
+    score-less candidates (nan — no table, or a pair outside it): the proven
+    conservative gap+colinearity rule.
     """
     g = ctx.get("fragments_graph")
     if g is None:
         return []
+    bank = ctx.get("feature_bank")
+    tau = bank.score_quantile("split", SPLIT_SCORE_QUANTILE) if bank is not None \
+        else float("nan")
 
     edits = []
     for s in sites:
-        kind = getattr(s, "kind", "split")
-        if kind != "split":
-            continue  # seed repairs splits only; leave merges for evolution
-        if s.gap_um > GAP_THRESHOLD_UM:
+        if getattr(s, "kind", "split") != "split":
             continue
         try:
-            if _is_colinear_split(g, s, MIN_COLINEAR_COS):
-                edits.append(s.as_edit())   # (label_a, label_b) merge tuple
+            score = getattr(s, "split_score", float("nan"))
+            if not math.isnan(score) and not math.isnan(tau) and score >= tau:
+                # Model is confident; still require ONE cheap geometric agreement
+                # (the zero-false gate punishes a lone over-eager prior).
+                if s.mutual_nearest or _is_colinear_split(g, s, MIN_COLINEAR_COS):
+                    edits.append(s.as_edit())
+                continue
+            # Fallback: candidates the frozen prior does not know.
+            if s.gap_um <= GAP_THRESHOLD_UM and \
+                    _is_colinear_split(g, s, MIN_COLINEAR_COS):
+                edits.append(s.as_edit())
         except Exception:
             # Geometry is advisory; never let one odd site crash the whole policy.
             continue
     return edits
+
+
+def propose_edits(sites, ctx) -> list:
+    """Two-phase detector-prior policy; see the module docstring for the theory.
+
+    Dispatches on ``ctx["phase"]``: pass 1 proposes ``split_label`` cuts on
+    top-scored fused labels, pass 2 proposes ``merge_labels`` unifications on
+    top-scored pairs (with geometric guards and a geometry-only fallback). In
+    legacy single-pass mode both are proposed from the one mixed stream.
+
+    Returns a list of edits; an empty list means "make no changes".
+    """
+    phase = ctx.get("phase", "single")
+    if phase == "merge_repair":
+        return _propose_merge_repairs(sites, ctx)
+    if phase == "split_repair":
+        return _propose_split_repairs(sites, ctx)
+    return _propose_merge_repairs(sites, ctx) + _propose_split_repairs(sites, ctx)

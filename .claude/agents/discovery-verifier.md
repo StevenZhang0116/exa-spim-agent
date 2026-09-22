@@ -141,11 +141,33 @@ For each `### N.` entry, append these bullets after the existing
 - **Test:** <named test, statistic, p-value, n — grounded in the record>
 - **Statistical issues:** <test choice / assumptions / power / effect size, or "none">
 - **Logic issues:** <induction/deduction errors, or "none">
+- **Deployability:** BLIND-COMPUTABLE | GT-REFERENCING — <one clause naming the inputs>
 - **Verdict rationale:** <why this verdict, grounded in the record>
 ```
 
 Write every field complete — never truncate with `…` or `...`; quote the test,
 p-value, n, and conclusion sentence from the record.
+
+**Deployability** judges whether the hypothesis's DISTINCTIVE QUANTITY (the
+feature itself, not the labels it is evaluated against) can be computed blind at
+inference time — from the fragments graph and raw image alone. Read the recorded
+code and classify the FEATURE's inputs:
+
+- `GT-REFERENCING` — the quantity is measured against ground-truth state:
+  distance/density to `gt_graph` nodes or paths, anything derived from
+  `gt_node_canonical_label` / `gt_merge_labels` / `gt_edge_error`, deviation
+  from a GT reference path, GT-neuron membership. These encode *label
+  availability* (GT tracing is required to detect an error in the first place),
+  not biology — a classic ascertainment artifact that can dominate a fitted
+  model (a real merge-detector build was ruined this way). Downstream detector
+  builds MUST exclude these, so mislabeling one as BLIND-COMPUTABLE ships the
+  answer key into a model.
+- `BLIND-COMPUTABLE` — the quantity reads only fragment geometry/topology
+  and/or raw image intensity. Using GT **only as the evaluation label** (every
+  hypothesis does) does NOT make it GT-REFERENCING.
+
+Judge by the feature's inputs alone — never by whether the result was
+significant, reproduced, or generalized.
 
 Then add **one** new run-wide section (the only audit content that is genuinely
 cross-hypothesis). Your instruction carries a `PLACEMENT:` rule with the report's

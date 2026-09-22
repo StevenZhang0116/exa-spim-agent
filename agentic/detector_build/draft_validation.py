@@ -56,7 +56,11 @@ def main() -> int:
     feature.add_argument("--template", required=True)
     feature.add_argument(
         "--target", required=True,
-        choices=(DetectorTarget.MERGE.value, DetectorTarget.SPLIT.value),
+        choices=(
+            DetectorTarget.MERGE.value,
+            DetectorTarget.MERGE_SITE.value,
+            DetectorTarget.SPLIT.value,
+        ),
     )
     feature.add_argument("--candidate-policy")
     args = parser.parse_args()
@@ -100,9 +104,11 @@ def main() -> int:
             )
     else:
         target = DetectorTarget(args.target)
-        if target is DetectorTarget.SPLIT and not args.candidate_policy:
-            parser.error("split feature validation requires --candidate-policy")
-        if target is DetectorTarget.MERGE and args.candidate_policy:
+        needs_policy = target in (DetectorTarget.SPLIT, DetectorTarget.MERGE_SITE)
+        if needs_policy and not args.candidate_policy:
+            parser.error(
+                f"{target.value} feature validation requires --candidate-policy")
+        if not needs_policy and args.candidate_policy:
             parser.error("merge feature validation does not accept --candidate-policy")
         with tempfile.TemporaryDirectory(prefix="feature-draft-validation-") as tmpdir:
             assemble_detector(

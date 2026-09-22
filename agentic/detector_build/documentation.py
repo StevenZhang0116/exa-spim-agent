@@ -7,7 +7,10 @@ import re
 import shlex
 from pathlib import Path
 
-from .candidate_policy import load_runtime_candidate_policy
+from .candidate_policy import (
+    load_runtime_candidate_policy,
+    load_runtime_merge_candidate_policy,
+)
 from .contracts import DetectorTarget, target_spec
 from .inputs import sha256
 
@@ -71,8 +74,34 @@ def write_readme_skeleton(
 The assembler embedded this exact policy and its artifact SHA-256 in the detector.
 Candidate generation is completed before GT-derived split labels are attached.
 """.strip()
+    elif spec.target is DetectorTarget.MERGE_SITE:
+        if candidate_policy_path is None or candidate_policy_rel is None:
+            raise SystemExit(
+                "Merge-site README generation requires the candidate policy.")
+        selected_policy, candidate_policy_sha = (
+            load_runtime_merge_candidate_policy(candidate_policy_path)
+        )
+        candidate_provenance = (
+            f"- Merge candidate policy: `{candidate_policy_rel}` "
+            f"(SHA-256 `{candidate_policy_sha}`)"
+        )
+        candidate_section = f"""
+## Merge junction-site candidate universe
+
+- Enumeration mode: `{selected_policy['mode']}` (degree>=3 fragment nodes)
+- Segment-scoped NMS radius: `{selected_policy['nms_um']}` µm
+- Claim radius (coverage accounting): `{selected_policy['claim_radius_um']}` µm geodesic
+- Positive-label radius (training tolerance): `{selected_policy['positive_label_radius_um']}` µm geodesic
+- Configuration: `{selected_policy['config_id']}`
+
+The assembler embedded this exact policy and its artifact SHA-256 in the
+detector. Candidate generation is GT-blind and completed before GT merge sites
+are consulted to attach is_merge_site labels; candidates whose nearest site
+falls between the positive-label and claim radii are labeled negative and
+flagged `in_ambiguous_ring` for audit.
+""".strip()
     elif candidate_policy_path is not None or candidate_policy_rel is not None:
-        raise SystemExit("Merge README generation does not accept a split candidate policy.")
+        raise SystemExit("Merge README generation does not accept a candidate policy.")
 
     feature_lines = [
         "| ID | Included | Source | Feature columns | Defined when / exclusion |",
@@ -110,7 +139,11 @@ Candidate generation is completed before GT-derived split labels are attached.
         )
 
     cache = cache_hint or "cache/dataset_cache_<brain>_mcl<N>_add.pkl"
-    title = "Merge detector" if spec.target is DetectorTarget.MERGE else "Split detector"
+    title = {
+        DetectorTarget.MERGE: "Merge detector",
+        DetectorTarget.MERGE_SITE: "Merge junction-site detector",
+        DetectorTarget.SPLIT: "Split detector",
+    }.get(spec.target, "Detector")
     content = f"""# {title} — `{Path(run_rel).stem}`
 
 > **Build-time status:** when this README was generated, the detector had only
@@ -291,9 +324,26 @@ def write_run_commands(
             f"printf '%s  %s\\n' '{candidate_policy_sha}' "
             '"$CANDIDATE_POLICY" | sha256sum --check'
         )
+    elif spec.target is DetectorTarget.MERGE_SITE:
+        if candidate_policy_path is None or candidate_policy_rel is None:
+            raise SystemExit(
+                "Merge-site run-command generation requires the candidate policy.")
+        _, candidate_policy_sha = load_runtime_merge_candidate_policy(
+            candidate_policy_path)
+        candidate_policy_row = (
+            f"| Merge candidate policy embedded at build time | "
+            f"`{candidate_policy_rel}` | `{candidate_policy_sha}` |"
+        )
+        candidate_policy_variable = (
+            f'CANDIDATE_POLICY="$APP_DIR/{Path(candidate_policy_rel).name}"'
+        )
+        candidate_policy_check = (
+            f"printf '%s  %s\\n' '{candidate_policy_sha}' "
+            '"$CANDIDATE_POLICY" | sha256sum --check'
+        )
     elif candidate_policy_path is not None or candidate_policy_rel is not None:
         raise SystemExit(
-            "Merge run-command generation does not accept a split candidate policy."
+            "Merge run-command generation does not accept a candidate policy."
         )
 
     q_root = shlex.quote(project_root.as_posix())

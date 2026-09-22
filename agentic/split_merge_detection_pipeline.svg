@@ -53,8 +53,8 @@
   <text x="704" y="337" font-size="18" font-weight="700" text-anchor="middle" fill="#ffffff">2</text>
   <text x="738" y="337" font-size="21" font-weight="700" fill="#166534">Generate candidates</text>
   <text x="696" y="378" font-size="17" font-weight="600" fill="#334155">GT-blind tip anchors</text>
-  <text x="696" y="408" font-size="17" fill="#475569">tip_to_tip</text>
-  <text x="696" y="436" font-size="17" fill="#475569">tip_to_any_node</text>
+  <text x="696" y="408" font-size="17" fill="#475569">tip_to_tip (legacy)</text>
+  <text x="696" y="436" font-size="17" font-weight="600" fill="#166534">tip_to_any_node ← adopted</text>
   <text x="696" y="476" font-size="16" fill="#64748b">radius + per_anchor_k</text>
   <text x="696" y="500" font-size="15" fill="#64748b">deduplicate segment pairs</text>
 
@@ -80,8 +80,9 @@
   <text x="1436" y="468" font-size="16" fill="#475569">recall conditional on the pool</text>
   <text x="1436" y="500" font-size="15" fill="#64748b">also report workload + merge risk</text>
 
-  <rect x="650" y="536" width="870" height="56" rx="14" fill="#fff7ed" stroke="#f59e0b" stroke-width="2"/>
-  <text x="1085" y="571" font-size="17" font-weight="600" text-anchor="middle" fill="#92400e">Observed legacy setting · 30 µm tip-to-tip pool covered 63.75% of reachable truth pairs</text>
+  <rect x="650" y="530" width="870" height="66" rx="14" fill="#ecfdf5" stroke="#16a34a" stroke-width="2"/>
+  <text x="1085" y="556" font-size="16" font-weight="600" text-anchor="middle" fill="#166534">Frozen policy tip_to_any_node|r=50|k=2 · 2,793,919 candidates · worst-brain pair coverage 90.7%</text>
+  <text x="1085" y="581" font-size="14" text-anchor="middle" fill="#475569">legacy 30 µm tip-to-tip pool covered only 63.7% on 794495 — the sweep that replaced it</text>
 
   <!-- Merge lane -->
   <rect x="60" y="620" width="1800" height="300" rx="22" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#shadow)"/>
@@ -90,10 +91,11 @@
   <text x="108" y="680" font-size="22" font-weight="700" text-anchor="middle" fill="#ffffff">M</text>
   <text x="148" y="680" font-size="27" font-weight="700" fill="#0f172a">Merge</text>
   <text x="90" y="724" font-size="18" font-weight="600" fill="#334155">Detection unit</text>
-  <text x="90" y="754" font-size="18" fill="#475569">one existing</text>
-  <text x="90" y="782" font-size="18" fill="#475569">predicted segment</text>
-  <text x="90" y="844" font-size="15" fill="#64748b">The scored object already</text>
-  <text x="90" y="866" font-size="15" fill="#64748b">exists in reconstruction.</text>
+  <text x="90" y="754" font-size="18" fill="#475569">one candidate</text>
+  <text x="90" y="782" font-size="18" fill="#475569">junction site</text>
+  <text x="90" y="810" font-size="16" fill="#475569">(degree ≥ 3 node)</text>
+  <text x="90" y="850" font-size="14" fill="#64748b">Segment-level detector kept</text>
+  <text x="90" y="870" font-size="14" fill="#64748b">(--merge-row-unit segment).</text>
 
   <rect x="320" y="664" width="300" height="200" rx="16" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
   <circle cx="354" cy="700" r="20" fill="#0f172a"/>
@@ -101,48 +103,49 @@
   <text x="388" y="707" font-size="21" font-weight="700" fill="#1e3a8a">Discover evidence</text>
   <text x="346" y="750" font-size="17" fill="#475569">Study per-segment topology,</text>
   <text x="346" y="778" font-size="17" fill="#475569">geometry, and definedness.</text>
-  <text x="346" y="820" font-size="16" fill="#64748b">One feature vector per segment.</text>
+  <text x="346" y="812" font-size="15" fill="#64748b">Sources re-anchored at build:</text>
+  <text x="346" y="834" font-size="15" fill="#64748b">junction-local or segment-context.</text>
 
   <line x1="620" y1="764" x2="660" y2="764" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
 
   <rect x="670" y="648" width="340" height="232" rx="16" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
   <circle cx="704" cy="684" r="20" fill="#0f172a"/>
   <text x="704" y="691" font-size="18" font-weight="700" text-anchor="middle" fill="#ffffff">2</text>
-  <text x="738" y="691" font-size="21" font-weight="700" fill="#166534">Build row universe</text>
-  <text x="696" y="732" font-size="17" font-weight="600" fill="#334155">All GT-adjudicable segments</text>
-  <text x="696" y="762" font-size="16" fill="#475569">nonzero canonical labels</text>
-  <text x="696" y="798" font-size="17" fill="#475569">optional excludeempty scope</text>
-  <text x="696" y="834" font-size="15" fill="#64748b">no radius or pair enumeration</text>
+  <text x="738" y="691" font-size="21" font-weight="700" fill="#166534">Generate candidates</text>
+  <text x="696" y="732" font-size="17" font-weight="600" fill="#334155">GT-blind junction anchors</text>
+  <text x="696" y="762" font-size="16" fill="#475569">degree ≥ 3 nodes · segment-scoped NMS</text>
+  <text x="696" y="798" font-size="16" fill="#475569">frozen merge_candidate_policy.json</text>
+  <text x="696" y="834" font-size="15" fill="#64748b">labels: geodesic ≤ label radius to GT site</text>
 
   <line x1="1010" y1="764" x2="1050" y2="764" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
 
   <rect x="1060" y="664" width="300" height="200" rx="16" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
   <circle cx="1094" cy="700" r="20" fill="#0f172a"/>
   <text x="1094" y="707" font-size="18" font-weight="700" text-anchor="middle" fill="#ffffff">3</text>
-  <text x="1128" y="707" font-size="21" font-weight="700" fill="#166534">Score segments</text>
-  <text x="1086" y="752" font-size="17" fill="#475569">Compute merge probability for</text>
-  <text x="1086" y="780" font-size="17" fill="#475569">every retained segment row.</text>
-  <text x="1086" y="824" font-size="16" fill="#64748b">GT-blind features · rank the queue.</text>
+  <text x="1128" y="707" font-size="21" font-weight="700" fill="#166534">Score junction sites</text>
+  <text x="1086" y="752" font-size="17" fill="#475569">Compute merge-site probability</text>
+  <text x="1086" y="780" font-size="17" fill="#475569">for every enumerated candidate.</text>
+  <text x="1086" y="824" font-size="16" fill="#64748b">GT-blind features · xyz per row.</text>
 
   <line x1="1360" y1="764" x2="1400" y2="764" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
 
   <rect x="1410" y="648" width="410" height="232" rx="16" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
   <circle cx="1444" cy="684" r="20" fill="#0f172a"/>
   <text x="1444" y="691" font-size="18" font-weight="700" text-anchor="middle" fill="#ffffff">4</text>
-  <text x="1478" y="691" font-size="21" font-weight="700" fill="#3730a3">Evaluate review workload</text>
-  <text x="1436" y="734" font-size="17" font-weight="600" fill="#334155">Precision@k and recall@k</text>
-  <text x="1436" y="762" font-size="16" fill="#475569">within scored segment rows</text>
-  <text x="1436" y="800" font-size="17" font-weight="600" fill="#334155">Cross-brain transfer</text>
-  <text x="1436" y="828" font-size="16" fill="#475569">same frozen pipeline</text>
-  <text x="1436" y="856" font-size="15" fill="#64748b">feature applicability audited</text>
+  <text x="1478" y="691" font-size="21" font-weight="700" fill="#3730a3">Evaluate two layers</text>
+  <text x="1436" y="734" font-size="17" font-weight="600" fill="#334155">Site coverage first</text>
+  <text x="1436" y="762" font-size="16" fill="#475569">GT sites within claim radius of a candidate</text>
+  <text x="1436" y="800" font-size="17" font-weight="600" fill="#334155">Scoring quality second</text>
+  <text x="1436" y="828" font-size="16" fill="#475569">segment-disjoint OOF · full coverage</text>
+  <text x="1436" y="856" font-size="15" fill="#64748b">ceilings: bridges + labels without a site</text>
 
   <rect x="604" y="890" width="960" height="56" rx="14" fill="#ecfdf5" stroke="#16a34a" stroke-width="2"/>
-  <text x="1084" y="925" font-size="17" font-weight="600" text-anchor="middle" fill="#166534">794495 run · 9,623 adjudicable → 3,227 scored; all 98 merges retained · top 500 found 67 (68.37%)</text>
+  <text x="1084" y="925" font-size="16" font-weight="600" text-anchor="middle" fill="#166534">Frozen policy junction|nms=20|r=150 µm · 679,203 candidates · worst-brain site coverage 84.6% · mean 89.5%</text>
 
   <!-- Interpretation -->
   <rect x="240" y="970" width="1440" height="76" rx="20" fill="#eef2ff" stroke="#6366f1" stroke-width="2" filter="url(#shadow)"/>
   <text x="960" y="1002" font-size="21" font-weight="700" text-anchor="middle" fill="#3730a3">Read the recall numbers at the correct stage</text>
-  <text x="960" y="1031" font-size="17" text-anchor="middle" fill="#475569">Split: candidate coverage bounds downstream pair recall.  ·  Merge: top-k recall measures review workload; all known merges were present in the scored rows.</text>
+  <text x="960" y="1031" font-size="17" text-anchor="middle" fill="#475569">Split: candidate coverage bounds pair recall.  ·  Merge-site: claim-radius coverage bounds site recall; bridges and no-site labels are structural ceilings.</text>
 
   <text x="80" y="1066" font-size="15" fill="#94a3b8">agentic/split_merge_detection_pipeline.svg</text>
 </svg>

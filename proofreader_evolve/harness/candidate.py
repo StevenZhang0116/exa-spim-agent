@@ -583,7 +583,13 @@ def split_repair_by_bucket(train_run, label_gt_map, fragments_graph, top_k=3):
         s = site_by_pair.get(_pk(lp[0], lp[1]))
         if s is None:
             return {}
-        feats = {"gap_um": getattr(s, "gap_um", None)}
+        feats = {
+            "gap_um": getattr(s, "gap_um", None),
+            # Frozen split-detector prior (harness.feature_bank); NaN buckets as
+            # "?" so table coverage stays visible in the attribution.
+            "split_score": getattr(s, "split_score", None),
+            "mutual_nearest": getattr(s, "mutual_nearest", None),
+        }
         if fragments_graph is not None:
             geom = _split_site_geom(fragments_graph, s)
             # Forward EVERY feature _split_site_geom exposes (numeric + bool/discrete);
@@ -936,14 +942,28 @@ class _RelabeledFragmentGraph:
 
 
 def _build_policy_ctx(fragments_graph, enum_params, n_split_sites, n_merge_sites,
-                      rec_reader):
+                      rec_reader, phase="single", feature_bank=None):
     """Build the ``ctx`` dict handed to ``propose_edits`` — the policy's GT-free
     view of the brain. Extracted so the single-pass and both TWO-PHASE passes build
     an IDENTICAL ctx shape (differing only in which ``fragments_graph`` and site
     counts are bound). ``rec_reader`` is the (optional) RecordingImageReader wrapping
     the run's image reader, shared across passes so image reads accumulate.
+    ``phase`` tells the policy WHICH pass it is running ("merge_repair" /
+    "split_repair" in two-phase mode, "single" otherwise) so it never has to infer
+    the pass from site counts. ``feature_bank`` is the brain's frozen detector-score
+    bank (harness.feature_bank.FeatureBank) or None when no tables exist.
     """
     return {
+        # Which pass this call is: "merge_repair" (two-phase pass 1 — only
+        # split_label edits are kept), "split_repair" (two-phase pass 2 — only
+        # merge_labels edits are kept), or "single" (one pass, both edit kinds).
+        "phase": phase,
+        # Frozen detector-score bank (or None). Scalar scores are already on the
+        # sites (site.split_score / site.label_merge_score); use the bank for full
+        # feature rows (ctx["feature_bank"].split_features(a, b) /
+        # .merge_features(label)) and brain-relative quantiles
+        # (.score_quantile("split", 0.999)).
+        "feature_bank": feature_bank,
         "max_gap_um": enum_params["max_gap_um"],
         # The resolved (validated + clamped) enumeration priors actually in effect
         # this run — so the policy / failure report can see what candidate stream it
@@ -1107,6 +1127,16 @@ def run_candidate(
         fragments_graph, enum_params, enumerate_merges=not splits_only,
         image_reader=image_reader)
 
+    # Annotate every site with its frozen detector score (harness.feature_bank).
+    # The bank rides on ``prepared`` (attached by run_evolution._setup_brain);
+    # None => no tables for this brain yet and every score stays nan, which the
+    # policy contract requires handling. Annotation is idempotent, so re-running
+    # over the memoized site cache is harmless.
+    feature_bank = getattr(prepared, "feature_bank", None)
+    if feature_bank is not None:
+        feature_bank.annotate_split_sites(split_sites)
+        feature_bank.annotate_merge_sites(merge_sites)
+
     # Passively record the image-evidence calls the policy makes (gap_connectivity /
     # merge_cut_evidence), so the failure report can turn the reads the policy ALREADY
     # paid for into a labelled learning signal. Adds NO extra cloud reads. Only wraps
@@ -1118,14 +1148,15 @@ def run_candidate(
     else:
         rec_reader = None
 
-    def _run_policy(sites, graph_for_ctx, n_split, n_merge):
+    def _run_policy(sites, graph_for_ctx, n_split, n_merge, phase="single"):
         """Call ``propose_edits`` once, timed + budgeted, returning
         ``(normalized_edits, seconds, timed_out)``. A policy is arbitrary evolved
         code that can run an accidental O(N^2) feature over the whole candidate
         stream; on budget overrun it is aborted and treated as producing NO edits, so
         the generation is rejected like any other failed revision rather than stalling
         the run for an hour."""
-        ctx = _build_policy_ctx(graph_for_ctx, enum_params, n_split, n_merge, rec_reader)
+        ctx = _build_policy_ctx(graph_for_ctx, enum_params, n_split, n_merge,
+                                rec_reader, phase=phase, feature_bank=feature_bank)
         timed_out = False
         _t = time.monotonic()
         try:
@@ -1147,7 +1178,8 @@ def run_candidate(
         # --- SINGLE-PASS (unchanged): one policy call over split+merge sites -------
         sites = list(split_sites) + list(merge_sites)
         edits, policy_seconds, policy_timed_out = _run_policy(
-            sites, fragments_graph, len(split_sites), len(merge_sites))
+            sites, fragments_graph, len(split_sites), len(merge_sites),
+            phase="single")
         # SPLIT-ERROR-ONLY defensive guard: with no MergeSite enumerated the policy
         # has nothing to build a split_label from, but a policy could still hardcode
         # one, so drop any split_label before it reaches the (expensive) scorer. A
@@ -1163,7 +1195,8 @@ def run_candidate(
         # policy's split_label edits (they cut fused segments into pseudo-labels).
         p1_sites = list(split_sites) + list(merge_sites)
         p1_edits, p1_seconds, p1_timed_out = _run_policy(
-            p1_sites, fragments_graph, len(split_sites), len(merge_sites))
+            p1_sites, fragments_graph, len(split_sites), len(merge_sites),
+            phase="merge_repair")
         split_edits = [e for e in p1_edits if e.get("kind") == "split_label"]
 
         # Build the phase-1 split handler and its graph-aware partitions so the
@@ -1182,6 +1215,11 @@ def run_candidate(
             relabeled = _RelabeledFragmentGraph(fragments_graph, split_handler)
             p2_split_sites, _p2_merge, p2_enum_stats = _enumerate_sites_cached(
                 relabeled, enum_params, enumerate_merges=False, image_reader=image_reader)
+            # Re-annotate the post-split stream: pseudo-label pairs ("L#a") read
+            # their BASE pair's frozen score (node geometry is unchanged by a
+            # relabel; only segment-membership columns are slightly stale).
+            if feature_bank is not None:
+                feature_bank.annotate_split_sites(p2_split_sites)
             ctx_graph = relabeled
         else:
             # No split proposed -> re-enumeration is identical to phase 1's splits.
@@ -1192,7 +1230,8 @@ def run_candidate(
         # merge_labels edits (a split_label here would re-cut the post-split graph;
         # merge repair is this pass's job — drop any stray split_label).
         p2_edits, p2_seconds, p2_timed_out = _run_policy(
-            list(p2_split_sites), ctx_graph, len(p2_split_sites), 0)
+            list(p2_split_sites), ctx_graph, len(p2_split_sites), 0,
+            phase="split_repair")
         merge_edits = [e for e in p2_edits if e.get("kind") == "merge_labels"]
         n_split_label_dropped = sum(1 for e in p2_edits if e.get("kind") == "split_label")
 
@@ -1958,7 +1997,8 @@ def _failure_report_body(
                 f"| {getattr(s, 'detector', '?')} | {_f(getattr(s, 'angle_deg', None))} | "
                 f"{_f(getattr(s, 'radius_ratio', None))} | "
                 f"{_f(getattr(s, 'cable_a_um', None),1)} | {_f(getattr(s, 'cable_b_um', None),1)} | "
-                f"{getattr(s, 'branch_degree', '?')} | {rec_s} |"
+                f"{getattr(s, 'branch_degree', '?')} | {rec_s} | "
+                f"{_f(getattr(s, 'label_merge_score', None), 4)} |"
             )
 
         # Two-way, train-derivable only: positive (label is a train merge) vs
@@ -1967,9 +2007,12 @@ def _failure_report_body(
                if str(getattr(s, "label", "")) in train_merge_labels]
         neg = [s for s in sites
                if str(getattr(s, "label", "")) not in train_merge_labels]
+        # merge_score is the frozen detector prior (site.label_merge_score, see
+        # harness.feature_bank) — the column the seed policy thresholds on; NaN =
+        # label not in this brain's precomputed table.
         header = ("| detector | angle_deg | radius_ratio | cable_a | cable_b | "
-                  "branch_degree | arms_reconverge |")
-        sep = "|---|---|---|---|---|---|---|"
+                  "branch_degree | arms_reconverge | merge_score |")
+        sep = "|---|---|---|---|---|---|---|---|"
 
         lines.append("\n\n## MergeSite features at TRUE merges (split_label targets)\n")
         lines.append(
@@ -1986,6 +2029,7 @@ def _failure_report_body(
             "angle_deg": _angle_of,
             "radius_ratio": lambda s: getattr(s, "radius_ratio", None),
             "cable_a": lambda s: getattr(s, "cable_a_um", None),
+            "merge_score": lambda s: getattr(s, "label_merge_score", None),
         }
         if pos:
             lines.append(header); lines.append(sep)
@@ -2115,7 +2159,8 @@ def _failure_report_body(
                 f"{geom['deg_a'] if geom['deg_a'] is not None else '—'} | "
                 f"{geom['deg_b'] if geom['deg_b'] is not None else '—'} | "
                 f"{_f(geom['rad_a'])} | {_f(geom['rad_b'])} | "
-                f"{_f(geom['rad_ratio'])} | {mutual} | {verdict} |"
+                f"{_f(geom['rad_ratio'])} | {mutual} | "
+                f"{_f(getattr(s, 'split_score', None), 4)} | {verdict} |"
             )
 
         # Buckets: (real|false) x (accepted|rejected). Each entry is (site, row_str) so
@@ -2178,8 +2223,15 @@ def _failure_report_body(
                 "that does not point back — a strong, gap-independent PRECISION cue. "
                 "Read it off `site.mutual_nearest` / `site.recip_rank_a` / "
                 "`site.recip_rank_b` in propose_edits (no split_geom call needed).\n"
-                "Find the colinear_cos / rad_ratio / mutual cutoff that separates "
-                "your MISSES from your hits below.\n"
+                "  • `split_score` — the FROZEN split-detector prior "
+                "(`site.split_score`, see harness.feature_bank): an uncalibrated "
+                "ranking score over 90 validated geometric features; NaN = pair "
+                "not in this brain's precomputed table (fallback territory). "
+                "Threshold it by brain-relative quantile "
+                "(`ctx['feature_bank'].score_quantile('split', q)`), never by "
+                "absolute value.\n"
+                "Find the colinear_cos / rad_ratio / mutual / split_score cutoff "
+                "that separates your MISSES from your hits below.\n"
             )
         else:
             lines.append(
@@ -2192,8 +2244,8 @@ def _failure_report_body(
             f"{len(sp['false_acc'])} / correctly rejected {len(sp['false_rej'])}).\n")
 
         _sp_header = ("| gap_um | colinear_cos | deg_a | deg_b | rad_a | rad_b | "
-                      "rad_ratio | mutual (recip #1?) | your decision |")
-        _sp_sep = "|---|---|---|---|---|---|---|---|---|"
+                      "rad_ratio | mutual (recip #1?) | split_score | your decision |")
+        _sp_sep = "|---|---|---|---|---|---|---|---|---|---|"
 
         # Feature extractors for representative selection + omitted-tail summary. Rows
         # are (site, row_str); spread over gap_um (the axis the reviser thresholds on),
@@ -2207,7 +2259,10 @@ def _failure_report_body(
                 return _split_site_geom(fragments_graph, entry[0]).get("colinear_cos")
             except Exception:
                 return None
-        _sp_feat_keys = {"gap_um": _gap_of, "colinear_cos": _colinear_of}
+        def _score_of(entry):
+            return getattr(entry[0], "split_score", None)
+        _sp_feat_keys = {"gap_um": _gap_of, "colinear_cos": _colinear_of,
+                         "split_score": _score_of}
 
         def _emit(title, rows, cap=table_budget):
             lines.append(f"\n**{title}** ({len(rows)} sites):")

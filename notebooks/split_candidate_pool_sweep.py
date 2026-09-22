@@ -132,7 +132,11 @@ class SweepConfig:
     per_anchor_k: tuple[int, ...] = (1, 2, 4, 8, 16, 32)
     modes: tuple[str, ...] = DEFAULT_PAIRING_RULES
     # tip_to_tip also gets an unbounded-per-anchor baseline. This reproduces the
-    # detector's current tip-to-tip/all-within-30-um proposal rule.
+    # LEGACY pre-policy proposal rule (tip_to_tip, 30 um, unbounded) that the
+    # split detector used before this sweep existed. Detectors built since then
+    # embed the sweep-selected rule recorded in their deliverable's
+    # split_candidate_policy.json (e.g. run-3: tip_to_any_node|r=50|k=2), so the
+    # baseline row is a historical reference point, NOT the current detector.
     include_unbounded_tip_to_tip: bool = True
     anchor_batch_size: int = 2_000
     cpus: int = 1
@@ -973,8 +977,10 @@ def analyze_dataset(cache_path: Path, config: SweepConfig) -> tuple[pd.DataFrame
     frame = pd.DataFrame(rows).sort_values(
         ["mode", "per_anchor_k_value", "radius_um", "global_cap_value"]
     )
-    # Current detector baseline: all tip-to-tip label pairs within 30 um and no
-    # per-anchor quota.
+    # Legacy pre-policy baseline: all tip-to-tip label pairs within 30 um and no
+    # per-anchor quota. This was the detector's rule BEFORE a sweep-derived
+    # split_candidate_policy.json existed; the metadata key and the
+    # current_detector_baseline.csv filename are kept for artifact compatibility.
     baseline = frame[
         (frame["mode"] == TIP_TO_TIP)
         & (frame["radius_um"] == 30.0)
@@ -988,7 +994,7 @@ def analyze_dataset(cache_path: Path, config: SweepConfig) -> tuple[pd.DataFrame
             "n_candidate_truth_pairs": int(row["n_candidate_truth_pairs"]),
             "candidate_recall": float(row["candidate_recall"]),
         }
-        print(f"{brain} detector baseline: {meta['detector_baseline']}")
+        print(f"{brain} legacy tip_to_tip baseline: {meta['detector_baseline']}")
 
     del payload, frag, leaves, component_segment
     gc.collect()
@@ -1357,10 +1363,15 @@ truth pairs before feature scoring.
 
 {table(dataset_summary, ["brain", "n_reachable_truth_pairs", "best_candidate_recall", "fewest_candidates_at_best_recall"])}
 
-## Current detector baseline
+## Legacy tip-to-tip baseline
 
-The baseline is `tip_to_tip`, 30 µm, and unlimited per-anchor partners. All
-surviving segment pairs are retained; the sweep has no global candidate cap.
+This table reproduces the proposal rule the split detector used BEFORE a
+sweep-derived candidate policy existed: `tip_to_tip`, 30 µm, unlimited
+per-anchor partners (all surviving segment pairs retained; no global cap).
+Detector deliverables built after this sweep instead embed the sweep-selected
+rule recorded in their `split_candidate_policy.json` — do NOT read this table
+as the deployed detector's ceiling. The `tables/current_detector_baseline.csv`
+filename is kept for artifact compatibility.
 
 {table(baseline, ["brain", "n_candidate_pairs", "n_candidate_truth_pairs", "candidate_recall", "direct_candidate_recall", "gap_candidate_recall"])}
 

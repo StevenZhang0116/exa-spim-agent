@@ -365,6 +365,13 @@ class SplitSite:
     # policy treat image-rescued far-gap sites with appropriate caution.
     image_rescued: bool = False
     bridge_ratio: float = float("nan")  # gap_bridge_evidence.bridge_ratio when rescued
+    # Frozen split-detector score for this label PAIR (see harness.feature_bank):
+    # an UNCALIBRATED ranking score from the AutoDiscovery-built model — higher =
+    # more likely one broken neuron. nan = pair not in this brain's precomputed
+    # score table (candidate outside the table's enumeration, or no table yet);
+    # a policy must handle nan explicitly (fall back to pure-geometry rules).
+    # Full 90-column feature rows: ctx["feature_bank"].split_features(a, b).
+    split_score: float = float("nan")
 
     def as_edit(self) -> tuple:
         """The label pair this site would unify if accepted.
@@ -813,6 +820,13 @@ class MergeSite:
     # fall back to the seed_a/seed_b/extra_seeds path (bridge/component, or when no
     # confident pairing exists). Advisory: the policy still decides whether to cut.
     seed_groups: list = field(default_factory=list)
+    # Frozen merge-detector score for this site's raw LABEL (see
+    # harness.feature_bank): an UNCALIBRATED ranking score — higher = more likely
+    # this label fuses two neurons. SEGMENT-level: it says WHICH label to cut,
+    # never WHERE (cut placement is this site's job). All MergeSites on one label
+    # share the score. nan = label not in this brain's precomputed table; handle
+    # explicitly. Full 39-column rows: ctx["feature_bank"].merge_features(label).
+    label_merge_score: float = float("nan")
 
     def as_edit(self) -> dict:
         """The ``split_label`` edit this site proposes if accepted.

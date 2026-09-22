@@ -98,6 +98,7 @@ from proofreader_evolve.harness import (
     incremental_scoring as inc,
     priors as priors_kb,
 )
+from proofreader_evolve.harness.feature_bank import FeatureBank
 from proofreader_evolve.harness.ledger import Ledger, GenerationCost
 
 # HERE = the proofreader_evolve/ package dir (anchors artifacts/, runs/, prepared_cache/).
@@ -106,6 +107,10 @@ HERE = Path(__file__).resolve().parent.parent
 ARTIFACTS = HERE / "artifacts"
 HEURISTICS = ARTIFACTS / "heuristics.py"
 RULES = ARTIFACTS / "rules.md"
+# Durable central log mirror: every run's full console log is also written to
+# log/<run_id>.log (and one argv line to log/runs_index.tsv), so run history
+# survives runs/<id>/ being pruned. See run_log_capture.
+LOG_DIR = HERE / "log"
 # Validated, cross-run error-regularity knowledge base produced by the
 # AutoDiscovery workflow (agentic/run_discovery_workflow.py). When present, the
 # reviser is pointed at it as a PRIOR — but told to trust ONLY the findings that
@@ -131,24 +136,26 @@ class _Tee:
     down the run.
     """
 
-    def __init__(self, console, fh) -> None:
+    def __init__(self, console, *fhs) -> None:
         self._console = console
-        self._fh = fh
+        self._fhs = fhs
 
     def write(self, s):
         n = self._console.write(s)
-        try:
-            self._fh.write(s)
-        except Exception:
-            pass
+        for fh in self._fhs:
+            try:
+                fh.write(s)
+            except Exception:
+                pass
         return n
 
     def flush(self):
         self._console.flush()
-        try:
-            self._fh.flush()
-        except Exception:
-            pass
+        for fh in self._fhs:
+            try:
+                fh.flush()
+            except Exception:
+                pass
 
     def isatty(self):
         return getattr(self._console, "isatty", lambda: False)()
@@ -165,7 +172,7 @@ _ACTIVE_LOG_CAP = None
 
 
 class run_log_capture:
-    """Tees stdout+stderr to ``run_dir/run.log`` for the run.
+    """Tees stdout+stderr to ``run_dir/run.log`` AND ``log/<run_id>.log``.
 
     A header line records the wall-clock start and argv so a saved log is
     self-describing. Append mode ('a') so a resumed/re-run into the same dir extends
@@ -173,22 +180,43 @@ class run_log_capture:
     (called from main()'s finally) restores the streams and closes the file even when
     the run raises — the interpreter prints any traceback to ``sys.stderr`` (still the
     tee) before that finally runs, so the crash is captured.
+
+    The second copy under ``proofreader_evolve/log/`` is a DURABLE mirror: run
+    directories get pruned when experiments are cleaned up, and every log went
+    with them. The mirror (plus one argv line appended to ``log/runs_index.tsv``)
+    keeps the run history readable after ``runs/<id>/`` is gone. Mirror failures
+    never take down the run.
     """
 
     def __init__(self, run_dir: Path) -> None:
         self._path = Path(run_dir) / "run.log"
+        self._mirror_path = LOG_DIR / f"{Path(run_dir).name}.log"
         self._fh = None
+        self._mirror_fh = None
         self._saved = None
 
     def __enter__(self) -> Path:
         global _ACTIVE_LOG_CAP
         self._fh = open(self._path, "a", buffering=1)  # line-buffered
-        self._fh.write(
+        try:
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            self._mirror_fh = open(self._mirror_path, "a", buffering=1)
+            with open(LOG_DIR / "runs_index.tsv", "a") as idx:
+                idx.write(f"{datetime.now():%Y-%m-%d %H:%M:%S}\t"
+                          f"{self._mirror_path.stem}\t{' '.join(sys.argv)}\n")
+        except Exception as exc:  # mirror is best-effort, run.log is not
+            print(f"[run-log] WARNING: central log mirror unavailable: {exc!r}",
+                  file=sys.stderr)
+            self._mirror_fh = None
+        header = (
             f"\n{'='*70}\n# run.log — started {datetime.now():%Y-%m-%d %H:%M:%S}\n"
             f"# argv: {' '.join(sys.argv)}\n{'='*70}\n")
+        fhs = [fh for fh in (self._fh, self._mirror_fh) if fh is not None]
+        for fh in fhs:
+            fh.write(header)
         self._saved = (sys.stdout, sys.stderr)
-        sys.stdout = _Tee(sys.stdout, self._fh)
-        sys.stderr = _Tee(sys.stderr, self._fh)
+        sys.stdout = _Tee(sys.stdout, *fhs)
+        sys.stderr = _Tee(sys.stderr, *fhs)
         _ACTIVE_LOG_CAP = self
         return self._path
 
@@ -197,12 +225,14 @@ class run_log_capture:
         if self._saved is not None:
             sys.stdout, sys.stderr = self._saved
             self._saved = None
-        if self._fh is not None:
-            try:
-                self._fh.flush(); self._fh.close()
-            except Exception:
-                pass
-            self._fh = None
+        for attr in ("_fh", "_mirror_fh"):
+            fh = getattr(self, attr)
+            if fh is not None:
+                try:
+                    fh.flush(); fh.close()
+                except Exception:
+                    pass
+                setattr(self, attr, None)
         if _ACTIVE_LOG_CAP is self:
             _ACTIVE_LOG_CAP = None
         return False  # never suppress exceptions
@@ -307,7 +337,14 @@ def _make_isolation_guard(run_dir: Path, audit_path: Path):
 
     Allowed under ``runs/`` (this run only):
       * Read/Write/Edit:  <run>/artifacts/heuristics.py, <run>/artifacts/rules.md
+      * Read/Write/Edit:  <run>/gen*/cand_*/heuristics.py, .../rules.md — the
+                          per-candidate sandboxes of a multi-candidate generation
+                          (each of the k parallel revisers edits only its own copy)
       * Read:             <run>/gen*/failure_report.md   (train-only, leak-free)
+
+    Concurrency note: the k parallel reviser sessions of one generation all fire
+    this callback on the SAME asyncio event loop (no threads), so the audit-file
+    appends below never actually race.
 
     Returns ``(callback, state)`` where ``state['violations']`` accumulates the
     denied attempts (also appended to ``audit_path``).
@@ -333,6 +370,13 @@ def _make_isolation_guard(run_dir: Path, audit_path: Path):
         """Allowlist test for a single resolved path that lies under ``runs/``."""
         # The two working artifacts: read or write.
         if rp in allowed_rw:
+            return True
+        # Per-candidate sandboxes of a multi-candidate generation: read or write.
+        # <run>/gen*/cand_*/heuristics.py|rules.md — each parallel reviser owns one.
+        if (rp.name in ("heuristics.py", "rules.md")
+                and rp.parent.name.startswith("cand_")
+                and rp.parent.parent.name.startswith("gen")
+                and rp.parent.parent.parent == this_run):
             return True
         # Failure reports of THIS run: read-only (never writable by the reviser).
         if (tool_name not in WRITE_TOOLS
@@ -392,7 +436,8 @@ def _make_isolation_guard(run_dir: Path, audit_path: Path):
             return PermissionResultDeny(
                 behavior="deny",
                 message=(f"Run isolation: {tool_name} may only touch this run's "
-                         f"working heuristics.py / rules.md (read/write) or a "
+                         f"working heuristics.py / rules.md (read/write), its own "
+                         f"gen*/cand_*/ copies of those two files (read/write), or a "
                          f"gen*/failure_report.md (read). Denied: {bad}."),
                 interrupt=False,
             )
@@ -413,7 +458,8 @@ REVISER_AGENT_MD = PROJECT_ROOT / ".claude" / "agents" / "proofreader-reviser.md
 
 def _load_reviser_system_prompt() -> str | None:
     """Load the proofreader-reviser agent's instruction BODY (frontmatter stripped) to
-    use as the single session's system prompt. Returns None if the file is missing —
+    use as the system prompt of each generation's fresh reviser session. Returns None
+    if the file is missing —
     the caller logs loudly and falls back to the per-turn instruction alone (which
     still carries the essentials), so a missing file degrades rather than crashes.
     """
@@ -433,7 +479,8 @@ def _load_reviser_system_prompt() -> str | None:
 
 def build_options(model: str = DEFAULT_MODEL, run_dir: Path | None = None,
                   audit_path: Path | None = None):
-    """SDK session config for the SINGLE reviser agent (no Task subagent).
+    """SDK session config for the reviser agent (no Task subagent); built once per
+    run and reused by every generation's FRESH ``ask_reviser`` session.
 
     The model defaults to Opus 4.8 on the Anthropic API (see DEFAULT_MODEL); pass a
     different ``model`` to override. The proofreader-reviser instructions are loaded
@@ -483,21 +530,32 @@ def build_options(model: str = DEFAULT_MODEL, run_dir: Path | None = None,
     return opts, state
 
 
-def make_working_artifacts(run_dir: Path) -> tuple[Path, Path]:
-    """Copy the pristine starting artifacts into this run's timestamped dir and
-    return the copies' paths. The run reads/revises ONLY these copies; the originals
-    under ``artifacts/`` are never touched, so the run is reproducible and the
-    before/after files are trivially identifiable (original = ``artifacts/``,
-    this run = ``runs/<brain>_<timestamp>/artifacts/``).
+def make_working_artifacts(run_dir: Path,
+                           start_from: str | None = None,
+                           start_rules: str | None = None) -> tuple[Path, Path]:
+    """Copy the starting artifacts into this run's timestamped dir and return the
+    copies' paths. The run reads/revises ONLY these copies; the originals are never
+    touched, so the run is reproducible and the before/after files are trivially
+    identifiable (original seed vs ``runs/<brain>_<timestamp>/artifacts/``).
 
-    The start is always the pristine seed (``artifacts/``), i.e. from scratch.
+    By default the start is the pristine seed (``artifacts/``). ``--start-from``
+    selects a different seed policy file (e.g. ``artifacts/seeds/geometric.py`` for
+    the pure-geometry control lineage, or an accepted ``heuristics.py`` from an
+    earlier run to continue a lineage); ``--start-rules`` optionally pairs it with a
+    different starting rules.md (defaults to the pristine one).
     """
+    seed_heuristics = Path(start_from) if start_from else HEURISTICS
+    seed_rules = Path(start_rules) if start_rules else RULES
+    for path, flag in ((seed_heuristics, "--start-from"),
+                       (seed_rules, "--start-rules")):
+        if not path.is_file():
+            raise SystemExit(f"{flag} seed does not exist: {path}")
     work_dir = run_dir / "artifacts"
     work_dir.mkdir(parents=True, exist_ok=True)
     work_heuristics = work_dir / "heuristics.py"
     work_rules = work_dir / "rules.md"
-    shutil.copy2(HEURISTICS, work_heuristics)
-    shutil.copy2(RULES, work_rules)
+    shutil.copy2(seed_heuristics, work_heuristics)
+    shutil.copy2(seed_rules, work_rules)
     return work_heuristics, work_rules
 
 
@@ -522,23 +580,25 @@ def save_candidate(gen_dir: Path, heuristics: Path, rules: Path) -> tuple[str, s
     cand_r = gen_dir / "rules.candidate.md"
     shutil.copy2(heuristics, cand_h)
     shutil.copy2(rules, cand_r)
-
     # Diffstat of the edited policy vs the parent (the snapshot taken at gen start).
-    parent_h = gen_dir / "heuristics.py"
+    return str(cand_h), _diffstat(gen_dir / "heuristics.py", Path(heuristics))
+
+
+def _diffstat(parent: Path, revised: Path) -> str:
+    """'+added -removed' line counts of ``revised`` vs ``parent`` ('?' on error)."""
     try:
         import difflib
-        a = parent_h.read_text().splitlines()
-        b = Path(heuristics).read_text().splitlines()
+        a = Path(parent).read_text().splitlines()
+        b = Path(revised).read_text().splitlines()
         added = removed = 0
         for line in difflib.unified_diff(a, b, lineterm=""):
             if line.startswith("+") and not line.startswith("+++"):
                 added += 1
             elif line.startswith("-") and not line.startswith("---"):
                 removed += 1
-        diffstat = f"+{added} -{removed}"
+        return f"+{added} -{removed}"
     except Exception:
-        diffstat = "?"
-    return str(cand_h), diffstat
+        return "?"
 
 
 def revert(gen_dir: Path, heuristics: Path, rules: Path) -> None:
@@ -578,6 +638,17 @@ def _format_attempts(attempts: list[dict]) -> str:
                            f"{f} false merge(s); cull those {f} to unlock this regime")
         else:
             decomp = ""
+        if a.get("stage") == "screen":
+            # A multi-candidate generation's screened-out candidate: it lost the
+            # TRAIN-side pre-screen (never reached the held-out gate). The delta is
+            # its TRAIN fitness vs the parent's TRAIN fitness — same decision
+            # variable, screen side.
+            lines.append(
+                f"  - gen{a['gen']}: {a['summary']} -> TRAIN-screen fitness "
+                f"{a['heldout']:+g} vs parent{decomp} "
+                f"(screened out before the held-out gate)"
+            )
+            continue
         lines.append(
             f"  - gen{a['gen']}: {a['summary']} -> held-out fitness "
             f"{a['heldout']:+g} vs parent{decomp} "
@@ -719,8 +790,41 @@ def _format_priors(priors_path: str | None) -> str:
     )
 
 
+# Focus directives for MULTI-CANDIDATE generations (--candidates-per-gen k > 1).
+# Candidate i gets CANDIDATE_FOCI[(i-1) % len] appended to its prompt so the k
+# parallel revisers — which start from the SAME parent + failure report and cannot
+# see each other — explore DIFFERENT improvement levers instead of converging on
+# the same obvious edit. Order mirrors the lever ranking in artifacts/rules.md;
+# None = free choice (the reviser's own judgment, the classic single-candidate
+# behavior, always given to candidate 1).
+CANDIDATE_FOCI: list = [
+    None,
+    ("DECISION-TREE STRUCTURE: restructure how the detector scores combine with "
+     "cheap geometry — tiered acceptance (very high score alone; moderate score + "
+     "geometric agreement; low score never), per-detector rules for MergeSites "
+     "('branch'/'bridge'/'component' carry different evidence), budget "
+     "re-allocation between the passes, or a rule on a specific feature column "
+     "from ctx['feature_bank'] that the report's feature tables single out. Do "
+     "NOT merely retune existing threshold constants."),
+    ("ENUMERATION CEILING: widen or narrow the candidate stream via the "
+     "module-level ENUM_PARAMS (max_gap_um, split_per_tip_k, min_arm_cable_um, "
+     "split_alt_per_pair, ...), guided by the report's enumeration-ceiling / "
+     "recall-gap evidence. Remember candidates beyond the precomputed score "
+     "tables carry split_score = nan and fall to your geometric fallback — make "
+     "that fallback worthy of the wider stream."),
+    ("ORTHOGONAL EVIDENCE: use a signal the frozen detectors have never seen — "
+     "the image reader (gap_bridge_evidence / merge_cut_evidence; consult the "
+     "report's image warm-start probe AUC FIRST) or a new feature computed from "
+     "ctx['fragments_graph'] — to break ties in the ambiguous score band. Gate "
+     "any cloud read behind cheap geometric filters."),
+    ("THRESHOLDS & BUDGETS ONLY: retune the quantile gates, per-brain budgets, "
+     "and geometric guard constants (smallest-diff candidate; keep the decision "
+     "structure as is)."),
+]
+
+
 async def ask_reviser(
-    client: ClaudeSDKClient, report_path: str,
+    options: "ClaudeAgentOptions", report_path: str,
     heuristics_path: str, rules_path: str, verbose: bool,
     attempts: list[dict] | None = None,
     priors_path: str | None = None,
@@ -728,13 +832,22 @@ async def ask_reviser(
     two_phase: bool = False,
     gen_gap: list[dict] | None = None,
     transcript_path: str | None = None,
+    focus: str | None = None,
 ):
-    """Run the single proofreader-reviser agent on the failure report. Returns
-    (text, input_tokens, output_tokens, cost_usd, read_priors,
+    """Run the single proofreader-reviser agent on the failure report, in a FRESH
+    SDK session opened (and closed) inside this call — no conversation state is
+    carried between generations. The compact cross-generation memory arrives
+    through the arguments instead: this gen's failure report, ``attempts`` (what
+    was already tried against the current parent), ``gen_gap`` (train vs held-out
+    scores of accepted gens), and the rules.md file the reviser itself maintains.
+
+    Returns (text, input_tokens, output_tokens, cost_usd, read_priors,
     cache_read_tokens, cache_creation_tokens), all token counts taken from the
-    terminal ResultMessage.usage (authoritative). ``input_tokens`` is UNCACHED input
-    only; ``cache_read_tokens`` is input served from the prompt cache — in the shared
-    session that dominates, so the true input the model saw is
+    terminal ResultMessage.usage (authoritative) and — with the fresh session —
+    genuinely PER-GENERATION. ``input_tokens`` is UNCACHED input only;
+    ``cache_read_tokens`` is input served from the prompt cache (across fresh
+    sessions that is mainly the shared system-prompt prefix, no longer a growing
+    transcript), so the true input the model saw is
     ``input_tokens + cache_read_tokens + cache_creation_tokens``. ``read_priors`` is
     True/False when a priors file was configured (did the reviser actually Read it
     this generation?), or None when no priors were configured.
@@ -809,33 +922,34 @@ async def ask_reviser(
            "so you know BEFORE writing the rule whether image is worth gating on and "
            "roughly where the threshold sits. If the AUC is weak, do not over-invest "
            "in image — improve the geometric `merge_labels` policy instead.")
+        + (f"\n\nTHIS CANDIDATE'S FOCUS: {focus}\nOther candidate revisions are "
+           "being explored in parallel from the SAME parent policy (you cannot see "
+           "them); keep YOUR one improvement within this focus so the candidates "
+           "stay distinct. Only if the failure report clearly shows this focus "
+           "cannot help this generation, say so in one line and make the most "
+           "promising improvement you see instead."
+           if focus else "")
         + _format_priors(priors_path)
         + _format_gen_gap(gen_gap or [])
         + _format_attempts(attempts or [])
         + ("\nPropose a DIFFERENT improvement from any listed above."
            if attempts else "")
     )
-    await client.query(instruction)
-    # SINGLE-AGENT: the session IS the reviser (no Task subagent), so every
-    # AssistantMessage is the reviser's own — no ``parent_tool_use_id`` routing to
-    # disentangle. We collect its text and thinking directly.
     chunks: list[str] = []
     think: list[str] = []
     # Full stream-ordered transcript events for transcript_path (thinking, text,
     # tool calls + results), so the saved record reads in the order it happened.
     transcript_events: list[str] = []
     # Token accounting. The AUTHORITATIVE numbers come from the terminal
-    # ResultMessage.usage (the CLI's end-of-turn accounting), NOT a hand-sum of the
-    # streamed AssistantMessage.usage blocks. The old hand-sum counted only
-    # ``input_tokens``/``output_tokens`` and IGNORED cache tokens — yet in the shared
-    # session almost ALL input is served from cache (``cache_read_input_tokens``), so
-    # the real input was ~150x what got logged. We now read every field from
-    # ResultMessage.usage and keep the streamed sum only as a fallback for SDKs that
-    # don't populate it.
-    #   NOTE (semantics): like ``total_cost_usd``, these ResultMessage.usage values may
-    #   be SESSION-CUMULATIVE in the shared-client design (monotonic across gens), not
-    #   per-gen. They are recorded RAW; delta consecutive ledger rows for a per-gen view
-    #   (the same disambiguation _cumulative_cost applies to cost_usd).
+    # ResultMessage.usage (the CLI's end-of-turn accounting), including the cache
+    # fields; the streamed AssistantMessage.usage hand-sum is kept only as a
+    # fallback for SDKs that don't populate ResultMessage.usage.
+    #   Semantics: the session is FRESH per call, so these values (and
+    #   ``total_cost_usd``) are genuinely PER-GENERATION. Ledgers written by the
+    #   old shared-client design carried session-cumulative values instead; the
+    #   downstream readers (ledger.summarize / plotting _cumulative_cost)
+    #   disambiguate from the data (a monotonic series is treated as cumulative),
+    #   so both eras of ledger stay readable.
     stream_in = stream_out = 0          # fallback only (streamed AssistantMessage sum)
     in_tok = out_tok = 0                # uncached input / output (from ResultMessage)
     cache_read_tok = cache_creation_tok = 0
@@ -849,54 +963,60 @@ async def ask_reviser(
     def _ev(tag: str, body: str) -> None:
         transcript_events.append(f"### {tag}\n\n{body.rstrip()}\n")
 
-    async for message in client.receive_response():
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                # THINKING first: the chain-of-thought the ledger drops. The SDK
-                # exposes it as a ThinkingBlock with a ``.thinking`` str (older SDKs
-                # may use ``.text``); guard both.
-                if ThinkingBlock and isinstance(block, ThinkingBlock):
-                    tb = getattr(block, "thinking", None) or getattr(block, "text", "") or ""
-                    think.append(tb)
-                    _ev("💭 thinking", tb)
-                    if verbose:
-                        print(tb, end="", flush=True)
-                elif isinstance(block, TextBlock):
-                    chunks.append(block.text)
-                    _ev("📝 text", block.text)
-                    if verbose:
-                        print(block.text, end="", flush=True)
-                elif ToolUseBlock and isinstance(block, ToolUseBlock):
-                    tname = getattr(block, "name", "tool")
-                    log(f"    → {tname}")
-                    ti = getattr(block, "input", {}) or {}
-                    _ev(f"🔧 tool call: {tname}",
-                        "```json\n" + json.dumps(ti, indent=2, default=str)[:4000] + "\n```")
-                    # Flag a Read whose target is the priors file (any field that
-                    # carries a path), so we can confirm the prior was consulted.
-                    if priors_name and tname == "Read":
-                        if any(priors_name in str(v) for v in ti.values()):
-                            read_priors = True
-                elif ToolResultBlock and isinstance(block, ToolResultBlock):
-                    _content = getattr(block, "content", "")
-                    _ev("📤 tool result", str(_content)[:4000])
-            # FALLBACK ONLY: sum streamed AssistantMessage usage. Used solely when the
-            # terminal ResultMessage carries no usage dict (older SDKs).
-            usage = getattr(message, "usage", None) or {}
-            stream_in += usage.get("input_tokens", 0) or 0
-            stream_out += usage.get("output_tokens", 0) or 0
-        elif isinstance(message, ResultMessage):
-            cost = getattr(message, "total_cost_usd", 0.0) or 0.0
-            # AUTHORITATIVE: the CLI's end-of-turn usage accounting, including the
-            # cache tokens the streamed sum ignores.
-            ru = getattr(message, "usage", None) or {}
-            in_tok = ru.get("input_tokens", 0) or 0
-            out_tok = ru.get("output_tokens", 0) or 0
-            cache_read_tok = ru.get("cache_read_input_tokens", 0) or 0
-            cache_creation_tok = ru.get("cache_creation_input_tokens", 0) or 0
-            # If the ResultMessage had no usage dict at all, keep the streamed sum.
-            if not ru:
-                in_tok, out_tok = stream_in, stream_out
+    # FRESH SESSION: a new client is opened for THIS call only — the conversation
+    # holds just this generation's instruction + the reviser's response, and is
+    # closed on exit. Every AssistantMessage is the reviser's own (no Task
+    # subagent), so text/thinking are collected directly.
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query(instruction)
+        async for message in client.receive_response():
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    # THINKING first: the chain-of-thought the ledger drops. The SDK
+                    # exposes it as a ThinkingBlock with a ``.thinking`` str (older SDKs
+                    # may use ``.text``); guard both.
+                    if ThinkingBlock and isinstance(block, ThinkingBlock):
+                        tb = getattr(block, "thinking", None) or getattr(block, "text", "") or ""
+                        think.append(tb)
+                        _ev("💭 thinking", tb)
+                        if verbose:
+                            print(tb, end="", flush=True)
+                    elif isinstance(block, TextBlock):
+                        chunks.append(block.text)
+                        _ev("📝 text", block.text)
+                        if verbose:
+                            print(block.text, end="", flush=True)
+                    elif ToolUseBlock and isinstance(block, ToolUseBlock):
+                        tname = getattr(block, "name", "tool")
+                        log(f"    → {tname}")
+                        ti = getattr(block, "input", {}) or {}
+                        _ev(f"🔧 tool call: {tname}",
+                            "```json\n" + json.dumps(ti, indent=2, default=str)[:4000] + "\n```")
+                        # Flag a Read whose target is the priors file (any field that
+                        # carries a path), so we can confirm the prior was consulted.
+                        if priors_name and tname == "Read":
+                            if any(priors_name in str(v) for v in ti.values()):
+                                read_priors = True
+                    elif ToolResultBlock and isinstance(block, ToolResultBlock):
+                        _content = getattr(block, "content", "")
+                        _ev("📤 tool result", str(_content)[:4000])
+                # FALLBACK ONLY: sum streamed AssistantMessage usage. Used solely when the
+                # terminal ResultMessage carries no usage dict (older SDKs).
+                usage = getattr(message, "usage", None) or {}
+                stream_in += usage.get("input_tokens", 0) or 0
+                stream_out += usage.get("output_tokens", 0) or 0
+            elif isinstance(message, ResultMessage):
+                cost = getattr(message, "total_cost_usd", 0.0) or 0.0
+                # AUTHORITATIVE: the CLI's end-of-turn usage accounting, including the
+                # cache tokens the streamed sum ignores.
+                ru = getattr(message, "usage", None) or {}
+                in_tok = ru.get("input_tokens", 0) or 0
+                out_tok = ru.get("output_tokens", 0) or 0
+                cache_read_tok = ru.get("cache_read_input_tokens", 0) or 0
+                cache_creation_tok = ru.get("cache_creation_input_tokens", 0) or 0
+                # If the ResultMessage had no usage dict at all, keep the streamed sum.
+                if not ru:
+                    in_tok, out_tok = stream_in, stream_out
     text = "".join(chunks)
     thinking = "".join(think)
 
@@ -1081,6 +1201,11 @@ class BrainContext:
                                            # fit ONCE on this brain's train warm-start
                                            # REAL/FALSE examples. GATE-side per-edit
                                            # confidence input; None -> fallback used.
+    screen_names: list = None              # multi-candidate TRAIN-screen skeleton
+                                           # subset (--screen-fraction < 1); assigned
+                                           # by run_evolution, None otherwise. The
+                                           # screen FITNESS is subset-invariant —
+                                           # this only trims diagnostic scoring cost.
 
 
 def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
@@ -1151,6 +1276,23 @@ def _setup_brain(brain: str, run_dir: Path, heldout_fraction: float,
         f"{prepared_cache}; shared cache: {inc.shared_prepared_cache_path(brain)})")
     with Heartbeat(f"[{brain}] preparing brain (load/build — can be ~30 min cold)"):
         prepared = inc.get_or_build(paths, prepared_cache, verbose=verbose)
+
+    # Frozen detector-score bank (harness.feature_bank): per-brain candidate score
+    # tables precomputed OFFLINE by cli/precompute_error_scores.py straight from
+    # the detector deliverable folders under autodiscovery-application/ (one merge
+    # + one split run; provenance in feature_tables/<brain>/meta.json). Attached
+    # as a runtime
+    # attribute (never pickled with the prepared cache); None => no tables yet and
+    # every site's detector score stays nan, which the policy contract handles.
+    feature_bank = FeatureBank.load(brain)
+    prepared.feature_bank = feature_bank
+    if feature_bank is not None:
+        log(f"[{brain}] {feature_bank.describe()}")
+        for warning in feature_bank.validate_graph(fragments_graph):
+            log(f"[{brain}] WARNING: {warning}")
+    else:
+        log(f"[{brain}] no detector feature tables (feature_tables/{brain}/) — "
+            f"sites carry nan scores; run cli/precompute_error_scores.py to add them")
 
     with Heartbeat(f"[{brain}] scoring baseline"):
         baseline_full = inc.score_incremental(prepared, label_pairs=None, verbose=verbose)
@@ -1627,6 +1769,164 @@ def _confidence_level(repair: dict, conf: dict) -> str:
     return "medium"
 
 
+async def generate_candidates(
+    k: int, gen_dir: Path, work_heuristics: Path, work_rules: Path,
+    options, report_path: str, verbose: bool,
+    attempts: list[dict], priors_path: str | None,
+    splits_only: bool, two_phase: bool, gen_gap: list[dict],
+) -> list[dict]:
+    """Fan out ``k`` INDEPENDENT reviser candidates from the same parent (step 4-5
+    of a multi-candidate generation; see --candidates-per-gen).
+
+    Each candidate gets its own sandbox ``gen*/cand_<i>/`` holding a copy of the
+    PARENT's heuristics.py + rules.md (the isolation guard allowlists exactly those
+    copies), its own fresh SDK session (``ask_reviser``), and a rotating focus
+    directive (``CANDIDATE_FOCI``) so the k revisions explore different levers
+    instead of converging on the same edit. The sessions run CONCURRENTLY via
+    ``asyncio.gather`` — fresh-session ask_reviser calls share nothing but the
+    options object, and the guard callback runs on this one event loop, so the
+    audit appends never race. Only candidate 1 streams live under ``verbose``
+    (parallel streaming would interleave illegibly); every candidate still writes
+    its full ``cand_<i>/reviser_transcript.md``.
+
+    Returns one dict per candidate (idx, paths, focus, diagnosis, token/cost
+    fields, error). A candidate whose session RAISED comes back with ``error`` set
+    and is treated by the screen exactly like an import failure — one bad session
+    never kills the generation.
+    """
+    jobs = []
+    for i in range(1, k + 1):
+        d = gen_dir / f"cand_{i}"
+        d.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(work_heuristics, d / "heuristics.py")
+        shutil.copy2(work_rules, d / "rules.md")
+        jobs.append((i, d, CANDIDATE_FOCI[(i - 1) % len(CANDIDATE_FOCI)]))
+
+    async def _one(i: int, d: Path, focus):
+        base = {"idx": i, "dir": str(d), "heuristics": str(d / "heuristics.py"),
+                "rules": str(d / "rules.md"), "focus": focus, "diagnosis": "",
+                "in_tok": 0, "out_tok": 0, "cost": 0.0, "read_priors": None,
+                "cache_read": 0, "cache_creation": 0, "error": None}
+        try:
+            (text, in_tok, out_tok, cost, read_priors, cache_read,
+             cache_creation) = await ask_reviser(
+                options, report_path, base["heuristics"], base["rules"],
+                verbose and i == 1,
+                attempts=attempts, priors_path=priors_path,
+                splits_only=splits_only, two_phase=two_phase, gen_gap=gen_gap,
+                transcript_path=str(d / "reviser_transcript.md"), focus=focus)
+            base.update(diagnosis=text, in_tok=in_tok, out_tok=out_tok, cost=cost,
+                        read_priors=read_priors, cache_read=cache_read,
+                        cache_creation=cache_creation)
+        except Exception as e:
+            log(f"   [WARN] candidate {i} reviser session failed ({e!r})")
+            base["error"] = repr(e)
+        return base
+
+    return list(await asyncio.gather(*[_one(i, d, f) for i, d, f in jobs]))
+
+
+def _pick_screen_winner(records: list[dict]) -> int:
+    """1-based idx of the best 'scored' screen record (0 = none survived).
+
+    Ranking: train fitness desc, then policy-caused false asc, then diffstat size
+    asc (on a fitness tie prefer the more precise, then the smaller change), then
+    candidate index (stable).
+    """
+    winner_idx, winner_key = 0, None
+    for rec in records:
+        if rec.get("status") != "scored":
+            continue
+        try:
+            plus, minus = rec["diffstat"].split()
+            diff_size = abs(int(plus)) + abs(int(minus))
+        except Exception:
+            diff_size = 10 ** 9
+        key = (-rec["train_fitness"], rec["false_policy"], diff_size, rec["cand"])
+        if winner_key is None or key < winner_key:
+            winner_key, winner_idx = key, rec["cand"]
+    return winner_idx
+
+
+def screen_candidates(
+    cands: list[dict], parent_heuristics: Path, report_labels: set,
+    train_ctxs: list, screen_names_attr: str, max_class_size, verbose: bool,
+    splits_only: bool, two_phase: bool, policy_time_budget: float,
+    merge_penalty: float, parent_train_fitness: float,
+) -> tuple[int, list[dict], float]:
+    """TRAIN-side pre-screen of a multi-candidate generation: cheap gates + rank.
+
+    Per candidate, in order: (a) session error, (b) import + ``propose_edits``
+    presence, (c) the no-hardcode lint, (d) run the candidate on each train brain's
+    ``screen_names_attr`` skeletons and compute the SAME penalized fitness the
+    held-out gate uses — on the TRAIN map (``label_gt_map``). The screen fitness is
+    driven by the edit classification against the full train map, so it is
+    INVARIANT to the skeleton subset; the subset only trims the diagnostic
+    per-skeleton scoring cost (``run_candidate``'s edits are graph-wide). A
+    ``policy_time_budget`` timeout disqualifies the candidate (incomplete edits are
+    never ranked). Held-out data is NEVER touched here — the screen sees exactly
+    what the failure report sees.
+
+    Returns ``(winner_idx, records, screen_seconds)``: the 1-based winner (0 = no
+    survivor), one auditable record per candidate (the caller writes them to
+    ``gen*/screen.json``), and the scorer time spent screening.
+    """
+    import importlib.util as ilu
+
+    records: list[dict] = []
+    screen_seconds = 0.0
+    for c in cands:
+        rec = {"cand": c["idx"], "dir": c["dir"], "focus": c["focus"],
+               "diffstat": _diffstat(parent_heuristics, Path(c["heuristics"])),
+               "status": None, "reason": None,
+               "train_fitness": None, "train_score": None,
+               "correct": None, "false_policy": None,
+               "summary": (c.get("diagnosis") or "").strip().split("\n", 1)[0][:120]}
+        records.append(rec)
+        if c.get("error"):
+            rec.update(status="session-error", reason=c["error"])
+            continue
+        spec = ilu.spec_from_file_location(f"_screen_cand_{c['idx']}",
+                                           c["heuristics"])
+        try:
+            m = ilu.module_from_spec(spec)
+            spec.loader.exec_module(m)
+            assert hasattr(m, "propose_edits"), "policy lost propose_edits"
+        except Exception as e:
+            rec.update(status="import-failed", reason=repr(e))
+            continue
+        lint_ok, lint_reason = lint_no_hardcoded_labels(c["heuristics"],
+                                                        report_labels)
+        if not lint_ok:
+            rec.update(status="lint-failed", reason=lint_reason)
+            continue
+        try:
+            _, runs = _score_pooled(
+                train_ctxs, screen_names_attr, c["heuristics"], "train",
+                max_class_size, verbose, splits_only=splits_only,
+                two_phase=two_phase, policy_time_budget=policy_time_budget)
+        except Exception as e:
+            rec.update(status="screen-error", reason=repr(e))
+            continue
+        screen_seconds += sum(r.score.seconds for r in runs)
+        if any(getattr(r, "policy_timed_out", False) for r in runs):
+            rec.update(status="budget-timeout",
+                       reason=f"propose_edits exceeded {policy_time_budget:g}s "
+                              f"on a train brain")
+            continue
+        repair = _pooled_split_repair(train_ctxs, runs, map_attr="label_gt_map")
+        rec.update(status="scored",
+                   train_fitness=_fitness(repair, merge_penalty),
+                   train_score=repair["score"], correct=repair["correct"],
+                   false_policy=_policy_false(repair))
+
+    winner_idx = _pick_screen_winner(records)
+    for rec in records:
+        rec["winner"] = (rec["cand"] == winner_idx)
+        rec["parent_train_fitness"] = parent_train_fitness
+    return winner_idx, records, screen_seconds
+
+
 def _parent_train_key(policy_source: str, train_ctxs: list, mcl: int,
                       max_class_size, splits_only: bool,
                       two_phase: bool = False) -> str:
@@ -1680,6 +1980,10 @@ async def run_evolution(
     confidence_veto: bool = False,
     hard_merge_reject: bool = False,
     policy_time_budget: float = 300.0,
+    start_from: str | None = None,
+    start_rules: str | None = None,
+    candidates_per_gen: int = 1,
+    screen_fraction: float = 1.0,
 ) -> None:
     # CROSS-BRAIN mode: --train-brains + --test-brains assign WHOLE brains to roles —
     # every train brain's neurons feed the failure report, every test brain's neurons
@@ -1745,18 +2049,34 @@ async def run_evolution(
     ledger = Ledger(str(run_dir / "ledger.jsonl"))
 
     # Work on TIMESTAMPED COPIES of the artifacts, never the originals. The agent
-    # reads/revises only these; artifacts/ stays pristine. The start is always the
-    # pristine from-scratch seed.
-    work_heuristics, work_rules = make_working_artifacts(run_dir)
+    # reads/revises only these; the seed files stay pristine. Default seed is
+    # artifacts/heuristics.py; --start-from selects another lineage start.
+    work_heuristics, work_rules = make_working_artifacts(
+        run_dir, start_from=start_from, start_rules=start_rules)
     log(f"Run {run_id}")
-    log(f"  start policy: from-scratch seed")
-    log(f"  originals (untouched): {HEURISTICS}")
+    log(f"  start policy: {start_from or 'default seed'}")
+    log(f"  originals (untouched): {Path(start_from) if start_from else HEURISTICS}")
     log(f"  working copies (revised this run): {work_heuristics}")
     if splits_only and two_phase:
         raise SystemExit(
             "--splits-only and --two-phase are mutually exclusive: splits-only DROPS "
             "merge-error repair, two-phase is precisely the mode that ADDS it. Pass "
             "at most one.")
+    if candidates_per_gen < 1:
+        raise SystemExit(f"--candidates-per-gen must be >= 1 (got {candidates_per_gen})")
+    if not (0.0 < screen_fraction <= 1.0):
+        raise SystemExit(f"--screen-fraction must be in (0, 1] (got {screen_fraction})")
+    if candidates_per_gen > 1:
+        # WINNER'S CURSE GUARD: the gated candidate is the argmax of k train-screen
+        # scores, so its held-out gain carries selection noise a single candidate
+        # does not. Require it to clear the parent by 2, not 1, before it becomes
+        # the new parent.
+        if score_margin <= 1:
+            score_margin = 2
+        log(f"  MULTI-CANDIDATE mode: {candidates_per_gen} parallel reviser "
+            f"candidates per generation, train-side screen picks one for the "
+            f"held-out gate (score_margin raised to {score_margin} for the "
+            f"winner's-curse noise of the train argmax)")
     if splits_only:
         log("  SPLIT-ERROR-ONLY mode: split_label (merge-error) edits are dropped "
             "before scoring — faster, and the gate metric is unchanged (it scores "
@@ -1792,6 +2112,24 @@ async def run_evolution(
     heldout_ctxs = [bc for bc in brain_ctxs if bc.heldout_names]
     assert train_ctxs, "no brain contributes TRAIN neurons — nothing to learn from"
     assert heldout_ctxs, "no brain contributes HELD-OUT neurons — nothing to gate on"
+
+    # Multi-candidate TRAIN-screen subset (--candidates-per-gen k > 1 with
+    # --screen-fraction < 1). Fixed ONCE per run from split_seed so every
+    # generation screens on the same skeletons. The screen fitness itself is
+    # subset-invariant (candidates' edits are graph-wide and classified against the
+    # full train label→GT map); the subset only trims the diagnostic per-skeleton
+    # scoring cost, so this is purely a wall-clock knob.
+    screen_names_attr = "train_names"
+    if candidates_per_gen > 1 and screen_fraction < 1.0:
+        import random as _random
+        _rng = _random.Random(split_seed)
+        for bc in train_ctxs:
+            n_keep = max(1, int(round(len(bc.train_names) * screen_fraction)))
+            bc.screen_names = sorted(_rng.sample(sorted(bc.train_names), n_keep))
+        screen_names_attr = "screen_names"
+        log(f"Screen subset: {screen_fraction:.0%} of each train brain's skeletons "
+            f"({[len(bc.screen_names) for bc in train_ctxs]} of "
+            f"{[len(bc.train_names) for bc in train_ctxs]})")
 
     # Pooled held-out names across brains. Pooling indexes skeletons BY NAME (concat
     # / isin / loc / fold slicing), which silently corrupts — duplicate rows, double-
@@ -1852,9 +2190,14 @@ async def run_evolution(
         "two_phase": bool(two_phase),
         "train_brains": train_brains if cross_brain else None,
         "test_brains": test_brains if cross_brain else None,
+        # Multi-candidate settings (defaults describe the classic 1-candidate loop).
+        "candidates_per_gen": candidates_per_gen,
+        "screen_fraction": screen_fraction,
         "per_brain": {bc.brain: {"role": bc.role,
                                  "train": bc.train_names,
-                                 "heldout": bc.heldout_names} for bc in brain_ctxs},
+                                 "heldout": bc.heldout_names,
+                                 # the fixed TRAIN-screen subset (None = full train)
+                                 "screen": bc.screen_names} for bc in brain_ctxs},
         "k_folds": k_eff,
         "heldout_folds": [f["heldout"] for f in heldout_folds],
     }, indent=2))
@@ -1922,7 +2265,8 @@ async def run_evolution(
         f"(diagnostic; the actual bar gen 1 must beat is the split-repair score above)")
 
     options, guard_state = build_options(model=model, run_dir=run_dir)
-    log(f"Reviser model: {model} (Anthropic API)")
+    log(f"Reviser model: {model} (Anthropic API; fresh session per generation — "
+        f"context = failure report + compact attempts/gen-gap memory + rules.md)")
     log("Run isolation: reviser tools = Read/Write/Edit/Task; cross-run file "
         "access DENIED via can_use_tool (audit -> tool_audit.jsonl)")
     # Validated discovery priors: pass the ABSOLUTE path (the reviser's cwd is the
@@ -1970,187 +2314,288 @@ async def run_evolution(
     # "are my changes generalizing?" becomes visible feedback. Each entry:
     # {"gen": int, "train": int, "heldout": int}.
     gen_gap_history: list[dict] = []
-    # ONE shared ClaudeSDKClient for the WHOLE loop: the session is opened once and
-    # every generation's reviser call reuses it, so the running conversation (each
-    # prior generation's failure report + the single reviser agent's full transcript)
-    # stays in-context. NOTE: this makes per-generation input GROW with generation
-    # count (the whole history is re-sent each turn as cache_read) — the dominant token
-    # cost. The essential cross-generation memory does NOT depend on it: the compact
-    # attempts_vs_parent / gen_gap_history summaries are passed into ask_reviser
-    # explicitly. FOLLOW-UP (separate change, real behavior trade-off, NOT done here):
-    # open a FRESH client per generation fed only those summaries + this gen's report —
-    # that collapses the cache_read growth and matches the old subagent's clean-context
-    # regime, at the cost of dropping the verbatim prior-transcript history.
-    async with ClaudeSDKClient(options=options) as client:
-        for gen in range(1, generations + 1):
-            print(f"\n=== Generation {gen}/{generations} ===")
-            gen_wall0 = time.monotonic()
-            gen_dir = run_dir / f"gen{gen:02d}"
-            snapshot(gen_dir, work_heuristics, work_rules)  # revert source if rejected
+    # FRESH SESSION PER GENERATION: each reviser call opens its own ClaudeSDKClient
+    # inside ask_reviser (no run-long shared conversation). The cross-generation
+    # memory the reviser needs is passed explicitly and compactly every turn — this
+    # gen's failure report + attempts_vs_parent + gen_gap_history (and rules.md, the
+    # durable design notebook it edits) — so per-generation input stays FLAT with
+    # generation count instead of re-sending the whole prior transcript as
+    # cache_read (the old shared-client regime's dominant token cost). Trade-off
+    # (accepted): verbatim prior-generation transcripts are no longer in-context;
+    # gen*/reviser_transcript.md keeps each one on disk for post-analysis.
+    for gen in range(1, generations + 1):
+        print(f"\n=== Generation {gen}/{generations} ===")
+        gen_wall0 = time.monotonic()
+        gen_dir = run_dir / f"gen{gen:02d}"
+        snapshot(gen_dir, work_heuristics, work_rules)  # revert source if rejected
 
-            # (1-3) Run CURRENT policy on each brain's TRAIN; build the failure
-            # report. Per brain so raw labels / merge targets stay brain-local.
-            #
-            # PARENT TRAIN-BUNDLE CACHE: the parent at the START of this generation is
-            # whatever ``work_heuristics`` holds now — the seed at gen 1, the last
-            # accepted policy otherwise (a rejected gen reverted it unchanged). The
-            # train pass is a pure function of that source + fixed config, so key the
-            # whole bundle by its hash and reuse it on a repeated-parent generation.
-            # This skips ONLY the deterministic train re-score; the reviser LLM call
-            # still runs every generation (it must, to get a new candidate), so this is
-            # a compute/wall-time win, not a token one.
-            report_path = str(gen_dir / "failure_report.md")
-            parent_policy_source = Path(work_heuristics).read_text()
-            parent_train_key = _parent_train_key(
-                parent_policy_source, train_ctxs, mcl, max_class_size, splits_only,
-                two_phase)
-            bundle = parent_bundle_cache.get(parent_train_key)
-            if bundle is not None:
-                # HIT: reuse the cached train pass. Re-materialize this gen's failure
-                # report from the cached text (the reviser reads it fresh each gen).
-                log(f"Step 1-3: parent unchanged (cache HIT {parent_train_key[:12]}) — "
-                    f"reusing train bundle, skipping the whole-brain re-score")
-                train_runs = bundle["train_runs"]
-                train_repair = bundle["train_repair"]
-                train_acc = bundle["train_acc"]
-                train_false = bundle["train_false"]
-                train_false_preexisting = bundle.get("train_false_preexisting", 0)
-                n_edits_total = bundle["n_edits_total"]
-                train_seconds = 0.0  # nothing re-scored this gen
-                gen_dir.mkdir(parents=True, exist_ok=True)
-                Path(report_path).write_text(bundle["report_text"])
+        # (1-3) Run CURRENT policy on each brain's TRAIN; build the failure
+        # report. Per brain so raw labels / merge targets stay brain-local.
+        #
+        # PARENT TRAIN-BUNDLE CACHE: the parent at the START of this generation is
+        # whatever ``work_heuristics`` holds now — the seed at gen 1, the last
+        # accepted policy otherwise (a rejected gen reverted it unchanged). The
+        # train pass is a pure function of that source + fixed config, so key the
+        # whole bundle by its hash and reuse it on a repeated-parent generation.
+        # This skips ONLY the deterministic train re-score; the reviser LLM call
+        # still runs every generation (it must, to get a new candidate), so this is
+        # a compute/wall-time win, not a token one.
+        report_path = str(gen_dir / "failure_report.md")
+        parent_policy_source = Path(work_heuristics).read_text()
+        parent_train_key = _parent_train_key(
+            parent_policy_source, train_ctxs, mcl, max_class_size, splits_only,
+            two_phase)
+        bundle = parent_bundle_cache.get(parent_train_key)
+        if bundle is not None:
+            # HIT: reuse the cached train pass. Re-materialize this gen's failure
+            # report from the cached text (the reviser reads it fresh each gen).
+            log(f"Step 1-3: parent unchanged (cache HIT {parent_train_key[:12]}) — "
+                f"reusing train bundle, skipping the whole-brain re-score")
+            train_runs = bundle["train_runs"]
+            train_repair = bundle["train_repair"]
+            train_acc = bundle["train_acc"]
+            train_false = bundle["train_false"]
+            train_false_preexisting = bundle.get("train_false_preexisting", 0)
+            n_edits_total = bundle["n_edits_total"]
+            train_seconds = 0.0  # nothing re-scored this gen
+            gen_dir.mkdir(parents=True, exist_ok=True)
+            Path(report_path).write_text(bundle["report_text"])
+        else:
+            log("Step 1-3: run current policy on train, build failure report...")
+            with Heartbeat(f"gen {gen}: running policy on train"):
+                _, train_runs = _score_pooled(
+                    train_ctxs, "train_names", str(work_heuristics), "train",
+                    max_class_size, verbose, splits_only=splits_only,
+                    two_phase=two_phase, policy_time_budget=policy_time_budget,
+                )
+            # Train split-repair score of the CURRENT policy (this gen, on train),
+            # for the generalization-gap meta-signal. Same metric as the gate, but
+            # on the TRAIN map — so train_repair["score"] vs the held-out score
+            # below shows whether a change generalizes. Cheap (reuses train edits).
+            train_repair = _pooled_split_repair(train_ctxs, train_runs,
+                                                map_attr="label_gt_map")
+            # DELIVERY: inline the qualifying AutoDiscovery priors INTO the report
+            # the reviser always reads (instead of pointing at a file it skipped
+            # ~70% of generations). UNRANKED and Priority-free — which finding(s) to
+            # use is the agent's call; the only curation is the GENERALIZES+UPHELD
+            # trust filter. [] when priors are off/absent, so writers splice nothing.
+            priors_section = (priors_kb.build_unranked_section(priors_path)
+                              if priors_path else [])
+            # SPLIT-ERROR-ONLY: withhold merge_labels from the report so every
+            # merge-diagnosis section (Baseline merge errors, MergeSite feature
+            # tables, detector recall gap) is suppressed — otherwise the report
+            # would keep coaching the reviser toward split_label repairs this run
+            # drops. The train label→GT map is still passed: it drives the SplitSite
+            # audit, which is exactly the split-error signal we DO want.
+            report_merge_labels = (lambda bc: None if splits_only else bc.merge_labels)
+            per_brain_report = [
+                (bc.brain, tr,
+                 scoring.ScoreResult(  # baseline on this brain's train, for the report
+                     primary=scoring._weighted_avg(bc.base_train, "Edge Accuracy"),
+                     metrics={}, per_swc=bc.base_train, output_dir="", seconds=0.0),
+                 report_merge_labels(bc), bc.label_gt_map, bc.fragments_graph,
+                 bc.image_probe_section)
+                for bc, tr in zip(train_ctxs, train_runs)
+            ]
+            if len(per_brain_report) == 1:
+                _, tr, base_sr, ml, lgm, fg, probe = per_brain_report[0]
+                cand.write_failure_report(tr, base_sr, report_path,
+                                          merge_labels=ml, label_gt_map=lgm,
+                                          fragments_graph=fg, extra_sections=probe,
+                                          priors_section=priors_section,
+                                          merge_penalty=merge_penalty)
             else:
-                log("Step 1-3: run current policy on train, build failure report...")
-                with Heartbeat(f"gen {gen}: running policy on train"):
-                    _, train_runs = _score_pooled(
-                        train_ctxs, "train_names", str(work_heuristics), "train",
-                        max_class_size, verbose, splits_only=splits_only,
-                        two_phase=two_phase, policy_time_budget=policy_time_budget,
-                    )
-                # Train split-repair score of the CURRENT policy (this gen, on train),
-                # for the generalization-gap meta-signal. Same metric as the gate, but
-                # on the TRAIN map — so train_repair["score"] vs the held-out score
-                # below shows whether a change generalizes. Cheap (reuses train edits).
-                train_repair = _pooled_split_repair(train_ctxs, train_runs,
-                                                    map_attr="label_gt_map")
-                # DELIVERY: inline the qualifying AutoDiscovery priors INTO the report
-                # the reviser always reads (instead of pointing at a file it skipped
-                # ~70% of generations). UNRANKED and Priority-free — which finding(s) to
-                # use is the agent's call; the only curation is the GENERALIZES+UPHELD
-                # trust filter. [] when priors are off/absent, so writers splice nothing.
-                priors_section = (priors_kb.build_unranked_section(priors_path)
-                                  if priors_path else [])
-                # SPLIT-ERROR-ONLY: withhold merge_labels from the report so every
-                # merge-diagnosis section (Baseline merge errors, MergeSite feature
-                # tables, detector recall gap) is suppressed — otherwise the report
-                # would keep coaching the reviser toward split_label repairs this run
-                # drops. The train label→GT map is still passed: it drives the SplitSite
-                # audit, which is exactly the split-error signal we DO want.
-                report_merge_labels = (lambda bc: None if splits_only else bc.merge_labels)
-                per_brain_report = [
-                    (bc.brain, tr,
-                     scoring.ScoreResult(  # baseline on this brain's train, for the report
-                         primary=scoring._weighted_avg(bc.base_train, "Edge Accuracy"),
-                         metrics={}, per_swc=bc.base_train, output_dir="", seconds=0.0),
-                     report_merge_labels(bc), bc.label_gt_map, bc.fragments_graph,
-                     bc.image_probe_section)
-                    for bc, tr in zip(train_ctxs, train_runs)
-                ]
-                if len(per_brain_report) == 1:
-                    _, tr, base_sr, ml, lgm, fg, probe = per_brain_report[0]
-                    cand.write_failure_report(tr, base_sr, report_path,
-                                              merge_labels=ml, label_gt_map=lgm,
-                                              fragments_graph=fg, extra_sections=probe,
-                                              priors_section=priors_section,
-                                              merge_penalty=merge_penalty)
-                else:
-                    cand.write_multibrain_failure_report(per_brain_report, report_path,
-                                                         priors_section=priors_section,
-                                                         merge_penalty=merge_penalty)
-                if priors_section:
-                    log(f"   inlined {len(priors_section)} priors line(s) into the "
-                        f"report (unranked; agent selects)")
-                train_acc = scoring._weighted_avg(
-                    _pd.concat([tr.score.per_swc for tr in train_runs]), "Edge Accuracy")
-                n_edits_total = sum(tr.n_edits for tr in train_runs)
-                # SPLIT-ERROR-ONLY visibility: with no MergeSite enumerated the policy
-                # should emit no split_label, but if it hardcoded one we dropped it —
-                # say so loudly rather than letting the discard be silent.
-                n_dropped = sum(getattr(tr, "n_split_label_dropped", 0)
-                                for tr in train_runs)
-                if n_dropped:
-                    log(f"   [WARN] splits-only: dropped {n_dropped} split_label "
-                        f"edit(s) the policy emitted — merge repairs disabled this run")
-                # TRAIN-SIDE over-merge alert (diagnostic; the gate judges false merges
-                # on HELD-OUT, so these never reject — but they are real over-merges the
-                # gate is blind to). Pool each brain's train edits against ITS OWN map,
-                # classifying once and splitting the SAME way the gate does:
-                #   train_false            = POLICY-CAUSED (a genuinely new fusion),
-                #   train_false_preexisting = NEUTRAL (a fragment already spanning both
-                #                             neurons — not the policy's fault, not
-                #                             penalized, not credited).
-                # Both are recorded so post-analysis can extract/visualize the train-side
-                # neutral count symmetrically with the held-out one.
-                train_false = 0
-                train_false_preexisting = 0
-                for bc, tr in zip(train_ctxs, train_runs):
-                    _c = inc.classify_merge_edits(tr.edits, bc.label_gt_map)
-                    train_false += _c.get("false_policy", 0)
-                    train_false_preexisting += _c.get("false_preexisting", 0)
-                train_seconds = sum(tr.score.seconds for tr in train_runs)
-                # Cache the full bundle keyed by parent state, so the next
-                # repeated-parent generation reuses it instead of re-scoring.
-                parent_bundle_cache[parent_train_key] = {
-                    "train_runs": train_runs,
-                    "train_repair": train_repair,
-                    "train_acc": train_acc,
-                    "train_false": train_false,
-                    "train_false_preexisting": train_false_preexisting,
-                    "n_edits_total": n_edits_total,
-                    "report_text": Path(report_path).read_text(),
-                }
-            log(f"   train Edge Accuracy={train_acc:.4f} "
-                f"({n_edits_total} edits across {len(train_runs)} brain(s)); "
-                f"report -> {report_path}")
-            # Always log the train-side over-merge count, even when 0, so a clean
-            # generation is explicitly confirmed rather than silent (absence of the
-            # line used to be ambiguous: 0 errors vs. the check not running).
-            if train_false:
-                log(f"   [ALERT] {train_false} train-side false merge(s) — over-merges "
-                    f"the held-out gate does NOT see (see failure report)")
-            else:
-                log("   train-side false merges: 0 (no over-merges on train GT)")
+                cand.write_multibrain_failure_report(per_brain_report, report_path,
+                                                     priors_section=priors_section,
+                                                     merge_penalty=merge_penalty)
+            if priors_section:
+                log(f"   inlined {len(priors_section)} priors line(s) into the "
+                    f"report (unranked; agent selects)")
+            train_acc = scoring._weighted_avg(
+                _pd.concat([tr.score.per_swc for tr in train_runs]), "Edge Accuracy")
+            n_edits_total = sum(tr.n_edits for tr in train_runs)
+            # SPLIT-ERROR-ONLY visibility: with no MergeSite enumerated the policy
+            # should emit no split_label, but if it hardcoded one we dropped it —
+            # say so loudly rather than letting the discard be silent.
+            n_dropped = sum(getattr(tr, "n_split_label_dropped", 0)
+                            for tr in train_runs)
+            if n_dropped:
+                log(f"   [WARN] splits-only: dropped {n_dropped} split_label "
+                    f"edit(s) the policy emitted — merge repairs disabled this run")
+            # TRAIN-SIDE over-merge alert (diagnostic; the gate judges false merges
+            # on HELD-OUT, so these never reject — but they are real over-merges the
+            # gate is blind to). Pool each brain's train edits against ITS OWN map,
+            # classifying once and splitting the SAME way the gate does:
+            #   train_false            = POLICY-CAUSED (a genuinely new fusion),
+            #   train_false_preexisting = NEUTRAL (a fragment already spanning both
+            #                             neurons — not the policy's fault, not
+            #                             penalized, not credited).
+            # Both are recorded so post-analysis can extract/visualize the train-side
+            # neutral count symmetrically with the held-out one.
+            train_false = 0
+            train_false_preexisting = 0
+            for bc, tr in zip(train_ctxs, train_runs):
+                _c = inc.classify_merge_edits(tr.edits, bc.label_gt_map)
+                train_false += _c.get("false_policy", 0)
+                train_false_preexisting += _c.get("false_preexisting", 0)
+            train_seconds = sum(tr.score.seconds for tr in train_runs)
+            # Cache the full bundle keyed by parent state, so the next
+            # repeated-parent generation reuses it instead of re-scoring.
+            parent_bundle_cache[parent_train_key] = {
+                "train_runs": train_runs,
+                "train_repair": train_repair,
+                "train_acc": train_acc,
+                "train_false": train_false,
+                "train_false_preexisting": train_false_preexisting,
+                "n_edits_total": n_edits_total,
+                "report_text": Path(report_path).read_text(),
+            }
+        log(f"   train Edge Accuracy={train_acc:.4f} "
+            f"({n_edits_total} edits across {len(train_runs)} brain(s)); "
+            f"report -> {report_path}")
+        # Always log the train-side over-merge count, even when 0, so a clean
+        # generation is explicitly confirmed rather than silent (absence of the
+        # line used to be ambiguous: 0 errors vs. the check not running).
+        if train_false:
+            log(f"   [ALERT] {train_false} train-side false merge(s) — over-merges "
+                f"the held-out gate does NOT see (see failure report)")
+        else:
+            log("   train-side false merges: 0 (no over-merges on train GT)")
 
-            # (4-5) Ask the agent to explain and revise the WORKING-COPY artifacts.
+        # (4-5) Ask the agent(s) to explain and revise the WORKING-COPY artifacts.
+        winner_idx = 0           # 1-based train-screen winner (multi-candidate gens)
+        screen_secs = 0.0        # scorer time spent on the train-side screen
+        n_screen_evals = 0       # screen scoring passes actually run
+        precheck_failed = False  # multi-candidate: NO candidate survived the screen
+        if candidates_per_gen <= 1:
             log("Step 4-5: proofreader-reviser diagnoses and revises artifacts...")
             reviser_transcript = str(gen_dir / "reviser_transcript.md")
             with Heartbeat(f"gen {gen}: waiting on reviser (LLM)"):
                 (diagnosis, in_tok, out_tok, cost, read_priors,
                  cache_read_tok, cache_creation_tok) = await ask_reviser(
-                    client, report_path, str(work_heuristics), str(work_rules), verbose,
+                    options, report_path, str(work_heuristics), str(work_rules),
+                    verbose,
                     attempts=attempts_vs_parent, priors_path=priors_path,
                     splits_only=splits_only, two_phase=two_phase,
                     gen_gap=gen_gap_history,
                     transcript_path=reviser_transcript,
                 )
-            log(f"   reviser transcript (thinking + text + tools) -> {reviser_transcript}")
+            log(f"   reviser transcript (thinking + text + tools) -> "
+                f"{reviser_transcript}")
 
             # (A) Persist what the reviser wrote THIS generation — before scoring or
             # any revert — so even rejected candidates are inspectable afterward.
-            candidate_path, diffstat = save_candidate(gen_dir, work_heuristics, work_rules)
-            log(f"   candidate saved -> {candidate_path} (diffstat vs parent: {diffstat})")
+            candidate_path, diffstat = save_candidate(gen_dir, work_heuristics,
+                                                      work_rules)
+            log(f"   candidate saved -> {candidate_path} "
+                f"(diffstat vs parent: {diffstat})")
 
-            # Priors are now DELIVERED by inlining into the report (which the reviser
-            # always reads), so grounding no longer depends on the agent choosing to
-            # open the file — there is no "did NOT read -> un-grounded" case anymore.
-            # ``read_priors`` now just notes whether the agent ALSO opened the full KB
-            # file (e.g. to see an excluded finding's full text); informational only.
+            # Priors are now DELIVERED by inlining into the report (which the
+            # reviser always reads), so grounding no longer depends on the agent
+            # choosing to open the file — there is no "did NOT read -> un-grounded"
+            # case anymore. ``read_priors`` now just notes whether the agent ALSO
+            # opened the full KB file (e.g. to see an excluded finding's full
+            # text); informational only.
             if read_priors is True:
                 log("   reviser also opened the full priors file this generation")
+        else:
+            # MULTI-CANDIDATE generation: fan out k independent revisers from the
+            # SAME parent, pre-screen on the TRAIN side with the gate's own fitness,
+            # and promote only the winner to the held-out gate (held-out cost per
+            # generation unchanged — the expected gain is the max over k mutations).
+            log(f"Step 4-5: fanning out {candidates_per_gen} reviser candidates "
+                f"(parallel fresh sessions; train-side screen picks one)...")
+            with Heartbeat(f"gen {gen}: waiting on {candidates_per_gen} "
+                           f"revisers (LLM)"):
+                cand_results = await generate_candidates(
+                    candidates_per_gen, gen_dir, work_heuristics, work_rules,
+                    options, report_path, verbose,
+                    attempts_vs_parent, priors_path, splits_only, two_phase,
+                    gen_gap_history)
+            # Aggregate the k sessions into the ledger's per-generation fields.
+            in_tok = sum(c["in_tok"] for c in cand_results)
+            out_tok = sum(c["out_tok"] for c in cand_results)
+            cache_read_tok = sum(c["cache_read"] for c in cand_results)
+            cache_creation_tok = sum(c["cache_creation"] for c in cand_results)
+            cost = sum(c["cost"] for c in cand_results)
+            read_priors = (any(c["read_priors"] for c in cand_results)
+                           if priors_path else None)
 
-            # Harness-side import check (the reviser no longer has Bash to do it).
-            # A revision that doesn't import is a dead candidate -> revert to parent.
-            import importlib.util as _ilu
+            # TRAIN-side screen: same report labels the lint below uses, same
+            # fitness the gate uses — computed on the parent's train bundle.
+            report_labels = set()
+            for bc, tr in zip(train_ctxs, train_runs):
+                report_labels |= collect_report_labels(bc.merge_labels, tr)
+            parent_train_fitness = _fitness(train_repair, merge_penalty)
+            with Heartbeat(f"gen {gen}: train-side screen of "
+                           f"{candidates_per_gen} candidates"):
+                winner_idx, screen_records, screen_secs = screen_candidates(
+                    cand_results, gen_dir / "heuristics.py", report_labels,
+                    train_ctxs, screen_names_attr, max_class_size, verbose,
+                    splits_only, two_phase, policy_time_budget, merge_penalty,
+                    parent_train_fitness)
+            n_screen_evals = sum(1 for r in screen_records
+                                 if r["status"] in ("scored", "budget-timeout"))
+            (gen_dir / "screen.json").write_text(
+                json.dumps(screen_records, indent=2, default=str))
+            for rec in screen_records:
+                log(f"   cand {rec['cand']}: {rec['status']}"
+                    + (f" train_fitness={rec['train_fitness']:g} vs parent "
+                       f"{parent_train_fitness:g} (correct={rec['correct']}, "
+                       f"false={rec['false_policy']}, {rec['diffstat']})"
+                       if rec["status"] == "scored"
+                       else f" ({str(rec['reason'])[:120]})")
+                    + ("  <- WINNER" if rec.get("winner") else ""))
+            log(f"   screen record -> {gen_dir / 'screen.json'} "
+                f"(screen scorer time {screen_secs:.1f}s)")
+            # Screened-out candidates join the attempts memory NOW, with their
+            # TRAIN-side delta and decomposition, so next generation's k revisers
+            # do not re-propose them. (The winner's held-out outcome is appended by
+            # the shared gate code below, like any single candidate.)
+            for rec in screen_records:
+                if rec["status"] == "scored" and not rec["winner"]:
+                    focus_tag = (rec["focus"].split(":", 1)[0]
+                                 if rec["focus"] else "free choice")
+                    attempts_vs_parent.append({
+                        "gen": gen, "stage": "screen",
+                        "summary": (f"[cand {rec['cand']}, focus: {focus_tag}] "
+                                    f"{rec['diffstat']} lines; {rec['summary']}"),
+                        "heldout": rec["train_fitness"] - parent_train_fitness,
+                        "correct": rec["correct"], "false": rec["false_policy"],
+                        "accepted": False,
+                    })
+            if winner_idx == 0:
+                # Every candidate died in the screen (session/import/lint/timeout).
+                # The work files still hold the PARENT; record a non-improving gen
+                # exactly like a failed import, without a held-out pass.
+                precheck_failed = True
+                diagnosis = "(no candidate survived the train-side screen)"
+                candidate_path, diffstat = save_candidate(
+                    gen_dir, work_heuristics, work_rules)  # parent == candidate
+                log(f"   [WARN] none of the {candidates_per_gen} candidates "
+                    f"survived the screen — recording a non-improving generation")
+            else:
+                win = next(c for c in cand_results if c["idx"] == winner_idx)
+                diagnosis = win["diagnosis"]
+                shutil.copy2(win["heuristics"], work_heuristics)
+                shutil.copy2(win["rules"], work_rules)
+                candidate_path, diffstat = save_candidate(
+                    gen_dir, work_heuristics, work_rules)
+                log(f"   screen winner: cand {winner_idx} promoted to the held-out "
+                    f"gate (candidate saved -> {candidate_path}, diffstat "
+                    f"{diffstat})")
+            # Screen scoring is evaluation time like any other; bill it with the
+            # train side so eval_seconds stays the full scorer wall-clock.
+            train_seconds += screen_secs
+
+        # Harness-side import check (the reviser no longer has Bash to do it).
+        # A revision that doesn't import is a dead candidate -> revert to parent.
+        # (A multi-candidate winner was already import+lint checked in the screen;
+        # re-checking the promoted copy here is cheap and keeps one shared path.)
+        import importlib.util as _ilu
+        if precheck_failed:
+            import_ok = False
+        else:
             _spec = _ilu.spec_from_file_location("_cand_check", str(work_heuristics))
             try:
                 _m = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_m)
@@ -2158,412 +2603,416 @@ async def run_evolution(
                 import_ok = True
             except Exception as _e:
                 import_ok = False
-                log(f"   [WARN] revised policy does not import ({_e}); reverting this gen")
+                log(f"   [WARN] revised policy does not import ({_e}); "
+                    f"reverting this gen")
                 revert(gen_dir, work_heuristics, work_rules)
 
-            # No-hardcode lint (P1-4): a policy that copies raw segment-id labels
-            # from the failure report overfits train and won't generalize, so it is
-            # rejected exactly like a failed import. Uses THIS generation's report
-            # labels (baseline merge targets + the candidate's own edited labels).
-            if import_ok:
-                report_labels = set()
-                for bc, tr in zip(train_ctxs, train_runs):
-                    report_labels |= collect_report_labels(bc.merge_labels, tr)
-                lint_ok, lint_reason = lint_no_hardcoded_labels(
-                    str(work_heuristics), report_labels
+        # No-hardcode lint (P1-4): a policy that copies raw segment-id labels
+        # from the failure report overfits train and won't generalize, so it is
+        # rejected exactly like a failed import. Uses THIS generation's report
+        # labels (baseline merge targets + the candidate's own edited labels).
+        if import_ok:
+            report_labels = set()
+            for bc, tr in zip(train_ctxs, train_runs):
+                report_labels |= collect_report_labels(bc.merge_labels, tr)
+            lint_ok, lint_reason = lint_no_hardcoded_labels(
+                str(work_heuristics), report_labels
+            )
+            if not lint_ok:
+                import_ok = False
+                log(f"   [WARN] no-hardcode lint FAILED: {lint_reason}; "
+                    f"reverting this gen")
+                revert(gen_dir, work_heuristics, work_rules)
+
+        # The bar this gen tried to beat (pre-update): the parent's penalized
+        # FITNESS (split-repair score minus merge_penalty * false), which is the
+        # gate's decision variable. Capture the raw parent score too, BEFORE any
+        # accept advances parent_repair, so the ledger can record the true bar.
+        parent_bar = _fitness(parent_repair, merge_penalty)
+        parent_score_raw = parent_repair["score"]
+        # ``train_seconds`` was set in Step 1-3 above: the real scorer time on a
+        # cache MISS, or 0.0 on a HIT (nothing was re-scored this generation). Do
+        # NOT recompute it from ``train_runs`` here — on a hit those are the CACHED
+        # runs whose ``.score.seconds`` is the ORIGINAL scoring time, which would
+        # wrongly re-bill this generation for work it reused.
+        if not import_ok:
+            # Revision was already reverted to the parent above; don't waste a
+            # held-out scoring pass on it. Record as a non-improving gen.
+            heldout_acc = parent_mean_acc
+            cand_repair = dict(parent_repair)  # no change: candidate == parent
+            cand_fitness = parent_bar          # == parent fitness (no change)
+            heldout_n_edits = 0                # nothing scored on held-out
+            heldout_dropped = 0                # nothing scored -> nothing dropped
+            eval_seconds = train_seconds
+            keep = False
+            human_touches = 0
+            # No held-out scoring ran, so there is no decision to gauge confidence
+            # for; record neutral placeholders (the ledger call below is shared).
+            cand_conf = {"soft_correct": 0, "soft_false": 0, "soft_ambiguous": 0,
+                         "unknown": 0, "covered": 0, "coverage": float("nan"),
+                         "gt_fraction": float("nan")}
+            confidence = "n/a"
+            # No held-out scoring ran, so the standard benchmark metrics are absent.
+            heldout_merged_edges = float("nan")
+            heldout_merges = float("nan")
+            heldout_split_edges = float("nan")
+            # No held-out policy pass ran (import/lint failed first), so there is no
+            # policy time to attribute or budget to enforce.
+            heldout_policy_seconds = 0.0
+            heldout_policy_timed_out = False
+        else:
+            # (6) Re-run the REVISED policy on each brain's HELD-OUT, pool results.
+            log("Step 6: score revised policy on pooled held-out...")
+            with Heartbeat(f"gen {gen}: scoring revised policy on pooled held-out"):
+                heldout_pooled, heldout_runs = _score_pooled(
+                    heldout_ctxs, "heldout_names", str(work_heuristics), "heldout",
+                    max_class_size, verbose, splits_only=splits_only,
+                    two_phase=two_phase, policy_time_budget=policy_time_budget,
                 )
-                if not lint_ok:
-                    import_ok = False
-                    log(f"   [WARN] no-hardcode lint FAILED: {lint_reason}; "
-                        f"reverting this gen")
+            heldout_acc = scoring._weighted_avg(heldout_pooled, "Edge Accuracy")
+            eval_seconds = train_seconds + sum(
+                hr.score.seconds for hr in heldout_runs)
+            # (1) PER-STEP TIMING + (2) BUDGET: aggregate the policy's own
+            # propose_edits wall-clock (separate from scoring) and whether it blew
+            # the time budget on ANY brain. A timeout means that brain produced no
+            # edits; we surface the cost and, below, force a REJECT so a runaway
+            # (e.g. accidentally O(N^2)) policy is discarded like a failed import
+            # rather than accepted or left to stall the run.
+            heldout_policy_seconds = sum(
+                getattr(hr, "policy_seconds", 0.0) for hr in heldout_runs)
+            heldout_policy_timed_out = any(
+                getattr(hr, "policy_timed_out", False) for hr in heldout_runs)
+            log(f"   policy propose_edits time: {heldout_policy_seconds:.1f}s "
+                f"(budget {policy_time_budget:g}s"
+                + ("; TIMED OUT — treated as no edits, will REJECT"
+                   if heldout_policy_timed_out else "")
+                + ")")
+
+            # Per-fold candidate metrics, sliced from the pooled scoring pass —
+            # still computed + recorded (Edge Accuracy is informative), but no
+            # longer the bar. They feed the ledger / log, not the keep decision.
+            cand_fold_metrics = [
+                fold_metrics(heldout_pooled, f["heldout"])
+                for f in heldout_folds
+            ]
+            cand_pooled_metrics = {m: scoring._weighted_avg(heldout_pooled, m)
+                                   for m in _FOLD_METRIC_COLS}
+
+            # (7) PRIMARY GATE = penalized split-repair FITNESS on pooled held-out.
+            # Edge Accuracy only moves when a merge bridges a true split EDGE, so
+            # most correct repairs read +0.000 and evolution flat-lined. The
+            # split-repair score counts EVERY correctly-repaired held-out split
+            # (correct) and penalizes only POLICY-CAUSED wrong fusions (false_policy);
+            # the gate then subtracts a HEAVY per-false-merge penalty to get fitness:
+            #   fitness = (correct - false_policy) - merge_penalty * false_policy.
+            # A ``false_preexisting`` (a fragment that already spanned both neurons
+            # before the merge) is NOT the policy's fault, so it does not enter the
+            # score or the penalty (see classify_merge_edits / _fitness). A candidate
+            # is kept iff its fitness beats the parent's by at least ``score_margin``.
+            # This REPLACES the old hard 'false == 0' reject: a policy-caused false
+            # merge is still heavily discouraged (at merge_penalty=100 it costs ~100
+            # correct repairs to offset), but a change that trades a single one for a
+            # large recall gain is no longer rejected outright.
+            #
+            # MARGIN (score_margin, integer >= 1). The bar is
+            # ``fitness >= parent + score_margin``, NOT a strict ``>`` — a strict
+            # ``>`` accepts a +1 win, which on a small held-out set is within
+            # the noise of a single repaired split flipping correct<->unscored
+            # from one revision to the next. score_margin=1 accepts any net
+            # improvement; 2-3 requires the gain to clear that single-repair noise
+            # floor before it is locked in as the parent.
+            cand_repair = _pooled_split_repair(heldout_ctxs, heldout_runs)
+            heldout_n_edits = sum(hr.n_edits for hr in heldout_runs)
+            heldout_dropped = sum(
+                getattr(hr, "n_split_label_dropped", 0) for hr in heldout_runs)
+            has_split_edit = any(
+                isinstance(e, dict) and e.get("kind") == "split_label"
+                for hr in heldout_runs for e in (hr.edits or [])
+            )
+            cand_fitness = _fitness(cand_repair, merge_penalty)
+            _gain = cand_fitness - parent_bar
+            # Only POLICY-caused false merges are penalized; pre-existing two-neuron
+            # fragments the policy merely joined are not the policy's fault (see
+            # _fitness / classify_merge_edits). Log both so the split is visible.
+            _fpol = _policy_false(cand_repair)
+            _fpre = int(cand_repair.get("false_preexisting", 0))
+            _fnote = ("false 0" if cand_repair["false"] == 0 else
+                      f"false {cand_repair['false']} "
+                      f"({_fpol} policy-caused [penalty -{merge_penalty:g}*{_fpol}="
+                      f"{-merge_penalty * _fpol:g}] + {_fpre} pre-existing [not penalized])")
+            # HARD MERGE REJECT (--hard-merge-reject): restore the 9ca88bb gate.
+            # ANY held-out POLICY-CAUSED false merge (a NEW fusion of two DIFFERENT
+            # neurons) rejects the candidate outright, regardless of how much recall
+            # it gained — the smoothed merge_penalty fitness is bypassed as the accept
+            # criterion. This is the strict-precision gate: false_policy==0 is a HARD
+            # constraint, not a penalty. Pre-existing merges (a fragment already
+            # spanning both neurons) do NOT trigger it — the policy did not create
+            # them. (It still requires the fitness margin too, so a clean candidate
+            # that does not improve is not accepted just for being clean.)
+            if heldout_policy_timed_out:
+                # (2) BUDGET REJECT: the policy exceeded its wall-clock budget on at
+                # least one held-out brain, so its edits are incomplete/absent. Never
+                # accept a policy we could not fully evaluate — reject it outright
+                # (it is remembered as an attempt, so the next gen avoids it).
+                improved = False
+                gate_reason = (
+                    f"BUDGET-REJECT: propose_edits exceeded the "
+                    f"{policy_time_budget:g}s time budget on held-out "
+                    f"({heldout_policy_seconds:.0f}s spent) — the policy is too slow "
+                    f"(likely a quadratic per-site scan); rejected without consulting "
+                    f"fitness. Use an efficient ctx spatial helper "
+                    f"(nodes_within / foreign_labels_near) instead of scanning "
+                    f"node_xyz per site.")
+            elif hard_merge_reject and _fpol > 0:
+                improved = False
+                gate_reason = (
+                    f"HARD-REJECT: {_fpol} held-out POLICY-CAUSED false merge(s) "
+                    f"(a NEW fusion of two DIFFERENT neurons) — --hard-merge-reject "
+                    f"forbids any policy-caused false>0 (9ca88bb gate); fitness "
+                    f"{cand_fitness:g} vs parent {parent_bar:g} ({_gain:+g}) is not "
+                    f"consulted. ({_fpre} pre-existing false merge(s) ignored.)")
+            elif _gain >= score_margin:
+                improved = True
+                gate_reason = (
+                    f"fitness {parent_bar:g} -> {cand_fitness:g} ({_gain:+g} >= "
+                    f"margin {score_margin}; correct {parent_repair['correct']}"
+                    f"->{cand_repair['correct']}, {_fnote})")
+            else:
+                improved = False
+                gate_reason = (
+                    f"fitness {cand_fitness:g} did not beat parent {parent_bar:g} "
+                    f"by margin {score_margin} ({_gain:+g}; "
+                    f"correct={cand_repair['correct']}, {_fnote})")
+            heldout_acc = fold_summary_mean = cand_pooled_metrics["Edge Accuracy"]
+            fold_summary = {"cand_mean": heldout_acc,
+                            "cand_fold_acc": [m["Edge Accuracy"] for m in cand_fold_metrics],
+                            "cand_stdev": 0.0}
+            log(f"   gate: {gate_reason}")
+            log(f"   (recorded: Edge Accuracy {heldout_acc:.4f}, "
+                f"%Merged {cand_pooled_metrics['% Merged Edges']:.4f}, "
+                f"#Merges {cand_pooled_metrics['# Merges']:.2f})")
+            # Absolute standard benchmark metrics for the ledger / performance
+            # figure (diagnostic only — the gate is the fitness, above).
+            heldout_merged_edges = cand_pooled_metrics["% Merged Edges"]
+            heldout_merges = cand_pooled_metrics["# Merges"]
+            heldout_split_edges = cand_pooled_metrics["% Split Edges"]
+            # BLIND SPOT: how many held-out merges the gate could not verify (no
+            # GT coverage at either endpoint) — these carry NO correctness check.
+            _unsc = cand_repair["unscored"]
+            _frac = (_unsc / heldout_n_edits) if heldout_n_edits else float("nan")
+            log(f"   blind spot: {_unsc}/{heldout_n_edits} held-out merges "
+                f"UNSCORED ({_frac:.0%}) — outside held-out GT coverage, neither "
+                f"rewarded nor penalized by the gate")
+            # NEUTRAL (pre-existing) false merges: joins onto a fragment that was
+            # ALREADY a two-neuron mix before the edit. These are NOT penalized
+            # (not the policy's fault) but also earn NO recall credit — a wash. The
+            # COUNT is recorded (heldout_false_merges_preexisting) so post-analysis
+            # can extract/visualize it; logged here so a heavily-pre-merged brain
+            # (where the gate silently under-credits real repairs in corrupt regions)
+            # is visible rather than silent. Flag it if it rivals the scored recall.
+            _scored_edits = cand_repair["correct"] + cand_repair["false"]
+            _pre_share = (_fpre / _scored_edits) if _scored_edits else float("nan")
+            if _fpre:
+                _hot = (_pre_share == _pre_share and _pre_share >= 0.25)
+                log(f"   {'[NOTE] ' if _hot else ''}neutral pre-existing false "
+                    f"merges: {_fpre} (fragment already spanned both neurons — not "
+                    f"penalized, not credited"
+                    + (f"; {_pre_share:.0%} of scored edits — this brain is heavily "
+                       f"pre-merged, so real repairs in those regions go "
+                       f"UNDER-CREDITED)" if _hot else ")"))
+            # ① CONFIDENCE: independent, CALIBRATED multi-feature image verdict on
+            # that blind spot, replayed from reads the policy already made (zero
+            # extra reads), folded into a coarse decision-confidence level. Advisory
+            # by default; only --confidence-veto lets an image-flagged false merge
+            # block accept.
+            cand_conf = _image_confidence(cand_repair)
+            confidence = _confidence_level(cand_repair, cand_conf)
+            log(f"   confidence: {confidence.upper()} "
+                f"(gt_fraction={cand_conf['gt_fraction']:.0%}; model="
+                f"{cand_conf['model_kind']}; blind-spot image verdict: "
+                f"{cand_conf['soft_correct']} likely-correct / "
+                f"{cand_conf['soft_false']} likely-FALSE / "
+                f"{cand_conf['soft_ambiguous']} ambiguous / {cand_conf['unknown']} "
+                f"unimaged; coverage={cand_conf['coverage']:.0%})")
+            # PER-EDIT confidence: one verdict per held-out merge (GT-authoritative
+            # where covered, calibrated multi-feature image model in the blind spot).
+            # A GATE-side triage artifact (uses the held-out GT map) — written to the
+            # gen dir, NEVER shown to the reviser. Zero extra cloud reads.
+            edit_conf_rows = _per_edit_confidence(cand_repair)
+            try:
+                (gen_dir / "edit_confidence.json").write_text(json.dumps(
+                    edit_conf_rows, indent=2, default=str))
+                log(f"   per-edit confidence: {len(edit_conf_rows)} edit(s) -> "
+                    f"{gen_dir / 'edit_confidence.json'}")
+            except OSError as _e:
+                log(f"   [warn] could not write per-edit confidence ({_e})")
+            human_touches = 0
+            if human:
+                human_touches = 1
+                keep = human_gate(gen, train_acc, heldout_acc, parent_edge_accuracy)
+            else:
+                keep = improved
+                # OPT-IN veto (--confidence-veto): if the hard gate would ACCEPT
+                # but the decision is LOW confidence — a large unverified blind spot
+                # AND the independent image signal flags likely-false merges in it —
+                # block it. This acts ONLY on POSITIVE evidence of a bad merge
+                # (soft_false), never on mere absence of GT, so it does not push the
+                # policy away from untraced neurons.
+                if confidence_veto and improved and confidence == "low":
+                    keep = False
+                    log(f"   [VETO] hard gate accepted but confidence is LOW "
+                        f"({cand_conf['soft_false']} image-flagged likely-false "
+                        f"merge(s) in a blind spot with gt_fraction="
+                        f"{cand_conf['gt_fraction']:.0%}); reverting. Disable with "
+                        f"no --confidence-veto to keep it as an advisory label only.")
                     revert(gen_dir, work_heuristics, work_rules)
 
-            # The bar this gen tried to beat (pre-update): the parent's penalized
-            # FITNESS (split-repair score minus merge_penalty * false), which is the
-            # gate's decision variable. Capture the raw parent score too, BEFORE any
-            # accept advances parent_repair, so the ledger can record the true bar.
-            parent_bar = _fitness(parent_repair, merge_penalty)
-            parent_score_raw = parent_repair["score"]
-            # ``train_seconds`` was set in Step 1-3 above: the real scorer time on a
-            # cache MISS, or 0.0 on a HIT (nothing was re-scored this generation). Do
-            # NOT recompute it from ``train_runs`` here — on a hit those are the CACHED
-            # runs whose ``.score.seconds`` is the ORIGINAL scoring time, which would
-            # wrongly re-bill this generation for work it reused.
-            if not import_ok:
-                # Revision was already reverted to the parent above; don't waste a
-                # held-out scoring pass on it. Record as a non-improving gen.
-                heldout_acc = parent_mean_acc
-                cand_repair = dict(parent_repair)  # no change: candidate == parent
-                cand_fitness = parent_bar          # == parent fitness (no change)
-                heldout_n_edits = 0                # nothing scored on held-out
-                heldout_dropped = 0                # nothing scored -> nothing dropped
-                eval_seconds = train_seconds
-                keep = False
-                human_touches = 0
-                # No held-out scoring ran, so there is no decision to gauge confidence
-                # for; record neutral placeholders (the ledger call below is shared).
-                cand_conf = {"soft_correct": 0, "soft_false": 0, "soft_ambiguous": 0,
-                             "unknown": 0, "covered": 0, "coverage": float("nan"),
-                             "gt_fraction": float("nan")}
-                confidence = "n/a"
-                # No held-out scoring ran, so the standard benchmark metrics are absent.
-                heldout_merged_edges = float("nan")
-                heldout_merges = float("nan")
-                heldout_split_edges = float("nan")
-                # No held-out policy pass ran (import/lint failed first), so there is no
-                # policy time to attribute or budget to enforce.
-                heldout_policy_seconds = 0.0
-                heldout_policy_timed_out = False
-            else:
-                # (6) Re-run the REVISED policy on each brain's HELD-OUT, pool results.
-                log("Step 6: score revised policy on pooled held-out...")
-                with Heartbeat(f"gen {gen}: scoring revised policy on pooled held-out"):
-                    heldout_pooled, heldout_runs = _score_pooled(
-                        heldout_ctxs, "heldout_names", str(work_heuristics), "heldout",
-                        max_class_size, verbose, splits_only=splits_only,
-                        two_phase=two_phase, policy_time_budget=policy_time_budget,
-                    )
-                heldout_acc = scoring._weighted_avg(heldout_pooled, "Edge Accuracy")
-                eval_seconds = train_seconds + sum(
-                    hr.score.seconds for hr in heldout_runs)
-                # (1) PER-STEP TIMING + (2) BUDGET: aggregate the policy's own
-                # propose_edits wall-clock (separate from scoring) and whether it blew
-                # the time budget on ANY brain. A timeout means that brain produced no
-                # edits; we surface the cost and, below, force a REJECT so a runaway
-                # (e.g. accidentally O(N^2)) policy is discarded like a failed import
-                # rather than accepted or left to stall the run.
-                heldout_policy_seconds = sum(
-                    getattr(hr, "policy_seconds", 0.0) for hr in heldout_runs)
-                heldout_policy_timed_out = any(
-                    getattr(hr, "policy_timed_out", False) for hr in heldout_runs)
-                log(f"   policy propose_edits time: {heldout_policy_seconds:.1f}s "
-                    f"(budget {policy_time_budget:g}s"
-                    + ("; TIMED OUT — treated as no edits, will REJECT"
-                       if heldout_policy_timed_out else "")
-                    + ")")
-
-                # Per-fold candidate metrics, sliced from the pooled scoring pass —
-                # still computed + recorded (Edge Accuracy is informative), but no
-                # longer the bar. They feed the ledger / log, not the keep decision.
-                cand_fold_metrics = [
-                    fold_metrics(heldout_pooled, f["heldout"])
-                    for f in heldout_folds
-                ]
-                cand_pooled_metrics = {m: scoring._weighted_avg(heldout_pooled, m)
-                                       for m in _FOLD_METRIC_COLS}
-
-                # (7) PRIMARY GATE = penalized split-repair FITNESS on pooled held-out.
-                # Edge Accuracy only moves when a merge bridges a true split EDGE, so
-                # most correct repairs read +0.000 and evolution flat-lined. The
-                # split-repair score counts EVERY correctly-repaired held-out split
-                # (correct) and penalizes only POLICY-CAUSED wrong fusions (false_policy);
-                # the gate then subtracts a HEAVY per-false-merge penalty to get fitness:
-                #   fitness = (correct - false_policy) - merge_penalty * false_policy.
-                # A ``false_preexisting`` (a fragment that already spanned both neurons
-                # before the merge) is NOT the policy's fault, so it does not enter the
-                # score or the penalty (see classify_merge_edits / _fitness). A candidate
-                # is kept iff its fitness beats the parent's by at least ``score_margin``.
-                # This REPLACES the old hard 'false == 0' reject: a policy-caused false
-                # merge is still heavily discouraged (at merge_penalty=100 it costs ~100
-                # correct repairs to offset), but a change that trades a single one for a
-                # large recall gain is no longer rejected outright.
-                #
-                # MARGIN (score_margin, integer >= 1). The bar is
-                # ``fitness >= parent + score_margin``, NOT a strict ``>`` — a strict
-                # ``>`` accepts a +1 win, which on a small held-out set is within
-                # the noise of a single repaired split flipping correct<->unscored
-                # from one revision to the next. score_margin=1 accepts any net
-                # improvement; 2-3 requires the gain to clear that single-repair noise
-                # floor before it is locked in as the parent.
-                cand_repair = _pooled_split_repair(heldout_ctxs, heldout_runs)
-                heldout_n_edits = sum(hr.n_edits for hr in heldout_runs)
-                heldout_dropped = sum(
-                    getattr(hr, "n_split_label_dropped", 0) for hr in heldout_runs)
-                has_split_edit = any(
-                    isinstance(e, dict) and e.get("kind") == "split_label"
-                    for hr in heldout_runs for e in (hr.edits or [])
-                )
-                cand_fitness = _fitness(cand_repair, merge_penalty)
-                _gain = cand_fitness - parent_bar
-                # Only POLICY-caused false merges are penalized; pre-existing two-neuron
-                # fragments the policy merely joined are not the policy's fault (see
-                # _fitness / classify_merge_edits). Log both so the split is visible.
-                _fpol = _policy_false(cand_repair)
-                _fpre = int(cand_repair.get("false_preexisting", 0))
-                _fnote = ("false 0" if cand_repair["false"] == 0 else
-                          f"false {cand_repair['false']} "
-                          f"({_fpol} policy-caused [penalty -{merge_penalty:g}*{_fpol}="
-                          f"{-merge_penalty * _fpol:g}] + {_fpre} pre-existing [not penalized])")
-                # HARD MERGE REJECT (--hard-merge-reject): restore the 9ca88bb gate.
-                # ANY held-out POLICY-CAUSED false merge (a NEW fusion of two DIFFERENT
-                # neurons) rejects the candidate outright, regardless of how much recall
-                # it gained — the smoothed merge_penalty fitness is bypassed as the accept
-                # criterion. This is the strict-precision gate: false_policy==0 is a HARD
-                # constraint, not a penalty. Pre-existing merges (a fragment already
-                # spanning both neurons) do NOT trigger it — the policy did not create
-                # them. (It still requires the fitness margin too, so a clean candidate
-                # that does not improve is not accepted just for being clean.)
-                if heldout_policy_timed_out:
-                    # (2) BUDGET REJECT: the policy exceeded its wall-clock budget on at
-                    # least one held-out brain, so its edits are incomplete/absent. Never
-                    # accept a policy we could not fully evaluate — reject it outright
-                    # (it is remembered as an attempt, so the next gen avoids it).
-                    improved = False
-                    gate_reason = (
-                        f"BUDGET-REJECT: propose_edits exceeded the "
-                        f"{policy_time_budget:g}s time budget on held-out "
-                        f"({heldout_policy_seconds:.0f}s spent) — the policy is too slow "
-                        f"(likely a quadratic per-site scan); rejected without consulting "
-                        f"fitness. Use an efficient ctx spatial helper "
-                        f"(nodes_within / foreign_labels_near) instead of scanning "
-                        f"node_xyz per site.")
-                elif hard_merge_reject and _fpol > 0:
-                    improved = False
-                    gate_reason = (
-                        f"HARD-REJECT: {_fpol} held-out POLICY-CAUSED false merge(s) "
-                        f"(a NEW fusion of two DIFFERENT neurons) — --hard-merge-reject "
-                        f"forbids any policy-caused false>0 (9ca88bb gate); fitness "
-                        f"{cand_fitness:g} vs parent {parent_bar:g} ({_gain:+g}) is not "
-                        f"consulted. ({_fpre} pre-existing false merge(s) ignored.)")
-                elif _gain >= score_margin:
-                    improved = True
-                    gate_reason = (
-                        f"fitness {parent_bar:g} -> {cand_fitness:g} ({_gain:+g} >= "
-                        f"margin {score_margin}; correct {parent_repair['correct']}"
-                        f"->{cand_repair['correct']}, {_fnote})")
-                else:
-                    improved = False
-                    gate_reason = (
-                        f"fitness {cand_fitness:g} did not beat parent {parent_bar:g} "
-                        f"by margin {score_margin} ({_gain:+g}; "
-                        f"correct={cand_repair['correct']}, {_fnote})")
-                heldout_acc = fold_summary_mean = cand_pooled_metrics["Edge Accuracy"]
-                fold_summary = {"cand_mean": heldout_acc,
-                                "cand_fold_acc": [m["Edge Accuracy"] for m in cand_fold_metrics],
-                                "cand_stdev": 0.0}
-                log(f"   gate: {gate_reason}")
-                log(f"   (recorded: Edge Accuracy {heldout_acc:.4f}, "
-                    f"%Merged {cand_pooled_metrics['% Merged Edges']:.4f}, "
-                    f"#Merges {cand_pooled_metrics['# Merges']:.2f})")
-                # Absolute standard benchmark metrics for the ledger / performance
-                # figure (diagnostic only — the gate is the fitness, above).
-                heldout_merged_edges = cand_pooled_metrics["% Merged Edges"]
-                heldout_merges = cand_pooled_metrics["# Merges"]
-                heldout_split_edges = cand_pooled_metrics["% Split Edges"]
-                # BLIND SPOT: how many held-out merges the gate could not verify (no
-                # GT coverage at either endpoint) — these carry NO correctness check.
-                _unsc = cand_repair["unscored"]
-                _frac = (_unsc / heldout_n_edits) if heldout_n_edits else float("nan")
-                log(f"   blind spot: {_unsc}/{heldout_n_edits} held-out merges "
-                    f"UNSCORED ({_frac:.0%}) — outside held-out GT coverage, neither "
-                    f"rewarded nor penalized by the gate")
-                # NEUTRAL (pre-existing) false merges: joins onto a fragment that was
-                # ALREADY a two-neuron mix before the edit. These are NOT penalized
-                # (not the policy's fault) but also earn NO recall credit — a wash. The
-                # COUNT is recorded (heldout_false_merges_preexisting) so post-analysis
-                # can extract/visualize it; logged here so a heavily-pre-merged brain
-                # (where the gate silently under-credits real repairs in corrupt regions)
-                # is visible rather than silent. Flag it if it rivals the scored recall.
-                _scored_edits = cand_repair["correct"] + cand_repair["false"]
-                _pre_share = (_fpre / _scored_edits) if _scored_edits else float("nan")
-                if _fpre:
-                    _hot = (_pre_share == _pre_share and _pre_share >= 0.25)
-                    log(f"   {'[NOTE] ' if _hot else ''}neutral pre-existing false "
-                        f"merges: {_fpre} (fragment already spanned both neurons — not "
-                        f"penalized, not credited"
-                        + (f"; {_pre_share:.0%} of scored edits — this brain is heavily "
-                           f"pre-merged, so real repairs in those regions go "
-                           f"UNDER-CREDITED)" if _hot else ")"))
-                # ① CONFIDENCE: independent, CALIBRATED multi-feature image verdict on
-                # that blind spot, replayed from reads the policy already made (zero
-                # extra reads), folded into a coarse decision-confidence level. Advisory
-                # by default; only --confidence-veto lets an image-flagged false merge
-                # block accept.
-                cand_conf = _image_confidence(cand_repair)
-                confidence = _confidence_level(cand_repair, cand_conf)
-                log(f"   confidence: {confidence.upper()} "
-                    f"(gt_fraction={cand_conf['gt_fraction']:.0%}; model="
-                    f"{cand_conf['model_kind']}; blind-spot image verdict: "
-                    f"{cand_conf['soft_correct']} likely-correct / "
-                    f"{cand_conf['soft_false']} likely-FALSE / "
-                    f"{cand_conf['soft_ambiguous']} ambiguous / {cand_conf['unknown']} "
-                    f"unimaged; coverage={cand_conf['coverage']:.0%})")
-                # PER-EDIT confidence: one verdict per held-out merge (GT-authoritative
-                # where covered, calibrated multi-feature image model in the blind spot).
-                # A GATE-side triage artifact (uses the held-out GT map) — written to the
-                # gen dir, NEVER shown to the reviser. Zero extra cloud reads.
-                edit_conf_rows = _per_edit_confidence(cand_repair)
-                try:
-                    (gen_dir / "edit_confidence.json").write_text(json.dumps(
-                        edit_conf_rows, indent=2, default=str))
-                    log(f"   per-edit confidence: {len(edit_conf_rows)} edit(s) -> "
-                        f"{gen_dir / 'edit_confidence.json'}")
-                except OSError as _e:
-                    log(f"   [warn] could not write per-edit confidence ({_e})")
-                human_touches = 0
-                if human:
-                    human_touches = 1
-                    keep = human_gate(gen, train_acc, heldout_acc, parent_edge_accuracy)
-                else:
-                    keep = improved
-                    # OPT-IN veto (--confidence-veto): if the hard gate would ACCEPT
-                    # but the decision is LOW confidence — a large unverified blind spot
-                    # AND the independent image signal flags likely-false merges in it —
-                    # block it. This acts ONLY on POSITIVE evidence of a bad merge
-                    # (soft_false), never on mere absence of GT, so it does not push the
-                    # policy away from untraced neurons.
-                    if confidence_veto and improved and confidence == "low":
-                        keep = False
-                        log(f"   [VETO] hard gate accepted but confidence is LOW "
-                            f"({cand_conf['soft_false']} image-flagged likely-false "
-                            f"merge(s) in a blind spot with gt_fraction="
-                            f"{cand_conf['gt_fraction']:.0%}); reverting. Disable with "
-                            f"no --confidence-veto to keep it as an advisory label only.")
-                        revert(gen_dir, work_heuristics, work_rules)
-
-            # B: one-line summary of what this generation tried, for the memory.
-            attempt_summary = (
-                f"{diffstat} lines; " + (diagnosis or "").strip().split("\n", 1)[0][:120]
-            ) or "(no diagnosis text)"
-            if keep:
-                parent_edge_accuracy = cand_pooled_metrics["Edge Accuracy"]  # diagnostic
-                parent_mean_acc = heldout_acc                # recorded Edge Accuracy
-                # Advance the metric vectors AND the split-repair bar so the next
-                # generation's gate measures against THIS accepted child, not a stale
-                # baseline. Only set when we actually scored held-out (import-failed
-                # gens keep the prior parent).
-                if import_ok:
-                    parent_metrics = dict(cand_pooled_metrics)
-                    parent_fold_metrics = cand_fold_metrics
-                    parent_pooled = heldout_pooled
-                    parent_repair = cand_repair       # advance the primary gate bar
-                    # Record this accepted policy's train vs held-out split-repair
-                    # scores for the generalization-gap meta-signal (next gen's prompt).
-                    gen_gap_history.append({
-                        "gen": gen,
-                        "train": train_repair["score"],
-                        "heldout": cand_repair["score"],
-                        # Denominators so the gap can be compared as RECALL FRACTION,
-                        # not raw counts: train and held-out expose very different
-                        # numbers of repairable real splits (~13x here), so raw
-                        # train-minus-held-out mostly measures brain size, not
-                        # non-transfer. See ``_format_gen_gap``.
-                        "train_reachable": train_repair.get("reachable_real", 0),
-                        "heldout_reachable": cand_repair.get("reachable_real", 0),
-                    })
-                shutil.copy2(work_heuristics, gen_dir / "heuristics.accepted.py")
-                shutil.copy2(work_rules, gen_dir / "rules.accepted.md")
-                note = "accepted (new parent)"
-                if k_eff > 1 and import_ok:
-                    note += (f" [folds {[round(a,2) for a in fold_summary['cand_fold_acc']]}"
-                             f" ±{fold_summary['cand_stdev']:.3f}]")
-                # Parent advanced: prior rejections were against the OLD parent and
-                # no longer apply, so clear the in-prompt memory.
-                attempts_vs_parent = []
-            else:
-                revert(gen_dir, work_heuristics, work_rules)  # restore the parent
-                note = "reverted (did not beat parent)"
-                # Remember this rejected attempt so the next gen proposes something new.
-                # Delta is in FITNESS units (penalized), matching the gate — BUT we also
-                # carry the (correct, false) DECOMPOSITION so the next gen can see WHY a
-                # rejection lost. A big-negative fitness with high ``correct`` and a few
-                # ``false`` is a HIGH-RECALL NEAR-MISS (cull the false merges to unlock
-                # it), not "breadth is death" — the fitness delta alone hides that and
-                # was steering the reviser into a zero-false / low-recall local optimum.
-                attempts_vs_parent.append({
+        # B: one-line summary of what this generation tried, for the memory.
+        attempt_summary = (
+            f"{diffstat} lines; " + (diagnosis or "").strip().split("\n", 1)[0][:120]
+        ) or "(no diagnosis text)"
+        if keep:
+            parent_edge_accuracy = cand_pooled_metrics["Edge Accuracy"]  # diagnostic
+            parent_mean_acc = heldout_acc                # recorded Edge Accuracy
+            # Advance the metric vectors AND the split-repair bar so the next
+            # generation's gate measures against THIS accepted child, not a stale
+            # baseline. Only set when we actually scored held-out (import-failed
+            # gens keep the prior parent).
+            if import_ok:
+                parent_metrics = dict(cand_pooled_metrics)
+                parent_fold_metrics = cand_fold_metrics
+                parent_pooled = heldout_pooled
+                parent_repair = cand_repair       # advance the primary gate bar
+                # Record this accepted policy's train vs held-out split-repair
+                # scores for the generalization-gap meta-signal (next gen's prompt).
+                gen_gap_history.append({
                     "gen": gen,
-                    "summary": attempt_summary,
-                    "heldout": cand_fitness - parent_bar,
-                    "correct": cand_repair["correct"],
-                    # ``false`` here is the PENALIZED (policy-caused) count — the one the
-                    # reviser should act on. Pre-existing false merges are not its fault
-                    # and are excluded, so the near-miss decomposition points at fusions
-                    # it can actually cull.
-                    "false": _policy_false(cand_repair),
-                    "accepted": False,
+                    "train": train_repair["score"],
+                    "heldout": cand_repair["score"],
+                    # Denominators so the gap can be compared as RECALL FRACTION,
+                    # not raw counts: train and held-out expose very different
+                    # numbers of repairable real splits (~13x here), so raw
+                    # train-minus-held-out mostly measures brain size, not
+                    # non-transfer. See ``_format_gen_gap``.
+                    "train_reachable": train_repair.get("reachable_real", 0),
+                    "heldout_reachable": cand_repair.get("reachable_real", 0),
                 })
-            # B (durable): every generation's attempt is persisted in ledger.jsonl
-            # (the single source of truth) via ledger.record(...) just below. The old
-            # per-run attempts.md is no longer written inline; render the same
-            # human-readable timeline on demand from the ledger with
-            # ``python -m proofreader_evolve.harness.ledger <run_dir>`` (see
-            # ledger.render_attempts_timeline).
-            log(f"Step 7: fitness={cand_fitness:g} (split-repair "
-                f"score={cand_repair['score']}, correct={cand_repair['correct']}, "
-                f"false={cand_repair['false']} [{_policy_false(cand_repair)} policy-caused / "
-                f"{cand_repair.get('false_preexisting', 0)} pre-existing]; "
-                f"parent fitness={parent_bar:g}); "
-                f"Edge Accuracy={heldout_acc:.4f} -> {note}")
-            # HIGH-RECALL NEAR-MISS alert: a REVERTED candidate that repaired many real
-            # splits and lost only to a few POLICY-CAUSED false merges is not "breadth is
-            # death" — it is a precision-cull opportunity. Keys off false_policy (the
-            # culla­ble fusions), not the total false, so pre-existing merges (which the
-            # policy cannot fix) do not mask a genuine near-miss.
-            _near_false = _policy_false(cand_repair)
-            if (not keep and _near_false > 0
-                    and cand_repair["correct"] >= 20
-                    and cand_repair["correct"] > 10 * _near_false):
-                log(f"   [NEAR-MISS] reverted candidate repaired "
-                    f"{cand_repair['correct']} real splits, lost only to "
-                    f"{_near_false} policy-caused false merge(s) — culling those "
-                    f"{_near_false} would unlock this high-recall regime (do not abandon "
-                    f"the breadth)")
+            shutil.copy2(work_heuristics, gen_dir / "heuristics.accepted.py")
+            shutil.copy2(work_rules, gen_dir / "rules.accepted.md")
+            note = "accepted (new parent)"
+            if k_eff > 1 and import_ok:
+                note += (f" [folds {[round(a,2) for a in fold_summary['cand_fold_acc']]}"
+                         f" ±{fold_summary['cand_stdev']:.3f}]")
+            # Parent advanced: prior rejections were against the OLD parent and
+            # no longer apply, so clear the in-prompt memory.
+            attempts_vs_parent = []
+        else:
+            revert(gen_dir, work_heuristics, work_rules)  # restore the parent
+            note = "reverted (did not beat parent)"
+            # Remember this rejected attempt so the next gen proposes something new.
+            # Delta is in FITNESS units (penalized), matching the gate — BUT we also
+            # carry the (correct, false) DECOMPOSITION so the next gen can see WHY a
+            # rejection lost. A big-negative fitness with high ``correct`` and a few
+            # ``false`` is a HIGH-RECALL NEAR-MISS (cull the false merges to unlock
+            # it), not "breadth is death" — the fitness delta alone hides that and
+            # was steering the reviser into a zero-false / low-recall local optimum.
+            attempts_vs_parent.append({
+                "gen": gen,
+                "summary": attempt_summary,
+                "heldout": cand_fitness - parent_bar,
+                "correct": cand_repair["correct"],
+                # ``false`` here is the PENALIZED (policy-caused) count — the one the
+                # reviser should act on. Pre-existing false merges are not its fault
+                # and are excluded, so the near-miss decomposition points at fusions
+                # it can actually cull.
+                "false": _policy_false(cand_repair),
+                "accepted": False,
+            })
+        # B (durable): every generation's attempt is persisted in ledger.jsonl
+        # (the single source of truth) via ledger.record(...) just below. The old
+        # per-run attempts.md is no longer written inline; render the same
+        # human-readable timeline on demand from the ledger with
+        # ``python -m proofreader_evolve.harness.ledger <run_dir>`` (see
+        # ledger.render_attempts_timeline).
+        log(f"Step 7: fitness={cand_fitness:g} (split-repair "
+            f"score={cand_repair['score']}, correct={cand_repair['correct']}, "
+            f"false={cand_repair['false']} [{_policy_false(cand_repair)} policy-caused / "
+            f"{cand_repair.get('false_preexisting', 0)} pre-existing]; "
+            f"parent fitness={parent_bar:g}); "
+            f"Edge Accuracy={heldout_acc:.4f} -> {note}")
+        # HIGH-RECALL NEAR-MISS alert: a REVERTED candidate that repaired many real
+        # splits and lost only to a few POLICY-CAUSED false merges is not "breadth is
+        # death" — it is a precision-cull opportunity. Keys off false_policy (the
+        # culla­ble fusions), not the total false, so pre-existing merges (which the
+        # policy cannot fix) do not mask a genuine near-miss.
+        _near_false = _policy_false(cand_repair)
+        if (not keep and _near_false > 0
+                and cand_repair["correct"] >= 20
+                and cand_repair["correct"] > 10 * _near_false):
+            log(f"   [NEAR-MISS] reverted candidate repaired "
+                f"{cand_repair['correct']} real splits, lost only to "
+                f"{_near_false} policy-caused false merge(s) — culling those "
+                f"{_near_false} would unlock this high-recall regime (do not abandon "
+                f"the breadth)")
 
-            ledger.record(GenerationCost(
-                generation=gen,
-                wall_seconds=time.monotonic() - gen_wall0,
-                eval_seconds=eval_seconds,
-                input_tokens=in_tok,
-                output_tokens=out_tok,
-                cache_read_input_tokens=cache_read_tok,
-                cache_creation_input_tokens=cache_creation_tok,
-                cost_usd=cost,
-                n_evaluations=2,
-                human_interventions=human_touches,
-                train_edge_accuracy=train_acc,
-                heldout_edge_accuracy=heldout_acc,
-                heldout_merged_edges=heldout_merged_edges,
-                heldout_merges=heldout_merges,
-                heldout_split_edges=heldout_split_edges,
-                parent_split_repair_score=parent_score_raw,  # raw parent score, for plots
-                accepted=keep,
-                note=note,
-                heldout_n_edits=heldout_n_edits,
-                heldout_correct_merges=cand_repair["correct"],
-                heldout_false_merges=cand_repair["false"],
-                heldout_false_merges_policy=_policy_false(cand_repair),
-                heldout_false_merges_preexisting=int(
-                    cand_repair.get("false_preexisting", 0)),
-                heldout_split_repair_score=cand_repair["score"],
-                merge_penalty=merge_penalty,
-                heldout_fitness=cand_fitness,
-                parent_fitness=parent_bar,
-                heldout_unscored_merges=cand_repair["unscored"],
-                heldout_unscored_fraction=(
-                    cand_repair["unscored"] / heldout_n_edits
-                    if heldout_n_edits else float("nan")),
-                decision_confidence=confidence,
-                heldout_gt_fraction=cand_conf["gt_fraction"],
-                heldout_soft_correct=cand_conf["soft_correct"],
-                heldout_soft_false=cand_conf["soft_false"],
-                heldout_soft_ambiguous=cand_conf["soft_ambiguous"],
-                confidence_veto=confidence_veto,
-                heldout_policy_seconds=heldout_policy_seconds,
-                heldout_policy_timed_out=heldout_policy_timed_out,
-                policy_time_budget=policy_time_budget,
-                splits_only=splits_only,
-                heldout_split_label_dropped=heldout_dropped,
-                two_phase=two_phase,
-                heldout_mrepair_correct=cand_repair.get("mrepair_correct", 0),
-                heldout_mrepair_false=cand_repair.get("mrepair_false", 0),
-                heldout_mrepair_unscored=cand_repair.get("mrepair_unscored", 0),
-                read_priors=read_priors,
-                train_false_merges=train_false,
-                train_false_merges_preexisting=train_false_preexisting,
-                candidate_path=candidate_path,
-                heuristics_diffstat=diffstat,
-                diagnosis=(diagnosis or "")[:2000],  # truncate; full text is in stdout
-            ))
+        ledger.record(GenerationCost(
+            generation=gen,
+            wall_seconds=time.monotonic() - gen_wall0,
+            eval_seconds=eval_seconds,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+            cache_read_input_tokens=cache_read_tok,
+            cache_creation_input_tokens=cache_creation_tok,
+            cost_usd=cost,
+            n_evaluations=2 + n_screen_evals,
+            n_candidates=candidates_per_gen,
+            screen_winner=winner_idx if candidates_per_gen > 1 else 0,
+            screen_seconds=screen_secs,
+            human_interventions=human_touches,
+            train_edge_accuracy=train_acc,
+            heldout_edge_accuracy=heldout_acc,
+            heldout_merged_edges=heldout_merged_edges,
+            heldout_merges=heldout_merges,
+            heldout_split_edges=heldout_split_edges,
+            parent_split_repair_score=parent_score_raw,  # raw parent score, for plots
+            accepted=keep,
+            note=note,
+            heldout_n_edits=heldout_n_edits,
+            heldout_correct_merges=cand_repair["correct"],
+            heldout_false_merges=cand_repair["false"],
+            heldout_false_merges_policy=_policy_false(cand_repair),
+            heldout_false_merges_preexisting=int(
+                cand_repair.get("false_preexisting", 0)),
+            heldout_split_repair_score=cand_repair["score"],
+            merge_penalty=merge_penalty,
+            heldout_fitness=cand_fitness,
+            parent_fitness=parent_bar,
+            heldout_unscored_merges=cand_repair["unscored"],
+            heldout_unscored_fraction=(
+                cand_repair["unscored"] / heldout_n_edits
+                if heldout_n_edits else float("nan")),
+            decision_confidence=confidence,
+            heldout_gt_fraction=cand_conf["gt_fraction"],
+            heldout_soft_correct=cand_conf["soft_correct"],
+            heldout_soft_false=cand_conf["soft_false"],
+            heldout_soft_ambiguous=cand_conf["soft_ambiguous"],
+            confidence_veto=confidence_veto,
+            heldout_policy_seconds=heldout_policy_seconds,
+            heldout_policy_timed_out=heldout_policy_timed_out,
+            policy_time_budget=policy_time_budget,
+            splits_only=splits_only,
+            heldout_split_label_dropped=heldout_dropped,
+            two_phase=two_phase,
+            heldout_mrepair_correct=cand_repair.get("mrepair_correct", 0),
+            heldout_mrepair_false=cand_repair.get("mrepair_false", 0),
+            heldout_mrepair_unscored=cand_repair.get("mrepair_unscored", 0),
+            read_priors=read_priors,
+            train_false_merges=train_false,
+            train_false_merges_preexisting=train_false_preexisting,
+            candidate_path=candidate_path,
+            heuristics_diffstat=diffstat,
+            diagnosis=(diagnosis or "")[:2000],  # truncate; full text is in stdout
+        ))
 
     # Run-isolation audit: if the reviser ever attempted to touch a sibling run's
     # files, the guard denied it — but flag the run loudly so the result isn't
@@ -2773,6 +3222,32 @@ def main() -> int:
                         "base (autodiscovery/all-runs.combined.md). Default: read it. "
                         "Use this for an ablation — does the reviser improve WITHOUT "
                         "the cross-run priors?")
+    p.add_argument("--start-from", default=None, metavar="HEURISTICS_PY",
+                   help="Seed policy file to start the lineage from (default: "
+                        "artifacts/heuristics.py — the detector-prior seed). Use "
+                        "artifacts/seeds/geometric.py for the pure-geometry control "
+                        "lineage, or a previous run's accepted heuristics.py to "
+                        "continue that lineage.")
+    p.add_argument("--start-rules", default=None, metavar="RULES_MD",
+                   help="Starting rules.md to pair with --start-from (default: "
+                        "artifacts/rules.md).")
+    p.add_argument("--candidates-per-gen", type=int, default=1, metavar="K",
+                   help="Revision candidates per generation (default 1 = classic "
+                        "loop). K>1 fans out K independent parallel reviser "
+                        "sessions from the same parent (rotating focus "
+                        "directives), pre-screens them on the TRAIN side with the "
+                        "gate's own penalized fitness, and sends ONLY the best to "
+                        "the held-out gate — so held-out cost per generation is "
+                        "unchanged while each generation samples K mutations. "
+                        "Screened-out candidates join the attempts memory. With "
+                        "K>1 the accept margin is raised 1->2 to absorb the "
+                        "winner's-curse noise of picking the train argmax.")
+    p.add_argument("--screen-fraction", type=float, default=1.0, metavar="F",
+                   help="Fraction (0,1] of each train brain's skeletons the K>1 "
+                        "screen scores on (default 1.0). The screen fitness is "
+                        "subset-invariant (edits are graph-wide and classified "
+                        "against the full train map), so lowering this only trims "
+                        "the screen's diagnostic scoring wall-clock.")
     p.add_argument("--verbose", action="store_true")
     args = p.parse_args()
     brains = None
@@ -2797,6 +3272,10 @@ def main() -> int:
             confidence_veto=args.confidence_veto,
             hard_merge_reject=args.hard_merge_reject,
             policy_time_budget=args.policy_time_budget,
+            start_from=args.start_from,
+            start_rules=args.start_rules,
+            candidates_per_gen=args.candidates_per_gen,
+            screen_fraction=args.screen_fraction,
         ))
     except KeyboardInterrupt:
         # Ctrl-C: note it in the (still-teed) log, then exit non-zero quietly.
