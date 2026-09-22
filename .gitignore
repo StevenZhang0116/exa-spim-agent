@@ -109,4 +109,5 @@ workflow_summary.tex
 
 # Notebook analysis artifacts
 notebooks/merge_diagnosis/
+notebooks/merge_candidate_pool_sweep_outputs/
 notebooks/split_candidate_pool_sweep_outputs/
