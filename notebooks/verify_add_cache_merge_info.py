@@ -3,7 +3,7 @@
 Verify that an ``_add.pkl`` cache carries merge-error information consistent with
 the canonical ``metrics_out/<brain>/<seg_id>/`` results.
 
-This is the *merge-focused* companion to ``verify_add_cache_metrics.ipynb`` (which
+This is the *merge-focused* companion to ``verify_add_cache_metrics.py`` (which
 checks the per-neuron edge metrics broadly). Here we only look at merges, and we
 compare against the two canonical merge artifacts:
 

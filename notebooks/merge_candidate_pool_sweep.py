@@ -39,7 +39,7 @@ Usage (panda env, from the project root; needs >20 GB RAM per cache)::
 
 Artifacts land in
 ``notebooks/merge_candidate_pool_sweep_outputs/mcl<MCL>_<signature>/``.
-Re-running with the same configuration reuses finished brains (checkpoint);
+Re-running with the same configuration, cache identity and sweep source reuses finished brains (checkpoint);
 delete a brain's ``per_brain`` files to force recomputation. The figures are
 enumeration ceilings, not classifier performance: after adopting a policy, a
 site-scoring model must be trained and evaluated on held-out brains.
@@ -282,16 +282,22 @@ def sweep_payload(payload: dict, brain: str, config: SweepConfig
 
 def sweep_brain(cache_path: Path, config: SweepConfig, run_dir: Path
                 ) -> tuple[pd.DataFrame, dict]:
-    """Checkpointed per-brain sweep: reuse finished brains of the SAME config."""
+    """Reuse only checkpoints for the same config, cache file and sweep source."""
+    cache_stat = cache_path.stat()
+    cache_identity = {"path": str(cache_path.resolve()), "size": cache_stat.st_size,
+                      "mtime_ns": cache_stat.st_mtime_ns, "inode": cache_stat.st_ino}
+    source_sha256 = hashlib.sha256(THIS_FILE.read_bytes()).hexdigest()
     brain = brain_id_from_cache(cache_path)
     per_brain = run_dir / "per_brain"
     per_brain.mkdir(parents=True, exist_ok=True)
     sweep_path = per_brain / f"{brain}_sweep.csv"
     sites_path = per_brain / f"{brain}_site_distances.csv"
     meta_path = per_brain / f"{brain}_meta.json"
-    if sweep_path.exists() and meta_path.exists():
+    if sweep_path.exists() and meta_path.exists() and sites_path.exists():
         meta = json.loads(meta_path.read_text())
-        if meta.get("config_signature") == config.signature():
+        if (meta.get("config_signature") == config.signature()
+                and meta.get("cache_identity") == cache_identity
+                and meta.get("sweep_source_sha256") == source_sha256):
             frame = pd.read_csv(sweep_path)
             if len(frame):
                 print(f"{brain}: reusing checkpoint {sweep_path}", flush=True)
@@ -300,7 +306,13 @@ def sweep_brain(cache_path: Path, config: SweepConfig, run_dir: Path
     frame, sites_df, meta = sweep_payload(payload, brain, config)
     del payload
     gc.collect()
+    after = cache_path.stat()
+    if (after.st_size, after.st_mtime_ns, after.st_ino) != (
+            cache_stat.st_size, cache_stat.st_mtime_ns, cache_stat.st_ino):
+        raise RuntimeError(f"Cache changed during sweep: {cache_path}; rerun after refresh completes")
     meta["cache"] = str(cache_path)
+    meta["cache_identity"] = cache_identity
+    meta["sweep_source_sha256"] = source_sha256
     meta["config_signature"] = config.signature()
     atomic_to_csv(frame, sweep_path)
     atomic_to_csv(sites_df, sites_path)
