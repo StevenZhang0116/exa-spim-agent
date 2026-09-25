@@ -4,10 +4,13 @@ Run in the panda conda environment. Only load trusted pickle caches.
 Each split candidate is a segment PAIR with two model-proposed endpoint nodes,
 so the viewing center is the gap midpoint between them — a genuinely localized
 candidate site, unlike the merge plotter's viewing anchor. GT labels never
-determine ranking. The default score column is the nested out-of-fold selector
-probability, which covers only the scored subset of the pool; rows without a
-finite score are skipped. `split_probability_in_sample` covers every row but is
+determine ranking. The default score column is the winner out-of-fold score,
+matching the detector's score-by-class and workload figures; rows without a
+finite score are skipped. Use --score-column split_probability_oof_selector
+for model-selection diagnostics. Scores are not calibrated probabilities.
+`split_probability_in_sample` covers every row but is
 in-sample (optimistic) — use it only for browsing, not for honest ranking.
+Skeleton edges crossing the displayed volume are clipped to its boundary.
 """
 
 import argparse
@@ -24,10 +27,15 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 
+try:
+    from scripts.skeleton_plot_util import clipped_edges_in_patch
+except ModuleNotFoundError:
+    from skeleton_plot_util import clipped_edges_in_patch
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RESULT = ROOT / "autodiscovery-application/split-error-794495-mcl100-run-3_2026-08-24"
-DEFAULT_SCORE = "split_probability_oof_selector"
+DEFAULT_SCORE = "split_probability_oof"
 VIEWS = (("XY", 0, (0, 1)), ("XZ", 1, (0, 2)), ("YZ", 2, (1, 2)))
 SIDE_A_COLOR = "#00e5ff"
 SIDE_B_COLOR = "#ff4dff"
@@ -139,7 +147,7 @@ def read_patch(image, center_xyz, anisotropy, patch_um):
 
 def skeleton_overlay(axes, graph, origin, shape, anisotropy, highlight=None):
     highlight = highlight or {}
-    edges, edge_components = graph.edges_in_patch(origin, shape, return_components=True)
+    edges, edge_components = clipped_edges_in_patch(graph, origin, shape, anisotropy)
     nodes, node_components = graph.nodes_in_patch(origin, shape, return_components=True)
     components = sorted(set(map(int, edge_components)) | set(map(int, node_components)))
     names = {
@@ -277,7 +285,8 @@ def main(argv=None):
     parser.add_argument("--pkl", type=Path, help="Matching trusted labeled dataset cache")
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--score-column", default=DEFAULT_SCORE,
-                        help="Default: nested out-of-fold selector score (scored subset only); no GT-label filtering")
+                        help=f"Default: {DEFAULT_SCORE} (winner OOF, matching detector figures); "
+                            "selector OOF is available as an explicit diagnostic override")
     parser.add_argument("--min-score", type=float, help="Optional lower score cutoff; scores are not calibrated probabilities")
     parser.add_argument("--patch-um", nargs=3, type=float, default=(100, 100, 40),
                         metavar=("X", "Y", "Z"), help="Field of view in micrometers (default: 100 100 40)")
