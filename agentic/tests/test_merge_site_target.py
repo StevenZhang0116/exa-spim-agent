@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import ast
 import hashlib
+import inspect
 import json
+import sys
 import tempfile
 import unittest
 from collections import defaultdict
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import networkx as nx
 import numpy as np
@@ -84,6 +89,22 @@ def _write_sweep_bundle(root: Path) -> Path:
             "bytes": aggregate.stat().st_size,
         },
     ]}, indent=2) + "\n", encoding="utf-8")
+    entries = json.loads(manifest.read_text())["artifacts"]
+    (root / "per_brain").mkdir()
+    (root / "cache").mkdir()
+    for brain in ("794495", "794493"):
+        cache = root / "cache" / f"dataset_cache_{brain}_mcl100_add.pkl"
+        cache.write_bytes(b"synthetic cache identity")
+        stat = cache.stat()
+        metadata = root / "per_brain" / f"{brain}_meta.json"
+        metadata.write_text(json.dumps({
+            "brain": brain, "config_signature": "deadbeefdeadbeef", "cache": str(cache.resolve()),
+            "cache_identity": {"path": str(cache.resolve()), "size": stat.st_size,
+                               "mtime_ns": stat.st_mtime_ns, "inode": stat.st_ino},
+        }))
+        entries.append({"path": f"per_brain/{brain}_meta.json", "sha256": _sha256_bytes(metadata.read_bytes()),
+                        "bytes": metadata.stat().st_size})
+    manifest.write_text(json.dumps({"artifacts": entries}))
     return source_policy
 
 
@@ -137,7 +158,49 @@ def _adapter_namespace() -> dict:
     return namespace
 
 
+def _runtime_namespace() -> dict:
+    namespace = _adapter_namespace()
+    namespace["inspect"] = inspect
+    namespace["MERGE_FEATURE_SCOPES"] = {"x": "candidate"}
+    storage = (Path(__file__).resolve().parents[1] / "detector_build"
+               / "templates" / "merge_feature_accumulator.py.tmpl")
+    exec(storage.read_text(), namespace)
+    template = (Path(__file__).resolve().parents[1] / "detector_build"
+                / "templates" / "detector_runtime.py.tmpl").read_text()
+    start = template.index("# --- blindness guard")
+    end = template.index("# --- end blindness guard ---")
+    exec(template[start:end], namespace)
+    wrapper = next(
+        node for node in ast.parse(template).body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_extract_features_runtime"
+    )
+    exec(compile(ast.Module(body=[wrapper], type_ignores=[]),
+                 "detector_runtime.py.tmpl", "exec"), namespace)
+    return namespace
+
+
 class MergeSiteContractTests(unittest.TestCase):
+    def test_junction_audit_is_not_a_feature_or_automatic_label(self):
+        from agentic.detector_build.assembly import FEATURE_FORBIDDEN_PAYLOAD_KEYS
+
+        namespace = _runtime_namespace()
+        payload = _merge_site_payload()
+        samples, expected_labels = namespace["build_sample_universe"](payload)
+        payload["gt_junction_audit"] = {
+            "schema_version": 1, "audit_only": True,
+            "junctions": [{"node_id": 8, "status": "merge_supported"}],
+        }
+        del payload["__detector_sample_universe_cache__"]
+        _, labels = namespace["build_sample_universe"](payload)
+        np.testing.assert_array_equal(labels, expected_labels)
+        blind = namespace["_BlindPayloadView"](payload, samples)
+        for key in ("gt_junction_audit", "gt_merge_site_metadata"):
+            self.assertIn(key, FEATURE_FORBIDDEN_PAYLOAD_KEYS)
+            self.assertNotIn(key, blind)
+            with self.assertRaises(namespace["BlindnessViolation"]):
+                blind[key]
+
     def test_spec_names_do_not_collide_with_segment_merge(self) -> None:
         site = target_spec(DetectorTarget.MERGE_SITE)
         merge = target_spec(DetectorTarget.MERGE)
@@ -166,6 +229,57 @@ class MergeSiteContractTests(unittest.TestCase):
 
 
 class MergeCandidatePolicyTests(unittest.TestCase):
+    def test_stale_cache_aborts_workflow_before_output_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = _write_sweep_bundle(root / "bundle")
+            (source.parent / "cache/dataset_cache_794495_mcl100_add.pkl").write_bytes(b"refreshed")
+            run = root / "merge-error-794495-mcl100_2026-08-04.json"
+            run.write_text("{}")
+            output = root / "existing-experiment"
+            output.mkdir()
+            baseline = output / "baseline.txt"
+            baseline.write_text("preserve")
+            argv = ["run_detector_build_workflow.py", str(run), "--out-dir", str(output),
+                    "--merge-candidate-policy", str(source), "--yes"]
+            with patch.object(workflow, "PROJECT_ROOT", root), patch.object(sys, "argv", argv), \
+                    patch.object(workflow, "resolve_run_context", return_value=SimpleNamespace(target=DetectorTarget.MERGE)), \
+                    patch.object(workflow, "confirm_and_clean") as cleanup, \
+                    self.assertRaisesRegex(SystemExit, "cache identity is stale"):
+                workflow.main()
+            cleanup.assert_not_called()
+            self.assertEqual(baseline.read_text(), "preserve")
+
+    def test_cache_freshness_and_metadata_are_validated(self):
+        for change in ("replaced_cache", "missing_cache", "missing_meta", "tampered_meta", "legacy_meta"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                source = _write_sweep_bundle(root / "bundle")
+                cache = source.parent / "cache" / "dataset_cache_794495_mcl100_add.pkl"
+                meta = source.parent / "per_brain" / "794495_meta.json"
+                if change == "replaced_cache":
+                    replacement = cache.with_suffix(".tmp")
+                    replacement.write_bytes(cache.read_bytes())
+                    replacement.replace(cache)
+                elif change == "missing_cache":
+                    cache.unlink()
+                elif change == "missing_meta":
+                    meta.unlink()
+                else:
+                    data = json.loads(meta.read_text())
+                    data.pop("cache_identity")
+                    meta.write_text(json.dumps(data))
+                    if change == "legacy_meta":
+                        manifest = source.parent / "artifact_manifest.json"
+                        data = json.loads(manifest.read_text())
+                        for entry in data["artifacts"]:
+                            if entry["path"] == "per_brain/794495_meta.json":
+                                entry["sha256"] = _sha256_bytes(meta.read_bytes())
+                        manifest.write_text(json.dumps(data))
+                with self.assertRaises(SystemExit):
+                    validate_merge_candidate_policy_sources(source, minimum_site_recall=.8,
+                                                            expected_mcl=100, project_root=root)
+
     def test_compile_validate_and_tamper_detection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -190,6 +304,7 @@ class MergeCandidatePolicyTests(unittest.TestCase):
                 policy["selected_policy"]["positive_label_radius_um"], 10.0)
             self.assertEqual(policy["evidence_metrics"]["total_candidates"], 60)
             self.assertEqual(policy["evidence_scope"]["mcl"], 100)
+            self.assertEqual(len(policy["provenance"]["cache_evidence"]), 2)
             self.assertFalse(
                 policy["evidence_scope"]["bridge_candidate_family_evaluated"])
 
@@ -240,6 +355,99 @@ class MergeCandidatePolicyTests(unittest.TestCase):
 
 
 class MergeSiteAdapterTests(unittest.TestCase):
+    def test_combined_sites_add_positive_without_changing_candidates_or_legacy_positive(self):
+        namespace = _runtime_namespace()
+        payload = _merge_site_payload()
+        old_samples, old_labels = namespace["build_sample_universe"](payload)
+        payload.pop("__detector_sample_universe_cache__")
+        payload["gt_merge_sites"].append({
+            "segment_id": 222, "xyz": [105., 0., 0.], "source": "two_gt_junction",
+            "gt_neuron": "A", "gt_neurons": ["A", "B"],
+        })
+        payload["gt_merge_site_metadata"] = {"method": "junction_gt_branch_support_v1",
+                                             "parameters": {"match_radius_um": 6.}}
+        samples, labels = namespace["build_sample_universe"](payload)
+        self.assertEqual([row["node_id"] for row in samples], [row["node_id"] for row in old_samples])
+        self.assertEqual(old_labels.tolist(), [1, 0])
+        self.assertEqual(labels.tolist(), [1, 1])
+        provenance = namespace["sample_universe_audit"](payload, samples, labels)["site_provenance"]
+        self.assertEqual(provenance["source_counts"], {
+            "geometric_only": 4, "two_gt_only": 1, "shared": 0, "untagged_legacy": 4})
+        self.assertEqual(provenance["n_sites"], 5)
+        self.assertEqual(provenance["generation_metadata"]["parameters"]["match_radius_um"], 6.)
+        blind = namespace["_BlindPayloadView"](payload, samples)
+        with self.assertRaises(namespace["BlindnessViolation"]):
+            namespace["_merge_site_provenance"](blind)
+        payload["gt_merge_site_metadata"]["parameters"]["match_radius_um"] = 99.
+        self.assertEqual(provenance["generation_metadata"]["parameters"]["match_radius_um"], 6.)
+
+    def test_site_provenance_hashes_current_content_and_handles_shared_and_missing(self):
+        namespace = _adapter_namespace()
+        payload = _merge_site_payload()
+        payload["gt_merge_sites"][0].update(source="geometric_walk",
+            sources=["geometric_walk", "two_gt_junction"])
+        first = namespace["_merge_site_provenance"](payload)
+        self.assertEqual(first["source_counts"]["shared"], 1)
+        payload["gt_merge_sites"].reverse()
+        self.assertEqual(namespace["_merge_site_provenance"](payload), first)
+        payload["gt_merge_sites"][0]["xyz"] = [998., 999., 999.]
+        self.assertNotEqual(namespace["_merge_site_provenance"](payload)["site_records_sha256"],
+                            first["site_records_sha256"])
+        empty = namespace["_merge_site_provenance"]({"gt_merge_sites": []})
+        missing = namespace["_merge_site_provenance"]({})
+        self.assertTrue(empty["sites_available"])
+        self.assertFalse(missing["sites_available"])
+        self.assertIsNone(missing["site_records_sha256"])
+        self.assertIsNotNone(empty["site_records_sha256"])
+
+    def test_extraction_restores_audit_rows_without_exposing_gt(self) -> None:
+        namespace = _runtime_namespace()
+        payload = _merge_site_payload()
+        expected_samples, expected_labels = namespace["build_sample_universe"](payload)
+        accumulator = namespace["FeatureAccumulator"](expected_samples)
+
+        def extract_features(blind, **kwargs):
+            samples, labels = namespace["build_sample_universe"](blind)
+            self.assertFalse(np.any(labels))
+            for sample in samples:
+                self.assertNotIn("in_ambiguous_ring", sample)
+                self.assertNotIn("distance_to_nearest_gt_site_um", sample)
+            with self.assertRaises(namespace["BlindnessViolation"]):
+                blind["gt_merge_sites"]
+            return samples, labels, accumulator
+
+        namespace["extract_features"] = extract_features
+        samples, labels, returned = namespace["_extract_features_runtime"](payload)
+
+        self.assertEqual(samples, expected_samples)
+        np.testing.assert_array_equal(labels, expected_labels)
+        self.assertIs(returned, accumulator)
+        audit = namespace["sample_universe_audit"](payload, samples, labels)
+        self.assertEqual(audit["n_ambiguous_ring"], 1)
+        frame = namespace["sample_output_frame"](samples, labels)
+        self.assertEqual(frame["in_ambiguous_ring"].tolist(), [0, 1])
+
+    def test_profile_extraction_restores_subset_audit_by_identity(self) -> None:
+        namespace = _runtime_namespace()
+        payload = _merge_site_payload()
+        expected_samples, expected_labels = namespace["build_sample_universe"](payload)
+        accumulator = namespace["FeatureAccumulator"](expected_samples[1:])
+
+        def extract_features(blind, **kwargs):
+            self.assertEqual(kwargs["profile_segment_limit"], 1)
+            samples, labels = namespace["build_sample_universe"](blind)
+            return samples[1:], labels[1:], accumulator
+
+        namespace["extract_features"] = extract_features
+        samples, labels, _ = namespace["_extract_features_runtime"](
+            payload, profile_segment_limit=1)
+
+        self.assertEqual(samples, expected_samples[1:])
+        np.testing.assert_array_equal(labels, expected_labels[1:])
+        audit = namespace["sample_universe_audit"](payload, samples, labels)
+        self.assertEqual(audit["n_rows"], 1)
+        self.assertEqual(audit["n_ambiguous_ring"], 1)
+
     def test_universe_nms_labels_and_audit(self) -> None:
         namespace = _adapter_namespace()
         payload = _merge_site_payload()
@@ -338,6 +546,15 @@ class MergeSiteAdapterTests(unittest.TestCase):
             feature = root / "feature.py"
             output = root / "merge_junction_detector.py"
             policy_path = root / MERGE_CANDIDATE_POLICY_NAME
+            inventory_path = root / "feature_inventory.json"
+            inventory_path.write_text(json.dumps({
+                "schema_version": 4,
+                "hypotheses": [{"included": True, "features": [{
+                    "name": "degree_feature", "scope": "candidate",
+                    "source_feature": "degree_feature", "source_aggregation": "node degree",
+                    "adaptation": "identity",
+                }]}],
+            }))
             policy_path.write_text(json.dumps({
                 "schema_version": 1,
                 "artifact_type": "merge_site_candidate_policy_selection",
@@ -362,7 +579,6 @@ class MergeSiteAdapterTests(unittest.TestCase):
                 "    'primitive': 'row_math', 'cost_class': 'constant',\n"
                 "    'bound': '', 'amortization': '', 'consumers': ['hypo_1'],\n"
                 "}]\n"
-                "class FeatureAccumulator:\n    pass\n"
                 "def extract_features(payload, verbose=True, timing=None, "
                 "enabled_analysis_keys=None, profile_segment_limit=None):\n"
                 "    _ = profile_segment_limit\n"
@@ -373,12 +589,12 @@ class MergeSiteAdapterTests(unittest.TestCase):
                 "        timing.start_phase('junction_site')\n"
                 "        timing.start_analysis('hypo_1')\n"
                 "    samples, labels = build_sample_universe(payload)\n"
-                "    return samples, labels, FeatureAccumulator()\n"
+                "    return samples, labels, FeatureAccumulator(samples)\n"
             )
 
             assemble_detector(
                 template, feature, output, target=DetectorTarget.MERGE_SITE,
-                candidate_policy_path=policy_path)
+                candidate_policy_path=policy_path, inventory_path=inventory_path)
 
             text = output.read_text()
             self.assertIn("DETECTOR_TARGET = 'merge_site_detection'", text)
@@ -409,7 +625,7 @@ class MergeSiteAdapterTests(unittest.TestCase):
                 assemble_detector(
                     template, feature, output,
                     target=DetectorTarget.MERGE_SITE,
-                    candidate_policy_path=policy_path)
+                    candidate_policy_path=policy_path, inventory_path=inventory_path)
 
     def test_assembly_rejects_per_edge_graph_rebuilds(self) -> None:
         """Regression: the 2026-09-09 merge-site fragment's 'tree fast path'
@@ -476,12 +692,21 @@ class MergeSiteAdapterTests(unittest.TestCase):
         self.assertIn(MERGE_CANDIDATE_POLICY_NAME, inventory)
         self.assertIn("JUNCTION-LOCAL", inventory)
         self.assertIn("SEGMENT-CONTEXT", inventory)
+        self.assertIn("two_gt_junction", inventory)
+        self.assertIn("not a verified non-merge", inventory)
+        self.assertIn("geometric_walk", inventory)
         generate = steps[2]["instruction"]
         self.assertIn("--target merge_site_detection", generate)
         self.assertIn(
             f"--candidate-policy autodiscovery-application/merge-error-test/"
             f"{MERGE_CANDIDATE_POLICY_NAME}", generate)
         self.assertIn("gt_merge_sites", generate)
+        self.assertIn("gt_junction_audit", generate)
+        self.assertIn("gt_merge_site_metadata", generate)
+        verify = steps[3]["instruction"]
+        self.assertIn("site_records_sha256", verify)
+        self.assertIn("ordered_row_labels_sha256", verify)
+        self.assertIn("not an untouched", verify)
 
 
 if __name__ == "__main__":

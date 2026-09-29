@@ -573,10 +573,18 @@ def validate_frozen_candidate_policy(
 def merge_candidate_policy_source_paths(source_policy_path: Path) -> tuple[Path, ...]:
     """The sweep-bundle files the merge-site policy validation reads."""
     directory = source_policy_path.resolve().parent
+    source = _load_json(source_policy_path, "merge candidate sweep policy")
+    scope = source.get("evidence_scope")
+    brains = scope.get("brains") if isinstance(scope, dict) else None
+    if (not isinstance(brains, list) or not brains
+            or any(not isinstance(brain, str) or not brain.isascii() or not brain.isdigit()
+                   for brain in brains) or len(set(brains)) != len(brains)):
+        raise SystemExit("Merge candidate sweep needs unique numeric brain IDs in evidence_scope.")
     return (
         source_policy_path.resolve(),
         directory / "artifact_manifest.json",
         directory / "tables" / "cross_dataset_aggregate.csv",
+        *(directory / "per_brain" / f"{brain}_meta.json" for brain in brains),
     )
 
 
@@ -677,6 +685,44 @@ def _merge_deterministic_selection(
     return min(eligible, key=lambda row: (row["total_candidates"], row["config_id"]))
 
 
+def _validate_merge_cache_evidence(meta_path, entries, brain, signature, mcl, project_root):
+    """Reject changed cache files without deserializing multi-GB payloads."""
+    relative = f"per_brain/{brain}_meta.json"
+    if not meta_path.is_file():
+        raise SystemExit(f"Missing merge sweep cache evidence {meta_path}; rerun the sweep.")
+    meta_sha = _require_manifest_hash(entries, relative, meta_path)
+    meta = _load_json(meta_path, "merge sweep brain metadata")
+    if meta.get("brain") != brain or meta.get("config_signature") != signature:
+        raise SystemExit(f"Merge sweep metadata scope mismatch for brain {brain}.")
+    identity = meta.get("cache_identity")
+    if (not isinstance(identity, dict) or not isinstance(identity.get("path"), str)
+            or not identity["path"]
+            or any(type(identity.get(key)) is not int or identity[key] < 0
+                   for key in ("size", "mtime_ns", "inode"))):
+        raise SystemExit(f"Merge sweep lacks valid cache identity for brain {brain}; rerun the sweep.")
+    recorded = meta.get("cache")
+    if not isinstance(recorded, str) or not recorded:
+        raise SystemExit(f"Merge sweep lacks cache path for brain {brain}.")
+    cache_path = Path(identity["path"])
+    cache_path = (cache_path if cache_path.is_absolute() else project_root / cache_path).resolve()
+    recorded_path = Path(recorded)
+    recorded_path = (recorded_path if recorded_path.is_absolute() else project_root / recorded_path).resolve()
+    if cache_path != recorded_path or cache_path.name != f"dataset_cache_{brain}_mcl{mcl}_add.pkl":
+        raise SystemExit(f"Merge sweep cache path/brain/MCL mismatch for brain {brain}.")
+    try:
+        stat = cache_path.stat()
+    except OSError as exc:
+        raise SystemExit(f"Cannot verify merge sweep cache {cache_path}: {exc}") from exc
+    actual = {"path": str(cache_path), "size": stat.st_size,
+              "mtime_ns": stat.st_mtime_ns, "inode": stat.st_ino}
+    expected = {**identity, "path": str(cache_path)}
+    if actual != expected:
+        raise SystemExit(f"Merge sweep cache identity is stale for brain {brain}; rerun the sweep "
+                         "against the current cache before building the detector.")
+    return {"brain": brain, "metadata_path": _relative(meta_path, project_root),
+            "metadata_sha256": meta_sha, "cache_identity": actual}
+
+
 def _validated_merge_source_bundle(
     source_policy_path: Path,
     *,
@@ -687,7 +733,7 @@ def _validated_merge_source_bundle(
     minimum_site_recall = _finite_probability(
         minimum_site_recall, "minimum worst-brain merge site recall"
     )
-    source_policy_path, manifest_path, aggregate_path = (
+    source_policy_path, manifest_path, aggregate_path, *meta_paths = (
         merge_candidate_policy_source_paths(source_policy_path)
     )
     for path in (source_policy_path, manifest_path, aggregate_path):
@@ -730,6 +776,12 @@ def _validated_merge_source_bundle(
             or any(not isinstance(brain, str) or not brain for brain in brains)):
         raise SystemExit("Merge candidate sweep evidence needs a brains list.")
 
+    cache_evidence = [
+        _validate_merge_cache_evidence(path, entries, brain, scope_block.get("config_signature"),
+                                       evidence_mcl, project_root)
+        for brain, path in zip(brains, meta_paths)
+    ]
+
     selected = _merge_deterministic_selection(aggregate_path, minimum_site_recall)
     if selected["n_brains"] != len(brains):
         raise SystemExit(
@@ -755,6 +807,7 @@ def _validated_merge_source_bundle(
         "aggregate_sha256": aggregate_sha,
         "manifest_path": _relative(manifest_path, project_root),
         "manifest_sha256": _sha256(manifest_path),
+        "cache_evidence": cache_evidence,
     }
     return selected, {
         "scope": scope,

@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" font-family="'Helvetica Neue',Arial,sans-serif" role="img" aria-labelledby="title description">
+  <title id="title">Proofreader scorer evolution</title>
+  <desc id="description">The fixed-pool proofreader_evolve workflow. Prepare immutable detector-native candidates and features from frozen merge-junction and split-site detectors and labeled brain caches. Keep evaluator labels and candidate identities separate from scorer inputs. Evaluate the seed and frozen-detector baseline. Each generation uses a fresh LLM session to revise scorer.py and rules.md from TRAIN-only feedback. A child must strictly improve macro Precision at K without a brain or kind regression on TRAIN before development validation is evaluated. Accept only if validation also improves; otherwise retain the parent. TRAIN failures skip validation. Repeat with the selected scorer and TRAIN-only feedback, then save the final scorer, measurements and audit records. No graph edits, candidate expansion, detector retraining or automatic deployment occur.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M0,1 L9,5 L0,9 z" fill="#64748b"/>
+    </marker>
+    <marker id="reject-arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M0,1 L9,5 L0,9 z" fill="#d97706"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+    <style>
+      .heading { font-size: 23px; font-weight: 700; fill: #0f172a; }
+      .body { font-size: 17px; fill: #475569; }
+      .note { font-size: 15px; fill: #64748b; }
+      .code { font-family: monospace; font-size: 16px; fill: #3730a3; }
+      .agent-title { fill: #1e3a8a; }
+      .compute-title { fill: #166534; }
+      .contract-title { fill: #3730a3; }
+      .step { font-size: 19px; font-weight: 700; text-anchor: middle; fill: #ffffff; }
+      .flow { fill: none; stroke: #64748b; stroke-width: 2.5; marker-end: url(#arrow); }
+      .feedback { fill: none; stroke: #64748b; stroke-width: 2.5; stroke-dasharray: 7 5; marker-end: url(#arrow); }
+      .reject { fill: none; stroke: #d97706; stroke-width: 2.5; marker-end: url(#reject-arrow); }
+    </style>
+  </defs>
+
+  <rect width="1920" height="1080" fill="#f8fafc"/>
+
+  <!-- Same canvas, typography, palette and card treatment as agentic workflow figures. -->
+  <text x="80" y="82" font-size="42" font-weight="700" fill="#0f172a">Proofreader scorer evolution</text>
+  <text x="80" y="122" font-size="22" fill="#64748b">Improve Precision@K on the same detector-native candidates; evolve ranking logic, not graph edits</text>
+  <g id="legend">
+    <rect x="1440" y="68" width="28" height="20" rx="5" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+    <text x="1480" y="85" font-size="17" fill="#334155">agent proposes</text>
+    <rect x="1660" y="68" width="28" height="20" rx="5" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+    <text x="1700" y="85" font-size="17" fill="#334155">driver computes</text>
+  </g>
+
+  <!-- Immutable benchmark versus the two editable artifacts. -->
+  <rect x="60" y="150" width="1800" height="38" rx="10" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1.5"/>
+  <line x1="590" y1="157" x2="590" y2="181" stroke="#cbd5e1" stroke-width="1.5"/>
+  <line x1="1130" y1="157" x2="1130" y2="181" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="82" y="175" font-size="16" font-weight="700" fill="#0f172a">FROZEN</text>
+  <text x="172" y="175" font-size="16" fill="#334155">pool · features · labels · model · K</text>
+  <text x="612" y="175" font-size="16" font-weight="700" fill="#0f172a">EDITABLE</text>
+  <text x="720" y="175" font-size="16" fill="#334155">scorer.py + rules.md</text>
+  <text x="1152" y="175" font-size="16" font-weight="700" fill="#0f172a">EVALUATION</text>
+  <text x="1288" y="175" font-size="16" fill="#334155">TRAIN screen → development-validation gate</text>
+
+  <text x="60" y="219" font-size="17" font-weight="700" fill="#334155">PREPARE ONCE, THEN INITIALIZE · no LLM calls</text>
+  <text x="1860" y="219" font-size="15" text-anchor="end" fill="#64748b">Exact detector definitions; no repair-site approximation</text>
+
+  <!-- NativeTable preparation: native_pool.py and precompute_error_scores.py. -->
+  <g id="frozen-inputs" data-box="60 240 350 180">
+    <rect x="60" y="240" width="350" height="180" rx="20" fill="#ffffff" stroke="#94a3b8" stroke-width="2" filter="url(#shadow)"/>
+    <circle cx="96" cy="278" r="21" fill="#0f172a"/>
+    <text x="96" y="285" class="step">0</text>
+    <text x="132" y="286" class="heading">Frozen inputs</text>
+    <text x="84" y="321" class="body">autodiscovery-application/</text>
+    <text x="84" y="347" class="body">One merge + one split detector</text>
+    <text x="84" y="373" class="body">Labeled _add.pkl brain caches</text>
+    <text x="84" y="400" class="note">Trusted scripts + fitted model weights</text>
+  </g>
+  <path d="M412 330 H447" class="flow"/>
+
+  <g id="native-preparation" data-box="455 240 395 180">
+    <rect x="455" y="240" width="395" height="180" rx="20" fill="#dcfce7" stroke="#16a34a" stroke-width="2" filter="url(#shadow)"/>
+    <circle cx="491" cy="278" r="21" fill="#0f172a"/>
+    <text x="491" y="285" class="step">1</text>
+    <text x="527" y="286" class="heading compute-title">Prepare native pools</text>
+    <text x="479" y="321" class="body">Merge junctions · split segment pairs</text>
+    <text x="479" y="347" class="body">Preserve native rows + occurrences</text>
+    <text x="479" y="373" class="body">Extract features; apply frozen model</text>
+    <text x="479" y="400" class="note">No fitting or extra enumeration caps</text>
+  </g>
+  <path d="M852 330 H887" class="flow"/>
+
+  <g id="frozen-tables" data-box="895 240 475 180">
+    <rect x="895" y="240" width="475" height="180" rx="20" fill="#eef2ff" stroke="#6366f1" stroke-width="2" filter="url(#shadow)"/>
+    <circle cx="931" cy="278" r="21" fill="#0f172a"/>
+    <text x="931" y="285" class="step">2</text>
+    <text x="967" y="286" class="heading contract-title">Freeze evaluation contract</text>
+    <text x="919" y="321" class="body">Predictors + detector_score → scorer</text>
+    <text x="919" y="347" class="body">Candidate IDs + labels → evaluator only</text>
+    <text x="919" y="373" class="body">Hashes bind data, code and models; K fixed</text>
+    <text x="919" y="400" class="note">Matching tables reused; stale or corrupt data rejected</text>
+  </g>
+  <path d="M1372 330 H1407" class="flow"/>
+
+  <g id="initialize-parent" data-box="1415 240 445 180">
+    <rect x="1415" y="240" width="445" height="180" rx="20" fill="#dcfce7" stroke="#16a34a" stroke-width="2" filter="url(#shadow)"/>
+    <circle cx="1451" cy="278" r="21" fill="#0f172a"/>
+    <text x="1451" y="285" class="step">3</text>
+    <text x="1487" y="286" class="heading compute-title">Initialize parent</text>
+    <text x="1439" y="321" class="body">Seed defaults to detector_score ranking</text>
+    <text x="1439" y="347" class="body">Evaluate seed on TRAIN + validation</text>
+    <text x="1439" y="373" class="body">Save separate frozen-score comparator</text>
+    <text x="1439" y="400" class="note">Require disjoint, eligible TRAIN / validation brains</text>
+  </g>
+
+  <!-- Seed enters the first generation; the long connector stays outside cards. -->
+  <path d="M1640 421 V444 H36 V620 H58" class="flow"/>
+  <rect x="736" y="432" width="448" height="24" rx="6" fill="#f8fafc"/>
+  <text x="960" y="450" font-size="15" text-anchor="middle" fill="#64748b">Seed scorer becomes the initial accepted parent</text>
+
+  <text x="60" y="488" font-size="25" font-weight="700" fill="#0f172a">EVOLUTION · one child per generation</text>
+  <text x="1860" y="486" font-size="17" text-anchor="end" fill="#475569">Both gates: strict macro Precision@K gain, with no brain / kind regression</text>
+
+  <!-- Fresh SDK session: only scorer.py and rules.md writable. -->
+  <g id="revise-scorer" data-box="60 520 390 220">
+    <rect x="60" y="520" width="390" height="220" rx="20" fill="#dbeafe" stroke="#3b82f6" stroke-width="2" filter="url(#shadow)"/>
+    <circle cx="96" cy="558" r="21" fill="#0f172a"/>
+    <text x="96" y="565" class="step">4</text>
+    <text x="132" y="566" class="heading agent-title">Revise scorer</text>
+    <text x="84" y="604" class="body">Fresh LLM session</text>
+    <text x="84" y="632" class="body">Edit scorer.py + rules.md</text>
+    <text x="84" y="660" font-size="16" fill="#475569">TRAIN metrics + anonymous examples</text>
+    <text x="84" y="688" font-size="15" fill="#475569">Recent attempts; no validation report</text>
+    <text x="84" y="720" font-family="monospace" font-size="14" fill="#1e3a8a">score_candidates(features, ctx)</text>
+  </g>
+  <path d="M452 620 H522" class="flow"/>
+  <text x="490" y="606" font-size="14" text-anchor="middle" fill="#64748b">evaluate</text>
+
+  <!-- fixed_pool_scoring.py: score all rows, always select min(K, pool size). -->
+  <g id="train-screen" data-box="530 520 390 220">
+    <rect x="530" y="520" width="390" height="220" rx="20" fill="#dcfce7" stroke="#16a34a" stroke-width="2" filter="url(#shadow)"/>
+    <circle cx="566" cy="558" r="21" fill="#0f172a"/>
+    <text x="566" y="565" class="step">5</text>
+    <text x="602" y="566" class="heading compute-title">TRAIN screen</text>
+    <text x="554" y="604" class="body">Score every fixed-pool row</text>
+    <text x="554" y="632" font-size="16" fill="#475569">Finite, deterministic; timeout checked</text>
+    <text x="554" y="660" class="body">Select exactly min(K, pool size)</text>
+    <text x="554" y="688" class="body">Compare child against parent</text>
+    <text x="554" y="720" class="note">Macro gain &gt; margin; no cell regression</text>
+  </g>
+  <path d="M922 620 H992" class="flow"/>
+  <text x="960" y="606" font-size="14" font-weight="700" text-anchor="middle" fill="#166534">PASS</text>
+
+  <g id="validation-gate" data-box="1000 520 390 220">
+    <rect x="1000" y="520" width="390" height="220" rx="20" fill="#dcfce7" stroke="#16a34a" stroke-width="2" filter="url(#shadow)"/>
+    <circle cx="1036" cy="558" r="21" fill="#0f172a"/>
+    <text x="1036" y="565" class="step">6</text>
+    <text x="1072" y="566" class="heading compute-title">Validation gate</text>
+    <text x="1024" y="604" class="body">Run only if TRAIN passes</text>
+    <text x="1024" y="632" class="body">Same K, pool and label contract</text>
+    <text x="1024" y="660" class="body">Compare child against parent</text>
+    <text x="1024" y="688" class="body">No validation examples to reviser</text>
+    <text x="1024" y="720" class="note">Macro gain &gt; margin; no cell regression</text>
+  </g>
+  <path d="M1392 620 H1462" class="flow"/>
+  <text x="1430" y="606" font-size="14" text-anchor="middle" fill="#64748b">decision</text>
+
+  <g id="select-and-record" data-box="1470 520 390 220">
+    <rect x="1470" y="520" width="390" height="220" rx="20" fill="#eef2ff" stroke="#6366f1" stroke-width="2" filter="url(#shadow)"/>
+    <circle cx="1506" cy="558" r="21" fill="#0f172a"/>
+    <text x="1506" y="565" class="step">7</text>
+    <text x="1542" y="566" class="heading contract-title">Select + record</text>
+    <text x="1494" y="604" font-size="17" font-weight="600" fill="#166534">Accept → replace parent scorer</text>
+    <text x="1494" y="632" font-size="17" font-weight="600" fill="#92400e">Reject / fail → retain parent</text>
+    <text x="1494" y="660" font-size="16" fill="#475569">Record each attempt + session cost</text>
+    <text x="1494" y="688" class="body">Refresh TRAIN-only feedback</text>
+    <text x="1494" y="720" class="note">No accepted revision? Keep the seed.</text>
+  </g>
+
+  <!-- Rejection bypasses validation. Neither branch exposes its validation report. -->
+  <path d="M725 742 V785 H1560 V742" class="reject"/>
+  <rect x="844" y="772" width="586" height="25" rx="6" fill="#f8fafc"/>
+  <text x="1137" y="790" font-size="16" text-anchor="middle" fill="#92400e">TRAIN fail / tie / invalid: skip validation; keep parent</text>
+
+  <!-- Carry the accepted source and notes, not validation examples, into the next fresh session. -->
+  <path d="M1750 742 V835 H255 V742" class="feedback"/>
+  <rect x="555" y="823" width="903" height="26" rx="6" fill="#f8fafc"/>
+  <text x="1006" y="842" font-size="17" text-anchor="middle" fill="#1e3a8a">Next generation: selected scorer + rules + TRAIN-only feedback</text>
+  <text x="255" y="864" font-size="15" text-anchor="middle" fill="#64748b">Fresh session; file-based handoff</text>
+  <text x="1060" y="868" font-size="15" text-anchor="middle" fill="#64748b">Development validation is reused for selection — not an untouched final test.</text>
+  <path d="M1805 742 V892" class="flow"/>
+  <text x="1819" y="793" font-size="15" fill="#64748b">after</text>
+  <text x="1819" y="815" font-size="15" fill="#64748b">N gens</text>
+
+  <!-- Run artifacts are written throughout the run; final.json is written on completion. -->
+  <g id="run-outputs" data-box="60 900 1800 104">
+    <rect x="60" y="900" width="1800" height="104" rx="20" fill="#ffffff" stroke="#94a3b8" stroke-width="2" filter="url(#shadow)"/>
+    <text x="86" y="942" class="heading">Run outputs</text>
+    <text x="86" y="972" class="note">runs/precision_…/</text>
+    <line x1="308" y1="920" x2="308" y2="984" stroke="#cbd5e1" stroke-width="1.5"/>
+    <text x="338" y="939" class="code" font-weight="700">best_scorer.py</text>
+    <text x="338" y="969" class="body">Final accepted ranking logic</text>
+    <line x1="659" y1="920" x2="659" y2="984" stroke="#cbd5e1" stroke-width="1.5"/>
+    <text x="689" y="939" font-size="17" font-weight="700" fill="#3730a3">Manifest + baseline / seed / final measurements</text>
+    <text x="689" y="969" class="body">Bound provenance; compare at the same fixed K</text>
+    <line x1="1215" y1="920" x2="1215" y2="984" stroke="#cbd5e1" stroke-width="1.5"/>
+    <text x="1245" y="939" class="code" font-weight="700">genNNN/ · ledger.jsonl · tool_audit.jsonl</text>
+    <text x="1245" y="969" class="body">Revisions, decisions, errors, costs and access audit</text>
+  </g>
+
+  <rect x="60" y="1020" width="1800" height="32" rx="9" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="960" y="1042" font-size="16" text-anchor="middle" fill="#92400e">Scope: precision on sparse native labels is not proof of safe graph repair. No pool expansion, detector retraining or automatic deployment.</text>
+  <text x="60" y="1075" font-size="14" fill="#94a3b8">Defaults: TRAIN 789202 · validation 794491 · MCL 100 · K = 100 per kind · 5 generations</text>
+  <text x="1860" y="1075" font-size="14" text-anchor="end" fill="#94a3b8">proofreader_evolve/workflow_diagram.svg</text>
+</svg>

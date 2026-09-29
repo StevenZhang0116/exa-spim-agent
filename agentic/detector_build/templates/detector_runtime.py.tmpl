@@ -519,6 +519,8 @@ def mcl_from_payload(payload, pkl_path):
         return int(m.group(1)) if m else None
 
 
+_MERGE_FEATURE_ACCUMULATOR_TYPE = None
+_SPLIT_FEATURE_ACCUMULATOR_TYPE = None
 # __DETECTOR_TARGET_ADAPTER__
 
 
@@ -2391,7 +2393,7 @@ class BlindnessViolation(RuntimeError):
 # _derive_split_truth), which runs BEFORE the fragment and outside the guard.
 _GT_PAYLOAD_KEYS = frozenset({
     "gt_edge_error", "gt_graph", "gt_node_canonical_label", "gt_merge_labels",
-    "gt_merge_sites",
+    "gt_merge_sites", "gt_junction_audit", "gt_merge_site_metadata",
     # GT-derived runtime scratch (merge-site adapter's site-distance audit).
     "__detector_universe_site_audit__",
 })
@@ -2482,9 +2484,9 @@ def _extract_features_runtime(payload, *, verbose=True, timing=None,
     the fragment then runs against a ``_BlindPayloadView`` whose GT keys raise,
     whose sample rows carry no audit fields, and whose labels are all zeros.
     After extraction the fragment's row identity/order is verified against the
-    runtime universe (via ``sample_display``) and the true labels are
-    re-attached — so feature math can never see the answer key, statically or
-    dynamically.
+    runtime universe (via ``sample_display``) and the complete runtime rows and
+    true labels are re-attached for auditing and output. Feature math still
+    never sees the answer key, statically or dynamically.
     """
     samples_true, labels_true = build_sample_universe(payload)
     blind = _BlindPayloadView(payload, samples_true)
@@ -2503,6 +2505,14 @@ def _extract_features_runtime(payload, *, verbose=True, timing=None,
             "(row_records, labels, accumulator), got %s" % type(result).__name__
         )
     samples, labels, accumulator = result
+    if DETECTOR_TARGET == 'merge_site_detection':
+        if type(accumulator) is not _MERGE_FEATURE_ACCUMULATOR_TYPE:
+            raise TypeError("Merge-site extraction must return the runtime-owned FeatureAccumulator")
+        accumulator.validate_rows(samples)
+    if DETECTOR_TARGET == 'split_detection':
+        if type(accumulator) is not _SPLIT_FEATURE_ACCUMULATOR_TYPE:
+            raise TypeError("Split extraction must return the runtime-owned FeatureAccumulator")
+        accumulator.validate_rows(samples)
     if not callable(getattr(accumulator, "to_frame", None)):
         raise TypeError(
             "extract_features contract violation: third item must be an "
@@ -2521,13 +2531,13 @@ def _extract_features_runtime(payload, *, verbose=True, timing=None,
             "extract_features contract violation: row_records and labels have "
             "different lengths (%d != %d)" % (n_samples, n_labels)
         )
-    # Re-attach TRUE labels by row identity. Full runs must return the runtime
+    # Re-attach runtime rows and TRUE labels by identity. Full runs must return the runtime
     # universe exactly (same rows, same order); a profiling run
     # (profile_segment_limit) may return a deterministic subset, so labels are
     # looked up per row instead.
     true_by_display = {}
-    for s, l in zip(samples_true, labels_true):
-        true_by_display[sample_display(s)] = int(l)
+    for sample, label in zip(samples_true, labels_true):
+        true_by_display[sample_display(sample)] = (sample, int(label))
     if len(true_by_display) != len(samples_true):
         raise ValueError(
             "sample_display is not unique over the runtime universe (%d displays "
@@ -2538,14 +2548,29 @@ def _extract_features_runtime(payload, *, verbose=True, timing=None,
             "extract_features contract violation: returned %d rows but the "
             "runtime universe has %d" % (n_samples, len(samples_true)))
     relabeled = np.zeros(n_samples, dtype=np.int64)
+    restored_samples = []
+    seen_displays = set()
     for pos, s in enumerate(samples):
         display = sample_display(s)
+        if DETECTOR_TARGET in ('merge_site_detection', 'split_detection'):
+            if display in seen_displays:
+                raise ValueError("Duplicate candidate in extraction rows")
+            seen_displays.add(display)
+            if profile_segment_limit is None and display != sample_display(samples_true[pos]):
+                raise ValueError("Extraction must preserve runtime candidate order")
         if display not in true_by_display:
             raise ValueError(
                 "extract_features contract violation: returned row %d (%s) is "
                 "not in the runtime sample universe" % (pos, display))
-        relabeled[pos] = true_by_display[display]
-    return samples, relabeled, accumulator
+        original_sample, true_label = true_by_display[display]
+        if DETECTOR_TARGET == 'merge_site_detection' and any(
+                s[key] != original_sample[key] for key in ('candidate_id', 'node_id', 'segment_id')):
+            raise ValueError("Extraction changed candidate identity or segment membership")
+        restored_samples.append(original_sample)
+        relabeled[pos] = true_label
+    if DETECTOR_TARGET == 'split_detection':
+        accumulator.validate_rows(restored_samples)
+    return restored_samples, relabeled, accumulator
 
 
 def _drop_all_undefined(df, samples, labels):
@@ -2581,6 +2606,34 @@ def _print_queue(samples, labels, scores, budget, title):
                  int(labels[idx])))
         if rank >= 20:
             break
+
+
+def _cache_file_identity(path):
+    resolved = os.path.realpath(path)
+    stat = os.stat(resolved)
+    return {"path": resolved, "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns, "inode": stat.st_ino}
+
+
+def _input_provenance(path, identity, samples, labels, universe_audit, scope):
+    """Bind the loaded file and actual ordered training/evaluation labels."""
+    import copy
+
+    if _cache_file_identity(path) != identity:
+        raise RuntimeError("Input cache changed during load/extraction: %s; rerun against a stable cache" % path)
+    if len(samples) != len(labels):
+        raise ValueError("Cannot fingerprint misaligned sample/label rows")
+    digest = hashlib.sha256()
+    for sample, label in zip(samples, labels):
+        record = [sample_display(sample), int(label)]
+        digest.update((json.dumps(record, separators=(",", ":")) + "\n").encode())
+    return {
+        "cache_identity": dict(identity), "scope": scope,
+        "n_rows": len(samples), "n_positive": int(np.sum(np.asarray(labels) == 1)),
+        "ordered_row_labels_sha256": digest.hexdigest(),
+        "row_digest_fields": ["sample_display", "binary_label"],
+        "sample_universe_audit": copy.deepcopy(universe_audit),
+    }
 
 
 def _collect_measuretime_versions():
@@ -2640,6 +2693,7 @@ def run_measuretime(args, log):
     try:
         log("measuretime: loading payload: %s" % args.pkl)
         started = time.perf_counter()
+        input_identity = _cache_file_identity(args.pkl)
         payload = load_payload(args.pkl)
         recorder.record_wall_seconds(
             "payload_load", time.perf_counter() - started)
@@ -2675,6 +2729,9 @@ def run_measuretime(args, log):
                 profiled_segment_ids=[int(x) for x in profiled_samples],
             )
         recorder.update_metadata(**profile_metadata)
+        recorder.update_metadata(data_provenance=_input_provenance(
+            args.pkl, input_identity, profiled_samples, profiled_labels,
+            universe_audit, "profile_subset"))
         recorder.record_wall_seconds(
             "total", time.perf_counter() - total_started)
         recorder.finish()
@@ -2734,6 +2791,7 @@ def run_detector(args, log):
     prefix = "%s_%s" % (train_brain, scope)
 
     log("loading training payload: %s" % args.pkl)
+    train_identity = _cache_file_identity(args.pkl)
     payload = load_payload(args.pkl)
     train_mcl = mcl_from_payload(payload, args.pkl)
     samples, labels, acc = _extract_features_runtime(
@@ -2760,6 +2818,8 @@ def run_detector(args, log):
     feat_df, samples, labels = _apply_scope(
         feat_df, samples, labels, args.exclude_empty, log)
     y = np.asarray(labels, dtype=np.int64)
+    train_provenance = _input_provenance(
+        args.pkl, train_identity, samples, y, universe_audit, scope)
 
     audit = undefined_audit(feat_df, y, log)
 
@@ -2827,6 +2887,18 @@ def run_detector(args, log):
             train_brain, train_mcl, scope, hypothesis_selection,
             model_feature_names, log)
 
+    data_provenance = {
+        "schema_version": 1, "detector_sha256": _sha256_file(__file__),
+        "feature_inventory_sha256": inventory_sha, "model_config_sha256": config_sha,
+        "training": train_provenance,
+        "heldout": heldout_report.get("data_provenance") if heldout_report else None,
+    }
+    provenance_path = out_csv + ".provenance.json"
+    with open(provenance_path, "w") as handle:
+        json.dump({"csv_path": os.path.abspath(out_csv), "csv_sha256": _sha256_file(out_csv),
+                   "data_provenance": data_provenance}, handle, indent=2, default=_json_default)
+    log("wrote label provenance: %s" % provenance_path)
+
     # ---- model-selection result JSON ---- #
     versions = _collect_versions()
     model_selection_record = {
@@ -2839,6 +2911,7 @@ def run_detector(args, log):
         "model_policy_sha256": EMBEDDED_MODEL_POLICY_SHA256,
         "feature_inventory_sha256": inventory_sha,
         "train_pkl": os.path.abspath(args.pkl),
+        "data_provenance": data_provenance,
         "train_brain": train_brain,
         "train_mcl": train_mcl,
         "scope": scope,
@@ -2876,6 +2949,7 @@ def run_detector(args, log):
                  "label_name": LABEL_NAME,
                  "score_prefix": SCORE_PREFIX,
                  "scope": scope,
+                 "data_provenance": data_provenance,
                  "hypothesis_selection": hypothesis_selection}, out_joblib)
     log("wrote joblib: %s" % out_joblib)
 
@@ -2931,6 +3005,7 @@ def _run_heldout(args, final_est, winner, win_params, configured, policy,
 
     test_brain = brain_id_from_path(args.test_pkl)
     log("loading held-out payload: %s" % args.test_pkl)
+    test_identity = _cache_file_identity(args.test_pkl)
     payload = load_payload(args.test_pkl)
     test_mcl = mcl_from_payload(payload, args.test_pkl)
     if train_mcl is not None and test_mcl is not None and train_mcl != test_mcl:
@@ -2949,6 +3024,8 @@ def _run_heldout(args, final_est, winner, win_params, configured, policy,
     df_t, samples_t, labels_t = _apply_scope(
         df_t, samples_t, labels_t, args.exclude_empty, log)
     y_t = np.asarray(labels_t, dtype=np.int64)
+    heldout_provenance = _input_provenance(
+        args.test_pkl, test_identity, samples_t, y_t, heldout_universe_audit, scope)
 
     # test brain's own all-undefined share (context for the transfer gap)
     flag_cols = [c for c in df_t.columns if c.endswith("_is_defined")]
@@ -2982,6 +3059,7 @@ def _run_heldout(args, final_est, winner, win_params, configured, policy,
 
     heldout_report = {
         "test_pkl": os.path.abspath(args.test_pkl),
+        "data_provenance": heldout_provenance,
         "test_brain": test_brain, "test_mcl": test_mcl,
         "mcl_mismatch": (train_mcl != test_mcl),
         "held_out_average_precision": ap_t if ok else None,

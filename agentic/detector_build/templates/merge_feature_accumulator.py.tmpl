@@ -1,0 +1,60 @@
+# Reviewed merge-site feature storage. Injected by the builder, never generated.
+class FeatureAccumulator:
+    """Store local values by candidate identity; broadcast only declared context."""
+
+    def __init__(self, samples):
+        import threading
+        self._lock = threading.Lock()
+        self._rows = tuple(
+            (s['candidate_id'], s['node_id'], s['segment_id']) for s in samples)
+        self._candidate_ids = {r[0] for r in self._rows}
+        if len(self._candidate_ids) != len(self._rows):
+            raise ValueError("FeatureAccumulator: duplicate candidate_id")
+        self._segment_ids = {r[2] for r in self._rows}
+        self._scopes = dict(MERGE_FEATURE_SCOPES)
+        self._values = {name: {} for name in self._scopes}
+
+    def _write(self, feature, key, value, scope):
+        import math
+        if feature not in self._scopes:
+            raise KeyError("Unknown inventory feature: %r" % feature)
+        if self._scopes[feature] != scope:
+            raise ValueError("Feature %r has scope=%s, cannot write as %s"
+                             % (feature, self._scopes[feature], scope))
+        valid = self._candidate_ids if scope == 'candidate' else self._segment_ids
+        if key not in valid:
+            raise KeyError("Unknown %s identity: %r" % (scope, key))
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("Undefined features must be left unwritten; value must be finite")
+        with self._lock:
+            if key in self._values[feature]:
+                raise ValueError("Duplicate feature write: %s[%r]; reduce before writing"
+                                 % (feature, key))
+            self._values[feature][key] = number
+
+    def set_candidate(self, feature_name, candidate_id, value):
+        self._write(feature_name, candidate_id, value, 'candidate')
+
+    def set_segment(self, feature_name, segment_id, value):
+        self._write(feature_name, segment_id, value, 'segment')
+
+    def validate_rows(self, samples):
+        rows = tuple((s['candidate_id'], s['node_id'], s['segment_id']) for s in samples)
+        if rows != self._rows:
+            raise ValueError("FeatureAccumulator rows differ from extraction rows/order")
+
+    def to_frame(self):
+        import pandas as pd
+        import numpy as np
+        data = {}
+        with self._lock:
+            for feature, scope in self._scopes.items():
+                values = self._values[feature]
+                keys = [r[0] if scope == 'candidate' else r[2] for r in self._rows]
+                data[feature] = np.asarray([values.get(k, np.nan) for k in keys], dtype=float)
+                data[feature + '_is_defined'] = np.asarray([k in values for k in keys], dtype=np.int8)
+        return pd.DataFrame(data)
+
+
+_MERGE_FEATURE_ACCUMULATOR_TYPE = FeatureAccumulator

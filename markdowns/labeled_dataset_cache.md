@@ -121,7 +121,7 @@ systematic *topological* errors, both already identified in the `_add` cache:
 >   e.g. a segment flagged by the walk on neuron A that also grazes neuron B with
 >   a few dozen nodes contributes to B here but not in `results.csv`. This is one
 >   of the sources of the small residual seen in
->   `notebooks/verify_add_cache_metrics.ipynb`.
+>   [verify_add_cache_metrics.py](../notebooks/verify_add_cache_metrics.py).
 
 > **⚠ The "> 50 nodes" thresholds count RESAMPLED nodes, not GT SWC nodes.**
 > Both cache graphs are rebuilt by `agentic_neuron_proofreader`'s loader, which
@@ -195,12 +195,28 @@ the ones you will actually use.
 | **`gt_node_canonical_label`** | `np.ndarray (N_gt,) int64` | Predicted segment id at each GT node's voxel; `0` = unlabeled (omit). |
 | **`gt_edge_error`** | `np.ndarray (E_gt,) uint8` | Per-GT-edge class, parallel to `list(gt_graph.edges)`: `0=correct, 1=split, 2=omit, 3=merged`. |
 | **`gt_merge_labels`** | `np.ndarray (M,) int64` | Predicted segment ids flagged as merges — node-count rule ∪ geometric walk, pooled over **all** GT neurons into one global set (canonical keeps one set *per neuron* — see the note below). **Not all of them fuse ≥2 GT neurons**: only the node-count branch requires that. The walk branch also flags a segment fused to *untraced* material, using a single traced neuron — see the provenance note below. |
-| **`gt_merge_sites`** | `list[dict]` | One entry per merge site: `{"segment_id": int, "gt_neuron": str, "xyz": (x,y,z) µm}`. |
+| **`gt_merge_sites`** | `list[dict]` | One active list of geometric-walk and two-GT junction sites: `{"segment_id": int, "gt_neuron": str, "xyz": (x,y,z) µm}` plus source/evidence fields on refreshed caches. Older caches contain only geometric sites. |
+| `gt_merge_site_metadata` | `dict` or `None` | Combined-site generation parameters and counts, also on `gt_graph.merge_site_metadata`. No parallel label sets. |
 
 The four added arrays are also attached to `gt_graph` as
 `gt_graph.node_label`, `gt_graph.edge_error`, `gt_graph.merge_labels`, and
 `gt_graph.merge_sites`, so you can read them off either the payload dict or the
 graph. Their combined size is tiny (~tens of MB) next to the multi-GB graphs.
+
+**Combined-site refresh:** `scripts/relabel_cache.py --refresh-merge-sites`
+updates an existing `_add.pkl` in place without rereading segmentation or
+rebuilding graphs. The two original segment-merge criteria are preserved;
+two-GT junction localization adds site coordinates to the same `gt_merge_sites`.
+The historical `# Merges == len(gt_merge_sites)` comparisons elsewhere in this
+document refer to geometric-only caches. Combined site counts need not match
+the original canonical merge-event count and may include two localizations of
+one biological event. Recompute sweep evidence and detector results after a
+refresh; old scored CSVs still carry old labels.
+
+Optional `gt_junction_audit` stores versioned local GT branch evidence, also on
+`gt_graph.junction_gt_audit`. It is review-only and does not replace the four
+canonical label fields. See [Junction GT Audit](../docs/junction_gt_audit.md) for the
+segment/site distinction, compute-node command, and limitations.
 
 > **`_add.pkl` vs plain `.pkl`.** A plain `dataset_cache_*.pkl` lacks the four
 > label keys; an `_add.pkl` has them. This document is about the `_add.pkl` — the
@@ -452,23 +468,27 @@ print(cache_df)
 
 `cache_df` lines up column-for-column with the canonical `results.csv`
 (`metrics_out/<brain>/<seg_id>/results.csv`), which is exactly the comparison
-`notebooks/verify_add_cache_metrics.ipynb` runs. Expected agreement (per that
-notebook): `# Splits`, `% Split Edges`, and `Edge Accuracy` correlate strongly
+[verify_add_cache_metrics.py](../notebooks/verify_add_cache_metrics.py) runs.
+It processes all brains for `--mcl 100` (or another MCL), with optional
+`--brain` filtering; see the [run command](../README.md#4-verify-the-labeled-cache).
+Expected agreement: `# Splits`, `% Split Edges`, and `Edge Accuracy` correlate strongly
 (r > 0.7) with no large systematic bias; `% Merged Edges` correlates strongly
 with a small residual (canonical snaps merge sites to branch nodes, dedups in a
 specific order, and keeps `labels_with_merge` per neuron rather than globally);
 `% Omit Edges` reads a touch **higher** cache-side (≈ +0.4 … +1.6 pts on the
 verified brains — resampling, *not* fragment filtering; see *Known gaps*). The
-`# Merges` total is `len(gt_merge_sites)`, grouped per neuron by
-`s["gt_neuron"]` — **not** `len(merge_labels)` and not the `Σ max(k−1, 0)`
+`# Merges` comparison uses the geometric-walk subset of `gt_merge_sites`, grouped
+per neuron by `s["gt_neuron"]`. Supplemental and combined counts are exported
+separately. It is **not** `len(merge_labels)` or the `Σ max(k−1, 0)`
 node-count sum, which `summarize()` reports as `total_merges` and which
 structurally scores 0 for single-traced-neuron merges.
 
-> **Note on the notebook.** `verify_add_cache_metrics.ipynb` still computes
+> **Note on verification.** The Python verifier preserves the former notebook's
+> formulas: it computes
 > `Edge Accuracy` as the `EDGE_CORRECT` fraction and still narrates the omit gap
 > as a fragment-filtering effect. Its numbers are close (the two Edge-Accuracy
 > formulas differ by ≤ 0.24 pts here) but the definitions above are the canonical
-> ones; the notebook has not been updated to match.
+> ones; converting the notebook to a batch script did not change these definitions.
 
 The expensive scoring (segmentation read + geometric merge walk) ran once at
 build time; recovery here is pure lookup over `node_label` / `edge_error` /

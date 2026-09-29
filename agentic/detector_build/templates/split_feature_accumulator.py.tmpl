@@ -1,0 +1,123 @@
+# Reviewed split feature anchoring, reduction and storage; never agent-defined.
+def _split_row_identity(sample):
+    return (sample['candidate_id'], sample['segment_id_a'], sample['segment_id_b'],
+            sample['node_id_a'], sample['node_id_b'], tuple(
+                tuple(occ[key] for key in (
+                    'node_id_a', 'node_id_b', 'anchor_side', 'node_role_a', 'node_role_b',
+                    'gap_um', 'partner_rank')) for occ in sample['occurrences']))
+
+
+def _split_feature_inputs(sample, spec, graph):
+    from types import MappingProxyType
+    pair = (sample['segment_id_a'], sample['segment_id_b'])
+    base = {'candidate_id': sample['candidate_id']}
+    if spec['anchor'] == 'segment_pair':
+        return (MappingProxyType(dict(base, segment_ids=pair)),)
+    contexts = []
+    for occ in compatible_occurrences(sample, spec['node_role_requirement']):
+        a, b = int(occ['node_id_a']), int(occ['node_id_b'])
+        anchor = spec['anchor']
+        if anchor == 'tip_anchor':
+            side = occ['anchor_side']
+            if side not in ('a', 'b') or occ['node_role_' + side] != 'tip':
+                raise ValueError('Invalid tip anchor in split occurrence')
+            tip, partner = (a, b) if side == 'a' else (b, a)
+            tip_seg, partner_seg = pair if side == 'a' else pair[::-1]
+            context = dict(base, anchor_node_id=tip, partner_node_id=partner,
+                           anchor_segment_id=tip_seg, partner_segment_id=partner_seg,
+                           gap_um=occ['gap_um'])
+        else:
+            context = dict(base, node_ids=(a, b), segment_ids=pair, gap_um=occ['gap_um'])
+            if anchor == 'gap_midpoint':
+                context['center_um'] = tuple(
+                    (float(graph.node_xyz[a][i]) + float(graph.node_xyz[b][i])) / 2.
+                    for i in range(3))
+            elif anchor == 'component_pair':
+                context['component_ids'] = (
+                    int(graph.node_component_id[a]), int(graph.node_component_id[b]))
+        contexts.append(MappingProxyType(context))
+        if spec['occurrence_reduction'] == 'first_compatible':
+            break
+    return tuple(contexts)
+
+
+class FeatureAccumulator:
+    """Evaluate a declared formula on reviewed inputs and store one candidate value.
+
+    compute(feature_name, candidate_id, evaluate): evaluate receives an immutable
+    context, or a tuple of contexts for all_compatible. Return None if undefined.
+    No raw set/broadcast API is exposed for split features.
+    """
+    def __init__(self, samples, graph):
+        import threading
+        import numpy as np
+        self._lock = threading.Lock()
+        self._graph = graph
+        self._identities = tuple(_split_row_identity(s) for s in samples)
+        self._samples = {s['candidate_id']: dict(
+            s, occurrences=tuple(dict(o) for o in s['occurrences'])) for s in samples}
+        if len(self._samples) != len(self._identities):
+            raise ValueError('Duplicate split candidate_id')
+        pairs = [(s['segment_id_a'], s['segment_id_b']) for s in samples]
+        if any(a >= b for a, b in pairs) or len(set(pairs)) != len(pairs):
+            raise ValueError('Split rows must be unique canonical unordered segment pairs')
+        self._positions = {s['candidate_id']: i for i, s in enumerate(samples)}
+        self._specs = {name: dict(spec) for name, spec in SPLIT_FEATURE_SPECS.items()}
+        self._values = {name: np.full(len(samples), np.nan) for name in self._specs}
+        self._attempted = {name: np.zeros(len(samples), dtype=bool) for name in self._specs}
+
+    def compute(self, feature_name, candidate_id, evaluate):
+        import math
+        spec = self._specs[feature_name]
+        position = self._positions[candidate_id]
+        with self._lock:
+            if self._attempted[feature_name][position]:
+                raise ValueError('Duplicate split feature computation for candidate')
+            self._attempted[feature_name][position] = True
+        inputs = _split_feature_inputs(self._samples[candidate_id], spec, self._graph)
+        if not inputs:
+            return
+        reduction = spec['occurrence_reduction']
+        raw = ([evaluate(inputs)] if reduction == 'all_compatible'
+               else [evaluate(context) for context in inputs])
+        values = []
+        for value in raw:
+            if value is None:
+                continue
+            number = float(value)
+            if not math.isfinite(number):
+                raise ValueError('Split evaluator must return a finite scalar or None')
+            values.append(number)
+        if not values:
+            return
+        if reduction == 'min':
+            result = min(values)
+        elif reduction == 'max':
+            result = max(values)
+        elif reduction == 'mean':
+            result = math.fsum(v / len(values) for v in values)
+        elif reduction == 'sum':
+            result = math.fsum(values)
+        else:
+            result = values[0]
+        if not math.isfinite(result):
+            raise ValueError('Split occurrence reduction produced a non-finite value')
+        with self._lock:
+            self._values[feature_name][position] = result
+
+    def validate_rows(self, samples):
+        if tuple(_split_row_identity(s) for s in samples) != self._identities:
+            raise ValueError('Split accumulator rows/occurrences differ from runtime universe')
+
+    def to_frame(self):
+        import numpy as np
+        import pandas as pd
+        with self._lock:
+            data = {}
+            for name, values in self._values.items():
+                data[name] = values.copy()
+                data[name + '_is_defined'] = np.isfinite(values).astype(np.int8)
+        return pd.DataFrame(data)
+
+
+_SPLIT_FEATURE_ACCUMULATOR_TYPE = FeatureAccumulator

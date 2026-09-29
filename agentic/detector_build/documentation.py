@@ -99,6 +99,20 @@ detector. Candidate generation is GT-blind and completed before GT merge sites
 are consulted to attach is_merge_site labels; candidates whose nearest site
 falls between the positive-label and claim radii are labeled negative and
 flagged `in_ambiguous_ring` for audit.
+
+The single `gt_merge_sites` list combines `geometric_walk` and
+`two_gt_junction` sources when the cache has been refreshed. Untagged legacy
+sites are geometric; shared evidence is one record. Both positive sources
+are preserved. A zero label means no recorded site within the positive-label
+radius, not a verified non-merge. Combined sites are rule-derived locations,
+not independently confirmed biological events. Junction-derived labels can
+favor junction-geometry features by construction.
+
+`sample_universe_audit.site_provenance` records source counts, a digest of the
+actual site records, and generation parameters. Neither `gt_junction_audit`
+nor `gt_merge_site_metadata` is accessible to feature extraction. The build
+checks manifest-bound per-brain cache identities against the sweep; refreshes
+after that sweep require new evidence before building.
 """.strip()
     elif candidate_policy_path is not None or candidate_policy_rel is not None:
         raise SystemExit("Merge README generation does not accept a candidate policy.")
@@ -203,6 +217,7 @@ brain; it must not influence model or preprocessing selection.
 ## Expected outputs
 
 - `{spec.output_prefix}_<brain>.csv`
+- `<output.csv>.provenance.json` binds the CSV hash to its data provenance
 - `model_selection_<brain>.json`
 - `{spec.output_prefix}_<brain>.joblib`
 - `{spec.output_prefix}_<brain>.log.txt`
@@ -214,9 +229,18 @@ brain; it must not influence model or preprocessing selection.
   `result_analysis_evidence.json`, and `result_analysis_workflow.log.txt` after
   separately invoking the result analyst
 
+Model JSON and joblib carry the same `data_provenance` as the CSV sidecar:
+training and held-out cache identities, scope, ordered-row label digests, and
+universe audits. Cache identity uses path/size/mtime/inode, not a full-file
+content hash. Record an input SHA-256 separately for archival reproducibility.
+Old scored CSVs/models are not updated by a cache refresh. Use a clean run
+directory and regenerate results. A training-excluded brain used to choose
+candidate-policy parameters is not an untouched end-to-end test set.
+
 Read undefined coverage first, then average precision and review-budget
 precision/recall, then held-out transfer; read ROC-AUC last. Training thresholds
-and queues must use nested out-of-fold scores, never the final in-sample score.
+and queues use winner OOF; selector OOF separately evaluates the selection
+procedure. Never use the final in-sample score as a validation metric.
 For split detectors, segment-disjoint folds can deliberately leave cross-fold
 candidate pairs without an OOF score. The CSV preserves those rows with NaN;
 queues exclude them, model metrics report `n_scored`, and OOF recall is
@@ -421,7 +445,11 @@ python "$DETECTOR" \\
 ```
 
 The smoke command must print `DETECTOR_SMOKE_OK` and must not create detector
-outputs.
+outputs. This checks synthetic model matrices and runtime contracts, not every
+path in the generated feature extractor. The assembler separately checks
+statically resolvable accumulator `set()` signatures and registry-name bindings.
+An actual extraction check on a small synthetic graph is still needed to cover
+feature writes and `to_frame()`; neither check proves full real-data coverage.
 
 ## Profile hypothesis computational cost
 
@@ -661,6 +689,7 @@ tail -f "$RUN_DIR/merge_detector_${{BRAIN}}.log.txt"
 ## Expected outputs in each run directory
 
 - `merge_detector_{brain}.csv`
+- `merge_detector_{brain}.csv.provenance.json`
 - `model_selection_{brain}.json`
 - `merge_detector_{brain}.joblib`
 - `merge_detector_{brain}.log.txt`
@@ -669,6 +698,27 @@ tail -f "$RUN_DIR/merge_detector_${{BRAIN}}.log.txt"
 The separate `--measuretime` directory contains the timing JSON, ranked cost
 report, editable selection template, and requested log; it contains no model
 output.
+
+## Input and label provenance
+
+Model-selection JSON and joblib share `data_provenance` with the CSV sidecar.
+It records the training and held-out cache identities separately, the actual
+ordered row-label digest, and runtime universe audits. Merge-site audits also
+record geometric/two-GT/shared counts, `site_records_sha256`, and generation
+metadata. The site fingerprint is computed from the loaded site records, not
+copied from a potentially stale cache annotation. These are audit records,
+never feature inputs. Cache replacement during loading/extraction aborts the
+run. Path/size/mtime/inode identity is not a full-file cryptographic digest;
+use the SHA-256 command below when archiving an experiment.
+
+After a cache refresh, build against a sweep whose cache identities still
+match, run no-data smoke tests, and train into a clean output directory.
+Do not treat older CSVs/models/figures as current simply because the input
+cache path stayed the same. Re-run profiling before reusing a timing-bound
+hypothesis selection with a newly generated detector. If all hypotheses are
+used, profiling is optional. A new build can regenerate feature code and is
+not a label-only ablation. Preserve old results before output cleanup;
+`--keep-existing` does not refresh historical training outputs.
 
 Read undefined coverage first, then average precision and review-budget
 precision/recall, then held-out transfer, and ROC-AUC last.

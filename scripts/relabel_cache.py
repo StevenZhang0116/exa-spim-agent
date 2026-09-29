@@ -56,7 +56,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-# --- Config / credentials (mirror proofreader_evolve/harness/scoring.py) ------
+# --- Config / credentials for reference segmentation metrics ----------------
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _CONFIG_DIR = os.path.abspath(os.path.join(_HERE, "..", "configs"))
 os.environ.setdefault(

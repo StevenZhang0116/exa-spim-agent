@@ -32,8 +32,12 @@ class ArrayImage:
 class FakeGraph:
     nodes = [1, 0]
     node_xyz = np.array([[10., 12., 4.], [12., 12., 4.]])
+    node_component_id = np.array([0, 1])
     component_id_to_swc_id = {0: "111.0", 1: "222.0"}
     segment_by_node = {0: "111", 1: "222"}
+
+    def edges(self):
+        return [(0, 0), (1, 1)]
 
     def node_segment_id(self, node):
         return self.segment_by_node[node]
@@ -97,6 +101,30 @@ class PlotTopSplitPredictionsTests(unittest.TestCase):
             self.assertEqual(len(plotter.rank_predictions(path, 1, "score")), 1)
             with self.assertRaises(ValueError):
                 plotter.rank_predictions(path, 0, "score")
+
+    def test_winner_oof_default_and_explicit_selector_override(self):
+        winner = "split_probability_oof"
+        selector = "split_probability_oof_selector"
+        self.assertEqual(plotter.DEFAULT_SCORE, winner)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "scores.csv"
+            path.write_text(
+                f"candidate_id,segment_id_a,segment_id_b,node_id_a,node_id_b,gap_um,is_split,{winner},{selector}\n"
+                "1,111,222,0,1,2.0,0,0.01,0.9\n"
+                "2,111,222,0,1,2.0,1,0.02,0.1\n"
+                "3,111,222,0,1,2.0,0,,1.0\n")
+            self.assertEqual([row["candidate_id"] for row in plotter.rank_predictions(path, 3)], [2, 1])
+            self.assertEqual([row["candidate_id"] for row in plotter.rank_predictions(path, 3, selector)],
+                             [3, 1, 2])
+            for options, column in (([], winner), (["--score-column", selector], selector)):
+                with self.subTest(column=column):
+                    argv = ["--csv", str(path), "--pkl", str(root / "missing.pkl"),
+                            "--output-dir", str(root / "plots"), *options]
+                    with patch.object(plotter, "rank_predictions", wraps=plotter.rank_predictions) as rank:
+                        with patch("builtins.print"), self.assertRaises(FileNotFoundError):
+                            plotter.main(argv)
+                        self.assertEqual(rank.call_args.args[2], column)
 
     def test_duplicate_candidate_id_and_missing_columns_raise(self):
         with tempfile.TemporaryDirectory() as directory:

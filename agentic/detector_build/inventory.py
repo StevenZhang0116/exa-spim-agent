@@ -4,6 +4,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from .feature_scope import (
+    MERGE_SITE_FEATURE_FIELDS,
+    inventory_feature_scopes,
+    validate_feature_scope,
+)
+from .split_feature_scope import SPLIT_FEATURE_FIELDS, validate_split_feature, split_inventory_specs
 
 from .inputs import (
     corrected_status_by_id,
@@ -95,10 +101,14 @@ def validate_semantic_draft(
     *,
     selected_ids: list[int],
     project_root: Path,
+    merge_site: bool = False,
+    split: bool = False,
 ) -> dict:
     """Validate the agent-owned semantic schema before provenance compilation."""
     draft = load_json_object(
         semantics_path, "feature semantics draft", project_root)
+    if merge_site and split:
+        raise SystemExit("A semantic draft cannot be both merge-site and split.")
     if set(draft) != {"schema_version", "hypotheses"}:
         raise SystemExit(
             "Feature semantics draft must contain exactly schema_version and "
@@ -177,11 +187,14 @@ def validate_semantic_draft(
                     f"Excluded hypothesis {hypothesis_id} must have empty features."
                 )
         for feature_index, feature in enumerate(row["features"]):
-            if not isinstance(feature, dict) or set(feature) != SEMANTIC_FEATURE_FIELDS:
+            fields = SEMANTIC_FEATURE_FIELDS | (MERGE_SITE_FEATURE_FIELDS if merge_site else set())
+            if split:
+                fields |= SPLIT_FEATURE_FIELDS
+            if not isinstance(feature, dict) or set(feature) != fields:
                 raise SystemExit(
                     f"Semantic hypothesis {hypothesis_id} feature {feature_index} "
                     "must contain exactly: "
-                    + ", ".join(sorted(SEMANTIC_FEATURE_FIELDS))
+                    + ", ".join(sorted(fields))
                 )
             name = feature["name"]
             if not isinstance(name, str) or not name.strip():
@@ -190,6 +203,12 @@ def validate_semantic_draft(
             if name in feature_names:
                 raise SystemExit(f"Semantic draft duplicates feature name {name!r}.")
             feature_names.add(name)
+            if merge_site:
+                validate_feature_scope(feature)
+            if split:
+                validate_split_feature(feature)
+    if merge_site:
+        inventory_feature_scopes({"schema_version": 4, "hypotheses": rows})
     return draft
 
 
@@ -207,12 +226,13 @@ def compile_feature_inventory(
     reconcile_unbacked_verdicts: bool = False,
     split_applicability_path: Path | None = None,
     run_json: Path | None = None,
+    merge_site: bool = False,
 ) -> list[str]:
     """Merge semantic judgments with deterministic same-ID provenance.
 
-    Merge output remains inventory v2. Split output is v3 because every feature
-    carries a source-validated node_role_requirement and the top level records
-    the applicability artifact provenance.
+    Legacy merge output is v2; merge-site output is v4 with explicit scope.
+    Split output is v5 with source-validated applicability, explicit anchoring
+    and occurrence reduction. Applicability provenance remains driver-owned.
 
     ``reconcile_unbacked_verdicts`` mirrors the input gate's flag: a report
     post-correction verdict with no USABLE corrected measurement is transcribed
@@ -221,7 +241,10 @@ def compile_feature_inventory(
     """
     changes = canonicalize_semantic_draft(semantics_path, project_root)
     draft = validate_semantic_draft(
-        semantics_path, selected_ids=selected_ids, project_root=project_root)
+        semantics_path, selected_ids=selected_ids, project_root=project_root,
+        merge_site=merge_site, split=split_applicability_path is not None)
+    if merge_site and split_applicability_path is not None:
+        raise SystemExit("Merge-site scope and split applicability are mutually exclusive.")
     semantic_rows = draft["hypotheses"]
     if (split_applicability_path is None) != (run_json is None):
         raise SystemExit(
@@ -349,12 +372,13 @@ def compile_feature_inventory(
         })
 
     inventory = {
-        "schema_version": 3 if applicability is not None else 2,
+        "schema_version": 4 if merge_site else (5 if applicability is not None else 2),
         "selection_manifest": selection_manifest,
         "selected_ids": selected_ids,
         "hypotheses": compiled_rows,
     }
     if applicability is not None:
+        split_inventory_specs(inventory)
         assert split_applicability_path is not None
         inventory["split_feature_applicability"] = rel_to_root(
             split_applicability_path, project_root

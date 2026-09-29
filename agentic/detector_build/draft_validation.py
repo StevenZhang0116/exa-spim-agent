@@ -39,6 +39,8 @@ def main() -> int:
     semantic = subparsers.add_parser("semantic")
     semantic.add_argument("--draft", required=True)
     semantic.add_argument("--run-json", required=True)
+    semantic.add_argument("--target", choices=[t.value for t in DetectorTarget],
+                          default=DetectorTarget.MERGE.value)
 
     candidate_policy = subparsers.add_parser("candidate-policy")
     candidate_policy.add_argument("--draft", required=True)
@@ -63,6 +65,7 @@ def main() -> int:
         ),
     )
     feature.add_argument("--candidate-policy")
+    feature.add_argument("--inventory")
     args = parser.parse_args()
 
     if args.kind == "semantic":
@@ -77,6 +80,8 @@ def main() -> int:
             _path(args.draft),
             selected_ids=list(context.selected_ids),
             project_root=PROJECT_ROOT,
+            merge_site=args.target == DetectorTarget.MERGE_SITE.value,
+            split=args.target == DetectorTarget.SPLIT.value,
         )
     elif args.kind == "candidate-policy":
         run_json = _path(args.run_json)
@@ -118,6 +123,7 @@ def main() -> int:
                 candidate_policy_path=(
                     _path(args.candidate_policy) if args.candidate_policy else None
                 ),
+                inventory_path=_path(args.inventory) if args.inventory else None,
             )
     print("DRAFT_VALIDATION_OK")
     return 0

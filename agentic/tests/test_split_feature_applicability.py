@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agentic.split_feature_applicability import (
     compile_applicability,
@@ -181,6 +182,12 @@ class SplitFeatureApplicabilityTests(unittest.TestCase):
                         "traversal_phase": "candidate_pair_pass",
                         "measurable_condition": "compatible occurrence exists",
                         "historical_undefined_sentinel": None,
+                        "scope": "candidate", "anchor": "tip_anchor",
+                        "occurrence_reduction": "first_compatible",
+                        "source_feature": "direction_alignment",
+                        "source_formula": "dot(anchor_tangent, gap_direction)",
+                        "source_aggregation": "closest compatible occurrence",
+                        "adaptation": "identity",
                     }],
                 }],
             }))
@@ -199,13 +206,18 @@ class SplitFeatureApplicabilityTests(unittest.TestCase):
                 run_json=run,
             )
             payload = json.loads(inventory.read_text())
-            self.assertEqual(payload["schema_version"], 3)
+            self.assertEqual(payload["schema_version"], 5)
             self.assertEqual(
                 payload["hypotheses"][0]["features"][0][
                     "node_role_requirement"
                 ],
                 "requires_tip_anchor",
             )
+            from agentic import run_detector_build_workflow as workflow
+            with patch.object(workflow, "PROJECT_ROOT", root):
+                workflow.validate_inventory(
+                    inventory, [1], None, rerun, None, summary,
+                    split_applicability_path=labels, run_json=run)
 
 
 if __name__ == "__main__":

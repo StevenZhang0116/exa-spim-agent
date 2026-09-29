@@ -10,6 +10,7 @@ import tempfile
 import threading
 import types
 import unittest
+from unittest.mock import patch
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
@@ -66,6 +67,19 @@ def _load_module():
 
 
 workflow = _load_module()
+
+
+def _write_split_inventory(root: Path) -> Path:
+    path = root / "feature_inventory.json"
+    path.write_text(json.dumps({"schema_version": 5, "hypotheses": [{
+        "included": True, "features": [{
+            "name": "gap_um_feature", "scope": "candidate", "anchor": "endpoint_pair",
+            "occurrence_reduction": "first_compatible", "source_feature": "gap_um_feature",
+            "source_formula": "norm(p_b - p_a)", "source_aggregation": "closest compatible pair",
+            "adaptation": "identity", "node_role_requirement": "no_tip_requirement",
+        }],
+    }]}))
+    return path
 
 
 def _write_split_candidate_policy(root: Path) -> Path:
@@ -749,6 +763,7 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             feature = root / "feature.py"
             output = root / "split_detector.py"
             candidate_policy = _write_split_candidate_policy(root)
+            inventory = _write_split_inventory(root)
             template.write_text(
                 "import numpy as np\n"
                 "from collections import defaultdict\n"
@@ -767,7 +782,6 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 "    'primitive': 'row_math', 'cost_class': 'constant',\n"
                 "    'bound': '', 'amortization': '', 'consumers': ['hypo_1'],\n"
                 "}]\n"
-                "class FeatureAccumulator:\n    pass\n"
                 "def extract_features(payload, verbose=True, timing=None, "
                 "enabled_analysis_keys=None, profile_segment_limit=None):\n"
                 "    _ = profile_segment_limit\n"
@@ -778,12 +792,15 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 "        timing.start_phase('candidate_pair')\n"
                 "        timing.start_analysis('hypo_1')\n"
                 "    samples, labels = build_sample_universe(payload)\n"
-                "    return samples, labels, FeatureAccumulator()\n"
+                "    acc = FeatureAccumulator(samples, payload['fragments_graph'])\n"
+                "    for sample in samples:\n"
+                "        acc.compute('gap_um_feature', sample['candidate_id'], lambda c: c['gap_um'])\n"
+                "    return samples, labels, acc\n"
             )
 
             assemble_detector(
                 template, feature, output, target=DetectorTarget.SPLIT,
-                candidate_policy_path=candidate_policy)
+                candidate_policy_path=candidate_policy, inventory_path=inventory)
 
             text = output.read_text()
             self.assertIn("DETECTOR_TARGET = 'split_detection'", text)
@@ -811,7 +828,7 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "GT-only.*gt_edge_error"):
                 assemble_detector(
                     template, feature, output, target=DetectorTarget.SPLIT,
-                    candidate_policy_path=candidate_policy)
+                    candidate_policy_path=candidate_policy, inventory_path=inventory)
 
     def test_detector_assembly_rejects_every_template_owned_symbol(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -972,6 +989,11 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             self.assertEqual(payload["metadata"]["profile_occurrence_limit"], 3)
             self.assertEqual(payload["metadata"]["n_profiled_segments"], 1)
             self.assertEqual(payload["metadata"]["profiled_segment_ids"], [1])
+            provenance = payload["metadata"]["data_provenance"]
+            self.assertEqual(provenance["scope"], "profile_subset")
+            self.assertEqual(provenance["n_rows"], 1)
+            self.assertEqual(provenance["cache_identity"]["path"], str(input_path.resolve()))
+            self.assertEqual(len(provenance["ordered_row_labels_sha256"]), 64)
             self.assertEqual(
                 payload["hypothesis_costs"][0][
                     "estimated_removable_seconds_if_excluded_alone"
@@ -1398,7 +1420,7 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             inventory = root / "feature_inventory.json"
             model_config = root / "model_candidates.json"
             candidate_policy = _write_split_candidate_policy(root)
-            inventory.write_text("{}\n")
+            _write_split_inventory(root)
             model_config.write_text(json.dumps(self._valid_model_config(inventory)))
             feature.write_text(
                 "FEATURE_REGISTRY = [('gap_um_feature', 'candidate_pair')]\n"
@@ -1411,7 +1433,6 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 "    'primitive': 'row_math', 'cost_class': 'constant',\n"
                 "    'bound': '', 'amortization': '', 'consumers': ['hypo_1'],\n"
                 "}]\n"
-                "class FeatureAccumulator:\n    pass\n"
                 "def extract_features(payload, verbose=True, timing=None, "
                 "enabled_analysis_keys=None, profile_segment_limit=None):\n"
                 "    _ = profile_segment_limit\n"
@@ -1422,7 +1443,10 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 "        timing.start_phase('candidate_pair')\n"
                 "        timing.start_analysis('hypo_1')\n"
                 "    samples, labels = build_sample_universe(payload)\n"
-                "    return samples, labels, FeatureAccumulator()\n"
+                "    acc = FeatureAccumulator(samples, payload['fragments_graph'])\n"
+                "    for sample in samples:\n"
+                "        acc.compute('gap_um_feature', sample['candidate_id'], lambda c: c['gap_um'])\n"
+                "    return samples, labels, acc\n"
             )
             assemble_detector(
                 workflow.RUNTIME_TEMPLATE_PATH,
@@ -1430,6 +1454,7 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 detector,
                 target=DetectorTarget.SPLIT,
                 candidate_policy_path=candidate_policy,
+                inventory_path=inventory,
             )
 
             workflow.validate_detector_executable(detector, model_config)
@@ -1612,6 +1637,9 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             self.assertIn("--nodelist=n287", text)
             self.assertIn("dataset_cache_794495_mcl100_add.pkl", text)
             self.assertIn("merge_detector_794495.csv", text)
+            self.assertIn("merge_detector_794495.csv.provenance.json", text)
+            self.assertIn("ordered row-label digest", text)
+            self.assertIn("not a label-only ablation", text)
             self.assertIn("Monitor component extraction", text)
             self.assertIn("feature:start", text)
             self.assertIn("calls` and `total_s", text)
@@ -2056,7 +2084,8 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("density-stratified", generate)
         self.assertIn("_memoized(cache, key, compute)", generate)
         self.assertIn("not merely the raw array", generate)
-        self.assertIn("follows local\nhelper and bounded-worker callbacks", generate)
+        self.assertIn("follows resolvable\nlocal helpers", generate)
+        self.assertIn("split acc.compute evaluators", generate)
         self.assertIn("row_or_component_key", generate)
         self.assertIn("COMPUTATION_PLAN matches the actual code", verify)
         self.assertIn("full-array reductions of pre-pass-built arrays", verify)
@@ -2082,8 +2111,8 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("final per-feature cumulative timing/call-count", verify)
         self.assertIn("schema-v2 timing JSON", verify)
         self.assertIn("bounded completion-order thread map", verify)
-        self.assertIn("never acquire a shared lock for every feature write", generate)
-        self.assertIn("without a shared per-feature write lock", verify)
+        self.assertIn("never add a second lock around every", generate)
+        self.assertIn("without adding a shared per-feature write lock", verify)
         self.assertIn("without audit, CV, fitting", verify)
         self.assertIn("--hypothesis-selection", verify)
         self.assertIn("does not choose exclusions automatically", verify)
@@ -2146,7 +2175,7 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("build_sample_universe(payload)", generate)
         self.assertIn("--candidate-policy", generate)
         self.assertIn("only the anchor is guaranteed", generate)
-        self.assertIn("must be ignored by feature extraction", generate)
+        self.assertIn("stripped before feature extraction", generate)
         self.assertIn("For split measuretime", generate)
         self.assertIn("EITHER segment of the pair is sampled", generate)
         self.assertIn("Do NOT require BOTH", generate)
@@ -2747,6 +2776,56 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 inventory_path, [1, 2], None, rerun, fixed, summary, corrected,
                 reconcile_unbacked_verdicts=True,
             )
+
+            # Exercise both real workflow recovery branches with the same
+            # unbacked report. Stop at SDK loading so no agent is contacted;
+            # compilation and validation remain real, not mocked.
+            context = types.SimpleNamespace(
+                target=DetectorTarget.MERGE,
+                unbacked_verdict_ids=(1,),
+                summary_path=summary,
+                rerun_dir=rerun,
+                fixed_dir=fixed,
+                selection_path=None,
+                selected_ids=(1, 2),
+                corrected_results_path=corrected,
+                split_feature_applicability_path=None,
+            )
+            class RecoveryComplete(Exception):
+                pass
+
+            for mode in ("draft", "public_inventory"):
+                with self.subTest(recovery=mode):
+                    out_dir = root / mode
+                    out_dir.mkdir()
+                    recovered_inventory = out_dir / workflow.FEATURE_INVENTORY_NAME
+                    recovered_draft = out_dir / workflow.FEATURE_SEMANTICS_DRAFT_NAME
+                    if mode == "draft":
+                        recovered_draft.write_text(semantics.read_text())
+                    else:
+                        recovered_inventory.write_text(inventory_path.read_text())
+                    with (
+                        patch.object(workflow, "resolve_run_context", return_value=context),
+                        patch.object(workflow, "protected_source_paths", return_value=[]),
+                        patch.object(workflow, "log") as log,
+                        patch.object(workflow, "load_claude_sdk", side_effect=RecoveryComplete),
+                        self.assertRaises(RecoveryComplete),
+                    ):
+                        asyncio.run(workflow.run_workflow(
+                            root / "run.json", out_dir, False,
+                            workflow.WorkflowCostSummary(),
+                            reconcile_unbacked_verdicts=True,
+                            merge_row_unit="segment",
+                        ))
+                    messages = "\n".join(call.args[0] for call in log.call_args_list)
+                    self.assertIn("Recovered", messages)
+                    self.assertNotIn("not recoverable", messages)
+                    self.assertNotIn("stale; rebuilding", messages)
+                    self.assertFalse(recovered_draft.exists())
+                    self.assertEqual(
+                        json.loads(recovered_inventory.read_text()),
+                        json.loads(inventory_path.read_text()),
+                    )
 
     def test_included_empty_exclusion_reason_is_canonicalized_to_null(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

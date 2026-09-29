@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import builtins
 import symtable
+import warnings
 from pathlib import Path
 
 from .candidate_policy import (
@@ -12,6 +13,9 @@ from .candidate_policy import (
     load_runtime_merge_candidate_policy,
 )
 from .contracts import DetectorTarget
+from .cost_validation import analyze_row_cost
+from .feature_scope import feature_scope_runtime_source
+from .split_feature_scope import split_scope_runtime_source
 from .target_runtime import TARGET_ADAPTER_MARKER, target_adapter_source
 
 
@@ -52,7 +56,7 @@ RUNTIME_OWNED_SYMBOLS = frozenset({
     "ascertainment_covariates",
     "_derive_split_truth", "_gt_neuron_membership",
     "_merge_site_node_arrays", "_nms_kept_junctions",
-    "_site_distances_to_kept",
+    "_site_distances_to_kept", "_merge_site_provenance",
 })
 
 # GT payload keys no feature fragment may read, for EITHER target. These are the
@@ -63,7 +67,7 @@ RUNTIME_OWNED_SYMBOLS = frozenset({
 # _BlindPayloadView guard in the detector runtime template.
 FEATURE_FORBIDDEN_PAYLOAD_KEYS = frozenset({
     "gt_edge_error", "gt_graph", "gt_node_canonical_label", "gt_merge_labels",
-    "gt_merge_sites",
+    "gt_merge_sites", "gt_junction_audit", "gt_merge_site_metadata",
     "__detector_universe_site_audit__",
 })
 SPLIT_FEATURE_FORBIDDEN_SAMPLE_KEYS = frozenset({
@@ -78,7 +82,7 @@ MERGE_SITE_FEATURE_FORBIDDEN_SAMPLE_KEYS = frozenset({
 })
 FEATURE_FORBIDDEN_RUNTIME_NAMES = frozenset({
     "_derive_split_truth", "_gt_neuron_membership", "ascertainment_covariates",
-    "_site_distances_to_kept",
+    "_site_distances_to_kept", "_merge_site_provenance",
 })
 
 
@@ -156,6 +160,123 @@ def _validate_accumulator_registry_usage(tree: ast.Module, path: Path) -> None:
                 "flat string FEATURE_NAMES; FEATURE_REGISTRY contains metadata "
                 "entries."
             )
+
+
+def _validate_accumulator_set_calls(tree: ast.Module, path: Path) -> None:
+    """Bind statically resolvable accumulator writes to their declared methods.
+
+    Constructor-bound locals and their aliases are tracked within lexical
+    scopes, including closures. Dynamic dispatch and expanded arguments are
+    left to extraction tests, not claimed as statically verified.
+    """
+    import inspect
+
+    feature_names = set(_feature_registry_names(tree, path))
+    signatures = {}
+    for definition in tree.body:
+        if not isinstance(definition, ast.ClassDef) or not definition.name.endswith("Accumulator"):
+            continue
+        method = next((node for node in definition.body
+                       if isinstance(node, ast.FunctionDef) and node.name == "set"), None)
+        if method is None or method.decorator_list:
+            continue
+        positional = [*method.args.posonlyargs, *method.args.args]
+        if not positional:
+            continue
+        defaults = len(positional) - len(method.args.defaults)
+        parameters = []
+        for index, parameter in enumerate(positional[1:], 1):
+            kind = (inspect.Parameter.POSITIONAL_ONLY if index < len(method.args.posonlyargs)
+                    else inspect.Parameter.POSITIONAL_OR_KEYWORD)
+            default = None if index >= defaults else inspect.Parameter.empty
+            parameters.append(inspect.Parameter(parameter.arg, kind, default=default))
+        if method.args.vararg:
+            parameters.append(inspect.Parameter(method.args.vararg.arg, inspect.Parameter.VAR_POSITIONAL))
+        for parameter, default in zip(method.args.kwonlyargs, method.args.kw_defaults):
+            parameters.append(inspect.Parameter(parameter.arg, inspect.Parameter.KEYWORD_ONLY,
+                default=None if default is not None else inspect.Parameter.empty))
+        if method.args.kwarg:
+            parameters.append(inspect.Parameter(method.args.kwarg.arg, inspect.Parameter.VAR_KEYWORD))
+        signatures[definition.name] = inspect.Signature(parameters)
+
+    class WriteVisitor(ast.NodeVisitor):
+        def __init__(self):
+            self.bindings = {}
+
+        def visit_FunctionDef(self, node):
+            outer = self.bindings
+            self.bindings = dict(outer)
+            arguments = [*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs]
+            arguments += [argument for argument in (node.args.vararg, node.args.kwarg) if argument]
+            for argument in arguments:
+                self.bindings.pop(argument.arg, None)
+            for statement in node.body:
+                self.visit(statement)
+            self.bindings = outer
+
+        visit_AsyncFunctionDef = visit_FunctionDef
+
+        def visit_ClassDef(self, node):
+            return
+
+        def assign(self, target, value):
+            if not isinstance(target, ast.Name):
+                return
+            kind = None
+            if isinstance(value, ast.Call) and isinstance(value.func, ast.Name):
+                kind = value.func.id if value.func.id in signatures else None
+            elif isinstance(value, ast.Name):
+                kind = self.bindings.get(value.id)
+            if kind is None:
+                self.bindings.pop(target.id, None)
+            else:
+                self.bindings[target.id] = kind
+
+        def visit_Assign(self, node):
+            self.visit(node.value)
+            for target in node.targets:
+                self.assign(target, node.value)
+
+        def visit_AnnAssign(self, node):
+            if node.value is not None:
+                self.visit(node.value)
+            self.assign(node.target, node.value)
+
+        def visit_Call(self, node):
+            self.generic_visit(node)
+            if not isinstance(node.func, ast.Attribute) or node.func.attr != "set":
+                return
+            owner = node.func.value
+            kind = self.bindings.get(owner.id) if isinstance(owner, ast.Name) else None
+            if kind is None:
+                return
+            if any(isinstance(argument, ast.Starred) for argument in node.args) or any(
+                    keyword.arg is None for keyword in node.keywords):
+                return
+            signature = signatures[kind]
+            try:
+                bound = signature.bind(*node.args, **{keyword.arg: keyword.value for keyword in node.keywords})
+            except TypeError as exc:
+                raise SystemExit(f"Feature implementation {path}: accumulator set() call on line "
+                                 f"{node.lineno} does not match {kind}.set{signature}: {exc}") from exc
+            feature_parameter = next((name for name in ("feature_name", "feature", "name")
+                                      if name in signature.parameters), None)
+            if feature_parameter is None:
+                return
+            feature = bound.arguments.get(feature_parameter)
+            if isinstance(feature, ast.Constant):
+                if not isinstance(feature.value, str) or feature.value not in feature_names:
+                    raise SystemExit(f"Feature implementation {path}: accumulator set() on line "
+                                     f"{node.lineno} binds unknown feature {feature.value!r} to "
+                                     f"{feature_parameter}; expected a FEATURE_NAMES entry.")
+            for parameter, value in bound.arguments.items():
+                if (parameter != feature_parameter and isinstance(value, ast.Constant)
+                        and isinstance(value.value, str) and value.value in feature_names):
+                    raise SystemExit(f"Feature implementation {path}: accumulator set() argument order "
+                                     f"mismatch on line {node.lineno}; feature {value.value!r} binds to "
+                                     f"{parameter}, not {feature_parameter}, in {kind}.set{signature}.")
+
+    WriteVisitor().visit(tree)
 
 
 def _scope_assignment_lines(
@@ -819,6 +940,25 @@ def _validate_no_per_element_graph_rebuilds(tree: ast.Module, path: Path) -> Non
 
 
 def _validate_row_path_cost(tree: ast.Module, path: Path) -> None:
+    """Combine existing structural guards with scope-aware data-flow checks."""
+    _validate_legacy_row_path_cost(tree, path)
+    report = analyze_row_cost(tree)
+    if report.violations:
+        raise SystemExit(
+            f"Feature implementation {path} has setup/global work reachable "
+            "from per-row analysis or invalid memoization:\n"
+            + "\n".join(report.violations[:8])
+        )
+    if report.unverified:
+        warnings.warn(
+            f"Partial row-cost verification for {path}: "
+            f"{len(report.unverified)} unverified path(s); this is not a full complexity guarantee.\n"
+            + "\n".join(report.unverified[:5]),
+            RuntimeWarning, stacklevel=2,
+        )
+
+
+def _validate_legacy_row_path_cost(tree: ast.Module, path: Path) -> None:
     """Reject setup/global work reachable from timing-instrumented row loops.
 
     COMPUTATION_PLAN is a useful declaration but cannot prove complexity. This
@@ -1141,6 +1281,7 @@ def validate_feature_implementation(
     if overlap:
         raise SystemExit("Feature implementation redefines runtime-owned symbols: " + ", ".join(overlap))
     _validate_accumulator_registry_usage(tree, path)
+    _validate_accumulator_set_calls(tree, path)
     _validate_image_patch_cache_scope(tree, path)
     timing_group_keys = _validate_timing_contract(tree, path)
     _validate_computation_plan(tree, path, timing_group_keys)
@@ -1150,6 +1291,44 @@ def validate_feature_implementation(
     return source.rstrip() + "\n"
 
 
+def _validate_scoped_feature_writes(tree: ast.Module, scopes: dict[str, str]) -> None:
+    """Catch literal scope mistakes at build time; dynamic names are checked at runtime."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        expected = {"set_candidate": "candidate", "set_segment": "segment"}.get(node.func.attr)
+        if expected is None:
+            continue
+        feature = node.args[0] if node.args else next(
+            (k.value for k in node.keywords if k.arg == "feature_name"), None)
+        if isinstance(feature, ast.Constant):
+            if not isinstance(feature.value, str) or feature.value not in scopes:
+                raise SystemExit(f"Unknown feature in {node.func.attr} at line {node.lineno}.")
+            if scopes[feature.value] != expected:
+                raise SystemExit(
+                    f"Feature {feature.value!r} has scope={scopes[feature.value]}, "
+                    f"cannot use {node.func.attr} (line {node.lineno}).")
+
+
+def _validate_split_feature_writes(tree: ast.Module, scopes: dict[str, str]) -> None:
+    """Split writes must pass through runtime anchoring and occurrence reduction."""
+    has_compute = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr in {"set", "set_candidate", "set_segment", "bind_rows"}:
+            raise SystemExit("Split features must use acc.compute with runtime-owned anchoring/reduction.")
+        if node.func.attr != "compute":
+            continue
+        has_compute = True
+        feature = node.args[0] if node.args else next(
+            (k.value for k in node.keywords if k.arg == "feature_name"), None)
+        if isinstance(feature, ast.Constant) and feature.value not in scopes:
+            raise SystemExit(f"Unknown split feature in compute at line {node.lineno}.")
+    if not has_compute:
+        raise SystemExit("Split extraction must use runtime FeatureAccumulator.compute.")
+
+
 def assemble_detector(
     template_path: Path,
     feature_path: Path,
@@ -1157,6 +1336,7 @@ def assemble_detector(
     *,
     target: DetectorTarget = DetectorTarget.MERGE,
     candidate_policy_path: Path | None = None,
+    inventory_path: Path | None = None,
 ) -> None:
     """Inject one validated feature fragment into the reviewed runtime template."""
     try:
@@ -1181,9 +1361,32 @@ def assemble_detector(
     required_symbols = set(REQUIRED_SYMBOLS)
     if target in policy_targets:
         required_symbols.remove("SegmentAccumulator")
-        required_symbols.add("FeatureAccumulator")
+    scope_source = ""
+    feature_scopes = None
+    if target is DetectorTarget.SPLIT:
+        if candidate_policy_path is None:
+            raise SystemExit("Split detector assembly requires split_candidate_policy.json.")
+        if inventory_path is None:
+            raise SystemExit("Split detector assembly requires feature_inventory.json (v5).")
+        scope_source, feature_scopes = split_scope_runtime_source(inventory_path)
+        runtime_owned = runtime_owned | _top_level_defined_symbols(ast.parse(scope_source))
+    if target is DetectorTarget.MERGE_SITE:
+        if candidate_policy_path is None:
+            raise SystemExit("Merge-site detector assembly requires merge_candidate_policy.json.")
+        if inventory_path is None:
+            raise SystemExit("Merge-site detector assembly requires feature_inventory.json (v4).")
+        scope_source, feature_scopes = feature_scope_runtime_source(inventory_path)
+        runtime_owned = runtime_owned | _top_level_defined_symbols(ast.parse(scope_source))
     feature_source = validate_feature_implementation(
         feature_path, runtime_owned, required_symbols, target)
+    if feature_scopes is not None:
+        feature_tree = ast.parse(feature_source)
+        names = _feature_registry_names(feature_tree, feature_path)
+        if names != list(feature_scopes):
+            raise SystemExit("FEATURE_REGISTRY must match inventory names and order exactly.")
+        _validate_scoped_feature_writes(feature_tree, feature_scopes)
+        if target is DetectorTarget.SPLIT:
+            _validate_split_feature_writes(feature_tree, feature_scopes)
     candidate_policy = None
     candidate_policy_sha256 = None
     if target is DetectorTarget.SPLIT:
@@ -1211,7 +1414,7 @@ def assemble_detector(
                 target,
                 candidate_policy=candidate_policy,
                 candidate_policy_sha256=candidate_policy_sha256,
-            ).rstrip(),
+            ).rstrip() + "\n" + scope_source,
         )
     assembled = template.replace(FEATURE_MARKER, feature_source)
     try:

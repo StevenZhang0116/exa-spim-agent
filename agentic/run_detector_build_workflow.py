@@ -16,20 +16,24 @@ for split runs.
 The motivation comes from the reports themselves: each hypothesis contributes
 one or more related features, and the recurring caveat is that none is precise enough alone
 ("high recall, ~8% precision — best used as one component of an ensemble").
-This workflow builds the combined feature table and selects a model for it.
+The generated detector builds the combined feature table and selects a model
+when the operator runs it against data; this builder does neither.
 
-THIS WORKFLOW IS CODE GENERATION ONLY, and it takes NO DATASET. Its inputs are
+THIS WORKFLOW IS CODE GENERATION ONLY; it does not load dataset contents. Its inputs are
 the run export, the report beside it, the predictive-selection manifest when
 applicable, the ``.rerun/`` scripts, and optional ``.fixed/`` scripts. Split
 builds additionally require the source-bound
-``<RUN>.split-feature-applicability.json`` written by discovery. It
-cross-checks selection, rerun MANIFEST, inventory paths, and source hashes before
-generation. It never loads a cache; it runs only the generated CLI's no-data
-``--help`` and synthetic smoke modes. The pkl needs >20 GB RAM and may require
-hours of
-graph traversal, so the operator runs the finished script themselves on a
-compute node with the data.
-Hence a login node is fine for this. The origin dataset is recorded in the
+``<RUN>.split-feature-applicability.json`` written by discovery and a completed
+candidate-pool AI review bundle. Merge-site builds require the sweep's
+recommended policy and evidence bundle; preflight also checks live cache file
+identities without deserializing them. The driver cross-checks selection, rerun
+MANIFEST and source hashes before generation, then validates inventory paths
+and hashes when compiling or reusing that artifact. Executable checks use
+``--help``, synthetic model smoke tests and invalid-config/no-output checks;
+they do not certify arbitrary generated feature formulas. Real cache loading
+and graph traversal can require >20 GB RAM and hours of work, so the operator
+runs the finished script on a compute node with the data.
+The origin dataset is recorded in the
 report, which is where the README's provenance comes from; the run command
 printed at the end guesses the cache path from the run name (``...-794495-mcl100``
 -> ``cache/dataset_cache_794495_mcl100_add.pkl``) purely as a convenience.
@@ -73,7 +77,9 @@ file, split into what this workflow rewrites anyway, what a compute-node rerun o
 the detector recreates, and what nothing here can bring back — plus any
 uncommitted git paths, since an untracked file is gone for good. ``--yes`` skips
 the prompt (required in batch jobs, which have no terminal); ``--keep-existing``
-writes into the folder as it stands, the older behaviour.
+reuses completed artifacts only after validation against current inputs and
+contracts, and offers retained drafts to their stage for repair. Detector run
+outputs are preserved and may be stale after a rebuild.
 
 The steps (split builds first run the additional candidate-policy
 step described below; merge builds retain the established four-step sequence,
@@ -94,11 +100,15 @@ with merge-site builds freezing their policy driver-side before step 1):
   1. inventory-features  — the agent reads <RUN>.summary.md, each selected
                            .rerun/hypo_<id>.py and matching .fixed/hypo_<id>.py;
                            it records only semantic judgments (source choice,
-                           feature math, aggregation and defined condition).
+                           feature math, aggregation and defined condition,
+                           plus target-specific scope and explicit adaptation).
                            The driver joins IDs, evidence, paths and hashes and
                            compiles the public feature_inventory.json. For split,
                            it also joins the exact selected source SHA to its
-                           validated node-role requirement.
+                           validated node-role requirement. The public schema is
+                           v2 for legacy segment merge, v4 for merge sites and
+                           v5 for split pairs (including anchor, occurrence
+                           reduction and source formula).
   2. configure-models    — write a validated model-candidate configuration. A
                            versioned declarative policy defines mandatory models,
                            optional limits and parameter rules. No arbitrary
@@ -106,13 +116,15 @@ with merge-site builds freezing their policy driver-side before step 1):
   3. generate-detector   — the agent writes only the task-specific feature
                            implementation. The driver AST-validates it and injects
                            it into a reviewed runtime template that owns the CLI,
-                           model selection, outputs and smoke contract. Split
-                           features use applicability guards without removing
-                           rows from the candidate universe.
+                           model selection, outputs and smoke contract. Reviewed
+                           accumulators enforce merge-site write scope and split
+                           anchoring, applicability and occurrence reduction;
+                           undefined features do not remove candidate rows.
   4. verify-and-document — enrich the factual README skeleton that the driver
                            wrote after detector assembly; check the script against the inventory and
-                           the inventoried rerun/fixed sources (every feature computed and fitted,
-                           constants unchanged, defined flags consistent, no sandbox
+                           the inventoried rerun/fixed sources (definitions and
+                           explicit adaptations respected, disabled work skipped,
+                           defined flags consistent, no sandbox
                            pip preamble, parses, --help works), report defects
                            without editing the assembled detector, run
                            driver-owned no-data CLI checks, and add semantic
@@ -135,16 +147,17 @@ compilation rejects a hidden draft,
 `--keep-existing` can recover it only after rebuilding and strictly validating
 its public artifact, avoiding a repeated semantic agent turn.
 
-Usage (from the ``exa-spim-agent/`` project root; a login node is fine):
+Usage (from the ``exa-spim-agent/`` project root):
     conda activate panda
     python agentic/run_detector_build_workflow.py \
         autodiscovery/<merge-error-or-split-error-run>.json
 
-Then run the generated detector yourself, on a compute node:
+Then use RUN_COMMANDS.md to run the generated detector on a compute node.
+For example, the default merge-site target uses:
     sbatch --mem=80G --wrap="\
         source /shared/utils.x86_64/anaconda3-2024.10/etc/profile.d/conda.sh; \
         conda activate panda; \
-        python autodiscovery-application/<RUN>/<merge_or_split>_site_detector.py \
+        python autodiscovery-application/<RUN>/merge_junction_detector.py \
             cache/dataset_cache_<brain>_mcl<N>_add.pkl"
 
 Then analyze that completed result directory:
@@ -224,6 +237,13 @@ try:  # package import (tests and ``python -m agentic...``)
         SEMANTIC_DRAFT_CONTRACT,
         compile_feature_inventory,
     )
+    from agentic.detector_build.feature_scope import (
+        MERGE_SITE_FEATURE_FIELDS, MERGE_SITE_SEMANTIC_CONTRACT,
+        inventory_feature_scopes,
+    )
+    from agentic.detector_build.split_feature_scope import (
+        SPLIT_FEATURE_FIELDS, SPLIT_SEMANTIC_CONTRACT, split_inventory_specs,
+    )
     from agentic.detector_build.documentation import (
         read_driver_generated_block,
         validate_readme_enrichment,
@@ -301,6 +321,13 @@ except ModuleNotFoundError as exc:  # direct ``python agentic/run_....py``
     from detector_build.inventory import (  # type: ignore[no-redef]
         SEMANTIC_DRAFT_CONTRACT,
         compile_feature_inventory,
+    )
+    from detector_build.feature_scope import (
+        MERGE_SITE_FEATURE_FIELDS, MERGE_SITE_SEMANTIC_CONTRACT,
+        inventory_feature_scopes,
+    )
+    from detector_build.split_feature_scope import (
+        SPLIT_FEATURE_FIELDS, SPLIT_SEMANTIC_CONTRACT, split_inventory_specs,
     )
     from detector_build.documentation import (  # type: ignore[no-redef]
         read_driver_generated_block,
@@ -659,7 +686,8 @@ The usable values are `requires_both_tips`, `requires_tip_anchor`, and
 `no_tip_requirement`.
 """.strip()
         extraction_contract = """
-- FeatureAccumulator with explicit measured/definedness membership;
+- Use runtime-owned FeatureAccumulator(samples, payload['fragments_graph']);
+  do NOT define an accumulator or write raw feature values;
 - extract_features(payload, verbose=True, timing=None,
   enabled_analysis_keys=None, profile_segment_limit=None, image_workers=1),
   returning canonical candidate-pair records, is_split labels, and the
@@ -676,10 +704,9 @@ anchor_side, partner_rank, node_role_a, node_role_b, and occurrences.
 node/gap/anchor/rank/role fields for every policy-admitted occurrence of the same
 unordered segment pair. Under tip_to_any_node, only the anchor is guaranteed to
 be a degree-1 tip; the partner may be a tip, shaft, or branch node. Runtime-only
-is_merge_creating and
-contains_known_merge_segment fields are also present strictly for output audit
-and must be ignored by feature extraction. FeatureAccumulator must preserve this exact sample
-order in to_frame(). GT-only fields (is_split,
+is_merge_creating and contains_known_merge_segment fields belong to output
+audits and are stripped before feature extraction. The runtime accumulator preserves
+this exact sample order in to_frame(). GT-only fields (is_split,
 split_kind, GT neuron membership, merge-risk audit fields) may not enter
 FEATURE_REGISTRY or any feature computation.
 
@@ -694,14 +721,35 @@ fields — the assembler additionally rejects the fragment statically if any GT
 key literal appears in it. Features must be computable from the fragments graph
 and image state alone.
 
-For each inventory feature, obey its `node_role_requirement` using the
-runtime-provided compatible_occurrences(sample, requirement):
-- requires_both_tips uses only occurrences whose two nodes are tips;
-- requires_tip_anchor uses occurrences whose recorded anchor is a tip;
-- no_tip_requirement uses all occurrences.
-If no occurrence is compatible, retain the candidate row and leave that feature
-NaN with is_defined=False. Never filter the candidate universe down to the
-feature's applicability subset.
+For each enabled feature and candidate call:
+    acc.compute(feature_name, sample['candidate_id'], evaluate)
+The runtime calls compatible_occurrences using the source-bound
+node_role_requirement, then applies anchor and occurrence_reduction before
+writing one scalar. evaluate(context)
+returns a finite scalar, or None for undefined. Do NOT call set(), set_candidate,
+set_segment or write private accumulator state. Define evaluators using ONLY
+the supplied context and shared geometry; never capture a raw sample/occurrence
+to override the anchor, select a different occurrence or reduce a second time.
+
+Context fields supplied by the reviewed runtime (all contexts are immutable):
+- tip_anchor: anchor_node_id, partner_node_id, anchor_segment_id,
+  partner_segment_id, gap_um, candidate_id. The anchor can be canonical side b;
+  the runtime orients BOTH node and segment identities together. Never assume a
+  canonical node_id_a is the tip.
+- endpoint_pair: node_ids and segment_ids in canonical pair order, gap_um,
+  candidate_id. Preserve the source's symmetric pair math; if the source uses
+  an oriented tip, declare tip_anchor instead.
+- gap_midpoint: endpoint_pair fields plus center_um, computed by the runtime.
+- component_pair: endpoint_pair fields plus component_ids.
+- segment_pair: segment_ids and candidate_id only, evaluated once per pair.
+For all_compatible, evaluate receives the TUPLE of compatible contexts for its
+joint formula. For other reductions it receives one context at a time; the
+runtime owns first_compatible/min/max/mean/sum/pair_once. Missing applicability
+leaves NaN/is_defined=0 and never deletes the candidate row. first_compatible
+must not silently become first_defined. Share indexes/context primitives across
+enabled consumers, but key candidate-dependent results by all dependencies.
+Never filter the candidate universe down to a feature's applicability subset.
+Construct the accumulator only after selecting the profiling subset.
 """.strip()
         verification_scope = (
             "candidate-pair-level rather than exact missing-voxel localization"
@@ -718,8 +766,20 @@ Confirm sample_universe_audit reports those same values. Treat the policy as
 immutable and report any mismatch rather than editing either artifact.
 Also verify every inventory `node_role_requirement` matches the exact selected
 source annotation in {split_applicability_rel}. Restrictive features must call
-compatible_occurrences before their endpoint math; absence of a compatible
-occurrence produces NaN/is_defined=False without deleting the candidate row.
+the runtime acc.compute path, which calls compatible_occurrences before the
+formula; absence of a compatible occurrence leaves NaN without deleting rows.
+Review the explicit anchor, occurrence_reduction, source_formula and adaptation.
+Compare source code, inventory quantity and generated formula including sign,
+units, numerator/denominator order and constants. Never invert a source ratio
+to fit an erroneous prose summary. Record any explicit candidate_pair adaptation
+under a new name; performance fixes must preserve the inventoried definition.
+Use independent synthetic reference values for: anchor_side=b with a non-tip
+on side a; A-B and A-C with different geometry; multiple compatible occurrences
+with different values; first_compatible versus aggregate reductions; absent
+applicability; canonical-pair relabeling, row order and GT blindness. Also check
+segment/component context uses BOTH sides rather than broadcasting one side.
+State which formulas were actually tested. Schema, storage and cost validation
+do not prove arbitrary generated formulas equivalent to their sources.
 """.strip()
         oof_verification = """
 Segment-disjoint split folds must never share either candidate segment between
@@ -732,9 +792,11 @@ the OOF-scored subset, not the complete candidate universe.
         measuretime_scope = f"""
 For split measuretime, `profile_segment_limit` means a deterministic sample of
 at most that many segment ids drawn from those that actually appear in the
-candidate pair universe (first-appearance order). Retain every candidate row in
-which EITHER segment of the pair is sampled, and restrict expensive feature
-computation to the retained rows' nodes/components. Do NOT require BOTH
+candidate pair universe. Enumerate eligible ids in first-appearance order for
+deterministic tie-breaking, then select across the density ranking below.
+Retain every candidate row in which EITHER segment of the pair is sampled, and
+restrict expensive candidate-local feature computation to the retained rows'
+nodes/components. Do NOT require BOTH
 endpoints to be sampled: the row unit is a segment pair, so an AND filter
 almost always retains zero rows and empties the profile. Do not reinterpret the
 limit as a number of GT edges, positive split pairs, endpoint occurrences, or
@@ -760,24 +822,38 @@ gt_merge_sites only afterwards to attach is_merge_site (geodesic distance <=
 the positive-label radius); candidates between the positive-label and claim
 radii are labeled negative and flagged in_ambiguous_ring for audit only.
 
-Anchor every inventoried feature honestly, and record the anchoring in the
-feature's measurable_condition text:
+The single gt_merge_sites list may contain geometric_walk sites (including
+merges with one traced partner) and two_gt_junction sites (local connections
+between two traced neurons). Untagged legacy records mean geometric_walk;
+shared-evidence records are one site, not two. These are rule-derived labels,
+not individually manually verified merge events. A zero is site-unlabelled,
+not a verified non-merge. Preserve both positive sources and the frozen
+positive-label radius; do not substitute claim radius for training tolerance.
+Never recompute GT sites or use gt_junction_audit / gt_merge_site_metadata in
+feature math. Junction-derived labels can favor junction-geometry features by
+construction; disclose this ascertainment bias rather than claiming independent
+biological validation. Original hypothesis verdicts are historical discovery
+evidence, not fresh measurements under the updated site labels.
+
+Anchor every inventoried feature honestly using the structured scope fields
+specified below, and record candidate applicability in measurable_condition:
 - JUNCTION-LOCAL: the source math is defined on a bounded local neighborhood
   (radius statistics near a point, local branch geometry, local density) —
-  re-anchor it at the candidate node with the source's own parameters, changing
-  the anchor only, never the math;
+  evaluate the local statistic at the candidate node with the source's own
+  parameters. If the source reduces over all junctions, removing that reduction
+  is an explicit candidate_local adaptation with a new feature name. Preserve
+  the local formula; do not claim the new local values equal the old aggregate;
 - SEGMENT-CONTEXT: the source math is a whole-segment aggregate — keep the
   exact source semantics, compute it once per segment, and broadcast it to that
   segment's candidates (constant within a segment; localization must come from
-  junction-local features, so an inventory of ONLY segment-context features is
-  a defect to report);
+  junction-local features; the driver rejects all-context inventories);
 - a hypothesis whose distinctive quantity is measured against GT tracings
   (distance to the GT graph, GT-node density, deviation from a GT path,
   anything derived from gt_merge_sites) is NOT blind-computable — exclude it
   with that reason rather than inventorying it.
 """.strip()
         extraction_contract = """
-- FeatureAccumulator with explicit measured/definedness membership;
+- Use the runtime-owned FeatureAccumulator(samples); do NOT define an accumulator;
 - extract_features(payload, verbose=True, timing=None,
   enabled_analysis_keys=None, profile_segment_limit=None, image_workers=1),
   returning canonical candidate junction records, is_merge_site labels, and the
@@ -790,11 +866,24 @@ derive a competing candidate set in the feature fragment. Each sample is a dict
 with candidate_id, node_id, segment_id, degree, x_um, y_um, z_um. Runtime-only
 distance_to_nearest_gt_site_um and in_ambiguous_ring fields are present
 strictly for output audit and must be ignored by feature extraction.
-FeatureAccumulator must preserve this exact sample order in to_frame().
+Construct FeatureAccumulator(samples) AFTER selecting any profiling subset.
+Use acc.set_candidate(feature_name, sample['candidate_id'], value) for
+scope=candidate, and acc.set_segment(feature_name, segment_id, value) for
+scope=segment. The driver embeds the inventory scope map. Wrong scopes, unknown
+identities, duplicate writes and non-finite values raise. Reduce values first,
+write each defined scalar exactly once, and leave undefined values unwritten
+(NaN with is_defined=0). Do not use set(), bind_rows(), custom storage or direct
+private-attribute writes. The runtime preserves sample order in to_frame().
+Local feature computation must use sample['node_id'] as its anchor. A segment
+aggregate copied with set_candidate is still wrong. Share graph indexes and
+global preprocessing, but key candidate-dependent cached values by candidate
+identity (and all varying parameters), never merely by segment. Segment-context
+features must be computed once per segment, only when their analysis is enabled.
 
 BLINDNESS IS ENFORCED, NOT ADVISORY. At runtime your extract_features receives
 a _BlindPayloadView, not the raw payload: reading any GT key (gt_graph,
-gt_node_canonical_label, gt_merge_labels, gt_edge_error, gt_merge_sites)
+gt_node_canonical_label, gt_merge_labels, gt_edge_error, gt_merge_sites,
+gt_junction_audit, gt_merge_site_metadata)
 raises BlindnessViolation and aborts the run; `"gt_..." in payload` reports
 False; the sample-universe cache hands you audit-stripped rows and ALL-ZERO
 labels, and the runtime re-attaches the true labels after extraction by row
@@ -818,10 +907,27 @@ mode, NMS radius, claim radius, positive-label radius, and SHA-256 from
 {candidate_policy_rel}. Confirm sample_universe_audit reports those same
 values plus the site-side coverage counts. Treat the policy as immutable and
 report any mismatch rather than editing either artifact. Also verify each
-inventory feature's recorded anchoring: JUNCTION-LOCAL features must be
-re-anchored at the candidate node without changing the source math, and
+inventory feature's structured scope and adaptation: candidate features must
+evaluate the local formula at the candidate node; removing a segment reduction
+must be explicitly recorded as candidate_local under a distinct name, and
 SEGMENT-CONTEXT features must be computed once per segment and broadcast —
-flag as a defect an inventory whose included features are all segment-context.
+the driver rejects inventories whose included features are all segment-context.
+Trace each candidate feature back to its source formula and constants. Check a
+synthetic segment containing two junctions with deliberately different local
+geometry against independently computed expected local values, not against
+the old segment aggregate. Check context equality, undefined local values,
+row permutation and label blindness. Equal local values on arbitrary real
+data are valid and must not trigger a heuristic rejection. The storage contract
+does not prove the generated mathematical formula is correct; disclose which
+feature formulas were actually tested and any untested adaptations.
+Verify site_provenance records actual source counts, site_records_sha256 and
+generation_metadata without exposing them to feature code. Model JSON, joblib
+and <output.csv>.provenance.json must agree on data_provenance, including
+the loaded cache identity and ordered_row_labels_sha256. Training and held-out
+inputs get separate records; shared-source sites count once in the total.
+Use synthetic tests for legacy positives plus new two-GT positives and for
+blocked GT metadata access. A changed cache during extraction must fail, not
+silently record the new file identity against old in-memory labels.
 """.strip()
         oof_verification = """
 Segment-disjoint merge-site folds must never share a segment between train and
@@ -832,9 +938,11 @@ coverage must be complete.
         measuretime_scope = """
 For merge-site measuretime, `profile_segment_limit` means a deterministic
 sample of at most that many segment ids drawn from those that actually appear
-in the candidate universe (first-appearance order). Retain every candidate row
-whose segment is sampled, and restrict expensive feature computation to the
-retained rows' nodes/components. Do not reinterpret the limit as a number of
+in the candidate universe. Enumerate eligible ids in first-appearance order for
+deterministic tie-breaking, then select across the density ranking below.
+Retain every candidate row whose segment is sampled, and restrict expensive
+candidate-local feature computation to the retained rows' nodes/components.
+Do not reinterpret the limit as a number of
 candidate rows, junctions, or GT sites. The reported seconds are observed on
 that bounded sample, not a full-run estimate. Draw the sample
 density-stratified, not first-N: rank the eligible segments by a cheap
@@ -971,15 +1079,18 @@ Write the internal semantic draft {semantics_rel}. It must obey this exact
 driver-owned contract:
 
 {SEMANTIC_DRAFT_CONTRACT}
+{MERGE_SITE_SEMANTIC_CONTRACT if spec.target is DetectorTarget.MERGE_SITE else ''}
+{SPLIT_SEMANTIC_CONTRACT if spec.target is DetectorTarget.SPLIT else ''}
 
 The driver will combine this draft with same-ID evidence and source hashes to write the public
-{inventory_rel}, then apply the strict inventory-v2 validator for merge or the
-strict inventory-v3 validator for split. Undefined values
+{inventory_rel}, then apply the strict inventory-v2 validator for legacy merge,
+inventory-v5 for split, or inventory-v4 for merge-site. The extra target-specific
+fields above extend the base feature field set. Undefined values
 in the eventual detector are NaN plus an explicit <feature>_is_defined column.
 
 Before returning, run this narrow read-only self-check from the project root:
 python -m agentic.detector_build.draft_validation semantic --draft \
-  {semantics_rel} --run-json {run_rel}
+  {semantics_rel} --run-json {run_rel} --target {target.value}
 It must print DRAFT_VALIDATION_OK. If it reports a mismatch, repair the draft and
 run the same command again.
 
@@ -1073,8 +1184,8 @@ included feature, only its recorded feature_source_path after verifying the
 recorded SHA-256. Never fall back between rerun and fixed sources.
 {candidate_policy_generation_note}
 
-The driver owns the reviewed runtime template plus target adapter and will assemble the unchanged
-public {detector_rel}; do not write that file. Your fragment must define:
+The driver owns the reviewed runtime template plus target adapter and will
+assemble the public detector at {detector_rel}; do not write that file. Your fragment must define:
 - FEATURE_REGISTRY in inventory order;
 - ANALYSIS_TIMING_GROUPS, a literal list mapping stable timing-group keys to
   positive hypothesis ids, actual traversal phase, and owned feature names;
@@ -1101,8 +1212,10 @@ at least one primitive). `cost_class` uses exactly this closed vocabulary:
 - global_scan: touches the full node/candidate arrays (full-array conditional
   filtering, sorting, clustering, or reductions such as min/max/sum/
   flatnonzero) — even when the array itself was materialized by a pre-pass.
-When unsure between two classes, declare the more expensive one; constraints
-only tighten with the class, so under-classifying removes protection.
+Classify the actual input-size dependence; these classes are not a total
+ordering and have different obligations. If a primitive mixes growth modes,
+split it into separate primitives. Document uncertainty instead of claiming a
+verified bound that the code does not establish.
 `bound` and `amortization` are honest declarations the driver checks for
 substance:
 - density_scaled and component_scaled primitives must declare a concrete bound
@@ -1112,7 +1225,8 @@ substance:
   key covering all result-determining parameters);
 - global_scan primitives must declare a one-time pre-pass in `amortization`;
   full-array scans are forbidden on the per-row path — build the index or
-  clustering once at startup and do per-row dict/array lookups only.
+  clustering once at startup, reuse it via lookups, and do only the declared
+  candidate-local work on the row path.
 These cost-discipline invariants bind the implementation, not just the plan:
 - compute-once: when several hypotheses need an identical (primitive,
   parameters) result for the same row, route them through one memoized shared
@@ -1122,8 +1236,9 @@ These cost-discipline invariants bind the implementation, not just the plan:
   amortization key, and pass the expensive work as the compute callable. The
   assembler mechanically rejects a plan that declares density_scaled or
   memoized amortization when the implementation never calls `_memoized`;
-- boundedness: every graph traversal or shortest-path call carries an explicit
-  cutoff or node cap matching the declared bound;
+- boundedness: bounded-local graph traversals or shortest-path calls carry the
+  declared cutoff or node cap. Whole-component quantities instead retain their
+  source semantics and use declared component-scoped memoization;
 - pre-pass: any computation touching full-length arrays or the whole candidate
   set runs once before the row loop and is reused via lookup. The pre-pass must
   materialize the DERIVED result each consumer needs (a scalar, a
@@ -1135,20 +1250,33 @@ These cost-discipline invariants bind the implementation, not just the plan:
   (connected_components, betweenness) INSIDE a loop over that graph's edges
   or nodes — an O(E)-iteration loop with an O(V+E) body is a quadratic
   blow-up that defeats every declared bound, even inside a memoized
-  per-component pre-pass. Skeleton components are almost always trees, so a
-  "tree fast path" that removes each edge from a fresh graph copy is SLOWER
-  than the k-sampled algorithm it replaces; derive per-element quantities in
-  one pass instead (tree edge betweenness = subtree-size products from a
-  single rooted DFS, exactly as the bounded discovery sources implement it).
+  per-component pre-pass. Use a shared graph pass when it preserves the source
+  quantity. For example, on a verified tree, exact edge betweenness can use
+  subtree-size products from one rooted DFS; do not assume every component is
+  a tree or replace a sampled source quantity with a different exact one.
   The assembler statically rejects graph construction and whole-graph
   algorithms inside per-edge/per-node loops.
-The assembler enforces this last boundary independently. It follows local
-helper and bounded-worker callbacks from timing-instrumented row loops and
-rejects whole-universe iteration/reduction/index construction, unbounded graph
-search, and imports reachable from that path. Wrapping such setup in
+The assembler checks supported AST paths independently. It follows resolvable
+local helpers, bounded-worker callbacks and split acc.compute evaluators from
+row work, rejecting detected whole-universe iteration/reduction/index
+construction, unbounded graph search and imports on that path. Wrapping such setup in
 `_memoized(cache, row_or_component_key, compute)` does not make it legal. A
 constant-key global cache may be read from row work only after the same helper
 has been explicitly warmed before row processing starts.
+The data-flow check tracks graph-array origins through aliases, object fields,
+multidimensional slices and local helper/method parameters; renaming a variable
+does not turn whole-graph data into local data. A column slice keeps the node
+axis, while indexing one node or a fixed-size slice is local. Reductions,
+sorting, masks and index construction on that variable-size axis must stay out
+of row work. A radius query is density-scaled, not a fixed-size neighborhood.
+Persistent component caches must cover result-determining row inputs in their
+keys. A row-local cache can share local/image work within that row, but cannot
+amortize work across candidates. The validator reports unresolved calls,
+variable-size work without a verified bound/cache, recursion and analysis-budget
+limits as PARTIAL verification; never describe that result as a complete
+complexity proof. Keep these limitations in the verification notes. Fix reported
+violations with equivalent computation, not feature deletion, new sampling,
+or altered mathematical definitions.
 The optimizations reorganize computation only; they must not change feature
 numeric semantics. If a cutoff would truncate a quantity the selected source
 defines over a whole component, keep the source semantics, classify the
@@ -1169,9 +1297,13 @@ three-item tuple `(row_records, labels, accumulator)`. Never return a DataFrame
 or call `accumulator.to_frame()` there; the reviewed runtime owns conversion to
 the feature frame. The deterministic assembler rejects any other return shape.
 
-Copy feature math, constants, reductions, and measurable conditions from the
-inventoried sources. Share traversal passes, keep intermediate quantities out of
-FEATURE_REGISTRY, and emit NaN plus <feature>_is_defined for undefined values.
+Implement the inventory's feature definitions and measurable conditions, using
+the selected sources for formulas and constants. Preserve source reductions
+for identity features; apply only the explicitly inventoried adaptation for
+candidate_local / candidate_pair features. Share traversal passes, keep intermediate quantities out of
+FEATURE_REGISTRY, and represent undefined outputs as NaN plus <feature>_is_defined=0.
+For split evaluators return None; for merge-site leave undefined values unwritten.
+The reviewed accumulators produce the NaN/flag columns in these two targets.
 Never infer missingness from historical numeric sentinels. Preserve the complete
 runtime-provided target row universe, leaving features undefined when their
 required fragment structure is absent, and remove install/sandbox scaffolding.
@@ -1187,8 +1319,22 @@ honest computation boundary. `ANALYSIS_TIMING_GROUPS` must cover every
 FEATURE_REGISTRY name exactly once and every hypothesis id must belong to exactly
 one group. FEATURE_REGISTRY owns only public feature names and inventory order;
 do not duplicate phase metadata there. Treat FEATURE_REGISTRY as metadata only:
-initialize accumulators with the runtime-derived flat string FEATURE_NAMES,
-never with FEATURE_REGISTRY itself. ANALYSIS_TIMING_GROUPS is the sole owner
+For merge-site use ONLY the runtime-owned FeatureAccumulator(samples) and its
+set_candidate/set_segment APIs described above. For split use ONLY the runtime
+FeatureAccumulator(samples, graph) and acc.compute(feature_name, candidate_id,
+evaluate); the runtime owns anchoring and occurrence reduction. For legacy merge initialize
+accumulators with the runtime-derived flat string FEATURE_NAMES, never with
+FEATURE_REGISTRY itself. For legacy merge, keep every accumulator set() call consistent
+with its actual method signature: do not define set(segment_id, feature_name,
+value) and call set(feature_name, segment_id, value). Prefer explicit keyword
+arguments for feature_name and the segment/candidate identity. The assembler
+binds statically resolvable accumulator writes to their declared signatures,
+rejecting reversed feature-name arguments, invalid arity and unknown literal
+feature names. It does not prove dynamic calls correct. Check a real write,
+readback and to_frame() conversion, including a large integer identity,
+undefined values, multiple distinct candidates sharing a segment, row
+permutations and rejection of duplicate identities, rather than testing only a
+random numeric matrix. ANALYSIS_TIMING_GROUPS is the sole owner
 of actual execution phase and selection-unit membership. Treat each group as a
 final-run selection unit. A group may own multiple
 hypotheses/features only when their computation is genuinely inseparable; record
@@ -1209,9 +1355,13 @@ must not change the target row universe, feature-column order, labels, return
 types, or all-enabled results.
 
 Implement `profile_segment_limit` as a profiling-only deterministic sample of at
-most that many component-bearing segments. Restrict every expensive edge, node,
-junction, chain, component, and segment computation to that sample; do not merely
-stop the timer while continuing full-data work. `None` must preserve the complete
+most that many eligible segments (component-bearing for legacy segment merge;
+candidate-bearing for site/pair targets). Restrict candidate-local edge, node,
+junction, chain, component and segment work to the retained sample; do not merely
+stop the timer while continuing unsampled candidate work. If a feature requires
+a truly global pre-pass, preserve its full reference universe and report that
+cost separately; never redefine global quantities on the profiling subset.
+`None` must preserve the complete
 row universe and exact normal-run behavior. The runtime passes a default limit of
 3 for `--measuretime` and records the sampled ids and full-data counts.
 
@@ -1233,10 +1383,13 @@ thread-aware through `image_workers`:
   so the complete row/column/definedness output remains identical to the serial
   path;
 - assign each candidate row to exactly one worker and do not read accumulator
-  arrays until the bounded thread map is fully drained. Write that exclusively
-  owned row directly, or return row-local updates for parent-thread commit;
-  never acquire a shared lock for every feature write and never let two workers
-  own the same candidate row;
+  arrays until the bounded thread map is fully drained. Split workers call
+  acc.compute; merge-site workers use the reviewed set_candidate/set_segment
+  interfaces (compute segment context outside the candidate workers). Use the
+  runtime's internal synchronization and never add a second lock around every
+  feature call. Legacy merge may write exclusively owned rows directly or
+  return row-local updates for parent-thread commit. Never let two workers own
+  the same candidate row;
 - share only read-only graph/image state. TensorStore patch reads may overlap,
   but patch caches remain candidate-local and bounded. Initialize `patch_cache = {{}}`
   inside the per-row worker, never in `extract_features` scope, and do not retain
@@ -1286,7 +1439,7 @@ independently execute the assembled detector's no-data contract checks.
 
 Before returning, run this narrow read-only self-check from the project root:
 python -m agentic.detector_build.draft_validation feature --draft \
-  {feature_impl_rel} --template {runtime_template_rel} --target {target.value}{feature_policy_validation_arg}
+  {feature_impl_rel} --template {runtime_template_rel} --target {target.value}{feature_policy_validation_arg} --inventory {inventory_rel}
 It must print DRAFT_VALIDATION_OK. If it reports a mismatch, repair the fragment
 and run the same command again.
 
@@ -1312,9 +1465,12 @@ semantic context from {summary_rel}, {inventory_rel} and {model_config_rel}, plu
 VERIFY READ-ONLY BEFORE DOCUMENTING
 1. Every inventory feature has one explicit feature_source_path whose current
    SHA-256 matches the inventory; the rerun-vs-fixed choice follows the recorded
-   correction_scope and source_reason. Every included feature is genuinely
-   computed once, keeps the selected source's constants,
-   reaches the frame and has an extraction-time binary is_defined flag. Undefined
+   correction_scope and source_reason. Every enabled, applicable feature produces
+   one scalar per target row, keeps the selected source's constants and explicit
+   inventoried adaptation, reaches the frame and has a binary is_defined flag.
+   Split formulas may run on multiple compatible occurrences before the runtime
+   reduction; segment context is shared across merge candidates. Disabled groups
+   and inapplicable split formulas do no feature work. Undefined
    values are NaN; valid 0/1/180 values are not missing. --exclude-empty uses
    flags rather than sentinels.
    Any plain induced/copied networkx graph is treated as topology-only: code
@@ -1343,7 +1499,12 @@ VERIFY READ-ONLY BEFORE DOCUMENTING
    that the plan does not declare. These row-path violations are build-blocking
    and must be repaired before assembly; finding one in an assembled detector
    is a deterministic-validator escape to document, not an accepted performance
-   caveat. Post-extraction diagnostics and figures
+   caveat. Preserve any partial row-cost verification diagnostics in the README:
+   unresolved paths are not confirmed violations, but passing structural checks
+   does not certify their complexity. Check cache lifetime and key parameters,
+   including aliases and helper/method calls; row-local image caches are valid
+   for within-row reuse, not evidence of cross-row amortization.
+   Post-extraction diagnostics and figures
    must also stay bounded on the full universe: any all-rows pairwise or
    rank statistic must be row-subsampled to a fixed cap or be O(n log n)
    (for example, scipy spearmanr with nan_policy="omit" on NaN-bearing data
@@ -1354,12 +1515,13 @@ VERIFY READ-ONLY BEFORE DOCUMENTING
    owns a strict majority of included hypothesis ids, normal extraction uses
    the runtime's bounded completion-order thread map, honors `--n-jobs` (-1 =
    all available CPUs, 0 = auto capped at 8, 1 = serial), assigns each row to
-   one worker without a shared per-feature write lock, preserves stable output
+   one worker without adding a shared per-feature write lock around runtime
+   accumulator calls, preserves stable output
    placement by row id, and logs the worker count;
    timing mode forces the identical serial path. If image ids are half or fewer,
    extraction remains serial and does not create a thread pool.
-   `--measuretime` profiles
-   only its small deterministic segment sample and writes the
+   `--measuretime` profiles candidate work on its small deterministic segment
+   sample, separately accounts for any required global pre-pass, and writes the
    schema-v2 timing JSON, ranked hypothesis cost report, and editable schema-v1
    selection template, then exits without audit, CV, fitting, held-out scoring,
    CSV, joblib, model-selection JSON, or figures. Per-hypothesis rows distinguish
@@ -1399,12 +1561,21 @@ VERIFY READ-ONLY BEFORE DOCUMENTING
 6. The model-selection JSON explains why the model won; joblib carries pipeline and
    ordered schema; CSV columns are unambiguous. Nonlinear models do not present
    impurity importance as validation importance.
+    data_provenance is shared by model JSON, joblib and the CSV provenance sidecar;
+    it binds loaded cache identity, actual ordered row labels and runtime universe
+    audits. It is audit-only metadata and must never be a predictor input.
 7. There is no install command, sys.path edit or sys.modules deletion. Each pkl
    loads once, caches release sequentially, Agg precedes pyplot, logging is
    durable, and the required `--synthetic-smoke-test` remains a no-data/no-output
-   mode that prints `{SMOKE_SUCCESS_MARKER}` only after its assertions pass. The
-   driver will independently run parsing, --help, and that smoke test after this
-   turn; do not claim success in lieu of executable checks.
+    mode that prints `{SMOKE_SUCCESS_MARKER}` only after its assertions pass.
+    The model smoke uses synthetic feature matrices; it does not execute every
+    path of the generated extract_features implementation. Do not equate its
+    success with real extraction validation. Verify accumulator method/call
+    signatures and explicitly report which generated extraction paths were
+    tested on a small synthetic graph without cloud access or real caches. The
+   driver independently runs parsing, --help, model smoke and invalid-config/
+   no-output checks after assembly and again after this turn; do not claim
+   success in lieu of executable checks.
 
 Then document every excluded hypothesis and the per-feature rerun/fixed source
 choice, plus provenance, feature mapping and defined conditions; why each model
@@ -1419,6 +1590,8 @@ and cross-brain transfer, with ROC-AUC last. State that weighted classifier scor
 are not automatically calibrated probabilities. Preserve caveats about sparse
 positive labels, correlated features, discovery-stage feature-selection bias,
 uneven coverage, and {verification_scope}. Report
+which brains participated in candidate-policy selection: a training-excluded
+brain used in the sweep is not an untouched end-to-end test set. Report
 defects found and anything requiring a real compute-node run.
 
 This turn is ONLY the verify-and-document stage. Treat {inventory_rel},
@@ -1890,6 +2063,7 @@ def validate_inventory(
     reconcile_unbacked_verdicts: bool = False,
     split_applicability_path: Path | None = None,
     run_json: Path | None = None,
+    merge_site: bool = False,
 ) -> None:
     """Enforce inventory semantics and per-hypothesis source provenance.
 
@@ -1918,7 +2092,7 @@ def validate_inventory(
             "Feature inventory must contain exactly: "
             + ", ".join(sorted(top_level_fields))
         )
-    expected_schema = 3 if split_inventory else 2
+    expected_schema = 4 if merge_site else (5 if split_inventory else 2)
     if inventory.get("schema_version") != expected_schema:
         raise SystemExit(
             f"Feature inventory must set schema_version to {expected_schema}."
@@ -2199,8 +2373,11 @@ def validate_inventory(
                 "traversal_phase", "measurable_condition",
                 "historical_undefined_sentinel",
             }
+            if merge_site:
+                required_feature_fields.update(MERGE_SITE_FEATURE_FIELDS)
             expected_requirement = None
             if applicability is not None:
+                required_feature_fields.update(SPLIT_FEATURE_FIELDS)
                 required_feature_fields.add("node_role_requirement")
                 annotation = applicability.get(
                     (hypothesis_id, _sha256(expected_source))
@@ -2275,6 +2452,10 @@ def validate_inventory(
                     "features list."
                 )
 
+    if merge_site:
+        inventory_feature_scopes(inventory)
+    if split_inventory:
+        split_inventory_specs(inventory)
     log(
         f"  OK: inventory v{expected_schema} validated for {len(rows)} "
         "selected hypothesis ids."
@@ -2372,9 +2553,8 @@ async def run_workflow(
         run_json, reconcile_unbacked_verdicts=reconcile_unbacked_verdicts
     )
     # Merge-error runs build the junction-site detector by default; the
-    # established segment-level target stays available via
-    # --merge-row-unit segment (the proofreader scoring stack still consumes
-    # segment-level merge_site_detector.py deliverables).
+    # established segment-level target remains an explicit legacy option via
+    # --merge-row-unit segment.
     if context.target is DetectorTarget.MERGE and merge_row_unit == "site":
         context = dataclasses.replace(context, target=DetectorTarget.MERGE_SITE)
     if context.unbacked_verdict_ids:
@@ -2737,8 +2917,10 @@ async def run_workflow(
                 rerun_dir=rerun_dir,
                 fixed_dir=fixed_dir,
                 project_root=PROJECT_ROOT,
+                reconcile_unbacked_verdicts=reconcile_unbacked_verdicts,
                 split_applicability_path=split_applicability_path,
                 run_json=(run_json if split_applicability_path is not None else None),
+                merge_site=spec.target is DetectorTarget.MERGE_SITE,
             )
             for change in canonical_changes:
                 log(f"  Canonicalized semantic draft: {change}")
@@ -2750,8 +2932,10 @@ async def run_workflow(
                 fixed_dir,
                 summary_path,
                 corrected_results_path,
+                reconcile_unbacked_verdicts=reconcile_unbacked_verdicts,
                 split_applicability_path=split_applicability_path,
                 run_json=(run_json if split_applicability_path is not None else None),
+                merge_site=spec.target is DetectorTarget.MERGE_SITE,
             )
         except SystemExit as exc:
             log(
@@ -2784,8 +2968,10 @@ async def run_workflow(
                 fixed_dir,
                 summary_path,
                 corrected_results_path,
+                reconcile_unbacked_verdicts=reconcile_unbacked_verdicts,
                 split_applicability_path=split_applicability_path,
                 run_json=(run_json if split_applicability_path is not None else None),
+                merge_site=spec.target is DetectorTarget.MERGE_SITE,
             )
         except SystemExit as exc:
             log(f"Existing feature inventory is stale; rebuilding it: {exc}")
@@ -2844,6 +3030,7 @@ async def run_workflow(
                 feature_path,
                 detector_path,
                 target=context.target,
+                inventory_path=inventory_path,
                 candidate_policy_path=(
                     candidate_policy_path
                     if spec.target in (DetectorTarget.SPLIT,
@@ -2944,6 +3131,7 @@ async def run_workflow(
                         project_root=PROJECT_ROOT,
                         reconcile_unbacked_verdicts=reconcile_unbacked_verdicts,
                         split_applicability_path=split_applicability_path,
+                        merge_site=spec.target is DetectorTarget.MERGE_SITE,
                         run_json=(
                             run_json if split_applicability_path is not None else None
                         ),
@@ -2960,6 +3148,7 @@ async def run_workflow(
                         corrected_results_path,
                         reconcile_unbacked_verdicts=reconcile_unbacked_verdicts,
                         split_applicability_path=split_applicability_path,
+                        merge_site=spec.target is DetectorTarget.MERGE_SITE,
                         run_json=(
                             run_json if split_applicability_path is not None else None
                         ),
@@ -3015,6 +3204,7 @@ async def run_workflow(
                             feature_path,
                             detector_path,
                             target=context.target,
+                            inventory_path=out_dir / FEATURE_INVENTORY_NAME,
                             candidate_policy_path=(
                                 candidate_policy_path
                                 if spec.target in (DetectorTarget.SPLIT,
@@ -3078,10 +3268,9 @@ async def run_workflow(
         )
     detector_rel = f"{_rel_to_root(out_dir)}/{spec.detector_name}"
     if (out_dir / spec.detector_name).is_file():
-        # End on the command, not on a summary: the detector is the deliverable
-        # and running it — on a compute node, with the data — is the next action.
-        # The cache is a guess from the run name (this workflow was never told
-        # one), so it is worth checking against the report before submitting.
+        # Print the next compute-node command. This cache path is inferred from
+        # the run name, not selected from the policy sweep's input caches;
+        # check it against the report before submitting.
         cache = origin_cache_hint(run_json)
         print("\nRun it next, on a compute node (>20 GB RAM):")
         print("    conda activate panda")
@@ -3090,7 +3279,9 @@ async def run_workflow(
         print(f"        --model-config {_rel_to_root(out_dir / MODEL_CONFIG_NAME)}"
               + ("" if cache else "   # the origin cache, per the report"))
         print("\nThat writes the per-model OOF CSV, model-selection JSON, fitted "
-              "winner joblib, txt log and figures next to the script.\nRead the "
+              "winner joblib and txt log beside the script, with figures in "
+              "its figures/ subdirectory. RUN_COMMANDS.md provides commands "
+              "with explicit, separate run directories.\nRead the "
               "undefined-coverage audit and selection manifest before trusting "
               "the selected model's scores.")
 
@@ -3152,9 +3343,8 @@ def main() -> int:
         help=(
             "Row unit for merge-error runs. 'site' (default) builds the "
             "junction-site detector (merge_junction_detector.py) from the "
-            "frozen merge candidate policy; 'segment' builds the established "
-            "segment-level detector (merge_site_detector.py) that the "
-            "proofreader scoring stack still consumes."
+            "frozen merge candidate policy; 'segment' builds the legacy "
+            "segment-level detector (merge_site_detector.py)."
         ),
     )
     parser.add_argument(

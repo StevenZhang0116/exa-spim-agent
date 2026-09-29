@@ -539,6 +539,57 @@ def _nms_kept_junctions(xyz, node_segments, degrees):
     return junctions, kept
 
 
+def _merge_site_provenance(payload):
+    """Snapshot the actual label-source records, never feature inputs.
+
+    The digest is order independent but retains duplicate records. It covers
+    segment, XYZ, associated neurons and source tags, not merely a cached hash.
+    Legacy untagged sites are geometric; shared evidence counts once in total.
+    """
+    import copy
+    import hashlib
+    import json
+
+    stored = payload.get("gt_merge_sites")
+    counts = {"geometric_only": 0, "two_gt_only": 0, "shared": 0, "untagged_legacy": 0}
+    records = []
+    for site in ([] if stored is None else stored):
+        declared = site.get("sources", [])
+        if not isinstance(declared, (list, tuple, set)):
+            raise ValueError("Merge-site sources must be a collection")
+        sources = set(declared)
+        if site.get("source") is not None:
+            sources.add(site["source"])
+        if not sources:
+            sources = {"geometric_walk"}
+            counts["untagged_legacy"] += 1
+        if not sources.issubset({"geometric_walk", "two_gt_junction"}):
+            raise ValueError("Unknown merge-site source: %r" % sources)
+        category = ("shared" if len(sources) == 2 else
+                    "geometric_only" if "geometric_walk" in sources else "two_gt_only")
+        counts[category] += 1
+        xyz = np.asarray(site["xyz"], dtype=float)
+        if xyz.shape != (3,) or not np.isfinite(xyz).all():
+            raise ValueError("Merge-site coordinates must be finite XYZ")
+        neurons = site.get("gt_neurons", [])
+        if not isinstance(neurons, (list, tuple, set)):
+            raise ValueError("Merge-site gt_neurons must be a collection")
+        records.append(json.dumps({
+            "segment_id": int(site["segment_id"]), "xyz": xyz.tolist(),
+            "gt_neuron": str(site.get("gt_neuron", "")),
+            "gt_neurons": sorted(set(map(str, neurons))), "sources": sorted(sources),
+        }, sort_keys=True, separators=(",", ":"), allow_nan=False))
+    digest = hashlib.sha256(json.dumps(sorted(records), separators=(",", ":")).encode()).hexdigest()
+    return {
+        "schema_version": 1, "sites_available": stored is not None,
+        "n_sites": len(records), "source_counts": counts,
+        "site_records_sha256": digest if stored is not None else None,
+        "site_digest_fields": ["segment_id", "xyz", "gt_neuron", "gt_neurons", "sources"],
+        "generation_metadata": copy.deepcopy(payload.get("gt_merge_site_metadata")),
+        "negative_label_meaning": "no recorded site within positive-label radius; not verified non-merge",
+    }
+
+
 def _site_distances_to_kept(payload, xyz, node_segments, kept):
     """GT consumer: geodesic distances between merge sites and kept candidates.
 
@@ -598,6 +649,7 @@ def _site_distances_to_kept(payload, xyz, node_segments, kept):
         "n_sites": len(sites),
         "n_sites_snapped": n_snapped,
         "site_min_distances": site_min_distances,
+        "site_provenance": _merge_site_provenance(payload),
     }
 
 
@@ -688,6 +740,7 @@ def sample_universe_audit(payload, samples, labels):
             int(sample["in_ambiguous_ring"]) for sample in samples)),
         "n_junctions_raw": int(site_audit.get("n_junctions_raw", 0)),
         "n_sites": n_sites,
+        "site_provenance": site_audit.get("site_provenance"),
         "n_sites_snapped": int(site_audit.get("n_sites_snapped", 0)),
         "n_sites_covered_at_claim_radius": n_covered,
         "site_recall_at_claim_radius": (
