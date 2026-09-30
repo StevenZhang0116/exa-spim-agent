@@ -48,8 +48,8 @@ def build_options(*, run_dir, system_prompt, model=DEFAULT_MODEL,
     return options, state
 
 
-def bind_session_options(options, policy_path, rules_path, report_path, *, readable_paths=()):
-    """Allow only this generation's policy/rules and explicitly supplied reads."""
+def bind_session_options(options, policy_path, rules_path, report_path, *, readable_paths=(), training_server=None):
+    """Bind this generation's scorer/rules and optional proposal/training program; explicit reads only."""
     from claude_agent_sdk import HookMatcher
 
     run_dir = Path(options.cwd).resolve()
@@ -61,11 +61,18 @@ def bind_session_options(options, policy_path, rules_path, report_path, *, reada
     readable = list(readable_paths)
     if report_path is not None:
         readable.append(report_path)
+    training_tools = (["mcp__training__evaluate_train", "mcp__training__search_parameters",
+                       "mcp__training__train_classifier",
+                       "mcp__training__restore_candidate", "mcp__training__search_memory"]
+                      if training_server is not None else [])
     guard, state = make_guard(
         run_dir, policy.parent, readable, run_dir / "tool_audit.jsonl",
         state=getattr(options, "_isolation_state", None), policy_filename=policy.name,
+        allowed_tools=training_tools, allow_proposal=training_server is not None,
     )
     bound = replace(options, can_use_tool=guard, permission_mode="default",
-                    hooks={"PreToolUse": [HookMatcher(hooks=[pre_tool_hook(guard)])]})
+                    hooks={"PreToolUse": [HookMatcher(hooks=[pre_tool_hook(guard)])]},
+                    allowed_tools=["Read", "Write", "Edit", *training_tools],
+                    mcp_servers={"training": training_server} if training_server is not None else {})
     bound._isolation_state = state
     return bound

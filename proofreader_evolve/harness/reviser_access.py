@@ -12,7 +12,7 @@ def canonical_file(path, cwd):
 
 
 def make_guard(cwd, editable_dir, readable_paths, audit_path, state=None, *,
-               policy_filename="scorer.py"):
+               policy_filename="scorer.py", allowed_tools=(), allow_proposal=False):
     from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 
     cwd = Path(cwd).resolve()
@@ -26,10 +26,15 @@ def make_guard(cwd, editable_dir, readable_paths, audit_path, state=None, *,
     if policy_filename != "scorer.py":
         raise ValueError("Unsupported policy filename")
     writable = {editable_dir / policy_filename, editable_dir / "rules.md"}
+    if allow_proposal:
+        writable.update({editable_dir / "proposal.json", editable_dir / "training.py"})
     readable = writable | {canonical_file(p, cwd) for p in readable_paths}
     state = state if state is not None else {"violations": []}
+    trusted_tools = frozenset(allowed_tools)
 
     async def guard(tool_name, tool_input, context):
+        if tool_name in trusted_tools:
+            return PermissionResultAllow(behavior="allow")
         value = (tool_input or {}).get("file_path")
         allowed = False
         if tool_name in {"Read", "Write", "Edit"} and isinstance(value, str) and value:
@@ -52,7 +57,7 @@ def make_guard(cwd, editable_dir, readable_paths, audit_path, state=None, *,
         except OSError:
             pass
         return PermissionResultDeny(behavior="deny", interrupt=False,
-                                    message="Only the current policy/rules are writable; "
+                                    message="Only explicitly allowed current-generation artifacts are writable; "
                                             "reads require an explicitly allowed source or report.")
 
     return guard, state

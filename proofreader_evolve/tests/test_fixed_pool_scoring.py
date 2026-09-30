@@ -17,7 +17,7 @@ from proofreader_evolve.harness.native_pool import NativeTable, NativeTables, po
 
 
 BASELINE = "def score_candidates(features, ctx):\n    return features['detector_score'].to_numpy()\n"
-IMPROVED = "def score_candidates(features, ctx):\n    return features['evidence'].to_numpy()\n"
+IMPROVED = "def score_candidates(features, ctx):\n    return features['evidence'].fillna(0).to_numpy()\n"
 
 
 def fixture(brain="1"):
@@ -93,10 +93,13 @@ class FixedScoringTests(unittest.TestCase):
                                       "--split-k", "1", "--generations", "3", "--runs-dir", tmp])
             attempts = iter([IMPROVED, BASELINE, "bad syntax!"])
 
-            async def revise(run_dir, policy, rules, report, model):
+            async def revise(run_dir, policy, rules, report, model, *, experiments):
                 text = report.read_text()
                 self.assertNotIn('"validation"', text)
                 policy.write_text(next(attempts))
+                experiments.proposal_path.write_text(json.dumps({
+                    'hypothesis': 'Fixture ranking hypothesis', 'strategy': 'Evidence score'}))
+                experiments.evaluate()
                 return {"summary": "mock", "usage": {}}
 
             with patch.object(driver.pc, "resolve_detector_runs", return_value={}), \
@@ -104,16 +107,52 @@ class FixedScoringTests(unittest.TestCase):
                 path = asyncio.run(driver.run(args, revise_fn=revise))
             records = [json.loads(line) for line in (path / "ledger.jsonl").read_text().splitlines()]
             self.assertEqual([r["accepted"] for r in records], [True, False, False])
-            self.assertIsNone(records[1]["validation"])
+            self.assertIsNotNone(records[1]["validation"])
+            self.assertFalse(records[1]["train_gate"]["required_for_promotion"])
             self.assertIsNone(records[2]["train"])
             self.assertIsNone(records[2]["validation"])
-            self.assertEqual((path / "best_scorer.py").read_text(), IMPROVED)
+            from proofreader_evolve.harness.scorer_components import components
+            self.assertEqual(components((path / "best_scorer.py").read_text())['split'], IMPROVED)
             self.assertEqual(json.loads((path / "final.json").read_text())["validation"]["macro_precision"], 1)
+            self.assertEqual((path / "gen002/parent_scorer.py").read_text(), IMPROVED)
+            self.assertEqual((path / "gen003/parent_scorer.py").read_text(), IMPROVED)
+            self.assertIn("+    return features['evidence']", (path / "gen001/scorer.py.diff").read_text())
+            self.assertIn("+bad syntax!", (path / "gen003/scorer.py.diff").read_text())
+            self.assertEqual(records[2]["failure_stage"], "submission_check")
+            self.assertEqual(records[2]['experiments'][0]['status'], 'execution_error')
+            trace = (path / "gen002/trajectory.txt").read_text()
+            self.assertIn("regardless of TRAIN gain", trace)
+            self.assertIn("parent retained", trace)
+            self.assertIn("delta=-1.0000", trace)
+            self.assertIn("run_complete", (path / "trajectory.txt").read_text())
 
     def test_train_validation_overlap_rejected(self):
         from proofreader_evolve.cli import run_precision_evolution as driver
         with self.assertRaises(SystemExit):
             driver.parse_args(["--train-brains", "1", "--validation-brains", "1"])
+
+    def test_failed_revision_keeps_partial_diff_cost_and_parent(self):
+        from proofreader_evolve.cli import run_precision_evolution as driver
+        with tempfile.TemporaryDirectory() as tmp:
+            args = driver.parse_args(["--train-brains", "1", "--validation-brains", "2",
+                                      "--split-k", "1", "--generations", "1", "--runs-dir", tmp])
+
+            async def failed_revision(run_dir, policy, rules, report, model, *, experiments):
+                policy.write_text(IMPROVED)
+                (policy.parent / "reviser_result.json").write_text(json.dumps({"cost_usd": .02}))
+                raise RuntimeError("fixture SDK failure after editing")
+
+            with patch.object(driver.pc, "resolve_detector_runs", return_value={}), \
+                    patch.object(driver, "ensure_native_tables", side_effect=lambda brain, *a, **k: fixture(brain)):
+                path = asyncio.run(driver.run(args, revise_fn=failed_revision))
+            record = json.loads((path / "gen001/evaluation.json").read_text())
+            self.assertFalse(record["accepted"])
+            self.assertIsNone(record["train"])
+            self.assertIsNone(record["validation"])
+            self.assertEqual(record["failure_stage"], "revision")
+            self.assertEqual(record["reviser"]["cost_usd"], .02)
+            self.assertEqual((path / "best_scorer.py").read_text(), args.start_from.read_text())
+            self.assertIn("+    return features['evidence']", (path / "gen001/scorer.py.diff").read_text())
 
     def test_default_entrypoint_dispatches_precision_not_edit_loop(self):
         from proofreader_evolve.cli import run_evolution, run_precision_evolution
@@ -124,8 +163,10 @@ class FixedScoringTests(unittest.TestCase):
 
     def test_detector_fitted_brain_cannot_be_validation(self):
         from proofreader_evolve.cli import run_precision_evolution as driver
-        args = driver.parse_args(["--train-brains", "1", "--validation-brains", "3", "--generations", "0"])
-        with patch.object(driver.pc, "resolve_detector_runs", return_value={}), \
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(driver.pc, "resolve_detector_runs", return_value={}), \
                 patch.object(driver, "ensure_native_tables", side_effect=lambda brain, *a, **k: fixture(brain)), \
                 self.assertRaisesRegex(ValueError, "Detector-fitted"):
+            args = driver.parse_args(["--train-brains", "1", "--validation-brains", "3",
+                                      "--generations", "0", "--runs-dir", tmp])
             asyncio.run(driver.run(args))

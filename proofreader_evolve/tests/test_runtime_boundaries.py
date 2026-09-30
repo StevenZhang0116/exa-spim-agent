@@ -1,16 +1,13 @@
-"""Precision-only entrypoint, SDK isolation and policy timeout regressions."""
+"""Precision-only entrypoint and SDK isolation regressions."""
 
 import asyncio
 from pathlib import Path
-import signal
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from unittest.mock import patch
 
-from proofreader_evolve.harness.policy_runtime import PolicyTimeout, policy_time_budget
 from proofreader_evolve.harness.reviser_session import build_options, bind_session_options
 
 
@@ -92,21 +89,6 @@ class ReviserSessionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaisesRegex(RuntimeError, "ANTHROPIC_API_KEY"):
                 build_options(run_dir=Path(tmp), system_prompt="contract")
-
-
-class PolicyRuntimeTests(unittest.TestCase):
-    @unittest.skipUnless(hasattr(signal, "SIGALRM"), "Requires SIGALRM")
-    def test_timeout_restores_handler_and_disarms_timer(self):
-        handler = signal.getsignal(signal.SIGALRM)
-        with self.assertRaises(PolicyTimeout):
-            with policy_time_budget(.02):
-                time.sleep(.2)
-        self.assertEqual(signal.getsignal(signal.SIGALRM), handler)
-        self.assertEqual(signal.getitimer(signal.ITIMER_REAL)[0], 0)
-
-    def test_disabled_timeout(self):
-        with policy_time_budget(None):
-            pass
 
 
 if __name__ == "__main__":

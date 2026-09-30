@@ -26,7 +26,7 @@ from proofreader_evolve.harness import dataset as ds
 HERE = Path(__file__).resolve().parents[1]
 DEFAULT_OUT = HERE / "feature_tables"
 APP_DIR = PROJECT_ROOT / "autodiscovery-application"
-DEFAULT_MERGE_DIR = APP_DIR / "merge-error-794495-mcl100_2026-08-04-rebuild-20260923-160112"
+DEFAULT_MERGE_DIR = APP_DIR / "merge-error-794495-mcl100_2026-08-04"
 DEFAULT_SPLIT_DIR = APP_DIR / "split-error-794495-mcl100-run-3_2026-08-24"
 
 
