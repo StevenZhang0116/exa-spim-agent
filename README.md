@@ -1,304 +1,289 @@
 # exa-spim-agent
 
-This repository builds labeled ExaSPIM skeleton caches and checks them against
-the official
-[`segmentation-skeleton-metrics`](https://github.com/AllenNeuralDynamics/segmentation-skeleton-metrics)
-results.
+Agentic discovery-to-evolution workflow for ExaSPIM neuron proofreading. Starting
+from labeled skeleton caches, the repository
 
-## Pipeline
+1. turns AutoDiscovery experiment exports into reproduced, audited discovery reports,
+2. compiles the surviving findings into frozen split- and merge-error detectors, and
+3. evolves a scorer that re-ranks each detector's own candidates behind a
+   held-out promotion gate.
+
+![Discovery-to-evolution workflow](end_to_end_workflow_diagram.svg)
+
+The figure is the map for this document ([SVG source](end_to_end_workflow_diagram.svg)). Per-stage diagrams live beside their
+drivers: [`agentic/discovery_workflow_diagram.svg`](agentic/discovery_workflow_diagram.svg),
+[`agentic/detector_build_workflow_diagram.svg`](agentic/detector_build_workflow_diagram.svg),
+[`agentic/split_merge_detection_pipeline.svg`](agentic/split_merge_detection_pipeline.svg)
+and [`proofreader_evolve/workflow_diagram.svg`](proofreader_evolve/workflow_diagram.svg).
+
+## Workflow at a glance
+
+| Stage | Driver | Consumes | Produces |
+|---|---|---|---|
+| 1. Discover | `agentic/run_discovery_workflow.py`, `agentic/run_consolidation_workflow.py` | one AutoDiscovery run export `autodiscovery/<RUN>.json` plus the origin `_add.pkl` cache | `autodiscovery/<RUN>.summary.md` with per-hypothesis verdicts, re-runnable hypothesis scripts, a split feature-applicability manifest |
+| 2. Build | `agentic/run_detector_build_workflow.py`, `agentic/detector_build/` | the finished report and its scripts, candidate-pool sweep evidence | `autodiscovery-application/<RUN>/`: frozen candidate policy, feature inventory, model configuration and detector script; after a compute-node run, out-of-fold scores, a fitted model and its provenance |
+| 3. Evolve | `proofreader_evolve/` | one frozen merge-junction detector, one frozen split-site detector, labeled caches for every brain | `proofreader_evolve/runs/precision_*/best_scorer.py` with ledger, traces and `report.html` |
+
+Three rules hold in every stage:
+
+- **GT-blind predictors.** Ground truth supplies labels, audits and evaluation; it
+  never enters a feature, a candidate rule or a scorer. Discovery flags
+  GT-referencing hypotheses, detector builds hard-reject them, and evolution
+  workers never receive labels or candidate identities.
+- **Driver-owned compute.** Agents read artifacts on disk and write judgments,
+  code or prose. The drivers run every long computation, measure results and
+  validate what the agents produced. No agent turn owns a dataset load.
+- **Hash-bound handoffs.** Each stage consumes the previous stage's outputs by
+  exact path and SHA-256: selection manifests, rerun scripts, inventories,
+  detector sources, fitted joblibs and feature tables. Stale or mismatched inputs
+  fail instead of being substituted silently.
+
+## Prerequisites
+
+### Environment
+
+Every Python command in this repository runs in the `panda` conda environment,
+which provides the `agentic_neuron_proofreader` package that defines
+`SkeletonGraph` (source: [AllenInstitute/neuron-proofreader](https://github.com/AllenInstitute/neuron-proofreader)):
+
+```bash
+conda activate panda
+```
+
+Loading an `_add.pkl` cache needs more than 20 GB of RAM, so every step that
+touches a dataset runs on a compute node:
+
+```bash
+#!/bin/bash
+#SBATCH --mem=80G
+source /shared/utils.x86_64/anaconda3-2024.10/etc/profile.d/conda.sh
+conda activate panda
+cd /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/exa-spim-agent
+python your_script.py
+```
+
+Agent steps need `ANTHROPIC_API_KEY`. Steps that read raw image patches from
+public S3 need `AWS_EC2_METADATA_DISABLED=true`; building caches needs GCS
+credentials at `configs/zihan_gcs_token.json`. The caches themselves load fully
+offline.
+
+### Data: labeled caches
+
+Every stage reads `cache/dataset_cache_<brain>_mcl<N>_add.pkl`, a pickle holding
+the UNet fragment reconstruction (`fragments_graph`), the human ground-truth
+tracings (`gt_graph`) and baked-in error labels (`gt_node_canonical_label`,
+`gt_edge_error`, `gt_merge_labels`, `gt_merge_sites`).
+[Appendix A](#appendix-a-data-preparation-labeled-caches) explains how the
+caches are built and verified;
+[`markdowns/labeled_dataset_cache.md`](markdowns/labeled_dataset_cache.md) holds
+the schema. Quick load:
+
+```python
+import pickle
+import agentic_neuron_proofreader  # noqa — registers SkeletonGraph
+
+with open("cache/dataset_cache_794495_mcl100_add.pkl", "rb") as f:
+    payload = pickle.load(f)
+frag, gt = payload["fragments_graph"], payload["gt_graph"]
+```
+
+The GT graphs cover tens of neurons per brain, so GT-derived labels are sparse
+annotations rather than exhaustive truth: label 0 means "no recorded error
+here", not a verified clean location. Every downstream metric inherits this.
+
+## Stage 1. Discover: from AutoDiscovery exports to a validated report
+
+### 1.1 AutoDiscovery runs
+
+AutoDiscovery is an external autonomous-experimentation system. A run is pointed
+at one labeled cache and one task specification from `markdowns/`
+(`merge_detection_from_fragments.md`, `split_detection_from_fragments.md` and
+their image-aware variants). The specification separates GT-informed
+characterization from GT-blind detection and names the cache fields a detector
+may never read. Each experiment the system performs records its hypothesis,
+analysis code, numerical result and interpretation; the whole run is exported
+as one JSON file saved as
 
 ```text
-same source brain + segmentation
-        |
-        +--> load_skeletons.py --> base .pkl --> relabel_cache.py --> _add.pkl -----+
-        |                                                                         |
-        +--> evaluate_skeleton_metrics.ipynb --> official results.csv ------------+
-                                                                                  |
-                                                                                  v
-                                                             verify_add_cache_metrics.py
+autodiscovery/<kind>-error-<brain>-mcl<N>[-<variant>]_<date>.json
 ```
 
-Run the pipeline in the `panda` conda environment. Cloud-reading steps require
-GCS credentials in `configs/zihan_gcs_token.json`.
+for example `autodiscovery/merge-error-794495-mcl100_2026-08-04.json`. This
+export is the raw experimental record. Nothing in it counts as evidence until
+the validation workflow below has reproduced and audited it.
 
-### 1. Generate the base cache
-
-Run [`notebooks/load_skeletons.py`](notebooks/load_skeletons.py), selecting the
-brain and minimum cable length with command-line arguments, for example:
+### 1.2 Validate one run
 
 ```bash
-python notebooks/load_skeletons.py --brain-id 794495 --min-cable-length 10
+conda activate panda
+python agentic/run_discovery_workflow.py \
+    autodiscovery/<RUN>.json \
+    --pkl cache/dataset_cache_<brain>_mcl<N>_add.pkl \
+    --direction predictive \
+    --extra-pkl cache/dataset_cache_<other-brain>_mcl<N>_add.pkl   # optional transfer test
 ```
 
-It reads the GT and UNet-fragment SWCs, constructs two `SkeletonGraph` objects,
-and writes:
+The driver alternates agent steps, which run in fresh Claude Agent SDK sessions
+and operate only on files already on disk, with compute steps, which the driver
+runs itself as blocking subprocesses. The phases, in order:
 
-```text
-cache/dataset_cache_<brain>_mcl<N>.pkl
-```
+| Phase | Kind | What happens |
+|---|---|---|
+| summarize | agent | Select the hypotheses to keep and rank them by evidence and surprise. `--direction predictive` keeps every hypothesis except explicit exclusions (invalid, constant, non-predictive, confounded); `positive` and `both` apply a top-K cut instead. |
+| reproduce | compute + agent | Re-run every recorded analysis on the origin cache, export editable scripts, let an agent repair data-loading failures without touching the logic, re-measure only changed scripts (up to 3 repair rounds) and fold `REPRODUCED` · `DIVERGED` · `FAILED` verdicts. |
+| extrapolate | compute + agent | With `--extra-pkl`, run the reproduced code unchanged on another brain and fold `GENERALIZES` · `PARTIAL` · `DOES-NOT-GENERALIZE` · `INCONCLUSIVE`. |
+| verify | agent | Audit test choice, effect size, power and multiple comparisons; grade `SOUND` · `WEAK` · `MINOR` · `MAJOR` · `CRITICAL`, and mark each feature `BLIND-COMPUTABLE` or `GT-REFERENCING`. |
+| fix-tests | agent + compute | Write corrected tests for `MAJOR`/`CRITICAL` findings, re-measure them and fold `UPHELD` · `WEAKENED` · `OVERTURNED`. |
+| feature-applicability | agent + driver | Split runs only: classify the node-role requirement of every rerun or fixed source and bind it to the source hash. |
 
-This base cache contains skeletons but no baked-in error labels.
+Everything folds into one report with a fixed top-level order: Header, Ranked
+Conclusions, Reproduction, Generalization, Statistical Verification, Statistical
+Test Corrections, then the Excluded appendix. The driver writes, beside the input
+JSON:
 
-### 2. Generate the official reference metrics
+| Artifact | Content |
+|---|---|
+| `<RUN>.summary.md` | the report every later stage reads |
+| `<RUN>.predictive-selection.json` | the cached exclusion-only selection, reused while the run hash and policy version match |
+| `<RUN>.json.predictive.rerun/hypo_<id>.py`, `.fixed/hypo_<id>.py` | the exact re-runnable hypothesis sources that Stage 2 inventories |
+| `<RUN>.json.predictive.{reproduce,extrapolate,corrected}.json` | measured results per phase |
+| `<RUN>.split-feature-applicability.json` | split only: source-bound node-role requirements |
+| `<RUN>.json.predictive.workflow.log.txt` | the full console log, ending in an `# OK/FAILED` footer |
 
-Open and run
-[`notebooks/evaluate_skeleton_metrics.ipynb`](notebooks/evaluate_skeleton_metrics.ipynb)
-for the same brain and segmentation.
+Compute steps reuse an existing result JSON whenever it parses and is non-empty;
+there is no `--force`, so delete an artifact to recompute it. Agent-step timeouts
+scale with the hypothesis count; compute steps get a 24-hour budget and each
+experiment script a 1-hour cap. `--smoke` prints the selected hypothesis IDs and
+stops without loading data. The `.claude/agents/discovery-*.md` files define the
+subagents; `agentic/tests/` holds the unittest suite
+(`python -m unittest discover -s agentic/tests`).
 
-It runs the official `segmentation-skeleton-metrics` package and writes:
-
-```text
-metrics_out/<brain>/<segmentation_id>/results.csv
-metrics_out/<brain>/<segmentation_id>/merge_sites.csv
-```
-
-This step is independent of the cache. It produces the canonical answers used
-to validate the labeled cache later.
-
-### 3. Generate the labeled `_add.pkl`
-
-Run from the repository root:
+### 1.3 Consolidate across runs and rank
 
 ```bash
-python scripts/relabel_cache.py \
-  --cache-dir cache \
-  --brain 794495 \
-  --mcl 100
+python agentic/run_consolidation_workflow.py        # -> autodiscovery/all-runs.combined.md (+ .zh.md)
+python agentic/rank_by_surprise.py autodiscovery/<RUN>.json \
+    --rank-by posterior-surprise --direction predictive \
+    --predictive-manifest autodiscovery/<RUN>.predictive-selection.json
 ```
 
-To label every matching base cache, omit `--brain` and `--mcl`:
+Consolidation clusters equivalent findings across finished reports, keeps one
+canonical copy per cluster and lists what is unique and new; it re-runs nothing
+and re-judges nothing. The ranking helper reproduces the summarizer's ordering
+deterministically. `agentic/collect_summaries.py` gathers report entries across
+runs and `agentic/summary_heatmap.py` renders a per-hypothesis verdict heatmap.
+
+## Stage 2. Build: from a validated report to frozen detectors
+
+A detector is one script that enumerates GT-blind candidates over a fragment
+graph, computes the inventoried features in shared passes, selects a model under
+nested cross-validation and scores every candidate. The build workflow writes
+that script from a finished report; it never loads a dataset. Fitting happens
+afterwards on a compute node.
+
+### 2.1 Candidate-pool sweeps and the frozen candidate policy
+
+Before any feature is scored, a cheap enumeration rule fixes which candidates
+exist at all. Two sweeps measure that ceiling across all labeled brains:
+
+- [`notebooks/split_candidate_pool_sweep.py`](notebooks/split_candidate_pool_sweep.py)
+  enumerates segment pairs by pairing mode, maximum gap and per-anchor partner
+  quota, and reports candidate count against the fraction of GT split pairs
+  reachable in the pool. `agentic/run_split_candidate_result_analysis.py` turns a
+  finished bundle into a grounded `AI_REVIEW.md`.
+- [`notebooks/merge_candidate_pool_sweep.py`](notebooks/merge_candidate_pool_sweep.py)
+  anchors candidates at degree >= 3 fragment nodes with segment-scoped
+  non-maximum suppression and a geodesic claim radius, and writes a deterministic
+  `recommended_policy.json`.
+
+The build driver re-derives the minimum-candidate-count policy that keeps
+worst-brain recall above a floor (0.90 pair recall for split, 0.80 site recall
+for merge by default), freezes it as `split_candidate_policy.json` or
+`merge_candidate_policy.json`, and embeds the exact policy and its hash in the
+detector. Candidate enumeration is therefore fixed before training and cannot be
+tuned against labels later.
+
+### 2.2 Build the detector
 
 ```bash
-python scripts/relabel_cache.py --cache-dir cache
+conda activate panda
+python agentic/run_detector_build_workflow.py autodiscovery/<RUN>.json
 ```
 
-The script reads the dense segmentation, labels GT nodes and edges, identifies
-merge labels and sites, and writes a new file without modifying the base cache:
+One persistent Claude session runs the ordered steps so later steps share
+earlier context; the driver validates every artifact between steps:
 
-```text
-cache/dataset_cache_<brain>_mcl<N>_add.pkl
-```
+| Step | Agent proposes | Driver validates and writes |
+|---|---|---|
+| 0. candidate policy | split: interprets the sweep's AI review; merge: no agent turn | re-derives the argmin from sweep evidence; freezes `*_candidate_policy.json` |
+| 1. feature inventory | source choice, feature math, aggregation and defined-condition per hypothesis | joins IDs, evidence, paths and hashes; rejects GT-referencing rows; writes `feature_inventory.json` |
+| 2. model setup | optional model families with a feature-based rationale | enforces `agentic/detector_model_policy.json` (L2 logistic, histogram gradient boosting and XGBoost always included, at most two extensions, bounded grids); writes `model_candidates.json` |
+| 3. detector assembly | the task-specific feature implementation only | AST-validates it, injects it into the reviewed runtime template, runs no-data smoke tests; writes `merge_junction_detector.py` or `split_site_detector.py` |
+| 4. verify and document | semantic review of the assembled script against the inventory | README skeleton with an immutable provenance block and `RUN_COMMANDS.md` bound to the artifact hashes |
 
-The added fields are:
+Deliverables land in `autodiscovery-application/<RUN>/`. Rebuilding into an
+existing folder asks for confirmation because it would leave a new script beside
+an old run's outputs; `--yes` skips the prompt in batch jobs and `--keep-existing`
+reuses validated artifacts. `--merge-row-unit segment` restores the older
+segment-level merge detector instead of junction sites. Feature contracts are
+documented in [`docs/merge_site_feature_scope.md`](docs/merge_site_feature_scope.md),
+[`docs/split_feature_scope.md`](docs/split_feature_scope.md) and
+[`docs/detector_cost_validation.md`](docs/detector_cost_validation.md).
 
-- `gt_node_canonical_label`
-- `gt_edge_error`
-- `gt_merge_labels`
-- `gt_merge_sites`
+### 2.3 Run the detector on a compute node
 
-See [`markdowns/labeled_dataset_cache.md`](markdowns/labeled_dataset_cache.md)
-for the complete schema.
-
-### 4. Verify the labeled cache
-
-Run [notebooks/verify_add_cache_metrics.py](notebooks/verify_add_cache_metrics.py)
-from the repository root on a compute node. By default it processes every brain
-with an `_add.pkl` at the requested MCL, one cache at a time:
+`RUN_COMMANDS.md` in each deliverable folder is the authoritative, hash-bound
+runbook. The shape of a run is:
 
 ```bash
-srun --partition=aibs_debug --constraint=cpu \
-  --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=100G --time=01:00:00 \
-  --chdir="$PWD" "$HOME/.conda/envs/panda/bin/python" -u \
-  notebooks/verify_add_cache_metrics.py --mcl 100
+sbatch --mem=80G --wrap="\
+    source /shared/utils.x86_64/anaconda3-2024.10/etc/profile.d/conda.sh; \
+    conda activate panda; \
+    python autodiscovery-application/<RUN>/merge_junction_detector.py \
+        cache/dataset_cache_<brain>_mcl<N>_add.pkl"
 ```
 
-Use `--mcl 10` for mcl10, or add `--brain 794495 794493` to select brains.
-`--cache-dir`, `--metrics-dir` and `--output-dir` override the repository defaults.
-Memory and time requests may need increasing for larger caches or more brains.
-Brains missing a canonical `results.csv` are reported as skipped without loading
-their caches. Multiple reference runs for one brain are rejected rather than
-silently choosing one. Other brains continue after a failure; errors and hard
-consistency failures produce exit code 1, while metric warnings alone do not.
+The runbook first profiles feature cost on a small sample (`--measuretime`;
+`agentic/run_feature_cost_analysis.py` adds the complementary code-structure
+view), then runs the chosen hypotheses on the full brain with average precision
+as the model-selection objective. A completed run writes out-of-fold candidate
+scores (`*_detector_<brain>.csv`), the model-selection manifest
+(`model_selection_<brain>.json`, which records the training brain and feature
+order that Stage 3 relies on), the fitted winner (`*_<brain>.joblib`), a log and
+figures. `agentic/run_detector_result_analysis.py` then produces a grounded
+bilingual `RESULT_ANALYSIS.md` from the saved numbers. The GT-site tools in
+[Appendix B](#appendix-b-gt-merge-site-inspection-tools) compare a detector's
+positives with the cached GT sites.
 
-The script reconstructs per-neuron split, omit, merge, and edge-accuracy
-metrics using only the stored labels, then compares them with the official
-`results.csv` from step 2. It opens no image readers, requires no cloud credentials,
-and never modifies the caches or reference results. It overwrites matching
-`<brain>_mcl<N>_per_neuron.csv`, `_summary.csv`, and `_scatter.png` files under:
+### 2.4 Detectors currently in use
 
-```text
-notebooks/verify_stats/
-```
+| Kind | Deliverable | Candidate policy | Fitted on |
+|---|---|---|---|
+| merge junction sites | `autodiscovery-application/merge-error-794495-mcl100_2026-08-04/` | `junction\|nms=20\|r=150`; worst-brain site recall 0.85 | 794495 |
+| split segment pairs | `autodiscovery-application/split-error-794495-mcl100-run-3_2026-08-24/` | `tip_to_any_node\|r=50\|k=2`; worst-brain pair recall 0.91 | 794495 |
 
-Canonical `# Merges` comparisons use geometric-walk sites only. Supplemental
-two-GT-only, shared-evidence and combined site counts are exported separately;
-combined counts are not counts of independent biological merge events. Missing
-site data remains unavailable, not zero. Existing columns remain compatible with
-[notebooks/compare_add_cache_metrics_across_datasets.py](notebooks/compare_add_cache_metrics_across_datasets.py).
+These two are the default inputs of Stage 3. Because both were fitted on
+794495, that brain can never serve as a validation brain there.
 
-Expect close agreement, not byte-for-byte equality. Small differences remain
-because the cached graphs are resampled and the merge-site implementations have
-minor snapping and deduplication differences. For a detailed merge-site check,
-run [`notebooks/verify_add_cache_merge_info.py`](notebooks/verify_add_cache_merge_info.py).
+## Stage 3. Evolve: re-rank the frozen candidate pools
 
-### 5. Compare brains and MCLs
+The evolution stage keeps everything the detectors decided and changes only the
+order in which their candidates are presented. It is an LLM-driven search: a
+fresh agent session is the mutation operator, a TRAIN-side selection score ranks
+exploration branches, and a held-out validation gate alone decides promotion.
+The subsections below follow one generation of the loop in the figure; the
+maintained design record is
+[`proofreader_evolve/WORKFLOW_REVISION.md`](proofreader_evolve/WORKFLOW_REVISION.md).
 
-Once verification CSVs are available, run the lightweight comparison script on
-a compute node. It does not load skeleton caches, access cloud data, or rewrite
-verification CSVs:
-
-```bash
-srun --partition=aibs_debug --constraint=cpu \
-  --nodes=1 --ntasks=1 --cpus-per-task=1 --mem=3G --time=00:05:00 \
-  --chdir="$PWD" "$HOME/.conda/envs/panda/bin/python" -u \
-  notebooks/compare_add_cache_metrics_across_datasets.py
-```
-
-All generated figures are saved in `notebooks/verify_stats/`:
-
-- `compare_mcl100_across_brains.png`
-- `compare_mcl10_across_brains.png`
-- `compare_<brain>_mcl100_vs_mcl10.png` for each brain with both MCLs
-
-Missing MCLs are reported and skipped. Use `--stats-dir` for another input
-directory; figures go there by default, or to `--output-dir` if provided.
-`--dpi` defaults to 160. Re-running overwrites matching comparison PNGs but
-leaves the verifier's `<brain>_mcl<N>_scatter.png` files and CSVs untouched.
-Legacy tables remain supported via their MCL column or matching summary; MCL-named
-tables take precedence over duplicate legacy rows. The plots reflect the saved
-CSVs, so rerun verification first if the underlying caches have changed.
-
-### 6. Inspect cached GT merge sites
-
-[notebooks/plot_gt_merge_sites.py](notebooks/plot_gt_merge_sites.py) samples K
-distinct positions directly from `gt_merge_sites` and saves one 3x3 image per
-position: Image MIP / GT / Fragments rows, with XY / XZ / YZ columns. It reuses
-the prediction plotter's coordinate-based renderer, including 3D boundary
-clipping, and needs no detector CSV, scores or model.
-
-```bash
-srun --partition=aibs_debug --constraint=cpu \
-  --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=100G --time=00:15:00 \
-  --chdir="$PWD" "$HOME/.conda/envs/panda/bin/python" -u \
-  notebooks/plot_gt_merge_sites.py --brain-id 794495 --k 10 --mcl 100
-```
-
-The image reader uses the cache's `img_path`; cloud access is needed for image
-patches. No dense segmentation mask is read: the third row is the fragment
-skeleton, with the site's segment highlighted in cyan. The yellow `+` marks
-the exact stored site coordinate, not a snapped candidate. Both geometric and
-two-GT sites are included, without requiring two GT neurons in the patch.
-These are rule-derived labels, not independently verified cut locations.
-
-- `--seed 0` is the default reproducible sample; change it for other positions.
-- `--source geometric_walk` or `--source two_gt_junction` restricts the source;
-  shared-evidence sites qualify for either. Default is `all`.
-- `--patch-um 100 100 100` sets the XYZ field of view in micrometers (the default).
-- `--cache-dir` and `--dpi` override the cache directory and output resolution.
-- Default output is a new run directory in `figs/gt_merge_sites/<brain>_mcl<N>/`.
-  `--output-dir` can select another directory but it must be empty.
-
-Selection deduplicates exact XYZ positions, then samples without replacement.
-Different centers may still have overlapping views. If fewer than K unique
-positions exist, all available positions are rendered with a warning. Coincident
-records retain all matching site indices and segment/neuron IDs in the manifest;
-only the first record's segment is highlighted. Original site indices are
-zero-based and refer to the input cache.
-
-Every run saves all PNGs plus `selection.json` (seed, inputs and chosen positions)
-and `gt_merge_sites.csv` (coordinates, sources, patch bounds and filenames).
-Cache files, prediction outputs and existing figures are not modified. If a run
-fails, the manifest contains the successfully saved figures; use a fresh output
-directory when retrying. Only the requested brain is loaded once per run.
-
-### 7. Compare GT merge sites and positive candidates
-
-[notebooks/plot_positive_merge_sites.py](notebooks/plot_positive_merge_sites.py)
-creates **one global comparison figure with two panels, XY and XZ**, in
-**millimeters**. Blue open circles show every cached `gt_merge_sites` record;
-smaller red dots show every `is_merge_site=1` candidate in the supplied junction
-CSV, so both colors remain visible at coincident positions. Faint gray dots show
-all candidate positions for context, not an anatomical brain outline. There is
-no score/rank threshold, finite-score requirement, GT-visibility filter, sampling
-or deduplication of either set. Several positive candidates may correspond to one
-GT site; overlapping markers do not imply one-to-one matching or independent events.
-
-From the repository root, on a compute node in panda:
-
-```bash
-APP=autodiscovery-application/merge-error-794495-mcl100_2026-08-04-rebuild-20260923-160112
-srun --partition=aibs_debug --constraint=cpu \
-  --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=100G --time=00:15:00 \
-  --chdir="$PWD" "$HOME/.conda/envs/panda/bin/python" -u \
-  notebooks/plot_positive_merge_sites.py --brain-id 794495 --mcl 100 \
-  --csv "$APP/merge_junction_detector_794495.csv" --cache-dir cache
-```
-
-Only load trusted pickle files. `--brain-id`, `--mcl` and `--cache-dir` select
-`dataset_cache_<brain>_mcl<N>_add.pkl`; the stored MCL is checked when present.
-The whole cache must be deserialized to extract its GT sites, requiring much more
-memory than the CSV-only plot. No image volume is read and no model is run.
-Candidate labels/coordinates are taken directly from the CSV, without recalculation
-or validation against cache geometry. Choose a matching experiment/cache, especially
-after refreshing labels. Use the GT-site sampler above for local image inspection.
-
-The single PNG, `selection.json` (CSV SHA256, cache identity, counts and positive
-candidate IDs), `positive_merge_sites.csv` and `gt_merge_sites.csv` are saved under
-`figs/positive_merge_sites/<brain>_mcl<N>/comparison_<suffix>/`. Both coordinate
-CSVs retain original XYZ micrometers; the GT export preserves each record's site
-index and segment ID. Use an empty `--output-dir` to override that location.
-Inputs and earlier outputs are never overwritten. Either set may be empty and
-is marked as such; no figure is generated only when both the candidate CSV and
-GT site list are empty. Use a fresh directory to retry a failed run.
-
-### 8. Log GT sites and positive candidates across datasets
-
-[notebooks/log_merge_site_counts.py](notebooks/log_merge_site_counts.py) discovers
-all `dataset_cache_*_mcl<N>_add.pkl` files for one MCL and processes them sequentially.
-It reuses the reviewed detector target adapter to recompute candidate labels from
-stored GT sites, ignoring any cached candidate universe. No detector CSV, trained
-model or image access is needed, and no cache is modified. Only load trusted pickles.
-
-From the repository root, run on a compute node in panda:
-
-```bash
-srun --partition=aibs_debug --constraint=cpu \
-  --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=150G --time=00:20:00 \
-  --chdir="$PWD" "$HOME/.conda/envs/panda/bin/python" -u \
-  notebooks/log_merge_site_counts.py --mcl 100
-```
-
-Change `--mcl` for another level, or add `--brains 794495 794493` to select datasets.
-Defaults are `--nms-um 20 --positive-radius-um 20 --claim-radius-um 150`, with
-50 um snapping to each GT site's own segment. These explicit analysis settings
-match the current junction policy; they do not select a new policy or guarantee
-matching results from a detector built with different settings. Distances after
-snapping are cable distances; NMS uses segment-scoped Euclidean distance.
-
-Each run writes a fresh `notebooks/merge_site_counts/mcl<N>_<suffix>/` directory:
-
-- `summary.csv`: one row per dataset, including status and any error.
-- `run.json`: settings, adapter/script hashes and input paths.
-- `per_brain/<brain>.json`: cache identity, source provenance and per-GT nearest
-  candidate distances. A null distance means no candidate found within the claim
-  radius or an unsnappable site, not a measured infinite physical distance.
-
-Key summary columns use distinct counting units:
-
-| Column | Meaning |
-| --- | --- |
-| `n_gt_merge_sites` | All stored GT site records, without deduplication |
-| `n_is_merge_site_1` | Kept candidates within the positive radius of any GT site |
-| `n_in_ambiguous_ring_1` | Candidates outside the positive radius but within the claim radius |
-| `n_gt_sites_covered_at_positive_radius` | GT records with at least one candidate within the positive radius |
-| `n_gt_sites_only_within_claim_radius` | GT records whose nearest candidate is outside the positive radius but within the claim radius |
-| `n_gt_sites_not_covered_at_claim_radius` | GT records without a candidate within the claim radius, including unsnappable sites |
-
-Ring candidates are included in `n_negative`; label 0 is not a verified non-merge.
-Counts need not match one-to-one, and this logger does not export all GT-candidate
-associations. Missing GT labels are reported as errors, not zero. Empty GT lists
-are valid. Errors do not stop other datasets; any error makes the command exit 1.
-Use an empty `--output-dir` to override the output location; previous runs are
-never overwritten. The full caches must be loaded, so memory needs are much
-higher than for reading the small output tables.
-
-### 9. Evolve a scorer on fixed detector-native candidates
+### 3.1 What is evolved and what stays fixed
 
 `proofreader_evolve` improves **native-label Precision@K on the
 same candidate pool** as the selected `merge_junction_detector.py` and
 `split_site_detector.py`. The frozen scripts define candidate enumeration,
 including split occurrences and junction NMS; evolution cannot change the pool.
 Exactly one detector per kind is required.
+
+### 3.2 Prepare tables and launch a run
 
 On an allocated compute node in panda:
 
@@ -338,6 +323,8 @@ Each run gets a separate log with invocation, timing and exit status. Use
 Evolution and preflight default to `claude-opus-5` (Claude Opus 5).
 Use `--model MODEL_ID` to override the model for a run.
 
+### 3.3 Scorer contract and promotion gate
+
 The editable scorer is seeded from `proofreader_evolve/artifacts/scorer.py`:
 `score_candidates(features, ctx)` receives only predictor columns plus the frozen
 `detector_score` and optional custom local geometry features; `ctx` contains the candidate kind. It must return one finite
@@ -374,6 +361,8 @@ Pass one `--merge-dir` and one `--split-dir` to select other frozen deliverables
 Detector-fitted brains cannot be validation brains. The reviser requires
 `ANTHROPIC_API_KEY`; preparation and baseline-only evaluation do not call an LLM.
 
+### 3.4 One generation: the reviser session
+
 Each generation allows up to 24 SDK interaction turns by default; use
 `--reviser-max-turns 40` to change this independently of `--generations`.
 The reviser reads a compact TRAIN feedback file capped at 24 KB. Feature names
@@ -405,6 +394,8 @@ keeping the formula fixed, snapshots every configuration and restores the best
 successful one by the official selection score. In tune
 generations an AST fingerprint enforces the assigned formula. Grid sizes must fit
 the remaining budget; oversized grids fail before scoring.
+
+### 3.5 Agent-authored models and the selection protocol
 
 The agent can also author **its own training and prediction program** in
 `training.py`, defining `fit(X_train, y_train, artifact_dir, params)` and
@@ -448,6 +439,8 @@ Keep its sibling `model_artifacts/` directory when moving/resuming a run; use
 needed at inference time. Resuming a managed model fitted on a requested
 validation brain is rejected before seed evaluation. Legacy NumPy exports remain
 readable; newly trained models use the program/artifact interface.
+
+### 3.6 Exploration tools: geometry, 3D volumes, images and feature discovery
 
 The agent can inspect **TRAIN candidate locations and local fragment geometry**
 using `inspect_candidate(candidate_ref, radius_um, occurrence_index)`. Feedback
@@ -522,6 +515,8 @@ See the [feature discovery guide](proofreader_evolve/artifacts/feature_discovery
 and the maintained [literature provenance](proofreader_evolve/WORKFLOW_REVISION.md#literature-basis-and-implementation-provenance)
 for mechanisms, source papers, adaptation limits, and verification status.
 
+### 3.7 Branch archive and scheduling
+
 Each kind retains up to **5 TRAIN exploration branches**: the selection-score champion,
 then specialists that recover different GT-positive candidates or lead geometry
 slices. Specialists may fall more than **0.02 absolute precision** below the
@@ -573,6 +568,8 @@ deduplicated, but the framework cannot certify semantic or scientific novelty.
 Controls: `--candidate-pool-size`,
 `--candidate-score-tolerance`, `--explore-every`, `--plateau-patience`,
 `--exploration-patience`, and `--no-early-stop`.
+
+### 3.8 Submission, validation and run artifacts
 
 Before full evaluation, a small feature-only check exercises the real schema,
 missing predictor values and deterministic scoring. The first scorer execution
@@ -659,6 +656,8 @@ that were previously discarded. To follow a new generation from another terminal
 tail -f proofreader_evolve/runs/precision_<run>/gen001/trajectory.txt
 ```
 
+### 3.9 Reports and recorded runs
+
 Each new run automatically writes `report.html` at initialization, after seed
 evaluation, at generation boundaries, and on completion or a caught interruption.
 Open the file in a browser (or copy it to your local machine); it embeds all assets
@@ -672,6 +671,12 @@ tool-event records remain in the run directory.
 Evolution code, comments, docstrings, UI labels, diagnostics, experiment hypotheses,
 strategies, and explanations use English. Saved agent output and historical records
 are displayed verbatim; conversation language does not change the project language.
+
+Completed runs stay under `proofreader_evolve/runs/precision_<timestamp>_<id>/`.
+`dataset_split.json` records the brain roles, `manifest.json` the frozen
+detectors, budgets and gate, `ledger.jsonl` every generation's decision and
+`search_summary.json` the stopping reason. Treat numbers from these runs as
+development evidence; the validation brains are queried every generation.
 
 To generate a report from an existing fixed-pool precision run, from the repo root:
 
@@ -699,10 +704,332 @@ disk; current reporting tools support precision runs only. Current evolution
 uses `feature_tables/` prepared from labeled `_add.pkl` files in `cache/`.
 See the workflow document for the remaining interfaces and integrity requirements.
 
+## Appendix A. Data preparation: labeled caches
+
+The caches consumed by every stage are built once per brain and minimum cable
+length (MCL) and checked against the official
+[`segmentation-skeleton-metrics`](https://github.com/AllenNeuralDynamics/segmentation-skeleton-metrics)
+results:
+
+```text
+same source brain + segmentation
+        |
+        +--> load_skeletons.py --> base .pkl --> relabel_cache.py --> _add.pkl -----+
+        |                                                                         |
+        +--> evaluate_skeleton_metrics.ipynb --> official results.csv ------------+
+                                                                                  |
+                                                                                  v
+                                                             verify_add_cache_metrics.py
+```
+
+Run the pipeline in the `panda` conda environment. Cloud-reading steps require
+GCS credentials in `configs/zihan_gcs_token.json`.
+
+### A1. Generate the base cache
+
+Run [`notebooks/load_skeletons.py`](notebooks/load_skeletons.py), selecting the
+brain and minimum cable length with command-line arguments, for example:
+
+```bash
+python notebooks/load_skeletons.py --brain-id 794495 --min-cable-length 10
+```
+
+It reads the GT and UNet-fragment SWCs, constructs two `SkeletonGraph` objects,
+and writes:
+
+```text
+cache/dataset_cache_<brain>_mcl<N>.pkl
+```
+
+This base cache contains skeletons but no baked-in error labels.
+
+### A2. Generate the official reference metrics
+
+Open and run
+[`notebooks/evaluate_skeleton_metrics.ipynb`](notebooks/evaluate_skeleton_metrics.ipynb)
+for the same brain and segmentation.
+
+It runs the official `segmentation-skeleton-metrics` package and writes:
+
+```text
+metrics_out/<brain>/<segmentation_id>/results.csv
+metrics_out/<brain>/<segmentation_id>/merge_sites.csv
+```
+
+This step is independent of the cache. It produces the canonical answers used
+to validate the labeled cache later.
+
+### A3. Generate the labeled `_add.pkl`
+
+Run from the repository root:
+
+```bash
+python scripts/relabel_cache.py \
+  --cache-dir cache \
+  --brain 794495 \
+  --mcl 100
+```
+
+To label every matching base cache, omit `--brain` and `--mcl`:
+
+```bash
+python scripts/relabel_cache.py --cache-dir cache
+```
+
+The script reads the dense segmentation, labels GT nodes and edges, identifies
+merge labels and sites, and writes a new file without modifying the base cache:
+
+```text
+cache/dataset_cache_<brain>_mcl<N>_add.pkl
+```
+
+The added fields are:
+
+- `gt_node_canonical_label`
+- `gt_edge_error`
+- `gt_merge_labels`
+- `gt_merge_sites`
+
+See [`markdowns/labeled_dataset_cache.md`](markdowns/labeled_dataset_cache.md)
+for the complete schema.
+
+### A4. Verify the labeled cache
+
+Run [notebooks/verify_add_cache_metrics.py](notebooks/verify_add_cache_metrics.py)
+from the repository root on a compute node. By default it processes every brain
+with an `_add.pkl` at the requested MCL, one cache at a time:
+
+```bash
+srun --partition=aibs_debug --constraint=cpu \
+  --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=100G --time=01:00:00 \
+  --chdir="$PWD" "$HOME/.conda/envs/panda/bin/python" -u \
+  notebooks/verify_add_cache_metrics.py --mcl 100
+```
+
+Use `--mcl 10` for mcl10, or add `--brain 794495 794493` to select brains.
+`--cache-dir`, `--metrics-dir` and `--output-dir` override the repository defaults.
+Memory and time requests may need increasing for larger caches or more brains.
+Brains missing a canonical `results.csv` are reported as skipped without loading
+their caches. Multiple reference runs for one brain are rejected rather than
+silently choosing one. Other brains continue after a failure; errors and hard
+consistency failures produce exit code 1, while metric warnings alone do not.
+
+The script reconstructs per-neuron split, omit, merge, and edge-accuracy
+metrics using only the stored labels, then compares them with the official
+`results.csv` from step A2. It opens no image readers, requires no cloud credentials,
+and never modifies the caches or reference results. It overwrites matching
+`<brain>_mcl<N>_per_neuron.csv`, `_summary.csv`, and `_scatter.png` files under:
+
+```text
+notebooks/verify_stats/
+```
+
+Canonical `# Merges` comparisons use geometric-walk sites only. Supplemental
+two-GT-only, shared-evidence and combined site counts are exported separately;
+combined counts are not counts of independent biological merge events. Missing
+site data remains unavailable, not zero. Existing columns remain compatible with
+[notebooks/compare_add_cache_metrics_across_datasets.py](notebooks/compare_add_cache_metrics_across_datasets.py).
+
+Expect close agreement, not byte-for-byte equality. Small differences remain
+because the cached graphs are resampled and the merge-site implementations have
+minor snapping and deduplication differences. For a detailed merge-site check,
+run [`notebooks/verify_add_cache_merge_info.py`](notebooks/verify_add_cache_merge_info.py).
+
+### A5. Compare brains and MCLs
+
+Once verification CSVs are available, run the lightweight comparison script on
+a compute node. It does not load skeleton caches, access cloud data, or rewrite
+verification CSVs:
+
+```bash
+srun --partition=aibs_debug --constraint=cpu \
+  --nodes=1 --ntasks=1 --cpus-per-task=1 --mem=3G --time=00:05:00 \
+  --chdir="$PWD" "$HOME/.conda/envs/panda/bin/python" -u \
+  notebooks/compare_add_cache_metrics_across_datasets.py
+```
+
+All generated figures are saved in `notebooks/verify_stats/`:
+
+- `compare_mcl100_across_brains.png`
+- `compare_mcl10_across_brains.png`
+- `compare_<brain>_mcl100_vs_mcl10.png` for each brain with both MCLs
+
+Missing MCLs are reported and skipped. Use `--stats-dir` for another input
+directory; figures go there by default, or to `--output-dir` if provided.
+`--dpi` defaults to 160. Re-running overwrites matching comparison PNGs but
+leaves the verifier's `<brain>_mcl<N>_scatter.png` files and CSVs untouched.
+Legacy tables remain supported via their MCL column or matching summary; MCL-named
+tables take precedence over duplicate legacy rows. The plots reflect the saved
+CSVs, so rerun verification first if the underlying caches have changed.
+
+## Appendix B. GT merge-site inspection tools
+
+These tools read cached GT merge sites and detector outputs to inspect labels and
+positives visually or in aggregate. They support Stage 2 result review and feed
+no training step.
+
+### B1. Inspect cached GT merge sites
+
+[notebooks/plot_gt_merge_sites.py](notebooks/plot_gt_merge_sites.py) samples K
+distinct positions directly from `gt_merge_sites` and saves one 3x3 image per
+position: Image MIP / GT / Fragments rows, with XY / XZ / YZ columns. It reuses
+the prediction plotter's coordinate-based renderer, including 3D boundary
+clipping, and needs no detector CSV, scores or model.
+
+```bash
+srun --partition=aibs_debug --constraint=cpu \
+  --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=100G --time=00:15:00 \
+  --chdir="$PWD" "$HOME/.conda/envs/panda/bin/python" -u \
+  notebooks/plot_gt_merge_sites.py --brain-id 794495 --k 10 --mcl 100
+```
+
+The image reader uses the cache's `img_path`; cloud access is needed for image
+patches. No dense segmentation mask is read: the third row is the fragment
+skeleton, with the site's segment highlighted in cyan. The yellow `+` marks
+the exact stored site coordinate, not a snapped candidate. Both geometric and
+two-GT sites are included, without requiring two GT neurons in the patch.
+These are rule-derived labels, not independently verified cut locations.
+
+- `--seed 0` is the default reproducible sample; change it for other positions.
+- `--source geometric_walk` or `--source two_gt_junction` restricts the source;
+  shared-evidence sites qualify for either. Default is `all`.
+- `--patch-um 100 100 100` sets the XYZ field of view in micrometers (the default).
+- `--cache-dir` and `--dpi` override the cache directory and output resolution.
+- Default output is a new run directory in `figs/gt_merge_sites/<brain>_mcl<N>/`.
+  `--output-dir` can select another directory but it must be empty.
+
+Selection deduplicates exact XYZ positions, then samples without replacement.
+Different centers may still have overlapping views. If fewer than K unique
+positions exist, all available positions are rendered with a warning. Coincident
+records retain all matching site indices and segment/neuron IDs in the manifest;
+only the first record's segment is highlighted. Original site indices are
+zero-based and refer to the input cache.
+
+Every run saves all PNGs plus `selection.json` (seed, inputs and chosen positions)
+and `gt_merge_sites.csv` (coordinates, sources, patch bounds and filenames).
+Cache files, prediction outputs and existing figures are not modified. If a run
+fails, the manifest contains the successfully saved figures; use a fresh output
+directory when retrying. Only the requested brain is loaded once per run.
+
+### B2. Compare GT merge sites and positive candidates
+
+[notebooks/plot_positive_merge_sites.py](notebooks/plot_positive_merge_sites.py)
+creates **one global comparison figure with two panels, XY and XZ**, in
+**millimeters**. Blue open circles show every cached `gt_merge_sites` record;
+smaller red dots show every `is_merge_site=1` candidate in the supplied junction
+CSV, so both colors remain visible at coincident positions. Faint gray dots show
+all candidate positions for context, not an anatomical brain outline. There is
+no score/rank threshold, finite-score requirement, GT-visibility filter, sampling
+or deduplication of either set. Several positive candidates may correspond to one
+GT site; overlapping markers do not imply one-to-one matching or independent events.
+
+From the repository root, on a compute node in panda:
+
+```bash
+APP=autodiscovery-application/merge-error-794495-mcl100_2026-08-04-rebuild-20260923-160112
+srun --partition=aibs_debug --constraint=cpu \
+  --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=100G --time=00:15:00 \
+  --chdir="$PWD" "$HOME/.conda/envs/panda/bin/python" -u \
+  notebooks/plot_positive_merge_sites.py --brain-id 794495 --mcl 100 \
+  --csv "$APP/merge_junction_detector_794495.csv" --cache-dir cache
+```
+
+Only load trusted pickle files. `--brain-id`, `--mcl` and `--cache-dir` select
+`dataset_cache_<brain>_mcl<N>_add.pkl`; the stored MCL is checked when present.
+The whole cache must be deserialized to extract its GT sites, requiring much more
+memory than the CSV-only plot. No image volume is read and no model is run.
+Candidate labels/coordinates are taken directly from the CSV, without recalculation
+or validation against cache geometry. Choose a matching experiment/cache, especially
+after refreshing labels. Use the GT-site sampler above for local image inspection.
+
+The single PNG, `selection.json` (CSV SHA256, cache identity, counts and positive
+candidate IDs), `positive_merge_sites.csv` and `gt_merge_sites.csv` are saved under
+`figs/positive_merge_sites/<brain>_mcl<N>/comparison_<suffix>/`. Both coordinate
+CSVs retain original XYZ micrometers; the GT export preserves each record's site
+index and segment ID. Use an empty `--output-dir` to override that location.
+Inputs and earlier outputs are never overwritten. Either set may be empty and
+is marked as such; no figure is generated only when both the candidate CSV and
+GT site list are empty. Use a fresh directory to retry a failed run.
+
+### B3. Log GT sites and positive candidates across datasets
+
+[notebooks/log_merge_site_counts.py](notebooks/log_merge_site_counts.py) discovers
+all `dataset_cache_*_mcl<N>_add.pkl` files for one MCL and processes them sequentially.
+It reuses the reviewed detector target adapter to recompute candidate labels from
+stored GT sites, ignoring any cached candidate universe. No detector CSV, trained
+model or image access is needed, and no cache is modified. Only load trusted pickles.
+
+From the repository root, run on a compute node in panda:
+
+```bash
+srun --partition=aibs_debug --constraint=cpu \
+  --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=150G --time=00:20:00 \
+  --chdir="$PWD" "$HOME/.conda/envs/panda/bin/python" -u \
+  notebooks/log_merge_site_counts.py --mcl 100
+```
+
+Change `--mcl` for another level, or add `--brains 794495 794493` to select datasets.
+Defaults are `--nms-um 20 --positive-radius-um 20 --claim-radius-um 150`, with
+50 um snapping to each GT site's own segment. These explicit analysis settings
+match the current junction policy; they do not select a new policy or guarantee
+matching results from a detector built with different settings. Distances after
+snapping are cable distances; NMS uses segment-scoped Euclidean distance.
+
+Each run writes a fresh `notebooks/merge_site_counts/mcl<N>_<suffix>/` directory:
+
+- `summary.csv`: one row per dataset, including status and any error.
+- `run.json`: settings, adapter/script hashes and input paths.
+- `per_brain/<brain>.json`: cache identity, source provenance and per-GT nearest
+  candidate distances. A null distance means no candidate found within the claim
+  radius or an unsnappable site, not a measured infinite physical distance.
+
+Key summary columns use distinct counting units:
+
+| Column | Meaning |
+| --- | --- |
+| `n_gt_merge_sites` | All stored GT site records, without deduplication |
+| `n_is_merge_site_1` | Kept candidates within the positive radius of any GT site |
+| `n_in_ambiguous_ring_1` | Candidates outside the positive radius but within the claim radius |
+| `n_gt_sites_covered_at_positive_radius` | GT records with at least one candidate within the positive radius |
+| `n_gt_sites_only_within_claim_radius` | GT records whose nearest candidate is outside the positive radius but within the claim radius |
+| `n_gt_sites_not_covered_at_claim_radius` | GT records without a candidate within the claim radius, including unsnappable sites |
+
+Ring candidates are included in `n_negative`; label 0 is not a verified non-merge.
+Counts need not match one-to-one, and this logger does not export all GT-candidate
+associations. Missing GT labels are reported as errors, not zero. Empty GT lists
+are valid. Errors do not stop other datasets; any error makes the command exit 1.
+Use an empty `--output-dir` to override the output location; previous runs are
+never overwritten. The full caches must be loaded, so memory needs are much
+higher than for reading the small output tables.
+
+## Repository layout
+
+```text
+exa-spim-agent/
+├── agentic/                    # Stage 1 and 2 drivers, helpers, per-stage diagrams, tests
+│   └── detector_build/         # inventory, model policy, assembly and verification modules
+├── autodiscovery/              # AutoDiscovery exports (*.json) plus generated reports and scripts
+├── autodiscovery-application/  # Stage 2 deliverables, one folder per originating run
+├── proofreader_evolve/         # Stage 3: cli/, harness/, artifacts/, feature_tables/, runs/
+├── markdowns/                  # task specifications and the cache schema for agents
+├── cache/                      # dataset_cache_<brain>_mcl<N>[_add].pkl (gitignored, large)
+├── notebooks/                  # cache building, verification, candidate-pool sweeps
+├── scripts/                    # relabel_cache.py and other one-off tools
+├── docs/                       # feature-scope contracts, cost checks, literature notes
+├── metrics_out/                # official reference metrics per brain
+├── figs/                       # generated figures
+├── .claude/agents/             # subagent definitions used by the drivers
+└── configs/                    # credentials (gitignored) and image-alignment receipts
+```
+
 ## Main outputs
 
 ```text
-cache/                 base and labeled pickle files
-metrics_out/           official reference metrics
-notebooks/verify_stats cache-versus-reference comparisons
+autodiscovery/<RUN>.summary.md                validated discovery report (Stage 1)
+autodiscovery-application/<RUN>/              frozen detector deliverables and runs (Stage 2)
+proofreader_evolve/feature_tables/<brain>/    detector-native candidate tables (Stage 3 input)
+proofreader_evolve/runs/precision_*/          evolution runs: best_scorer.py, ledger, report.html
+cache/                                        base and labeled pickle files
+metrics_out/                                  official reference metrics
+notebooks/verify_stats/                       cache-versus-reference comparisons
 ```
