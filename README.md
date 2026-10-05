@@ -303,26 +303,54 @@ Exactly one detector per kind is required.
 On an allocated compute node in panda:
 
 ```bash
-python -u proofreader_evolve/prepare_feature_tables.py
-python -m proofreader_evolve.cli.preflight --brains 789202 794491 --mcl 100
+python -u proofreader_evolve/prepare_feature_tables.py --brains 794495 789202 794491 794493 802449 --mcl 100
+python -m proofreader_evolve.cli.preflight --brains 794495 789202 794491 794493 802449 \
+  --train-brains 794495 802449 --mcl 100
 python -m proofreader_evolve.cli.run_evolution \
-  --train-brains 789202 --validation-brains 794491 \
+  --train-brains 794495,802449 --selection-brains 802449 \
+  --validation-brains 789202,794493,794491 \
+  --merge-k 100 --split-k 100 --generations 1
+# Historical in-sample ranking with the detector-fitted TRAIN brain alone:
+python -m proofreader_evolve.cli.run_evolution \
+  --train-brains 794495 --validation-brains auto --selection-protocol in_sample \
   --merge-k 100 --split-k 100 --generations 1
 ```
+
+The default TRAIN brain is **794495**. `--validation-brains auto` (the default)
+discovers other local MCL-matching `_add.pkl` caches and includes brains whose
+merge and split tables pass the existing provenance/integrity checks. TRAIN and
+detector-fitted brains are excluded. Missing tables are logged and skipped;
+corrupt tables and empty pools fail rather than silently changing the benchmark.
+At least one validation brain must be ready. The resolved split is fixed before
+the seed evaluation and recorded in `dataset_split.json` and `manifest.json`.
+To require an exact set, pass e.g. `--validation-brains 789202,794491,794493,802449`;
+then any missing input is an error. Evolution never prepares tables itself.
 
 Preparation now uses `dataset_cache_<brain>_mcl100_add.pkl`, preserving the native
 detector's annotation definition. Full native pools replace the previous capped
 tables; these different schemas cannot be reused interchangeably. Preparation
 can still be expensive, especially merge extraction. It does not call an LLM.
+Preparation mirrors its console output, including child-process stdout/stderr,
+to `proofreader_evolve/log/prepare_feature_tables_<timestamp>_<pid>.log.txt`.
+Each run gets a separate log with invocation, timing and exit status. Use
+`--log-txt PATH` to append to a specific file; `--dry-run` creates no log.
+
+Evolution and preflight default to `claude-opus-5` (Claude Opus 5).
+Use `--model MODEL_ID` to override the model for a run.
 
 The editable scorer is seeded from `proofreader_evolve/artifacts/scorer.py`:
 `score_candidates(features, ctx)` receives only predictor columns plus the frozen
-`detector_score`; `ctx` contains the candidate kind. It must return one finite
+`detector_score` and optional custom local geometry features; `ctx` contains the candidate kind. It must return one finite
 score per row. The harness selects exactly min(K, pool size) with deterministic
 tie breaking. GT labels are stored separately and never passed to the scorer.
-Training feedback includes anonymous labeled examples; validation feedback is
-not supplied to the reviser. Candidates must improve both training and validation
-macro precision, with no brain/kind regression. Invalid, non-deterministic or
+Training feedback includes labeled examples with TRAIN-only inspection handles; validation feedback is
+not supplied to the reviser. Promotion uses **mean validation Precision@K only**:
+average merge/split precision within each validation brain, then average the
+brains with equal weight. The candidate must exceed the accepted parent's mean
+by more than `--precision-margin` (default 0; ties fail). Individual brain/kind
+regressions are allowed; TRAIN gain is diagnostic, not a promotion requirement.
+Training scores still guide experiment ranking, branch retention and plateau
+scheduling. Invalid, non-deterministic or
 timed-out scorers are rejected without substituting parent measurements.
 
 K is fixed per run. Both raw detector and evolved scorer are compared on identical
@@ -330,23 +358,346 @@ pools and budgets. Returning fewer candidates cannot improve the metric. No grap
 edits, pool expansion, on-demand detector queries or post-cut re-enumeration occur.
 These are sparse-annotation native labels, not exhaustive biological truth; a
 better ranking does not establish safe graph repairs. Repeated validation is
-development data, not a final untouched test. The SDK file guard is not an OS
-sandbox for generated Python. See [workflow revision](proofreader_evolve/WORKFLOW_REVISION.md).
+development data, not a final untouched test. Scorer execution uses a separate
+feature-only Linux worker with a seccomp syscall filter, wall-time/CPU/memory
+limits, and no inherited credentials. File access, network access and child
+process creation are denied before candidate code executes. Linux with
+`libseccomp.so.2` is required; unavailable isolation fails the evaluation.
+See [workflow revision](proofreader_evolve/WORKFLOW_REVISION.md).
 
 The default frozen detectors were fitted on 794495:
 
-- Merge: `merge-error-794495-mcl100_2026-08-04-rebuild-20260923-160112`
+- Merge: `merge-error-794495-mcl100_2026-08-04`
 - Split: `split-error-794495-mcl100-run-3_2026-08-24`
 
 Pass one `--merge-dir` and one `--split-dir` to select other frozen deliverables.
 Detector-fitted brains cannot be validation brains. The reviser requires
 `ANTHROPIC_API_KEY`; preparation and baseline-only evaluation do not call an LLM.
 
+Each generation allows up to 24 SDK interaction turns by default; use
+`--reviser-max-turns 40` to change this independently of `--generations`.
+The reviser reads a compact TRAIN feedback file capped at 24 KB. Feature names
+appear once per cell with aligned example vectors; values are rounded to six
+significant digits for display. It samples selected positives and label-0 rows,
+rows just below K, and missed positives. Each group keeps a fixed anchor and
+reproducibly rotates other examples across generations, up to four per group
+(fewer when needed to fit). `feature_statistics.json` provides whole-TRAIN
+feature quartiles by native label, so error samples are not mistaken for the
+full distribution. Candidate feedback adds gained/lost positives and Top-K overlap.
+
+Each generation edits one component: merge and split alternate by default;
+`--target-kind split` or `merge` focuses the search. The harness freezes the other
+component. The agent writes its hypothesis, strategy, formula family and numeric
+grid to `proposal.json`, then calls `evaluate_train({})` or `search_parameters({})`.
+These tools have no text arguments. The default budget is **8 evaluation units**
+per generation, configurable with `--train-evaluations-per-generation`; cache hits
+and proposal-format errors cost no scoring budget. New configurations and optional
+feature-diagnostic fold/arm fits share these units. Tool calls still consume SDK
+turns. `search_memory` searches earlier TRAIN experiments, including rejected and
+failed attempts. `restore_candidate` accepts an experiment ID, `parent`, or `best`,
+and restores measured code without another scorer execution.
+
+The scheduler separates `explore` (design a formula, features or model program)
+from `tune` (change numeric values only). Formula scorers expose a literal
+`PARAMS = {'weight': 1.0}` dictionary and
+reference its values. `search_parameters` enumerates the proposed grid while
+keeping the formula fixed, snapshots every configuration and restores the best
+successful one by the official selection score. In tune
+generations an AST fingerprint enforces the assigned formula. Grid sizes must fit
+the remaining budget; oversized grids fail before scoring.
+
+The agent can also author **its own training and prediction program** in
+`training.py`, defining `fit(X_train, y_train, artifact_dir, params)` and
+`predict(X, artifact_dir, params)`. There is no model whitelist or required
+NumPy export. Within installed CPU dependencies and resource limits, the agent
+chooses preprocessing, features, model architecture, loss, optimizer, ensembles,
+training schedule and file format. `proposal.json.classifier.parameters` supplies
+arbitrary JSON settings. `train_classifier({})` runs the program on **TRAIN only**,
+saves its artifacts and measures its ranking. See the
+[training guide](proofreader_evolve/artifacts/classifier_guide.md) and
+[editable example](proofreader_evolve/artifacts/training.py).
+
+Agent code and model deserialization run after Linux Landlock + seccomp isolation.
+Installed libraries and supplied inputs are readable; fit can write model files
+and scratch space. Prediction receives predictors, declared raw image patches
+and read-only model artifacts, without labels. Network, child processes, credentials and unrelated data paths
+are unavailable. Unsupported isolation fails closed. The framework cannot prove
+that arbitrary prediction code implements frozen preprocessing correctly; that
+remains part of the model interface contract.
+
+One new fit plus TRAIN evaluation consumes one shared budget unit; failed fits
+also consume one with no metric. Exact training-source/parameter repeats reuse
+the fitted model. Explore generations can rewrite the whole program; tune
+fixes its AST and nonnumeric settings while refitting numeric parameters.
+Defaults are 300 seconds wall/CPU, 8192 MiB and one numerical-library thread
+(`--classifier-time-budget`, `--classifier-memory-mb`, `--classifier-threads`).
+Artifact storage permits 128 MiB / 256 regular files per model. The agent chooses
+and records randomness seeds. `model_environment.json` lists installed packages
+and budgets; training stdout/stderr is saved and its last 8 KB returned to the agent.
+
+Branches are ranked by the selection protocol: under the default `grouped_oof`,
+grouped out-of-fold precision on detector-naive selection brains from host-owned
+fold refits, with auxiliary TRAIN brains as fitting-only data; in-sample TRAIN
+precision is a **resubstitution diagnostic**. The agent may still use TRAIN-only
+internal validation/CV during fitting. Final promotion requires
+improvement in mean development-validation precision. The outer evaluator calls
+frozen feature extraction and predict on validation; it never supplies validation labels to a worker.
+`best_scorer.py` binds training source, parameters, provenance and artifact hashes.
+Keep its sibling `model_artifacts/` directory when moving/resuming a run; use
+`--start-from-artifacts` for another artifact location. Model dependencies are
+needed at inference time. Resuming a managed model fitted on a requested
+validation brain is rejected before seed evaluation. Legacy NumPy exports remain
+readable; newly trained models use the program/artifact interface.
+
+The agent can inspect **TRAIN candidate locations and local fragment geometry**
+using `inspect_candidate(candidate_ref, radius_um, occurrence_index)`. Feedback
+contains the required candidate references. Each generation allows eight
+inspections; split pairs support multiple occurrence locations. These are cached,
+processed skeletons, not raw images or GT skeletons.
+
+In explore mode, the agent can define `LOCAL_CONTEXT` and
+`extract_local_features(context)` in scorer.py or training.py. The host loads the
+matching fragment cache, supplies relative nodes/edges/radii and locally numbered
+fragments to an isolated worker, and appends its numeric features to the table.
+The same frozen extraction runs on validation outside the LLM. Default extraction
+covers the 5000 highest detector-score candidates per brain/kind; the agent may
+choose another base feature/direction and a budget up to 20000. Every candidate
+still receives a score; unselected local features are missing. Graphs are loaded
+for requested geometry/image access, local features, or split feature-diagnostic grouping;
+existing prepared tables remain valid. See the
+[local context guide](proofreader_evolve/artifacts/local_context_guide.md) for the
+schema, feature example, limits and logs. No new launch flag is required.
+
+The primary image exploration path is **agent-written analysis of actual 3D
+volumes**. Edit `analysis.py` and `analysis_request.json`, then call
+`run_volume_analysis({})`. An isolated worker passes original pixels, validity
+masks, spacing, candidate anchors and aligned local fragments to `analyze(context)`.
+It returns concise JSON findings, without requiring model fitting or 2D previews.
+Each generation has eight executions, up to four TRAIN candidates each, separate
+from scoring. Code, input identities, results and logs are saved under
+`genNNN/volume_analyses/analysisNNN/`. See the
+[3D analysis guide](proofreader_evolve/artifacts/volume_analysis_guide.md).
+Optional `inspect_candidate_image` and `inspect_failure_images({})` tools still
+return XY/XZ/YZ PNG previews, with a separate eight-image allowance.
+
+To turn findings into a measured policy,
+`LOCAL_IMAGE` enables agent-written image features or raw patches for arbitrary
+CPU fit/predict programs through a read-only `images` argument. Pixels keep their
+original values; preview contrast normalization is separate. Only TRAIN images
+are inspectable. Frozen extraction and prediction use validation images inside
+the outer evaluator, without labels or agent inspection. See the
+[image guide](proofreader_evolve/artifacts/image_context_guide.md).
+
+To connect small 3D investigations to ranking at larger K, `LOCAL_IMAGE` supports
+`selection_mode='top_k_boundary'` with a literal `selection_k`. For K=2000, a
+256-row pilot selects ranks 1873..2128 of the declared base predictor; 4000 rows
+cover its entire Top 2000 and the next 2000. The agent can call
+`plan_image_scoring({})` to preview TRAIN coverage without image IO. Stateless
+numeric extraction uses bounded batches with a shared timeout; raw-patch models
+retain the 1 GiB staging limit. Future reports distinguish 3D access, actual
+Top-K image coverage, and image-only paired TRAIN evidence. Neither access nor
+coverage alone demonstrates an image-ranking benefit; the outer mean gate is unchanged.
+
+Image access requires host registration receipts in `configs/image_alignment.json`
+(or `--image-alignment PATH`). The reader uses explicit OME-Zarr axes, units,
+scale/translation, channel and timepoint. To audit new/changed sources on n257,
+run `python -m proofreader_evolve.cli.check_image_alignment --brains BRAIN_IDS
+--out proofreader_evolve/image_audits/REVIEW_ID`; use `--image-uri` for an explicit
+single-brain source override. Inspect the saved overlays before recording a
+receipt with the same brains/output plus `--record-reviewed --review-note "..."`.
+This only checks sampled registration, not all candidate locations or error labels.
+An unavailable image fails the image-dependent measurement without dropping any
+validation brain. Existing table-only policies need no images or credentials.
+
+Feature discovery now starts from bounded matched TRAIN failures and a relevant
+hypothesis-evidence record. `inspect_failure_cases({})` batches local inspection;
+`evaluate_feature_ablation({})` measures full inputs against a constant-masked
+feature group using the same program and parameters. Classifier diagnostics use
+the selection protocol's three grouped, fragment-purged folds (two evaluation
+units, one per arm); formulas use a descriptive two-arm comparison (two units).
+A classifier configuration costs one unit, fold refits included. Evidence is
+saved separately from agent claims and
+guides soft stagnation scheduling, while the outer promotion gate stays the same.
+See the [feature discovery guide](proofreader_evolve/artifacts/feature_discovery_guide.md)
+and the maintained [literature provenance](proofreader_evolve/WORKFLOW_REVISION.md#literature-basis-and-implementation-provenance)
+for mechanisms, source papers, adaptation limits, and verification status.
+
+Each kind retains up to **5 TRAIN exploration branches**: the selection-score champion,
+then specialists that recover different GT-positive candidates or lead geometry
+slices. Specialists may fall more than **0.02 absolute precision** below the
+champion. The tolerance applies only to near-best alternatives filling remaining
+slots; distinct Top-K membership and formula structures guide that fallback.
+Slice diagnostics use split gap <=25/>25 microns and merge degree 3/>=4, plus
+whole-pool coverage for each TRAIN brain. Hits always come from the same global
+Top K. Raw positive identities stay in the host; only aggregate counts reach
+the agent. All successful trials in a generation compete for the bounded archive.
+The exploration parent can differ from the accepted scorer. Pool membership does
+not require validation acceptance; the validation mean alone determines promotion.
+In addition, each kind has **one protected reference slot** for its current
+accepted component, initialized from the seed and updated only after promotion.
+It does not consume a TRAIN pool slot and cannot be evicted for a low selection score
+or redundant TRAIN coverage. The same snapshot can serve both reference and TRAIN
+roles without duplication. A newly promoted component gets the **next generation
+of the same kind** in explore mode, ahead of the TRAIN champion and normal cadence.
+One new measurement from that workspace branch completes the follow-up; cached
+restores do not. At most one retry is reserved. Seeds and unchanged references do
+not enqueue follow-ups. Otherwise, every **third scheduled generation of each kind**
+starts from the reference; merge and split count independently,
+including cache-only or failed generations for this scheduling cadence.
+Other generations use the TRAIN champion/specialist scheduler, with
+periodic exploration controlled by `--explore-every` on newly measured
+non-reference rounds, so protected rounds do not displace specialist exploration.
+The scheduler also explores whenever
+the champion lacks PARAMS. After **2 measured rounds** without
+a new selection-score best, previously uncovered retained positive, or historical
+slice-hit best, exploration is forced from an alternative branch if available.
+After **2 unsuccessful forced explorations**, that kind can pause once a generation
+assigned to its current reference has produced a new successful TRAIN measurement.
+Cache-only or failed reference rounds do not satisfy that requirement. A promotion
+replaces the reference, resets that kind's stagnation counters and reopens it for
+exploration. When all target kinds pause the run ends. Rediscovered positive coverage
+does not reset counters. Cache-only rounds and execution/infrastructure failures
+do not advance measured-progress counters.
+Separately, two completed same-kind rounds without new measurements force an
+investigation. Performance plateaus also require a new paired TRAIN feature
+ablation or a numerical 3D comparison on at least two distinct TRAIN candidates.
+If registered TRAIN images are available and have not yet been compared, the
+assignment requires image evidence. Negative measurements count; previews,
+inspection repeats, cached restores and plans do not. A priority follow-up and
+investigation can share one assignment. Incomplete assignments skip validation
+and retain the accepted policy. The default two incomplete assignments or two
+consecutive execution-blocked rounds pause that kind with separate reasons.
+`research_evidence.jsonl` records actual tool evidence; per-generation
+`research_status.json` gives live completion feedback. Code-format changes are
+deduplicated, but the framework cannot certify semantic or scientific novelty.
+Controls: `--candidate-pool-size`,
+`--candidate-score-tolerance`, `--explore-every`, `--plateau-patience`,
+`--exploration-patience`, and `--no-early-stop`.
+
+Before full evaluation, a small feature-only check exercises the real schema,
+missing predictor values and deterministic scoring. The first scorer execution
+error grants one additional repair attempt per generation. The final submitted
+code must exactly match a successfully measured snapshot; an untested last edit
+is rejected. Only that final candidate reaches one evaluation across the fixed
+validation brains, even if its TRAIN precision did not improve. Full-precision
+validation means decide promotion; reports retain each brain/kind's result and
+any regressed cells. An evaluation failure on any selected brain rejects the
+candidate; it never drops that brain from the average. Exported `best_scorer.py`
+bundles both components and remains usable
+with `--start-from`.
+SDK failures report the subtype, actual/configured turns and returned error
+details; the complete SDK result metadata is saved in `reviser_result.json`.
+
+Evolution prints live progress for table loading, baseline evaluation, measured
+attempts and acceptance decisions. Raw agent text, tool calls/results and repeated
+TRAIN/parent metric lines remain in the durable traces and interactive report.
+Seed, baseline, submitted-candidate and final accepted reports print one line per
+brain and error kind for TRAIN and development validation. Each line includes
+`pool_candidates`, `discoverable_pool_positives`, `top_k_hits`, requested/effective K,
+Precision@K and Recall@K; TRAIN search attempts save the same format in trace files. Discoverable
+positives are GT-positive rows in the fixed candidate pool (merge sites or split
+pairs), not all GT errors or all GT pairs with both fragments available.
+Recall@K is `top_k_hits / discoverable_pool_positives`, or N/A for zero positives.
+Final lines describe the retained accepted scorer even when the last candidate
+was rejected. Counts come from the loaded evaluation tables without rereading
+source graphs or recomputing candidates.
+Each run saves `trajectory.txt` (readable) and `trajectory.jsonl` (structured)
+under `proofreader_evolve/runs/precision_*/`. Each `genNNN/` also saves:
+
+- `trajectory.txt` / `trajectory.jsonl`: timestamped observable agent messages,
+  tool inputs/results linked by tool-use ID, evaluation stages and decisions.
+  Full tool payloads are saved here; the console prints stage/measurement summaries.
+- `reviser_prompt.txt` and `reviser_result.json`: the task, final explanation,
+  token usage and cost when returned by the SDK.
+- `parent_scorer.py`, `parent_rules.md`, `scorer.py.diff`, `rules.md.diff`:
+  the selected exploration branch and changes made in this generation, including
+  failed attempts. `accepted_scorer.py` stores the component used for promotion gates.
+- `search_plan.json`, `candidate_pool.json`, `proposal.json`: this generation's
+  mode, `branch_role`, branch selection, retained TRAIN candidates, protected
+  reference, hypothesis and parameter grid.
+- `candidate_pool_after.json`: the TRAIN pool and separate `reference_branch`
+  after this generation, including retention reasons and complementary-positive
+  statistics. TRAIN archive coverage counts exclude references outside that archive.
+- `evaluation.json`: measurements, decision reason and failure stage if applicable.
+- `experiments/attemptNNN/`: `proposal.json`, component `scorer.py`,
+  `combined_scorer.py`, `scorer.py.diff`, `rules.md`, `result.json`, and successful
+  attempts' `parameters.json`, `train_evaluation.json` / `feedback.json`.
+  New attempts also record `lineage.edit_base_experiment`, `cached_from`, and
+  `*.from_edit_base.diff` relative to the last observed workspace checkpoint;
+  this differs from the generation's assigned search branch and accepted policy.
+- `parameter_searches/batchNNN/`: the fixed `formula.py`, proposed grid and a
+  results table for every configuration in that search.
+- `training.py`: editable fit/predict program, restored together with the measured model.
+- `classifier_guide.md`, `model_environment.json`: interface, installed packages and budgets.
+- `model_artifacts/<digest>/` (run level): hashed model/preprocessing files, required for resume.
+- `classifier_fits/fitNNN/`: fitting request/provenance, worker log, model.json,
+  training.py, scorer manifest and training_summary.json (or a failed-fit result). Raw TRAIN
+  matrices are transient and are never exposed through the agent's file tools.
+- `classifier_searches/batchNNN/`: the classifier proposal/grid and outcome table.
+  Successful experiment snapshots also include training_summary.json.
+
+The run-level `train_experiments.jsonl` is the complete TRAIN experiment archive;
+validation decisions remain in the outer generation ledger. The agent restores
+immutable snapshots through the tool's ID lookup. Run-level `candidate_pool.json`
+and `search_summary.json` record the retained branches, plateau counts and stopping
+reason. All exposed measurements and diagnostics are TRAIN-only. The reference
+identity comes from the outer promotion decision; its selection is indirect
+development-validation feedback, without exposing heldout data, scores or reasons.
+Candidates include `specialist_profile`, `retention`, `vs_champion` and
+`vs_other_retained` counts. Each generation's `search_plan.json` also lists
+`complementary_candidates` with restore IDs so the agent can investigate methods
+that find different positives. New combinations require an ordinary measured
+TRAIN experiment; the archive does not automatically ensemble its members.
+
+Events are saved as SDK messages arrive, so interrupted sessions retain their
+received history. These traces contain observable actions and explanations,
+not hidden model reasoning. Validation metrics in trace files are not readable
+through the reviser's file-tool allowlist. Existing runs cannot recover messages
+that were previously discarded. To follow a new generation from another terminal:
+
+```bash
+tail -f proofreader_evolve/runs/precision_<run>/gen001/trajectory.txt
+```
+
+Each new run automatically writes `report.html` at initialization, after seed
+evaluation, at generation boundaries, and on completion or a caught interruption.
+Open the file in a browser (or copy it to your local machine); it embeds all assets
+and requires no server, external scripts or API calls. Refresh to see the latest
+generated version. The English interface includes separate TRAIN/validation
+curves, per-brain counts, clickable candidate ancestry with attempt details,
+specialist retention, and code diffs. The page has three sections: Run Overview,
+Exploration Branches, and Current TRAIN Candidate Pool. Complete generation and
+tool-event records remain in the run directory.
+
+Evolution code, comments, docstrings, UI labels, diagnostics, experiment hypotheses,
+strategies, and explanations use English. Saved agent output and historical records
+are displayed verbatim; conversation language does not change the project language.
+
+To generate a report from an existing fixed-pool precision run, from the repo root:
+
+```bash
+python -m proofreader_evolve.cli.build_evolution_report proofreader_evolve/runs/precision_<run>
+# Optional: continuously rebuild from saved artifacts while a run is in progress.
+python -m proofreader_evolve.cli.build_evolution_report proofreader_evolve/runs/precision_<run> --watch
+```
+
+These commands only read saved JSON/text; they never load brain caches, execute
+scorers, train models or invoke an LLM. Missing old ancestry/pool snapshots are
+marked unrecorded; missing measurements remain unknown. Costs are summed once per
+generation and incomplete totals are labelled. Raw files remain complete on disk;
+embedded code/tool previews are bounded and explicitly marked when truncated.
+`run_status.json` records the last known state, not a live process heartbeat.
+Abrupt process kills cannot write a final status. `report.html` and its validation
+data remain outside the reviser's read allowlist. Report-generation failures emit
+a warning and do not alter scorer acceptance.
+
 There is only one evolution workflow now: fixed-pool scorer evolution. The
 graph-edit driver, repair-site enumerators, repair templates and dedicated
-analyses have been removed. Old run/cache data remain on disk but are not
-supported by the current reporting tools. See the workflow document for the
-remaining interfaces and integrity requirements.
+analyses have been removed, along with the unused `prepared_cache/` directory
+and old in-process policy timeout helper. Historical runs and logs remain on
+disk; current reporting tools support precision runs only. Current evolution
+uses `feature_tables/` prepared from labeled `_add.pkl` files in `cache/`.
+See the workflow document for the remaining interfaces and integrity requirements.
 
 ## Main outputs
 

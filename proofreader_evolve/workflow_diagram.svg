@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1280" viewBox="0 0 1920 1280" font-family="'Helvetica Neue',Arial,sans-serif" role="img" aria-labelledby="title description">
   <title id="title">Proofreader scorer evolution</title>
-  <desc id="description">Fixed-pool proofreader_evolve workflow. Frozen detectors and default TRAIN use 794495. Automatically select other eligible local brains with complete matching prepared tables for development validation, then freeze the split for this run. Immutable native candidates, features and labels are prepared once. Initialize the accepted scorer and a TRAIN-only branch pool. Each generation selects one active kind, an exploration branch and explore or tune mode. The agent writes a formula or training.py fit/predict program with parameters in proposal.json, with rules.md recording the hypothesis and observations. Zero-argument evaluate_train and search_parameters tools measure formulas in isolated workers; train_classifier runs agent-authored fit/predict code in Landlock and seccomp workers using TRAIN labels only, stores hashed model artifacts, and measures its in-sample TRAIN ranking. Parameter search restores the best successful TRAIN mean. Tune mode fixes the formula/program AST and nonnumeric settings. Budget: 8 new configurations plus one execution-error repair; cached scores and proposal-format errors cost no scoring budget. Restore measured snapshots by short ID. Keep up to 5 distinct Top-K branches within 0.02 absolute TRAIN precision of the champion. Explore every third measured round; after 2 stagnant measured rounds force exploration, then pause a kind after 2 unsuccessful forced explorations. All kinds paused ends the run. The final source, parameters and artifact hashes must match a successful measurement. Evaluate the final candidate once on every selected validation brain regardless of TRAIN gain. Average merge/split Precision at K within each brain, then average brains equally. Promote only if the validation mean exceeds the accepted parent's mean by more than the configured margin. Individual brain/kind regressions are allowed. Validation remains hidden adaptive development data, not an untouched final test. Save the resolved split, exclusions, gate rule, per-brain results, hypotheses, parameters, branch ancestry, Top-K changes, observable trajectories, costs and stop reason.</desc>
+  <desc id="description">Fixed-pool proofreader_evolve workflow. Frozen detectors were fitted on 794495, the default TRAIN brain; the default grouped_oof selection protocol ranks TRAIN branches by out-of-fold precision on a detector-naive selection brain (for example 802449) with 794495 as auxiliary fitting data; other eligible prepared brains form fixed development validation. Each generation evolves one merge or split component through formulas or isolated TRAIN-only fit/predict programs. Tune changes numeric parameters; explore can redesign methods. The default scoring budget is eight shared units plus one execution-error repair. Each classifier configuration costs one unit, including three host-owned fold refits whose out-of-fold score ranks it. Classifier feature diagnostics refit both arms over the same grouped, fragment-purged folds for two units; descriptive formula comparisons cost two. Diagnostic fold models cannot be submitted. Direct 3D analysis is the primary image exploration interface: edit analysis.py and analysis_request.json, then call run_volume_analysis. Eight executions of up to four TRAIN cases use a separate budget. The sandbox supplies original voxels, validity masks, physical spacing, anchors and aligned bounded fragments; OME metadata maps fragment xyz microns to patch zyx voxel centers. Optional MIP/slab tools have a separate allowance. Save code, input identities, results and IO timings. Analysis does not establish ranking gain; implement and measure a feature or frozen model. Image investigation selections and scoring coverage are independent. Retain at most five TRAIN branches per kind plus a protected accepted reference. A new promotion gets the next same-kind explore slot for fresh branch evidence, with at most one retry. Seeds and identical references do not enqueue follow-ups. Otherwise explore the reference every third scheduled kind round. Performance plateaus or two rounds without fresh evidence require a new paired TRAIN ablation or numerical 3D comparison on two distinct candidates. Prioritize registered image evidence when images have not been compared. Negative measurements count; plans, previews and cached restores do not complete the investigation. Combined assignments must measure the comparison on the promoted branch. Incomplete assignments skip validation and retain the accepted policy. Default bounded pauses distinguish incomplete investigations, consecutive execution blocks and measured stagnation. Execution failure is not scientific rejection. A completed assignment with a measured submission receives frozen evaluation on every validation brain regardless of TRAIN gain. Average merge/split Precision at K within each brain, then average brains equally; promote when the mean improves beyond the margin. Validation inspection and labels remain hidden; frozen inference can use registered validation pixels. Selection provides indirect validation feedback: this is development validation, not an untouched final test. Save scorer/model artifacts, evidence receipts, branch ancestry, coverage, trajectories, costs and alignment provenance.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
       <path d="M0,1 L9,5 L0,9 z" fill="#64748b"/>
@@ -44,14 +44,14 @@
   <line x1="590" y1="157" x2="590" y2="181" stroke="#cbd5e1" stroke-width="1.5"/>
   <line x1="1130" y1="157" x2="1130" y2="181" stroke="#cbd5e1" stroke-width="1.5"/>
   <text x="82" y="175" font-size="16" font-weight="700" fill="#0f172a">FROZEN</text>
-  <text x="172" y="175" font-size="16" fill="#334155">pool · features · labels · detector · K</text>
+  <text x="172" y="175" font-size="16" fill="#334155">pool · base features · labels · K</text>
   <text x="612" y="175" font-size="16" font-weight="700" fill="#0f172a">EDITABLE</text>
-  <text x="720" y="175" font-size="16" fill="#334155">scorer / training.py · rules · proposal</text>
+  <text x="720" y="175" font-size="16" fill="#334155">scorer · training · analysis · proposal · rules</text>
   <text x="1152" y="175" font-size="16" font-weight="700" fill="#0f172a">EVALUATION</text>
   <text x="1288" y="175" font-size="16" fill="#334155">TRAIN exploration → mean validation gate</text>
 
   <text x="60" y="219" font-size="17" font-weight="700" fill="#334155">PREPARE ONCE, THEN INITIALIZE · no LLM calls</text>
-  <text x="1860" y="219" font-size="15" text-anchor="end" fill="#64748b">Exact detector definitions; no repair-site approximation</text>
+  <text x="1860" y="219" font-size="15" text-anchor="end" fill="#64748b">Optional images: review metadata + fragment alignment before access</text>
 
   <!-- NativeTable preparation: native_pool.py and precompute_error_scores.py. -->
   <g id="frozen-inputs" data-box="60 240 350 180">
@@ -74,7 +74,7 @@
     <text x="479" y="321" class="body">Merge junctions · split segment pairs</text>
     <text x="479" y="347" class="body">Preserve native rows + occurrences</text>
     <text x="479" y="373" class="body">Extract features; apply frozen model</text>
-    <text x="479" y="400" class="note">TRAIN 794495 · other ready brains for validation</text>
+    <text x="479" y="400" class="note">TRAIN 794495 (aux) + 802449 (selection) · validation</text>
   </g>
   <path d="M852 330 H887" class="flow"/>
 
@@ -83,10 +83,10 @@
     <circle cx="931" cy="278" r="21" fill="#0f172a"/>
     <text x="931" y="285" class="step">2</text>
     <text x="967" y="286" class="heading contract-title">Freeze evaluation contract</text>
-    <text x="919" y="321" class="body">Predictors → fit / prediction workers</text>
+    <text x="919" y="321" class="body">Predictors + optional pixels → isolated workers</text>
     <text x="919" y="347" class="body">TRAIN labels → fit; IDs stay in evaluator</text>
     <text x="919" y="373" class="body">Validation labels → outer evaluator only</text>
-    <text x="919" y="400" class="note">Fixed K + pools; verify data, code and model hashes</text>
+    <text x="919" y="400" class="note">Fixed K + pools; registered xyz/zyx; hash inputs + models</text>
   </g>
   <path d="M1372 330 H1407" class="flow"/>
 
@@ -113,18 +113,18 @@
   <text x="60" y="485" font-size="22" font-weight="700" fill="#1e3a8a">WITHIN EACH GENERATION · fresh LLM session</text>
   <text x="1000" y="485" font-size="22" font-weight="700" fill="#166534">OUTER EVALUATOR · after the LLM session ends</text>
 
-  <!-- Fresh SDK session: scorer.py, training.py, rules.md and proposal.json writable. -->
+  <!-- Fresh SDK session: scorer, training, analysis, request, rules and proposal writable. -->
   <g id="revise-scorer" data-box="60 530 390 250">
     <rect x="60" y="530" width="390" height="250" rx="20" fill="#dbeafe" stroke="#3b82f6" stroke-width="2" filter="url(#shadow)"/>
     <circle cx="96" cy="568" r="21" fill="#0f172a"/>
     <text x="96" y="575" class="step">4</text>
     <text x="132" y="576" class="heading agent-title">Propose + revise</text>
     <text x="84" y="613" class="body">Edit one kind; harness freezes the other</text>
-    <text x="84" y="641" class="body">TRAIN feedback + installed dependencies</text>
-    <text x="84" y="669" class="body">Write formula / fit + predict code</text>
-    <text x="84" y="697" class="body">proposal.json: hypothesis + params / grid</text>
-    <text x="84" y="725" class="body">Choose model, preprocessing and loss</text>
-    <text x="84" y="755" class="note">No model whitelist; installed CPU libraries</text>
+    <text x="84" y="641" class="body">Matched failures + hypothesis evidence</text>
+    <text x="84" y="669" class="body">Run custom analysis on 3D patches</text>
+    <text x="84" y="697" class="body">Plan image coverage around Top K</text>
+    <text x="84" y="725" class="body">Features / models; batched image inputs</text>
+    <text x="84" y="755" class="note">8 3D analyses; 2D previews optional</text>
   </g>
   <path d="M452 648 H522" class="flow"/>
   <text x="490" y="634" font-size="14" text-anchor="middle" fill="#64748b">tool call</text>
@@ -135,12 +135,12 @@
     <circle cx="566" cy="568" r="21" fill="#0f172a"/>
     <text x="566" y="575" class="step">5</text>
     <text x="602" y="576" class="heading compute-title">Measure on TRAIN</text>
-    <text x="554" y="613" class="body">TRAIN X + y → fit() in isolated worker</text>
-    <text x="554" y="641" class="body">Saved model files → predict(X)</text>
-    <text x="554" y="669" class="body">TRAIN Precision@K + Top-K changes</text>
-    <text x="554" y="697" class="body">8 configurations + 1 scorer repair</text>
-    <text x="554" y="725" class="body">Restore code, parameters + model by ID</text>
-    <text x="554" y="755" class="note">Fitted TRAIN metric: in-sample; cache hits free</text>
+    <text x="554" y="613" class="body">Fold refits → OOF score → full-TRAIN fit</text>
+    <text x="554" y="641" class="body">Stalled? New comparison required</text>
+    <text x="554" y="669" class="body">Ablation: 3 folds × 2 arms (2 units)</text>
+    <text x="554" y="697" class="body">8 shared units + 1 scorer repair</text>
+    <text x="554" y="725" class="body">Selection P@K + coverage + Δfeature</text>
+    <text x="554" y="755" class="note">Separate image coverage from image-only gain</text>
   </g>
   <path d="M922 648 H992" class="flow"/>
   <text x="960" y="634" font-size="14" text-anchor="middle" fill="#64748b">submit</text>
@@ -150,9 +150,9 @@
     <circle cx="1036" cy="568" r="21" fill="#0f172a"/>
     <text x="1036" y="575" class="step">6</text>
     <text x="1072" y="576" class="heading compute-title">Submit + validate</text>
-    <text x="1024" y="613" class="body">Check measured code + params + files</text>
+    <text x="1024" y="613" class="body">Check measured code + research receipt</text>
     <text x="1024" y="641" class="body">TRAIN gain is diagnostic only</text>
-    <text x="1024" y="669" class="body">predict(X) on all fixed validation brains</text>
+    <text x="1024" y="669" class="body">Frozen extraction + scoring on each brain</text>
     <text x="1024" y="697" class="body">Mean Precision@K must improve</text>
     <text x="1024" y="725" class="body">Equal brain weights; regressions allowed</text>
     <text x="1024" y="755" class="note">No validation data or scores sent to the LLM</text>
@@ -167,9 +167,9 @@
     <text x="1542" y="576" class="heading contract-title">Select + record</text>
     <text x="1494" y="613" font-size="17" font-weight="600" fill="#166534">Validation mean improves → replace parent</text>
     <text x="1494" y="641" font-size="17" font-weight="600" fill="#92400e">Reject / fail → retain parent</text>
-    <text x="1494" y="669" class="body">TRAIN pool: up to 5 distinct Top-K sets</text>
-    <text x="1494" y="697" class="body">2 stalled rounds → force exploration</text>
-    <text x="1494" y="725" class="body">2 forced searches, no gain → pause</text>
+    <text x="1494" y="669" class="body">Selection score: champion + specialists</text>
+    <text x="1494" y="697" class="body">Separate protected accepted branch</text>
+    <text x="1494" y="725" class="body">New parent: next same-kind follow-up</text>
     <text x="1494" y="755" class="note">All kinds paused → stop; keep accepted scorer</text>
   </g>
 
@@ -178,9 +178,9 @@
   <rect x="274" y="804" width="432" height="25" rx="6" fill="#eff6ff"/>
   <text x="490" y="822" font-size="16" text-anchor="middle" fill="#1e3a8a">TRAIN results → revise within the attempt budget</text>
   <text x="490" y="850" font-size="15" text-anchor="middle" fill="#475569">Formula path: evaluate_train / search_parameters · model path: train_classifier</text>
-  <text x="490" y="874" font-size="15" text-anchor="middle" fill="#475569">fit sees TRAIN labels · predict sees no labels + read-only models · isolated CPU workers</text>
+  <text x="490" y="874" font-size="15" text-anchor="middle" fill="#475569">evaluate_feature_ablation: full vs constant-masked inputs; TRAIN-only, advisory</text>
 
-  <!-- Invalid submissions skip validation; an evaluation failure retains the parent. -->
+  <!-- Invalid submissions or incomplete research skip validation and retain the parent. -->
   <path d="M1195 782 V817 H1665 V782" class="reject"/>
   <rect x="1214" y="804" width="432" height="25" rx="6" fill="#f0fdf4"/>
   <text x="1430" y="822" font-size="16" text-anchor="middle" fill="#92400e">Invalid / evaluation failure → keep parent</text>
@@ -189,7 +189,7 @@
   <!-- Parent selection carries indirect validation feedback into later generations. -->
   <path d="M1750 782 V925 H36 V700 H58" class="feedback"/>
   <rect x="426" y="912" width="1008" height="27" rx="6" fill="#f8fafc"/>
-  <text x="930" y="932" font-size="18" text-anchor="middle" fill="#1e3a8a">Explore: rewrite method · tune: refit numeric params · plateau: switch branch → stop</text>
+  <text x="930" y="932" font-size="18" text-anchor="middle" fill="#1e3a8a">Verify new evidence after stalls; prioritize promoted branches; bound incomplete and failed retries</text>
 
   <g id="validation-boundary">
     <rect x="60" y="958" width="1800" height="66" rx="12" fill="#fffbeb" stroke="#f59e0b" stroke-width="1.5"/>
@@ -209,11 +209,11 @@
     <line x1="659" y1="1070" x2="659" y2="1160" stroke="#cbd5e1" stroke-width="1.5"/>
     <text x="689" y="1092" class="code" font-weight="700">train_experiments.jsonl</text>
     <text x="689" y="1122" class="body">Training code, parameters, file hashes and outcomes</text>
-    <text x="689" y="1152" class="note">Snapshots + training logs + pool / search summary</text>
+    <text x="689" y="1152" class="note">Analysis code + 3D input identities/results + ablations</text>
     <line x1="1215" y1="1070" x2="1215" y2="1160" stroke="#cbd5e1" stroke-width="1.5"/>
-    <text x="1245" y="1092" class="code" font-weight="700">trajectory.txt / .jsonl · ledger.jsonl</text>
-    <text x="1245" y="1122" class="body">Observable agent actions, tool results, decisions and cost</text>
-    <text x="1245" y="1152" class="note">Validation reports remain outside the agent's file allowlist</text>
+    <text x="1245" y="1092" class="code" font-weight="700">report.html · trajectories · ledger.jsonl</text>
+    <text x="1245" y="1122" class="body">Offline branches, attempts, diffs, metrics and errors</text>
+    <text x="1245" y="1152" class="note">Human-only validation reports + alignment / IO evidence</text>
   </g>
 
   <rect x="60" y="1200" width="1800" height="32" rx="9" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1.5"/>

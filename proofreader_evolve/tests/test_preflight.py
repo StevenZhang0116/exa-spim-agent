@@ -31,6 +31,27 @@ class PreflightTests(unittest.TestCase):
         with patch.dict("os.environ", {}, clear=True):
             self.assertEqual(preflight.api_probe("chosen")["status"], "missing_key")
 
+    def test_selection_roles_block_detector_fitted_selection_brains(self):
+        def bank(brain, *args, **kwargs):
+            table = SimpleNamespace(meta={"training_brain": "794495"})
+            return SimpleNamespace(meta={"table_paths": {}}, tables={"merge": table, "split": table})
+        with patch.object(preflight.pc, "resolve_detector_runs", return_value={}), \
+                patch.object(preflight, "ensure_native_tables", side_effect=bank):
+            good = preflight.inspect_readiness(["794495", "802449"], train_brains=["794495", "802449"])
+            bad = preflight.inspect_readiness(["794495"], train_brains=["794495"])
+            forced = preflight.inspect_readiness(["794495", "802449"], train_brains=["794495", "802449"],
+                                                 selection_brains=["794495"])
+            legacy = preflight.inspect_readiness(["794495"], train_brains=["794495"], selection_protocol="in_sample")
+        self.assertEqual(good["status"], "checks_passed")
+        self.assertEqual(good["selection"]["selection_brains"], ["802449"])
+        self.assertEqual(good["selection"]["auxiliary_train_brains"], ["794495"])
+        self.assertEqual(bad["status"], "blocked")
+        self.assertEqual(bad["selection"]["selection_brains"], [])
+        self.assertEqual(forced["selection"]["conflicts"], ["794495"])
+        self.assertEqual(forced["status"], "blocked")
+        self.assertEqual(legacy["status"], "checks_passed")
+        self.assertEqual(legacy["selection"]["selection_brains"], ["794495"])
+
     def test_valid_offline_checks_do_not_claim_api_success(self):
         with patch.object(preflight.pc, "resolve_detector_runs", return_value={}), \
                 patch.object(preflight, "ensure_native_tables", return_value=SimpleNamespace(meta={"table_paths": {}})):

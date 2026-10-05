@@ -21,7 +21,7 @@ def _outcome_reason(row):
 
 
 def make_figure(rows, run_name, out_path, run_dir=None):
-    version = records.run_objective(run_dir, rows)
+    records.run_objective(run_dir, rows)
     pairs = records.paired_measurements(rows, run_dir)
     fig, axes = plt.subplots(2, 1, figsize=(11, 9))
     plot_candidates(axes[0], rows, records.METRIC_NAME)
@@ -47,7 +47,7 @@ def make_figure(rows, run_name, out_path, run_dir=None):
 
 
 def write_md(rows, run_name, run_dir, path):
-    version = records.run_objective(run_dir, rows)
+    records.run_objective(run_dir, rows)
     lines = [f"# Search digest — {run_name}", "", f"Metric: {records.METRIC_NAME}", "",
              "Missing validation is not a zero score. Reasons are recorded, not inferred.", "",
              "| Generation | Outcome | Validation | Reason |", "| --- | --- | --- | --- |"]

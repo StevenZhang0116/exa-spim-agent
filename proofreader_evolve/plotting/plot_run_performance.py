@@ -101,7 +101,7 @@ def write_csv(rows, parent_bar, path):
 def summarize(rows):
     if not rows:
         return "No generations recorded."
-    version = records.run_objective(rows=rows)
+    records.run_objective(rows=rows)
     accepted = [records.validation_value(r) for r in rows if r.get("accepted")]
     parents = records.parent_values(rows)
     final = accepted[-1] if accepted else parents[0]

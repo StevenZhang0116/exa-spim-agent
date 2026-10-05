@@ -1,6 +1,8 @@
 """Editable example, not a model whitelist. Replace either function as needed.
 
-fit sees TRAIN rows/labels only. predict sees features and read-only model files.
+This tabular example fits TRAIN rows/labels and predicts from frozen model files.
+For optional raw 3D inputs, see image_context_guide.md and add the images keyword
+argument to both functions together with a LOCAL_IMAGE declaration.
 Use params for values to tune without changing the training program.
 """
 

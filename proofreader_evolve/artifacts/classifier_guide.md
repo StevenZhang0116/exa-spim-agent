@@ -6,6 +6,25 @@ no requirement to translate a trained model to NumPy. Read
 `model_environment.json` for installed packages and resource settings. The
 editable `training.py` is only an example; replace it with your own method.
 CPU execution, installed dependencies and the stated budgets define what can run.
+For new local morphology features, read `local_context_guide.md`. You may define
+`LOCAL_CONTEXT` and `extract_local_features(context)` in training.py; the host
+appends these label-free features to TRAIN fit inputs and frozen validation inputs.
+Keep top-level code usable in the extraction worker, which has no model artifacts.
+Before fitting, you can investigate actual TRAIN volumes using custom
+`analysis.py` code and `run_volume_analysis({})`; read `volume_analysis_guide.md`.
+No model fit or 2D preview is required for this exploration. Its outputs do not
+automatically become predictors or fitted artifacts.
+For image inputs in a model, read `image_context_guide.md`. A literal `LOCAL_IMAGE` can
+append stateless image features or request `raw_patches: True`; the latter adds
+an `images` keyword argument to both fit and predict. `images[i]` contains only
+the local patches for that input row. You may learn image preprocessing and
+encoders in fit and save their frozen state alongside your model. Internal folds
+receive only their own row subsets, including images. Handle empty patch lists.
+For coverage beyond a few investigated cases, declare top_k_boundary selection at
+this kind's K and call plan_image_scoring({}) before IO. Numeric image extraction
+uses bounded batches; raw-patch models retain a 1 GiB staging limit. Inspect actual
+Top-K image coverage, then measure an image-only ablation at the intended final
+coverage before attributing any improvement to pixels. See image_context_guide.md.
 GPU access, network, package installation and child processes are unavailable;
 use in-process training and threads rather than multiprocessing/joblib processes.
 
@@ -16,14 +35,16 @@ Write these functions in `training.py`:
 ```python
 def fit(X_train, y_train, artifact_dir, params):
     # X_train: DataFrame of common TRAIN predictors, including detector_score.
-    # y_train: aligned binary native labels; all TRAIN rows are supplied.
+    # y_train: aligned binary native labels; normal fits use all TRAIN rows.
+    # Framework feature diagnostics supply only the fitting rows of each fold.
     # Fit any model/preprocessing and save whatever predict needs here.
     # fit's return value is ignored; persist the fitted state as files.
     ...
 
 
 def predict(X, artifact_dir, params):
-    # New process; features only, no labels, brain ID or candidate IDs.
+    # New process; no labels, brain ID or candidate IDs.
+    # Raw-image models also accept the images keyword argument described above.
     # Load your frozen model/preprocessor from read-only artifact_dir.
     # Return a 1-D array: one finite score for every input row, original order.
     ...
@@ -65,8 +86,9 @@ it cannot prove the mathematical behavior of arbitrary Python.
 Call `train_classifier({})`. This tool name is retained for continuity; your
 program can fit a classifier, regression/ranking model, neural network, ensemble
 or custom predictor. The harness runs fit on TRAIN, snapshots the artifacts,
-runs feature-only inference, evaluates TRAIN Precision@K and restores the best
-successful configuration by TRAIN mean precision. TRAIN comparisons guide search;
+runs label-free inference with the declared inputs, measures the selection score (see Evaluation
+below) alongside in-sample TRAIN Precision@K, and restores the best successful configuration by
+the selection score. Selection comparisons guide search;
 only the outer mean validation Precision@K controls promotion. With no
 grid, it measures one fit. To try a different method, edit training.py and explain
 the change in proposal.json/rules.md.
@@ -109,11 +131,38 @@ not hidden agent reasoning.
 
 ## Evaluation and resume
 
-The outer TRAIN score is **in-sample resubstitution**; no independent generalization
-estimate is implied. You can implement a TRAIN-only internal split or CV inside
-fit and print its diagnostics. Final promotion still requires the original TRAIN
-gate, then one outer development-validation evaluation of the frozen candidate.
-Repeated development validation is not an untouched final test.
+Branch ranking uses the **selection protocol** reported in the feedback
+(`selection_protocol`). Under `grouped_oof`, `train_classifier({})` first refits
+your program in three fixed, fragment-purged folds on the selection brains, with
+auxiliary TRAIN brains fully included in every fitting set and never held out.
+Out-of-fold scores are ranked inside each fold with budgets that sum to K, and
+`target_precision` / `grouped_cv_precision` is the summed TP divided by K. The
+full-TRAIN fit is then frozen as the candidate. `candidate_train` numbers remain
+**in-sample resubstitution** diagnostics and rank nothing. A model that memorizes
+rows scores high in-sample and low out-of-fold. If `fit` declares a `groups`
+keyword it receives the label-free source brain of each training row (a pandas
+Series) so you can weight or block auxiliary rows. One configuration costs one
+evaluation unit, fold refits included. You may still print your own internal
+diagnostics. Final promotion uses the outer mean development gate on the frozen
+candidate; the selection score is a repeatedly used development signal, not an
+untouched final test.
+
+For a host-measured feature comparison, use `evaluate_feature_ablation({})` with
+the current training.py, fixed classifier parameters, an empty parameter_grid,
+and research.feature_columns (or default to declared LOCAL_CONTEXT/LOCAL_IMAGE
+features and their availability columns).
+The framework fits both full and constant-masked inputs over three grouped,
+fragment-purged TRAIN folds; fitting workers receive only that fold's fitting
+rows and labels. Prediction receives held predictors, declared held-row patches
+and frozen artifacts. Removing image_available also withholds raw patches.
+This costs two shared evaluation units (one per arm) and uses the same fold
+partition as the selection protocol; only selection brains are scored, with the
+partitioned fold budgets. It preserves the feature schema and
+does not force a model family. It seeds Python/NumPy per fold in this diagnostic;
+agent seed overrides or other random generators can still affect reproducibility.
+Afterward, call train_classifier({}) to fit the chosen program on all TRAIN rows.
+Diagnostic fold models cannot be submitted. See feature_discovery_guide.md for
+split grouping, unavailable-diagnostic behavior, cache identity and limits.
 
 To move or resume a run, keep `best_scorer.py` and its sibling `model_artifacts/`
 together. `--start-from` reuses those artifacts without fitting. For another

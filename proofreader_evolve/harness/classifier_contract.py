@@ -24,7 +24,7 @@ def config_identity(config):
     return hashlib.sha256(json.dumps(config, sort_keys=True, allow_nan=False).encode()).hexdigest()
 
 
-def normalize_config(spec, available_features=None):
+def normalize_config(spec):
     if not isinstance(spec, dict) or set(spec) - {'parameters'}:
         raise ValueError('classifier accepts only parameters; define your model and feature selection in training.py')
     parameters = spec.get('parameters', {})
@@ -57,7 +57,7 @@ def classifier_info(config, program):
                 'program_ast': ast.dump(tree, include_attributes=False), 'parameters': structure})}
 
 
-def classifier_configs(spec, grid, available_features=None):
+def classifier_configs(spec, grid):
     base = normalize_config(spec)
     numeric = {k for k, v in base['parameters'].items() if finite(v)}
     if set(grid) - numeric:

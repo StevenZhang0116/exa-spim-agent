@@ -21,7 +21,7 @@ The steps:
                    audit. Pure consolidation — no experiment is re-run and no
                    finding is re-judged; verdicts/caveats are carried over.
   2. translate   — faithfully translate the finished combined report into
-                   简体中文, writing ``<out-stem>.zh.md``. Pure localization (no
+                   Simplified Chinese, writing ``<out-stem>.zh.md``. Pure localization (no
                    re-analysis), so it ALWAYS runs last.
 
 By default the workflow consolidates EVERY ``autodiscovery/*.summary.md`` except
@@ -108,7 +108,7 @@ def collect_cmd(report_rels: list[str]) -> str:
 
 
 def zh_path_for(out_rel: str) -> str:
-    """The 简体中文 sibling path for the combined report: insert ``.zh`` before ``.md``."""
+    """The Simplified Chinese sibling path: insert ``.zh`` before ``.md``."""
     if out_rel.endswith(".md"):
         return out_rel[: -len(".md")] + ".zh.md"
     return out_rel + ".zh.md"
@@ -162,7 +162,7 @@ def build_steps(out_rel: str, report_rels: list[str]) -> list[dict[str, str]]:
     ]
 
     # Final, purely-cosmetic step: translate the finished combined report into
-    # 简体中文. It reads only the completed Markdown deliverable and writes a
+    # Simplified Chinese. It reads only the completed Markdown deliverable and writes a
     # sibling .zh.md, so it has NO analytical dependency and must always run
     # LAST. If more analytical steps are added, append them BEFORE this block.
     out_zh_rel = zh_path_for(out_rel)
@@ -171,7 +171,7 @@ def build_steps(out_rel: str, report_rels: list[str]) -> list[dict[str, str]]:
             "name": "translate-report",
             "instruction": (
                 "Use the discovery-translator subagent to produce a faithful "
-                f"简体中文 translation of the finished combined report at {out_rel}, "
+                f"Simplified Chinese translation of the finished combined report at {out_rel}, "
                 f"writing it to {out_zh_rel}. This is a pure localization pass: "
                 "translate the prose and section/field labels but keep the EXACT "
                 "same structure, ordering, facts and verdicts, and copy ALL numbers "
@@ -367,7 +367,7 @@ def main() -> int:
         help=(
             "Run ONLY these steps (aliases: consolidate, translate), reusing the "
             "other step's on-disk artifact. E.g. --steps translate to only "
-            "(re)generate the 简体中文 version from an existing combined report."
+            "(re)generate the Simplified Chinese version from an existing combined report."
         ),
     )
     parser.add_argument(

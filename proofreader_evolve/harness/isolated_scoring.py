@@ -1,4 +1,4 @@
-"""Feature-only worker transport with hard wall time and bounded output files."""
+"""Dispatch isolated formula/model inference, including declared raw image inputs."""
 
 import json
 from pathlib import Path
@@ -59,10 +59,10 @@ def score(source, frame, kind, timeout=120, memory_mb=8192, *, artifact_store=No
 
 def preflight(source, frame, kind, timeout=120, *, artifact_store=None):
     """Real schema plus missing predictor values; no evaluator labels are sent."""
-    import pandas as pd
+    from .image_features import subset_features
     indices = np.linspace(0, len(frame) - 1, min(16, len(frame)), dtype=int)
-    sample = frame.iloc[indices].copy()
-    missing = pd.DataFrame(np.nan, index=[0], columns=frame.columns)
-    missing['detector_score'] = 0.0
-    sample = pd.concat([sample, missing], ignore_index=True)
+    image_rows = sorted(frame.attrs.get('_image_rows', {}))[:2]
+    if image_rows:
+        indices = np.asarray(list(dict.fromkeys([*image_rows, *indices]))[:16], dtype=int)
+    sample = subset_features(frame, indices, missing_row=True)
     return score(source, sample, kind, timeout, artifact_store=artifact_store)

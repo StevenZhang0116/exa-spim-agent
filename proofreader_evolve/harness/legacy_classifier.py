@@ -1,9 +1,12 @@
-"""Data-only classifier requests and portable frozen-model source; no fitting or exec."""
+"""Read/validate v1 NumPy exports for resume; new fits use classifier_contract.
+
+RUNTIME_PATH is the byte-preserved v1 source template: frozen_model compares the
+entire historical export, including that template's comments and docstring.
+"""
 
 import ast
 from copy import deepcopy
 import hashlib
-import itertools
 import json
 import math
 from pathlib import Path
@@ -23,22 +26,18 @@ def finite(value):
     return type(value) in (int, float) and abs(value) <= 1e100 and math.isfinite(value)
 
 
-def normalize_config(spec, available_features=None):
+def normalize_config(spec):
     if not isinstance(spec, dict) or set(spec) - {'algorithm', 'features', 'parameters'}:
         raise ValueError('classifier must contain algorithm, optional features and parameters only')
     algorithm = spec.get('algorithm')
     if not isinstance(algorithm, str) or algorithm not in DEFAULTS:
         raise ValueError('classifier.algorithm must be logistic_regression or random_forest')
     features = spec.get('features')
-    if features is None and available_features is not None:
-        features = list(available_features)
     if features is not None:
         if (not isinstance(features, list) or not 1 <= len(features) <= 256
                 or any(not isinstance(f, str) or not f or len(f) > 256 for f in features)
                 or len(set(features)) != len(features)):
             raise ValueError('classifier.features must list 1–256 distinct predictor column names')
-        if available_features is not None and set(features) - set(available_features):
-            raise ValueError('Unknown classifier features: ' + repr(sorted(set(features) - set(available_features))))
     supplied = spec.get('parameters', {})
     if not isinstance(supplied, dict) or set(supplied) - DEFAULTS[algorithm].keys():
         raise ValueError(f'Allowed {algorithm} parameters: {sorted(DEFAULTS[algorithm])}')
@@ -72,21 +71,6 @@ def classifier_info(config):
                                          for k, v in config['parameters'].items()}}
     return {'candidate_type': 'classifier', 'classifier': deepcopy(config), 'parameters': numeric,
             'formula_sha256': config_identity({'classifier_version': MODEL_VERSION, **structure})}
-
-
-def classifier_configs(spec, grid, available_features):
-    base = normalize_config(spec, available_features)
-    allowed = classifier_info(base)['parameters']
-    if set(grid) - allowed.keys():
-        raise ValueError('Classifier parameter_grid may change only numeric hyperparameters: ' + repr(sorted(allowed)))
-    if math.prod(len(values) for values in grid.values()) > 64:
-        raise ValueError('Classifier grid exceeds 64 combinations')
-    configurations = {}
-    for values in itertools.product(*grid.values()):
-        config = normalize_config({**base, 'parameters': {**base['parameters'], **dict(zip(grid, values))}},
-                                  available_features)
-        configurations[config_identity(config)] = config
-    return list(configurations.values())
 
 
 def validate_model(model):

@@ -26,11 +26,8 @@ metrics_merge_site_patches_794495/
 
 # Evolution runs: ignore the entire directory (large/local artifacts).
 proofreader_evolve/runs/
-
-# Prepared-brain shared cache: the cached pickles are large (~1.6 GB each) and
-# fully rebuildable, so keep them local. Track the folder + its README only.
-proofreader_evolve/prepared_cache/*
-!proofreader_evolve/prepared_cache/README.md
+proofreader_evolve/image_audits/
+proofreader_evolve/log/*.log.txt
 
 # Autodiscovery runs and detector-build application outputs are local artifacts.
 /autodiscovery/

@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Evolution · Exploration Trace</title>
+  <style>@@CSS@@</style>
+</head>
+<body>
+  <header><div class="wrap"><p class="eyebrow">PROOFREADER EVOLVE / RUN REPORT</p>
+    <h1 id="run-title">Exploration Trace</h1><p id="run-meta"></p>
+    <nav><a href="#overview">Overview</a><a href="#branches">Branches</a><a href="#pool">Candidate Pool</a></nav>
+  </div></header>
+  <main class="wrap">
+    <div class="notice">This report is for human review. TRAIN guides exploration; development validation is repeatedly used for promotion and is not an independent final test. Hypotheses and explanations come from recorded agent output. Graph edges represent observed workspace checkpoints or cached measurements.</div>
+    <section id="overview"><h2>Run Overview</h2><div id="stats" class="stats"></div>
+      <div id="warnings"></div><div id="charts" class="charts"></div>
+      <details class="panel"><summary>Candidate pools and Top-K hits by brain</summary><div id="metric-reports"></div></details>
+    </section>
+    <section id="branches"><h2>Exploration Branches</h2><p class="muted">Click a node to inspect an attempt. Solid edges show the last measured or restored workspace checkpoint; dashed edges show cache sources. Missing ancestry in older runs is not inferred. Green marks promoted candidates, purple marks current pool members, and red marks failures.</p>
+      <div id="branch-graph" class="panel scroll"></div><div id="selected-attempt" class="panel" hidden></div>
+    </section>
+    <section id="pool"><h2>Current TRAIN Candidate Pool</h2><div id="pool-content"></div></section>
+    <footer>Data and assets are embedded for offline viewing. Source code previews are displayed as plain text. Embedded previews have size limits; complete records remain in the original run directory. New runs rebuild this report after each generation. Refresh the page to view the latest saved version.</footer>
+  </main>
+  <script id="report-data" type="application/json">@@DATA@@</script>
+  <script>@@JS@@</script>
+</body>
+</html>

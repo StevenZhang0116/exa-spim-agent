@@ -11,7 +11,7 @@ from pathlib import Path
 from .reviser_access import canonical_file, make_guard, pre_tool_hook
 
 
-DEFAULT_MODEL = "claude-opus-4-8"
+DEFAULT_MODEL = "claude-opus-5"
 
 
 def anthropic_api_env():
@@ -49,7 +49,7 @@ def build_options(*, run_dir, system_prompt, model=DEFAULT_MODEL,
 
 
 def bind_session_options(options, policy_path, rules_path, report_path, *, readable_paths=(), training_server=None):
-    """Bind this generation's scorer/rules and optional proposal/training program; explicit reads only."""
+    """Bind generation files and TRAIN tools, including analysis code/request; explicit reads only."""
     from claude_agent_sdk import HookMatcher
 
     run_dir = Path(options.cwd).resolve()
@@ -62,7 +62,10 @@ def bind_session_options(options, policy_path, rules_path, report_path, *, reada
     if report_path is not None:
         readable.append(report_path)
     training_tools = (["mcp__training__evaluate_train", "mcp__training__search_parameters",
-                       "mcp__training__train_classifier",
+                       "mcp__training__train_classifier", "mcp__training__inspect_candidate",
+                       "mcp__training__inspect_failure_cases", "mcp__training__evaluate_feature_ablation",
+                       "mcp__training__inspect_candidate_image", "mcp__training__inspect_failure_images",
+                       "mcp__training__run_volume_analysis", "mcp__training__plan_image_scoring",
                        "mcp__training__restore_candidate", "mcp__training__search_memory"]
                       if training_server is not None else [])
     guard, state = make_guard(

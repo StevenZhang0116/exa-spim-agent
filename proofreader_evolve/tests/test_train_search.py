@@ -16,7 +16,7 @@ import pandas as pd
 
 from proofreader_evolve.harness import fixed_pool_scoring as scoring
 from proofreader_evolve.harness.isolated_scoring import score, preflight, ScorerExecutionError
-from proofreader_evolve.harness.native_pool import NativeTable, NativeTables, pool_digest
+from proofreader_evolve.harness.native_pool import NativeTable, pool_digest
 from proofreader_evolve.harness.scorer_components import components, compose
 from proofreader_evolve.harness.train_experiments import TrainingExperiments, ExperimentMemory
 from proofreader_evolve.harness.search_proposals import formula_info, parameterize, parameter_candidates, read_proposal
@@ -65,7 +65,8 @@ class DiagnosticsTests(unittest.TestCase):
         samples = lambda r: [e['features']['x'] for e in r['training_examples'] if e['group'] == 'missed_positive']
         self.assertEqual(samples(result)[0], samples(rotated)[0])
         self.assertNotEqual(samples(result)[1:], samples(rotated)[1:])
-        self.assertTrue(all(set(e) == {'group', 'label', 'score', 'features'} for e in result['training_examples']))
+        self.assertTrue(all(set(e) == {'group', 'label', 'score', 'features', 'candidate_ref'}
+                            for e in result['training_examples']))
         gain = describe(table, scores, np.array([1]), parent={'chosen': np.array([0])})
         self.assertEqual(gain['ranking_delta']['net_tp'], 1)
         self.assertEqual(gain['group_sizes']['gained_positive'], 1)
@@ -100,9 +101,24 @@ class WorkerTests(unittest.TestCase):
                 source = ('import os\ndef score_candidates(features, ctx):\n'
                           f'    {operation}\n'
                           "    return features['detector_score'].to_numpy()\n")
-                with self.subTest(operation=operation), self.assertRaisesRegex(ScorerExecutionError, 'PermissionError'):
+                # A not-yet-loaded module can be blocked before its syscall is reached.
+                errors = 'PermissionError|ModuleNotFoundError' if 'socket' in operation else 'PermissionError'
+                with self.subTest(operation=operation), self.assertRaisesRegex(ScorerExecutionError, errors):
                     score(source, frame, 'split')
             self.assertEqual(secret.read_text(), 'private-training-labels')
+
+    def test_socket_syscall_is_denied_even_without_a_socket_module_import(self):
+        source = '''import ctypes
+import errno
+def score_candidates(features, ctx):
+    libc = ctypes.CDLL(None, use_errno=True)
+    result = libc.socket(2, 1, 0)
+    if result != -1 or ctypes.get_errno() != errno.EPERM:
+        raise RuntimeError('Socket syscall was not denied with EPERM')
+    return features['detector_score'].to_numpy()
+'''
+        frame = fixture().tables['split'].features
+        np.testing.assert_array_equal(score(source, frame, 'split'), frame.detector_score)
 
     def test_credentials_do_not_enter_worker(self):
         source = ("import os\nassert 'ANTHROPIC_API_KEY' not in os.environ\n"
@@ -160,6 +176,8 @@ class TrainingSearchTests(unittest.TestCase):
         self.assertTrue(result['train_gate']['passed'])
         self.assertEqual(result['ranking_delta']['1/split']['gained_positives'], 1)
         self.assertEqual((Path(result['snapshot']) / 'scorer.py').read_text(), IMPROVED)
+        self.assertEqual(self.session.edit_base, result['experiment'])
+        self.assertTrue((Path(result['snapshot']) / 'scorer.py.from_edit_base.diff').is_file())
         with patch('proofreader_evolve.harness.train_experiments.scoring.evaluate') as evaluate:
             repeated = self.session.evaluate()
         evaluate.assert_not_called()
@@ -202,9 +220,23 @@ class TrainingSearchTests(unittest.TestCase):
         self.assertTrue(again['cached'])
         self.assertEqual(self.session.evaluations_used, 0)
         self.assertEqual(again['train'], first['train'])
+        self.assertEqual(again['cached_from'], first['experiment'])
         found = self.memory.search('split', 'rare eigenvalue', limit=1)
         self.assertEqual(found[0]['experiment'], 'gen001/attempt001')
         self.assertEqual(self.memory.search('merge'), [])
+
+    def test_observed_workspace_lineage_tracks_restore_and_parameter_grid_siblings(self):
+        self.session.max_evaluations = 4
+        first = self.evaluate(IMPROVED)
+        second = self.evaluate(BASELINE)
+        self.assertEqual(second['lineage']['edit_base_experiment'], first['experiment'])
+        restored = self.session.restore(first['experiment'])
+        self.session.policy_path.write_text(PARAMETERIZED)
+        write_proposal(self.session, grid={'weight': [0.0, 1.0]})
+        batch = self.session.search_parameters()
+        entries = [self.memory.candidates[row['experiment']] for row in batch['candidates']]
+        self.assertTrue(all(entry['lineage']['edit_base_experiment'] == restored['restored'] for entry in entries))
+        self.assertEqual(self.session.edit_base, batch['best']['restored'])
 
     def test_mcp_handlers_and_explicit_tool_permissions(self):
         import claude_agent_sdk as sdk
@@ -231,6 +263,7 @@ class TrainingSearchTests(unittest.TestCase):
         for tool, expected in [('mcp__training__evaluate_train', 'allow'),
                                ('mcp__training__search_parameters', 'allow'),
                                ('mcp__training__train_classifier', 'allow'),
+                               ('mcp__training__inspect_candidate', 'allow'),
                                ('mcp__training__restore_candidate', 'allow'),
                                ('mcp__training__search_memory', 'allow'),
                                ('mcp__training__evaluate_validation', 'deny'), ('Bash', 'deny')]:
@@ -246,6 +279,7 @@ class TrainingSearchTests(unittest.TestCase):
             self.assertEqual(asyncio.run(guard(tool, {'file_path': str(self.session.training_path)}, None)).behavior,
                              'allow')
         for name in ('candidate_pool.json', 'search_plan.json', 'classifier_guide.md', 'model_environment.json',
+                     'research_status.json', '../research_evidence.jsonl',
                      'classifier_fits/fit001/model.json', 'experiments/attempt001/scorer.py'):
             self.assertEqual(asyncio.run(guard('Write', {'file_path': str(self.session.gen_dir / name)}, None)).behavior,
                              'deny')
@@ -309,12 +343,63 @@ class TrainingSearchTests(unittest.TestCase):
 
 
 class SearchDriverTests(unittest.TestCase):
+    def test_accepted_train_regression_is_protected_and_revisited(self):
+        from proofreader_evolve.cli import run_precision_evolution as driver
+        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
+            seed = Path(tmp) / 'seed.py'
+            seed.write_text(IMPROVED)
+            args = driver.parse_args(['--selection-protocol', 'in_sample', '--train-brains', '1', '--validation-brains', '2',
+                                      '--split-k', '1', '--generations', '3', '--runs-dir', tmp,
+                                      '--start-from', str(seed), '--candidate-pool-size', '1'])
+            def bank(brain, *args, **kwargs):
+                result = fixture(brain)
+                if brain == '2':
+                    result.tables['split'].truth = np.array([1, 0, 0])
+                return result
+            async def revise(run_dir, policy, rules, report, model, *, experiments):
+                if experiments.generation == 1:
+                    policy.write_text(BASELINE)  # Worse TRAIN, better outer evaluation.
+                    write_proposal(experiments)
+                    experiments.evaluate()
+                else:
+                    self.assertEqual(policy.read_text(), BASELINE)
+                    self.assertEqual(experiments.parent_sources['split'], BASELINE)
+                    if experiments.generation == 2:
+                        # Follow the newly promoted, weaker-TRAIN branch immediately.
+                        self.assertEqual(experiments.search_plan['reason'], 'promotion_followup')
+                        policy.write_text(BASELINE.replace("features['detector_score']",
+                                                           "(features['detector_score'] * 1.01)"))
+                        write_proposal(experiments)
+                        experiments.evaluate()
+                    else:
+                        experiments.restore('parent')
+                    for name in ('search_plan.json', 'candidate_pool.json'):
+                        text = (policy.parent / name).read_text()
+                        self.assertNotIn('validation', text.lower())
+                        self.assertNotIn('2/split', text)
+                return {'summary': 'Reference branch regression fixture', 'cost_usd': 0}
+            with patch.object(driver.pc, 'resolve_detector_runs', return_value={}), \
+                    patch.object(driver, 'ensure_native_tables', side_effect=bank):
+                path = asyncio.run(driver.run(args, revise_fn=revise))
+            rows = [json.loads(line) for line in (path / 'ledger.jsonl').read_text().splitlines()]
+            self.assertTrue(rows[0]['accepted'])
+            self.assertFalse(rows[0]['train_gate']['passed'])
+            self.assertEqual(rows[1]['search_parent'], 'gen001/attempt001')
+            self.assertTrue(rows[1]['research_status']['followup_complete'])
+            self.assertEqual(rows[2]['search_branch_role'], 'reference')
+            self.assertEqual(rows[2]['search_parent'], 'gen001/attempt001')
+            self.assertFalse(rows[1]['accepted'])
+            summary = json.loads((path / 'candidate_pool.json').read_text())['kinds']['split']
+            self.assertEqual(summary['candidates'][0]['experiment'], 'seed/split')
+            self.assertEqual(summary['reference_branch']['experiment'], 'gen001/attempt001')
+            self.assertEqual(components((path / 'best_scorer.py').read_text())['split'], BASELINE)
+
     def test_validation_rejected_branch_remains_searchable_without_becoming_accepted_parent(self):
         from proofreader_evolve.cli import run_precision_evolution as driver
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
             seed = Path(tmp) / 'seed.py'
             seed.write_text(BASELINE)
-            args = driver.parse_args(['--train-brains', '1', '--validation-brains', '2',
+            args = driver.parse_args(['--selection-protocol', 'in_sample', '--train-brains', '1', '--validation-brains', '2',
                                       '--split-k', '1', '--generations', '2', '--runs-dir', tmp,
                                       '--start-from', str(seed)])
             def bank(brain, *args, **kwargs):
@@ -346,7 +431,7 @@ class SearchDriverTests(unittest.TestCase):
     def test_three_train_attempts_one_validation_and_alternating_components(self):
         from proofreader_evolve.cli import run_precision_evolution as driver
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
-            args = driver.parse_args(['--train-brains', '1', '--validation-brains', '2',
+            args = driver.parse_args(['--selection-protocol', 'in_sample', '--train-brains', '1', '--validation-brains', '2',
                                       '--merge-k', '1', '--split-k', '1', '--generations', '2', '--runs-dir', tmp])
             targets = []
             async def revise(run_dir, policy, rules, report, model, *, experiments):
@@ -375,13 +460,24 @@ class SearchDriverTests(unittest.TestCase):
             self.assertEqual(first['split'], args.start_from.read_text())
             final = components((path / 'best_scorer.py').read_text())
             self.assertEqual(final, {'merge': IMPROVED, 'split': IMPROVED})
+            saved_pool = json.loads((path / 'candidate_pool.json').read_text())
+            self.assertEqual(saved_pool['selection'], 'train-champion-and-specialists-v1')
+            for kind, summary in saved_pool['kinds'].items():
+                for branch in summary['candidates']:
+                    self.assertTrue(branch['specialist_profile']['slices'])
+                    self.assertTrue(all(name.startswith(f'1/{kind}/')
+                                        for name in branch['specialist_profile']['slices']))
+                    self.assertIn('vs_champion', branch)
+                    self.assertIn('vs_other_retained', branch)
+            plan = json.loads((path / 'gen002/search_plan.json').read_text())
+            self.assertIn('complementary_candidates', plan)
 
 
 class ProposalTests(unittest.TestCase):
     def test_parameter_substitution_preserves_formula_and_unicode(self):
-        source = '# 几何评分\n' + PARAMETERIZED
+        source = '# Naive scorer: \u03b1-weighted geometry\n' + PARAMETERIZED
         changed = parameterize(source, {'weight': 2.5})
-        self.assertIn('# 几何评分', changed)
+        self.assertIn('# Naive scorer: \u03b1-weighted geometry', changed)
         self.assertEqual(formula_info(source)[0]['formula_sha256'], formula_info(changed)[0]['formula_sha256'])
         self.assertNotEqual(formula_info(source)[0]['formula_sha256'], formula_info(IMPROVED)[0]['formula_sha256'])
         with self.assertRaisesRegex(ValueError, 'Every grid key'):
@@ -417,6 +513,41 @@ class CandidatePoolTests(unittest.TestCase):
                 pool.add(entry)
             self.assertEqual([e['sequence'] for e in pool.members['split']], [1, 2])
             self.assertEqual(pool.next_plan()['mode'], 'tune')
+
+    def test_reference_cadence_is_per_kind_and_duplicate_roles_share_a_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = CandidatePool(Path(tmp) / 'pool.json', ['split', 'merge'], size=1)
+            split = self.entry(1)
+            merge = {**self.entry(2), 'target_kind': 'merge'}
+            for entry in (split, merge):
+                pool.add(entry)
+                pool.set_reference(entry)
+            plans = [pool.next_plan() for _ in range(6)]
+            self.assertEqual([p['target_kind'] for p in plans], ['split', 'merge'] * 3)
+            self.assertEqual([p['scheduled_round'] for p in plans], [1, 1, 2, 2, 3, 3])
+            self.assertEqual([p['branch_role'] for p in plans], ['train_champion'] * 4 + ['reference'] * 2)
+            for kind in ('split', 'merge'):
+                self.assertEqual(len(pool.members[kind]), 1)
+                self.assertEqual(pool.members[kind][0]['component_sha256'], pool.references[kind]['component_sha256'])
+            replacement = self.entry(3, .1)
+            pool.set_reference(replacement)
+            self.assertEqual(pool.references['merge']['experiment'], merge['experiment'])
+
+    def test_reference_round_does_not_consume_periodic_train_alternative_slot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = CandidatePool(Path(tmp) / 'pool.json', ['split'], size=2,
+                                 explore_every=3, plateau_patience=99, early_stop=False)
+            pool.add(self.entry(1))
+            pool.add(self.entry(2, .49, formula='alternative'))
+            pool.set_reference(self.entry(9, .1))
+            for number in (3, 4):
+                pool.finish(pool.next_plan(), [self.entry(number, ranking='1')])
+            plan = pool.next_plan()
+            self.assertEqual(plan['branch_role'], 'reference')
+            pool.finish(plan, [self.entry(5, .1)])
+            plan = pool.next_plan()
+            self.assertEqual(plan['reason'], 'periodic_exploration')
+            self.assertEqual(plan['search_parent']['sequence'], 2)
 
     def test_plateau_switches_branch_and_stops_only_after_measured_explorations(self):
         with tempfile.TemporaryDirectory() as tmp:

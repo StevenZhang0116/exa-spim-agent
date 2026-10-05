@@ -90,6 +90,12 @@ def predict_model(model, store, frame, kind, timeout=120, memory_mb=8192):
         np.save(root / 'X.npy', frame.to_numpy(dtype=float), allow_pickle=False)
         request = {'mode': 'predict', 'columns': list(frame.columns), 'config': model['config'],
                    'timeout': timeout, 'memory_mb': memory_mb, 'threads': model.get('threads', 1)}
+        from .image_contract import image_spec
+        from .image_features import stage_images
+        contract = image_spec(model['program'])
+        if contract is not None and contract[1]['raw_patches']:
+            stage_images(root, [(frame, np.arange(len(frame)))])
+            request['image_inputs'] = True
         run_worker(root, request)
         if artifact_files(root / 'artifacts') != model['files']:
             raise ModelExecutionError('Prediction modified frozen model artifacts')

@@ -2,6 +2,7 @@
 
 import hashlib
 import numpy as np
+from .local_context import candidate_ref
 
 
 def _sample(indices, seed, limit=4):
@@ -14,13 +15,15 @@ def _sample(indices, seed, limit=4):
     return [int(indices[0]), *map(int, rng.choice(rest, min(limit - 1, len(rest)), replace=False))]
 
 
-def example(table, scores, index, group):
+def example(table, scores, index, group, features=None):
+    features = table.features if features is None else features
     return {'group': group, 'label': int(table.truth[index]), 'score': float(scores[index]),
+            'candidate_ref': candidate_ref(table, index),
             'features': {name: float(value) if np.isfinite(value) else None
-                         for name, value in table.features.iloc[index].items()}}
+                         for name, value in features.iloc[index].items()}}
 
 
-def describe(table, scores, chosen, generation=0, cell='', parent=None):
+def describe(table, scores, chosen, generation=0, cell='', parent=None, *, features=None):
     order = np.lexsort((np.asarray(table.keys, dtype=str), -scores))
     mask = np.zeros(len(scores), dtype=bool)
     mask[chosen] = True
@@ -51,7 +54,7 @@ def describe(table, scores, chosen, generation=0, cell='', parent=None):
     examples = []
     for group, indices in groups.items():
         seed = int.from_bytes(hashlib.sha256(f'{cell}/{generation}/{group}'.encode()).digest()[:8], 'big')
-        examples.extend(example(table, scores, i, group) for i in _sample(indices, seed))
+        examples.extend(example(table, scores, i, group, features) for i in _sample(indices, seed))
     return {'training_examples': examples, 'group_sizes': {g: len(i) for g, i in groups.items()},
             'ranking_delta': delta}
 

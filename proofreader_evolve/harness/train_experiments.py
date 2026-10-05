@@ -18,11 +18,22 @@ from .classifier_contract import (MAX_MODEL_SOURCE_BYTES, frozen_model, classifi
                                   classifier_info, config_identity, normalize_config, validate_program,
                                   verify_artifacts, MODEL_VERSION)
 from .classifier_training import fit_classifier
+from .failure_cases import matched_failure_cases
+from .feature_ablation import (prepare_ablation, measure_ablation, ABLATION_VERSION,
+                               CLASSIFIER_UNITS, FORMULA_UNITS)
+from .hypothesis_memory import HypothesisMemory
+from .research_evidence import ResearchEvidence, program_identity, has_measurement, scoring_source
 from .isolated_scoring import preflight, ScorerExecutionError
+from .selection_protocol import SelectionProtocol, load_selection, save_selection
+from .local_context import resolve_train_candidate
+from .local_features import augmented_features
+from .model_execution import ModelExecutionError
 from .scorer_components import compose
 from .search_proposals import read_proposal, formula_info, parameter_candidates
 from .train_feedback import metrics_only, write_train_feedback
+from .train_coverage import TrainingCoverage
 from .trajectory import Trajectory, log_metrics
+from .volume_analysis import read_analysis, execute_analysis, MAX_ANALYSES
 
 
 def digest(source):
@@ -34,17 +45,73 @@ def save_state(path, state):
                      for key in ('scores', 'chosen')})
 
 
+def in_sample_precision(report, kind):
+    """Mean in-sample TRAIN precision of this kind's cells; a diagnostic, not a rank."""
+    cells = [cell for name, cell in report['cells'].items() if name.endswith('/' + kind)]
+    return sum(cell['precision'] for cell in cells) / len(cells)
+
+
 class ExperimentMemory:
     """Host-owned archive: no validation values or validation decision reasons."""
-    def __init__(self, run_dir):
+    def __init__(self, run_dir, *, train=None, protocol=None, fit_limits=None):
         self.path = run_dir / 'train_experiments.jsonl'
         self.artifact_store = run_dir / 'model_artifacts'
         self.entries, self.cache, self.candidates = [], {}, {}
         self.fit_cache, self.fitted_sources = {}, {}
+        # Official selection protocol; coverage/specialists live on its selection brains.
+        self.protocol = protocol
+        self.fit_limits = dict(fit_limits or {})
+        self.oof_scores = {}
+        if protocol is not None:
+            self.coverage = TrainingCoverage(protocol.selection_train)
+        else:
+            self.coverage = TrainingCoverage(train) if train is not None else None
+        self.train = train or {}
+        self.hypotheses = HypothesisMemory(run_dir / 'hypothesis_memory.json')
+        self.research = ResearchEvidence(run_dir / 'research_evidence.jsonl')
+        # Ablation partitions for kinds without a protocol partition (in_sample mode only);
+        # under grouped_oof ablations reuse the selection protocol's folds.
+        self.internal_folds = {}
 
     def register(self, entry):
         self.cache[(entry['target_kind'], entry['component_sha256'])] = entry
         self.candidates[entry['experiment']] = entry
+
+    def ensure_protocol(self, budgets, train=None):
+        """Default to the historical in-sample protocol for sessions built without one."""
+        if self.protocol is None:
+            if not self.train and train:
+                self.train = train
+            self.protocol = SelectionProtocol(self.train, budgets, mode='in_sample')
+            if self.coverage is None and self.train:
+                self.coverage = TrainingCoverage(self.protocol.selection_train)
+        return self.protocol
+
+    def selection_measurement(self, kind, component, state, directory, *, model=None, budgets=None,
+                              oof_scores=None):
+        """Official selection report for a measured component.
+
+        Formulas reuse their deterministic scores under the protocol's budgets.
+        Fitted models need out-of-fold scores: recorded at fit time, loaded from a
+        snapshot, or measured here by fold refits for a resumed seed model.
+        """
+        protocol = self.ensure_protocol(budgets or {})
+        model = frozen_model(component) if model is None else model
+        policy = digest(component)
+        if model is None or not protocol.requires_fold_fits:
+            return protocol.measure_formula(kind, state, policy_sha256=policy)
+        scores = oof_scores if oof_scores is not None else self.oof_scores.get(policy)
+        if scores is not None:
+            self.oof_scores.setdefault(policy, scores)
+            return protocol.score_report(kind, scores, policy_sha256=policy)
+        if model.get('program') is None:
+            raise ValueError('A legacy frozen model without its training program cannot be measured '
+                             'under the grouped_oof selection protocol')
+        report, selection_state = protocol.measure_classifier(
+            kind, model['program'], model['config'], Path(directory) / 'selection_folds', **self.fit_limits)
+        report['policy_sha256'] = policy
+        self.oof_scores[policy] = {cell: values['scores'] for cell, values in selection_state.items()}
+        return report, selection_state
 
     def seed(self, kind, component, rules, report, state):
         directory = self.path.parent / 'train_seed' / kind
@@ -53,13 +120,19 @@ class ExperimentMemory:
         (directory / 'rules.md').write_text(rules)
         (directory / 'train_evaluation.json').write_text(json.dumps(report, allow_nan=False))
         save_state(directory / 'train_state.npz', state)
+        model = frozen_model(component)
+        selection_report, selection_state = self.selection_measurement(
+            kind, component, state, directory, model=model,
+            budgets={name.rsplit('/', 1)[1]: cell['requested_k'] for name, cell in report['cells'].items()})
+        save_selection(directory, selection_report, selection_state)
         entry = {'experiment': f'seed/{kind}', 'target_kind': kind, 'sequence': 0,
                  'component_sha256': digest(component), 'family': 'seed',
                  'hypothesis': 'Initial measured scorer', 'strategy': 'Starting component',
                  'parameter_grid': {}, 'snapshot': str(directory), 'status': 'evaluated',
                  'train': metrics_only(report), 'cached': True,
-                 **candidate_metadata(component, kind, report, state)}
-        model = frozen_model(component)
+                 'in_sample_precision': in_sample_precision(report, kind),
+                 'selection': metrics_only(selection_report),
+                 **candidate_metadata(component, kind, selection_report, selection_state, coverage=self.coverage)}
         if model is not None:
             summary = {key: model[key] for key in ('config', 'training_brains', 'training_rows', 'training_fingerprint')}
             if model.get('program') is not None:
@@ -69,6 +142,16 @@ class ExperimentMemory:
             self.fitted_sources[digest(component)] = summary
             entry['training'] = summary
         self.register(entry)
+        self.hypotheses.register_seed(entry)
+        if self.train:
+            cells = [cell for name, cell in report['cells'].items() if name.endswith('/' + kind)]
+            self.research.record(kind=kind, generation=0, tool='evaluate_train', source=scoring_source(report, kind),
+                category='measurement', identity={'program': program_identity((model or {}).get('program') or component),
+                    'model_config': model['config'] if model else None,
+                    'train': {brain: bank.tables[kind].meta for brain, bank in self.train.items()},
+                    'k': cells[0]['requested_k']}, success=True, cached=True,
+                artifact=directory / 'result.json')
+        (directory / 'result.json').write_text(json.dumps(entry, indent=2, allow_nan=False))
         return entry
 
     def append(self, entry):
@@ -77,6 +160,7 @@ class ExperimentMemory:
             stream.write(json.dumps(entry, allow_nan=False) + '\n')
         if entry['status'] == 'evaluated':
             self.register(deepcopy(entry))
+        self.hypotheses.observe(entry)
 
     def search(self, target_kind, query='', limit=5):
         tokens = set(re.findall(r'\w+', query.lower()))
@@ -99,7 +183,8 @@ class TrainingExperiments:
     def __init__(self, gen_dir, policy_path, rules_path, target_kind, parent_sources,
                  train, parent_report, parent_state, budgets, timeout, margin,
                  memory, max_evaluations=8, generation=0, search_plan=None,
-                 classifier_timeout=300, classifier_memory_mb=8192, classifier_threads=1):
+                 classifier_timeout=300, classifier_memory_mb=8192, classifier_threads=1,
+                 parent_selection=None):
         self.gen_dir, self.policy_path, self.rules_path = gen_dir, policy_path, rules_path
         self.proposal_path = gen_dir / 'proposal.json'
         self.training_path = gen_dir / 'training.py'
@@ -107,13 +192,73 @@ class TrainingExperiments:
         self.train, self.parent_report, self.parent_state = train, parent_report, parent_state
         self.budgets, self.timeout, self.margin = budgets, timeout, margin
         self.memory, self.max_evaluations, self.generation = memory, max_evaluations, generation
+        self.protocol = self.memory.ensure_protocol(budgets, train)
+        self.protocol_info = self.protocol.describe(target_kind)
+        if self.memory.coverage is None:
+            self.memory.coverage = TrainingCoverage(self.protocol.selection_train)
         self.search_plan = search_plan or {'mode': 'explore', 'search_parent': {}}
         self.search_source = policy_path.read_text()
+        # An observed workspace checkpoint, not an inference about the agent's
+        # conceptual ancestry. Grid variants share this checkpoint until restore.
+        self.edit_base = self.search_plan['search_parent'].get('experiment')
+        self.edit_source = self.search_source
+        self.edit_program = self.training_path.read_text() if self.training_path.exists() else ''
+        self.restored_from = None
         self.classifier_timeout, self.classifier_memory_mb = classifier_timeout, classifier_memory_mb
         self.classifier_threads = classifier_threads
         self.attempts, self.results = [], {}
         self.evaluations_used, self.repair_granted = 0, False
+        self.inspections_used = 0
+        self.image_inspections_used = 0
+        self.volume_analyses_used = 0
         self.lock, self.trace = asyncio.Lock(), Trajectory(gen_dir)
+        self.feature_diagnostics = []
+        self.frame_cache = (None, None)
+        if parent_selection is None:
+            parent_selection = self.memory.selection_measurement(
+                target_kind, parent_sources[target_kind], parent_state, gen_dir / 'parent_selection',
+                budgets=budgets)
+        self.parent_selection, self.parent_selection_state = parent_selection
+        # Matched failures come from the official selection measurement of the accepted parent.
+        self.failure_cases = matched_failure_cases(self.protocol.selection_train, target_kind,
+                                                   self.parent_selection_state)
+        (gen_dir / 'failure_cases.json').write_text(json.dumps(self.failure_cases, indent=2, allow_nan=False))
+        # The request starts with one matched pair when available. The agent may
+        # replace it with any valid TRAIN handles, independent of scoring selection.
+        request_path = gen_dir / 'analysis_request.json'
+        if not request_path.exists():
+            pair = self.failure_cases['pairs'][:1]
+            requests = [{'candidate_ref': case['candidate_ref'], 'occurrence_index': 0}
+                        for entry in pair for case in entry['cases']]
+            request_path.write_text(json.dumps({'candidates': requests, 'radius_um': 40., 'level': 0,
+                'channel': 0, 'timepoint': 0, 'max_nodes': 256}, indent=2))
+        self._save_hypothesis_feedback()
+
+    def _save_hypothesis_feedback(self):
+        query = self.search_plan.get('search_parent', {}).get('hypothesis', '')
+        snapshot = self.memory.hypotheses.snapshot(self.target_kind, query)
+        (self.gen_dir / 'hypothesis_memory.json').write_text(json.dumps(snapshot, indent=2, allow_nan=False))
+        self.research_status()
+
+    def research_status(self):
+        """Live, host-owned completion receipt, safe to expose to the reviser."""
+        status = self.memory.research.status(self.target_kind, self.generation,
+                                           self.search_plan, self.memory.candidates)
+        (self.gen_dir / 'research_status.json').write_text(json.dumps(status, indent=2, allow_nan=False))
+        return status
+
+    def _record_research(self, tool, source, category, identity, success, artifact, **kwargs):
+        # Lightweight inspection fixtures may omit the run archive.
+        memory = getattr(self, 'memory', None)
+        if memory is None or not hasattr(memory, 'research'):
+            return
+        self.memory.research.record(kind=self.target_kind, generation=self.generation,
+            tool=tool, source=source, category=category, identity=identity,
+            success=success, artifact=artifact, edit_base=self.edit_base, **kwargs)
+        self.research_status()
+
+    def _train_identity(self):
+        return {brain: bank.tables[self.target_kind].meta for brain, bank in self.train.items()}
 
     @property
     def remaining(self):
@@ -168,6 +313,34 @@ class TrainingExperiments:
             raise ValueError('This is a tune generation: change only PARAMS or numeric training parameters; '
                              'restore_candidate("parent") recovers the assigned formula')
 
+    def _selection_gate(self, selection_report):
+        before, after = self.parent_selection['macro_precision'], selection_report['macro_precision']
+        return {'metric': self.protocol_info['metric'], 'mode': self.protocol.mode,
+                'parent': before, 'candidate': after, 'delta': after - before,
+                'passed': after > before + 1e-12, 'required_for_promotion': False,
+                'scope': 'Development selection signal on selection brains; the outer promotion gate decides acceptance'}
+
+    def _cached_selection(self, cached, component, model, measured_state):
+        directory = Path(cached['snapshot'])
+        if (directory / 'selection_state.npz').exists():
+            report, state = load_selection(directory)
+            if model is not None:
+                self.memory.oof_scores.setdefault(digest(component),
+                                                  {cell: values['scores'] for cell, values in state.items()})
+            return report, state
+        return self.memory.selection_measurement(self.target_kind, component, measured_state, directory,
+                                                 model=model, budgets=self.budgets)
+
+    def _classifier_frames(self, program):
+        """One feature extraction per program, shared by fold fits and the full fit."""
+        key = digest(program)
+        if self.frame_cache[0] != key:
+            frames = {brain: augmented_features(program, bank.tables[self.target_kind],
+                                                self.classifier_timeout, self.classifier_memory_mb)
+                      for brain, bank in self.train.items()}
+            self.frame_cache = (key, frames)
+        return self.frame_cache[1]
+
     def _merge_measurement(self, measured, measured_state, combined):
         """Reuse only this component; the other kind always comes from the accepted parent."""
         report, state = deepcopy(self.parent_report), dict(self.parent_state)
@@ -190,12 +363,33 @@ class TrainingExperiments:
                     or model.get('program') != self._read_program()):
                 raise ValueError('Training code/parameters have not been fitted: call train_classifier(); '
                                  'for a hand-written formula, remove proposal.json.classifier')
-        return self._evaluate(component, rules, proposal)
+        response = self._evaluate(component, rules, proposal)
+        if response.get('experiment'):
+            self._checkpoint(response['experiment'], component)
+        return response
 
-    def _evaluate(self, component, rules, proposal, *, charge=True):
+    def _lineage(self):
+        return {'version': 1, 'basis': 'observed_workspace_checkpoint',
+                'edit_base_experiment': self.edit_base, 'restored_from': self.restored_from}
+
+    def _checkpoint(self, experiment, component):
+        self.edit_base, self.edit_source = experiment, component
+        self.edit_program = self.training_path.read_text() if self.training_path.exists() else ''
+
+    def _edit_diffs(self, directory, component, program=None):
+        for name, before, after in (('scorer.py', self.edit_source, component),
+                                    ('training.py', self.edit_program, program)):
+            if after is not None:
+                difference = difflib.unified_diff(before.splitlines(keepends=True),
+                    after.splitlines(keepends=True), fromfile='workspace_checkpoint/' + name, tofile=name)
+                (directory / (name + '.from_edit_base.diff')).write_text(''.join(difference))
+
+    def _evaluate(self, component, rules, proposal, *, charge=True, selection_scores=None):
         self._verify_model(component)
         component_hash = digest(component)
         if component_hash in self.results:
+            self.trace.emit('candidate_cache_hit', 'Reusing this generation\'s measured snapshot',
+                            experiment=self.results[component_hash]['entry']['experiment'])
             return {**self.results[component_hash]['public'], 'cached': True,
                     'evaluations_used': self.evaluations_used,
                     'evaluations_remaining': self.remaining}
@@ -208,6 +402,7 @@ class TrainingExperiments:
         trial_dir.mkdir(parents=True)
         (trial_dir / 'scorer.py').write_text(component)
         model = frozen_model(component) if digest(component) in self.memory.fitted_sources else None
+        self._edit_diffs(trial_dir, component, (model or {}).get('program'))
         if model is not None and model.get('program') is not None:
             (trial_dir / 'training.py').write_text(model['program'])
             previous = frozen_model(self.search_source)
@@ -227,6 +422,7 @@ class TrainingExperiments:
                  'experiment': f'{self.gen_dir.name}/{trial_dir.name}',
                  'search_mode': self.search_plan['mode'],
                  'search_parent': self.search_plan['search_parent'].get('experiment'),
+                 'lineage': self._lineage(), 'cached_from': cached['experiment'] if cached else None,
                  'parent_sha256': digest(compose(self.parent_sources)),
                  'component_sha256': component_hash, 'candidate_sha256': digest(combined),
                  'snapshot': str(trial_dir), 'train': None, 'train_gate': None,
@@ -257,7 +453,8 @@ class TrainingExperiments:
                                       for cell in measured['cells'] if cell.endswith('/' + self.target_kind)}
             else:
                 for bank in self.train.values():
-                    preflight(component, bank.tables[self.target_kind].features, self.target_kind, self.timeout,
+                    features = augmented_features(component, bank.tables[self.target_kind], self.timeout)
+                    preflight(component, features, self.target_kind, self.timeout,
                               artifact_store=self.memory.artifact_store)
                 stage = 'train_evaluation'
                 measured_state = {}
@@ -265,30 +462,59 @@ class TrainingExperiments:
                                  for brain, bank in self.train.items()}
                 measured = scoring.evaluate(component, target_tables, self.budgets, self.timeout,
                                             state=measured_state, artifact_store=self.memory.artifact_store)
+            stage = 'selection'
+            if cached:
+                selection_report, selection_state = self._cached_selection(cached, component, model, measured_state)
+            else:
+                selection_report, selection_state = self.memory.selection_measurement(
+                    self.target_kind, component, measured_state, trial_dir, model=model, budgets=self.budgets,
+                    oof_scores=selection_scores)
             stage = 'diagnostics'
             report, state = self._merge_measurement(measured, measured_state, combined)
             from .training_diagnostics import describe
+            features_by_brain = {brain: augmented_features(component, bank.tables[self.target_kind], self.timeout)
+                                 for brain, bank in self.train.items()}
             for brain, bank in self.train.items():
                 for kind, table in bank.tables.items():
                     cell = f'{brain}/{kind}'
+                    features = features_by_brain[brain] if kind == self.target_kind else None
                     report['cells'][cell].update(describe(table, state[cell]['scores'], state[cell]['chosen'],
-                                                         self.generation, cell, self.parent_state[cell]))
+                                                         self.generation, cell, self.parent_state[cell], features=features))
+            selection_feedback = deepcopy(selection_report)
+            for cell, values in selection_state.items():
+                brain = cell.rsplit('/', 1)[0]
+                selection_feedback['cells'][cell].update(describe(
+                    self.train[brain].tables[self.target_kind], values['scores'], values['chosen'],
+                    self.generation, cell, self.parent_selection_state.get(cell), features=features_by_brain[brain]))
             passed, reason = scoring.acceptance(self.parent_report, report, self.margin)
             entry.update(status='evaluated', train=metrics_only(report),
                          train_gate={'passed': passed, 'reason': reason, 'required_for_promotion': False},
                          ranking_delta={k: v['ranking_delta'] for k, v in report['cells'].items()},
-                         **candidate_metadata(component, self.target_kind, report, state))
-            result.update(report=report, state=state)
+                         in_sample_precision=in_sample_precision(report, self.target_kind),
+                         selection=metrics_only(selection_report),
+                         selection_gate=self._selection_gate(selection_report),
+                         selection_ranking_delta={k: v['ranking_delta'] for k, v in selection_feedback['cells'].items()},
+                         **candidate_metadata(component, self.target_kind, selection_report, selection_state,
+                                              coverage=self.memory.coverage))
+            entry['feature_evidence'] = self.memory.hypotheses.candidate_evidence(entry)
+            result.update(report=report, state=state, selection_report=selection_report,
+                          selection_state=selection_state)
             (trial_dir / 'train_evaluation.json').write_text(json.dumps(report, indent=2, allow_nan=False))
             save_state(trial_dir / 'train_state.npz', state)
+            save_selection(trial_dir, selection_report, selection_state)
             feedback_path = trial_dir / 'feedback.json'
             write_train_feedback(feedback_path, report, [], self.budgets, target_kind=self.target_kind,
-                                 report_role='candidate')
+                                 report_role='candidate', selection=selection_feedback, protocol=self.protocol_info)
             public = {**entry, 'feedback': json.loads(feedback_path.read_text())}
-            log_metrics(self.trace, entry['experiment'], report, self.parent_report)
+            log_metrics(self.trace, f"TRAIN {entry['experiment']}", report, self.parent_report)
+            self.trace.emit('selection_measurement', f"{entry['experiment']}: {self.protocol.mode} selection "
+                            f"precision={selection_report['macro_precision']:.6f} "
+                            f"(parent {self.parent_selection['macro_precision']:.6f}); "
+                            f"in-sample {entry['in_sample_precision']:.6f}",
+                            selection=entry['selection'], selection_gate=entry['selection_gate'])
         except Exception as exc:
             execution_error = stage in {'preflight', 'train_evaluation'} and isinstance(
-                exc, (ScorerExecutionError, SyntaxError, ValueError))
+                exc, (ScorerExecutionError, ModelExecutionError, SyntaxError, ValueError))
             entry.update(status='execution_error' if execution_error else 'evaluation_error',
                          failure_stage=stage, error=f'{type(exc).__name__}: {exc}')
             result.update(report=None, state=None)
@@ -307,6 +533,15 @@ class TrainingExperiments:
         self.attempts.append(result)
         self.results[component_hash] = result
         self.memory.append(entry)
+        self._record_research('evaluate_train', scoring_source(entry.get('train'), self.target_kind), 'measurement',
+            {'program': program_identity((model or {}).get('program') or component)
+                if entry['status'] == 'evaluated' else component_hash,
+             'model_config': model['config'] if model else None,
+             'train': self._train_identity(), 'k': self.budgets[self.target_kind]},
+            entry['status'] == 'evaluated', trial_dir / 'result.json', cached=bool(cached),
+            outcome={'precision': entry.get('target_precision'), 'in_sample_precision': entry.get('in_sample_precision'),
+                     'error': entry.get('error')})
+        self._save_hypothesis_feedback()
         gate = entry.get('train_gate') or {}
         changes = '; '.join(f"{cell}: +{d['gained_positives']}/-{d['lost_positives']} positives, "
                             f"overlap={d['top_k_overlap']}, same_top_k={d['same_top_k']}"
@@ -321,9 +556,10 @@ class TrainingExperiments:
         valid = [r for r in results if r['report'] is not None]
         if not valid:
             raise ValueError('No successfully measured candidate to restore')
-        # TRAIN ranks exploration candidates; only the outer validation mean controls promotion.
-        return max(valid, key=lambda r: (r['report']['macro_precision'], -len(r['component']),
-                                        -r['entry']['sequence']))
+        # The official selection score ranks exploration candidates; in-sample TRAIN only
+        # breaks ties. Only the outer validation mean controls promotion.
+        return max(valid, key=lambda r: (r['entry']['target_precision'], r['report']['macro_precision'],
+                                        -len(r['component']), -r['entry']['sequence']))
 
     def _restore_result(self, result):
         self._check_editable_files()  # Restore even malformed/oversized code, but never redirected paths.
@@ -336,11 +572,16 @@ class TrainingExperiments:
             self._write_program(model['program'])
         self.rules_path.write_text(result['rules'])
         proposal = {k: result['entry'][k] for k in ('hypothesis', 'strategy', 'family', 'parameter_grid')}
+        if 'research' in result['entry']:
+            proposal['research'] = deepcopy(result['entry']['research'])
         proposal['parameter_grid'] = {}  # A restored candidate represents one measured configuration.
         if model is not None and model['version'] == MODEL_VERSION:
             proposal['classifier'] = result['entry']['classifier']
         self.proposal_path.write_text(json.dumps(proposal, indent=2, allow_nan=False))
-        self.trace.emit('candidate_restored', f"Restored {result['entry']['experiment']}; no new evaluation")
+        self.restored_from = result['entry']['experiment']
+        self._checkpoint(self.restored_from, result['component'])
+        self.trace.emit('candidate_restored', f"Restored {self.restored_from}; no new evaluation",
+                        experiment=self.restored_from, cached_from=result['entry'].get('cached_from'))
         return {**result['public'], 'restored': result['entry']['experiment'],
                 'evaluations_used': self.evaluations_used,
                 'evaluations_remaining': self.remaining}
@@ -359,6 +600,8 @@ class TrainingExperiments:
             raise ValueError('Archived scorer snapshot has changed; refusing to restore mismatched measurements')
         self._check_mode(component)
         proposal = {k: entry[k] for k in ('hypothesis', 'strategy', 'family', 'parameter_grid')}
+        if 'research' in entry:
+            proposal['research'] = deepcopy(entry['research'])
         model = frozen_model(component)
         if model is not None and model['version'] == MODEL_VERSION:
             proposal['classifier'] = entry['classifier']
@@ -404,6 +647,7 @@ class TrainingExperiments:
                  'component_sha256': digest('failed_fit:' + program + config_identity(config)),
                  'candidate_sha256': None, 'search_mode': self.search_plan['mode'],
                  'search_parent': self.search_plan['search_parent'].get('experiment'),
+                 'lineage': self._lineage(),
                  'status': 'training_error', 'failure_stage': 'classifier_fit', 'cached': False,
                  'error': f'{type(exc).__name__}: {exc}', 'train': None, 'train_gate': None, 'ranking_delta': None,
                  'evaluations_used': self.evaluations_used, 'wall_seconds': time.monotonic() - started}
@@ -413,10 +657,16 @@ class TrainingExperiments:
                 stream.seek(max(0, log.stat().st_size - 8000))
                 entry['training_output_tail'] = stream.read(8000).decode(errors='replace')
         (directory / 'result.json').write_text(json.dumps(entry, indent=2, allow_nan=False))
+        (directory / 'training.py').write_text(program)
+        self._edit_diffs(directory, None, program)
         result = {'entry': entry, 'report': None, 'state': None, 'source': None, 'component': None,
                   'public': {**entry, 'evaluations_remaining': self.remaining}}
         self.attempts.append(result)
         self.memory.append(entry)
+        self._record_research('train_classifier', 'scoring', 'measurement',
+            {'program': digest(program), 'config': config, 'train': self._train_identity()},
+            False, directory / 'result.json', outcome={'error': entry['error']})
+        self._save_hypothesis_feedback()
         self.trace.emit('classifier_training_error', entry['error'], experiment=entry['experiment'],
                         evaluations_remaining=self.remaining)
         return result['public']
@@ -460,14 +710,32 @@ class TrainingExperiments:
                 self.evaluations_used += 1
                 charged, started = True, time.monotonic()
                 self.trace.emit('classifier_fit', f"{self.target_kind}: fit agent program {digest(program)[:12]} on TRAIN only; "
-                                f"parameters={config['parameters']}",
+                                f"parameters={config['parameters']}; selection={self.protocol.mode}",
                                 config=config, fit_snapshot=str(directory))
+                oof_scores = None
                 try:
+                    frames = self._classifier_frames(program)
+                    if self.protocol.requires_fold_fits:
+                        # Fold fits come first; the official score never sees the full-fit model.
+                        selection_report, selection_state = self.protocol.measure_classifier(
+                            self.target_kind, program, config, directory / 'selection_folds', frames=frames,
+                            fit_timeout=self.classifier_timeout, score_timeout=self.timeout,
+                            memory_mb=self.classifier_memory_mb, threads=self.classifier_threads)
+                        oof_scores = {cell: values['scores'] for cell, values in selection_state.items()}
+                        save_selection(directory, selection_report, selection_state)
+                        self.trace.emit('classifier_fold_fits', f"Program {digest(program)[:12]}: "
+                                        f"{len(selection_report['fold_fits'])} fold fits; grouped_cv_precision="
+                                        f"{selection_report['macro_precision']:.6f}",
+                                        fold_fits=selection_report['fold_fits'])
                     component, summary = fit_classifier(self.train, self.target_kind, config, directory,
                                                         program=program, artifact_store=self.memory.artifact_store,
                                                         timeout=self.classifier_timeout,
                                                         memory_mb=self.classifier_memory_mb,
-                                                        threads=self.classifier_threads)
+                                                        threads=self.classifier_threads, feature_frames=frames)
+                    summary['selection_protocol'] = self.protocol.mode
+                    if oof_scores is not None:
+                        self.memory.oof_scores[digest(component)] = oof_scores
+                        summary['selection_fold_fits'] = selection_report['fold_fits']
                     cached = {'snapshot': str(directory), 'component_sha256': digest(component)}
                     self.memory.fit_cache[key] = cached
                     self.memory.fitted_sources[digest(component)] = {**summary, 'fit_snapshot': str(directory)}
@@ -481,6 +749,9 @@ class TrainingExperiments:
                 component = (Path(cached['snapshot']) / 'scorer.py').read_text()
                 if digest(component) != cached['component_sha256']:
                     raise ValueError('Cached fitted model was modified; refusing to reuse it')
+                if self.protocol.requires_fold_fits and digest(component) not in self.memory.oof_scores:
+                    _, cached_state = load_selection(cached['snapshot'])
+                    self.memory.oof_scores[digest(component)] = {cell: v['scores'] for cell, v in cached_state.items()}
             response = self._evaluate(component, rules, {**proposal, 'classifier': config}, charge=not charged)
             responses.append(response)
             result = self.results.get(digest(component))
@@ -496,7 +767,9 @@ class TrainingExperiments:
         best = ({key: restored[key] for key in ('restored', 'classifier', 'train_gate', 'feedback', 'training')}
                 if restored else None)
         return {'status': 'trained' if restored else 'no_successful_candidate', 'candidates': public_rows, 'best': best,
-                'training_metric_protocol': 'in_sample_resubstitution',
+                'training_metric_protocol': ('grouped_cv_precision' if self.protocol.requires_fold_fits
+                                             else 'in_sample_resubstitution'),
+                'selection_protocol': self.protocol.mode,
                 'evaluations_used': self.evaluations_used, 'evaluations_remaining': self.remaining}
 
     def submitted(self):
@@ -514,6 +787,300 @@ class TrainingExperiments:
                 raise ValueError('Final training parameters differ from the measured model')
         return result, rules
 
+    def inspect_candidate(self, candidate_ref, radius_um=50., occurrence_index=0):
+        if self.inspections_used >= 8:
+            raise ValueError('The eight TRAIN neighborhood inspections for this generation have been used')
+        if type(radius_um) not in (int, float) or not 1 <= radius_um <= 200:
+            raise ValueError('radius_um must be a finite number in [1, 200]')
+        brain, table, index = resolve_train_candidate(self.train, candidate_ref)
+        provider = getattr(table, 'local_context', None)
+        if provider is None:
+            raise ValueError('No local fragment provider is attached to this TRAIN table')
+        geometry, locations = provider.context(index, radius_um=radius_um, max_nodes=128,
+                                               occurrence_index=occurrence_index)
+        self.inspections_used += 1
+        response = {'status': 'ok', 'candidate_ref': candidate_ref, 'brain': brain,
+                    'occurrence_index': occurrence_index, 'locations_xyz_um': locations,
+                    'geometry': geometry, 'inspections_remaining': 8 - self.inspections_used,
+                    'note': 'TRAIN fragments after cache preprocessing. Coordinates in geometry are relative xyz um; '
+                            'node and segment indices are local. Edges form an induced, possibly truncated subgraph. '
+                            'No GT graph, image or predicted segmentation volume is included.'}
+        directory = self.gen_dir / 'context_inspections'
+        directory.mkdir(exist_ok=True)
+        path = directory / f'inspection{self.inspections_used:03d}.json'
+        path.write_text(json.dumps(response, allow_nan=False))
+        self._record_research('inspect_candidate', 'local_geometry', 'observation',
+            {'candidate_ref': candidate_ref, 'radius_um': radius_um, 'occurrence': occurrence_index,
+             'geometry': geometry, 'locations': locations}, True, path)
+        self.trace.emit('candidate_inspected', 'Inspected TRAIN fragment neighborhood',
+                        candidate_ref=candidate_ref, brain=brain, occurrence_index=occurrence_index,
+                        radius_um=radius_um, snapshot=str(path),
+                        nodes=sum(len(site['xyz_um']) for site in geometry['sites']),
+                        truncated=any(site['truncated'] for site in geometry['sites']))
+        return response
+
+    def inspect_failure_cases(self):
+        """Inspect the saved matched panel in one call using the shared query budget."""
+        results = []
+        for pair in self.failure_cases['pairs']:
+            if self.inspections_used + 2 > 8:
+                break
+            cases = []
+            for case in pair['cases']:
+                try:
+                    context = self.inspect_candidate(case['candidate_ref'])
+                except Exception as exc:
+                    context = {'status': 'error', 'error': f'{type(exc).__name__}: {exc}'}
+                    self._record_research('inspect_candidate', 'local_geometry', 'observation',
+                        {'candidate_ref': case['candidate_ref'], 'radius_um': 50., 'occurrence': 0},
+                        False, self.gen_dir / 'trajectory.jsonl', outcome=context['error'])
+                    self.trace.emit('candidate_inspection_error', context['error'],
+                                    candidate_ref=case['candidate_ref'])
+                cases.append({**case, 'context': context})
+            results.append({**pair, 'cases': cases})
+        return {'status': 'inspected' if results else 'no_pairs_or_budget', 'pairs': results,
+                'inspections_remaining': 8 - self.inspections_used, 'scope': self.failure_cases['scope']}
+
+    def run_volume_analysis(self):
+        """Run editable analysis.py on selected TRAIN volumes without fitting a policy."""
+        if self.volume_analyses_used >= MAX_ANALYSES:
+            raise ValueError(f'The {MAX_ANALYSES} volume-analysis executions for this generation have been used')
+        program, request, resolved = read_analysis(self.gen_dir, self.train)
+        self.volume_analyses_used += 1  # IO and worker failures count; invalid files/handles do not.
+        analysis_id = f'analysis{self.volume_analyses_used:03d}'
+        directory = self.gen_dir / 'volume_analyses' / analysis_id
+        directory.mkdir(parents=True)
+        (directory / 'analysis.py').write_text(program)
+        (directory / 'analysis_request.json').write_text(json.dumps(request, indent=2, allow_nan=False))
+        self.trace.emit('volume_analysis_start', f'{analysis_id}: analyzing {len(resolved)} TRAIN 3D patches',
+                        analysis=analysis_id, program_sha256=digest(program), request=request)
+        started = time.monotonic()
+        try:
+            response = execute_analysis(program, request, resolved, directory,
+                timeout=self.timeout, memory_mb=self.classifier_memory_mb, threads=self.classifier_threads)
+        except Exception as exc:
+            response = {'status': 'error', 'error': f'{type(exc).__name__}: {exc}',
+                        'wall_seconds': time.monotonic() - started}
+        response.update(analysis=f'{self.gen_dir.name}/{analysis_id}',
+                        volume_analyses_remaining=MAX_ANALYSES - self.volume_analyses_used,
+                        evaluations_remaining=self.remaining)
+        (directory / 'result.json').write_text(json.dumps(response, indent=2, allow_nan=False))
+        manifest_path = directory / 'input_manifest.json'
+        identity = json.loads(manifest_path.read_text()) if manifest_path.exists() else {'request': request}
+        identity['program_sha256'] = program_identity(program)
+        cases = response.get('cases', [])
+        compared = {case['candidate_ref'] for case in cases if has_measurement(case.get('result'))
+                    and case.get('valid_fraction', 0) > 0}
+        self._record_research('run_volume_analysis', 'raw_image',
+            'measurement' if compared else 'observation', identity,
+            response['status'] == 'analyzed', directory / 'result.json', comparison=len(compared) >= 2,
+            outcome={'status': response['status'], 'numerical_candidates': len(compared),
+                     'error': response.get('error')})
+        self.trace.emit('volume_analysis_result', f"{analysis_id}: {response['status']}; "
+                        f'{MAX_ANALYSES - self.volume_analyses_used} analyses remaining', **response)
+        return response
+
+    def plan_image_scoring(self):
+        """Dry-run the active image contract on TRAIN predictors without image IO."""
+        from .image_contract import image_spec
+        from .image_selection import select_image_rows, selection_coverage
+        proposal = json.loads(self.proposal_path.read_text())
+        source = self._read_program() if proposal.get('classifier') is not None else self._read_candidate()[0]
+        contract = image_spec(source)
+        if contract is None:
+            raise ValueError('Declare LOCAL_IMAGE in scorer.py or training.py before planning image scoring')
+        spec = contract[1]
+        cells = {}
+        for brain, bank in self.train.items():
+            table = bank.tables[self.target_kind]
+            selected = select_image_rows(table.features, spec, table.keys)
+            cells[f'{brain}/{self.target_kind}'] = selection_coverage(table.features, spec, selected, table.keys)
+        k = self.budgets[self.target_kind]
+        warnings = []
+        if spec['selection_mode'] != 'top_k_boundary':
+            warnings.append('Top-only sampling does not deliberately cover candidates just outside K')
+        elif spec['selection_k'] != k:
+            warnings.append('selection_k differs from this run\'s scoring K')
+        if spec['max_candidates'] < 2 * k:
+            warnings.append('Coverage is a pilot near K, not the complete Top-K plus K outside candidates')
+        report = {'status': 'planned', 'scope': 'TRAIN predictors only; no images read, no labels used, no score gain measured',
+            'target_kind': self.target_kind, 'scoring_k': k, 'contract': spec, 'cells': cells,
+            'warnings': warnings, 'evaluations_used': 0,
+            'resource_note': 'Numeric extraction batches share one preparation/extraction timeout. '
+                'Actual byte and cache limits are enforced during IO; raw-patch transport still has a 1 GiB limit.',
+            'next_step': 'Implement the proposed 3D measurement as extract_image_features or a raw-patch model. '
+                'Measure a pilot, then expand max_candidates in explore mode. Run an image-only removal '
+                'ablation at the final coverage before fitting/scoring the submitted candidate.'}
+        (self.gen_dir / 'image_scoring_plan.json').write_text(json.dumps(report, indent=2, allow_nan=False))
+        self.trace.emit('image_scoring_plan', 'Planned label-free TRAIN image coverage', **report)
+        return report
+
+    def inspect_candidate_image(self, candidate_ref, radius_um=40., level=0, occurrence_index=0):
+        """Return an actual image content block for a TRAIN-only candidate."""
+        import base64
+        from .image_preview import fragment_patch_geometry, render_preview
+        if self.image_inspections_used >= 8:
+            raise ValueError('Image inspection budget exhausted (eight requests per generation)')
+        if (type(radius_um) not in (int, float) or not np.isfinite(radius_um) or not 4 <= radius_um <= 100
+                or type(level) is not int or not 0 <= level <= 6 or type(occurrence_index) is not int):
+            raise ValueError('Use radius_um 4..100, integer level 0..6 and a valid occurrence_index')
+        brain, table, index = resolve_train_candidate(self.train, candidate_ref)
+        provider = getattr(table, 'image_context', None)
+        if provider is None:
+            raise ValueError('TRAIN image access is not configured')
+        self.image_inspections_used += 1  # Failed IO also consumes a request slot.
+        spec = {'radius_um': radius_um, 'level': level, 'channel': 0, 'timepoint': 0}
+        path, metadata = provider.patch(table, index, spec, occurrence_index)
+        with np.load(path, allow_pickle=False) as data:
+            patch = {key: data[key] for key in data.files}
+        nodes, edges, segments = fragment_patch_geometry(table, index, spec, metadata, occurrence_index)
+        directory = self.gen_dir / 'image_inspections'
+        directory.mkdir(exist_ok=True)
+        preview = directory / f'inspection{self.image_inspections_used:03d}.png'
+        render_preview(preview, patch, nodes, edges, segments, f'TRAIN {brain} / {table.kind} / occurrence {occurrence_index}')
+        # The host audit retains source identity. The tool exposes just the
+        # local preview, registration facts and existing TRAIN inspection handle.
+        response = {'candidate_ref': candidate_ref, 'brain': brain, 'kind': table.kind,
+                    'radius_um': radius_um, 'level': level, 'occurrence': occurrence_index,
+                    'shape_zyx': metadata['shape_zyx'], 'spacing_xyz_um': metadata['spacing_xyz_um'],
+                    'anchors_zyx': patch['anchors_zyx'].tolist(), 'valid_fraction': metadata['valid_fraction'],
+                    'image_inspections_remaining': 8 - self.image_inspections_used,
+                    'note': 'Raw MIPs, fragment overlays and thin slabs. No GT overlay. '
+                            'Display intensity scaling is separate from model pixels. Sampled alignment review is not a whole-brain guarantee.'}
+        preview.with_suffix('.json').write_text(json.dumps({'response': response, 'metadata': metadata}, indent=2))
+        self._record_research('inspect_candidate_image', 'raw_image', 'observation',
+            {'candidate_ref': candidate_ref, 'spec': spec, 'occurrence': occurrence_index,
+             'metadata': metadata}, True, preview.with_suffix('.json'))
+        self.trace.emit('candidate_image_inspected', f'TRAIN {brain}/{table.kind}: saved {preview.name}',
+                        candidate_ref=candidate_ref, preview=str(preview), level=level,
+                        image_inspections_remaining=8 - self.image_inspections_used)
+        return {'content': [{'type': 'text', 'text': json.dumps(response, allow_nan=False)},
+                            {'type': 'image', 'mimeType': 'image/png',
+                             'data': base64.b64encode(preview.read_bytes()).decode('ascii')}]}
+
+    def inspect_failure_images(self):
+        """At most two matched pairs per call, within the shared image allowance."""
+        content = []
+        for pair in self.failure_cases['pairs'][:2]:
+            if self.image_inspections_used + 2 > 8:
+                break
+            content.append({'type': 'text', 'text': json.dumps(pair, allow_nan=False)})
+            for case in pair['cases']:
+                try:
+                    content.extend(self.inspect_candidate_image(case['candidate_ref'])['content'])
+                except Exception as exc:
+                    content.append({'type': 'text', 'text': f'Image unavailable: {type(exc).__name__}: {exc}'})
+                    self._record_research('inspect_candidate_image', 'raw_image', 'observation',
+                        {'candidate_ref': case['candidate_ref'], 'radius_um': 40., 'level': 0, 'occurrence': 0},
+                        False, self.gen_dir / 'trajectory.jsonl', outcome=f'{type(exc).__name__}: {exc}')
+                    self.trace.emit('candidate_image_error', f'{type(exc).__name__}: {exc}',
+                                    candidate_ref=case['candidate_ref'])
+        return {'content': content or [{'type': 'text', 'text': 'No paired cases or remaining image budget'}]}
+
+    def evaluate_feature_ablation(self):
+        """Diagnostic only: never register a fold model as a submission candidate."""
+        proposal = read_proposal(self.proposal_path)
+        if proposal['parameter_grid']:
+            raise ValueError('Feature ablation holds parameters fixed; use an empty parameter_grid')
+        classifier = 'classifier' in proposal
+        source = self._read_program() if classifier else self._read_candidate()[0]
+        if not classifier and frozen_model(source) is not None:
+            raise ValueError('Classifier ablation requires training.py and proposal.json.classifier for fold refits')
+        if classifier:
+            config = proposal['classifier']
+            if (self.search_plan['mode'] == 'tune' and classifier_info(config, source)['formula_sha256']
+                    != self.search_plan['search_parent']['formula_sha256']):
+                raise ValueError('Tune mode fixes the training program; add new features in explore mode')
+        else:
+            self._check_mode(source)
+            config = {'parameters': formula_info(source)[0]['parameters']}
+        required = CLASSIFIER_UNITS if classifier else FORMULA_UNITS
+        # Resolve exact cache identity before charging; no fold fit starts unless
+        # the entire paired comparison fits the remaining configuration budget.
+        number = len(self.feature_diagnostics) + 1
+        directory = self.gen_dir / 'feature_ablations' / f'ablation{number:03d}'
+        directory.mkdir(parents=True)
+        (directory / 'program.py').write_text(source)
+        report = {'version': ABLATION_VERSION, 'experiment': f'{self.gen_dir.name}/ablation{number:03d}',
+                  'generation': self.generation,
+                  'target_kind': self.target_kind,
+                  'program_sha256': digest(source), 'parameters_sha256': config_identity(config),
+                  'status': 'unavailable', 'scope': 'TRAIN-only diagnostic, not a submission',
+                  'feature_columns': proposal.get('research', {}).get('feature_columns', [])}
+        started, before = time.monotonic(), self.evaluations_used
+        preparation_seconds = None
+        frames = {}
+        identity = {'program_sha256': program_identity(source), 'config': config,
+                    'feature_columns': report['feature_columns'], 'train': self._train_identity()}
+        self.trace.emit('feature_ablation_start', 'Paired TRAIN feature diagnostic',
+                        experiment=report['experiment'], classifier=classifier, required_evaluations=required)
+        try:
+            frames, columns, split, identity = prepare_ablation(
+                self.train, self.target_kind, source, report['feature_columns'], classifier=classifier,
+                config=config, timeout=self.classifier_timeout if classifier else self.timeout,
+                memory_mb=self.classifier_memory_mb,
+                partitions=(self.protocol.partitions.get(self.target_kind)
+                            or self.memory.internal_folds.get(self.target_kind)),
+                selection_brains=self.protocol.selection_brains)
+            preparation_seconds = time.monotonic() - started
+            identity.update(requested_k=self.budgets[self.target_kind],
+                            worker_limits={'fit_timeout': self.classifier_timeout,
+                                'score_timeout': self.timeout, 'memory_mb': self.classifier_memory_mb,
+                                'threads': self.classifier_threads})
+            if classifier:
+                self.memory.internal_folds[self.target_kind] = split
+            signature = config_identity(identity)
+            (directory / 'identity.json').write_text(json.dumps(identity, indent=2, allow_nan=False))
+            report.update(feature_columns=columns, signature=signature, split=split[1])
+            cached = self.memory.hypotheses.ablation_cache.get(signature)
+            if cached is not None:
+                report.update(deepcopy(cached), experiment=report['experiment'], generation=self.generation, cached=True,
+                              cached_from=cached['experiment'])
+            else:
+                if self.remaining < required:
+                    raise ValueError(f'Feature ablation requires {required} evaluations; {self.remaining} remain. '
+                                     'Reserve one additional evaluation to fit/score a final candidate.')
+                def charge():
+                    if self.remaining < 1:
+                        raise ValueError('Feature diagnostic evaluation budget exhausted')
+                    self.evaluations_used += 1
+                report.update(measure_ablation(self.train, self.target_kind, source, config, frames,
+                    columns, split, identity, self.budgets, directory, classifier=classifier, charge=charge,
+                    fit_timeout=self.classifier_timeout, score_timeout=self.timeout,
+                    memory_mb=self.classifier_memory_mb, threads=self.classifier_threads))
+        except Exception as exc:
+            report.update(status='unavailable', error=f'{type(exc).__name__}: {exc}',
+                          conclusion='No feature conclusion; diagnostic failed or could not be executed')
+        report.update(wall_seconds=time.monotonic() - started, preparation_seconds=preparation_seconds,
+                      evaluations_used=self.evaluations_used - before,
+                      evaluations_remaining=self.remaining)
+        (directory / 'proposal.json').write_text(json.dumps(proposal, indent=2, allow_nan=False))
+        (directory / 'result.json').write_text(json.dumps(report, indent=2, allow_nan=False))
+        self.feature_diagnostics.append(report)
+        evidence_identity = deepcopy(identity)
+        evidence_identity['program_sha256'] = program_identity(source)
+        # Extraction cache keys include the raw source hash. Use pixel identities
+        # for evidence novelty so comment-only edits cannot manufacture new inputs.
+        for brain, values in evidence_identity.get('tables', {}).items():
+            image_inputs = frames[brain].attrs.get('image_context', {})
+            if 'input_sha256' in image_inputs:
+                values['image_inputs'] = image_inputs['input_sha256']
+        image = report.get('image_evidence') or {}
+        evidence_source = ('raw_image' if image.get('all_image_inputs_removed_in_control')
+                           else 'feature_comparison')
+        self._record_research('evaluate_feature_ablation', evidence_source, 'measurement', evidence_identity,
+            report['status'] == 'measured', directory / 'result.json', cached=report.get('cached', False),
+            comparison=report['status'] == 'measured',
+            outcome={'delta_precision': report.get('delta_precision'), 'error': report.get('error')})
+        if not report.get('cached'):
+            self.memory.hypotheses.observe_ablation({**proposal, 'target_kind': self.target_kind}, report)
+        self._save_hypothesis_feedback()
+        delta = report.get('delta_precision')
+        detail = f'; delta Precision@K={delta:+.6f}' if delta is not None else ''
+        self.trace.emit('feature_ablation_result', f"{report['experiment']}: {report['status']}{detail}; "
+                        f"evaluation units={report['evaluations_used']}; remaining={self.remaining}", **report)
+        return report
+
     def mcp_server(self):
         from claude_agent_sdk import create_sdk_mcp_server, tool
 
@@ -524,7 +1091,18 @@ class TrainingExperiments:
                 except Exception as exc:
                     response = {'status': 'error', 'error': f'{type(exc).__name__}: {exc}',
                                 'evaluations_remaining': self.remaining}
-            return {'content': [{'type': 'text', 'text': json.dumps(response, allow_nan=False)}]}
+                    self._record_research(function.__name__, 'execution', 'failure',
+                        {'arguments': arguments, 'error': response['error']}, False,
+                        self.gen_dir / 'trajectory.jsonl', outcome=response['error'])
+                receipt = {k: v for k, v in self.research_status().items() if k in (
+                    'status', 'complete', 'investigation_complete', 'followup_complete',
+                    'new_measurements', 'reused_results', 'execution_failures', 'requirement')}
+                if isinstance(response, dict) and 'content' not in response:
+                    response['research_status'] = receipt
+                elif isinstance(response, dict):
+                    response['content'].append({'type': 'text', 'text': json.dumps({'research_status': receipt})})
+            return response if isinstance(response, dict) and 'content' in response else {
+                'content': [{'type': 'text', 'text': json.dumps(response, allow_nan=False)}]}
 
         @tool('evaluate_train', 'Evaluate scorer.py using hypothesis/strategy in proposal.json. '
               'Call with {}. TRAIN only; cached scores cost no evaluation budget.', {})
@@ -538,9 +1116,62 @@ class TrainingExperiments:
 
         @tool('train_classifier', 'Run agent-written training.py with proposal.json.classifier.parameters and optional parameter_grid. '
               'Call with {}. Harness uses TRAIN only, freezes preprocessing/weights, evaluates and restores '
-              'the best successful model. Shares the evaluation budget; validation is never supplied.', {})
+              'the best successful model. Under grouped_oof selection each configuration is first refit in '
+              'three host-owned folds and ranked by out-of-fold precision on the selection brains; the full '
+              'fit is the frozen candidate. One configuration costs one evaluation unit, folds included. '
+              'Validation is never supplied.', {})
         async def train_classifier(arguments):
             return await invoke(self.train_classifier, arguments)
+
+        @tool('inspect_candidate', 'Inspect one TRAIN candidate from feedback.candidate_refs. '
+              'Supply radius_um (1..200; normally 50) and occurrence_index (normally 0). '
+              'Returns absolute location plus relative fragment geometry, at most 128 nodes. '
+              'Eight inspections per generation, no evaluation charge. No GT or heldout access.',
+              {'candidate_ref': str, 'radius_um': float, 'occurrence_index': int})
+        async def inspect_candidate(arguments):
+            return await invoke(self.inspect_candidate, arguments)
+
+        @tool('inspect_failure_cases', 'Inspect matched TRAIN missed-positive/selected-label0 pairs from '
+              'failure_cases.json in one call. Shares the eight-neighborhood budget. Call with {}.', {})
+        async def inspect_failure_cases(arguments):
+            return await invoke(self.inspect_failure_cases, arguments)
+
+        @tool('run_volume_analysis', 'Primary 3D exploration tool. Execute analysis.py analyze(context) on '
+              '1..4 TRAIN candidates selected in analysis_request.json. Full original 3D pixels, spacing, '
+              'candidate anchors and aligned local fragments; arbitrary installed CPU analysis. '
+              'Returns compact JSON results, not projections. Eight executions per generation, separate '
+              'from scoring; no GT or validation access. Edit the two files and call with {}.', {})
+        async def run_volume_analysis(arguments):
+            return await invoke(self.run_volume_analysis, arguments)
+
+        @tool('plan_image_scoring', 'Preview LOCAL_IMAGE selection and Top-K boundary coverage on TRAIN '
+              'without reading images or spending evaluations. Reads training.py when proposal.classifier '
+              'is present, otherwise scorer.py. Edit the literal contract and call with {} before '
+              'expanding a 3D hypothesis to image features or raw-patch scoring.', {})
+        async def plan_image_scoring(arguments):
+            return await invoke(self.plan_image_scoring, arguments)
+
+        @tool('inspect_candidate_image', 'Optional 2D preview of a TRAIN candidate with fragment overlays. '
+              'Use run_volume_analysis for direct 3D analysis. '
+              'Eight requests per generation; defaults radius_um=40, level=0, occurrence_index=0. '
+              'Actual image content, no GT or heldout access.',
+              {'candidate_ref': str, 'radius_um': float, 'level': int, 'occurrence_index': int})
+        async def inspect_candidate_image(arguments):
+            return await invoke(self.inspect_candidate_image, arguments)
+
+        @tool('inspect_failure_images', 'Optional 2D previews of up to two matched TRAIN failure pairs with image/fragment '
+              'overlays in one call; shares the eight-image budget. Call with {}.', {})
+        async def inspect_failure_images(arguments):
+            return await invoke(self.inspect_failure_images, arguments)
+
+        @tool('evaluate_feature_ablation', 'Measure the incremental value of research.feature_columns '
+              '(default all LOCAL_CONTEXT/LOCAL_IMAGE columns; image_available also removes raw patches). '
+              'Classifiers refit the same program/parameters in '
+              'three TRAIN-only grouped folds for full and constant-masked inputs: two evaluation units (one per arm). '
+              'Formulas use two descriptive full-TRAIN score evaluations. Empty parameter_grid; call with {}. '
+              'Diagnostic only: still fit/evaluate a normal candidate before submission.', {})
+        async def evaluate_feature_ablation(arguments):
+            return await invoke(self.evaluate_feature_ablation, arguments)
 
         @tool('restore_candidate', 'Restore an immutable measured snapshot by short ID, e.g. '
               'gen002/attempt001, parent (assigned branch), or best (this generation). No evaluation charge.',
@@ -560,7 +1191,12 @@ class TrainingExperiments:
                 text = diff.read_text() if diff.is_file() else ''
                 entry['diff_file'] = diff.name
                 entry['code_diff'], entry['diff_truncated'] = text[:3000], len(text) > 3000
+                entry['hypothesis_evidence'] = self.memory.hypotheses.snapshot(
+                    self.target_kind, entry.get('hypothesis', ''), limit=1)
             return {'content': [{'type': 'text', 'text': json.dumps(response, allow_nan=False)}]}
 
         return create_sdk_mcp_server('training', tools=[evaluate_train, search_parameters,
-                                                       train_classifier, restore_candidate, search_memory])
+            train_classifier, inspect_candidate, inspect_failure_cases, evaluate_feature_ablation,
+            inspect_candidate_image, inspect_failure_images,
+            run_volume_analysis, plan_image_scoring,
+            restore_candidate, search_memory])

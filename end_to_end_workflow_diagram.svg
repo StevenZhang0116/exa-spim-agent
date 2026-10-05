@@ -1,0 +1,276 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" font-family="'Helvetica Neue',Arial,'Liberation Sans',sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L11,6 L0,12 z" fill="#64748b"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.10"/>
+    </filter>
+  </defs>
+
+  <rect width="1920" height="1080" fill="#f8fafc"/>
+
+  <!-- Header -->
+  <text x="80" y="76" font-size="42" font-weight="700" fill="#0f172a">Discovery-to-evolution workflow</text>
+  <text x="80" y="116" font-size="22" fill="#64748b">How AutoDiscovery findings become validated reports, frozen detectors, and an evolved candidate scorer</text>
+
+  <rect x="1010" y="62" width="28" height="20" rx="5" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+  <text x="1050" y="79" font-size="17" fill="#334155">agent judgment</text>
+  <rect x="1230" y="62" width="28" height="20" rx="5" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="1270" y="79" font-size="17" fill="#334155">driver compute</text>
+  <rect x="1440" y="62" width="28" height="20" rx="5" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+  <text x="1480" y="79" font-size="17" fill="#334155">external system</text>
+  <rect x="1660" y="62" width="28" height="20" rx="5" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
+  <text x="1700" y="79" font-size="17" fill="#334155">frozen handoff</text>
+
+  <!-- Cross-cutting contract -->
+  <rect x="60" y="140" width="1800" height="34" rx="10" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1.5"/>
+  <line x1="660" y1="146" x2="660" y2="168" stroke="#cbd5e1" stroke-width="1.5"/>
+  <line x1="1260" y1="146" x2="1260" y2="168" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="82" y="162" font-size="14" fill="#334155">
+    <tspan font-weight="700" fill="#0f172a">GT-BLIND PREDICTORS</tspan>
+    <tspan> · GT supplies labels and audits, never features</tspan>
+  </text>
+  <text x="682" y="162" font-size="14" fill="#334155">
+    <tspan font-weight="700" fill="#0f172a">DRIVER-OWNED COMPUTE</tspan>
+    <tspan> · agents judge artifacts; drivers run, measure, validate</tspan>
+  </text>
+  <text x="1282" y="162" font-size="14" fill="#334155">
+    <tspan font-weight="700" fill="#0f172a">HASH-BOUND HANDOFFS</tspan>
+    <tspan> · each stage consumes frozen, provenance-checked outputs</tspan>
+  </text>
+
+  <!-- ================= LANE 1: Discover ================= -->
+  <rect x="60" y="196" width="1800" height="245" rx="22" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="60" y="196" width="230" height="245" rx="22" fill="#f1f5f9"/>
+  <circle cx="108" cy="246" r="25" fill="#0f172a"/>
+  <text x="108" y="254" font-size="22" font-weight="700" text-anchor="middle" fill="#ffffff">1</text>
+  <text x="148" y="254" font-size="27" font-weight="700" fill="#0f172a">Discover</text>
+  <text x="90" y="294" font-size="17" font-weight="600" fill="#334155">Validate hypotheses</text>
+  <text x="90" y="320" font-size="16" fill="#475569">AutoDiscovery export →</text>
+  <text x="90" y="344" font-size="16" fill="#475569">audited report</text>
+  <text x="90" y="397" font-size="12.5" fill="#64748b">agentic/</text>
+  <text x="90" y="417" font-size="12.5" fill="#64748b">run_discovery_workflow.py</text>
+
+  <!-- 1.1 inputs -->
+  <rect x="320" y="222" width="200" height="190" rx="14" fill="#f1f5f9" stroke="#94a3b8" stroke-width="2"/>
+  <text x="340" y="252" font-size="18" font-weight="700" fill="#334155">Inputs</text>
+  <text x="340" y="278" font-size="14" fill="#475569">labeled _add.pkl cache</text>
+  <text x="340" y="300" font-size="14" fill="#475569">fragment skeletons</text>
+  <text x="340" y="322" font-size="14" fill="#475569">+ GT tracings + labels</text>
+  <text x="340" y="344" font-size="14" fill="#475569">task spec markdown</text>
+  <text x="340" y="368" font-size="12.5" fill="#64748b">markdowns/ task specs</text>
+  <line x1="520" y1="317" x2="560" y2="317" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- 1.2 AutoDiscovery (external) -->
+  <rect x="560" y="222" width="220" height="190" rx="14" fill="#fef3c7" stroke="#d97706" stroke-width="2"/>
+  <text x="580" y="252" font-size="17" font-weight="700" fill="#92400e">AutoDiscovery run</text>
+  <text x="580" y="278" font-size="14" fill="#475569">autonomous experiments</text>
+  <text x="580" y="300" font-size="14" fill="#475569">hypothesis, code, result,</text>
+  <text x="580" y="322" font-size="14" fill="#475569">interpretation</text>
+  <text x="580" y="346" font-size="14" font-weight="600" fill="#78350f">→ run export JSON</text>
+  <text x="580" y="370" font-size="12.5" fill="#92400e">raw record, not yet evidence</text>
+  <line x1="780" y1="317" x2="820" y2="317" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- 1.3 select + rank -->
+  <rect x="820" y="222" width="200" height="190" rx="14" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+  <text x="840" y="252" font-size="18" font-weight="700" fill="#1e3a8a">Select + rank</text>
+  <text x="840" y="278" font-size="14" fill="#475569">keep all non-excluded</text>
+  <text x="840" y="300" font-size="14" fill="#475569">predictive hypotheses</text>
+  <text x="840" y="322" font-size="14" fill="#475569">rank by evidence ×</text>
+  <text x="840" y="344" font-size="14" fill="#475569">surprise</text>
+  <text x="840" y="368" font-size="12.5" fill="#64748b">→ predictive selection</text>
+  <line x1="1020" y1="317" x2="1060" y2="317" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- 1.4 reproduce + transfer -->
+  <rect x="1060" y="222" width="240" height="190" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="1080" y="252" font-size="18" font-weight="700" fill="#166534">Re-run + transfer</text>
+  <text x="1080" y="278" font-size="14" fill="#475569">recorded code re-run on</text>
+  <text x="1080" y="300" font-size="14" fill="#475569">the origin brain; loading</text>
+  <text x="1080" y="322" font-size="14" fill="#475569">repaired, logic unchanged</text>
+  <text x="1080" y="344" font-size="14" fill="#475569">optional: another brain</text>
+  <text x="1080" y="370" font-size="12.5" font-weight="600" fill="#166534">REPRODUCED · GENERALIZES</text>
+  <line x1="1300" y1="317" x2="1340" y2="317" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- 1.5 audit + correct -->
+  <rect x="1340" y="222" width="210" height="190" rx="14" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+  <text x="1360" y="252" font-size="18" font-weight="700" fill="#1e3a8a">Audit + correct</text>
+  <text x="1360" y="278" font-size="14" fill="#475569">statistics audit</text>
+  <text x="1360" y="300" font-size="14" fill="#475569">SOUND … CRITICAL</text>
+  <text x="1360" y="322" font-size="14" fill="#475569">GT-blind deployability</text>
+  <text x="1360" y="344" font-size="14" fill="#475569">fix tests, re-measure</text>
+  <text x="1360" y="370" font-size="12.5" font-weight="600" fill="#1e3a8a">UPHELD · OVERTURNED</text>
+  <line x1="1550" y1="317" x2="1590" y2="317" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- 1.out report -->
+  <rect x="1590" y="222" width="240" height="190" rx="14" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
+  <text x="1610" y="250" font-size="13" font-weight="700" fill="#3730a3">DISCOVERY REPORT</text>
+  <text x="1610" y="278" font-size="17" font-weight="700" fill="#3730a3">&lt;RUN&gt;.summary.md</text>
+  <text x="1610" y="304" font-size="14" fill="#475569">ranked hypotheses + verdicts</text>
+  <text x="1610" y="326" font-size="14" fill="#475569">+ rerun / fixed scripts</text>
+  <text x="1610" y="348" font-size="14" fill="#475569">+ split applicability JSON</text>
+  <text x="1610" y="372" font-size="12" fill="#64748b">optional cross-run consolidation</text>
+
+  <!-- lane 1 -> lane 2 -->
+  <path d="M1710,412 V454 H175 V467" fill="none" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- ================= LANE 2: Build ================= -->
+  <rect x="60" y="467" width="1800" height="245" rx="22" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="60" y="467" width="230" height="245" rx="22" fill="#f1f5f9"/>
+  <circle cx="108" cy="517" r="25" fill="#0f172a"/>
+  <text x="108" y="525" font-size="22" font-weight="700" text-anchor="middle" fill="#ffffff">2</text>
+  <text x="148" y="525" font-size="27" font-weight="700" fill="#0f172a">Build</text>
+  <text x="90" y="565" font-size="17" font-weight="600" fill="#334155">Fit frozen detectors</text>
+  <text x="90" y="591" font-size="16" fill="#475569">validated report →</text>
+  <text x="90" y="615" font-size="16" fill="#475569">detector deliverables</text>
+  <text x="90" y="668" font-size="12.5" fill="#64748b">agentic/</text>
+  <text x="90" y="688" font-size="12.5" fill="#64748b">run_detector_build_workflow.py</text>
+
+  <!-- 2.1 candidate policy -->
+  <rect x="320" y="493" width="250" height="190" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="340" y="523" font-size="18" font-weight="700" fill="#166534">Candidate policy</text>
+  <text x="340" y="549" font-size="14" fill="#475569">frozen from candidate sweeps</text>
+  <text x="340" y="571" font-size="14" fill="#475569">split: pairing · radius · k</text>
+  <text x="340" y="593" font-size="14" fill="#475569">merge: junction NMS · radii</text>
+  <text x="340" y="615" font-size="14" fill="#475569">worst-brain recall floor</text>
+  <text x="340" y="641" font-size="12.5" fill="#166534">→ *_candidate_policy.json</text>
+  <line x1="570" y1="588" x2="610" y2="588" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- 2.2 feature inventory -->
+  <rect x="610" y="493" width="250" height="190" rx="14" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+  <text x="630" y="523" font-size="18" font-weight="700" fill="#1e3a8a">Feature inventory</text>
+  <text x="630" y="549" font-size="14" fill="#475569">agent: source, math and</text>
+  <text x="630" y="571" font-size="14" fill="#475569">defined condition per finding</text>
+  <text x="630" y="593" font-size="14" fill="#475569">driver: bind IDs + hashes,</text>
+  <text x="630" y="615" font-size="14" fill="#475569">reject GT-referencing rows</text>
+  <text x="630" y="641" font-size="12.5" fill="#1e3a8a">→ feature_inventory.json</text>
+  <line x1="860" y1="588" x2="900" y2="588" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- 2.3 assemble detector -->
+  <rect x="900" y="493" width="250" height="190" rx="14" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+  <text x="920" y="523" font-size="18" font-weight="700" fill="#1e3a8a">Assemble detector</text>
+  <text x="920" y="549" font-size="14" fill="#475569">fixed model families →</text>
+  <text x="920" y="571" font-size="14" fill="#475569">model_candidates.json</text>
+  <text x="920" y="593" font-size="14" fill="#475569">agent writes feature code;</text>
+  <text x="920" y="615" font-size="14" fill="#475569">driver injects it into a</text>
+  <text x="920" y="637" font-size="14" fill="#475569">reviewed runtime, smoke test</text>
+  <text x="920" y="663" font-size="12.5" fill="#1e3a8a">→ *_detector.py</text>
+  <line x1="1150" y1="588" x2="1190" y2="588" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- 2.4 run on compute node (separate) -->
+  <rect x="1190" y="493" width="360" height="190" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="2" stroke-dasharray="8 5"/>
+  <text x="1210" y="523" font-size="17" font-weight="700" fill="#166534">Run detector on a compute node</text>
+  <text x="1210" y="549" font-size="14" fill="#475569">later, separately, on the full brain:</text>
+  <text x="1210" y="571" font-size="14" fill="#475569">enumerate candidates + compute features</text>
+  <text x="1210" y="593" font-size="14" fill="#475569">nested-CV model selection, average precision</text>
+  <text x="1210" y="615" font-size="14" fill="#475569">→ OOF scores · fitted joblib · model manifest</text>
+  <text x="1210" y="641" font-size="12.5" fill="#64748b">result analysis → RESULT_ANALYSIS.md</text>
+  <line x1="1550" y1="588" x2="1590" y2="588" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- 2.out frozen detectors -->
+  <rect x="1590" y="493" width="240" height="190" rx="14" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
+  <text x="1610" y="521" font-size="13" font-weight="700" fill="#3730a3">DETECTOR DELIVERABLES</text>
+  <text x="1610" y="549" font-size="17" font-weight="700" fill="#3730a3">Two frozen detectors</text>
+  <text x="1610" y="575" font-size="14" fill="#475569">one merge-junction detector</text>
+  <text x="1610" y="597" font-size="14" fill="#475569">one split-site detector</text>
+  <text x="1610" y="619" font-size="14" fill="#475569">enumeration + feature code</text>
+  <text x="1610" y="641" font-size="14" fill="#475569">+ fitted model + provenance</text>
+  <text x="1610" y="665" font-size="12.5" fill="#64748b">both fitted on brain 794495</text>
+
+  <!-- lane 2 -> lane 3 -->
+  <path d="M1710,683 V726 H175 V740" fill="none" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- ================= LANE 3: Evolve ================= -->
+  <rect x="60" y="740" width="1800" height="300" rx="22" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="60" y="740" width="230" height="300" rx="22" fill="#f1f5f9"/>
+  <circle cx="108" cy="790" r="25" fill="#0f172a"/>
+  <text x="108" y="798" font-size="22" font-weight="700" text-anchor="middle" fill="#ffffff">3</text>
+  <text x="148" y="798" font-size="27" font-weight="700" fill="#0f172a">Evolve</text>
+  <text x="90" y="838" font-size="17" font-weight="600" fill="#334155">Evolve the scorer</text>
+  <text x="90" y="864" font-size="16" fill="#475569">frozen detectors →</text>
+  <text x="90" y="888" font-size="16" fill="#475569">re-ranked candidates</text>
+  <text x="90" y="926" font-size="15" fill="#64748b">candidate pool, K and</text>
+  <text x="90" y="948" font-size="15" fill="#64748b">labels stay fixed</text>
+  <text x="90" y="996" font-size="12.5" fill="#64748b">proofreader_evolve/</text>
+  <text x="90" y="1016" font-size="12.5" fill="#64748b">cli/run_precision_evolution.py</text>
+
+  <!-- 3.1 native pools -->
+  <rect x="320" y="768" width="220" height="240" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="340" y="798" font-size="18" font-weight="700" fill="#166534">Native pools</text>
+  <text x="340" y="824" font-size="14" fill="#475569">each frozen detector's</text>
+  <text x="340" y="846" font-size="14" fill="#475569">enumeration + features</text>
+  <text x="340" y="868" font-size="14" fill="#475569">on every brain's cache</text>
+  <text x="340" y="890" font-size="14" fill="#475569">features + detector_score</text>
+  <text x="340" y="912" font-size="14" fill="#475569">apart from IDs, GT labels</text>
+  <text x="340" y="938" font-size="12.5" fill="#166534">→ feature_tables/&lt;brain&gt;/</text>
+  <text x="340" y="958" font-size="12.5" fill="#64748b">pool + K fixed per run</text>
+  <line x1="540" y1="888" x2="580" y2="888" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- 3.2 roles + seed -->
+  <rect x="580" y="768" width="190" height="240" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="600" y="798" font-size="18" font-weight="700" fill="#166534">Roles + seed</text>
+  <text x="600" y="824" font-size="14" fill="#475569">TRAIN = selection +</text>
+  <text x="600" y="846" font-size="14" fill="#475569">auxiliary brain</text>
+  <text x="600" y="868" font-size="14" fill="#475569">VALIDATION = other</text>
+  <text x="600" y="890" font-size="14" fill="#475569">brains, hidden from</text>
+  <text x="600" y="912" font-size="14" fill="#475569">the agent</text>
+  <text x="600" y="938" font-size="12.5" fill="#166534">seed = detector_score</text>
+  <text x="600" y="958" font-size="12.5" fill="#64748b">baseline = frozen rank</text>
+  <line x1="770" y1="888" x2="810" y2="888" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- 3.3 generation loop -->
+  <rect x="810" y="768" width="760" height="240" rx="16" fill="#f1f5f9" stroke="#64748b" stroke-width="2" stroke-dasharray="8 5"/>
+  <text x="828" y="798" font-size="17" font-weight="700" fill="#334155">Generation loop · one kind per generation, alternating merge / split</text>
+
+  <rect x="824" y="812" width="165" height="146" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="836" y="838" font-size="15" font-weight="700" fill="#166534">Schedule</text>
+  <text x="836" y="860" font-size="13.5" fill="#475569">parent = champion,</text>
+  <text x="836" y="878" font-size="13.5" fill="#475569">specialist or</text>
+  <text x="836" y="896" font-size="13.5" fill="#475569">protected reference</text>
+  <text x="836" y="914" font-size="13.5" fill="#475569">mode: explore / tune</text>
+  <line x1="989" y1="885" x2="1013" y2="885" stroke="#64748b" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <rect x="1013" y="812" width="165" height="146" rx="10" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/>
+  <text x="1025" y="838" font-size="15" font-weight="700" fill="#1e3a8a">Revise</text>
+  <text x="1025" y="860" font-size="13.5" fill="#475569">fresh agent session</text>
+  <text x="1025" y="878" font-size="13.5" fill="#475569">TRAIN feedback only</text>
+  <text x="1025" y="896" font-size="13.5" fill="#475569">score · grid · fit</text>
+  <text x="1025" y="914" font-size="13.5" fill="#475569">inspect · 3D · ablate</text>
+  <text x="1025" y="932" font-size="13.5" fill="#475569">8 evaluation units</text>
+  <line x1="1178" y1="885" x2="1202" y2="885" stroke="#64748b" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <rect x="1202" y="812" width="165" height="146" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="1214" y="838" font-size="15" font-weight="700" fill="#166534">Measure</text>
+  <text x="1214" y="860" font-size="13.5" fill="#475569">sandboxed scoring</text>
+  <text x="1214" y="878" font-size="13.5" fill="#475569">selection score =</text>
+  <text x="1214" y="896" font-size="13.5" fill="#475569">grouped out-of-fold</text>
+  <text x="1214" y="914" font-size="13.5" fill="#475569">Precision@K</text>
+  <text x="1214" y="932" font-size="13.5" fill="#475569">every attempt saved</text>
+  <line x1="1367" y1="885" x2="1391" y2="885" stroke="#64748b" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <rect x="1391" y="812" width="165" height="146" rx="10" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/>
+  <text x="1403" y="838" font-size="15" font-weight="700" fill="#166534">Promotion gate</text>
+  <text x="1403" y="860" font-size="13.5" fill="#475569">frozen inference on</text>
+  <text x="1403" y="878" font-size="13.5" fill="#475569">validation brains</text>
+  <text x="1403" y="896" font-size="13.5" fill="#475569">equal-brain mean P@K</text>
+  <text x="1403" y="914" font-size="13.5" fill="#475569">improves → promote</text>
+  <text x="1403" y="932" font-size="13.5" fill="#475569">else retain parent</text>
+
+  <path d="M1473.5,958 V978 H906.5 V960" fill="none" stroke="#64748b" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <text x="1190" y="997" font-size="12.5" text-anchor="middle" fill="#64748b">archive = champion + specialists + protected reference · repeated stalls force exploration, then pause</text>
+  <line x1="1570" y1="888" x2="1610" y2="888" stroke="#64748b" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <!-- 3.out evolved scorer -->
+  <rect x="1610" y="768" width="220" height="240" rx="14" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/>
+  <text x="1630" y="796" font-size="13" font-weight="700" fill="#3730a3">EVOLVED SCORER</text>
+  <text x="1630" y="824" font-size="17" font-weight="700" fill="#3730a3">best_scorer.py</text>
+  <text x="1630" y="850" font-size="14" fill="#475569">merge + split components</text>
+  <text x="1630" y="872" font-size="14" fill="#475569">+ model artifacts</text>
+  <text x="1630" y="894" font-size="14" fill="#475569">ledger · report.html</text>
+  <text x="1630" y="924" font-size="12.5" fill="#9a3412">ranking gain on native</text>
+  <text x="1630" y="942" font-size="12.5" fill="#9a3412">labels, not proof of</text>
+  <text x="1630" y="960" font-size="12.5" fill="#9a3412">safe graph repair</text>
+
+  <text x="80" y="1068" font-size="15" fill="#94a3b8">agentic/run_discovery_workflow.py · agentic/run_detector_build_workflow.py · proofreader_evolve/cli/run_precision_evolution.py</text>
+</svg>

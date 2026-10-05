@@ -15,6 +15,10 @@ import sysconfig
 def restrict_filesystem(read_paths, write_paths):
     if platform.machine() not in ('x86_64', 'aarch64') or sys.platform != 'linux':
         raise RuntimeError('Agent model workers require Linux x86_64/aarch64 with Landlock')
+    # Some Python builds omit O_PATH even when the running kernel supports it.
+    # Linux UAPI asm-generic/fcntl.h defines these values for both supported
+    # architectures. Keep O_PATH semantics; do not substitute a regular open.
+    path_flags = getattr(os, 'O_PATH', 0o10000000) | getattr(os, 'O_CLOEXEC', 0o2000000)
     libc = ctypes.CDLL(None, use_errno=True)
     # These numbers are shared by x86_64 and aarch64.
     create, add, restrict = 444, 445, 446
@@ -43,7 +47,7 @@ def restrict_filesystem(read_paths, write_paths):
                 if not path.exists():
                     continue
                 allowed = permissions if path.is_dir() else permissions & ((1 << 1) | (1 << 2) | (1 << 14))
-                target = os.open(path, os.O_PATH | os.O_CLOEXEC)
+                target = os.open(path, path_flags)
                 try:
                     rule = PathRule(allowed, target)
                     if libc.syscall(add, fd, 1, ctypes.byref(rule), 0) < 0:

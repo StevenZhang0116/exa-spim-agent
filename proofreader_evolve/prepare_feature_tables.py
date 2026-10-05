@@ -1,15 +1,17 @@
 """Generate evolution-matching detector tables, then run read-only validation.
 
-Run with panda on an allocated compute node (e.g. n244):
-    python -u proofreader_evolve/prepare_feature_tables.py
+Run with panda on an allocated compute node (e.g. n257):
+    python -u proofreader_evolve/prepare_feature_tables.py --brains 794495 789202 794491 794493 802449
 
-Defaults: brains 789202 and 794491, MCL 100, labeled _add caches, and the exact
-native candidate pools of the current default frozen models. The shared merge
+Without --brains, the preparation default is 789202 and 794491; include 794495
+explicitly to prepare the current default evolution TRAIN brain. MCL defaults
+to 100, with labeled _add caches and the exact native candidate pools of the
+current default frozen models. The shared merge
 default is autodiscovery-application/merge-error-794495-mcl100_2026-08-04;
 precompute, preflight and evolution all resolve it through precompute_error_scores.
 Each brain runs in a fresh subprocess to release memory before the next.
-Existing matching tables are reused. The first
-failure stops the script with a nonzero exit code. No LLM calls or evolution.
+Existing matching tables are reused. The first failure stops the script with a
+nonzero exit code. No LLM calls or evolution.
 
 Use --dry-run to print commands without importing models or loading any data.
 Real runs mirror console output to proofreader_evolve/log/prepare_feature_tables_<timestamp>_<pid>.log.txt.

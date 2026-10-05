@@ -3,7 +3,6 @@
 from contextlib import redirect_stdout
 from copy import deepcopy
 import io
-import json
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace

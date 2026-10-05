@@ -34,8 +34,40 @@ def api_probe(model):
                 "http_status": getattr(exc, "status_code", None)}
 
 
+def selection_readiness(report, train_brains, selection_brains, protocol):
+    """Brain-role check for the selection protocol from table provenance only.
+
+    The fragment graph needed for split spatial folds on a selection brain is
+    loaded at run start, not here (it requires the full brain cache).
+    """
+    train_brains = [str(b) for b in train_brains or []]
+    if not train_brains:
+        return None
+    fitted, missing = set(), []
+    for brain in train_brains:
+        entry = report["brains"].get(brain, {})
+        provenance = entry.get("detector_training_brains")
+        if entry.get("status") == "passed" and not provenance:
+            missing.append(brain)
+        fitted.update(provenance or [])
+    if protocol == "grouped_oof":
+        chosen = [str(b) for b in selection_brains] if selection_brains else [b for b in train_brains if b not in fitted]
+    else:
+        chosen = list(train_brains)
+    conflicts = sorted(set(chosen) & fitted) if protocol == "grouped_oof" else []
+    outside = sorted(set(chosen) - set(train_brains))
+    blocked = protocol == "grouped_oof" and (not chosen or conflicts or missing or outside)
+    return {"protocol": protocol, "train_brains": train_brains, "detector_training_brains": sorted(fitted),
+            "selection_brains": chosen, "auxiliary_train_brains": [b for b in train_brains if b not in chosen],
+            "missing_provenance": missing, "conflicts": conflicts, "not_train": outside,
+            "status": "blocked" if blocked else "passed",
+            "note": "Selection brains must not be detector training brains; fragment-graph availability "
+                    "for split folds is verified when the run starts"}
+
+
 def inspect_readiness(brains, mcl=100, tables_dir=pc.DEFAULT_OUT,
-                      merge_dirs=None, split_dirs=None, check_api=False, model=DEFAULT_MODEL):
+                      merge_dirs=None, split_dirs=None, check_api=False, model=DEFAULT_MODEL,
+                      train_brains=None, selection_brains=None, selection_protocol="grouped_oof"):
     report = {"host": socket.gethostname(), "mcl": mcl, "brains": {},
               "scope": "No brain-cache deserialization, table preparation, scoring or evolution",
               "api": {"status": "not_checked", "key_present": bool(os.environ.get("ANTHROPIC_API_KEY")),
@@ -53,13 +85,19 @@ def inspect_readiness(brains, mcl=100, tables_dir=pc.DEFAULT_OUT,
         try:
             bank = ensure_native_tables(brain, native_cache_path(brain, mcl), selected,
                                          tables_dir, prepare=False, mcl=mcl)
-            report["brains"][brain] = {"status": "passed", "table_paths": bank.meta["table_paths"]}
+            tables = getattr(bank, "tables", None) or {}
+            report["brains"][brain] = {
+                "status": "passed", "table_paths": bank.meta["table_paths"],
+                "detector_training_brains": sorted({str(t.meta["training_brain"]) for t in tables.values()
+                                                    if getattr(t, "meta", {}).get("training_brain") is not None})}
         except (Exception, SystemExit) as exc:
             report["brains"][brain] = {"status": "blocked", "reason": str(exc)}
     if check_api:
         report["api"] = api_probe(model)
+    report["selection"] = selection_readiness(report, train_brains, selection_brains, selection_protocol)
     blocked = (not brains or any(v["status"] != "passed" for v in report["brains"].values())
-               or (check_api and report["api"]["status"] != "passed"))
+               or (check_api and report["api"]["status"] != "passed")
+               or (report["selection"] is not None and report["selection"]["status"] != "passed"))
     report["status"] = "blocked" if blocked else "checks_passed"
     return report
 
@@ -73,9 +111,16 @@ def main(argv=None):
     parser.add_argument("--split-dir", action="append")
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--check-api", action="store_true")
+    parser.add_argument("--train-brains", nargs="*", default=None,
+                        help="TRAIN brains whose roles to check (must be among --brains)")
+    parser.add_argument("--selection-brains", nargs="*", default=None,
+                        help="Explicit selection brains (default: TRAIN brains the detectors were not fitted on)")
+    parser.add_argument("--selection-protocol", choices=("grouped_oof", "in_sample"), default="grouped_oof")
     args = parser.parse_args(argv)
     report = inspect_readiness(args.brains, args.mcl, args.feature_tables_dir,
-                               args.merge_dir, args.split_dir, args.check_api, args.model)
+                               args.merge_dir, args.split_dir, args.check_api, args.model,
+                               train_brains=args.train_brains, selection_brains=args.selection_brains,
+                               selection_protocol=args.selection_protocol)
     print(json.dumps(report, indent=2))
     return int(report["status"] != "checks_passed")
 

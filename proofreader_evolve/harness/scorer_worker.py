@@ -8,7 +8,6 @@ import ctypes
 import errno
 import json
 import math
-import os
 from pathlib import Path
 import resource
 import sys

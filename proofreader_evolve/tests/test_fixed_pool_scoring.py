@@ -3,7 +3,6 @@
 import asyncio
 from copy import deepcopy
 import json
-from pathlib import Path
 import tempfile
 import sys
 import unittest
@@ -89,7 +88,7 @@ class FixedScoringTests(unittest.TestCase):
     def test_three_generations_accept_reject_invalid_and_no_validation_feedback(self):
         from proofreader_evolve.cli import run_precision_evolution as driver
         with tempfile.TemporaryDirectory() as tmp:
-            args = driver.parse_args(["--train-brains", "1", "--validation-brains", "2",
+            args = driver.parse_args(['--selection-protocol', 'in_sample', "--train-brains", "1", "--validation-brains", "2",
                                       "--split-k", "1", "--generations", "3", "--runs-dir", tmp])
             attempts = iter([IMPROVED, BASELINE, "bad syntax!"])
 
@@ -129,12 +128,12 @@ class FixedScoringTests(unittest.TestCase):
     def test_train_validation_overlap_rejected(self):
         from proofreader_evolve.cli import run_precision_evolution as driver
         with self.assertRaises(SystemExit):
-            driver.parse_args(["--train-brains", "1", "--validation-brains", "1"])
+            driver.parse_args(['--selection-protocol', 'in_sample', "--train-brains", "1", "--validation-brains", "1"])
 
     def test_failed_revision_keeps_partial_diff_cost_and_parent(self):
         from proofreader_evolve.cli import run_precision_evolution as driver
         with tempfile.TemporaryDirectory() as tmp:
-            args = driver.parse_args(["--train-brains", "1", "--validation-brains", "2",
+            args = driver.parse_args(['--selection-protocol', 'in_sample', "--train-brains", "1", "--validation-brains", "2",
                                       "--split-k", "1", "--generations", "1", "--runs-dir", tmp])
 
             async def failed_revision(run_dir, policy, rules, report, model, *, experiments):
@@ -167,6 +166,6 @@ class FixedScoringTests(unittest.TestCase):
                 patch.object(driver.pc, "resolve_detector_runs", return_value={}), \
                 patch.object(driver, "ensure_native_tables", side_effect=lambda brain, *a, **k: fixture(brain)), \
                 self.assertRaisesRegex(ValueError, "Detector-fitted"):
-            args = driver.parse_args(["--train-brains", "1", "--validation-brains", "3",
+            args = driver.parse_args(['--selection-protocol', 'in_sample', "--train-brains", "1", "--validation-brains", "3",
                                       "--generations", "0", "--runs-dir", tmp])
             asyncio.run(driver.run(args))

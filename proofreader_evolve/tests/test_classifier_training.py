@@ -1,12 +1,13 @@
 """Model-program/artifact contract and TRAIN isolation regressions.
 
-Synthetic fixtures only. Not executed as part of this code revision.
+Synthetic fixtures only; no brain caches or live LLM requests.
 The worker cases require Linux Landlock ABI >= 3 and libseccomp.
 """
 import asyncio
 from contextlib import redirect_stdout
 from copy import deepcopy
 import io
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -50,6 +51,35 @@ def proposal(session, *, parameters=None, grid=None, program=PROGRAM):
 
 
 class ProgramContractTests(unittest.TestCase):
+    def test_legacy_numpy_exports_still_validate_and_predict(self):
+        from proofreader_evolve.harness import legacy_classifier as legacy
+        # Historical exports embed this exact template, including comments.
+        self.assertEqual(hashlib.sha256(legacy.RUNTIME_PATH.read_bytes()).hexdigest(),
+                         '71b9047822e8adbc080a030ba67fb5a5233d584ec7e9604626710c3b9b995820')
+        for algorithm in ('logistic_regression', 'random_forest'):
+            with self.subTest(algorithm=algorithm):
+                config = {'algorithm': algorithm, 'features': ['evidence'],
+                          'parameters': {**legacy.DEFAULTS[algorithm]}}
+                model = {'version': legacy.MODEL_VERSION, 'kind': 'split', 'config': config,
+                         'training_brains': ['1'], 'training_rows': 3,
+                         'training_fingerprint': '0' * 64, 'impute': [0.], 'mean': [0.], 'scale': [1.]}
+                frame = pd.DataFrame({'evidence': [-1., 1., np.nan]})
+                if algorithm == 'logistic_regression':
+                    model.update(coef=[2.], intercept=0.)
+                    expected = 1 / (1 + np.exp(-np.array([-2., 2., 0.])))
+                else:
+                    config['parameters'].update(n_estimators=1, max_depth=1)
+                    model['trees'] = [{'left': [1, -1, -1], 'right': [2, -1, -1],
+                                       'feature': [0, -2, -2], 'threshold': [0., -2., -2.],
+                                       'probability': [.5, .2, .8]}]
+                    expected = [.2, .8, .2]
+                source = ('# Frozen classifier fitted by the harness on TRAIN only. Do not edit fitted arrays.\n'
+                          f'_FROZEN_CLASSIFIER = {model!r}\n' + legacy.RUNTIME_PATH.read_text())
+                self.assertEqual(frozen_model(source), model)
+                np.testing.assert_allclose(score(source, frame, 'split'), expected)
+                with self.assertRaisesRegex(ValueError, 'edited'):
+                    frozen_model(source + '\n# changed\n')
+
     def test_arbitrary_settings_and_program_structure(self):
         config = normalize_config({'parameters': {'scale': 1, 'architecture': [8, 4], 'loss': 'custom',
                                                  'options': {'depth': None}}})
@@ -241,7 +271,7 @@ class ClassifierDriverTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
             seed = Path(tmp) / 'seed.py'
             seed.write_text(BASELINE)
-            args = driver.parse_args(['--train-brains', '1', '--validation-brains', '2', '--split-k', '1',
+            args = driver.parse_args(['--selection-protocol', 'in_sample', '--train-brains', '1', '--validation-brains', '2', '--split-k', '1',
                                       '--generations', '1', '--start-from', str(seed), '--runs-dir', tmp])
             async def revise(run_dir, policy, rules, report, model, *, experiments):
                 self.assertEqual(set(experiments.train), {'1'})

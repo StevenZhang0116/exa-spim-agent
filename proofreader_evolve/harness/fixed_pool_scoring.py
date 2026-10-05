@@ -8,6 +8,7 @@ import numpy as np
 from .isolated_scoring import score
 from .scorer_components import components
 from .training_diagnostics import describe
+from .local_features import augmented_features
 
 
 SCORING_VERSION = "native-precision-at-k-v1"
@@ -63,9 +64,16 @@ def evaluate(source, tables_by_brain, budgets, timeout=120, examples=False, *,
     sources = components(source)
     for brain, banks in tables_by_brain.items():
         for kind, table in banks.tables.items():
-            scores = (score(sources[kind], table.features, kind, timeout, artifact_store=artifact_store)
-                      if artifact_store is not None else score(sources[kind], table.features, kind, timeout))
+            features = augmented_features(sources[kind], table, timeout)
+            scores = (score(sources[kind], features, kind, timeout, artifact_store=artifact_store)
+                      if artifact_store is not None else score(sources[kind], features, kind, timeout))
             metrics, chosen = rank_metrics(scores, table.truth, table.keys, budgets[kind])
+            if 'local_context' in features.attrs:
+                metrics['local_context'] = features.attrs['local_context']
+            if 'image_context' in features.attrs:
+                from .image_selection import scoring_coverage
+                metrics['image_context'] = {**features.attrs['image_context'],
+                    'scoring_coverage': scoring_coverage(features, chosen, table.truth, budgets[kind])}
             metrics["pool_sha256"] = table.meta["pool_sha256"]
             metrics["labels_sha256"] = hashlib.sha256(np.asarray(table.truth, dtype=np.int8).tobytes()).hexdigest()
             cell = f"{brain}/{kind}"
@@ -74,7 +82,7 @@ def evaluate(source, tables_by_brain, budgets, timeout=120, examples=False, *,
                 state[cell] = {'scores': scores, 'chosen': chosen}
             if examples:
                 metrics.update(describe(table, scores, chosen, generation, cell,
-                                        (parent_state or {}).get(cell)))
+                                        (parent_state or {}).get(cell), features=features))
     report.update(aggregate_precision(report["cells"]))
     return report
 
@@ -101,3 +109,65 @@ def acceptance(parent, candidate, margin=0, *, require_no_cell_regression=True):
     reason = "Mean Precision@K improved" if passed else "No sufficient mean Precision@K gain"
     return passed, (f"{reason}: {before_mean:.6f} -> {after_mean:.6f}; "
                     f"delta={gain:+.6f}, margin={margin:g}")
+
+
+BOOTSTRAP_VERSION = "paired-poisson-bootstrap-v1"
+
+
+def _prefix_hits(order, truth, counts, k):
+    """TP and effective K of the Top-K over a resampled multiset in ranking order."""
+    weights = counts[order]
+    cumulative = np.cumsum(weights)
+    if not len(cumulative) or cumulative[-1] <= k:
+        return int((truth[order] * weights).sum()), int(cumulative[-1]) if len(cumulative) else 0
+    stop = int(np.searchsorted(cumulative, k))
+    partial = k - (int(cumulative[stop - 1]) if stop else 0)
+    hits = int((truth[order[:stop]] * weights[:stop]).sum()) + int(truth[order[stop]]) * partial
+    return hits, k
+
+
+def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *, draws=200, seed=0):
+    """Paired resampling of candidate rows for the promotion delta; logging only.
+
+    Both scorers are re-ranked on the same Poisson(1)-weighted multiset per cell,
+    so the interval reflects row sampling noise, not scorer nondeterminism. It is
+    recorded next to the decision and does not change the gate.
+    """
+    if type(draws) is not int or draws < 1:
+        raise ValueError("Bootstrap draws must be a positive integer")
+    rng = np.random.default_rng(seed)
+    cells = {}
+    for brain, banks in tables_by_brain.items():
+        for kind, table in banks.tables.items():
+            cell = f"{brain}/{kind}"
+            truth = np.asarray(table.truth, dtype=np.int64)
+            keys = np.asarray(table.keys, dtype=str)
+            before = np.asarray(parent_state[cell]["scores"], dtype=float)
+            after = np.asarray(candidate_state[cell]["scores"], dtype=float)
+            if before.shape != truth.shape or after.shape != truth.shape:
+                raise ValueError(f"Bootstrap scores do not align with {cell}")
+            cells[cell] = (truth, np.lexsort((keys, -before)), np.lexsort((keys, -after)), budgets[kind])
+    deltas = np.empty(draws)
+    per_cell = {cell: np.empty(draws) for cell in cells}
+    for draw in range(draws):
+        sampled = {}
+        for cell, (truth, order_before, order_after, k) in cells.items():
+            counts = rng.poisson(1., len(truth)).astype(np.int64)
+            hits_before, k_before = _prefix_hits(order_before, truth, counts, k)
+            hits_after, k_after = _prefix_hits(order_after, truth, counts, k)
+            precision_before = hits_before / k_before if k_before else 0.
+            precision_after = hits_after / k_after if k_after else 0.
+            per_cell[cell][draw] = precision_after - precision_before
+            sampled[cell] = precision_after - precision_before
+        grouped = {}
+        for cell, value in sampled.items():
+            brain, _ = cell.rsplit("/", 1)
+            grouped.setdefault(brain, []).append(value)
+        deltas[draw] = math.fsum(math.fsum(v) / len(v) for v in grouped.values()) / len(grouped)
+    low, high = np.percentile(deltas, [2.5, 97.5])
+    return {"version": BOOTSTRAP_VERSION, "draws": draws, "seed": seed,
+            "macro_delta_ci95": [float(low), float(high)],
+            "p_delta_le_0": float(np.mean(deltas <= 0)), "p_delta_ge_0": float(np.mean(deltas >= 0)),
+            "cells": {cell: {"delta_ci95": [float(v) for v in np.percentile(values, [2.5, 97.5])]}
+                      for cell, values in per_cell.items()},
+            "scope": "Row-resampling uncertainty of the paired Precision@K delta; recorded, not a gate."}

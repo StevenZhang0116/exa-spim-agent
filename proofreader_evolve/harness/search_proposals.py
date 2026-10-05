@@ -8,6 +8,7 @@ import math
 import re
 
 from .classifier_contract import frozen_model, model_info, normalize_config
+from .hypothesis_memory import validate_research
 
 
 MAX_PROPOSAL_BYTES = 128_000  # Resolved classifier feature lists can exceed a small formula proposal.
@@ -35,7 +36,7 @@ def read_proposal(path):
         raise ValueError(f'Fix proposal.json JSON syntax: {exc}') from exc
     if not isinstance(proposal, dict):
         raise ValueError('proposal.json must contain a JSON object')
-    extra = set(proposal) - {'hypothesis', 'strategy', 'family', 'parameter_grid', 'classifier'}
+    extra = set(proposal) - {'hypothesis', 'strategy', 'family', 'parameter_grid', 'classifier', 'research'}
     if extra:
         raise ValueError(f'Unknown proposal fields: {sorted(extra)}')
     for key in ('hypothesis', 'strategy'):
@@ -54,11 +55,17 @@ def read_proposal(path):
             raise ValueError(f'parameter_grid.{key} must be a nonempty finite numeric list (maximum 64)')
     if 'classifier' in proposal:
         proposal['classifier'] = normalize_config(proposal['classifier'])
+    if 'research' in proposal:
+        proposal['research'] = validate_research(proposal['research'])
     return {**proposal, 'family': family, 'parameter_grid': grid}
 
 
 def formula_info(source):
-    """Ignore only the values of the one top-level literal PARAMS dictionary."""
+    """Describe a formula or frozen model, separating structure from tunable numbers.
+
+    Formula identity ignores values only in its single literal PARAMS dictionary;
+    frozen models delegate to the model program/configuration contract.
+    """
     tree = ast.parse(source)
     model = frozen_model(source, tree)
     if model is not None:

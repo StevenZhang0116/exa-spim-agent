@@ -62,7 +62,9 @@ class TrajectoryTests(unittest.TestCase):
         transcript = (self.gen / "trajectory.txt").read_text()
         self.assertIn("Edit was denied", transcript)
         self.assertNotIn("excluded", transcript)
-        self.assertIn("Edit scorer.py", self.output.getvalue())
+        self.assertNotIn("Edit scorer.py", self.output.getvalue())
+        trace.emit('generation_start', 'Generation 1: split explore')
+        self.assertIn('Generation 1: split explore', self.output.getvalue())
 
     def test_revise_logs_messages_and_preserves_result_before_sdk_error(self):
         for error in (False, True):
@@ -132,10 +134,14 @@ class TrajectoryTests(unittest.TestCase):
     def test_reviser_cannot_read_validation_in_trajectories_or_snapshots(self):
         guard, _ = make_guard(self.root, self.gen, [self.gen / "train_feedback.json"],
                               self.root / "tool_audit.jsonl")
-        for name in ("trajectory.txt", "trajectory.jsonl", "parent_scorer.py", "scorer.py.diff"):
+        for name in ("trajectory.txt", "trajectory.jsonl", "parent_scorer.py", "scorer.py.diff",
+                     "report.html", "run_status.json", "candidate_pool_after.json"):
             for tool in ("Read", "Write", "Edit"):
                 decision = asyncio.run(guard(tool, {"file_path": str(self.gen / name)}, None))
                 self.assertEqual(decision.behavior, "deny")
+        for name in ('report.html', 'run_status.json'):
+            decision = asyncio.run(guard('Read', {'file_path': str(self.root / name)}, None))
+            self.assertEqual(decision.behavior, 'deny')
 
 
 if __name__ == "__main__":
