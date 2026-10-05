@@ -104,7 +104,9 @@ def fit_classifier(train, kind, config, output_dir, *, program, artifact_store,
         files = artifact_files(root / 'artifacts')
         model = {'version': MODEL_VERSION, 'kind': kind, 'config': config, 'program': program,
                  'training_brains': sorted(train), 'training_rows': count, 'training_fingerprint': fingerprint,
-                 'files': files, 'artifact_sha256': config_identity(files), 'threads': threads}
+                 'files': files, 'artifact_sha256': config_identity(files), 'threads': threads,
+                 # Exact input columns, so inference can reindex and registered descriptors are explicit.
+                 'columns': list(columns)}
         source = render_model(model)
         store = Path(artifact_store)
         destination = store / model['artifact_sha256']

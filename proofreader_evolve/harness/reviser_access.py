@@ -28,7 +28,8 @@ def make_guard(cwd, editable_dir, readable_paths, audit_path, state=None, *,
     writable = {editable_dir / policy_filename, editable_dir / "rules.md"}
     if allow_proposal:
         writable.update({editable_dir / "proposal.json", editable_dir / "training.py",
-                         editable_dir / "analysis.py", editable_dir / "analysis_request.json"})
+                         editable_dir / "analysis.py", editable_dir / "analysis_request.json",
+                         editable_dir / "descriptor.py"})
     readable = writable | {canonical_file(p, cwd) for p in readable_paths}
     state = state if state is not None else {"violations": []}
     trusted_tools = frozenset(allowed_tools)

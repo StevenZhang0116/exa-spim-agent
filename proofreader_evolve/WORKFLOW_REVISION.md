@@ -116,6 +116,75 @@ data, scores or decision reasons enter them. The promotion gate compares against
 accepted parent's full-precision measurements. TRAIN feedback's `parent_train`
 also refers to that accepted parent; `search_plan.json` identifies the branch.
 
+### Agent descriptors over a cached candidate band (2026-10-04 / v14)
+
+Version `agent-descriptor-compute-v14` changes how the agent reaches fragment
+geometry and pixels, not how candidates are selected or promoted. Two measured
+facts motivate it: in `precision_20261003_190054_96ng6ehh` the agent ran 3D
+analysis three times on twelve sites and never scored an image quantity, and
+every descriptor it wrote (about 56 across two runs) was computed on at most
+16,000 rows under a per-evaluation time budget and then discarded. The cause is
+structural: image and local-geometry features could only enter through
+`LOCAL_IMAGE`/`LOCAL_CONTEXT` declarations extracted inside each evaluation,
+with cold cloud reads, per-call byte and time budgets, caches keyed by the whole
+program hash, and no step that shows a quantity's distribution before it is
+committed to a scorer.
+
+- **Context cache (`harness/context_cache.py`, `cli/precompute_context_cache.py`).**
+  Once per brain and kind, the host stores the raw context of the top
+  detector-ranked band (default 20,000 rows, ties by candidate key): the
+  fragment neighbourhood at 50 um / 256 nodes with the existing whitelisted
+  fields, and image patches at level 1 / 30 um for the whole band plus level 0 /
+  16 um for the first 4,000 rows. Entries live under
+  `proofreader_evolve/context_cache/<brain>/<kind>/<pool_sha256>/`, outside the
+  hashed feature-table directories, and bind to the pool, `features.pkl`,
+  source-cache and image identities. No labels, GT, absolute coordinates or
+  persistent IDs are stored; failed patch reads are recorded as unavailable
+  rows. Nothing in the cache is a feature.
+- **Descriptor contract (`harness/descriptor_contract.py`).** The agent edits
+  `descriptor.py`: a literal `DESCRIPTOR = {kind, inputs, image_tier,
+  feature_names}` and `describe(context)` receiving the same context schema as
+  `analyze(context)`. At most 16 names per submission; results register as
+  `bank_agent_<name>` columns.
+- **Pool-scale compute (`harness/descriptor_runs.py`, worker mode `describe`).**
+  `compute_descriptors({"scope"})` runs describe over `pilot` (512 rows),
+  `boundary` (2,000 rows each side of K) or `all_cached` for every TRAIN brain in
+  up to `--descriptor-workers` (default: available CPUs minus 2) single-threaded
+  sandboxed workers, 256 rows per batch, under one wall deadline
+  (`--descriptor-wall-seconds`, default 1800; `--descriptor-generation-wall-seconds`,
+  default 5400). Each row is evaluated twice and must agree; infinities fail the
+  call; a failure in any batch registers nothing. Results are cached in
+  `descriptor_bank/` by descriptor code hash, band identity and scope, so repeats
+  cost nothing across generations and runs. The reply carries label-conditional
+  TRAIN quartiles, finite fractions and coverage; `plan_descriptor_run({})` times
+  64 rows first and extrapolates. One uncached call costs one evaluation unit.
+- **Registration and use.** Registered columns join the in-memory predictor
+  frame of every TRAIN table, so `feature_statistics.json` (recomputed when the
+  registry changes), formulas, `training.py` programs and
+  `evaluate_feature_ablation` see them without any declaration.
+  `bank_context_available` marks cached rows; rows outside the band are NaN.
+  Frozen model manifests now record their exact input `columns`, prediction
+  reindexes to them, and a candidate that references unregistered descriptor
+  columns is rejected before validation.
+- **Inference on other brains.** At submission the host computes every
+  referenced descriptor on the validation brains' cached contexts (cached by
+  code hash) before the outer evaluation; those values never enter feedback.
+  Accepted scorers that reference descriptors save `descriptors.json` (code and
+  specs) beside `best_scorer.py`; a resumed run restores and recomputes them
+  before the seed evaluation and refuses to start without `--context-cache`.
+- **Agent surface.** `descriptor.py`, `descriptor_guide.md` and
+  `artifacts/descriptors/` (readable examples ported from earlier agent code,
+  with the outcome each one measured; not precomputed columns) are added to each
+  generation when a context cache is attached. `model_environment.json` lists
+  workers, wall budgets, cached rows and tiers. Feedback prunes all-missing
+  columns before shrinking examples and allows 48 KB.
+
+Without `--context-cache` the tools are not offered and the run behaves as v13,
+which is the attribution control. The selection protocol, promotion gate, K,
+candidate pool and sandbox boundaries are unchanged. Pool-scale label-conditional
+statistics make descriptor search against TRAIN labels cheap; the grouped
+out-of-fold selection and the outer gate remain the guards.
+
 ### Grouped out-of-fold selection on detector-naive brains (2026-10-03 / v13)
 
 Version `grouped-oof-selection-v13` changes how TRAIN branches are ranked, not
@@ -412,11 +481,17 @@ Use panda on an allocated compute node for table preparation:
 ```bash
 python proofreader_evolve/prepare_feature_tables.py --brains 794495 789202 794491 794493 802449 --mcl 100
 python -m proofreader_evolve.cli.preflight --brains 794495 789202 794491 794493 802449 --mcl 100
-python -m proofreader_evolve.cli.preflight --brains 794495 802449 --train-brains 794495 802449 --mcl 100
+# Once per brain: cache the detector-ranked band's fragment neighbourhoods and image patches (hours; S3 reads).
+python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802449 789202 794493 794491 --mcl 100 --readers 16
+python -m proofreader_evolve.cli.preflight --brains 794495 802449 789202 794493 794491 \
+  --train-brains 794495 802449 --mcl 100 --context-cache proofreader_evolve/context_cache
 python -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495,802449 --selection-brains 802449 \
   --validation-brains 789202,794493,794491 \
-  --merge-k 2000 --split-k 2000 --generations 20
+  --merge-k 2000 --split-k 2000 --generations 20 \
+  --context-cache proofreader_evolve/context_cache --descriptor-workers auto
+# Or on n257 with every idle CPU, via Slurm (reads sinfo at submission; CONTEXT_CACHE=none gives the control run):
+proofreader_evolve/slurm/submit_v14_trial.sh
 # Historical in-sample ranking for attribution (single detector-fitted TRAIN brain):
 python -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495 --validation-brains auto --selection-protocol in_sample \
@@ -650,6 +725,11 @@ CodeAct relationship are recorded below; discovery benefit is still unmeasured.
 - `harness/internal_validation.py`, `feature_ablation.py`: host-owned grouped,
   fragment-purged TRAIN folds with selection/auxiliary brain roles, and paired
   constant-removal feature diagnostics scored on selection brains.
+- `harness/context_cache.py`, `cli/precompute_context_cache.py`: persistent, label-free
+  fragment-neighbourhood and image-patch contexts for the detector-ranked band.
+- `harness/descriptor_contract.py`, `harness/descriptor_runs.py`: the `descriptor.py`
+  contract, parallel sandboxed pool-scale computation, code-hash result caching,
+  column registration and host-only label summaries.
 - `harness/selection_protocol.py`: the official TRAIN selection score
   (`grouped_oof` partitioned out-of-fold precision or historical `in_sample`),
   fold budgets, fold refits with out-of-fold prediction, snapshot persistence
@@ -884,6 +964,7 @@ records the motivating run and the original proposals.
 | [GEPA, ICLR 2026](https://arxiv.org/abs/2507.19457), `agrawal2026`; **adapted idea** | Preserve complementary measured behavior and use execution evidence to guide future changes. Existing [train_coverage.py](harness/train_coverage.py) / [candidate_pool.py](harness/candidate_pool.py), extended by [hypothesis_memory.py](harness/hypothesis_memory.py). | Our fixed Top-K positive coverage and geometry-slice specialists are not GEPA's exact per-instance Pareto selection. We evolve formulas/model programs rather than prompts. Stable hypothesis IDs and scoped feature records are our design, not a GEPA reproduction. | Specialist retention predates this revision. Hypothesis memory/scheduling added 2026-10-02; comparative benefit unmeasured. |
 | [AlphaEvolve, June 2025 white paper](https://arxiv.org/abs/2506.13131), `novikov2025`; **adapted idea** | Evolve executable candidates with automatic evaluation and a diverse retained population. [candidate_pool.py](harness/candidate_pool.py), [train_experiments.py](harness/train_experiments.py). | Our bounded specialist archive and protected accepted reference are not its island/MAP-Elites database or asynchronous model-mixture system. Multiple branches already existed; this revision adds evidence-based scheduling hints. | Conceptual correspondence; no reproduction or relative-throughput claim. |
 | Standard grouped cross-validation practice; [scikit-learn `cross_val_predict` note on not treating concatenated out-of-fold predictions as a single scored set](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.cross_val_predict.html); **engineering reference** with **project-specific** design in v13 | Official branch selection by grouped out-of-fold precision on detector-naive selection brains with auxiliary fitting-only brains, per-fold ranking under largest-remainder fold budgets summing to K, one evaluation unit per configuration, selection-sourced feedback and failure cases, baseline auxiliary ablation, and paired Poisson-bootstrap logging of the promotion delta. [selection_protocol.py](harness/selection_protocol.py), [internal_validation.py](harness/internal_validation.py), [train_experiments.py](harness/train_experiments.py), [fixed_pool_scoring.py](harness/fixed_pool_scoring.py), [run_precision_evolution.py](cli/run_precision_evolution.py). | The fold partition is fixed and repeatedly inspected by the reviser, so the score is a development signal rather than an unbiased estimate; fragment purging and spatial blocks do not prove neuron independence; the bootstrap reflects row resampling only and changes no decision. The outer gate, K and margin are unchanged. No paper is reproduced. | Implemented 2026-10-03; synthetic regression tests only (see the evidence log). Whether out-of-fold selection improves development-validation gain over in-sample selection is unmeasured; the `in_sample` flag exists for that comparison. |
+| Existing CodeAct-style executed analysis above; **project-specific extension** in v14 | Agent-written `describe(context)` executed by the host over a cached candidate band in parallel isolated workers, with code-hash result caching, wall-clock budgets, label-free context transport and registration as predictors. [context_cache.py](harness/context_cache.py), [descriptor_contract.py](harness/descriptor_contract.py), [descriptor_runs.py](harness/descriptor_runs.py), [precompute_context_cache.py](cli/precompute_context_cache.py). | Not a feature-selection algorithm from the literature: the host predefines no quantity; it moves the raw inputs next to the computation. Pool-scale label-conditional summaries increase adaptive use of TRAIN labels; the out-of-fold selection and outer gate are the guards. The band (top 20,000 detector-ranked rows) bounds coverage. | Implemented 2026-10-04; synthetic regression tests with real sandboxed workers (see the evidence log). Real-brain cache throughput and any ranking benefit from agent descriptors are unmeasured. |
 | No claimed paper algorithm; **project-specific** | Three label-independent folds, fragment purging, 500-um split blocks, diagnostic constant masking, matched-case sampling, exact-code evidence binding, and hypothesis stagnation penalties. [internal_validation.py](harness/internal_validation.py), [failure_cases.py](harness/failure_cases.py), [hypothesis_memory.py](harness/hypothesis_memory.py). | Internal folds are repeatedly inspected TRAIN data. Spatial blocks plus fragment purging do not prove neuron independence. Two nonpositive ablations lower priority rather than refute a hypothesis. Protected-reference cadence and the mean development-validation gate remain separate. | Implemented 2026-10-02; assumptions and thresholds require future evaluation. |
 | [CodeAct, ICML 2024](https://proceedings.mlr.press/v235/wang24h.html), `wang2024`; **adapted idea** in v10 | The agent writes executable analysis actions, observes results, then revises its investigation. [volume_analysis.py](harness/volume_analysis.py) and [volume_analysis_guide.md](artifacts/volume_analysis_guide.md) apply this pattern to TRAIN 3D pixels and aligned fragments. | A bounded microscopy analysis interface, not a general shell/interpreter agent or reproduction of CodeAct training. Our context schema, four-case batch, eight-execution allowance, sandbox and provenance are project-specific. Optional 2D previews are not required. | 37 scoped tests and real merge/split data-access checks passed on n257. No live LLM comparison, discovery gain or latency reduction has been measured. |
 | [LLMCompiler, ICML 2024](https://proceedings.mlr.press/v235/kim24y.html), `kim2024`; **deferred** broader orchestration | Dependency-aware execution and complete experiment packets remain proposals in the literature note. Existing grid, inspection, ablation and volume tools combine operations within a call. | No dependency compiler, parallel generation scheduler or general experiment-packet interface is implemented. Volume cases execute sequentially in one worker; batching alone does not reproduce the paper's system or establish its speedups. | No orchestration speedup claim. |
@@ -893,14 +974,16 @@ records the motivating run and the original proposals.
 
 | Date / version | Change and motivation | Verification / future evidence |
 |---|---|---|
+| 2026-10-05 / maintenance | Deleted `proofreader_evolve/image_audits/` (134 MB: 32 sample patch `.npz` arrays, 30 PNG previews, scripts, bytecode and trajectories of the 2026-10-02 alignment audit). No code reads it; the alignment receipts in `configs/image_alignment.json` only check status, URI, transform, source-cache and image identities. | Retained the written review, the per-brain `alignment.json` identity records and the direct-volume verification JSON under `docs/image_alignment_review_20261002/` at the repository root; receipt `evidence` fields and the two evidence rows above now point there. The review can be regenerated with `cli.check_image_alignment`. |
+| 2026-10-05 / `agent-descriptor-compute-v14` | Persistent context cache of the detector-ranked band (fragment neighbourhoods and two image tiers) plus `descriptor.py` / `plan_descriptor_run` / `compute_descriptors`: agent-written `describe(context)` run by the host over every cached row in parallel sandboxed workers, cached by code hash, registered as `bank_agent_*` predictors, computed on validation brains at submission, resumable through `descriptors.json`. No quantity is predefined by the host. Motivated by the unused image path in `precision_20261003_190054_96ng6ehh`. Project-specific design; see the provenance row above. | On the login host with panda: the [full suite](log/agent_descriptor_compute_20261005_tests.log) ran 255 tests in 612 s and passed (241 pre-existing plus 14 in `tests/test_descriptor_compute.py`, which exercise real sandboxed `describe` workers, parallel batches, caching, deadline kills and a mocked-reviser driver run with resume). On n257 (job 27185854, [log](log/precompute_context_cache_20261005_000011_202313_1352428.log.txt)): a 1,000-row probe of brain 802449 read level-1 and level-0 patches with 16 readers at a median 0.45 s per read, about 24 reads per second aggregate, 0 failures, 31 MB and 43 MB per 1,000 rows; geometry contexts took under 1 s per 1,000 rows. The full five-brain build (job 27185856, [script](slurm/build_context_cache.sbatch), 24 readers) completed in 2 h 37 min with 0 failed patches across all ten brain/kind entries: 20,000 band rows each, 11 GB on disk, 13 to 17 min per entry, geometry under 26 s per entry. The first evolution run with `--context-cache` is not yet recorded here. Ranking benefit from agent descriptors is unmeasured. |
 | 2026-10-03 / `grouped-oof-selection-v13` | Rank TRAIN branches by grouped out-of-fold precision on detector-naive selection brains with auxiliary fitting-only brains; keep every eligible brain (including 794491) in the unchanged promotion gate; one unit per classifier configuration; selection-sourced feedback and failure cases; baseline auxiliary ablation; paired-bootstrap logging of promotion deltas. Motivated by the in-sample split champion and detector-fitted TRAIN brain of `precision_20261003_004137_sogl3h0d`. Project-specific design; see the provenance row above. | On the login host with panda: the [full suite](log/grouped_oof_selection_20261003.log) ran 241 tests in 529 s and passed (228 pre-existing plus 13 in `tests/test_selection_protocol.py`, which use real sandboxed fold fits on synthetic two-brain fixtures and a mocked reviser). Existing tiny-fixture driver tests were switched to `--selection-protocol in_sample`. No real-brain run, fragment-graph load for 802449, cloud read or paid LLM call was made; the startup cost of the auxiliary ablation and the 802449 split fold partition, and any development-validation gain over in-sample selection, remain unmeasured. |
 | 2026-10-03 / reviser model configuration | Change the shared evolution/preflight default from `claude-opus-4-8` to `claude-opus-5` in [reviser_session.py](harness/reviser_session.py), as requested. Explicit `--model` overrides remain available. Project configuration only; the literature relationships and search/evaluation algorithms are unchanged. | Model ID checked against the [official Opus 5 documentation](https://platform.claude.com/docs/en/models/opus-5/overview). Static inspection confirms both CLIs import the shared default and the SDK receives it. No tests, API probe or evolution run; account access and comparative performance have not been measured. |
 | 2026-10-03 / `measured-investigation-followup-v12` | Replace deferred investigation promises with host-verified comparisons; follow newly promoted components in the next same-kind generation. Project-specific extension of the literature relationships above. | On n257: [45 initial core checks](log/research_evidence_20261003.log) passed. Tool integration exposed three bare-session SDK fixtures needing the new receipt mock: two in the [43-test run](log/research_evidence_20261003_tools.log), then one remaining in the [78-test run](log/research_evidence_20261003_recheck.log). After those updates, [four focused checks](log/research_evidence_20261003_final.log) and [39 final checks](log/research_evidence_20261003_completed.log) passed. Executions overlap and must not be summed as distinct tests. Coverage includes negative/reused evidence, comment-only edits, registration eligibility, branch ancestry, bounded retries, unchanged validation gate, skipped validation with retained TRAIN records, isolated 3D/image tools and report compatibility. [Static checks](log/research_evidence_20261003_static.json): 79 Python files, seven Markdown files, CLI help, SVG XML and report JavaScript passed. Synthetic inputs and mocked revisers only; no real evolution, cloud reads or paid LLM calls. Discovery speed and ranking benefit remain unmeasured. |
 | 2026-10-02 / `image-boundary-scoring-v11` | Project-specific bridge from existing CodeAct-style 3D actions and FAMOSE/Crafter-inspired paired diagnostics to K-aware image coverage: label-free boundary selection, a planning tool, bounded numeric batches and separate access/coverage/increment records. No new paper algorithm or speedup claim. | On n257: [55 scoped tests](log/image_boundary_scoring_20261002.log), [18 integration/recheck tests](log/image_boundary_scoring_20261002_integration.log), and [one planning-tool SDK/permission check](log/image_boundary_scoring_20261002_tool.log) passed. These are overlapping executions, not 74 unique tests. [Static checks](log/image_boundary_scoring_20261002_static.json) passed for 77 Python files, CLI help, documentation links, SVG XML and report JavaScript. Tests use synthetic images, actual isolated extraction/scoring workers, and mocked revisers. No real evolution, cloud reads, real-brain feature computation or image-ranking benefit measured for this revision. Future evidence must compare final-coverage image-only ablation and outer validation at fixed K and resource budgets. |
 | 2026-10-02 / v10 maintenance audit | Reconcile active docs/templates with 3D access and image ablations; remove unused legacy training helpers and hidden report payloads. Project-specific maintenance; literature relationships and search/gating algorithms are unchanged. | Full run: 192/194 passed, with two stale assertions identified and corrected. All 23 targeted follow-up tests passed, including the new direct socket-denial probe. See the [maintenance audit](#maintenance-audit-2026-10-02) for logs, retained compatibility and verification limits. |
 | 2026-10-02 / `failure-feature-hypothesis-v8` | Add matched TRAIN failures, batched local inspection, paired feature diagnostics, hypothesis-level memory, and soft stagnation scheduling. Motivated by limited local-context use and repeated ranking variants in `precision_20260930_215627_9t_i10um`; details and timing caveats are in the linked literature note. | Static source checks only; no tests, training, evolution, or data preparation run for this revision. Existing run results predate these changes and cannot validate them. Future evaluation should report feature-group deltas, fold/purge coverage, extraction/fit/wall time, tokens per distinct hypothesis, and development-validation gain under matched budgets. |
-| 2026-10-02 / `candidate-image-hypothesis-v9` | Add real TRAIN image previews, opt-in image features and arbitrary raw-patch models; explicit OME coordinate mapping; per-row isolated image transport; image-feature ablations, cache identities and IO traces. Image evidence can add observations beyond the skeleton-derived table. | On n257: 27 scoped image/feature/trajectory tests passed, including an actual isolated extraction worker and SDK image content transport, with model fitting mocked. Read and visually inspected 30 native candidate patches (3 merge + 3 split per brain) across 794495, 789202, 794491, 794493 and 802449; level 0, channel/timepoint 0. [Local audit evidence](image_audits/20261002/) and `configs/image_alignment.json` bind source/cache identities. No consistent gross axis swap/global offset observed; local skeleton disagreement, faint signal and fusion artifacts remain. No evolution, model fitting or paid LLM call was run; performance gains remain unmeasured. |
-| 2026-10-02 / `direct-volume-analysis-v10` | Make agent-written 3D analysis the primary image exploration interface; preserve optional 2D checks and the existing measured feature/model path. Separate exploration budgets, validate TRAIN handles, map fragment nodes to patch voxels and save code/input/result provenance. | On n257: 37 tests passed across `test_volume_analysis`, `test_image_context`, `test_feature_discovery`, `test_trajectory`; includes actual isolated workers, anisotropic/translated coordinates, access boundaries, request/output limits, timeout handling and MCP transport. A [real TRAIN check](image_audits/20261002/direct_volume_155757/verification.json) passed for 794495 merge row 36167 and split row 212375, each an 80x107x107 level-0 volume at zyx spacing (1, 0.748, 0.748) um. First input preparation took 49.84 s and the worker 2.60 s; these are access checks, not comparative benchmarks. No fitting, evolution or paid LLM call was run. Future runs must measure useful hypotheses, scoring coverage, IO/interaction cost and validation gain. |
+| 2026-10-02 / `candidate-image-hypothesis-v9` | Add real TRAIN image previews, opt-in image features and arbitrary raw-patch models; explicit OME coordinate mapping; per-row isolated image transport; image-feature ablations, cache identities and IO traces. Image evidence can add observations beyond the skeleton-derived table. | On n257: 27 scoped image/feature/trajectory tests passed, including an actual isolated extraction worker and SDK image content transport, with model fitting mocked. Read and visually inspected 30 native candidate patches (3 merge + 3 split per brain) across 794495, 789202, 794491, 794493 and 802449; level 0, channel/timepoint 0. The written review and per-brain identity records are retained under [docs/image_alignment_review_20261002/](../docs/image_alignment_review_20261002/) (the 109 MB of sample patch arrays and 20 MB of previews were deleted on 2026-10-05); `configs/image_alignment.json` binds source/cache identities. No consistent gross axis swap/global offset observed; local skeleton disagreement, faint signal and fusion artifacts remain. No evolution, model fitting or paid LLM call was run; performance gains remain unmeasured. |
+| 2026-10-02 / `direct-volume-analysis-v10` | Make agent-written 3D analysis the primary image exploration interface; preserve optional 2D checks and the existing measured feature/model path. Separate exploration budgets, validate TRAIN handles, map fragment nodes to patch voxels and save code/input/result provenance. | On n257: 37 tests passed across `test_volume_analysis`, `test_image_context`, `test_feature_discovery`, `test_trajectory`; includes actual isolated workers, anisotropic/translated coordinates, access boundaries, request/output limits, timeout handling and MCP transport. A [real TRAIN check](../docs/image_alignment_review_20261002/direct_volume_verification.json) passed for 794495 merge row 36167 and split row 212375, each an 80x107x107 level-0 volume at zyx spacing (1, 0.748, 0.748) um. First input preparation took 49.84 s and the worker 2.60 s; these are access checks, not comparative benchmarks. No fitting, evolution or paid LLM call was run. Future runs must measure useful hypotheses, scoring coverage, IO/interaction cost and validation gain. |
 
 For 794491, the cached image at processed timestamp `2025-10-26_12-28-14`
 has a deletion marker. The explicit reviewed override uses the same acquisition
@@ -911,8 +994,9 @@ peripheral merge samples contain strong block/fusion artifacts. This does not
 establish pixel equivalence to the deleted volume. Other brains use their cached
 image sources. Keep the receipts/evidence with the run; review again after a
 source or fragment cache change. No default dataset was excluded from gating.
-The [sampled review](image_audits/20261002/REVIEW.md) records the observations and
-limits. The raw-patch frozen prediction path was also exercised in an isolated
+The [sampled review](../docs/image_alignment_review_20261002/REVIEW.md) records the observations and
+limits; its sample arrays and previews were deleted on 2026-10-05 and can be regenerated
+with `cli.check_image_alignment` if a re-review is needed. The raw-patch frozen prediction path was also exercised in an isolated
 worker with synthetic pixels and an empty-image row; fitting remained mocked.
 
 For paper writing, cite the source for the borrowed idea, describe the actual
@@ -933,6 +1017,14 @@ plots. They do not load full brains or call a live LLM.
 `tests/test_feature_discovery.py` adds synthetic cases for matched TRAIN panels,
 fragment-isolated folds, fitting-row transport, paired refits, budget refusal,
 exact evidence binding, hypothesis progress, and protected-reference scheduling.
+`tests/test_descriptor_compute.py` (v14) covers the context cache (build, probe,
+identity binding, label-flip invariance, context schema with and without pixels),
+the descriptor contract, parallel sandboxed compute with code-hash caching,
+deadline kills, nondeterminism and infinity rejection, registration and
+summaries, the session tools and their charging, inference-side computation,
+a driver run with `--context-cache` including resume from `descriptors.json`,
+the refusal without a cache, frozen-model column reindexing, feedback column
+pruning and the preflight cache check.
 `tests/test_selection_protocol.py` (v13) covers selection/auxiliary fold roles,
 partitioned fold budgets and non-pooled ranking, a memorizing model losing to a
 generalizing one under out-of-fold selection with real sandboxed fits, one unit

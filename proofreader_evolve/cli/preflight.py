@@ -65,9 +65,35 @@ def selection_readiness(report, train_brains, selection_brains, protocol):
                     "for split folds is verified when the run starts"}
 
 
+def context_cache_readiness(banks, context_cache):
+    """Entries must exist and match each table identity; no chunk is read here."""
+    from ..harness.context_cache import ContextCache
+    report = {"directory": str(context_cache), "brains": {}}
+    try:
+        cache = ContextCache(context_cache)
+    except (FileNotFoundError, ValueError) as exc:
+        report.update(status="blocked", reason=str(exc))
+        return report
+    blocked = False
+    for brain, bank in banks.items():
+        cells = {}
+        for kind, table in (getattr(bank, "tables", None) or {}).items():
+            try:
+                entry = cache.entry(table)
+                cells[kind] = {"status": "passed", "band_rows": int(len(entry.rows)),
+                               "image_tiers": entry.tiers()}
+            except (FileNotFoundError, ValueError) as exc:
+                cells[kind] = {"status": "blocked", "reason": str(exc)}
+                blocked = True
+        report["brains"][brain] = cells
+    report["status"] = "blocked" if blocked or not banks else "passed"
+    return report
+
+
 def inspect_readiness(brains, mcl=100, tables_dir=pc.DEFAULT_OUT,
                       merge_dirs=None, split_dirs=None, check_api=False, model=DEFAULT_MODEL,
-                      train_brains=None, selection_brains=None, selection_protocol="grouped_oof"):
+                      train_brains=None, selection_brains=None, selection_protocol="grouped_oof",
+                      context_cache=None):
     report = {"host": socket.gethostname(), "mcl": mcl, "brains": {},
               "scope": "No brain-cache deserialization, table preparation, scoring or evolution",
               "api": {"status": "not_checked", "key_present": bool(os.environ.get("ANTHROPIC_API_KEY")),
@@ -80,11 +106,13 @@ def inspect_readiness(brains, mcl=100, tables_dir=pc.DEFAULT_OUT,
         report.update(status="blocked", detector_error=str(exc))
         return report
     report["detectors"] = selected
+    loaded = {}
     for brain in brains:
         brain = str(brain)
         try:
             bank = ensure_native_tables(brain, native_cache_path(brain, mcl), selected,
                                          tables_dir, prepare=False, mcl=mcl)
+            loaded[brain] = bank
             tables = getattr(bank, "tables", None) or {}
             report["brains"][brain] = {
                 "status": "passed", "table_paths": bank.meta["table_paths"],
@@ -95,9 +123,11 @@ def inspect_readiness(brains, mcl=100, tables_dir=pc.DEFAULT_OUT,
     if check_api:
         report["api"] = api_probe(model)
     report["selection"] = selection_readiness(report, train_brains, selection_brains, selection_protocol)
+    report["context_cache"] = (context_cache_readiness(loaded, context_cache) if context_cache else None)
     blocked = (not brains or any(v["status"] != "passed" for v in report["brains"].values())
                or (check_api and report["api"]["status"] != "passed")
-               or (report["selection"] is not None and report["selection"]["status"] != "passed"))
+               or (report["selection"] is not None and report["selection"]["status"] != "passed")
+               or (report["context_cache"] is not None and report["context_cache"]["status"] != "passed"))
     report["status"] = "blocked" if blocked else "checks_passed"
     return report
 
@@ -116,11 +146,13 @@ def main(argv=None):
     parser.add_argument("--selection-brains", nargs="*", default=None,
                         help="Explicit selection brains (default: TRAIN brains the detectors were not fitted on)")
     parser.add_argument("--selection-protocol", choices=("grouped_oof", "in_sample"), default="grouped_oof")
+    parser.add_argument("--context-cache", default=None,
+                        help="Verify that every brain/kind has a complete context cache entry in this directory")
     args = parser.parse_args(argv)
     report = inspect_readiness(args.brains, args.mcl, args.feature_tables_dir,
                                args.merge_dir, args.split_dir, args.check_api, args.model,
                                train_brains=args.train_brains, selection_brains=args.selection_brains,
-                               selection_protocol=args.selection_protocol)
+                               selection_protocol=args.selection_protocol, context_cache=args.context_cache)
     print(json.dumps(report, indent=2))
     return int(report["status"] != "checks_passed")
 

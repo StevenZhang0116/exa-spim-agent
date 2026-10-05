@@ -31,6 +31,9 @@ from ..harness.evolution_report import update_report
 from ..harness.train_feedback import write_train_feedback, render_compact_json, metrics_only
 from ..harness.selection_protocol import SelectionProtocol, load_selection, PROTOCOL_VERSION
 from ..harness.feature_ablation import CLASSIFIER_UNITS, FORMULA_UNITS
+from ..harness.context_cache import ContextCache
+from ..harness.descriptor_runs import DescriptorRuns, CONTEXT_COLUMN, SCOPES as DESCRIPTOR_SCOPES
+from ..harness.descriptor_contract import descriptor_spec, referenced_columns, COLUMN_PREFIX
 from ..harness.scorer_components import components
 from ..harness.train_experiments import ExperimentMemory, TrainingExperiments
 from ..harness.candidate_pool import CandidatePool
@@ -64,7 +67,8 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
             'model_environment.json', 'local_context_guide.md', 'failure_cases.json',
             'hypothesis_memory.json', 'research_status.json', 'feature_discovery_guide.md')]
         readable.extend(policy_path.parent / name for name in (
-            'image_context_guide.md', 'volume_analysis_guide.md', 'image_scoring_plan.json'))
+            'image_context_guide.md', 'volume_analysis_guide.md', 'image_scoring_plan.json',
+            'descriptor_guide.md'))
     options = bind_session_options(
         options, policy_path, rules_path, report_path,
         readable_paths=readable,
@@ -73,7 +77,7 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
     prompt = (
         f"Read TRAIN feedback at {report_path}. Improve {policy_path} and update {rules_path}. "
         "Follow the fixed-pool scorer contract. Do not change the candidate pool, budgets or evaluator. "
-        f"You have at most {max_turns} SDK turns. The compact feedback is at most 24 KB; read it once. "
+        f"You have at most {max_turns} SDK turns. The compact feedback is at most 48 KB; read it once. "
         "Feature vectors align with example labels/scores by index. Groups are diagnostic samples, not a dataset. "
         "Reserve turns to write scorer.py and rules.md and return your summary; avoid repeated tiny reads. "
         "Briefly describe the planned change before editing. "
@@ -214,6 +218,23 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
             "Summarize observed TRAIN evidence and "
             "remaining uncertainty in rules.md. Validation is unavailable to this session."
         )
+        if experiments.memory.descriptor_runs is not None:
+            budget = experiments.descriptor_budget
+            prompt += (
+                " POOL-SCALE DESCRIPTORS: the host has cached the raw context (fragment neighbourhood and image "
+                "patches) of the top detector-ranked band of every brain. Write descriptor.py with a literal "
+                "DESCRIPTOR dict and describe(context) that returns the quantities you want measured; read "
+                f"{policy_path.parent / 'descriptor_guide.md'} once. Call plan_descriptor_run({{}}) to time it, then "
+                'compute_descriptors({"scope": "pilot" | "boundary" | "all_cached"}) to run it over every cached row '
+                f"of the TRAIN brains in {experiments.memory.descriptor_runs.workers} parallel sandboxed workers. "
+                f"Budget: {budget['per_call_seconds']:.0f} s per call and {budget['generation_seconds']:.0f} s per "
+                "generation of wall time, plus one evaluation unit per uncached call; cached code hashes are free. "
+                "The reply returns label-conditional TRAIN quartiles and coverage per column, and registers "
+                "bank_agent_<name> predictor columns (NaN outside the band; bank_context_available marks cached rows) "
+                "that scorer.py, training.py and evaluate_feature_ablation can use immediately. Prefer this over "
+                "four-site run_volume_analysis for any claim about pixels or local geometry; use run_volume_analysis "
+                "only to debug describe on a few rows. Examples of earlier descriptors are in the guide."
+            )
     (policy_path.parent / "reviser_prompt.txt").write_text(prompt)
     trace.emit("reviser_start", f"Starting {model}; max_turns={max_turns}; prompt saved to reviser_prompt.txt",
                model=model, max_turns=max_turns)
@@ -277,6 +298,18 @@ def parse_args(argv=None):
     p.add_argument("--bootstrap-draws", type=int, default=200,
                    help="Paired row-resampling draws recorded with each promotion decision (default: 200; "
                         "0 disables). Logging only; the gate is unchanged")
+    p.add_argument("--context-cache", type=Path, default=None,
+                   help="Directory built by cli.precompute_context_cache; enables pool-scale agent descriptors "
+                        "(plan_descriptor_run / compute_descriptors). Omit to run without them")
+    p.add_argument("--descriptor-bank", type=Path, default=HERE / "descriptor_bank",
+                   help="Persistent cache of computed descriptor values, keyed by descriptor code hash "
+                        "(default: proofreader_evolve/descriptor_bank)")
+    p.add_argument("--descriptor-workers", default="auto", metavar="auto|N",
+                   help="Parallel sandboxed workers for descriptor computation (default: available CPUs minus 2)")
+    p.add_argument("--descriptor-wall-seconds", type=float, default=1800.,
+                   help="Wall-clock budget for one compute_descriptors call (default: 1800)")
+    p.add_argument("--descriptor-generation-wall-seconds", type=float, default=5400.,
+                   help="Wall-clock budget for all uncached descriptor computations in one generation (default: 5400)")
     p.add_argument("--mcl", type=int, default=100)
     p.add_argument("--generations", type=int, default=5)
     p.add_argument("--merge-k", type=int, default=100)
@@ -333,6 +366,13 @@ def parse_args(argv=None):
         p.error("Selection brains must be a subset of the TRAIN brains")
     if args.bootstrap_draws < 0:
         p.error("bootstrap-draws must be >= 0")
+    if args.descriptor_workers != "auto":
+        if not str(args.descriptor_workers).isdigit() or int(args.descriptor_workers) < 1:
+            p.error("descriptor-workers must be 'auto' or a positive integer")
+        args.descriptor_workers = int(args.descriptor_workers)
+    if (not math.isfinite(args.descriptor_wall_seconds) or args.descriptor_wall_seconds <= 0
+            or not math.isfinite(args.descriptor_generation_wall_seconds) or args.descriptor_generation_wall_seconds <= 0):
+        p.error("Descriptor wall budgets must be positive and finite")
     if args.generations < 0 or args.mcl < 0 or min(args.merge_k, args.split_k) < 1:
         p.error("generations/MCL must be >= 0; K must be >= 1")
     if args.reviser_max_turns < 1:
@@ -451,6 +491,49 @@ def _load_evaluation_banks(args, selected, trace):
     return banks, selection
 
 
+def _restore_descriptors(args, banks, kinds, parent_sources, descriptor_runs, budgets, trace):
+    """Recompute descriptors a resumed scorer references from the registry saved beside it."""
+    required = set()
+    for kind in kinds:
+        model = None
+        try:
+            model = frozen_model(parent_sources[kind])
+        except (SyntaxError, ValueError):
+            model = None
+        if model is not None and model.get('columns') is not None:
+            required.update(c for c in model['columns'] if c.startswith(COLUMN_PREFIX))
+        else:
+            required.update(referenced_columns((model or {}).get('program') if model else parent_sources[kind]))
+    if not required:
+        return None
+    registry_path = args.start_from.parent / 'descriptors.json'
+    if not registry_path.is_file():
+        raise ValueError(f"The starting scorer references {sorted(required)[:3]} but {registry_path} is missing")
+    registry = json.loads(registry_path.read_text())
+    missing = sorted(required - set(registry.get('columns', {})))
+    if missing:
+        raise ValueError(f'descriptors.json lacks registered columns {missing[:3]}')
+    programs = {}
+    for code, stored in registry['programs'].items():
+        program, spec = descriptor_spec(stored['program'])
+        if spec['code_sha256'] != code:
+            raise ValueError('descriptors.json program hash mismatch')
+        programs[code] = {'program': program, 'spec': spec}
+    columns = {c: registry['columns'][c] for c in required}
+    for code in {record['code_sha256'] for record in columns.values()}:
+        program, spec = programs[code]['program'], programs[code]['spec']
+        scope = next(record['scope'] for record in columns.values() if record['code_sha256'] == code)
+        for brain, bank in banks.items():
+            table = bank.tables[spec['kind']]
+            result = descriptor_runs.compute(table, program, spec, scope, k=budgets[spec['kind']],
+                                             wall_budget=args.descriptor_wall_seconds,
+                                             log_dir=args.runs_dir / '.descriptor_restore' / brain / code[:12])
+            descriptor_runs.register(table, spec['columns'], result['rows'], result['values'])
+    trace.emit('descriptors_restored', f'Restored {len(columns)} descriptor columns for the starting scorer',
+               columns=sorted(columns), programs=sorted(programs))
+    return {'columns': columns, 'programs': programs}
+
+
 def _auxiliary_ablation(args, protocol, kinds, run_dir, fit_limits, trace):
     """One-time host diagnostic: does auxiliary TRAIN data help the seed template out of fold?
 
@@ -546,6 +629,22 @@ async def _run(args, revise_fn, run_dir, trace):
     trace.emit("selection_protocol", f"TRAIN branch selection: {protocol.mode}; selection brains "
                f"{', '.join(protocol.selection_brains)}; auxiliary {', '.join(protocol.auxiliary_brains) or 'none'}",
                **protocol.describe())
+    descriptor_runs, restored_descriptors = None, None
+    if args.context_cache is not None:
+        cache = ContextCache(args.context_cache)
+        entries = {}
+        for brain, bank in banks.items():
+            for kind in kinds:
+                entries[f"{brain}/{kind}"] = cache.entry(bank.tables[kind]).summary()
+                DescriptorRuns.register_context_column(bank.tables[kind], cache.entry(bank.tables[kind]))
+        descriptor_runs = DescriptorRuns(cache, args.descriptor_bank, workers=args.descriptor_workers,
+                                         memory_mb=args.classifier_memory_mb, trace=trace)
+        trace.emit("context_cache", f"Context cache attached for {len(entries)} brain/kind entries; "
+                   f"{descriptor_runs.workers} descriptor workers", entries=entries,
+                   workers=descriptor_runs.workers, bank=str(args.descriptor_bank))
+        restored_descriptors = _restore_descriptors(args, banks, kinds, parent_sources, descriptor_runs, budgets, trace)
+    elif any(referenced_columns(parent_sources[kind]) for kind in kinds):
+        raise ValueError("The starting scorer references bank_agent_* descriptor columns; pass --context-cache")
     for kind in available:
         model = frozen_model(parent_sources[kind])
         if model is not None:
@@ -584,7 +683,15 @@ async def _run(args, revise_fn, run_dir, trace):
                 "selection_protocol": protocol.describe(),
                 "reviser_max_turns": args.reviser_max_turns,
                 "feedback_format": "stratified-train-v4",
-                "search_version": "grouped-oof-selection-v13", "target_kind": args.target_kind,
+                "search_version": "agent-descriptor-compute-v14", "target_kind": args.target_kind,
+                "descriptor_compute": ({"enabled": True, "context_cache": str(args.context_cache),
+                    "descriptor_bank": str(args.descriptor_bank), "workers": descriptor_runs.workers,
+                    "per_call_wall_seconds": args.descriptor_wall_seconds,
+                    "per_generation_wall_seconds": args.descriptor_generation_wall_seconds,
+                    "evaluation_units_per_uncached_call": 1, "scopes": list(DESCRIPTOR_SCOPES),
+                    "entries": {f"{b}/{k}": cache.entry(bank.tables[k]).summary() for b, bank in banks.items() for k in kinds},
+                    "restored_descriptors": sorted(restored_descriptors["columns"]) if restored_descriptors else []}
+                    if descriptor_runs is not None else {"enabled": False}),
                 "volume_analysis": {"version": VOLUME_ANALYSIS_VERSION, "primary_image_exploration": True,
                     "executions_per_generation": MAX_ANALYSES, "candidates_per_execution": MAX_CASES,
                     "max_result_bytes": MAX_RESULT_BYTES, "worker_timeout_seconds": args.policy_time_budget,
@@ -632,7 +739,12 @@ async def _run(args, revise_fn, run_dir, trace):
     _write(run_dir / "baseline.json", baseline)
     _write(run_dir / "seed.json", {"train": parent_train, "validation": parent_validation})
     rules = {kind: CONTRACT for kind in kinds}
-    memory = ExperimentMemory(run_dir, train=train, protocol=protocol, fit_limits=fit_limits)
+    memory = ExperimentMemory(run_dir, train=train, protocol=protocol, fit_limits=fit_limits,
+                              descriptor_runs=descriptor_runs)
+    if restored_descriptors is not None:
+        memory.descriptors.update(restored_descriptors['columns'])
+        memory.descriptor_programs.update(restored_descriptors['programs'])
+        memory.descriptor_generation += 1
     pool = CandidatePool(run_dir / 'candidate_pool.json', kinds, size=args.candidate_pool_size,
                          score_tolerance=args.candidate_score_tolerance, plateau_patience=args.plateau_patience,
                          exploration_patience=args.exploration_patience, explore_every=args.explore_every,
@@ -660,6 +772,9 @@ async def _run(args, revise_fn, run_dir, trace):
                'All branches share the fixed global K; only TRAIN aggregates are exposed to the reviser.',
                selection=pool.summary()['selection'], coverage=memory.coverage.definitions())
     statistics = {kind: feature_statistics(train, kind) for kind in kinds}
+    statistics_version = {kind: memory.descriptor_generation for kind in kinds}
+    descriptor_budget = {'per_call_seconds': args.descriptor_wall_seconds,
+                         'generation_seconds': args.descriptor_generation_wall_seconds}
     model_environment = {
         'packages': dict(sorted((dist.metadata['Name'], dist.version)
                                for dist in importlib.metadata.distributions() if dist.metadata['Name'])),
@@ -670,6 +785,15 @@ async def _run(args, revise_fn, run_dir, trace):
         'volume_analysis_memory_mb': args.classifier_memory_mb,
         'numerical_threads': args.classifier_threads, 'max_artifact_bytes': 128 * 1024**2,
         'max_artifact_files': 256, 'sandbox': 'Linux Landlock ABI >= 3 and libseccomp; fail closed',
+        'descriptor_compute': ({'enabled': True, 'workers': descriptor_runs.workers,
+            'worker_memory_mb': args.classifier_memory_mb, 'threads_per_worker': 1,
+            'per_call_wall_seconds': args.descriptor_wall_seconds,
+            'per_generation_wall_seconds': args.descriptor_generation_wall_seconds,
+            'evaluation_units_per_uncached_call': 1, 'scopes': list(DESCRIPTOR_SCOPES),
+            'cached_band': {f'{b}/{k}': cache.entry(bank.tables[k]).summary()
+                            for b, bank in train.items() for k in kinds},
+            'column_prefix': COLUMN_PREFIX, 'context_column': CONTEXT_COLUMN}
+            if descriptor_runs is not None else {'enabled': False}),
     }
     (run_dir / "best_scorer.py").write_text(source)
     completed_generations, stop_reason = 0, 'generation_limit'
@@ -712,6 +836,10 @@ async def _run(args, revise_fn, run_dir, trace):
         (gen_dir / 'image_context_guide.md').write_text((HERE / 'artifacts' / 'image_context_guide.md').read_text())
         (gen_dir / 'volume_analysis_guide.md').write_text((HERE / 'artifacts' / 'volume_analysis_guide.md').read_text())
         (gen_dir / 'analysis.py').write_text((HERE / 'artifacts' / 'analysis.py').read_text())
+        if descriptor_runs is not None:
+            (gen_dir / 'descriptor_guide.md').write_text((HERE / 'artifacts' / 'descriptor_guide.md').read_text())
+            (gen_dir / 'descriptor.py').write_text((HERE / 'artifacts' / 'descriptor_template.py').read_text()
+                                                   .replace("'kind': 'split'", f"'kind': '{target_kind}'"))
         gen_trace.emit("generation_start", f"Generation {generation}/{args.generations}; "
                        f"target={target_kind}; mode={plan['mode']}; reason={plan['reason']}; "
                        f"branch role={plan['branch_role']}; "
@@ -737,6 +865,10 @@ async def _run(args, revise_fn, run_dir, trace):
                 table, values['scores'], values['chosen'], generation, cell,
                 features=augmented_features(parent_sources[target_kind], table, args.policy_time_budget)))
         statistics_path = gen_dir / 'feature_statistics.json'
+        if statistics_version.get(target_kind) != memory.descriptor_generation:
+            # Registered descriptor columns join the whole-pool label-conditional statistics.
+            statistics[target_kind] = feature_statistics(train, target_kind)
+            statistics_version[target_kind] = memory.descriptor_generation
         statistics_path.write_text(render_compact_json(statistics[target_kind]) + '\n')
         feedback_info = write_train_feedback(report_path, parent_train, [], budgets,
                                              target_kind=target_kind, memory=memory.search(target_kind),
@@ -750,7 +882,8 @@ async def _run(args, revise_fn, run_dir, trace):
             parent_state, budgets, args.policy_time_budget, args.precision_margin, memory,
             max_evaluations=args.train_evaluations_per_generation, generation=generation, search_plan=plan,
             classifier_timeout=args.classifier_time_budget, classifier_memory_mb=args.classifier_memory_mb,
-            classifier_threads=args.classifier_threads, parent_selection=parent_selection[target_kind])
+            classifier_threads=args.classifier_threads, parent_selection=parent_selection[target_kind],
+            descriptor_budget=descriptor_budget)
         record = {"generation": generation, "accepted": False, "target_kind": target_kind,
                   "search_mode": plan['mode'], "search_reason": plan['reason'],
                   "search_branch_role": plan['branch_role'],
@@ -759,6 +892,7 @@ async def _run(args, revise_fn, run_dir, trace):
                   "selection_protocol": protocol.mode,
                   "parent_selection_precision": parent_selection[target_kind][0]["macro_precision"],
                   "parent_validation_precision": parent_validation["macro_precision"],
+                  "descriptors_referenced": [], "descriptor_inference": [],
                   "parent_policy_sha256": hashlib.sha256(source.encode()).hexdigest(),
                   "candidate_policy_sha256": None, "train": None, "validation": None}
         stage = "revision"
@@ -789,6 +923,13 @@ async def _run(args, revise_fn, run_dir, trace):
             if not research_status['complete']:
                 raise RuntimeError(research_status['requirement'] +
                     '; assigned-branch follow-up complete=' + str(research_status['followup_complete']))
+            stage = "validation_descriptors"
+            record['descriptors_referenced'] = experiments.required_descriptors(candidate_source)
+            if record['descriptors_referenced']:
+                record['descriptor_inference'] = experiments.ensure_descriptors(validation, record['descriptors_referenced'])
+                gen_trace.emit(stage, f"Computed {len(record['descriptors_referenced'])} registered descriptor columns "
+                               f"on {len(validation)} other brains for frozen inference",
+                               inference=record['descriptor_inference'])
             stage = "validation_evaluation"
             gen_trace.emit(stage, f"Measured submission; evaluating on all {len(validation)} validation brains "
                            "regardless of TRAIN gain")
@@ -827,6 +968,10 @@ async def _run(args, revise_fn, run_dir, trace):
                 parent_validation_state = candidate_validation_state
                 parent_train, parent_validation = candidate_train, candidate_validation
                 (run_dir / "best_scorer.py").write_text(source)
+                if record['descriptors_referenced']:
+                    _write(run_dir / "descriptors.json", experiments.descriptor_registry(record['descriptors_referenced']))
+                elif (run_dir / "descriptors.json").exists():
+                    (run_dir / "descriptors.json").unlink()
         except Exception as exc:
             # A failed/timeout policy is never substituted with a baseline measurement.
             record["reason"] = f"Failed: {type(exc).__name__}: {exc}"
@@ -852,6 +997,8 @@ async def _run(args, revise_fn, run_dir, trace):
         record['image_evidence'] = generation_image_evidence(gen_dir, record)
         _write(gen_dir / 'image_evidence.json', record['image_evidence'])
         record['train_evaluations_used'] = experiments.evaluations_used
+        record['descriptor_runs'] = experiments.descriptor_log
+        record['descriptor_seconds_used'] = experiments.descriptor_seconds_used
         record['research_status'] = experiments.research_status()
         receipt = record['research_status']
         gen_trace.emit('research_result', f"Research {receipt['status']}; "

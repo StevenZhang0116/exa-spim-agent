@@ -91,6 +91,47 @@ def analyze_volume(module, contexts, images, request, output, np):
     output.flush()
 
 
+def describe_rows(module, contexts, images, request, output, np):
+    """Agent descriptor over cached contexts: one finite-or-NaN row per context, deterministic."""
+    names = request['feature_names']
+    values = np.empty((len(contexts), len(names)), dtype=np.float64)
+    for index, description in enumerate(contexts):
+        context = copy.deepcopy(description)
+        if images is not None:
+            patches = images[index]
+            if len(patches) > 1:
+                raise ValueError('A descriptor context carries at most one patch')
+            if patches:
+                context.update(patches[0])
+        fragment = context['fragment']
+        for name, dtype in (('xyz_um', float), ('radius_um', float), ('degree', int), ('segment', int),
+                            ('edges', int), ('anchor_nodes', int), ('outside_radius', bool),
+                            ('nodes_zyx', float), ('inside_patch', bool)):
+            if name not in fragment:
+                continue
+            array = np.asarray(fragment[name], dtype=dtype)
+            if name == 'edges':
+                array = array.reshape(-1, 2)
+            if name == 'nodes_zyx':
+                array = array.reshape(-1, 3)
+            array.flags.writeable = False
+            fragment[name] = array
+        results = []
+        for _ in range(2):
+            result = module.describe(copy.deepcopy(context))
+            if not isinstance(result, dict) or set(result) != set(names):
+                raise ValueError('describe(context) must return a dict with exactly the declared feature_names')
+            row = np.asarray([result[name] for name in names], dtype=np.float64)
+            if row.shape != (len(names),) or np.isinf(row).any():
+                raise ValueError('Descriptor values must be finite scalars or NaN, never infinity')
+            results.append(row)
+        if not np.array_equal(*results, equal_nan=True):
+            raise ValueError('describe(context) must be deterministic')
+        values[index] = results[0]
+    np.save(output, values, allow_pickle=False)
+    output.flush()
+
+
 def extract(module, root, request, output, np):
     names = request['feature_names']
     values = np.empty((request['rows'], len(names)), dtype=np.float64)
@@ -133,16 +174,17 @@ def main():
     program = (root / 'training.py').read_text()
     status = (root / 'status.json').open('w')
     output_name = {'predict': 'scores.npy', 'extract': 'local_features.npy',
-                   'extract_image': 'local_features.npy', 'analyze_volume': 'analysis.json'}.get(request['mode'])
+                   'extract_image': 'local_features.npy', 'analyze_volume': 'analysis.json',
+                   'describe': 'descriptors.npy'}.get(request['mode'])
     output = (root / output_name).open('wb') if output_name else None
     artifacts, scratch = root / 'artifacts', root / 'scratch'
     started = time.monotonic()
     try:
-        if request['mode'] not in ('fit', 'predict', 'extract', 'extract_image', 'analyze_volume'):
+        if request['mode'] not in ('fit', 'predict', 'extract', 'extract_image', 'analyze_volume', 'describe'):
             raise ValueError('Unknown model worker mode')
         reads = ([root / 'training.py', root / 'contexts.jsonl'] if request['mode'] == 'extract'
                  else [root / 'training.py', root / 'X.npy', artifacts])
-        if request['mode'] == 'analyze_volume':
+        if request['mode'] in ('analyze_volume', 'describe'):
             reads = [root / 'training.py', root / 'volume_contexts.json']
         if request['mode'] == 'fit':
             reads.append(root / 'y.npy')
@@ -157,13 +199,14 @@ def main():
             import random
             random.seed(request['random_seed'])
             np.random.seed(request['random_seed'])
-        if request['mode'] == 'analyze_volume':
+        if request['mode'] in ('analyze_volume', 'describe'):
             contexts = json.loads((root / 'volume_contexts.json').read_text())
         elif request['mode'] != 'extract':
             x = pd.DataFrame(np.load(root / 'X.npy', allow_pickle=False), columns=request['columns'])
             params = request['config']['parameters']
         images = ImageDataset(root, np) if request.get('image_inputs') else None
-        expected_rows = len(contexts) if request['mode'] == 'analyze_volume' else (len(x) if images is not None else 0)
+        expected_rows = (len(contexts) if request['mode'] in ('analyze_volume', 'describe')
+                         else (len(x) if images is not None else 0))
         if images is not None and len(images) != expected_rows:
             raise ValueError('Image inputs are not aligned with feature rows')
         # Stable module name supports pickle/joblib of agent-defined classes.
@@ -177,6 +220,8 @@ def main():
             extract_image(module, x, images, request, output, np)
         elif request['mode'] == 'analyze_volume':
             analyze_volume(module, contexts, images, request, output, np)
+        elif request['mode'] == 'describe':
+            describe_rows(module, contexts, images, request, output, np)
         elif request['mode'] == 'fit':
             y = np.load(root / 'y.npy', allow_pickle=False)
             if y.shape != (len(x),) or not np.isin(y, [0, 1]).all():

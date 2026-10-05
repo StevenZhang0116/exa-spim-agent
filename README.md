@@ -291,10 +291,12 @@ On an allocated compute node in panda:
 python -u proofreader_evolve/prepare_feature_tables.py --brains 794495 789202 794491 794493 802449 --mcl 100
 python -m proofreader_evolve.cli.preflight --brains 794495 789202 794491 794493 802449 \
   --train-brains 794495 802449 --mcl 100
+python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802449 789202 794493 794491 --mcl 100 --readers 16
 python -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495,802449 --selection-brains 802449 \
   --validation-brains 789202,794493,794491 \
-  --merge-k 100 --split-k 100 --generations 1
+  --merge-k 100 --split-k 100 --generations 1 \
+  --context-cache proofreader_evolve/context_cache --descriptor-workers auto
 # Historical in-sample ranking with the detector-fitted TRAIN brain alone:
 python -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495 --validation-brains auto --selection-protocol in_sample \
@@ -495,7 +497,7 @@ Image access requires host registration receipts in `configs/image_alignment.jso
 (or `--image-alignment PATH`). The reader uses explicit OME-Zarr axes, units,
 scale/translation, channel and timepoint. To audit new/changed sources on n257,
 run `python -m proofreader_evolve.cli.check_image_alignment --brains BRAIN_IDS
---out proofreader_evolve/image_audits/REVIEW_ID`; use `--image-uri` for an explicit
+--out docs/image_alignment_review_<DATE>`; use `--image-uri` for an explicit
 single-brain source override. Inspect the saved overlays before recording a
 receipt with the same brains/output plus `--record-reviewed --review-note "..."`.
 This only checks sampled registration, not all candidate locations or error labels.

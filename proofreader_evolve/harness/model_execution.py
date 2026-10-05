@@ -79,6 +79,15 @@ def predict_model(model, store, frame, kind, timeout=120, memory_mb=8192):
     if kind != model['kind']:
         raise ModelExecutionError('Trained-model kind does not match prediction request')
     artifacts = verify_artifacts(model, store)
+    columns = model.get('columns')
+    if columns is not None:
+        missing = [name for name in columns if name not in frame.columns]
+        if missing:
+            raise ModelExecutionError(f'Prediction input lacks {len(missing)} training columns, e.g. {missing[:3]}; '
+                                      'registered descriptors must be computed for this table first')
+        attrs = dict(frame.attrs)
+        frame = frame[list(columns)]
+        frame.attrs.update(attrs)
     with tempfile.TemporaryDirectory(prefix='model_predict_') as tmp:
         root = Path(tmp)
         shutil.copytree(artifacts, root / 'artifacts')

@@ -25,10 +25,12 @@ from .hypothesis_memory import HypothesisMemory
 from .research_evidence import ResearchEvidence, program_identity, has_measurement, scoring_source
 from .isolated_scoring import preflight, ScorerExecutionError
 from .selection_protocol import SelectionProtocol, load_selection, save_selection
+from .descriptor_contract import descriptor_spec, referenced_columns, COLUMN_PREFIX
+from .descriptor_runs import SCOPES as DESCRIPTOR_SCOPES
 from .local_context import resolve_train_candidate
 from .local_features import augmented_features
 from .model_execution import ModelExecutionError
-from .scorer_components import compose
+from .scorer_components import compose, components
 from .search_proposals import read_proposal, formula_info, parameter_candidates
 from .train_feedback import metrics_only, write_train_feedback
 from .train_coverage import TrainingCoverage
@@ -53,7 +55,7 @@ def in_sample_precision(report, kind):
 
 class ExperimentMemory:
     """Host-owned archive: no validation values or validation decision reasons."""
-    def __init__(self, run_dir, *, train=None, protocol=None, fit_limits=None):
+    def __init__(self, run_dir, *, train=None, protocol=None, fit_limits=None, descriptor_runs=None):
         self.path = run_dir / 'train_experiments.jsonl'
         self.artifact_store = run_dir / 'model_artifacts'
         self.entries, self.cache, self.candidates = [], {}, {}
@@ -62,6 +64,10 @@ class ExperimentMemory:
         self.protocol = protocol
         self.fit_limits = dict(fit_limits or {})
         self.oof_scores = {}
+        # Agent descriptors: pool-scale computations over the cached contexts. The registry
+        # maps registered columns to the code that produced them, for the whole run.
+        self.descriptor_runs = descriptor_runs
+        self.descriptors, self.descriptor_programs, self.descriptor_generation = {}, {}, 0
         if protocol is not None:
             self.coverage = TrainingCoverage(protocol.selection_train)
         else:
@@ -184,7 +190,7 @@ class TrainingExperiments:
                  train, parent_report, parent_state, budgets, timeout, margin,
                  memory, max_evaluations=8, generation=0, search_plan=None,
                  classifier_timeout=300, classifier_memory_mb=8192, classifier_threads=1,
-                 parent_selection=None):
+                 parent_selection=None, descriptor_budget=None):
         self.gen_dir, self.policy_path, self.rules_path = gen_dir, policy_path, rules_path
         self.proposal_path = gen_dir / 'proposal.json'
         self.training_path = gen_dir / 'training.py'
@@ -214,6 +220,9 @@ class TrainingExperiments:
         self.lock, self.trace = asyncio.Lock(), Trajectory(gen_dir)
         self.feature_diagnostics = []
         self.frame_cache = (None, None)
+        self.descriptor_budget = {'per_call_seconds': 1800., 'generation_seconds': 5400., **(descriptor_budget or {})}
+        self.descriptor_seconds_used, self.descriptor_log = 0., []
+        self.descriptor_path = gen_dir / 'descriptor.py'
         if parent_selection is None:
             parent_selection = self.memory.selection_measurement(
                 target_kind, parent_sources[target_kind], parent_state, gen_dir / 'parent_selection',
@@ -1081,6 +1090,198 @@ class TrainingExperiments:
                         f"evaluation units={report['evaluations_used']}; remaining={self.remaining}", **report)
         return report
 
+    # ---- Agent descriptors over the cached band -------------------------------------------
+    @property
+    def descriptor_seconds_remaining(self):
+        return max(0., self.descriptor_budget['generation_seconds'] - self.descriptor_seconds_used)
+
+    def _read_descriptor(self):
+        if self.memory.descriptor_runs is None:
+            raise ValueError('Descriptor computation is unavailable: this run has no context cache (--context-cache)')
+        path = self.descriptor_path
+        if not path.is_file() or path.is_symlink():
+            raise ValueError('Write a regular descriptor.py in this generation')
+        program, spec = descriptor_spec(path.read_text())
+        if spec['kind'] != self.target_kind:
+            raise ValueError(f'DESCRIPTOR.kind must be {self.target_kind!r} in this generation')
+        for column in spec['columns']:
+            existing = self.memory.descriptors.get(column)
+            if existing is not None and existing['code_sha256'] != spec['code_sha256']:
+                raise ValueError(f'{column} is already registered by different code in this run; choose new names')
+        return program, spec
+
+    def _descriptor_tables(self):
+        return {brain: bank.tables[self.target_kind] for brain, bank in self.train.items()}
+
+    def _descriptor_source(self, spec):
+        return 'raw_image' if spec['inputs'] != 'geometry' else 'local_geometry'
+
+    def plan_descriptor_run(self):
+        """Time describe on a small sample and extrapolate each scope; no evaluation charge."""
+        program, spec = self._read_descriptor()
+        runs = self.memory.descriptor_runs
+        brain = self.protocol.selection_brains[0]
+        table = self.train[brain].tables[self.target_kind]
+        per_call = self.descriptor_budget['per_call_seconds']
+        plan = runs.plan(table, program, spec, k=self.budgets[self.target_kind], timeout=min(600., per_call))
+        k = self.budgets[self.target_kind]
+        allowance = min(per_call, self.descriptor_seconds_remaining)
+        response = {'status': 'planned', 'code_sha256': spec['code_sha256'], 'columns': spec['columns'],
+                    'inputs': spec['inputs'], 'image_tier': spec['image_tier'] if spec['inputs'] != 'geometry' else None,
+                    'timed_on_brain': brain, **plan,
+                    'budget': {'per_call_seconds': per_call, 'generation_seconds_remaining': self.descriptor_seconds_remaining,
+                               'evaluations_remaining': self.remaining},
+                    'fits_budget': {scope: plan['estimates'][scope]['estimated_seconds'] <= allowance for scope in plan['estimates']},
+                    'cached': {scope: all(runs.cached(t, spec, scope, k) for t in self._descriptor_tables().values())
+                               for scope in DESCRIPTOR_SCOPES},
+                    'note': 'Estimates assume linear scaling across workers; an uncached compute_descriptors call costs one evaluation unit.'}
+        directory = self.gen_dir / 'descriptor_plans'
+        directory.mkdir(exist_ok=True)
+        path = directory / f'plan{len(list(directory.glob("plan*.json"))) + 1:03d}.json'
+        path.write_text(json.dumps(response, indent=2, allow_nan=False))
+        self._record_research('plan_descriptor_run', self._descriptor_source(spec), 'observation',
+            {'code_sha256': spec['code_sha256'], 'sample_rows': plan['sample_rows']}, True, path)
+        estimates = ', '.join('%s: %.0fs' % (scope, item['estimated_seconds']) for scope, item in plan['estimates'].items())
+        self.trace.emit('descriptor_plan', f"{spec['columns']}: {plan['seconds_per_row_single_worker']:.3f}s/row single worker; "
+                        f"estimates {{{estimates}}}", **{k: v for k, v in response.items() if k != 'note'})
+        return response
+
+    def compute_descriptors(self, scope='pilot'):
+        """Run describe over the cached band of every TRAIN brain; register the columns."""
+        if scope not in DESCRIPTOR_SCOPES:
+            raise ValueError(f'scope must be one of {DESCRIPTOR_SCOPES}')
+        program, spec = self._read_descriptor()
+        runs = self.memory.descriptor_runs
+        tables = self._descriptor_tables()
+        k = self.budgets[self.target_kind]
+        cached = all(runs.cached(table, spec, scope, k) for table in tables.values())
+        per_call = self.descriptor_budget['per_call_seconds']
+        if not cached:
+            if self.descriptor_seconds_remaining <= 0:
+                raise ValueError('The per-generation descriptor wall budget is exhausted; use cached results or submit')
+            if self.remaining <= 0:
+                return {'status': 'budget_exhausted', 'evaluations_used': self.evaluations_used,
+                        'message': 'No evaluation units remain for an uncached descriptor computation.'}
+            self.evaluations_used += 1
+        number = len(self.descriptor_log) + 1
+        directory = self.gen_dir / 'descriptor_runs' / f'run{number:03d}'
+        directory.mkdir(parents=True)
+        (directory / 'descriptor.py').write_text(program)
+        (directory / 'spec.json').write_text(json.dumps(spec, indent=2))
+        started = time.monotonic()
+        entry = {'run': f'{self.gen_dir.name}/descriptor{number:03d}', 'code_sha256': spec['code_sha256'],
+                 'columns': spec['columns'], 'inputs': spec['inputs'],
+                 'image_tier': spec['image_tier'] if spec['inputs'] != 'geometry' else None, 'scope': scope,
+                 'target_kind': self.target_kind, 'status': 'running', 'cached': cached, 'charged': not cached,
+                 'brains': sorted(tables)}
+        self.trace.emit('descriptor_compute_start', f"{entry['run']}: {spec['columns']} over scope {scope} "
+                        f"on {', '.join(sorted(tables))}; cached={cached}", **{k: v for k, v in entry.items()})
+        results = {}
+        try:
+            for brain, table in sorted(tables.items()):
+                allowance = per_call if cached else max(1., min(per_call, self.descriptor_seconds_remaining)
+                                                        - (time.monotonic() - started))
+                results[brain] = runs.compute(table, program, spec, scope, k=k, wall_budget=allowance,
+                                              log_dir=directory / brain)
+            for brain, table in tables.items():
+                runs.register(table, spec['columns'], results[brain]['rows'], results[brain]['values'])
+            self.memory.descriptor_programs[spec['code_sha256']] = {'program': program, 'spec': spec}
+            for column in spec['columns']:
+                self.memory.descriptors[column] = {'code_sha256': spec['code_sha256'], 'scope': scope,
+                    'kind': self.target_kind, 'inputs': spec['inputs'], 'image_tier': entry['image_tier'],
+                    'registered_in': self.gen_dir.name}
+            self.memory.descriptor_generation += 1
+            entry.update(status='registered',
+                         summaries={brain: runs.summarize(table, spec['columns'], results[brain]['rows'], results[brain]['values'])
+                                    for brain, table in tables.items()},
+                         coverage={brain: {'computed_rows': int(len(r['rows'])), 'pool_rows': int(len(tables[brain].features)),
+                                           'cached': r['cached'], 'wall_seconds': r['wall_seconds'],
+                                           'workers': r['workers'], 'batches': r['batches']}
+                                   for brain, r in results.items()},
+                         selection_brains=list(self.protocol.selection_brains),
+                         auxiliary_brains=list(self.protocol.auxiliary_brains))
+        except Exception as exc:
+            entry.update(status='execution_error' if isinstance(exc, (ModelExecutionError, ValueError)) else 'error',
+                         error=f'{type(exc).__name__}: {exc}')
+        entry['wall_seconds'] = time.monotonic() - started
+        if not cached:
+            self.descriptor_seconds_used += entry['wall_seconds']
+        entry['descriptor_seconds_remaining'] = self.descriptor_seconds_remaining
+        (directory / 'result.json').write_text(json.dumps(entry, indent=2, allow_nan=False))
+        self.descriptor_log.append(entry)
+        registered = entry['status'] == 'registered'
+        self._record_research('compute_descriptors', self._descriptor_source(spec), 'measurement',
+            {'code_sha256': spec['code_sha256'], 'scope': scope, 'columns': spec['columns'],
+             'train': self._train_identity()}, registered, directory / 'result.json', cached=cached,
+            comparison=registered, outcome={'status': entry['status'], 'error': entry.get('error')})
+        self._save_hypothesis_feedback()
+        self.trace.emit('descriptor_compute_result', f"{entry['run']}: {entry['status']}; "
+                        f"{entry['wall_seconds']:.0f}s; evaluations remaining={self.remaining}; "
+                        f"descriptor seconds remaining={self.descriptor_seconds_remaining:.0f}",
+                        **{k: v for k, v in entry.items() if k != 'summaries'})
+        public = {**entry, 'evaluations_used': self.evaluations_used, 'evaluations_remaining': self.remaining}
+        if registered:
+            public['next'] = ('Use the columns in scorer.py or training.py (NaN outside the cached band; '
+                              'bank_context_available marks cached rows), or list them in research.feature_columns '
+                              'and call evaluate_feature_ablation for the out-of-fold increment.')
+        return public
+
+    def required_descriptors(self, source):
+        """Registered descriptor columns a (possibly bundled) scorer references."""
+        try:
+            parts = list(components(source).values())
+        except Exception:
+            parts = [source]
+        names = set()
+        for part in parts:
+            model = None
+            try:
+                model = frozen_model(part)
+            except (SyntaxError, ValueError):
+                model = None
+            if model is not None and model.get('columns') is not None:
+                names.update(c for c in model['columns'] if c.startswith(COLUMN_PREFIX))
+            else:
+                names.update(referenced_columns((model or {}).get('program') if model else part))
+        unknown = sorted(n for n in names if n not in self.memory.descriptors)
+        if unknown:
+            raise ValueError(f'Unregistered descriptor columns referenced: {unknown[:5]}; call compute_descriptors first')
+        return sorted(names)
+
+    def ensure_descriptors(self, tables_by_brain, columns, *, log_dir=None):
+        """Compute referenced descriptors on other brains for frozen inference; no summaries, no feedback."""
+        if not columns:
+            return []
+        runs = self.memory.descriptor_runs
+        groups = {}
+        for column in columns:
+            record = self.memory.descriptors[column]
+            groups[record['code_sha256']] = record['scope']
+        reports = []
+        for code, scope in groups.items():
+            stored = self.memory.descriptor_programs[code]
+            program, spec = stored['program'], stored['spec']
+            for brain, bank in sorted(tables_by_brain.items()):
+                table = bank.tables[spec['kind']]
+                if all(c in table.features.columns for c in spec['columns']):
+                    continue
+                result = runs.compute(table, program, spec, scope, k=self.budgets[spec['kind']],
+                                      wall_budget=self.descriptor_budget['per_call_seconds'],
+                                      log_dir=(log_dir or self.gen_dir / 'descriptor_runs' / 'inference') / brain / code[:12])
+                runs.register(table, spec['columns'], result['rows'], result['values'])
+                reports.append({'brain': brain, 'code_sha256': code, 'scope': scope, 'rows': int(len(result['rows'])),
+                                'cached': result['cached'], 'wall_seconds': result['wall_seconds']})
+        return reports
+
+    def descriptor_registry(self, columns=None):
+        """JSON-safe registry (code included) for resumable scorers."""
+        selected = self.memory.descriptors if columns is None else {c: self.memory.descriptors[c] for c in columns}
+        codes = {record['code_sha256'] for record in selected.values()}
+        return {'version': 'descriptor-registry-v1',
+                'columns': {column: dict(record) for column, record in selected.items()},
+                'programs': {code: {'program': self.memory.descriptor_programs[code]['program'],
+                                    'spec': self.memory.descriptor_programs[code]['spec']} for code in codes}}
+
     def mcp_server(self):
         from claude_agent_sdk import create_sdk_mcp_server, tool
 
@@ -1173,6 +1374,21 @@ class TrainingExperiments:
         async def evaluate_feature_ablation(arguments):
             return await invoke(self.evaluate_feature_ablation, arguments)
 
+        @tool('plan_descriptor_run', 'Time descriptor.py describe(context) on 64 cached rows with one worker and '
+              'extrapolate pilot/boundary/all_cached to the configured worker count and remaining wall budget. '
+              'No evaluation charge. Call with {}.', {})
+        async def plan_descriptor_run(arguments):
+            return await invoke(self.plan_descriptor_run, arguments)
+
+        @tool('compute_descriptors', 'Run descriptor.py describe(context) over the cached candidate band of every '
+              'TRAIN brain in parallel sandboxed workers and register the results as bank_agent_<name> predictor '
+              'columns. scope: pilot (512 rows), boundary (2000 rows each side of K) or all_cached (whole band). '
+              'Returns label-conditional TRAIN quartiles, finite fractions and coverage. One uncached call costs '
+              'one evaluation unit plus wall time; results are cached by code hash across generations and runs.',
+              {'scope': str})
+        async def compute_descriptors(arguments):
+            return await invoke(self.compute_descriptors, arguments)
+
         @tool('restore_candidate', 'Restore an immutable measured snapshot by short ID, e.g. '
               'gen002/attempt001, parent (assigned branch), or best (this generation). No evaluation charge.',
               {'candidate_id': str})
@@ -1199,4 +1415,5 @@ class TrainingExperiments:
             train_classifier, inspect_candidate, inspect_failure_cases, evaluate_feature_ablation,
             inspect_candidate_image, inspect_failure_images,
             run_volume_analysis, plan_image_scoring,
+            plan_descriptor_run, compute_descriptors,
             restore_candidate, search_memory])

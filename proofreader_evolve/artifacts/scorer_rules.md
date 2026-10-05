@@ -100,6 +100,9 @@ in the current generation's `proposal.json`.
   A new fit plus TRAIN scoring costs one shared budget unit; failed fits also
   cost one and receive no metric. Exact code/parameter repeats are cached.
   Print diagnostics for the saved worker.log and returned output tail.
+- With a context cache attached, `descriptor.py` plus `compute_descriptors` measures
+  any label-free quantity over the cached candidate band and registers it as
+  `bank_agent_*` predictors (NaN outside the band). See descriptor_guide.md.
 - Branches are ranked by the selection protocol named in the feedback: under
   grouped_oof, out-of-fold precision on selection brains from host-owned fold
   refits (one unit per configuration, folds included); in-sample TRAIN scores

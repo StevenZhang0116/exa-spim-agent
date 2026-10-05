@@ -3,7 +3,7 @@
 import json
 
 
-MAX_FEEDBACK_BYTES = 24_000
+MAX_FEEDBACK_BYTES = 48_000
 METRICS = ("precision", "tp", "fp", "requested_k", "effective_k", "pool_size", "positives", "recall")
 SELECTION_METRICS = ("protocol", "fold_budgets", "fold_tp", "fold_held_rows")
 
@@ -49,7 +49,7 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                  "train": metrics_only(h["train"]), "train_gate": h.get("train_gate")}
                 for h in history[-5:]]
     while True:
-        for per_class in (4, 2, 1):
+        for per_class, prune in ((4, False), (4, True), (2, True), (1, True)):
             report = {
                 "format": "stratified-train-v4" if selection is not None else "stratified-train-v3",
                 "reading_guide": (
@@ -73,6 +73,7 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                 **({f"{report_role}_selection": metrics_only(selection),
                     "selection_protocol": protocol} if selection is not None else {}),
                 "examples_per_group_limit": per_class,
+                "columns_pruned": prune,
                 "examples": {},
                 "ranking_delta": {name: c.get('ranking_delta') for name, c in example_source['cells'].items()},
                 "attempts": attempts,
@@ -89,7 +90,8 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                     group = e.get('group', 'selected_label0' if e['label'] == 0 else 'missed_positive')
                     grouped.setdefault(group, []).append(e)
                 examples = [e for group in grouped.values() for e in group[:per_class]]
-                features = sorted({key for e in examples for key in e["features"]})
+                features = sorted({key for e in examples for key in e["features"]
+                                   if not prune or e["features"].get(key) is not None})
                 report["examples"][name] = {
                     "available": len(available), "included": len(examples),
                     "labels": [e["label"] for e in examples],
