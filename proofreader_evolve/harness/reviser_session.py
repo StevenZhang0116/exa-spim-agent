@@ -49,7 +49,7 @@ def build_options(*, run_dir, system_prompt, model=DEFAULT_MODEL,
 
 
 def bind_session_options(options, policy_path, rules_path, report_path, *, readable_paths=(), training_server=None):
-    """Bind generation files and TRAIN tools, including analysis code/request; explicit reads only."""
+    """Bind generation files and TRAIN tools, including analysis and descriptor code; explicit reads only."""
     from claude_agent_sdk import HookMatcher
 
     run_dir = Path(options.cwd).resolve()

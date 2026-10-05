@@ -29,7 +29,9 @@ in the current generation's `proposal.json`.
   worker, then appends your features. Handle NaN for rows outside the deterministic
   context selection. All candidates still receive scores. GT graphs are excluded.
   Validation uses the same frozen extractor outside the LLM.
-- Use direct 3D code analysis as the primary image exploration path. Read
+- Use direct 3D code analysis to investigate image evidence on a few candidates;
+  with a context cache attached, `compute_descriptors` over the cached band is the
+  primary path (descriptor_guide.md). Read
   volume_analysis_guide.md; edit analysis.py and analysis_request.json, then call
   run_volume_analysis({}). Your code receives actual TRAIN voxels, validity,
   spacing, anchors and aligned local fragments. Eight independent executions

@@ -367,7 +367,7 @@ Detector-fitted brains cannot be validation brains. The reviser requires
 
 Each generation allows up to 24 SDK interaction turns by default; use
 `--reviser-max-turns 40` to change this independently of `--generations`.
-The reviser reads a compact TRAIN feedback file capped at 24 KB. Feature names
+The reviser reads a compact TRAIN feedback file capped at 48 KB. Feature names
 appear once per cell with aligned example vectors; values are rounded to six
 significant digits for display. It samples selected positives and label-0 rows,
 rows just below K, and missed positives. Each group keeps a fixed anchor and
@@ -463,8 +463,9 @@ existing prepared tables remain valid. See the
 [local context guide](proofreader_evolve/artifacts/local_context_guide.md) for the
 schema, feature example, limits and logs. No new launch flag is required.
 
-The primary image exploration path is **agent-written analysis of actual 3D
-volumes**. Edit `analysis.py` and `analysis_request.json`, then call
+Without a context cache, the image exploration path is **agent-written analysis
+of actual 3D volumes**; with `--context-cache`, `compute_descriptors` runs agent
+code over the whole cached band and is the primary path (`descriptor_guide.md`). Edit `analysis.py` and `analysis_request.json`, then call
 `run_volume_analysis({})`. An isolated worker passes original pixels, validity
 masks, spacing, candidate anchors and aligned local fragments to `analyze(context)`.
 It returns concise JSON findings, without requiring model fitting or 2D previews.

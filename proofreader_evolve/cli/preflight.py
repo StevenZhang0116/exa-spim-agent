@@ -1,6 +1,8 @@
 """Read-only launch checks; no brain loading, table building or evolution.
 
 Optional --check-api sends one tiny text-only request to the configured model.
+Optional --context-cache verifies that every brain/kind has a complete, identity-matching
+context cache entry (no chunk is read).
 It verifies direct Anthropic access, not the full reviser SDK/tool workflow.
 """
 

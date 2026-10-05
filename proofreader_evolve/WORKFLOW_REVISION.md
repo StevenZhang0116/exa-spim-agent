@@ -12,7 +12,7 @@ edit graphs, expand candidates, retrain detectors or deploy scorers automaticall
 flowchart TD
     A[TRAIN branches + matched failures + observed evidence] --> S[Priority follow-up or regular branch; assign required research]
     S --> B[Write formula or fit/predict program + parameters]
-    S --> V[Investigate TRAIN 3D patches with agent-written analysis]
+    S --> V["Investigate: compute_descriptors runs agent describe(context) over the cached band; 3D analysis on a few TRAIN patches"]
     V -->|Revise investigation within its separate budget| V
     V -->|Implement useful observations| B
     B --> C["Classifier: three host-owned fold refits on selection brains -> out-of-fold score; then full TRAIN fit, frozen. Formula: scored once under the same fold budgets"]
@@ -56,7 +56,9 @@ flowchart TD
    `search_parameters({})` measures the proposed grid and restores its best
    successful candidate by the official selection score (grouped out-of-fold
    precision on the selection brains under `grouped_oof`; see the v13 section
-   below). Tune mode enforces an unchanged formula AST. The default budget is 8 evaluation units,
+   below). With `--context-cache`, `compute_descriptors` runs agent-written
+   `describe(context)` over the cached candidate band and registers `bank_agent_*`
+   predictors (v14 section below). Tune mode enforces an unchanged formula AST. The default budget is 8 evaluation units,
    shared by new configurations and optional feature-diagnostic fold fits,
    plus one repair after the first execution error. Proposal-format errors and
    cache hits spend no scoring budget (but still use SDK turns).
@@ -758,7 +760,8 @@ CodeAct relationship are recorded below; discovery benefit is still unmeasured.
 Runs save `manifest.json`, `baseline.json`, `seed.json`, `final.json`,
 `best_scorer.py`, `ledger.jsonl`, `tool_audit.jsonl`, `candidate_pool.json`,
 `search_summary.json`, `auxiliary_ablation.json` (when auxiliary TRAIN brains
-exist), and per-generation `scorer.py`, `rules.md`, `proposal.json`,
+exist), `descriptors.json` (when the accepted scorer references agent descriptors),
+and per-generation `scorer.py`, `rules.md`, `proposal.json`,
 `search_plan.json`, `candidate_pool.json`, `train_feedback.json`, `evaluation.json`.
 `train_experiments.jsonl` archives all TRAIN attempts. Each generation's
 `experiments/attemptNNN/` keeps the proposal, component and combined source,
@@ -769,6 +772,9 @@ selection measurement (`selection_evaluation.json`, `selection_state.npz`). Each
 `classifier_fits/fitNNN/` keeps requests, TRAIN fingerprints, worker logs, model.json,
 training.py, scorer manifest and training_summary.json, or a failed-fit result,
 plus `selection_folds/foldN/` fold models under the `grouped_oof` protocol.
+`descriptor_plans/planNNN.json` and `descriptor_runs/runNNN/` keep each descriptor
+timing and computation (code, spec, per-brain worker logs, result); computed values
+live in the shared, code-hash-keyed `descriptor_bank/` outside the run directory.
 Run-level `model_artifacts/<digest>/` stores the model files referenced by those
 manifests. Every generation also saves training.py, model_environment.json,
 analysis.py and analysis_request.json. Direct analyses save immutable per-call

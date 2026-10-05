@@ -10,7 +10,6 @@ IDs never enter the cache.
 """
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -20,7 +19,7 @@ import numpy as np
 
 from .image_context import digest_json, file_hash
 from .image_coordinates import ImageGeometry
-from .local_context import _anchors, cache_identity
+from .local_context import cache_identity
 from .local_features import select_rows
 
 
@@ -198,7 +197,6 @@ class ContextCacheBuilder:
 
         def fetch(position):
             row = int(tier_rows[position])
-            anchors, _ = _anchors(table.kind, table.candidates[row], 0)
             t0 = time.monotonic()
             try:
                 data, metadata = image_reader(row, request)
@@ -364,7 +362,7 @@ class ContextEntry:
                 nodes = np.asarray(patch['nodes_zyx'])
                 fragment.update(nodes_zyx=nodes.tolist(),
                                 inside_patch=((nodes >= 0) & (nodes < patch['shape_zyx'])).all(axis=1).tolist())
-            values = frame.iloc[self._row_index(table, row)]
+            values = frame.iloc[row]
             contexts.append({'kind': table.kind, 'row_in_band': True,
                              'features': {str(k): float(v) if np.isfinite(v) else None for k, v in values.items()},
                              'fragment': fragment, 'radius_um': geometry['radius_um'],
@@ -374,10 +372,6 @@ class ContextEntry:
                              'occurrences_total': total, 'coordinates': COORDINATE_DOC})
             patches.append(None if patch is None else {k: patch[k] for k in ('image_zyx', 'valid_zyx', 'anchors_zyx', 'spacing_zyx_um')})
         return contexts, patches
-
-    @staticmethod
-    def _row_index(table, row):
-        return int(row)
 
     def summary(self):
         tiers = {name: {k: info.get(k) for k in ('level', 'radius_um', 'rows', 'failures', 'bytes')}

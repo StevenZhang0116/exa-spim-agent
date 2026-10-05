@@ -90,7 +90,9 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
             f"Whole-TRAIN feature statistics are at {policy_path.parent / 'feature_statistics.json'}. "
             "Use mcp__training__search_memory to look up related previous strategies before repeating them. "
             "Read failure_cases.json, hypothesis_memory.json and feature_discovery_guide.md once. "
-            "Use direct 3D analysis as the primary route for investigating image evidence. "
+            "Use direct 3D analysis to investigate image evidence on a few TRAIN candidates when no pool-scale "
+            "descriptor tools are offered; with a context cache attached, prefer compute_descriptors and keep "
+            "run_volume_analysis for debugging describe. "
             "Read volume_analysis_guide.md, edit analysis.py analyze(context) and analysis_request.json, "
             "then call run_volume_analysis({}). Your code receives full original 3D pixel arrays, "
             "valid masks, zyx voxel anchors/spacing and local fragment nodes in the same voxel frame. "
@@ -692,7 +694,8 @@ async def _run(args, revise_fn, run_dir, trace):
                     "entries": {f"{b}/{k}": cache.entry(bank.tables[k]).summary() for b, bank in banks.items() for k in kinds},
                     "restored_descriptors": sorted(restored_descriptors["columns"]) if restored_descriptors else []}
                     if descriptor_runs is not None else {"enabled": False}),
-                "volume_analysis": {"version": VOLUME_ANALYSIS_VERSION, "primary_image_exploration": True,
+                "volume_analysis": {"version": VOLUME_ANALYSIS_VERSION,
+                    "primary_image_exploration": descriptor_runs is None,
                     "executions_per_generation": MAX_ANALYSES, "candidates_per_execution": MAX_CASES,
                     "max_result_bytes": MAX_RESULT_BYTES, "worker_timeout_seconds": args.policy_time_budget,
                     "memory_mb": args.classifier_memory_mb, "threads": args.classifier_threads,

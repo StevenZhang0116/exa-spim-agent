@@ -19,7 +19,7 @@ import time
 import numpy as np
 
 from .descriptor_contract import DESCRIPTOR_VERSION
-from .image_context import digest_json, file_hash
+from .image_context import file_hash
 from .model_execution import ModelExecutionError, run_worker
 
 

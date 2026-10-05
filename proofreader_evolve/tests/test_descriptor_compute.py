@@ -249,7 +249,6 @@ from proofreader_evolve.harness.classifier_training import fit_classifier
 from proofreader_evolve.harness.classifier_contract import frozen_model
 from proofreader_evolve.harness.model_execution import predict_model
 from proofreader_evolve.harness.train_experiments import ExperimentMemory, TrainingExperiments
-from proofreader_evolve.harness.scorer_components import components
 from proofreader_evolve.tests.test_selection_protocol import FORMULA, two_brains
 
 
@@ -333,7 +332,6 @@ class SessionDescriptorTests(unittest.TestCase):
         archive = self.memory.path.read_text().lower()
         self.assertNotIn('validation', archive)
         self.assertEqual(self.session.descriptor_log[0]['status'], 'registered')
-        self.assertTrue(self.session.research_status()['complete'] or True)  # evidence recorded as a measurement
 
     def test_inference_side_computation_registers_without_feedback(self):
         self.session.descriptor_path.write_text(GEOMETRY_DESCRIPTOR)

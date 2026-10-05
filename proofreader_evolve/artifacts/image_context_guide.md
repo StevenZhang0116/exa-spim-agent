@@ -1,5 +1,9 @@
 # Candidate images: 3D exploration, features and learned models
 
+With a context cache attached, `compute_descriptors` (see `descriptor_guide.md`) is
+the direct route from pixels to predictors at pool scale; the `LOCAL_IMAGE` path
+below remains available for rows outside the cached band or custom patch sizes.
+
 Image access uses reviewed, registered raw fused fluorescence volumes. For
 exploration, write `analysis.py` and `analysis_request.json`, then call
 `run_volume_analysis({})`: your code receives actual 3D TRAIN pixels and aligned

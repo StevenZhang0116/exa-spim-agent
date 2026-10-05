@@ -270,6 +270,8 @@ def build_report_data(run_dir):
             'reason': row.get('reason'), 'failure_stage': row.get('failure_stage'),
             'parent_validation_precision': _number(row.get('parent_validation_precision')),
             'train_evaluations_used': row.get('train_evaluations_used'),
+            'descriptor_runs': [{key: run.get(key) for key in ('run', 'status', 'columns', 'scope', 'inputs', 'cached', 'wall_seconds')}
+                                for run in row.get('descriptor_runs') or []],
             'wall_seconds': _number(row.get('wall_seconds')),
             'cost_usd': _number(reviser.get('cost_usd')), 'agent_summary': reviser.get('summary'),
             'usage': reviser.get('usage'), 'progress': row.get('search_progress'),

@@ -112,6 +112,6 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
             memory = memory[:-1]
             continue
         if not attempts:
-            raise ValueError("Compact TRAIN feedback exceeds the 24 KB read budget even with one example "
+            raise ValueError(f"Compact TRAIN feedback exceeds the {MAX_FEEDBACK_BYTES // 1000} KB read budget even with one example "
                              "per group; reduce the number of training brains in this run")
         attempts = attempts[1:]

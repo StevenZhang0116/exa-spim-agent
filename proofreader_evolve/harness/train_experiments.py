@@ -1337,7 +1337,8 @@ class TrainingExperiments:
         async def inspect_failure_cases(arguments):
             return await invoke(self.inspect_failure_cases, arguments)
 
-        @tool('run_volume_analysis', 'Primary 3D exploration tool. Execute analysis.py analyze(context) on '
+        @tool('run_volume_analysis', 'Direct 3D exploration on a few TRAIN candidates; with a context cache attached, '
+              'prefer compute_descriptors and use this to debug describe. Execute analysis.py analyze(context) on '
               '1..4 TRAIN candidates selected in analysis_request.json. Full original 3D pixels, spacing, '
               'candidate anchors and aligned local fragments; arbitrary installed CPU analysis. '
               'Returns compact JSON results, not projections. Eight executions per generation, separate '

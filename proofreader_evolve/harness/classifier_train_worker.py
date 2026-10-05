@@ -1,4 +1,4 @@
-"""Fit, predict, extract features or analyze 3D volumes after OS isolation."""
+"""Fit, predict, extract features, analyze 3D volumes or run agent descriptors after OS isolation."""
 import copy
 import importlib.util
 import json
