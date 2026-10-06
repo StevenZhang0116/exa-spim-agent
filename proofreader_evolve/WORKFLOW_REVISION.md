@@ -8,6 +8,9 @@ edit graphs, expand candidates, retrain detectors or deploy scorers automaticall
 
 ![Fixed-pool scorer evolution with TRAIN search and development-validation selection](workflow_diagram.svg)
 
+A one-page visual overview (frozen inputs, the generation loop, outputs and the
+blindness boundary) is in [workflow_overview.svg](workflow_overview.svg).
+
 ```mermaid
 flowchart TD
     K["Allocate the kind: pending follow-up › floor › recent gate-passing gain › headroom"] --> A

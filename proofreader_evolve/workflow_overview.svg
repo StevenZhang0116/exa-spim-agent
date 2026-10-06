@@ -1,0 +1,257 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" font-family="'Helvetica Neue',Arial,'Liberation Sans',sans-serif" role="img" aria-labelledby="title description">
+  <title id="title">proofreader_evolve at a glance</title>
+  <desc id="description">Visual overview of the proofreader_evolve loop. Frozen inputs on the left: two TRAIN brains (794495 auxiliary, 802449 selection), three development-validation brains hidden from the agent, frozen detectors producing fixed candidate pools with K = 2000 per kind, and a context cache of fragment neighbourhoods plus level-1 and level-0 image patches for the top 20,000 candidates per brain and kind. The generation loop in the middle: the host allocates the kind (pending follow-up, floor, recent gain, headroom) and the starting branch (a newly promoted reference first, otherwise the champion for tuning or an alternative for exploration); the agent revises scorer, training and descriptor code from TRAIN feedback; the host measures on TRAIN with fold refits, pool-scale descriptors and paired ablations; the submission is scored by frozen inference on the hidden brains; the promotion gate requires the equal-brain mean Precision@K gain to clear paired-bootstrap noise; the TRAIN archive keeps up to five branches per kind for behavioural diversity: the champion, specialists that recover positives others miss, near-best alternatives with different Top-K sets or formulas, and the protected accepted reference; one branch is the starting point of each generation. Outputs on the right: best_scorer.py with model artifacts and descriptors.json, ledger and report, and per-kind validation curves (merge and split) of run precision_20261005_114814. The bottom band states what the agent never sees.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0,0 L11,6 L0,12 z" fill="#475569"/></marker>
+    <marker id="arrow-loop" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0,0 L11,6 L0,12 z" fill="#334155"/></marker>
+    <marker id="arrow-green" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0,0 L11,6 L0,12 z" fill="#16a34a"/></marker>
+    <marker id="arrow-amber" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0,0 L11,6 L0,12 z" fill="#d97706"/></marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.12"/></filter>
+    <pattern id="hatch" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="10" stroke="#f59e0b" stroke-width="2" opacity="0.3"/></pattern>
+    <style>
+      .h1 { font-size: 40px; font-weight: 700; fill: #0f172a; }
+      .h2 { font-size: 20px; fill: #64748b; }
+      .lane { font-size: 20px; font-weight: 700; fill: #334155; }
+      .t { font-size: 15px; fill: #475569; }
+      .ts { font-size: 13px; fill: #64748b; }
+      .node-title { font-size: 19px; font-weight: 700; }
+      .badge { font-size: 17px; font-weight: 700; fill: #fff; text-anchor: middle; }
+      .brain { fill: #f1f5f9; stroke: #94a3b8; stroke-width: 2; }
+      .code { font-family: monospace; font-size: 14px; fill: #3730a3; }
+    </style>
+  </defs>
+
+  <rect width="1920" height="1080" fill="#f8fafc"/>
+
+  <!-- header -->
+  <text x="70" y="70" class="h1">proofreader_evolve at a glance</text>
+  <text x="70" y="104" class="h2">A fresh agent session rewrites one scorer component per generation; the host measures, scores hidden brains and promotes only gains that beat resampling noise.</text>
+  <g font-size="16" fill="#334155">
+    <rect x="1395" y="52" width="26" height="18" rx="4" fill="#dbeafe" stroke="#3b82f6" stroke-width="2"/><text x="1430" y="67">agent</text>
+    <rect x="1500" y="52" width="26" height="18" rx="4" fill="#dcfce7" stroke="#16a34a" stroke-width="2"/><text x="1535" y="67">host compute</text>
+    <rect x="1665" y="52" width="26" height="18" rx="4" fill="#eef2ff" stroke="#6366f1" stroke-width="2"/><text x="1700" y="67">gate / frozen</text>
+  </g>
+
+  <!-- ===================== LEFT: frozen inputs ===================== -->
+  <text x="70" y="160" class="lane">FROZEN INPUTS</text>
+
+  <!-- TRAIN brains -->
+  <rect x="70" y="178" width="440" height="150" rx="16" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#shadow)"/>
+  <text x="90" y="206" font-size="17" font-weight="700" fill="#0f172a">TRAIN brains</text>
+  <text x="90" y="226" class="ts">feedback, fitting rows and the official selection score</text>
+  <g>
+    <ellipse cx="150" cy="282" rx="52" ry="34" class="brain"/>
+    <path d="M118 282 q16 -22 32 0 q16 22 32 0" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+    <text x="150" y="276" font-size="14" font-weight="700" fill="#0f172a" text-anchor="middle">794495</text>
+    <text x="150" y="294" font-size="11" fill="#64748b" text-anchor="middle">auxiliary · detector-fitted</text>
+  </g>
+  <g>
+    <ellipse cx="300" cy="282" rx="52" ry="34" class="brain"/>
+    <path d="M268 282 q16 -22 32 0 q16 22 32 0" fill="none" stroke="#94a3b8" stroke-width="1.5"/>
+    <text x="300" y="276" font-size="14" font-weight="700" fill="#0f172a" text-anchor="middle">802449</text>
+    <text x="300" y="294" font-size="11" fill="#64748b" text-anchor="middle">selection · OOF score</text>
+  </g>
+  <text x="372" y="262" class="ts">3 purged folds</text>
+  <text x="372" y="280" class="ts">fold budgets sum to K</text>
+  <text x="372" y="298" class="ts">in-sample = diagnostic</text>
+
+  <!-- validation brains (hidden) -->
+  <rect x="70" y="346" width="440" height="150" rx="16" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="70" y="346" width="440" height="150" rx="16" fill="url(#hatch)"/>
+  <text x="90" y="374" font-size="17" font-weight="700" fill="#92400e">Development-validation brains · hidden from the agent</text>
+  <g>
+    <ellipse cx="150" cy="428" rx="48" ry="29" class="brain"/><text x="150" y="433" font-size="14" font-weight="700" fill="#0f172a" text-anchor="middle">789202</text>
+    <ellipse cx="290" cy="428" rx="48" ry="29" class="brain"/><text x="290" y="433" font-size="14" font-weight="700" fill="#0f172a" text-anchor="middle">794493</text>
+    <ellipse cx="430" cy="428" rx="48" ry="29" class="brain"/><text x="430" y="433" font-size="14" font-weight="700" fill="#0f172a" text-anchor="middle">794491</text>
+  </g>
+  <text x="90" y="472" class="ts">equal-brain mean of merge/split Precision@K decides promotion</text>
+  <text x="90" y="489" class="ts">queried every generation: development data, not a final test</text>
+
+  <!-- detectors and pools -->
+  <rect x="70" y="514" width="440" height="160" rx="16" fill="#eef2ff" stroke="#6366f1" stroke-width="2" filter="url(#shadow)"/>
+  <text x="90" y="542" font-size="17" font-weight="700" fill="#3730a3">Frozen detectors → fixed candidate pools</text>
+  <text x="90" y="562" class="ts">fitted on 794495 · K = 2000 per kind · never retrained</text>
+  <!-- merge junction icon -->
+  <g stroke="#3730a3" stroke-width="3" fill="none" stroke-linecap="round">
+    <path d="M230 640 L270 606 L310 640"/><path d="M270 606 L270 578"/>
+  </g>
+  <circle cx="270" cy="606" r="6" fill="#dc2626"/>
+  <text x="270" y="660" font-size="12" fill="#3730a3" text-anchor="middle">merge junction</text>
+  <!-- split pair icon -->
+  <g stroke="#3730a3" stroke-width="3" fill="none" stroke-linecap="round">
+    <path d="M375 640 L420 608"/><path d="M450 600 L495 570"/>
+  </g>
+  <circle cx="420" cy="608" r="6" fill="#dc2626"/><circle cx="450" cy="600" r="6" fill="#dc2626"/>
+  <text x="435" y="660" font-size="12" fill="#3730a3" text-anchor="middle">split endpoint pair</text>
+  <text x="90" y="600" font-size="12" fill="#475569">agent sees features</text>
+  <text x="90" y="616" font-size="12" fill="#475569">+ detector_score;</text>
+  <text x="90" y="632" font-size="12" fill="#475569">labels stay host-side</text>
+
+  <!-- context cache -->
+  <rect x="70" y="692" width="440" height="190" rx="16" fill="#dcfce7" stroke="#16a34a" stroke-width="2" filter="url(#shadow)"/>
+  <text x="90" y="720" font-size="17" font-weight="700" fill="#166534">Context cache · top 20,000 per brain &amp; kind</text>
+  <text x="90" y="740" class="ts">raw inputs only, built once; nothing here is a feature</text>
+  <!-- fragment neighbourhood tile -->
+  <rect x="92" y="756" width="120" height="100" rx="8" fill="#ffffff" stroke="#16a34a" stroke-width="1.5"/>
+  <g stroke="#2563eb" stroke-width="2.5" fill="none" stroke-linecap="round">
+    <path d="M104 840 C 125 812, 150 820, 165 790 S 190 770, 204 762"/><path d="M128 846 L 150 822"/><path d="M165 790 L 184 812"/>
+  </g>
+  <circle cx="150" cy="820" r="4" fill="#dc2626"/>
+  <text x="152" y="872" font-size="12" fill="#166534" text-anchor="middle">fragments · 50 µm</text>
+  <!-- level1 tile -->
+  <rect x="236" y="756" width="120" height="100" rx="8" fill="#111827" stroke="#16a34a" stroke-width="1.5"/>
+  <!-- same fibre as the level-0 tile, seen at half resolution: thick and blurred; the thin side
+       branch is only a faint smear, and the dashed box marks the level-0 field of view -->
+  <path d="M248 834 C 270 800, 300 806, 344 768" fill="none" stroke="#e5e7eb" stroke-width="9" stroke-linecap="round" opacity="0.85"/>
+  <path d="M296 806 L 312 822" fill="none" stroke="#e5e7eb" stroke-width="7" stroke-linecap="round" opacity="0.28"/>
+  <rect x="266" y="776" width="60" height="56" fill="none" stroke="#86efac" stroke-width="1.2" stroke-dasharray="3 3"/>
+  <text x="296" y="872" font-size="12" fill="#166534" text-anchor="middle">level 1 · 30 µm</text>
+  <!-- level0 tile -->
+  <rect x="380" y="756" width="110" height="100" rx="8" fill="#111827" stroke="#16a34a" stroke-width="1.5"/>
+  <!-- the dashed region of the level-1 tile at full resolution: the fibre is sharp and the side branch resolved -->
+  <path d="M392 832 C 410 802, 440 804, 478 768" fill="none" stroke="#f3f4f6" stroke-width="4" stroke-linecap="round"/>
+  <path d="M430 804 L 450 824" fill="none" stroke="#f3f4f6" stroke-width="3" stroke-linecap="round"/>
+  <text x="435" y="872" font-size="12" fill="#166534" text-anchor="middle">level 0 · 16 µm</text>
+
+  <!-- ===================== CENTER: generation loop ===================== -->
+  <text x="650" y="160" class="lane">ONE GENERATION · repeated; early stop per kind</text>
+  <circle cx="1000" cy="560" r="300" fill="none" stroke="#cbd5e1" stroke-width="2" stroke-dasharray="6 6"/>
+  <!-- arcs between nodes (clockwise), trimmed to the node boxes -->
+  <g fill="none" stroke="#334155" stroke-width="3.5" marker-end="url(#arrow-loop)">
+    <path d="M1185 324 A300 300 0 0 1 1252 397"/>
+    <path d="M1293 622 A300 300 0 0 1 1236 745"/>
+    <path d="M1026 859 A300 300 0 0 1 974 859"/>
+    <path d="M764 745 A300 300 0 0 1 703 528"/>
+    <path d="M748 397 A300 300 0 0 1 841 306"/>
+  </g>
+
+  <!-- node 1: allocate kind and starting branch (top) -->
+  <g transform="translate(1000,260)">
+    <rect x="-150" y="-56" width="300" height="112" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="2" filter="url(#shadow)"/>
+    <circle cx="-126" cy="-30" r="14" fill="#0f172a"/><text x="-126" y="-24" class="badge">1</text>
+    <text x="-104" y="-24" class="node-title" fill="#166534">Pick the kind and branch</text>
+    <text x="-138" y="2" font-size="13.5" fill="#475569">kind: follow-up › floor › gain › headroom</text>
+    <text x="-138" y="20" font-size="13.5" fill="#475569">branch: promoted reference first, else</text>
+    <text x="-138" y="38" font-size="13.5" fill="#475569">champion to tune, alternative to explore</text>
+  </g>
+  <!-- node 2: agent revises (right-up) -->
+  <g transform="translate(1300,467)">
+    <rect x="-150" y="-56" width="300" height="112" rx="14" fill="#dbeafe" stroke="#3b82f6" stroke-width="2" filter="url(#shadow)"/>
+    <circle cx="-126" cy="-30" r="14" fill="#0f172a"/><text x="-126" y="-24" class="badge">2</text>
+    <text x="-104" y="-24" class="node-title" fill="#1e3a8a">Agent revises</text>
+    <text x="-138" y="2" class="t">reads TRAIN feedback, failure cases</text>
+    <text x="-138" y="22" class="t">edits scorer / training / descriptor.py</text>
+    <text x="-138" y="42" class="t">8 evaluation units, fresh session</text>
+  </g>
+  <!-- node 3: measure on TRAIN (right-down) -->
+  <g transform="translate(1176,803)">
+    <rect x="-130" y="-56" width="260" height="112" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="2" filter="url(#shadow)"/>
+    <circle cx="-106" cy="-30" r="14" fill="#0f172a"/><text x="-106" y="-24" class="badge">3</text>
+    <text x="-84" y="-24" class="node-title" fill="#166534">Measure on TRAIN</text>
+    <text x="-118" y="2" class="t">fold refits → out-of-fold P@K</text>
+    <text x="-118" y="22" class="t">descriptors over the cached band</text>
+    <text x="-118" y="42" class="t">paired ablations in sandboxes</text>
+  </g>
+  <!-- node 4: validate hidden brains (left-down) -->
+  <g transform="translate(824,803)">
+    <rect x="-130" y="-56" width="260" height="112" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="2" filter="url(#shadow)"/>
+    <circle cx="-106" cy="-30" r="14" fill="#0f172a"/><text x="-106" y="-24" class="badge">4</text>
+    <text x="-84" y="-24" class="node-title" fill="#166534">Score hidden brains</text>
+    <text x="-118" y="2" class="t">frozen inference of the submission</text>
+    <text x="-118" y="22" class="t">descriptors recomputed per brain</text>
+    <text x="-118" y="42" class="t">no result returns to the agent</text>
+  </g>
+  <!-- node 5: promotion gate (left-up) -->
+  <g transform="translate(680,467)">
+    <rect x="-160" y="-56" width="320" height="112" rx="14" fill="#eef2ff" stroke="#6366f1" stroke-width="2" filter="url(#shadow)"/>
+    <circle cx="-136" cy="-30" r="14" fill="#0f172a"/><text x="-136" y="-24" class="badge">5</text>
+    <text x="-114" y="-24" class="node-title" fill="#3730a3">Promotion gate</text>
+    <text x="-148" y="2" class="t">mean P@K gain beyond bootstrap noise?</text>
+    <text x="-148" y="22" font-size="15" font-weight="600" fill="#166534">yes → new parent + same-kind follow-up</text>
+    <text x="-148" y="42" font-size="15" font-weight="600" fill="#92400e">no → keep parent, retain the branch</text>
+  </g>
+  <!-- center archive: bounded, behaviourally diverse branches per kind -->
+  <circle cx="1000" cy="560" r="132" fill="#ffffff" stroke="#94a3b8" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1000" y="500" font-size="17" font-weight="700" fill="#0f172a" text-anchor="middle">TRAIN archive</text>
+  <text x="1000" y="517" font-size="12" fill="#64748b" text-anchor="middle">up to 5 branches per kind</text>
+  <g font-size="12" fill="#475569" text-anchor="middle">
+    <text x="1000" y="541">champion · best selection score</text>
+    <text x="1000" y="559">specialists · positives others miss</text>
+    <text x="1000" y="577">near-best · different Top-K or formula</text>
+    <text x="1000" y="595">reference · accepted, protected slot</text>
+  </g>
+  <text x="1000" y="618" font-size="12" fill="#64748b" text-anchor="middle">diverse in behaviour, not code text</text>
+  <text x="1000" y="634" font-size="12" fill="#64748b" text-anchor="middle">one start branch per generation</text>
+  <text x="1000" y="650" font-size="12" fill="#64748b" text-anchor="middle">validation never enters</text>
+
+  <!-- input arrows into the loop: routed around the loop, never across nodes or arcs -->
+  <path d="M512 262 C 560 262, 590 190, 650 190 H 1300 V 404" fill="none" stroke="#475569" stroke-width="2.5" stroke-dasharray="7 5" marker-end="url(#arrow)"/>
+  <text x="700" y="183" class="ts">TRAIN feedback → agent · fitting rows → host measurements</text>
+  <path d="M512 594 C 560 594, 600 803, 690 803" fill="none" stroke="#d97706" stroke-width="2.5" marker-end="url(#arrow-amber)"/>
+  <text x="522" y="768" class="ts" fill="#92400e">validation</text>
+  <text x="522" y="784" class="ts" fill="#92400e">pools, labels:</text>
+  <text x="522" y="800" class="ts" fill="#92400e">host only</text>
+  <path d="M512 800 C 560 800, 600 895, 700 895 H 1060 C 1120 895, 1160 884, 1176 862" fill="none" stroke="#16a34a" stroke-width="2.5" marker-end="url(#arrow-green)"/>
+  <text x="850" y="884" class="ts" fill="#166534" text-anchor="middle">cached contexts → agent descriptors</text>
+
+  <!-- ===================== RIGHT: outputs ===================== -->
+  <text x="1480" y="160" class="lane">OUTPUTS · runs/precision_…/</text>
+  <path d="M1452 440 L 1472 440" fill="none" stroke="#475569" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <rect x="1480" y="178" width="380" height="150" rx="16" fill="#eef2ff" stroke="#6366f1" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1500" y="206" font-size="17" font-weight="700" fill="#3730a3">Accepted scorer</text>
+  <text x="1500" y="236" class="code">best_scorer.py</text>
+  <text x="1500" y="258" class="code">+ model_artifacts/</text>
+  <text x="1500" y="280" class="code">+ descriptors.json</text>
+  <text x="1500" y="308" class="ts">merge + split components · resumable</text>
+
+  <rect x="1480" y="346" width="380" height="150" rx="16" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1500" y="374" font-size="17" font-weight="700" fill="#0f172a">Records</text>
+  <text x="1500" y="400" class="code">ledger.jsonl · report.html</text>
+  <text x="1500" y="424" class="t">every attempt, diff, measurement, gate</text>
+  <text x="1500" y="444" class="t">decision, bootstrap interval, allocation</text>
+  <text x="1500" y="464" class="t">rule, descriptor runs and costs</text>
+  <text x="1500" y="486" class="ts">human-only validation reports</text>
+
+  <!-- validation curves: accepted scorer after each generation, mean over the three hidden brains -->
+  <rect x="1480" y="514" width="380" height="240" rx="16" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1500" y="542" font-size="17" font-weight="700" fill="#0f172a">Validation P@K · merge vs split</text>
+  <text x="1500" y="560" class="ts">2026-10-05 run · 3 hidden brains · K = 2000</text>
+  <!-- merge chart: y range 0.007..0.0135 -->
+  <g transform="translate(1518,588)">
+    <text x="70" y="-4" font-size="12" font-weight="700" fill="#166534" text-anchor="middle">merge</text>
+    <line x1="0" y1="100" x2="140" y2="100" stroke="#94a3b8" stroke-width="1.5"/>
+    <line x1="0" y1="0" x2="0" y2="100" stroke="#94a3b8" stroke-width="1.5"/>
+    <text x="-5" y="88" font-size="10" fill="#64748b" text-anchor="end">0.008</text>
+    <text x="-5" y="27" font-size="10" fill="#64748b" text-anchor="end">0.012</text>
+    <text x="0" y="114" font-size="10" fill="#64748b" text-anchor="middle">0</text>
+    <text x="140" y="114" font-size="10" fill="#64748b" text-anchor="middle">10</text>
+    <polyline points="0,87.7 14,80 28,80 42,43.1 56,43.1 70,15.4 84,15.4 98,12.3 112,12.3 126,10.8 140,10.8" fill="none" stroke="#2563eb" stroke-width="2.2"/>
+    <g fill="#ffffff" stroke="#16a34a" stroke-width="2"><circle cx="14" cy="80" r="3.8"/><circle cx="98" cy="12.3" r="3.8"/><circle cx="126" cy="10.8" r="3.8"/></g>
+    <g fill="#16a34a"><circle cx="42" cy="43.1" r="3.8"/><circle cx="70" cy="15.4" r="3.8"/></g>
+  </g>
+  <!-- split chart: y range 0.15..0.28 -->
+  <g transform="translate(1708,588)">
+    <text x="70" y="-4" font-size="12" font-weight="700" fill="#166534" text-anchor="middle">split</text>
+    <line x1="0" y1="100" x2="140" y2="100" stroke="#94a3b8" stroke-width="1.5"/>
+    <line x1="0" y1="0" x2="0" y2="100" stroke="#94a3b8" stroke-width="1.5"/>
+    <text x="-5" y="96" font-size="10" fill="#64748b" text-anchor="end">0.16</text>
+    <text x="-5" y="19" font-size="10" fill="#64748b" text-anchor="end">0.26</text>
+    <text x="0" y="114" font-size="10" fill="#64748b" text-anchor="middle">0</text>
+    <text x="140" y="114" font-size="10" fill="#64748b" text-anchor="middle">10</text>
+    <polyline points="0,90.5 14,90.5 28,43.1 42,43.1 56,19.6 70,19.6 84,9.8 98,9.8 112,9.8 126,9.8 140,9.8" fill="none" stroke="#2563eb" stroke-width="2.2"/>
+    <g fill="#16a34a"><circle cx="28" cy="43.1" r="3.8"/><circle cx="56" cy="19.6" r="3.8"/><circle cx="84" cy="9.8" r="3.8"/></g>
+    <g fill="#d97706"><circle cx="112" cy="9.8" r="3.8"/><circle cx="140" cy="9.8" r="3.8"/></g>
+  </g>
+  <text x="1500" y="718" font-size="10" fill="#64748b">dots = generations that edited that kind</text>
+  <text x="1500" y="733" font-size="10" fill="#64748b">green = promoted (hollow: gain within noise) · amber = rejected</text>
+  <text x="1500" y="748" font-size="10" fill="#64748b">final: merge 0.0128 · split 0.267 · equal-kind mean 0.140 (seed 0.085)</text>
+
+  <!-- ===================== BOTTOM: blindness boundary ===================== -->
+  <rect x="70" y="912" width="1790" height="96" rx="14" fill="#fffbeb" stroke="#f59e0b" stroke-width="2"/>
+  <text x="90" y="942" font-size="17" font-weight="700" fill="#92400e">Blindness boundary</text>
+  <text x="90" y="968" class="t">The agent sees TRAIN feedback, tool results and cached contexts. It never sees labels, ground truth, absolute coordinates, persistent IDs or any validation result.</text>
+  <text x="90" y="990" class="t">The host alone holds labels and validation pools, computes the selection and bootstrap statistics, allocates kinds and writes the records. Generated code runs in seccomp/Landlock-sandboxed workers.</text>
+
+  <text x="70" y="1050" font-size="13" fill="#94a3b8">proofreader_evolve/workflow_overview.svg · companion to workflow_diagram.svg (step-level detail) · defaults: grouped_oof selection, bootstrap gate (1000 draws), adaptive kind allocation</text>
+</svg>
