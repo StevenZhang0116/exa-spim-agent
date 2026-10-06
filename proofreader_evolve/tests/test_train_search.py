@@ -348,7 +348,7 @@ class SearchDriverTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
             seed = Path(tmp) / 'seed.py'
             seed.write_text(IMPROVED)
-            args = driver.parse_args(['--selection-protocol', 'in_sample', '--train-brains', '1', '--validation-brains', '2',
+            args = driver.parse_args(['--selection-protocol', 'in_sample', '--promotion-gate', 'margin', '--kind-schedule', 'alternate', '--train-brains', '1', '--validation-brains', '2',
                                       '--split-k', '1', '--generations', '3', '--runs-dir', tmp,
                                       '--start-from', str(seed), '--candidate-pool-size', '1'])
             def bank(brain, *args, **kwargs):
@@ -399,7 +399,7 @@ class SearchDriverTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
             seed = Path(tmp) / 'seed.py'
             seed.write_text(BASELINE)
-            args = driver.parse_args(['--selection-protocol', 'in_sample', '--train-brains', '1', '--validation-brains', '2',
+            args = driver.parse_args(['--selection-protocol', 'in_sample', '--promotion-gate', 'margin', '--kind-schedule', 'alternate', '--train-brains', '1', '--validation-brains', '2',
                                       '--split-k', '1', '--generations', '2', '--runs-dir', tmp,
                                       '--start-from', str(seed)])
             def bank(brain, *args, **kwargs):
@@ -431,7 +431,7 @@ class SearchDriverTests(unittest.TestCase):
     def test_three_train_attempts_one_validation_and_alternating_components(self):
         from proofreader_evolve.cli import run_precision_evolution as driver
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
-            args = driver.parse_args(['--selection-protocol', 'in_sample', '--train-brains', '1', '--validation-brains', '2',
+            args = driver.parse_args(['--selection-protocol', 'in_sample', '--promotion-gate', 'margin', '--kind-schedule', 'alternate', '--train-brains', '1', '--validation-brains', '2',
                                       '--merge-k', '1', '--split-k', '1', '--generations', '2', '--runs-dir', tmp])
             targets = []
             async def revise(run_dir, policy, rules, report, model, *, experiments):

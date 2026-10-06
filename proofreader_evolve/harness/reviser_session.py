@@ -12,6 +12,10 @@ from .reviser_access import canonical_file, make_guard, pre_tool_hook
 
 
 DEFAULT_MODEL = "claude-opus-5"
+# Claude Code truncates MCP tool results above this many tokens and parks them in a
+# file; the default (25,000, about 50 KB of our JSON) lost train_classifier,
+# restore_candidate and search_memory results in run precision_20261005_114814_zxsbw5pj.
+MCP_OUTPUT_TOKENS = 100_000
 
 
 def anthropic_api_env():
@@ -24,6 +28,7 @@ def anthropic_api_env():
         "CLAUDE_CODE_USE_BEDROCK": "0",
         "CLAUDE_CODE_USE_VERTEX": "0",
         "CLAUDE_EFFORT": "high",
+        "MAX_MCP_OUTPUT_TOKENS": str(MCP_OUTPUT_TOKENS),
     }
 
 

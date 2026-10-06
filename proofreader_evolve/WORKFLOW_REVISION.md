@@ -10,6 +10,7 @@ edit graphs, expand candidates, retrain detectors or deploy scorers automaticall
 
 ```mermaid
 flowchart TD
+    K["Allocate the kind: pending follow-up › floor › recent gate-passing gain › headroom"] --> A
     A[TRAIN branches + matched failures + observed evidence] --> S[Priority follow-up or regular branch; assign required research]
     S --> B[Write formula or fit/predict program + parameters]
     S --> V["Investigate: compute_descriptors runs agent describe(context) over the cached band; 3D analysis on a few TRAIN patches"]
@@ -27,7 +28,7 @@ flowchart TD
     E --> F{Measured submission and required research complete?}
     F -->|Yes| G[Evaluate every fixed development-validation brain once]
     F -->|No| H[Retain parent]
-    G --> I{Equal-weight mean Precision@K improves?}
+    G --> I{Equal-weight mean Precision@K improves and the paired-bootstrap lower bound of the gain is above zero?}
     I -->|Yes| J[Promote candidate]
     I -->|No| H
     J --> R[Update parent; queue next same-kind follow-up]
@@ -49,8 +50,11 @@ flowchart TD
 5. In each generation, choose a retained TRAIN branch and an `explore` or `tune`
    mode. A fresh LLM session edits one kind's `scorer.py`, `training.py`, `rules.md`,
    and `proposal.json`, plus `analysis.py` and `analysis_request.json` for direct
-   TRAIN 3D investigation; the other kind stays at its accepted version. Active kinds
-   alternate unless `--target-kind` is specified. Stratified TRAIN diagnostics
+   TRAIN 3D investigation; the other kind stays at its accepted version. The kind
+   is chosen per generation by the adaptive allocator (pending follow-up, a floor
+   of one revision per `--kind-floor-every` generations, recent gate-passing gain,
+   then remaining headroom; `--kind-schedule alternate` restores strict rotation)
+   unless `--target-kind` is specified. Stratified TRAIN diagnostics
    and memory guide formula design. A literal numeric `PARAMS` dictionary separates
    constants from the formula. `evaluate_train({})` measures one candidate;
    `search_parameters({})` measures the proposed grid and restores its best
@@ -69,8 +73,10 @@ flowchart TD
    candidate on every selected development-validation
    brain. Average merge/split Precision@K within each brain, then average the
    brains equally. Promote only if this mean exceeds the accepted parent's mean
-   by more than `--precision-margin`. Individual brain/kind regressions and TRAIN
-   regressions are allowed. Reject invalid, nondeterministic or timed-out scorers;
+   by more than `--precision-margin` and, in the default `--promotion-gate bootstrap`
+   mode, the lower bound of the paired row-resampling interval of that gain is
+   above zero (`--bootstrap-draws`, `--bootstrap-alpha`). Individual brain/kind
+   regressions and TRAIN regressions are allowed. Reject invalid, nondeterministic or timed-out scorers;
    a failure on any selected brain rejects the candidate, not that brain.
 7. Independently retain up to 5 TRAIN branches per kind. Keep the overall TRAIN
    champion first. Prefer specialists that lead fixed geometry slices or recover
@@ -118,6 +124,95 @@ data, scores or decision reasons enter them. The promotion gate compares against
 accepted parent's full-precision measurements. TRAIN feedback's `parent_train`
 also refers to that accepted parent; `search_plan.json` identifies the branch.
 
+### Adaptive kind allocation (2026-10-05 / v16)
+
+Version `adaptive-kind-allocation-v16` changes which kind a generation revises;
+scoring, selection, the promotion gate and the per-kind exploration logic are
+unchanged. Motivation: in `precision_20261005_114814_zxsbw5pj` strict rotation
+spent five of ten generations on merge for a total validation gain of 0.0065
+while five split generations gained 0.048. Merge had almost no room: on the
+accepted scorer the equal-brain mean of `min(positives, K) / K - precision` was
+0.017 for merge (789202 has 62 merge positives, a cap of 0.031 at K = 2000)
+against 0.66 for split.
+
+- **Inputs (`harness/kind_schedule.py`, host-side).** Per kind: headroom, the
+  equal-brain mean remaining precision on the accepted parent's development-
+  validation cells; momentum, the mean gate-passing validation gain over the
+  kind's last two scheduled generations (rejected or failed generations count as
+  zero); generations since the kind was last scheduled; pause and pending state
+  from the candidate pool.
+- **Rules, in order.** (1) a kind with a pending promotion follow-up or pending
+  investigation; (2) floor: a kind not revised in the last `floor_every - 1`
+  generations (`--kind-floor-every`, default 4); (3) momentum: the largest
+  momentum among unsaturated kinds; (4) headroom: the largest headroom. A kind
+  whose headroom is below half a Top-K hit is saturated and only reaches a
+  generation through rules 1 and 2.
+- **Wiring.** `CandidatePool.next_plan(order=...)` takes the ordered kinds and
+  plans the first non-paused one; with `--kind-schedule alternate` (or a single
+  kind) the previous rotation is used. The default `--generations` is now 15; the
+  recommended run uses 20 with early stopping unchanged.
+- **Records and blindness.** The ledger row and run trajectory carry
+  `kind_allocation` (rule, chosen kind, per-kind headroom, momentum, generations
+  since, saturation); the manifest records `kind_schedule`. The agent-visible
+  `search_plan.json` gains only `allocation_rule`, a rule name; no headroom or
+  gain number reaches an agent-visible file, and the TRAIN-archive guard tests
+  still apply.
+- **Caveat.** Momentum feeds development-validation outcomes back into
+  scheduling, as promotion follow-ups already did; it does not make development
+  validation an untouched test. The allocation is faithful to the equal-kind
+  mean objective: when merge cannot move the mean by more than 0.017, more merge
+  generations cannot raise the score; a run that values merge quality for its
+  own sake can lower `--kind-floor-every` or use `--target-kind merge`.
+
+Tests: `tests/test_kind_schedule.py`: rule-level cases (headroom, momentum with
+rejections as zero, floor, pending follow-up, saturation, pauses) and driver runs
+on a two-kind fixture where merge is saturated at the seed: adaptive scheduling
+yields split, split, split, merge with rules headroom, pending_followup,
+momentum, floor; strict rotation alternates; agent-visible files contain no
+allocation numbers.
+
+### Bootstrap promotion gate (2026-10-05 / v15)
+
+Version `bootstrap-promotion-gate-v15` changes only the outer promotion decision.
+Motivation: in run `precision_20261005_114814_zxsbw5pj` generations 1, 7 and 9
+were promoted on mean validation gains of +0.0003, +0.00008 and +0.00008 whose
+95% paired-bootstrap intervals contained zero; generation 7 also carried a
+negative TRAIN ablation (-0.004) and still replaced the parent, and every
+promotion scheduled a same-kind follow-up generation.
+
+- **Rule (`fixed_pool_scoring.bootstrap_acceptance`).** The candidate must beat
+  the accepted parent's equal-brain mean Precision@K by more than
+  `--precision-margin` (the unchanged point test with its benchmark identity
+  checks) AND the lower bound of the two-sided (1 - alpha) paired
+  Poisson-bootstrap interval of that mean delta must exceed zero
+  (`--bootstrap-alpha`, default 0.05; `--bootstrap-draws`, default 1000; seed =
+  generation). A missing or failed interval never promotes.
+- **Modes.** `--promotion-gate bootstrap` (default) or `margin`, the previous
+  point-estimate rule with the interval logged only. Tiny-fixture tests use
+  `margin`, because a resampled 3-row pool cannot separate any gain from zero.
+- **Records.** `validation_gate` carries `mode`, `version`
+  (`mean-validation-bootstrap-v1` or `mean-validation-precision-v1`),
+  `point_gate`, `bootstrap_gate` (`alpha`, `lower_bound`, `upper_bound`,
+  `passed`, `binding`) and the full `paired_bootstrap`, which now reports
+  `alpha`, `macro_delta_ci` and per-cell `delta_ci` next to the legacy
+  `macro_delta_ci95`. The manifest's `promotion_gate.mode` and
+  `promotion_gate.bootstrap.affects_decision` state the rule in force;
+  `search_version` is `bootstrap-promotion-gate-v15`.
+- **Consequences.** A candidate rejected by the interval keeps the existing
+  rejection semantics: it stays in the TRAIN archive when its TRAIN score
+  qualifies, never becomes the accepted parent, and schedules no promotion
+  follow-up. The interval measures row-resampling noise on the fixed pools only;
+  it does not turn development validation into an untouched test, and it does
+  not model neuron-level dependence or scorer nondeterminism.
+- **Cost.** 1,000 draws over six synthetic cells totalling 425,142 rows took
+  21 s on n257 (Python loop over draws; rank orders are precomputed once).
+
+Tests: `tests/test_bootstrap_gate.py`: on a 4,000-row synthetic pool one extra
+Top-K hit (+1/K) passes the margin gate and fails the bootstrap gate, a clear
+gain passes, missing or mismatched intervals fail closed, and driver runs in
+both modes record the new fields and schedule no follow-up after a bootstrap
+rejection.
+
 ### Agent descriptors over a cached candidate band (2026-10-04 / v14)
 
 Version `agent-descriptor-compute-v14` changes how the agent reaches fragment
@@ -136,13 +231,20 @@ committed to a scorer.
   Once per brain and kind, the host stores the raw context of the top
   detector-ranked band (default 20,000 rows, ties by candidate key): the
   fragment neighbourhood at 50 um / 256 nodes with the existing whitelisted
-  fields, and image patches at level 1 / 30 um for the whole band plus level 0 /
-  16 um for the first 4,000 rows. Entries live under
+  fields, and image patches at level 1 / 30 um and level 0 / 16 um, both for the
+  whole band (level 0 covered only the first 4,000 rows until 2026-10-05; see the
+  level-0 extension entry in the evidence log). Entries live under
   `proofreader_evolve/context_cache/<brain>/<kind>/<pool_sha256>/`, outside the
   hashed feature-table directories, and bind to the pool, `features.pkl`,
   source-cache and image identities. No labels, GT, absolute coordinates or
   persistent IDs are stored; failed patch reads are recorded as unavailable
-  rows. Nothing in the cache is a feature.
+  rows. Nothing in the cache is a feature. `precompute_context_cache --extend-tier
+  level0` grows a tier of complete entries in place (`ContextCacheBuilder.extend_tier`):
+  leading full chunks are kept, the trailing partial chunk is rebuilt, new chunks are
+  appended, the tier directory is swapped atomically and the manifest rewritten last;
+  fragment node positions come from the cached neighbourhoods and the reader's
+  anchor midpoint. Descriptor-bank identities include only the tier a descriptor
+  reads, so extending level 0 leaves cached level-1 and geometry results valid.
 - **Descriptor contract (`harness/descriptor_contract.py`).** The agent edits
   `descriptor.py`: a literal `DESCRIPTOR = {kind, inputs, image_tier,
   feature_names}` and `describe(context)` receiving the same context schema as
@@ -179,7 +281,7 @@ committed to a scorer.
   with the outcome each one measured; not precomputed columns) are added to each
   generation when a context cache is attached. `model_environment.json` lists
   workers, wall budgets, cached rows and tiers. Feedback prunes all-missing
-  columns before shrinking examples and allows 48 KB.
+  columns before shrinking examples and allows 96 KB (48 KB before 2026-10-05).
 
 Without `--context-cache` the tools are not offered and the run behaves as v13,
 which is the attribution control. The selection protocol, promotion gate, K,
@@ -251,7 +353,9 @@ That run motivates the revision; it does not validate it.
   the equal-weight validation delta (`validation_gate.paired_bootstrap`,
   `--bootstrap-draws`, default 200; logging only) so a later revision can set a
   margin from data. Validation score vectors stay in host memory; only intervals
-  are written.
+  are written. Superseded on 2026-10-05: the interval is binding by default (see
+  the bootstrap promotion gate section); `--promotion-gate margin` restores this
+  logging-only behaviour.
 
 Deviation from the written plan: the full-TRAIN fit runs for every classifier
 configuration rather than only at submission, because the snapshot/restore
@@ -492,8 +596,9 @@ python -m proofreader_evolve.cli.run_evolution \
   --validation-brains 789202,794493,794491 \
   --merge-k 2000 --split-k 2000 --generations 20 \
   --context-cache proofreader_evolve/context_cache --descriptor-workers auto
-# Or on n257 with every idle CPU, via Slurm (reads sinfo at submission; CONTEXT_CACHE=none gives the control run):
-proofreader_evolve/slurm/submit_v14_trial.sh
+# Kinds are allocated adaptively by default; add --kind-schedule alternate for strict rotation.
+# On a compute node, request the CPUs you want (e.g. srun/sbatch --cpus-per-task=32 --mem=120G);
+# --descriptor-workers auto uses the granted CPUs minus 2. Omit --context-cache for the control run.
 # Historical in-sample ranking for attribution (single detector-fitted TRAIN brain):
 python -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495 --validation-brains auto --selection-protocol in_sample \
@@ -505,7 +610,8 @@ validation discovery. Because 794495 is the detectors' training brain, the
 default protocol needs a second, detector-naive TRAIN brain (`802449` above) or
 the explicit `--selection-protocol in_sample` flag; otherwise the run aborts
 before loading validation data. `--skip-auxiliary-ablation` skips the baseline
-template diagnostic; `--bootstrap-draws 0` disables promotion-interval logging. At startup, scan
+template diagnostic; `--bootstrap-draws 0` disables promotion-interval logging (only
+with `--promotion-gate margin`; the default bootstrap gate needs draws). At startup, scan
 local matching-MCL `_add.pkl` caches, exclude TRAIN and detector-fitted brains,
 and load each remaining brain's exact prepared merge/split tables. Missing inputs
 are logged and skipped; integrity errors or empty pools abort. At least one
@@ -707,7 +813,8 @@ CodeAct relationship are recorded below; discovery benefit is still unmeasured.
 - `harness/dataset.py`: trusted cache loading and brain/MCL checks only.
 - `harness/fixed_pool_scoring.py`: ranking evaluation and acceptance.
 - `dataset_split.json`, manifest `promotion_gate`: resolved datasets, exclusions,
-  equal-weight aggregation and the versioned mean-validation-only promotion rule.
+  equal-weight aggregation, the versioned mean-validation-only promotion rule, its
+  mode (`bootstrap` or `margin`) and the bootstrap draws/alpha in force.
 - `harness/isolated_scoring.py`: dispatch to isolated formula or model inference,
   preserving declared raw image inputs. `scorer_worker.py` runs numeric formulas
   behind seccomp with bounded resources.
@@ -969,7 +1076,9 @@ records the motivating run and the original proposals.
 | [Crafter, August 2026 preprint](https://arxiv.org/abs/2608.05207), `wang2026`; **adapted idea** | Start feature investigations from remaining errors and judge them with common measured evidence. [failure_cases.py](harness/failure_cases.py), [feature_discovery_guide.md](artifacts/feature_discovery_guide.md), [feature_ablation.py](harness/feature_ablation.py). | Our missed-positive/selected-label0 pairs concern native skeleton error labels. We do not implement forecasting residual correction, Crafter's compositional MCTS, or its feature admission algorithm. The feature diagnostic is advisory; the outer promotion gate is unchanged. | Implemented 2026-10-02; no demonstrated skeleton feature benefit yet. |
 | [GEPA, ICLR 2026](https://arxiv.org/abs/2507.19457), `agrawal2026`; **adapted idea** | Preserve complementary measured behavior and use execution evidence to guide future changes. Existing [train_coverage.py](harness/train_coverage.py) / [candidate_pool.py](harness/candidate_pool.py), extended by [hypothesis_memory.py](harness/hypothesis_memory.py). | Our fixed Top-K positive coverage and geometry-slice specialists are not GEPA's exact per-instance Pareto selection. We evolve formulas/model programs rather than prompts. Stable hypothesis IDs and scoped feature records are our design, not a GEPA reproduction. | Specialist retention predates this revision. Hypothesis memory/scheduling added 2026-10-02; comparative benefit unmeasured. |
 | [AlphaEvolve, June 2025 white paper](https://arxiv.org/abs/2506.13131), `novikov2025`; **adapted idea** | Evolve executable candidates with automatic evaluation and a diverse retained population. [candidate_pool.py](harness/candidate_pool.py), [train_experiments.py](harness/train_experiments.py). | Our bounded specialist archive and protected accepted reference are not its island/MAP-Elites database or asynchronous model-mixture system. Multiple branches already existed; this revision adds evidence-based scheduling hints. | Conceptual correspondence; no reproduction or relative-throughput claim. |
-| Standard grouped cross-validation practice; [scikit-learn `cross_val_predict` note on not treating concatenated out-of-fold predictions as a single scored set](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.cross_val_predict.html); **engineering reference** with **project-specific** design in v13 | Official branch selection by grouped out-of-fold precision on detector-naive selection brains with auxiliary fitting-only brains, per-fold ranking under largest-remainder fold budgets summing to K, one evaluation unit per configuration, selection-sourced feedback and failure cases, baseline auxiliary ablation, and paired Poisson-bootstrap logging of the promotion delta. [selection_protocol.py](harness/selection_protocol.py), [internal_validation.py](harness/internal_validation.py), [train_experiments.py](harness/train_experiments.py), [fixed_pool_scoring.py](harness/fixed_pool_scoring.py), [run_precision_evolution.py](cli/run_precision_evolution.py). | The fold partition is fixed and repeatedly inspected by the reviser, so the score is a development signal rather than an unbiased estimate; fragment purging and spatial blocks do not prove neuron independence; the bootstrap reflects row resampling only and changes no decision. The outer gate, K and margin are unchanged. No paper is reproduced. | Implemented 2026-10-03; synthetic regression tests only (see the evidence log). Whether out-of-fold selection improves development-validation gain over in-sample selection is unmeasured; the `in_sample` flag exists for that comparison. |
+| Standard grouped cross-validation practice; [scikit-learn `cross_val_predict` note on not treating concatenated out-of-fold predictions as a single scored set](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.cross_val_predict.html); **engineering reference** with **project-specific** design in v13 | Official branch selection by grouped out-of-fold precision on detector-naive selection brains with auxiliary fitting-only brains, per-fold ranking under largest-remainder fold budgets summing to K, one evaluation unit per configuration, selection-sourced feedback and failure cases, baseline auxiliary ablation, and paired Poisson-bootstrap logging of the promotion delta. [selection_protocol.py](harness/selection_protocol.py), [internal_validation.py](harness/internal_validation.py), [train_experiments.py](harness/train_experiments.py), [fixed_pool_scoring.py](harness/fixed_pool_scoring.py), [run_precision_evolution.py](cli/run_precision_evolution.py). | The fold partition is fixed and repeatedly inspected by the reviser, so the score is a development signal rather than an unbiased estimate; fragment purging and spatial blocks do not prove neuron independence; the bootstrap reflects row resampling only and, in v13, changed no decision (binding by default since v15; next row). The outer gate, K and margin were unchanged in v13. No paper is reproduced. | Implemented 2026-10-03; synthetic regression tests only (see the evidence log). Whether out-of-fold selection improves development-validation gain over in-sample selection is unmeasured; the `in_sample` flag exists for that comparison. |
+| Paired bootstrap of a model-comparison statistic (Efron and Tibshirani, *An Introduction to the Bootstrap*, 1993) with Poisson(1) weights as the large-sample approximation to multinomial resampling (Chamandy, Muralidharan, Najmi and Naidu, *Estimating uncertainty for massive data streams*, Google technical report, 2012); **engineering reference** with **project-specific** design in v15 | Promotion requires the paired Poisson-bootstrap lower bound of the equal-brain mean Precision@K delta to exceed zero in addition to the point gain over the margin ([fixed_pool_scoring.py](harness/fixed_pool_scoring.py) `bootstrap_acceptance`, [run_precision_evolution.py](cli/run_precision_evolution.py) `--promotion-gate`). | Resampling rows of the fixed pools measures row-sampling noise only; it ignores neuron-level dependence, the repeated use of the same development-validation brains and scorer nondeterminism, so it filters noise-level promotions rather than testing generalisation. Alpha and the draw count are conventions, not tuned. | Implemented 2026-10-05; synthetic tests only. Whether the stricter gate raises final development-validation precision or only reduces the number of promotions is unmeasured. |
+| Resource allocation between arms by observed progress and remaining room, in the spirit of successive-halving / bandit schedulers for configuration search (Jamieson and Talwalkar, AISTATS 2016; Li et al., Hyperband, JMLR 2018); **adapted idea**, deterministic rules with a floor rather than a probabilistic policy | Per generation the host ranks kinds by pending follow-up, a floor, the mean gate-passing validation gain of the last two generations, then the equal-brain mean of `min(positives, K)/K - precision`; saturated kinds wait for the floor ([kind_schedule.py](harness/kind_schedule.py), `CandidatePool.next_plan(order=...)`, `--kind-schedule`). | Two arms, no confidence bounds, no elimination: a heuristic allocation, not a regret-bounded algorithm. Headroom is a cap on the mean objective, not a prediction of achievable gain; momentum uses development-validation outcomes, so scheduling carries indirect validation feedback (as promotion follow-ups already do). | Implemented 2026-10-05; synthetic tests only. Whether adaptive allocation beats strict rotation on final development-validation precision is unmeasured; `--kind-schedule alternate` is the control. |
 | Existing CodeAct-style executed analysis above; **project-specific extension** in v14 | Agent-written `describe(context)` executed by the host over a cached candidate band in parallel isolated workers, with code-hash result caching, wall-clock budgets, label-free context transport and registration as predictors. [context_cache.py](harness/context_cache.py), [descriptor_contract.py](harness/descriptor_contract.py), [descriptor_runs.py](harness/descriptor_runs.py), [precompute_context_cache.py](cli/precompute_context_cache.py). | Not a feature-selection algorithm from the literature: the host predefines no quantity; it moves the raw inputs next to the computation. Pool-scale label-conditional summaries increase adaptive use of TRAIN labels; the out-of-fold selection and outer gate are the guards. The band (top 20,000 detector-ranked rows) bounds coverage. | Implemented 2026-10-04; synthetic regression tests with real sandboxed workers (see the evidence log). Real-brain cache throughput and any ranking benefit from agent descriptors are unmeasured. |
 | No claimed paper algorithm; **project-specific** | Three label-independent folds, fragment purging, 500-um split blocks, diagnostic constant masking, matched-case sampling, exact-code evidence binding, and hypothesis stagnation penalties. [internal_validation.py](harness/internal_validation.py), [failure_cases.py](harness/failure_cases.py), [hypothesis_memory.py](harness/hypothesis_memory.py). | Internal folds are repeatedly inspected TRAIN data. Spatial blocks plus fragment purging do not prove neuron independence. Two nonpositive ablations lower priority rather than refute a hypothesis. Protected-reference cadence and the mean development-validation gate remain separate. | Implemented 2026-10-02; assumptions and thresholds require future evaluation. |
 | [CodeAct, ICML 2024](https://proceedings.mlr.press/v235/wang24h.html), `wang2024`; **adapted idea** in v10 | The agent writes executable analysis actions, observes results, then revises its investigation. [volume_analysis.py](harness/volume_analysis.py) and [volume_analysis_guide.md](artifacts/volume_analysis_guide.md) apply this pattern to TRAIN 3D pixels and aligned fragments. | A bounded microscopy analysis interface, not a general shell/interpreter agent or reproduction of CodeAct training. Our context schema, four-case batch, eight-execution allowance, sandbox and provenance are project-specific. Optional 2D previews are not required. | 37 scoped tests and real merge/split data-access checks passed on n257. No live LLM comparison, discovery gain or latency reduction has been measured. |
@@ -980,8 +1089,12 @@ records the motivating run and the original proposals.
 
 | Date / version | Change and motivation | Verification / future evidence |
 |---|---|---|
+| 2026-10-05 / context cache level-0 extension | `IMAGE_TIERS['level0']['max_rows']` is now `None`: the 16 um / level-0 patches cover the whole 20,000-row band instead of the first 4,000 rows, so agent descriptors can read the finest resolution everywhere (`image_tier: 'level0'` was NaN on 80% of the band, and all four image descriptor sets of `precision_20261005_114814_zxsbw5pj` chose level 1). `ContextCacheBuilder.extend_tier` plus `--extend-tier` grow a tier of complete entries in place; `ContextCache.identity_key(table, tiers=...)` and the descriptor-bank identity are tier-selective so level-1 results survive the change. Motivation: the largest gains of that run were fibre-continuity questions (split gens 4 and 6) that level-1 voxels of 1.5 x 1.5 x 2 um undersample. | On n257: `tests/test_descriptor_compute.py` extension cases (kept chunks byte-identical, partial chunk rebuilt, new chunks appended, geometry and level 1 untouched, bank identities per tier, CLI flag pass-through) passed; full suite [279 tests in 4,453 s, OK](log/level0_extension_20261005_tests.log) while sharing the allocation with the build. Five-brain extension (`precompute_context_cache --brains 802449 794495 789202 794493 794491 --mcl 100 --readers 16 --extend-tier level0`, inside the user's 16-CPU n257 allocation, [log](log/context_cache_level0_extension_20261005.log.txt)): all ten entries went from 4,000 to 20,000 level-0 rows, keeping the three full existing chunks each; 0 failed patches; 543 to 909 s per entry (about 19 to 31 reads/s), 2 h 21 min in total including five fragment-graph loads; level-0 tier now 7.77 GB (was 1.55 GB), cache 19 GB on disk. Preflight `context_cache_readiness` passed afterwards. The ranking benefit of level-0 descriptors is unmeasured until the next trial. |
+| 2026-10-05 / `adaptive-kind-allocation-v16` | Generations are allocated to kinds by pending follow-up, a floor (`--kind-floor-every 4`), recent gate-passing validation gain and remaining headroom instead of strict merge/split rotation (`--kind-schedule adaptive`, default; `alternate` restores rotation); default `--generations` 15. Motivated by `precision_20261005_114814_zxsbw5pj`: five merge generations gained 0.0065 with 0.017 headroom while five split generations gained 0.048 with 0.66 headroom. Project-specific heuristic; see the provenance row above. | On n257 (inside a shared allocation, panda): `tests/test_kind_schedule.py` (8 tests: rule cases plus adaptive and alternate driver runs on a two-kind fixture) passed; full suite [276 tests in 1,331 s, OK](log/kind_schedule_20261005_tests.log) (268 pre-existing plus the 8 new ones). No real-brain run; the effect on final development-validation precision is unmeasured, and the next trial should be compared against this run's strict rotation. |
+| 2026-10-05 / maintenance (reviser I/O limits) | In run `precision_20261005_114814_zxsbw5pj`, `search_memory` results (88 to 128 KB) exceeded the Claude Code MCP output cap in every generation from the third, and `train_classifier` / `restore_candidate` results (50 to 57 KB) did so in five generations, so the reviser received errors instead of content; the feedback file sat at 45 to 47 KB against its 48 KB budget. Raised the cap to 100,000 tokens via `MAX_MCP_OUTPUT_TOKENS` in the reviser's SDK environment (`reviser_session.MCP_OUTPUT_TOKENS`), raised `MAX_FEEDBACK_BYTES` to 96 KB, and let the file guard read regular files parked by the SDK under `<config>/projects/<run>/<session>/tool-results/` so a future overflow is still readable. Tool payloads themselves are unchanged. | On n257: `tests/test_reviser_limits.py` (guard allows parked results, denies writes, symlinks and other projects; environment carries the cap; budget constant) plus the guard, feedback and trajectory suites. Extra context cost per generation is unmeasured. |
+| 2026-10-05 / `bootstrap-promotion-gate-v15` | Promotion now requires the paired-bootstrap lower bound of the mean validation gain to exceed zero in addition to the point gain (`--promotion-gate bootstrap`, `--bootstrap-draws 1000`, `--bootstrap-alpha 0.05`; `margin` keeps the old rule). Motivated by run `precision_20261005_114814_zxsbw5pj` (10 generations, validation 0.08508 -> 0.14008), where generations 1, 7 and 9 were promoted on gains of +0.0003, +0.00008 and +0.00008 with 95% intervals containing zero and generation 7 carried a negative TRAIN ablation. Project-specific design; see the provenance row above. | On n257 (inside the user's allocation, panda): `tests/test_bootstrap_gate.py` (7 tests) passed; 1,000 draws over six synthetic cells totalling 425,142 rows took 21 s. Full suite on n257 (6 CPUs inside a shared allocation): [262 tests in 1,724 s, OK](log/bootstrap_gate_20261005_tests.log) (255 pre-existing plus the 7 new ones). No real-brain run; the effect on final development-validation precision is unmeasured. |
 | 2026-10-05 / maintenance | Deleted `proofreader_evolve/image_audits/` (134 MB: 32 sample patch `.npz` arrays, 30 PNG previews, scripts, bytecode and trajectories of the 2026-10-02 alignment audit). No code reads it; the alignment receipts in `configs/image_alignment.json` only check status, URI, transform, source-cache and image identities. | Retained the written review, the per-brain `alignment.json` identity records and the direct-volume verification JSON under `docs/image_alignment_review_20261002/` at the repository root; receipt `evidence` fields and the two evidence rows above now point there. The review can be regenerated with `cli.check_image_alignment`. |
-| 2026-10-05 / `agent-descriptor-compute-v14` | Persistent context cache of the detector-ranked band (fragment neighbourhoods and two image tiers) plus `descriptor.py` / `plan_descriptor_run` / `compute_descriptors`: agent-written `describe(context)` run by the host over every cached row in parallel sandboxed workers, cached by code hash, registered as `bank_agent_*` predictors, computed on validation brains at submission, resumable through `descriptors.json`. No quantity is predefined by the host. Motivated by the unused image path in `precision_20261003_190054_96ng6ehh`. Project-specific design; see the provenance row above. | On the login host with panda: the [full suite](log/agent_descriptor_compute_20261005_tests.log) ran 255 tests in 612 s and passed (241 pre-existing plus 14 in `tests/test_descriptor_compute.py`, which exercise real sandboxed `describe` workers, parallel batches, caching, deadline kills and a mocked-reviser driver run with resume). On n257 (job 27185854, [log](log/precompute_context_cache_20261005_000011_202313_1352428.log.txt)): a 1,000-row probe of brain 802449 read level-1 and level-0 patches with 16 readers at a median 0.45 s per read, about 24 reads per second aggregate, 0 failures, 31 MB and 43 MB per 1,000 rows; geometry contexts took under 1 s per 1,000 rows. The full five-brain build (job 27185856, [script](slurm/build_context_cache.sbatch), 24 readers) completed in 2 h 37 min with 0 failed patches across all ten brain/kind entries: 20,000 band rows each, 11 GB on disk, 13 to 17 min per entry, geometry under 26 s per entry. The first evolution run with `--context-cache` is not yet recorded here. Ranking benefit from agent descriptors is unmeasured. |
+| 2026-10-05 / `agent-descriptor-compute-v14` | Persistent context cache of the detector-ranked band (fragment neighbourhoods and two image tiers) plus `descriptor.py` / `plan_descriptor_run` / `compute_descriptors`: agent-written `describe(context)` run by the host over every cached row in parallel sandboxed workers, cached by code hash, registered as `bank_agent_*` predictors, computed on validation brains at submission, resumable through `descriptors.json`. No quantity is predefined by the host. Motivated by the unused image path in `precision_20261003_190054_96ng6ehh`. Project-specific design; see the provenance row above. | On the login host with panda: the [full suite](log/agent_descriptor_compute_20261005_tests.log) ran 255 tests in 612 s and passed (241 pre-existing plus 14 in `tests/test_descriptor_compute.py`, which exercise real sandboxed `describe` workers, parallel batches, caching, deadline kills and a mocked-reviser driver run with resume). On n257 (job 27185854, [log](log/precompute_context_cache_20261005_000011_202313_1352428.log.txt)): a 1,000-row probe of brain 802449 read level-1 and level-0 patches with 16 readers at a median 0.45 s per read, about 24 reads per second aggregate, 0 failures, 31 MB and 43 MB per 1,000 rows; geometry contexts took under 1 s per 1,000 rows. The full five-brain build (job 27185856, `precompute_context_cache --brains 802449 794495 789202 794493 794491 --mcl 100 --readers 24` under sbatch, 24 CPUs, 120 GB) completed in 2 h 37 min with 0 failed patches across all ten brain/kind entries: 20,000 band rows each, 11 GB on disk, 13 to 17 min per entry, geometry under 26 s per entry. The first evolution run with `--context-cache` is not yet recorded here. Ranking benefit from agent descriptors is unmeasured. `workflow_diagram.svg` and the repository `end_to_end_workflow_diagram.svg` were updated on 2026-10-05 to show the context cache, `descriptor.py` and the descriptor path (editable artifacts, measurement, validation-side recomputation, `descriptors.json`). |
 | 2026-10-03 / `grouped-oof-selection-v13` | Rank TRAIN branches by grouped out-of-fold precision on detector-naive selection brains with auxiliary fitting-only brains; keep every eligible brain (including 794491) in the unchanged promotion gate; one unit per classifier configuration; selection-sourced feedback and failure cases; baseline auxiliary ablation; paired-bootstrap logging of promotion deltas. Motivated by the in-sample split champion and detector-fitted TRAIN brain of `precision_20261003_004137_sogl3h0d`. Project-specific design; see the provenance row above. | On the login host with panda: the [full suite](log/grouped_oof_selection_20261003.log) ran 241 tests in 529 s and passed (228 pre-existing plus 13 in `tests/test_selection_protocol.py`, which use real sandboxed fold fits on synthetic two-brain fixtures and a mocked reviser). Existing tiny-fixture driver tests were switched to `--selection-protocol in_sample`. No real-brain run, fragment-graph load for 802449, cloud read or paid LLM call was made; the startup cost of the auxiliary ablation and the 802449 split fold partition, and any development-validation gain over in-sample selection, remain unmeasured. |
 | 2026-10-03 / reviser model configuration | Change the shared evolution/preflight default from `claude-opus-4-8` to `claude-opus-5` in [reviser_session.py](harness/reviser_session.py), as requested. Explicit `--model` overrides remain available. Project configuration only; the literature relationships and search/evaluation algorithms are unchanged. | Model ID checked against the [official Opus 5 documentation](https://platform.claude.com/docs/en/models/opus-5/overview). Static inspection confirms both CLIs import the shared default and the SDK receives it. No tests, API probe or evolution run; account access and comparative performance have not been measured. |
 | 2026-10-03 / `measured-investigation-followup-v12` | Replace deferred investigation promises with host-verified comparisons; follow newly promoted components in the next same-kind generation. Project-specific extension of the literature relationships above. | On n257: [45 initial core checks](log/research_evidence_20261003.log) passed. Tool integration exposed three bare-session SDK fixtures needing the new receipt mock: two in the [43-test run](log/research_evidence_20261003_tools.log), then one remaining in the [78-test run](log/research_evidence_20261003_recheck.log). After those updates, [four focused checks](log/research_evidence_20261003_final.log) and [39 final checks](log/research_evidence_20261003_completed.log) passed. Executions overlap and must not be summed as distinct tests. Coverage includes negative/reused evidence, comment-only edits, registration eligibility, branch ancestry, bounded retries, unchanged validation gate, skipped validation with retained TRAIN records, isolated 3D/image tools and report compatibility. [Static checks](log/research_evidence_20261003_static.json): 79 Python files, seven Markdown files, CLI help, SVG XML and report JavaScript passed. Synthetic inputs and mocked revisers only; no real evolution, cloud reads or paid LLM calls. Discovery speed and ranking benefit remain unmeasured. |
@@ -1039,6 +1152,23 @@ feedback and failure cases, label-free group transport, bootstrap intervals,
 the auxiliary ablation and the driver's brain-role checks. Tiny-fixture driver
 tests pass `--selection-protocol in_sample` because three-row pools cannot form
 three grouped folds.
+`tests/test_bootstrap_gate.py` (v15) covers the bootstrap promotion rule on a
+4,000-row synthetic pool (a single extra Top-K hit passes the margin gate and
+fails the bootstrap gate; a clear gain passes; missing or mismatched intervals
+fail closed; CLI validation) and driver runs in both modes, including the
+recorded `point_gate`/`bootstrap_gate` fields, TRAIN-archive retention and the
+absence of a promotion follow-up after a bootstrap rejection. Tiny-fixture
+driver tests pass `--promotion-gate margin` because a resampled three-row pool
+cannot separate any gain from zero.
+`tests/test_kind_schedule.py` (v16) covers headroom, momentum with rejections as
+zero, the floor, pending follow-ups, saturation and pauses, plus adaptive and
+strict-rotation driver runs on a two-kind fixture; tiny-fixture driver tests
+pass `--kind-schedule alternate`. `tests/test_reviser_limits.py` covers the MCP
+output cap in the reviser environment, the 96 KB feedback budget and read access
+to SDK-parked tool results (writes, symlinks and other projects denied).
+`tests/test_descriptor_compute.py` also covers the in-place level-0 extension
+(kept chunks byte-identical, partial chunk rebuilt, new chunks appended, other
+tiers untouched, tier-selective bank identities, CLI flag pass-through).
 These cases were initially left unexecuted in v8. In the subsequent v9 image
 revision, `test_image_context`, `test_feature_discovery` and `test_trajectory`
 ran on n257: 27 tests passed. This scoped run used synthetic fixtures and mocked

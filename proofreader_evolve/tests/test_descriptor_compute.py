@@ -355,7 +355,7 @@ class DriverDescriptorTests(unittest.TestCase):
             seed.write_text(FORMULA)
             args = driver.parse_args(['--train-brains', '794495,802449', '--validation-brains', '2',
                                       '--merge-k', '3', '--split-k', '1', '--generations', '1', '--runs-dir', tmp,
-                                      '--start-from', str(seed), '--bootstrap-draws', '5', '--skip-auxiliary-ablation',
+                                      '--start-from', str(seed), '--bootstrap-draws', '5', '--promotion-gate', 'margin', '--kind-schedule', 'alternate', '--skip-auxiliary-ablation',
                                       '--context-cache', str(root / 'cache'), '--descriptor-bank', str(root / 'bank'),
                                       '--descriptor-workers', '2', '--descriptor-wall-seconds', '120'])
             seen = {}
@@ -364,6 +364,9 @@ class DriverDescriptorTests(unittest.TestCase):
                 seen['environment'] = environment['descriptor_compute']
                 self.assertTrue((policy.parent / 'descriptor.py').is_file())
                 self.assertTrue((policy.parent / 'descriptor_guide.md').is_file())
+                # An image descriptor first, so the generation's image-evidence summary has a run to report.
+                (policy.parent / 'descriptor.py').write_text(IMAGE_DESCRIPTOR)
+                self.assertEqual(experiments.compute_descriptors('pilot')['status'], 'registered')
                 (policy.parent / 'descriptor.py').write_text(GEOMETRY_DESCRIPTOR)
                 experiments.plan_descriptor_run()
                 result = experiments.compute_descriptors('all_cached')
@@ -383,12 +386,14 @@ class DriverDescriptorTests(unittest.TestCase):
             row = json.loads((path / 'ledger.jsonl').read_text().splitlines()[0])
             self.assertEqual(row['descriptors_referenced'], ['bank_agent_node_count'])
             self.assertEqual(row['descriptor_inference'][0]['brain'], '2')
-            self.assertEqual(row['descriptor_runs'][0]['status'], 'registered')
+            self.assertEqual([run['status'] for run in row['descriptor_runs']], ['registered', 'registered'])
+            # The image-evidence summary sees the generation's descriptor runs (ordering fixed 2026-10-06).
+            self.assertEqual([run['inputs'] for run in row['image_evidence']['descriptor_image_computations']], ['image'])
             self.assertEqual(row['validation']['cells']['2/merge']['precision'], 1.)
             self.assertTrue(row['accepted'])
             manifest = json.loads((path / 'manifest.json').read_text())
             self.assertTrue(manifest['descriptor_compute']['enabled'])
-            self.assertEqual(manifest['search_version'], 'agent-descriptor-compute-v14')
+            self.assertEqual(manifest['search_version'], 'adaptive-kind-allocation-v16')
             registry = json.loads((path / 'descriptors.json').read_text())
             self.assertEqual(list(registry['columns']), ['bank_agent_node_count'])
             # Statistics are written before the agent registers columns in gen 1; the context column is there.
@@ -422,7 +427,7 @@ class DriverDescriptorTests(unittest.TestCase):
             seed.write_text(FORMULA)
             args = driver.parse_args(['--train-brains', '794495,802449', '--validation-brains', '2', '--merge-k', '3',
                                       '--generations', '1', '--runs-dir', tmp, '--start-from', str(seed),
-                                      '--skip-auxiliary-ablation', '--bootstrap-draws', '0'])
+                                      '--skip-auxiliary-ablation', '--bootstrap-draws', '0', '--promotion-gate', 'margin'])
             async def revise(run_dir, policy, rules, report, model, *, experiments):
                 self.assertFalse((policy.parent / 'descriptor.py').exists())
                 self.assertEqual(json.loads((policy.parent / 'model_environment.json').read_text())['descriptor_compute'],
@@ -502,3 +507,92 @@ class PreflightContextCacheTests(unittest.TestCase):
         self.assertEqual(missing['context_cache']['brains']['802449']['merge']['status'], 'blocked')
         self.assertEqual(ready['status'], 'checks_passed')
         self.assertEqual(ready['context_cache']['brains']['802449']['merge']['band_rows'], 12)
+
+
+class ExtendTierTests(unittest.TestCase):
+    """Growing one image tier of a complete entry in place (2026-10-05)."""
+    LEVEL0 = {**cc.IMAGE_TIERS['level0'], 'max_rows': 6}
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.table = brain_table('802449').tables['merge']
+        self.chunk_patch = patch.object(cc, 'CHUNK_ROWS', 4)
+        self.chunk_patch.start()
+        self.addCleanup(self.chunk_patch.stop)
+        builder = cc.ContextCacheBuilder(self.root / 'cache', readers=2, log=lambda *_: None)
+        band = {**cc.BAND_SPEC, 'max_candidates': 12}
+        tiers = {'level1': cc.IMAGE_TIERS['level1'], 'level0': self.LEVEL0}
+        self.before = builder.build(self.table, FakeProvider(), fake_image_reader, band=band, tiers=tiers)
+        self.builder = builder
+
+    def files(self, group):
+        directory = self.root / 'cache' / cc.entry_directory('x', self.table).relative_to('x') / group
+        return {p.name: cc.file_hash(p) for p in sorted(directory.glob('*.npz'))}
+
+    def test_extension_keeps_full_chunks_rebuilds_the_partial_one_and_appends(self):
+        geometry_before, level1_before = self.files('geometry'), self.files('images/level1')
+        level0_before = self.files('images/level0')
+        self.assertEqual(sorted(level0_before), ['chunk_00000.npz', 'chunk_00001.npz'])  # 4 + 2 rows
+        after = self.builder.extend_tier(self.table, fake_image_reader, 'level0', {**self.LEVEL0, 'max_rows': None})
+        info = after['image_tiers']['level0']
+        self.assertEqual((info['rows'], info['extended_from_rows'], len(info['chunks'])), (12, 6, 3))
+        self.assertEqual(info['failures'], 1)  # row 7 lies in the newly read range
+        self.assertEqual([c['rows'] for c in info['chunks']], [4, 4, 4])
+        level0_after = self.files('images/level0')
+        self.assertEqual(level0_after['chunk_00000.npz'], level0_before['chunk_00000.npz'])
+        self.assertNotEqual(level0_after['chunk_00001.npz'], level0_before['chunk_00001.npz'])
+        self.assertIn('chunk_00002.npz', level0_after)
+        self.assertEqual(self.files('geometry'), geometry_before)
+        self.assertEqual(self.files('images/level1'), level1_before)
+        self.assertEqual(after['image_tiers']['level1'], self.before['image_tiers']['level1'])
+        self.assertFalse(list((self.root / 'cache').rglob('.extend_*')))
+        entry = cc.ContextCache(self.root / 'cache').entry(self.table)
+        patches = entry.image(list(range(12)), 'level0')
+        self.assertEqual([p is None for p in patches], [i == 7 for i in range(12)])
+        contexts, _ = entry.contexts(self.table, [9], inputs='image', tier='level0')
+        np.testing.assert_allclose(np.asarray(contexts[0]['fragment']['nodes_zyx'])[0], patches[9]['anchors_zyx'][0])
+        # Idempotent: a second call at the same limit is a no-op.
+        again = self.builder.extend_tier(self.table, fake_image_reader, 'level0', {**self.LEVEL0, 'max_rows': None})
+        self.assertEqual(again['image_tiers']['level0']['rows'], 12)
+        with self.assertRaisesRegex(ValueError, 'spec changed'):
+            self.builder.extend_tier(self.table, fake_image_reader, 'level0', {**self.LEVEL0, 'radius_um': 20., 'max_rows': None})
+
+    def test_identity_keys_and_bank_entries_are_tier_selective(self):
+        cache = cc.ContextCache(self.root / 'cache')
+        keys = {tiers: cache.identity_key(self.table, tiers=tiers) for tiers in (None, ('level1',), ('level0',), ())}
+        runs = dr.DescriptorRuns(cache, self.root / 'bank', workers=2, memory_mb=1024)
+        level0_source = IMAGE_DESCRIPTOR.replace("'level1'", "'level0'")
+        _, level1_spec = descriptor_spec(IMAGE_DESCRIPTOR)
+        _, level0_spec = descriptor_spec(level0_source)
+        _, geometry_spec = descriptor_spec(GEOMETRY_DESCRIPTOR)
+        for spec, source in ((level1_spec, IMAGE_DESCRIPTOR), (level0_spec, level0_source),
+                             (geometry_spec, GEOMETRY_DESCRIPTOR)):
+            runs.compute(self.table, source, spec, 'all_cached', k=4, wall_budget=120, log_dir=self.root / 'logs')
+            self.assertTrue(runs.cached(self.table, spec, 'all_cached', 4))
+        self.builder.extend_tier(self.table, fake_image_reader, 'level0', {**self.LEVEL0, 'max_rows': None})
+        cache = cc.ContextCache(self.root / 'cache')
+        self.assertEqual(cache.identity_key(self.table, tiers=('level1',)), keys[('level1',)])
+        self.assertEqual(cache.identity_key(self.table, tiers=()), keys[()])
+        self.assertNotEqual(cache.identity_key(self.table, tiers=('level0',)), keys[('level0',)])
+        self.assertNotEqual(cache.identity_key(self.table), keys[None])
+        runs = dr.DescriptorRuns(cache, self.root / 'bank', workers=2, memory_mb=1024)
+        self.assertTrue(runs.cached(self.table, level1_spec, 'all_cached', 4))
+        self.assertTrue(runs.cached(self.table, geometry_spec, 'all_cached', 4))
+        self.assertFalse(runs.cached(self.table, level0_spec, 'all_cached', 4))
+
+    def test_cli_flag_is_validated_and_passed_through(self):
+        from proofreader_evolve.cli import precompute_context_cache as cli
+        args = cli.parse_args(['--brains', '1', '--extend-tier', 'level0'])
+        self.assertEqual(args.extend_tier, ['level0'])
+        with redirect_stdout(io.StringIO()) as out, patch.object(cli, 'cache_path', return_value=Path('/nonexistent')):
+            self.assertEqual(cli.main(['--brains', '1', '2', '--extend-tier', 'level0', '--dry-run']), 0)
+        self.assertEqual(out.getvalue().count('--extend-tier level0'), 2)
+        for bad in (['--brains', '1', '--extend-tier', 'level0', '--force'],
+                    ['--brains', '1', '--extend-tier', 'level0', '--no-images'],
+                    ['--brains', '1', '--extend-tier', 'level2']):
+            with self.assertRaises(SystemExit), redirect_stdout(io.StringIO()):
+                import contextlib
+                with contextlib.redirect_stderr(io.StringIO()):
+                    cli.parse_args(bad)

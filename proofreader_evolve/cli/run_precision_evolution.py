@@ -5,7 +5,10 @@ Default TRAIN: 794495. Validation: all other eligible, prepared local datasets.
 TRAIN branches are ranked by the selection protocol: grouped out-of-fold precision on
 selection brains the detectors were not fitted on (auxiliary TRAIN brains only supply
 fitting rows), or the historical in-sample protocol for attribution runs.
-Promote on mean validation Precision@K; individual brain regressions are allowed.
+Promote on mean validation Precision@K whose paired-bootstrap lower bound is above zero
+(`--promotion-gate bootstrap`, default); individual brain regressions are allowed.
+Generations go to one kind each, chosen by pending follow-up, a floor, recent gate-passing
+gain and remaining headroom (`--kind-schedule adaptive`, default) or by strict rotation.
 Validation is repeatedly queried development data, never an untouched final test.
 """
 
@@ -28,7 +31,7 @@ from ..harness.native_pool import cache_path, ensure_native_tables
 from ..harness.reviser_session import DEFAULT_MODEL, build_options, bind_session_options
 from ..harness.trajectory import Trajectory, log_metrics, save_diffs
 from ..harness.evolution_report import update_report
-from ..harness.train_feedback import write_train_feedback, render_compact_json, metrics_only
+from ..harness.train_feedback import write_train_feedback, render_compact_json, metrics_only, MAX_FEEDBACK_BYTES
 from ..harness.selection_protocol import SelectionProtocol, load_selection, PROTOCOL_VERSION
 from ..harness.feature_ablation import CLASSIFIER_UNITS, FORMULA_UNITS
 from ..harness.context_cache import ContextCache
@@ -37,6 +40,7 @@ from ..harness.descriptor_contract import descriptor_spec, referenced_columns, C
 from ..harness.scorer_components import components
 from ..harness.train_experiments import ExperimentMemory, TrainingExperiments
 from ..harness.candidate_pool import CandidatePool
+from ..harness import kind_schedule
 from ..harness.classifier_contract import frozen_model, MODEL_VERSION, copy_artifacts
 from ..harness.training_diagnostics import describe, feature_statistics
 from ..harness.local_context import attach_local_context, CONTEXT_VERSION
@@ -77,7 +81,7 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
     prompt = (
         f"Read TRAIN feedback at {report_path}. Improve {policy_path} and update {rules_path}. "
         "Follow the fixed-pool scorer contract. Do not change the candidate pool, budgets or evaluator. "
-        f"You have at most {max_turns} SDK turns. The compact feedback is at most 48 KB; read it once. "
+        f"You have at most {max_turns} SDK turns. The compact feedback is at most {MAX_FEEDBACK_BYTES // 1000} KB; read it once. "
         "Feature vectors align with example labels/scores by index. Groups are diagnostic samples, not a dataset. "
         "Reserve turns to write scorer.py and rules.md and return your summary; avoid repeated tiny reads. "
         "Briefly describe the planned change before editing. "
@@ -297,9 +301,16 @@ def parse_args(argv=None):
     p.add_argument("--skip-auxiliary-ablation", action="store_true",
                    help="Skip the one-time baseline diagnostic that refits the seed training template with "
                         "and without auxiliary TRAIN rows under the selection protocol")
-    p.add_argument("--bootstrap-draws", type=int, default=200,
-                   help="Paired row-resampling draws recorded with each promotion decision (default: 200; "
-                        "0 disables). Logging only; the gate is unchanged")
+    p.add_argument("--promotion-gate", choices=scoring.GATE_MODES, default="bootstrap",
+                   help="bootstrap (default): promote only when the mean validation gain exceeds --precision-margin "
+                        "AND the lower bound of the paired bootstrap interval of that gain is above zero; "
+                        "margin: point-estimate gain only (legacy behaviour)")
+    p.add_argument("--bootstrap-draws", type=int, default=1000,
+                   help="Paired row-resampling draws of the validation delta (default: 1000). Binding in the "
+                        "bootstrap gate mode; logging only in margin mode, where 0 disables it")
+    p.add_argument("--bootstrap-alpha", type=float, default=.05,
+                   help="Two-sided interval level of the bootstrap gate (default: 0.05, a 95%% interval); "
+                        "promotion needs the lower bound above zero")
     p.add_argument("--context-cache", type=Path, default=None,
                    help="Directory built by cli.precompute_context_cache; enables pool-scale agent descriptors "
                         "(plan_descriptor_run / compute_descriptors). Omit to run without them")
@@ -313,7 +324,7 @@ def parse_args(argv=None):
     p.add_argument("--descriptor-generation-wall-seconds", type=float, default=5400.,
                    help="Wall-clock budget for all uncached descriptor computations in one generation (default: 5400)")
     p.add_argument("--mcl", type=int, default=100)
-    p.add_argument("--generations", type=int, default=5)
+    p.add_argument("--generations", type=int, default=15)
     p.add_argument("--merge-k", type=int, default=100)
     p.add_argument("--split-k", type=int, default=100)
     p.add_argument("--precision-margin", type=float, default=0,
@@ -353,7 +364,14 @@ def parse_args(argv=None):
                    help="Disable pauses for stagnation, incomplete investigations and execution blocks; "
                         "retain tool budgets, follow-up retry bound and generation limit")
     p.add_argument("--target-kind", choices=("alternate", "merge", "split"), default="alternate",
-                   help="Component to revise; alternate changes one kind per generation")
+                   help="Component to revise; alternate lets --kind-schedule choose one kind per generation, "
+                        "merge or split fixes it")
+    p.add_argument("--kind-schedule", choices=kind_schedule.MODES, default="adaptive",
+                   help="adaptive (default): pick the kind per generation by pending follow-up, a floor, recent "
+                        "gate-passing validation gain and remaining headroom; alternate: strict merge/split rotation")
+    p.add_argument("--kind-floor-every", type=int, default=kind_schedule.DEFAULT_FLOOR_EVERY,
+                   help="Adaptive schedule: every active kind is revised at least once per this many generations "
+                        "(default: 4)")
     p.add_argument("--feature-tables-dir", type=Path, default=pc.DEFAULT_OUT)
     p.add_argument('--image-alignment', type=Path, default=DEFAULT_ALIGNMENT,
                    help='Host-owned reviewed image/cache registration receipts for optional image access')
@@ -368,6 +386,12 @@ def parse_args(argv=None):
         p.error("Selection brains must be a subset of the TRAIN brains")
     if args.bootstrap_draws < 0:
         p.error("bootstrap-draws must be >= 0")
+    if not (math.isfinite(args.bootstrap_alpha) and 0. < args.bootstrap_alpha < 1.):
+        p.error("bootstrap-alpha must be in (0, 1)")
+    if args.promotion_gate == "bootstrap" and args.bootstrap_draws < 1:
+        p.error("The bootstrap promotion gate needs --bootstrap-draws >= 1 (or use --promotion-gate margin)")
+    if args.kind_floor_every < 1:
+        p.error("kind-floor-every must be >= 1")
     if args.descriptor_workers != "auto":
         if not str(args.descriptor_workers).isdigit() or int(args.descriptor_workers) < 1:
             p.error("descriptor-workers must be 'auto' or a positive integer")
@@ -574,7 +598,8 @@ def _auxiliary_ablation(args, protocol, kinds, run_dir, fit_limits, trace):
 
 
 async def run(args, revise_fn=None):
-    """Budgeted TRAIN search followed by mean-validation-only promotion."""
+    """Budgeted TRAIN search followed by mean-validation promotion; by default the mean gain
+    must also clear paired-bootstrap resampling noise."""
     revise_fn = partial(revise, max_turns=args.reviser_max_turns) if revise_fn is None else revise_fn
     args.runs_dir.mkdir(parents=True, exist_ok=True)
     run_dir = Path(tempfile.mkdtemp(prefix="precision_" + datetime.now().strftime("%Y%m%d_%H%M%S_"),
@@ -603,8 +628,11 @@ async def _run(args, revise_fn, run_dir, trace):
     _write(run_dir / 'image_alignment.json', {'brains': image_store.reviews})
     _write(run_dir / "dataset_split.json", selection)
     trace.emit("promotion_rule", "Promotion uses equal-weight mean validation Precision@K only; "
-               "TRAIN improvement is diagnostic, and individual validation regressions are allowed",
-               gate_version=scoring.VALIDATION_GATE_VERSION, aggregation=scoring.AGGREGATION)
+               "TRAIN improvement is diagnostic, and individual validation regressions are allowed"
+               + ("; the mean gain must also clear row-resampling noise (paired bootstrap lower bound above zero)"
+                  if args.promotion_gate == "bootstrap" else ""),
+               gate_version=scoring.gate_version(args.promotion_gate), gate_mode=args.promotion_gate,
+               aggregation=scoring.AGGREGATION)
     trace.emit("metric_definitions", "discoverable_pool_positives = GT-positive candidate rows in the fixed pool; "
                "top_k_hits = GT-positive rows selected in Top K; Precision@K = hits / effective_k; "
                "Recall@K = hits / pool positives (N/A when zero). Merge counts are candidate sites; "
@@ -675,17 +703,26 @@ async def _run(args, revise_fn, run_dir, trace):
     log_metrics(trace, "Baseline validation", baseline["validation"])
     baseline["auxiliary_ablation"] = _auxiliary_ablation(args, protocol, kinds, run_dir, fit_limits, trace)
     manifest = {"objective": scoring.SCORING_VERSION, "accounting_semantics": "per_generation", "budgets": budgets,
-                "promotion_gate": {"version": scoring.VALIDATION_GATE_VERSION,
+                "promotion_gate": {"version": scoring.gate_version(args.promotion_gate),
+                                   "mode": args.promotion_gate,
                                    "aggregation": scoring.AGGREGATION, "split": "development_validation",
                                    "require_train_improvement": False, "require_no_cell_regression": False,
                                    "precision_margin": args.precision_margin,
-                                   "logging": {"paired_bootstrap": scoring.BOOTSTRAP_VERSION,
-                                               "draws": args.bootstrap_draws, "affects_decision": False}},
+                                   "bootstrap": {"version": scoring.BOOTSTRAP_VERSION,
+                                                 "draws": args.bootstrap_draws, "alpha": args.bootstrap_alpha,
+                                                 "rule": "lower bound of the two-sided (1 - alpha) interval "
+                                                         "of the paired mean delta must exceed zero",
+                                                 "affects_decision": args.promotion_gate == "bootstrap"}},
                 "dataset_selection": selection,
                 "selection_protocol": protocol.describe(),
                 "reviser_max_turns": args.reviser_max_turns,
                 "feedback_format": "stratified-train-v4",
-                "search_version": "agent-descriptor-compute-v14", "target_kind": args.target_kind,
+                "search_version": "adaptive-kind-allocation-v16", "target_kind": args.target_kind,
+                "kind_schedule": {"mode": args.kind_schedule, "version": kind_schedule.SCHEDULE_VERSION,
+                                  "floor_every": args.kind_floor_every,
+                                  "momentum_window": kind_schedule.MOMENTUM_WINDOW,
+                                  "saturation_hits": kind_schedule.SATURATION_HITS,
+                                  "scope": "Host-side; headroom and gains stay in the ledger and trajectory"},
                 "descriptor_compute": ({"enabled": True, "context_cache": str(args.context_cache),
                     "descriptor_bank": str(args.descriptor_bank), "workers": descriptor_runs.workers,
                     "per_call_wall_seconds": args.descriptor_wall_seconds,
@@ -800,8 +837,23 @@ async def _run(args, revise_fn, run_dir, trace):
     }
     (run_dir / "best_scorer.py").write_text(source)
     completed_generations, stop_reason = 0, 'generation_limit'
+    ledger_rows = []
     for generation in range(1, args.generations + 1):
-        plan = pool.next_plan()
+        allocation = None
+        if args.kind_schedule == "adaptive" and len(kinds) > 1:
+            allocation = kind_schedule.allocate(
+                kinds, cells=parent_validation["cells"], budgets=budgets, records=ledger_rows,
+                paused={kind: pool.progress[kind]["paused"] for kind in kinds},
+                pending={kind: (pool.progress[kind]["pending_followup"] is not None
+                                or pool.progress[kind]["pending_investigation"] is not None) for kind in kinds},
+                floor_every=args.kind_floor_every)
+            trace.emit("kind_allocation", f"Generation {generation}: {allocation['chosen']} by {allocation['rule']}; "
+                       + "; ".join(f"{kind} headroom={info['headroom']:.4f} momentum={info['momentum']:.4f} "
+                                   f"since={info['generations_since']}" for kind, info in allocation["kinds"].items()),
+                       **{key: value for key, value in allocation.items() if key != "order"})
+        plan = pool.next_plan(order=allocation["order"] if allocation else None)
+        if plan is not None and allocation is not None:
+            plan['allocation_rule'] = allocation['rule']  # rule name only; numbers stay host-side
         if plan is None:
             stop_reason = 'all_kinds_stalled'
             trace.emit('search_stopped', 'All target kinds exhausted plateau exploration; retaining accepted scorer')
@@ -888,6 +940,7 @@ async def _run(args, revise_fn, run_dir, trace):
             classifier_threads=args.classifier_threads, parent_selection=parent_selection[target_kind],
             descriptor_budget=descriptor_budget)
         record = {"generation": generation, "accepted": False, "target_kind": target_kind,
+                  "kind_allocation": allocation,
                   "search_mode": plan['mode'], "search_reason": plan['reason'],
                   "search_branch_role": plan['branch_role'],
                   "search_parent": branch['experiment'],
@@ -941,20 +994,35 @@ async def _run(args, revise_fn, run_dir, trace):
                                                     state=candidate_validation_state, artifact_store=artifact_store)
             record["validation"] = candidate_validation
             log_metrics(gen_trace, "Candidate validation", candidate_validation, parent_validation)
-            accepted, reason = scoring.acceptance(parent_validation, candidate_validation, args.precision_margin,
-                                                  require_no_cell_regression=False)
+            point_passed, point_reason = scoring.acceptance(parent_validation, candidate_validation,
+                                                            args.precision_margin, require_no_cell_regression=False)
             bootstrap = None
             if args.bootstrap_draws > 0:
                 try:
                     bootstrap = scoring.paired_bootstrap(parent_validation_state, candidate_validation_state,
                                                          validation, budgets, draws=args.bootstrap_draws,
-                                                         seed=generation)
-                except Exception as exc:  # Logging only; never blocks or changes the decision.
+                                                         seed=generation, alpha=args.bootstrap_alpha)
+                except Exception as exc:  # In bootstrap mode a failed interval rejects; it never promotes.
                     bootstrap = {"status": "unavailable", "error": f"{type(exc).__name__}: {exc}"}
                 gen_trace.emit("promotion_uncertainty", "Paired bootstrap of the validation delta recorded "
-                               "(does not affect the gate)", paired_bootstrap=bootstrap)
-            record["validation_gate"] = {"version": scoring.VALIDATION_GATE_VERSION,
+                               + ("(binding: the lower bound must exceed zero)" if args.promotion_gate == "bootstrap"
+                                  else "(does not affect the gate)"), paired_bootstrap=bootstrap)
+            if args.promotion_gate == "bootstrap":
+                accepted, reason = scoring.bootstrap_acceptance(parent_validation, candidate_validation, bootstrap,
+                                                                args.precision_margin, alpha=args.bootstrap_alpha)
+            else:
+                accepted, reason = point_passed, point_reason
+            interval = (bootstrap or {}).get("macro_delta_ci")
+            record["validation_gate"] = {"version": scoring.gate_version(args.promotion_gate),
+                                         "mode": args.promotion_gate,
                                          "passed": accepted, "reason": reason,
+                                         "point_gate": {"passed": point_passed, "reason": point_reason,
+                                                        "margin": args.precision_margin},
+                                         "bootstrap_gate": ({"alpha": args.bootstrap_alpha,
+                                                             "lower_bound": interval[0], "upper_bound": interval[1],
+                                                             "passed": interval[0] > 0.,
+                                                             "binding": args.promotion_gate == "bootstrap"}
+                                                            if interval else None),
                                          "aggregation": scoring.AGGREGATION,
                                          "brains": list(args.validation_brains),
                                          "parent_mean": parent_validation["macro_precision"],
@@ -997,11 +1065,12 @@ async def _run(args, revise_fn, run_dir, trace):
             save_diffs(gen_dir)
         record['experiments'] = [attempt['entry'] for attempt in experiments.attempts]
         record['feature_diagnostics'] = experiments.feature_diagnostics
-        record['image_evidence'] = generation_image_evidence(gen_dir, record)
-        _write(gen_dir / 'image_evidence.json', record['image_evidence'])
         record['train_evaluations_used'] = experiments.evaluations_used
         record['descriptor_runs'] = experiments.descriptor_log
         record['descriptor_seconds_used'] = experiments.descriptor_seconds_used
+        # Descriptor runs must be on the record before the image-evidence summary reads them.
+        record['image_evidence'] = generation_image_evidence(gen_dir, record)
+        _write(gen_dir / 'image_evidence.json', record['image_evidence'])
         record['research_status'] = experiments.research_status()
         receipt = record['research_status']
         gen_trace.emit('research_result', f"Research {receipt['status']}; "
@@ -1032,6 +1101,7 @@ async def _run(args, revise_fn, run_dir, trace):
                        **progress)
         record["wall_seconds"] = time.monotonic() - generation_started
         _write(gen_dir / "evaluation.json", record)
+        ledger_rows.append(record)
         with (run_dir / "ledger.jsonl").open("a") as stream:
             stream.write(json.dumps(record, allow_nan=False) + "\n")
         outcome = ('incomplete' if record.get('failure_stage') == 'research_check' else

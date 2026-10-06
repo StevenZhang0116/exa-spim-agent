@@ -58,6 +58,9 @@ in the current generation's `proposal.json`.
 - Promotion gate: improve equal-weight mean native-label Precision@K on the fixed
   development-validation brains. First average merge/split precision within each
   brain, then average the brains. Individual brain/kind regressions are allowed.
+  The mean gain must also clear row-resampling noise: the host requires the lower
+  bound of a paired bootstrap interval of that gain to be above zero, so a change
+  worth one or two extra Top-K hits will not be promoted.
   The selection score guides exploration and is not a hard promotion requirement;
   `train_gate` in tool feedback is a diagnostic comparison only.
   Returning fewer candidates cannot inflate precision; the harness always takes

@@ -271,7 +271,7 @@ class ClassifierDriverTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
             seed = Path(tmp) / 'seed.py'
             seed.write_text(BASELINE)
-            args = driver.parse_args(['--selection-protocol', 'in_sample', '--train-brains', '1', '--validation-brains', '2', '--split-k', '1',
+            args = driver.parse_args(['--selection-protocol', 'in_sample', '--promotion-gate', 'margin', '--kind-schedule', 'alternate', '--train-brains', '1', '--validation-brains', '2', '--split-k', '1',
                                       '--generations', '1', '--start-from', str(seed), '--runs-dir', tmp])
             async def revise(run_dir, policy, rules, report, model, *, experiments):
                 self.assertEqual(set(experiments.train), {'1'})

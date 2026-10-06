@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1280" viewBox="0 0 1920 1280" font-family="'Helvetica Neue',Arial,sans-serif" role="img" aria-labelledby="title description">
   <title id="title">Proofreader scorer evolution</title>
-  <desc id="description">Fixed-pool proofreader_evolve workflow. Frozen detectors were fitted on 794495, the default TRAIN brain; the default grouped_oof selection protocol ranks TRAIN branches by out-of-fold precision on a detector-naive selection brain (for example 802449) with 794495 as auxiliary fitting data; other eligible prepared brains form fixed development validation. Each generation evolves one merge or split component through formulas or isolated TRAIN-only fit/predict programs. Tune changes numeric parameters; explore can redesign methods. The default scoring budget is eight shared units plus one execution-error repair. Each classifier configuration costs one unit, including three host-owned fold refits whose out-of-fold score ranks it. Classifier feature diagnostics refit both arms over the same grouped, fragment-purged folds for two units; descriptive formula comparisons cost two. Diagnostic fold models cannot be submitted. Direct 3D analysis is the primary image exploration interface: edit analysis.py and analysis_request.json, then call run_volume_analysis. Eight executions of up to four TRAIN cases use a separate budget. The sandbox supplies original voxels, validity masks, physical spacing, anchors and aligned bounded fragments; OME metadata maps fragment xyz microns to patch zyx voxel centers. Optional MIP/slab tools have a separate allowance. Save code, input identities, results and IO timings. Analysis does not establish ranking gain; implement and measure a feature or frozen model. Image investigation selections and scoring coverage are independent. Retain at most five TRAIN branches per kind plus a protected accepted reference. A new promotion gets the next same-kind explore slot for fresh branch evidence, with at most one retry. Seeds and identical references do not enqueue follow-ups. Otherwise explore the reference every third scheduled kind round. Performance plateaus or two rounds without fresh evidence require a new paired TRAIN ablation or numerical 3D comparison on two distinct candidates. Prioritize registered image evidence when images have not been compared. Negative measurements count; plans, previews and cached restores do not complete the investigation. Combined assignments must measure the comparison on the promoted branch. Incomplete assignments skip validation and retain the accepted policy. Default bounded pauses distinguish incomplete investigations, consecutive execution blocks and measured stagnation. Execution failure is not scientific rejection. A completed assignment with a measured submission receives frozen evaluation on every validation brain regardless of TRAIN gain. Average merge/split Precision at K within each brain, then average brains equally; promote when the mean improves beyond the margin. Validation inspection and labels remain hidden; frozen inference can use registered validation pixels. Selection provides indirect validation feedback: this is development validation, not an untouched final test. Save scorer/model artifacts, evidence receipts, branch ancestry, coverage, trajectories, costs and alignment provenance.</desc>
+  <desc id="description">Fixed-pool proofreader_evolve workflow. Frozen detectors were fitted on 794495, the default TRAIN brain; the default grouped_oof selection protocol ranks TRAIN branches by out-of-fold precision on a detector-naive selection brain (for example 802449) with 794495 as auxiliary fitting data; other eligible prepared brains form fixed development validation. Each generation evolves one merge or split component through formulas or isolated TRAIN-only fit/predict programs; the kind is chosen by pending follow-up, a floor of one revision per four generations, recent gate-passing validation gain and remaining headroom (strict rotation remains available). Tune changes numeric parameters; explore can redesign methods. The default scoring budget is eight shared units plus one execution-error repair. Each classifier configuration costs one unit, including three host-owned fold refits whose out-of-fold score ranks it. Classifier feature diagnostics refit both arms over the same grouped, fragment-purged folds for two units; descriptive formula comparisons cost two. Diagnostic fold models cannot be submitted. Direct 3D analysis is the primary image exploration interface: edit analysis.py and analysis_request.json, then call run_volume_analysis. Eight executions of up to four TRAIN cases use a separate budget. The sandbox supplies original voxels, validity masks, physical spacing, anchors and aligned bounded fragments; OME metadata maps fragment xyz microns to patch zyx voxel centers. Optional MIP/slab tools have a separate allowance. Save code, input identities, results and IO timings. Analysis does not establish ranking gain; implement and measure a feature or frozen model. Image investigation selections and scoring coverage are independent. With --context-cache, the host caches the raw context of the detector-ranked band once per brain and kind (fragment neighbourhoods at 50 um plus level-1 and level-0 image patches, both for the whole band since 2026-10-05); the agent edits descriptor.py and calls plan_descriptor_run and compute_descriptors to measure its own quantities over every cached TRAIN row in parallel sandboxed workers. Results register as bank_agent_* predictors with label-conditional TRAIN quartiles, cost one unit per uncached call within wall budgets, are cached by code hash in descriptor_bank/, and are recomputed by the host on validation brains at submission; descriptors.json records them for resume. Nothing in the cache is a feature. Retain at most five TRAIN branches per kind plus a protected accepted reference. A new promotion gets the next same-kind explore slot for fresh branch evidence, with at most one retry. Seeds and identical references do not enqueue follow-ups. Otherwise explore the reference every third scheduled kind round. Performance plateaus or two rounds without fresh evidence require a new paired TRAIN ablation or numerical 3D comparison on two distinct candidates. Prioritize registered image evidence when images have not been compared. Negative measurements count; plans, previews and cached restores do not complete the investigation. Combined assignments must measure the comparison on the promoted branch. Incomplete assignments skip validation and retain the accepted policy. Default bounded pauses distinguish incomplete investigations, consecutive execution blocks and measured stagnation. Execution failure is not scientific rejection. A completed assignment with a measured submission receives frozen evaluation on every validation brain regardless of TRAIN gain. Average merge/split Precision at K within each brain, then average brains equally; promote when the mean improves beyond the margin and the lower bound of the paired bootstrap interval of that gain is above zero (default gate; the margin-only rule remains available). Validation inspection and labels remain hidden; frozen inference can use registered validation pixels. Selection provides indirect validation feedback: this is development validation, not an untouched final test. Save scorer/model artifacts, evidence receipts, branch ancestry, coverage, trajectories, costs and alignment provenance.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
       <path d="M0,1 L9,5 L0,9 z" fill="#64748b"/>
@@ -41,17 +41,17 @@
 
   <!-- Immutable benchmark and editable scorer/training artifacts. -->
   <rect x="60" y="150" width="1800" height="38" rx="10" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1.5"/>
-  <line x1="590" y1="157" x2="590" y2="181" stroke="#cbd5e1" stroke-width="1.5"/>
+  <line x1="480" y1="157" x2="480" y2="181" stroke="#cbd5e1" stroke-width="1.5"/>
   <line x1="1130" y1="157" x2="1130" y2="181" stroke="#cbd5e1" stroke-width="1.5"/>
   <text x="82" y="175" font-size="16" font-weight="700" fill="#0f172a">FROZEN</text>
   <text x="172" y="175" font-size="16" fill="#334155">pool · base features · labels · K</text>
-  <text x="612" y="175" font-size="16" font-weight="700" fill="#0f172a">EDITABLE</text>
-  <text x="720" y="175" font-size="16" fill="#334155">scorer · training · analysis · proposal · rules</text>
+  <text x="502" y="175" font-size="16" font-weight="700" fill="#0f172a">EDITABLE</text>
+  <text x="610" y="175" font-size="16" fill="#334155">scorer · training · descriptor · analysis · proposal · rules</text>
   <text x="1152" y="175" font-size="16" font-weight="700" fill="#0f172a">EVALUATION</text>
   <text x="1288" y="175" font-size="16" fill="#334155">TRAIN exploration → mean validation gate</text>
 
   <text x="60" y="219" font-size="17" font-weight="700" fill="#334155">PREPARE ONCE, THEN INITIALIZE · no LLM calls</text>
-  <text x="1860" y="219" font-size="15" text-anchor="end" fill="#64748b">Optional images: review metadata + fragment alignment before access</text>
+  <text x="1860" y="219" font-size="15" text-anchor="end" fill="#64748b">Optional context cache: band fragment neighbourhoods + level-1 / level-0 patches for the whole band, built once per brain (--extend-tier grows a tier)</text>
 
   <!-- NativeTable preparation: native_pool.py and precompute_error_scores.py. -->
   <g id="frozen-inputs" data-box="60 240 350 180">
@@ -74,7 +74,7 @@
     <text x="479" y="321" class="body">Merge junctions · split segment pairs</text>
     <text x="479" y="347" class="body">Preserve native rows + occurrences</text>
     <text x="479" y="373" class="body">Extract features; apply frozen model</text>
-    <text x="479" y="400" class="note">TRAIN 794495 (aux) + 802449 (selection) · validation</text>
+    <text x="479" y="400" class="note">TRAIN 794495 (aux) + 802449 (sel.) · validation</text>
   </g>
   <path d="M852 330 H887" class="flow"/>
 
@@ -83,7 +83,7 @@
     <circle cx="931" cy="278" r="21" fill="#0f172a"/>
     <text x="931" y="285" class="step">2</text>
     <text x="967" y="286" class="heading contract-title">Freeze evaluation contract</text>
-    <text x="919" y="321" class="body">Predictors + optional pixels → isolated workers</text>
+    <text x="919" y="321" class="body">Predictors · pixels · cached contexts → workers</text>
     <text x="919" y="347" class="body">TRAIN labels → fit; IDs stay in evaluator</text>
     <text x="919" y="373" class="body">Validation labels → outer evaluator only</text>
     <text x="919" y="400" class="note">Fixed K + pools; registered xyz/zyx; hash inputs + models</text>
@@ -122,9 +122,9 @@
     <text x="84" y="613" class="body">Edit one kind; harness freezes the other</text>
     <text x="84" y="641" class="body">Matched failures + hypothesis evidence</text>
     <text x="84" y="669" class="body">Run custom analysis on 3D patches</text>
-    <text x="84" y="697" class="body">Plan image coverage around Top K</text>
+    <text x="84" y="697" class="body">descriptor.py: quantities over the band</text>
     <text x="84" y="725" class="body">Features / models; batched image inputs</text>
-    <text x="84" y="755" class="note">8 3D analyses; 2D previews optional</text>
+    <text x="84" y="755" class="note">8 3D analyses · descriptor wall budgets</text>
   </g>
   <path d="M452 648 H522" class="flow"/>
   <text x="490" y="634" font-size="14" text-anchor="middle" fill="#64748b">tool call</text>
@@ -138,8 +138,8 @@
     <text x="554" y="613" class="body">Fold refits → OOF score → full-TRAIN fit</text>
     <text x="554" y="641" class="body">Stalled? New comparison required</text>
     <text x="554" y="669" class="body">Ablation: 3 folds × 2 arms (2 units)</text>
-    <text x="554" y="697" class="body">8 shared units + 1 scorer repair</text>
-    <text x="554" y="725" class="body">Selection P@K + coverage + Δfeature</text>
+    <text x="554" y="697" class="body">8 units + 1 repair; descriptors 1 each</text>
+    <text x="554" y="725" class="body">Selection P@K · bank_agent_* quartiles</text>
     <text x="554" y="755" class="note">Separate image coverage from image-only gain</text>
   </g>
   <path d="M922 648 H992" class="flow"/>
@@ -152,8 +152,8 @@
     <text x="1072" y="576" class="heading compute-title">Submit + validate</text>
     <text x="1024" y="613" class="body">Check measured code + research receipt</text>
     <text x="1024" y="641" class="body">TRAIN gain is diagnostic only</text>
-    <text x="1024" y="669" class="body">Frozen extraction + scoring on each brain</text>
-    <text x="1024" y="697" class="body">Mean Precision@K must improve</text>
+    <text x="1024" y="669" class="body">Descriptors + frozen scoring per brain</text>
+    <text x="1024" y="697" class="body">Mean P@K up beyond bootstrap noise</text>
     <text x="1024" y="725" class="body">Equal brain weights; regressions allowed</text>
     <text x="1024" y="755" class="note">No validation data or scores sent to the LLM</text>
   </g>
@@ -165,11 +165,11 @@
     <circle cx="1506" cy="568" r="21" fill="#0f172a"/>
     <text x="1506" y="575" class="step">7</text>
     <text x="1542" y="576" class="heading contract-title">Select + record</text>
-    <text x="1494" y="613" font-size="17" font-weight="600" fill="#166534">Validation mean improves → replace parent</text>
+    <text x="1494" y="613" font-size="17" font-weight="600" fill="#166534">Mean gain clears noise → replace parent</text>
     <text x="1494" y="641" font-size="17" font-weight="600" fill="#92400e">Reject / fail → retain parent</text>
     <text x="1494" y="669" class="body">Selection score: champion + specialists</text>
     <text x="1494" y="697" class="body">Separate protected accepted branch</text>
-    <text x="1494" y="725" class="body">New parent: next same-kind follow-up</text>
+    <text x="1494" y="725" class="body">Next kind: follow-up · floor · gain · headroom</text>
     <text x="1494" y="755" class="note">All kinds paused → stop; keep accepted scorer</text>
   </g>
 
@@ -178,13 +178,13 @@
   <rect x="274" y="804" width="432" height="25" rx="6" fill="#eff6ff"/>
   <text x="490" y="822" font-size="16" text-anchor="middle" fill="#1e3a8a">TRAIN results → revise within the attempt budget</text>
   <text x="490" y="850" font-size="15" text-anchor="middle" fill="#475569">Formula path: evaluate_train / search_parameters · model path: train_classifier</text>
-  <text x="490" y="874" font-size="15" text-anchor="middle" fill="#475569">evaluate_feature_ablation: full vs constant-masked inputs; TRAIN-only, advisory</text>
+  <text x="490" y="874" font-size="15" text-anchor="middle" fill="#475569">evaluate_feature_ablation (TRAIN-only, advisory) · compute_descriptors: pilot / boundary / all_cached</text>
 
   <!-- Invalid submissions or incomplete research skip validation and retain the parent. -->
   <path d="M1195 782 V817 H1665 V782" class="reject"/>
   <rect x="1214" y="804" width="432" height="25" rx="6" fill="#f0fdf4"/>
   <text x="1430" y="822" font-size="16" text-anchor="middle" fill="#92400e">Invalid / evaluation failure → keep parent</text>
-  <text x="1430" y="859" font-size="15" text-anchor="middle" fill="#475569">Same fixed K and native pools · strict macro gain above the configured margin</text>
+  <text x="1430" y="859" font-size="15" text-anchor="middle" fill="#475569">Same fixed K and native pools · gain above margin with bootstrap lower bound &gt; 0</text>
 
   <!-- Parent selection carries indirect validation feedback into later generations. -->
   <path d="M1750 782 V925 H36 V700 H58" class="feedback"/>
@@ -203,13 +203,14 @@
     <text x="86" y="1092" class="heading">Run outputs</text>
     <text x="86" y="1122" class="note">runs/precision_…/</text>
     <line x1="308" y1="1070" x2="308" y2="1160" stroke="#cbd5e1" stroke-width="1.5"/>
-    <text x="338" y="1092" class="code" font-weight="700">best_scorer.py</text>
-    <text x="338" y="1122" class="code">+ model_artifacts/</text>
-    <text x="338" y="1152" class="note">Keep both together to resume trained models</text>
+    <text x="338" y="1086" class="code" font-weight="700">best_scorer.py</text>
+    <text x="338" y="1110" class="code">+ model_artifacts/</text>
+    <text x="338" y="1134" class="code">+ descriptors.json</text>
+    <text x="338" y="1160" class="note">Keep all three together to resume models</text>
     <line x1="659" y1="1070" x2="659" y2="1160" stroke="#cbd5e1" stroke-width="1.5"/>
     <text x="689" y="1092" class="code" font-weight="700">train_experiments.jsonl</text>
     <text x="689" y="1122" class="body">Training code, parameters, file hashes and outcomes</text>
-    <text x="689" y="1152" class="note">Analysis code + 3D input identities/results + ablations</text>
+    <text x="689" y="1152" class="note">3D analyses · ablations · descriptor runs (bank by code hash)</text>
     <line x1="1215" y1="1070" x2="1215" y2="1160" stroke="#cbd5e1" stroke-width="1.5"/>
     <text x="1245" y="1092" class="code" font-weight="700">report.html · trajectories · ledger.jsonl</text>
     <text x="1245" y="1122" class="body">Offline branches, attempts, diffs, metrics and errors</text>
@@ -218,6 +219,6 @@
 
   <rect x="60" y="1200" width="1800" height="32" rx="9" fill="#f1f5f9" stroke="#cbd5e1" stroke-width="1.5"/>
   <text x="960" y="1222" font-size="16" text-anchor="middle" fill="#475569">Scope: sparse native-label ranking. Graph repair efficacy requires separate evaluation; candidate pools, detector weights and K remain fixed.</text>
-  <text x="60" y="1260" font-size="14" fill="#94a3b8">Defaults: detector fit + TRAIN 794495 · validation: other ready brains · mean-only gate · MCL 100 · K = 100 per kind · 5 generations</text>
+  <text x="60" y="1260" font-size="14" fill="#94a3b8">CLI defaults: TRAIN 794495 · grouped_oof · bootstrap mean gate (1000 draws) · MCL 100 · K = 100 · 15 generations · recommended: TRAIN 794495,802449 · K = 2000 · --context-cache</text>
   <text x="1860" y="1260" font-size="14" text-anchor="end" fill="#94a3b8">proofreader_evolve/workflow_diagram.svg</text>
 </svg>

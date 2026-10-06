@@ -3,7 +3,7 @@
 import json
 
 
-MAX_FEEDBACK_BYTES = 48_000
+MAX_FEEDBACK_BYTES = 96_000  # raised from 48 KB on 2026-10-05; the ladder below still prunes when exceeded
 METRICS = ("precision", "tp", "fp", "requested_k", "effective_k", "pool_size", "positives", "recall")
 SELECTION_METRICS = ("protocol", "fold_budgets", "fold_tp", "fold_held_rows")
 

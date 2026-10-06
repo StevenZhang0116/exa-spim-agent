@@ -89,7 +89,8 @@ or custom predictor. The harness runs fit on TRAIN, snapshots the artifacts,
 runs label-free inference with the declared inputs, measures the selection score (see Evaluation
 below) alongside in-sample TRAIN Precision@K, and restores the best successful configuration by
 the selection score. Selection comparisons guide search;
-only the outer mean validation Precision@K controls promotion. With no
+only the outer mean validation Precision@K, with its resampling-noise bound, controls
+promotion. With no
 grid, it measures one fit. To try a different method, edit training.py and explain
 the change in proposal.json/rules.md.
 
@@ -143,8 +144,8 @@ rows scores high in-sample and low out-of-fold. If `fit` declares a `groups`
 keyword it receives the label-free source brain of each training row (a pandas
 Series) so you can weight or block auxiliary rows. One configuration costs one
 evaluation unit, fold refits included. You may still print your own internal
-diagnostics. Final promotion uses the outer mean development gate on the frozen
-candidate; the selection score is a repeatedly used development signal, not an
+diagnostics. Final promotion uses the outer mean development gate (mean gain beyond
+paired-bootstrap noise) on the frozen candidate; the selection score is a repeatedly used development signal, not an
 untouched final test.
 
 For a host-measured feature comparison, use `evaluate_feature_ablation({})` with

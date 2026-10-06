@@ -82,7 +82,9 @@ class DescriptorRuns:
                 'image_tier': spec['image_tier'] if spec['inputs'] != 'geometry' else None,
                 'feature_names': list(spec['feature_names']), 'scope': scope,
                 'rows_sha256': hashlib.sha256(np.asarray(rows, dtype='<i8').tobytes()).hexdigest(),
-                'context_cache': self.cache.identity_key(table), 'implementation': self.implementation}
+                'context_cache': self.cache.identity_key(
+                    table, tiers=(spec['image_tier'],) if spec['inputs'] != 'geometry' else ()),
+                'implementation': self.implementation}
 
     def directory(self, table, spec, scope):
         from .context_cache import table_identity

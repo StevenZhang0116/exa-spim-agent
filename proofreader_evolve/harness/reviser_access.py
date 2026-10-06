@@ -1,7 +1,21 @@
-"""Deny-by-default file-tool boundary. Not a Python execution sandbox."""
+"""Deny-by-default file-tool boundary. Not a Python execution sandbox.
+
+Reads are limited to the bound generation artifacts, explicitly listed reports and
+the SDK's parked tool-result files for this run; writes to the editable artifacts.
+"""
 
 from pathlib import Path
 import json
+import os
+import re
+
+
+def sdk_project_dir(cwd):
+    """Claude Code keeps per-session files for a working directory under
+    <config dir>/projects/<cwd with every non-alphanumeric character as "-">/.
+    Oversized MCP results are parked in <session>/tool-results/ there."""
+    config = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    return (config / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str(Path(cwd).resolve()))).resolve()
 
 
 def canonical_file(path, cwd):
@@ -12,7 +26,8 @@ def canonical_file(path, cwd):
 
 
 def make_guard(cwd, editable_dir, readable_paths, audit_path, state=None, *,
-               policy_filename="scorer.py", allowed_tools=(), allow_proposal=False):
+               policy_filename="scorer.py", allowed_tools=(), allow_proposal=False,
+               sdk_tool_results=True):
     from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 
     cwd = Path(cwd).resolve()
@@ -31,6 +46,9 @@ def make_guard(cwd, editable_dir, readable_paths, audit_path, state=None, *,
                          editable_dir / "analysis.py", editable_dir / "analysis_request.json",
                          editable_dir / "descriptor.py"})
     readable = writable | {canonical_file(p, cwd) for p in readable_paths}
+    # Parked MCP tool results are this run's own TRAIN tool output, so regular files
+    # directly inside <project>/<session>/tool-results/ are readable (never writable).
+    parked_root = sdk_project_dir(cwd) if sdk_tool_results else None
     state = state if state is not None else {"violations": []}
     trusted_tools = frozenset(allowed_tools)
 
@@ -47,6 +65,11 @@ def make_guard(cwd, editable_dir, readable_paths, audit_path, state=None, *,
                 permitted = readable if tool_name == "Read" else writable
                 # Require an allowed lexical entry with an unchanged target.
                 allowed = any(resolved == p and p.resolve() == p for p in permitted)
+                if (not allowed and tool_name == "Read" and parked_root is not None
+                        and resolved.parent.name == "tool-results"
+                        and resolved.parent.parent.parent == parked_root
+                        and resolved.is_file() and not path.is_symlink()):
+                    allowed = True
             except (OSError, RuntimeError, ValueError):
                 allowed = False
         if allowed:

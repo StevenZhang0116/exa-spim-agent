@@ -2,8 +2,10 @@
 
 The host caches, once per brain and kind, the raw context of the top 20,000
 detector-ranked candidates: the fragment neighbourhood (50 um, up to 256 nodes)
-and image patches (`level1`: level 1 at 30 um for the whole band; `level0`:
-level 0 at 16 um for the top 4,000 rows). Nothing in the cache is a feature.
+and image patches for the whole band at two resolutions (`level1`: level 1,
+30 um radius, about 1.5 x 1.5 x 2 um voxels; `level0`: level 0, 16 um radius,
+about 0.75 x 0.75 x 1 um voxels, the finest view of thin fibres). Nothing in the
+cache is a feature.
 You decide what to measure by writing `descriptor.py`; the host runs it over
 the cached rows in parallel sandboxed workers and registers the results as
 `bank_agent_<name>` predictor columns.

@@ -179,6 +179,8 @@
     ["TRAIN brains",(data.manifest.train_brains||[]).join(", ")||"Not recorded"],
     ["Validation brains",(data.manifest.development_validation_brains||[]).join(", ")||"Not recorded"],
     ["K: merge / split",`${data.manifest.budgets?.merge??"?"} / ${data.manifest.budgets?.split??"?"}`],
+    ["Promotion gate",data.manifest.promotion_gate?`${data.manifest.promotion_gate.mode||"margin"}${data.manifest.promotion_gate.bootstrap?.affects_decision?` (${data.manifest.promotion_gate.bootstrap.draws} draws, alpha ${data.manifest.promotion_gate.bootstrap.alpha})`:""}`:"Not recorded"],
+    ["Kind schedule",data.manifest.kind_schedule?`${data.manifest.kind_schedule.mode}${data.manifest.kind_schedule.mode==="adaptive"?` (floor every ${data.manifest.kind_schedule.floor_every})`:""}`:"Not recorded"],
     [total.evaluations_complete?"Evaluation units used":"Recorded evaluation units (incomplete)",count(total.train_evaluations)],
     [total.cost_complete?"API cost":"Recorded API cost (incomplete)",`$${fmt(total.recorded_cost_usd,4)}`],
     [total.timing_complete?"Total generation duration":"Recorded generation duration (incomplete)",`${fmt(total.generation_seconds,1)} s`]];

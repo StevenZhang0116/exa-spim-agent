@@ -152,10 +152,21 @@ class CandidatePool:
         return sorted(results, key=lambda item: (
             -len(item['improved_slices']), -item['additional_macro_recall'], -item['target_precision']))
 
-    def next_plan(self):
-        for _ in self.kinds:
-            kind = self.kinds[self.cursor % len(self.kinds)]
-            self.cursor += 1
+    def next_plan(self, order=None):
+        """Plan the next generation for the first non-paused kind.
+
+        `order` (from kind_schedule.allocate) overrides the strict rotation; the
+        per-kind exploration, reference and stall logic below is unchanged.
+        """
+        if order is None:
+            sequence = [self.kinds[(self.cursor + i) % len(self.kinds)] for i in range(len(self.kinds))]
+        else:
+            if any(kind not in self.kinds for kind in order):
+                raise ValueError('Kind order names an unconfigured kind')
+            sequence = list(order)
+        for kind in sequence:
+            if order is None:
+                self.cursor += 1
             progress = self.progress[kind]
             if progress['paused']:
                 continue

@@ -14,6 +14,14 @@ from .local_features import augmented_features
 SCORING_VERSION = "native-precision-at-k-v1"
 AGGREGATION = "equal-brain-mean-kind-precision"
 VALIDATION_GATE_VERSION = "mean-validation-precision-v1"
+BOOTSTRAP_GATE_VERSION = "mean-validation-bootstrap-v1"
+GATE_MODES = ("bootstrap", "margin")
+
+
+def gate_version(mode):
+    if mode not in GATE_MODES:
+        raise ValueError(f"Unknown promotion gate mode {mode!r}")
+    return BOOTSTRAP_GATE_VERSION if mode == "bootstrap" else VALIDATION_GATE_VERSION
 
 
 def aggregate_precision(cells):
@@ -126,15 +134,18 @@ def _prefix_hits(order, truth, counts, k):
     return hits, k
 
 
-def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *, draws=200, seed=0):
-    """Paired resampling of candidate rows for the promotion delta; logging only.
+def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *, draws=1000, seed=0, alpha=.05):
+    """Paired resampling of candidate rows for the promotion delta.
 
     Both scorers are re-ranked on the same Poisson(1)-weighted multiset per cell,
-    so the interval reflects row sampling noise, not scorer nondeterminism. It is
-    recorded next to the decision and does not change the gate.
+    so the interval reflects row sampling noise, not scorer nondeterminism. The
+    two-sided (1 - alpha) interval is what `bootstrap_acceptance` reads; the 95%
+    interval is always recorded as well.
     """
     if type(draws) is not int or draws < 1:
         raise ValueError("Bootstrap draws must be a positive integer")
+    if not (isinstance(alpha, float) and math.isfinite(alpha) and 0. < alpha < 1.):
+        raise ValueError("Bootstrap alpha must be a float in (0, 1)")
     rng = np.random.default_rng(seed)
     cells = {}
     for brain, banks in tables_by_brain.items():
@@ -164,10 +175,41 @@ def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *,
             brain, _ = cell.rsplit("/", 1)
             grouped.setdefault(brain, []).append(value)
         deltas[draw] = math.fsum(math.fsum(v) / len(v) for v in grouped.values()) / len(grouped)
-    low, high = np.percentile(deltas, [2.5, 97.5])
-    return {"version": BOOTSTRAP_VERSION, "draws": draws, "seed": seed,
-            "macro_delta_ci95": [float(low), float(high)],
+    bounds = [100. * alpha / 2., 100. * (1. - alpha / 2.)]
+    low, high = np.percentile(deltas, bounds)
+    return {"version": BOOTSTRAP_VERSION, "draws": draws, "seed": seed, "alpha": alpha,
+            "macro_delta_ci": [float(low), float(high)],
+            "macro_delta_ci95": [float(v) for v in np.percentile(deltas, [2.5, 97.5])],
+            "macro_delta_point": float(np.mean(deltas)),
             "p_delta_le_0": float(np.mean(deltas <= 0)), "p_delta_ge_0": float(np.mean(deltas >= 0)),
-            "cells": {cell: {"delta_ci95": [float(v) for v in np.percentile(values, [2.5, 97.5])]}
+            "cells": {cell: {"delta_ci": [float(v) for v in np.percentile(values, bounds)],
+                             "delta_ci95": [float(v) for v in np.percentile(values, [2.5, 97.5])]}
                       for cell, values in per_cell.items()},
-            "scope": "Row-resampling uncertainty of the paired Precision@K delta; recorded, not a gate."}
+            "scope": "Row-resampling uncertainty of the paired Precision@K delta over the fixed pools; "
+                     "the configured promotion gate mode decides whether it is binding."}
+
+
+def bootstrap_acceptance(parent, candidate, bootstrap, margin=0, *, alpha=.05):
+    """Promote only when the point gain clears the margin AND the lower bound of the
+    paired bootstrap interval of the mean delta is above zero.
+
+    A missing or failed bootstrap never promotes (fail closed). The point-estimate
+    comparison reuses `acceptance`, so benchmark identity checks still apply.
+    """
+    passed_point, point_reason = acceptance(parent, candidate, margin, require_no_cell_regression=False)
+    details = point_reason.split(": ", 1)[1]
+    if not passed_point:
+        return False, point_reason
+    if not isinstance(bootstrap, dict) or bootstrap.get("status") == "unavailable" \
+            or "macro_delta_ci" not in bootstrap:
+        return False, f"Bootstrap interval unavailable; candidate not promoted: {details}"
+    if bootstrap.get("alpha") != alpha:
+        raise ValueError("Bootstrap interval level differs from the gate alpha")
+    lower = float(bootstrap["macro_delta_ci"][0])
+    if not math.isfinite(lower):
+        return False, f"Bootstrap interval not finite; candidate not promoted: {details}"
+    detail = (f"{details}; bootstrap lower bound {lower:+.6f} at alpha={alpha:g} "
+              f"({bootstrap['draws']} draws)")
+    if lower > 0.:
+        return True, f"Mean Precision@K improved beyond resampling noise: {detail}"
+    return False, f"Mean Precision@K gain within resampling noise: {detail}"

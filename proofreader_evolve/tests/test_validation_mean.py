@@ -73,8 +73,8 @@ class SplitSelectionTests(unittest.TestCase):
         args = driver.parse_args(['--selection-protocol', 'in_sample'])
         self.assertEqual(args.train_brains, ["794495"])
         self.assertIsNone(args.validation_brains)
-        self.assertIsNone(driver.parse_args(['--selection-protocol', 'in_sample', "--validation-brains", "auto"]).validation_brains)
-        self.assertEqual(driver.parse_args(['--selection-protocol', 'in_sample', "--validation-brains", "789202,794491"]).validation_brains,
+        self.assertIsNone(driver.parse_args(['--selection-protocol', 'in_sample', '--promotion-gate', 'margin', '--kind-schedule', 'alternate', "--validation-brains", "auto"]).validation_brains)
+        self.assertEqual(driver.parse_args(['--selection-protocol', 'in_sample', '--promotion-gate', 'margin', '--kind-schedule', 'alternate', "--validation-brains", "789202,794491"]).validation_brains,
                          ["789202", "794491"])
 
     def test_auto_excludes_training_unprepared_and_wrong_mcl_and_freezes_list(self):
@@ -105,7 +105,7 @@ class SplitSelectionTests(unittest.TestCase):
             self.assertTrue(all(call.kwargs["prepare"] is False for call in loader.call_args_list))
 
     def test_missing_explicit_brain_does_not_silently_shrink_split(self):
-        args = driver.parse_args(['--selection-protocol', 'in_sample', "--train-brains", "1", "--validation-brains", "2"])
+        args = driver.parse_args(['--selection-protocol', 'in_sample', '--promotion-gate', 'margin', '--kind-schedule', 'alternate', "--train-brains", "1", "--validation-brains", "2"])
         with patch.object(driver, "ensure_native_tables", side_effect=[fixture("1"), FileNotFoundError("missing")]):
             with self.assertRaises(FileNotFoundError):
                 driver._load_evaluation_banks(args, {}, Mock())
@@ -118,7 +118,7 @@ class SplitSelectionTests(unittest.TestCase):
             cache("2").touch()
             for failure, expected in ((ValueError("Corrupt native table"), "Corrupt"),
                                       (FileNotFoundError("missing"), "No eligible")):
-                args = driver.parse_args(['--selection-protocol', 'in_sample', "--train-brains", "1"])
+                args = driver.parse_args(['--selection-protocol', 'in_sample', '--promotion-gate', 'margin', '--kind-schedule', 'alternate', "--train-brains", "1"])
                 with patch.object(driver, "cache_path", side_effect=cache), \
                         patch.object(driver, "ensure_native_tables", side_effect=[fixture("1"), failure]), \
                         self.subTest(failure=failure), self.assertRaisesRegex(ValueError, expected):
@@ -127,7 +127,7 @@ class SplitSelectionTests(unittest.TestCase):
     def test_empty_candidate_pool_fails_before_scoring(self):
         empty = fixture("2")
         empty.tables["split"].truth = np.array([], dtype=np.int8)
-        args = driver.parse_args(['--selection-protocol', 'in_sample', "--train-brains", "1", "--validation-brains", "2"])
+        args = driver.parse_args(['--selection-protocol', 'in_sample', '--promotion-gate', 'margin', '--kind-schedule', 'alternate', "--train-brains", "1", "--validation-brains", "2"])
         with patch.object(driver, "ensure_native_tables", side_effect=[fixture("1"), empty]), \
                 self.assertRaisesRegex(ValueError, "Empty candidate pool"):
             driver._load_evaluation_banks(args, {}, Mock())
@@ -136,7 +136,7 @@ class SplitSelectionTests(unittest.TestCase):
 class PromotionTests(unittest.TestCase):
     def test_train_and_one_validation_brain_can_regress_while_mean_promotes(self):
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
-            args = driver.parse_args(['--selection-protocol', 'in_sample', "--train-brains", "1", "--validation-brains", "2,4,5",
+            args = driver.parse_args(['--selection-protocol', 'in_sample', '--promotion-gate', 'margin', '--kind-schedule', 'alternate', "--train-brains", "1", "--validation-brains", "2,4,5",
                                       "--split-k", "1", "--generations", "1", "--runs-dir", tmp])
             def load(brain, *args, **kwargs):
                 bank = fixture(brain)

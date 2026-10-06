@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import json
 from pathlib import Path
+import shutil
 import tempfile
 import time
 
@@ -27,7 +28,7 @@ CACHE_VERSION = 'candidate-context-cache-v1'
 BAND_SPEC = {'selection_feature': 'detector_score', 'selection_largest': True, 'max_candidates': 20000}
 GEOMETRY_SPEC = {'radius_um': 50., 'max_nodes': 256}
 IMAGE_TIERS = {'level1': {'level': 1, 'radius_um': 30., 'channel': 0, 'timepoint': 0, 'max_rows': None},
-               'level0': {'level': 0, 'radius_um': 16., 'channel': 0, 'timepoint': 0, 'max_rows': 4000}}
+               'level0': {'level': 0, 'radius_um': 16., 'channel': 0, 'timepoint': 0, 'max_rows': None}}
 CHUNK_ROWS = 1024
 FRAGMENT_FIELDS = ('xyz_um', 'radius_um', 'degree', 'segment', 'edges', 'anchor_nodes', 'outside_radius', 'truncated')
 IMPLEMENTATION_FILES = ('context_cache.py', 'local_context.py', 'image_context.py', 'image_coordinates.py')
@@ -184,15 +185,26 @@ class ContextCacheBuilder:
                                     seconds=time.monotonic() - started, chunk_rows=CHUNK_ROWS)
         return sites, centers, totals
 
-    def _build_tier(self, table, image_reader, rows, sites, centers, name, tier, staging, manifest):
+    def _build_tier(self, table, image_reader, rows, sites, centers, name, tier, staging, manifest, *,
+                    start_row=0, kept=None):
+        """Read one image tier for the band into `staging/images/<name>`.
+
+        `sites[position]` and `centers[position]` are indexed by position in the
+        tier's row list; `centers` may be None, in which case the reader's
+        `center_xyz_um` (the same anchor midpoint) locates the fragment nodes.
+        With `start_row` > 0 the leading chunks are supplied by `kept`
+        (chunks, failures, bytes, metadata) and only the remaining rows are read.
+        """
         started = time.monotonic()
         limit = tier.get('max_rows')
         tier_rows = rows if limit is None else rows[:int(limit)]
         directory = staging / 'images' / name
-        directory.mkdir(parents=True)
+        directory.mkdir(parents=True, exist_ok=True)
         request = {k: tier[k] for k in ('level', 'radius_um', 'channel', 'timepoint')}
         reader_info = image_reader(None, request)  # metadata-only call: source identity and level geometry
-        chunks, failures, bytes_total, metadata_summary = [], [], 0, None
+        kept = kept or {}
+        chunks, failures = list(kept.get('chunks', [])), list(kept.get('failures', []))
+        bytes_total, metadata_summary = int(kept.get('bytes', 0)), kept.get('metadata')
         per_read = []
 
         def fetch(position):
@@ -204,7 +216,7 @@ class ContextCacheBuilder:
                 return position, None, None, f'{type(exc).__name__}: {exc}', time.monotonic() - t0
             return position, data, metadata, None, time.monotonic() - t0
 
-        for start in range(0, len(tier_rows), CHUNK_ROWS):
+        for start in range(int(start_row), len(tier_rows), CHUNK_ROWS):
             block = list(range(start, min(start + CHUNK_ROWS, len(tier_rows))))
             with ThreadPoolExecutor(max_workers=self.readers) as pool:
                 results = list(pool.map(fetch, block))
@@ -230,7 +242,9 @@ class ContextCacheBuilder:
                     np.asarray(metadata['spacing_xyz_um']), np.asarray(metadata['translation_xyz_um']),
                     np.asarray(metadata['graph_to_world_um']), metadata['dataset'])
                 relative = np.asarray(sites[position]['xyz_um'], dtype=float).reshape(-1, 3)
-                nodes = image_geometry.graph_to_voxel(relative + centers[position]) - np.asarray(metadata['origin_zyx'])
+                center = np.asarray(centers[position] if centers is not None else metadata['center_xyz_um'],
+                                    dtype=float)
+                nodes = image_geometry.graph_to_voxel(relative + center) - np.asarray(metadata['origin_zyx'])
                 anchors_zyx = np.asarray(data['anchors_zyx'], dtype=float)
                 if not np.allclose(nodes[sites[position]['anchor_nodes']], anchors_zyx, atol=1e-6, rtol=0):
                     failures.append({'row': int(tier_rows[position]), 'error': 'fragment/image anchor mismatch'})
@@ -254,8 +268,10 @@ class ContextCacheBuilder:
             self.log(f"[context-cache] images/{name} {block[-1] + 1}/{len(tier_rows)} rows "
                      f"({time.monotonic() - started:.0f}s, {len(failures)} failures)")
         # Tolerate isolated read failures (recorded as unavailable rows); abort on systematic failure.
-        if len(tier_rows) and len(failures) > max(50, .05 * len(tier_rows)):
-            raise ValueError(f'Image tier {name}: {len(failures)} of {len(tier_rows)} patches failed')
+        read_rows = len(tier_rows) - int(start_row)
+        new_failures = len(failures) - len(kept.get('failures', []))
+        if read_rows and new_failures > max(50, .05 * read_rows):
+            raise ValueError(f'Image tier {name}: {new_failures} of {read_rows} patches failed')
         manifest['image_tiers'][name] = {
             **request, 'rows': int(len(tier_rows)), 'chunks': chunks, 'bytes': bytes_total,
             'failed_rows': failures[:200], 'failures': len(failures), 'metadata': metadata_summary,
@@ -264,9 +280,82 @@ class ContextCacheBuilder:
                                  'max': float(np.max(per_read)) if per_read else None},
             'readers': self.readers, 'chunk_rows': CHUNK_ROWS}
 
+    def extend_tier(self, table, image_reader, name, tier):
+        """Grow one image tier of a complete entry to `tier['max_rows']` without
+        touching geometry or the other tiers.
+
+        Leading full chunks are kept byte-for-byte (chunking is deterministic over
+        the band order); the trailing partial chunk is rebuilt and new chunks are
+        appended. Fragment node positions come from the cached neighbourhoods and
+        the reader's anchor midpoint, so no fragment graph is needed here. The
+        tier directory is swapped atomically and the manifest rewritten last.
+        """
+        identity = table_identity(table)
+        final = entry_directory(self.root, table)
+        manifest = self.existing(table)
+        if manifest is None:
+            raise ValueError(f"No complete context cache entry for {identity['brain']}/{table.kind}; build it first")
+        entry = ContextEntry(final, manifest)
+        rows = np.asarray(entry.rows, dtype=np.int64)
+        limit = tier.get('max_rows')
+        tier_rows = rows if limit is None else rows[:int(limit)]
+        current = manifest['image_tiers'].get(name)
+        for key in ('level', 'radius_um', 'channel', 'timepoint'):
+            if current is not None and current.get(key) != tier[key]:
+                raise ValueError(f'Image tier {name} spec changed ({key}); rebuild the entry with --force')
+        if current is not None and current['rows'] >= len(tier_rows):
+            self.log(f"[context-cache] {identity['brain']}/{table.kind}: images/{name} already covers "
+                     f"{current['rows']} rows")
+            return manifest
+        chunk_rows = current.get('chunk_rows', CHUNK_ROWS) if current is not None else CHUNK_ROWS
+        if chunk_rows != CHUNK_ROWS:
+            raise ValueError('Chunk size changed since the entry was built; rebuild the entry with --force')
+        kept_chunks = []
+        for chunk in (current or {}).get('chunks', []):
+            path = final / 'images' / name / chunk['file']
+            if chunk['rows'] != CHUNK_ROWS or not path.is_file() or path.stat().st_size != chunk['bytes']:
+                break
+            kept_chunks.append(chunk)
+        start_row = len(kept_chunks) * CHUNK_ROWS
+        kept_failures = [f for f in (current or {}).get('failed_rows', [])
+                         if int(f['row']) in set(int(r) for r in tier_rows[:start_row])]
+        kept = {'chunks': kept_chunks, 'failures': kept_failures,
+                'bytes': sum(c['bytes'] for c in kept_chunks), 'metadata': (current or {}).get('metadata')}
+        sites_tail, _ = entry.geometry(tier_rows[start_row:])
+        sites = [None] * start_row + sites_tail
+        staging = Path(tempfile.mkdtemp(prefix=f'.extend_{name}_', dir=final))
+        started = time.monotonic()
+        try:
+            (staging / 'images' / name).mkdir(parents=True)
+            for chunk in kept_chunks:
+                shutil.copy2(final / 'images' / name / chunk['file'], staging / 'images' / name / chunk['file'])
+            updated = json.loads(json.dumps(manifest))
+            self._build_tier(table, image_reader, rows, sites, None, name, tier, staging, updated,
+                             start_row=start_row, kept=kept)
+            info = updated['image_tiers'][name]
+            info.update(extended_at=datetime.now().astimezone().isoformat(timespec='seconds'),
+                        extended_from_rows=int(current['rows']) if current is not None else 0,
+                        extend_seconds=time.monotonic() - started, max_rows=limit)
+            updated['implementation'] = implementation_hashes()
+            # Swap the tier directory, then publish the manifest that describes it.
+            target = final / 'images' / name
+            previous = final / 'images' / f'.{name}.previous'
+            if previous.exists():
+                _remove_tree(previous)
+            if target.exists():
+                target.rename(previous)
+            (staging / 'images' / name).rename(target)
+            (final / 'manifest.json.tmp').write_text(json.dumps(updated, indent=2, allow_nan=False))
+            (final / 'manifest.json.tmp').replace(final / 'manifest.json')
+            _remove_tree(previous)
+            self.log(f"[context-cache] {identity['brain']}/{table.kind}: images/{name} extended "
+                     f"{start_row}->{info['rows']} rows in {time.monotonic() - started:.0f}s "
+                     f"({info['failures']} failures recorded)")
+            return updated
+        finally:
+            _remove_tree(staging)
 
 def _remove_tree(path):
-    import shutil
     shutil.rmtree(path, ignore_errors=True)
 
 
@@ -414,11 +503,16 @@ class ContextCache:
         self._entries[key] = entry
         return entry
 
-    def identity_key(self, table):
+    def identity_key(self, table, tiers=None):
+        """Digest of the cached inputs; `tiers=None` covers every image tier, a
+        tuple restricts it to those tiers (empty for geometry-only consumers) so
+        extending one tier does not invalidate results that never read it."""
         entry = self.entry(table)
+        available = entry.manifest.get('image_tiers', {})
+        selected = available if tiers is None else {n: available[n] for n in tiers if n in available}
         return digest_json({'version': entry.manifest['version'], 'identity': entry.manifest['identity'],
                             'band': entry.manifest['band'], 'band_rows': entry.manifest['band_rows'],
                             'geometry': {k: entry.manifest['geometry'][k] for k in ('radius_um', 'max_nodes')},
                             'tiers': {n: {k: t.get(k) for k in ('level', 'radius_um', 'rows')}
-                                      for n, t in entry.manifest.get('image_tiers', {}).items()},
+                                      for n, t in selected.items()},
                             'implementation': entry.manifest['implementation']})

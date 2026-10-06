@@ -6,9 +6,11 @@ Run with panda on an allocated compute node, for example n257:
 Launcher mode runs one brain per fresh subprocess (single-brain mode, `--brain`) so
 the fragment graph of each brain is released before the next. Each entry covers the
 top detector-ranked band of every kind (default 20,000 rows): geometry at 50 um /
-256 nodes, images at level 1 / 30 um for the whole band and level 0 / 16 um for the
-first 4,000 rows. Existing complete entries are reused. `--probe N` builds a
-throughput sample of N rows into a side directory without replacing an entry.
+256 nodes, images at level 1 / 30 um and level 0 / 16 um, both for the whole band
+(level 0 covered only the first 4,000 rows before 2026-10-05). Existing complete entries
+are reused. `--extend-tier level0` grows one image tier of complete entries in place,
+keeping geometry and the other tiers. `--probe N` builds a throughput sample of N rows
+into a side directory without replacing an entry.
 No labels, GT or absolute coordinates are written; no LLM is called.
 """
 import argparse
@@ -87,6 +89,9 @@ def parse_args(argv=None):
     parser.add_argument('--probe', type=int, default=None, metavar='N',
                         help='Throughput sample of N band rows into a side directory; the entry is not replaced')
     parser.add_argument('--force', action='store_true', help='Rebuild complete entries')
+    parser.add_argument('--extend-tier', action='append', choices=sorted(IMAGE_TIERS), metavar='TIER',
+                        help='Grow this image tier of existing complete entries to the configured row limit '
+                             '(repeatable); geometry and other tiers are untouched')
     parser.add_argument('--threads', default='1', metavar='N|all', help='Numerical-library threads per subprocess')
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--log-txt', type=Path)
@@ -98,6 +103,8 @@ def parse_args(argv=None):
             parser.error('Brain IDs must contain ASCII digits only')
     if args.band_rows < 1 or args.readers < 1 or (args.probe is not None and args.probe < 1):
         parser.error('band-rows, readers and probe must be positive')
+    if args.extend_tier and (args.no_images or args.probe is not None or args.force):
+        parser.error('--extend-tier needs images and cannot be combined with --probe or --force')
     if args.threads == 'all':
         args.threads = str(available_cpu_count())
     elif not args.threads.isdigit() or int(args.threads) < 1:
@@ -141,13 +148,18 @@ def build_brain(args):
                 for tier in IMAGE_TIERS.values():
                     reader(first, tier)
             started = time.monotonic()
-            manifest = builder.build(table, provider, reader, band=band, geometry=GEOMETRY_SPEC, tiers=IMAGE_TIERS,
-                                     probe_rows=args.probe, force=args.force)
+            if args.extend_tier:
+                for name in args.extend_tier:
+                    manifest = builder.extend_tier(table, reader, name, IMAGE_TIERS[name])
+            else:
+                manifest = builder.build(table, provider, reader, band=band, geometry=GEOMETRY_SPEC, tiers=IMAGE_TIERS,
+                                         probe_rows=args.probe, force=args.force)
             summary = {'brain': brain, 'kind': kind, 'band_rows': manifest['band_rows'],
                        'geometry_seconds': manifest['geometry'].get('seconds'),
                        'image_tiers': {name: {k: tier.get(k) for k in ('rows', 'failures', 'bytes', 'seconds', 'seconds_per_read')}
                                        for name, tier in manifest['image_tiers'].items()},
-                       'wall_seconds': time.monotonic() - started, 'probe': args.probe}
+                       'wall_seconds': time.monotonic() - started, 'probe': args.probe,
+                       'extend_tier': args.extend_tier}
             log(f'brain {brain}/{kind}: {json.dumps(summary)}')
     return 0
 
@@ -168,6 +180,8 @@ def launcher(args):
             command += ['--probe', str(args.probe)]
         if args.force:
             command.append('--force')
+        for name in args.extend_tier or []:
+            command += ['--extend-tier', name]
         commands.append(command)
     missing = [str(cache_path(b, args.mcl)) for b in args.brains if not cache_path(b, args.mcl).is_file()]
     if missing and not args.dry_run:

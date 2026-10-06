@@ -343,7 +343,7 @@ class DriverRoleTests(unittest.TestCase):
             seed.write_text(FORMULA)
             args = driver.parse_args(['--train-brains', '794495,802449', '--validation-brains', '2',
                                       '--merge-k', '3', '--split-k', '1', '--generations', '1', '--runs-dir', tmp,
-                                      '--start-from', str(seed), '--bootstrap-draws', '20'])
+                                      '--start-from', str(seed), '--bootstrap-draws', '20', '--promotion-gate', 'margin'])
             seen = {}
             async def revise(run_dir, policy, rules, report, model, *, experiments):
                 data = json.loads(report.read_text())

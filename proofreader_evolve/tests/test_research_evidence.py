@@ -217,7 +217,7 @@ class DriverResearchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
             seed = Path(tmp) / 'seed.py'
             seed.write_text(BASELINE)
-            args = driver.parse_args(['--selection-protocol', 'in_sample', '--train-brains', '1', '--validation-brains', '2',
+            args = driver.parse_args(['--selection-protocol', 'in_sample', '--promotion-gate', 'margin', '--kind-schedule', 'alternate', '--train-brains', '1', '--validation-brains', '2',
                 '--split-k', '1', '--generations', '3', '--runs-dir', tmp, '--start-from', str(seed)])
             async def revise(run_dir, policy, rules, report, model, *, experiments):
                 experiments.restore('parent')

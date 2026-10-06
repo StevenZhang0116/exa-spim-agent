@@ -10,6 +10,23 @@ python -m proofreader_evolve.plotting.plot_search_dynamics <RUN_OR_PATH> --md di
 python -m proofreader_evolve.cli.build_evolution_report <RUN_OR_PATH>
 ```
 
+`plot_error_contexts` is the exception: it loads one brain's frozen native
+tables (with evaluator labels), its context cache and its labelled `_add.pkl`
+(ground-truth graph, > 20 GB RAM), and reads the dense UNet segmentation from
+the private GCS store. It writes one figure per kind with three true errors as
+columns and four rows: cached image patch with the fragment skeleton, 50 um
+fragment neighbourhood, ground-truth tracings in the same voxel box, and the
+segmentation in the same box. Run it on a compute node; the figures are for
+human review only and nothing in them is visible to the reviser.
+
+```bash
+python -m proofreader_evolve.plotting.plot_error_contexts --brain 802449 --examples 3 --tier level0
+# -> figs/error_context_split_802449_level0.png and figs/error_context_merge_802449_level0.png
+# (the requested --tier is part of the file name)
+# --rows-split/--rows-merge fix the table rows; --no-segmentation skips the GCS read;
+# --gcs-credentials overrides the key (default: the newest key in configs/)
+```
+
 `build_evolution_report` uses the Python standard library only. Its default
 output is `<RUN>/report.html`, an offline interactive report with English labels:
 submitted/accepted curves, per-brain counts, clickable observed branch ancestry
