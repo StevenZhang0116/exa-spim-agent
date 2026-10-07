@@ -1,0 +1,16 @@
+
+Average Results...
+  # Splits: 1661.1192
+  # Merges: 1.0946
+  % Split Edges: 1.1546
+  % Omit Edges: 27.4414
+  % Merged Edges: 2.4311
+  ERL: 1201.6357
+  Normalized ERL: 0.0038
+  Edge Accuracy: 68.9752
+  Split Rate: 159.5137
+  Merge Rate: 147457.7099
+
+Total Results...
+  # Splits: 9031
+  # Merges: 9

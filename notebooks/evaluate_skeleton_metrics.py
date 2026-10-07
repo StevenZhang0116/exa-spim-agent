@@ -67,6 +67,10 @@ def parse_args():
                         help="Processes reading fragment zips (default: CPUs allocated to this job)")
     parser.add_argument("--zip-retries", type=int, default=5,
                         help="Attempts per fragment zip download before failing")
+    parser.add_argument("--all-fragments", action="store_true",
+                        help="Load every fragment SWC (package default). By default only fragments "
+                             "whose segment ID labels a GT node are parsed; results are identical "
+                             "and memory is far lower")
     parser.add_argument("--stop-on-error", action="store_true",
                         help="With several brains, stop at the first failed brain")
     parser.add_argument("--log-dir", type=Path, default=PROJECT_ROOT / "notebooks" / "log",
@@ -127,8 +131,54 @@ def check_precomputed(path):
         raise ValueError(f"{path}info is not a neuroglancer precomputed volume")
 
 
+def run_evaluation(gt_path, segmentation, output_dir, fragments_path, args):
+    """segmentation_skeleton_metrics.evaluate.evaluate(), optionally loading only
+    the fragments that can matter.
+
+    The package parses every fragment SWC (10-12M for the older-microscope brains,
+    which exceeds 200 GB), but its merge count only visits fragments whose label is
+    one of the GT node labels (MergeCountMetric.__call__), and the added-cable
+    metric and merge exports only use fragments found at merge sites. Restricting
+    the reader to those segment IDs therefore leaves every output unchanged. Zips
+    are still downloaded; non-matching SWCs inside them are skipped unparsed.
+    """
+    from segmentation_skeleton_metrics.data_handling import swc_loading
+    from segmentation_skeleton_metrics.data_handling.graph_loading import DataLoader
+    from segmentation_skeleton_metrics.evaluate import Evaluator
+    from segmentation_skeleton_metrics.utils import util
+
+    dataloader = DataLoader(anisotropy=tuple(args.anisotropy), use_anisotropy=False, verbose=True)
+    gt_graphs = dataloader.load_groundtruth(gt_path, segmentation)
+    if args.all_fragments:
+        fragment_graphs = dataloader.load_fragments(fragments_path)
+    else:
+        labels = set().union(*(graph.node_labels() for graph in gt_graphs.values()))
+        labels.discard("0")
+        print(f"Fragment filter: parsing only SWCs of the {len(labels)} segment IDs that label "
+              f"GT nodes (--all-fragments to disable)", flush=True)
+        original = swc_loading.Reader.confirm_read
+
+        def confirm_read(self, path):
+            name = os.path.splitext(os.path.basename(path))[0]
+            return util.get_segment_id(name) in labels and original(self, path)
+
+        swc_loading.Reader.confirm_read = confirm_read  # inherited by forked readers
+        try:
+            fragment_graphs = dataloader.load_fragments(fragments_path)
+        finally:
+            swc_loading.Reader.confirm_read = original
+        print(f"Loaded {len(fragment_graphs)} fragment graphs", flush=True)
+
+    util.mkdir(str(output_dir))
+    evaluator = Evaluator(str(output_dir), "", True)
+    evaluator(gt_graphs, fragment_graphs)
+    if not args.no_save_merges:
+        evaluator.save_merge_results(gt_graphs, fragment_graphs)
+    if args.save_fragments and fragment_graphs:
+        evaluator.save_fragments(gt_graphs, fragment_graphs)
+
+
 def evaluate_brain(brain, args):
-    from segmentation_skeleton_metrics.evaluate import evaluate
     from segmentation_skeleton_metrics.utils.img_util import TensorStoreImage
     from dataset_config import get_fragments_path, get_segmentation_id, get_segmentation_path
 
@@ -154,17 +204,7 @@ def evaluate_brain(brain, args):
     # IndexError: OUT_OF_RANGE on the first GT skeleton labeling pass.
     segmentation = TensorStoreImage(segmentation_path, swap_axes=True)
 
-    evaluate(
-        gt_path,
-        segmentation,
-        str(output_dir),
-        anisotropy=tuple(args.anisotropy),
-        fragments_path=fragments_path,
-        use_anisotropy=False,
-        save_merges=not args.no_save_merges,
-        save_fragments=args.save_fragments,
-        verbose=True,
-    )
+    run_evaluation(gt_path, segmentation, output_dir, fragments_path, args)
 
     import pandas as pd
     results = pd.read_csv(output_dir / "results.csv", index_col=0)
@@ -192,7 +232,8 @@ def run_brains_in_subprocesses(args):
     """Run this script once per brain; tee each child's output to a log file."""
     shared = ["--output-root", str(args.output_root), "--anisotropy", *map(str, args.anisotropy),
               "--zip-retries", str(args.zip_retries)]
-    for flag, enabled in (("--no-save-merges", args.no_save_merges),
+    for flag, enabled in (("--all-fragments", args.all_fragments),
+                          ("--no-save-merges", args.no_save_merges),
                           ("--save-fragments", args.save_fragments),
                           ("--overwrite", args.overwrite)):
         if enabled:
