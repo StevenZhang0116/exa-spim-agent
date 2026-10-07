@@ -393,7 +393,7 @@ class DriverDescriptorTests(unittest.TestCase):
             self.assertTrue(row['accepted'])
             manifest = json.loads((path / 'manifest.json').read_text())
             self.assertTrue(manifest['descriptor_compute']['enabled'])
-            self.assertEqual(manifest['search_version'], 'adaptive-kind-allocation-v16')
+            self.assertEqual(manifest['search_version'], 'branch-feedback-handoff-v17')
             registry = json.loads((path / 'descriptors.json').read_text())
             self.assertEqual(list(registry['columns']), ['bank_agent_node_count'])
             # Statistics are written before the agent registers columns in gen 1; the context column is there.

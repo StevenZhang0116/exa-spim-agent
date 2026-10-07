@@ -776,7 +776,7 @@ works with no partner at all and is the primary image feature for unit A.
 ```python
 from agentic_neuron_proofreader.utils import img_util
 
-BUNDLED_GCP_CREDENTIALS = DELIVERY_DIR / "zihan_gcs_token.json"
+BUNDLED_GCP_CREDENTIALS = DELIVERY_DIR / "allen-nd-goog-f5d46dbfa2cd.json"
 
 
 def configure_image_access(image_path):
@@ -790,7 +790,7 @@ def configure_image_access(image_path):
     credentials = BUNDLED_GCP_CREDENTIALS.resolve()
     if not credentials.is_file():
         raise RuntimeError(
-            "private GCS image requires zihan_gcs_token.json beside the markdown "
+            "private GCS image requires allen-nd-goog-f5d46dbfa2cd.json beside the markdown "
             f"and _add.pkl; looked at {credentials}. Fragment-only analysis may "
             "continue, but image-feature claims may not."
         )

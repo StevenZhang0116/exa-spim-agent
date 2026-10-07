@@ -17,7 +17,7 @@ Requirements:
 
 Notes:
     - Loads the cached BrainDataset from cache/dataset_cache_794495_mcl1000.pkl
-    - Requires GCS credentials (configs/zihan_gcs_token.json) for reading images
+    - Requires GCS credentials (configs/allen-nd-goog-f5d46dbfa2cd.json) for reading images
     - Close the window to exit
 """
 
@@ -27,7 +27,7 @@ import sys
 
 import numpy as np
 
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "../configs/zihan_gcs_token.json"
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "../configs/allen-nd-goog-f5d46dbfa2cd.json"
 os.environ["AWS_EC2_METADATA_DISABLED"] = "true"
 
 from agentic_neuron_proofreader.data_modules.datasets import BrainDataset

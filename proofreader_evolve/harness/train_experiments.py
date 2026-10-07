@@ -18,7 +18,7 @@ from .classifier_contract import (MAX_MODEL_SOURCE_BYTES, frozen_model, classifi
                                   classifier_info, config_identity, normalize_config, validate_program,
                                   verify_artifacts, MODEL_VERSION)
 from .classifier_training import fit_classifier
-from .failure_cases import matched_failure_cases
+from .failure_cases import matched_failure_cases, branch_comparison
 from .feature_ablation import (prepare_ablation, measure_ablation, ABLATION_VERSION,
                                CLASSIFIER_UNITS, FORMULA_UNITS)
 from .hypothesis_memory import HypothesisMemory
@@ -35,7 +35,7 @@ from .search_proposals import read_proposal, formula_info, parameter_candidates
 from .train_feedback import metrics_only, write_train_feedback
 from .train_coverage import TrainingCoverage
 from .trajectory import Trajectory, log_metrics
-from .volume_analysis import read_analysis, execute_analysis, MAX_ANALYSES
+from .volume_analysis import read_analysis, execute_analysis, MAX_ANALYSES, MAX_CASES
 
 
 def digest(source):
@@ -190,7 +190,7 @@ class TrainingExperiments:
                  train, parent_report, parent_state, budgets, timeout, margin,
                  memory, max_evaluations=8, generation=0, search_plan=None,
                  classifier_timeout=300, classifier_memory_mb=8192, classifier_threads=1,
-                 parent_selection=None, descriptor_budget=None):
+                 parent_selection=None, descriptor_budget=None, branch=None):
         self.gen_dir, self.policy_path, self.rules_path = gen_dir, policy_path, rules_path
         self.proposal_path = gen_dir / 'proposal.json'
         self.training_path = gen_dir / 'training.py'
@@ -228,9 +228,19 @@ class TrainingExperiments:
                 target_kind, parent_sources[target_kind], parent_state, gen_dir / 'parent_selection',
                 budgets=budgets)
         self.parent_selection, self.parent_selection_state = parent_selection
-        # Matched failures come from the official selection measurement of the accepted parent.
+        # The assigned search branch's official selection measurement; the accepted parent's
+        # state is the comparison. When the branch is the reference the two coincide.
+        self.branch = branch or {'experiment': self.search_plan['search_parent'].get('experiment'),
+                                 'same_as_accepted': True, 'selection': self.parent_selection,
+                                 'state': self.parent_selection_state}
+        self.branch_selection, self.branch_selection_state = self.branch['selection'], self.branch['state']
         self.failure_cases = matched_failure_cases(self.protocol.selection_train, target_kind,
-                                                   self.parent_selection_state)
+                                                   self.branch_selection_state)
+        self.failure_cases['branch'] = {'experiment': self.branch['experiment'],
+                                        'same_as_accepted': bool(self.branch['same_as_accepted'])}
+        self.failure_cases['branch_vs_accepted'] = branch_comparison(
+            self.protocol.selection_train, target_kind, self.branch_selection_state, self.parent_selection_state,
+            same_as_accepted=bool(self.branch['same_as_accepted']))
         (gen_dir / 'failure_cases.json').write_text(json.dumps(self.failure_cases, indent=2, allow_nan=False))
         # The request starts with one matched pair when available. The agent may
         # replace it with any valid TRAIN handles, independent of scoring selection.
@@ -244,8 +254,8 @@ class TrainingExperiments:
         self._save_hypothesis_feedback()
 
     def _save_hypothesis_feedback(self):
-        query = self.search_plan.get('search_parent', {}).get('hypothesis', '')
-        snapshot = self.memory.hypotheses.snapshot(self.target_kind, query)
+        parent = self.search_plan.get('search_parent', {})
+        snapshot = self.memory.hypotheses.snapshot(self.target_kind, parent.get('hypothesis', ''), parent=parent)
         (self.gen_dir / 'hypothesis_memory.json').write_text(json.dumps(snapshot, indent=2, allow_nan=False))
         self.research_status()
 
@@ -1339,7 +1349,8 @@ class TrainingExperiments:
 
         @tool('run_volume_analysis', 'Direct 3D exploration on a few TRAIN candidates; with a context cache attached, '
               'prefer compute_descriptors and use this to debug describe. Execute analysis.py analyze(context) on '
-              '1..4 TRAIN candidates selected in analysis_request.json. Full original 3D pixels, spacing, '
+              f'1..{MAX_CASES} TRAIN candidates selected in analysis_request.json (compare groups, e.g. missed '
+              'positives vs selected label-0 rows). Full original 3D pixels, spacing, '
               'candidate anchors and aligned local fragments; arbitrary installed CPU analysis. '
               'Returns compact JSON results, not projections. Eight executions per generation, separate '
               'from scoring; no GT or validation access. Edit the two files and call with {}.', {})

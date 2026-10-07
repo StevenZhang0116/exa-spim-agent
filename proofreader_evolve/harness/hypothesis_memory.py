@@ -1,4 +1,5 @@
-"""Host-owned hypothesis evidence and scheduling hints, derived only from TRAIN."""
+"""Host-owned hypothesis evidence and scheduling hints, derived only from TRAIN, plus the
+agent-written research handoffs stored verbatim next to the host's measured outcomes."""
 
 from copy import deepcopy
 import hashlib
@@ -8,6 +9,57 @@ import re
 
 MEMORY_VERSION = 'train-hypothesis-evidence-v1'
 RESEARCH_FIELDS = {'hypothesis_id', 'failure_mode', 'information_source', 'prediction', 'feature_columns'}
+HANDOFF_FIELDS = {'open_questions', 'evidence', 'next_experiment'}
+HANDOFF_VERDICTS = ('supports', 'contradicts', 'mixed')
+HANDOFF_TEXT = 300
+
+
+def _short_text(value, name):
+    if not isinstance(value, str) or not 1 <= len(value.strip()) <= HANDOFF_TEXT:
+        raise ValueError(f'handoff.{name} entries must be text of 1..{HANDOFF_TEXT} characters')
+    return value.strip()
+
+
+def validate_handoff(value):
+    """Agent-written research handoff: open questions, evidence verdicts and the next experiment.
+
+    Everything here is an agent claim; the host stores it next to its own measurements
+    and never rewrites it. Bounded so a few records fit in the next session's memory file.
+    """
+    if not isinstance(value, dict) or not value or set(value) - HANDOFF_FIELDS:
+        raise ValueError('handoff accepts open_questions, evidence and next_experiment only')
+    result = {}
+    questions = value.get('open_questions', [])
+    if not isinstance(questions, list) or len(questions) > 3:
+        raise ValueError('handoff.open_questions must be a list of at most 3 questions')
+    result['open_questions'] = [_short_text(q, 'open_questions') for q in questions]
+    evidence = value.get('evidence', [])
+    if not isinstance(evidence, list) or len(evidence) > 3:
+        raise ValueError('handoff.evidence must be a list of at most 3 items')
+    result['evidence'] = []
+    for item in evidence:
+        if not isinstance(item, dict) or set(item) - {'claim', 'verdict', 'conditions'} or 'claim' not in item:
+            raise ValueError('handoff.evidence items need claim, verdict and optional conditions')
+        if item.get('verdict') not in HANDOFF_VERDICTS:
+            raise ValueError(f'handoff.evidence.verdict must be one of {HANDOFF_VERDICTS}')
+        entry = {'claim': _short_text(item['claim'], 'evidence.claim'), 'verdict': item['verdict']}
+        if 'conditions' in item:
+            entry['conditions'] = _short_text(item['conditions'], 'evidence.conditions')
+        result['evidence'].append(entry)
+    nxt = value.get('next_experiment')
+    if nxt is not None:
+        if not isinstance(nxt, dict) or set(nxt) - {'what', 'discriminates', 'units'} or 'what' not in nxt:
+            raise ValueError('handoff.next_experiment needs what, optional discriminates and units')
+        result['next_experiment'] = {'what': _short_text(nxt['what'], 'next_experiment.what')}
+        if 'discriminates' in nxt:
+            result['next_experiment']['discriminates'] = _short_text(nxt['discriminates'], 'next_experiment.discriminates')
+        if 'units' in nxt:
+            if type(nxt['units']) is not int or not 0 <= nxt['units'] <= 64:
+                raise ValueError('handoff.next_experiment.units must be an integer 0..64')
+            result['next_experiment']['units'] = nxt['units']
+    if not (result['open_questions'] or result['evidence'] or nxt is not None):
+        raise ValueError('handoff must contain at least one question, evidence item or next experiment')
+    return result
 
 
 def validate_research(value):
@@ -36,7 +88,7 @@ def identity(entry):
 
 
 class HypothesisMemory:
-    """Descriptions are agent claims; results and stagnation are host measurements."""
+    """Descriptions and handoffs are agent claims; results, stagnation and promotion are host measurements."""
 
     def __init__(self, path):
         self.path = path
@@ -55,7 +107,7 @@ class HypothesisMemory:
             'family': entry.get('family', 'unspecified'), 'fresh_measurements': 0,
             'cached_repeats': 0, 'execution_failures': 0, 'new_train_rankings': 0,
             'best_train_precision': None, 'stalled_generations': 0, 'measured_generations': 0,
-            'recent_evidence': [], 'feature_evidence': [], 'last_generation': 0})
+            'recent_evidence': [], 'feature_evidence': [], 'last_generation': 0, 'handoffs': []})
         if research and research not in record['declarations']:
             record['declarations'].append(deepcopy(research))
             record['declarations'] = record['declarations'][-3:]
@@ -111,6 +163,42 @@ class HypothesisMemory:
             self.ablation_cache[report['signature']] = deepcopy(report)
         self.save()
 
+    def record_handoff(self, entry, generation, handoff, host):
+        """Store an agent handoff next to host-measured facts about the same generation."""
+        record = self._record(entry)
+        item = {'generation': int(generation), 'experiment': host.get('experiment'),
+                'agent': deepcopy(handoff), 'host': {**deepcopy(host), 'source': 'host measurements'},
+                'note': 'agent = claims from that session; host = measured facts; promoted means the submission '
+                        'replaced the reference scorer'}
+        record.setdefault('handoffs', [])
+        record['handoffs'] = [*record['handoffs'], item][-3:]
+        record['last_generation'] = max(record.get('last_generation', 0), int(generation))
+        self.save()
+        return item
+
+    def mark_promoted(self, experiment):
+        for record in self.records.values():
+            for item in record.get('handoffs', []):
+                if item.get('experiment') == experiment:
+                    item['host']['promoted'] = True
+        self.save()
+
+    def handoffs(self, kind, parent=None, limit=3):
+        """Most relevant handoffs for the next session: the assigned branch's lineage first."""
+        parent = parent or {}
+        parent_key = identity({**parent, 'target_kind': kind}) if parent else None
+        parent_experiment = parent.get('experiment')
+        items = []
+        for record in self.records.values():
+            if record['target_kind'] != kind:
+                continue
+            for item in record.get('handoffs', []):
+                related = record['key'] == parent_key or item.get('experiment') == parent_experiment
+                items.append((0 if related else 1, -item['generation'], record['hypothesis_id'], item))
+        items.sort(key=lambda t: t[:3])
+        return [{'hypothesis_id': hid, 'related_to_assigned_branch': rank == 0, **deepcopy(item)}
+                for rank, _, hid, item in items[:limit]]
+
     def finish_generation(self, generation, entries):
         grouped = {}
         for entry in entries:
@@ -149,7 +237,7 @@ class HypothesisMemory:
         return [{k: deepcopy(report[k]) for k in ('experiment', 'protocol', 'feature_columns',
                     'delta_precision', 'conclusion', 'signature')} for report in matches[-3:]]
 
-    def snapshot(self, kind, query='', limit=5):
+    def snapshot(self, kind, query='', limit=5, parent=None):
         tokens = set(re.findall(r'\w+', query.lower()))
         records = [r for r in self.records.values() if r['target_kind'] == kind]
         def key(record):
@@ -163,6 +251,10 @@ class HypothesisMemory:
         while selected and len(json.dumps(selected).encode()) > 20_000:
             selected.pop()
         return {'version': MEMORY_VERSION, 'scope': 'TRAIN only; no heldout metrics, labels or decisions',
+                'handoff': self.handoffs(kind, parent),
+                'handoff_guide': 'Previous sessions\' open questions, evidence verdicts and proposed next experiment, '
+                                 'each next to host-measured facts; related_to_assigned_branch marks the branch you '
+                                 'start from. Fill proposal.json.handoff before finishing so the next session can continue.',
                 'records': selected, 'records_omitted': len(records) - len(selected),
                 'note': 'A failed configuration does not refute a whole hypothesis. Feature evidence binds '
                         'to the exact program, parameters, columns and internal split. Ranking novelty is not '

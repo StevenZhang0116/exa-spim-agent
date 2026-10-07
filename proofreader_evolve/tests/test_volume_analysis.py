@@ -15,7 +15,7 @@ from proofreader_evolve.harness.local_context import candidate_ref
 from proofreader_evolve.harness.reviser_access import make_guard
 from proofreader_evolve.harness.train_experiments import TrainingExperiments
 from proofreader_evolve.harness.trajectory import Trajectory
-from proofreader_evolve.harness.volume_analysis import read_analysis, MAX_ANALYSES
+from proofreader_evolve.harness.volume_analysis import read_analysis, MAX_ANALYSES, MAX_RESULT_BYTES
 from proofreader_evolve.tests.test_feature_discovery import training_fixture
 
 
@@ -148,7 +148,8 @@ def analyze(context):
         self.assertTrue((self.gen/'volume_analyses/analysis001/result.json').is_file())
 
     def test_nonfinite_and_oversized_outputs_fail_without_fabricated_results(self):
-        for code in ('return {"bad": float("nan")}', 'return {"large": "x" * 30000}'):
+        oversized = MAX_RESULT_BYTES + 4096  # above the host and worker result cap (64 KiB since 2026-10-06)
+        for code in ('return {"bad": float("nan")}', f'return {{"large": "x" * {oversized}}}'):
             self.write('def analyze(context):\n    '+code+'\n')
             result = self.experiments.run_volume_analysis()
             self.assertEqual(result['status'],'error',result)
@@ -215,3 +216,30 @@ def analyze(context):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CaseLimitTests(unittest.TestCase):
+    """2026-10-06: up to 16 candidates per analysis call so one request can compare groups."""
+
+    def test_sixteen_cases_pass_the_count_check_and_seventeen_do_not(self):
+        from proofreader_evolve.harness import volume_analysis as va
+        self.assertEqual(va.MAX_CASES, 16)
+        self.assertEqual(va.MAX_RESULT_BYTES, 64 * 1024)
+        from proofreader_evolve.cli import run_precision_evolution as driver
+        self.assertEqual(driver.parse_args([]).policy_time_budget, 300)
+        with tempfile.TemporaryDirectory() as tmp:
+            gen = Path(tmp) / 'gen001'
+            gen.mkdir()
+            train = training_fixture('split')
+            table = train['794495'].tables['split']
+            (gen / 'analysis.py').write_text('def analyze(context):\n    return {"ok": 1}\n')
+            too_many = [{'candidate_ref': candidate_ref(table, 0), 'occurrence_index': i} for i in range(17)]
+            (gen / 'analysis_request.json').write_text(json.dumps({'candidates': too_many, 'radius_um': 40., 'level': 0}))
+            with self.assertRaisesRegex(ValueError, 'Select 1..16'):
+                read_analysis(gen, train)
+            # Sixteen distinct handles clear the count check; the duplicate check then fires on the
+            # repeated row, which proves the request got past the limit itself.
+            sixteen = [{'candidate_ref': candidate_ref(table, 0), 'occurrence_index': 0}] * 16
+            (gen / 'analysis_request.json').write_text(json.dumps({'candidates': sixteen, 'radius_um': 40., 'level': 0}))
+            with self.assertRaisesRegex(ValueError, 'Duplicate candidate'):
+                read_analysis(gen, train)

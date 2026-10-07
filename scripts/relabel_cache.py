@@ -6,7 +6,8 @@ For each ``dataset_cache_<brain_id>_mcl<N>.pkl`` this:
 
   1. loads the cache (reusing the graphs already in it -- no SWC rebuild),
   2. resolves the brain's dense segmentation path from ``brain_id``
-     (via ``dataset_config.get_segmentation_id`` + the standard GCS template),
+     (via ``dataset_config.get_segmentation_path``: explicit
+     ``configs/segmentation_paths.json`` entry, else the legacy GCS template),
   3. reads the segmentation at every GT node's voxel, stores the canonical
      per-node label and per-edge error class on ``gt_graph``,
     4. combines geometric-walk sites and two-GT junction sites in gt_merge_sites,
@@ -61,12 +62,12 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _CONFIG_DIR = os.path.abspath(os.path.join(_HERE, "..", "configs"))
 os.environ.setdefault(
     "GOOGLE_APPLICATION_CREDENTIALS",
-    os.path.join(_CONFIG_DIR, "zihan_gcs_token.json"),
+    os.path.join(_CONFIG_DIR, "allen-nd-goog-f5d46dbfa2cd.json"),
 )
 os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
 
 sys.path.insert(0, _HERE)  # for dataset_config
-from dataset_config import get_segmentation_id  # noqa: E402
+from dataset_config import get_fragments_path, get_segmentation_path  # noqa: E402
 
 _CONFIG_RTF = os.path.join(_CONFIG_DIR, "segmentation_datasets.rtf")
 
@@ -86,12 +87,13 @@ def mcl_from_path(path):
 
 
 def segmentation_path_for(brain_id):
-    """brain_id -> dense segmentation volume path (standard GCS template)."""
-    segmentation_id = get_segmentation_id(brain_id, rtf_path=_CONFIG_RTF)
-    return (
-        f"gs://allen-nd-goog/from_google/{brain_id}"
-        f"/whole_brain/{segmentation_id}/"
-    )
+    """brain_id -> dense segmentation volume path (see dataset_config)."""
+    return get_segmentation_path(brain_id, rtf_path=_CONFIG_RTF)
+
+
+def fragments_path_for(brain_id):
+    """brain_id -> fragment SWC directory; not always ``<segmentation>/swcs``."""
+    return get_fragments_path(brain_id, rtf_path=_CONFIG_RTF)
 
 
 def load_canonical_results(results_dir, brain_id):

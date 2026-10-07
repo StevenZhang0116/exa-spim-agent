@@ -108,3 +108,4 @@ workflow_summary.tex
 notebooks/merge_diagnosis/
 notebooks/merge_candidate_pool_sweep_outputs/
 notebooks/split_candidate_pool_sweep_outputs/
+notebooks/split_candidate_pool_sweep_outputs_with_oldscope/

@@ -2,7 +2,7 @@
 
 This document is the complete task specification. The agent will receive exactly
 three colocated files: this markdown, one trusted
-`dataset_cache_<brain>_mcl<N>_add.pkl`, and `zihan_gcs_token.json`. Do not assume that
+`dataset_cache_<brain>_mcl<N>_add.pkl`, and `allen-nd-goog-f5d46dbfa2cd.json`. Do not assume that
 any repository notebook, configuration file, metrics CSV, pre-extracted patch, or
 dense segmentation volume is also available. Everything needed to locate errors,
 align the data sources, authenticate image access, read the real image, and interpret
@@ -302,14 +302,14 @@ The image is external to the pickle. Configure authentication **before** constru
 - `s3://`: the usual raw image is public. Disable EC2 metadata probing and use
   anonymous access; no AWS key is needed.
 - `gs://`: treat the image as private and use the supplied
-  `zihan_gcs_token.json` file.
+  `allen-nd-goog-f5d46dbfa2cd.json` file.
 
-The delivery contains this markdown, the `_add.pkl`, and `zihan_gcs_token.json` in
+The delivery contains this markdown, the `_add.pkl`, and `allen-nd-goog-f5d46dbfa2cd.json` in
 the same directory. Start the analysis with that delivery directory as the current
 working directory. Resolve the credential from the filename—not from a repository
 path, username, or machine-specific absolute path. For GCS:
 
-1. resolve `Path("zihan_gcs_token.json")` in the delivery directory;
+1. resolve `Path("allen-nd-goog-f5d46dbfa2cd.json")` in the delivery directory;
 2. verify that it is a readable file;
 3. assign its absolute resolved path to `GOOGLE_APPLICATION_CREDENTIALS`;
 4. only then construct `TensorStoreImage`.
@@ -320,7 +320,7 @@ Use this complete helper:
 from agentic_neuron_proofreader.utils import img_util
 
 
-BUNDLED_GCP_CREDENTIALS = Path("zihan_gcs_token.json")
+BUNDLED_GCP_CREDENTIALS = Path("allen-nd-goog-f5d46dbfa2cd.json")
 
 
 def configure_image_access(image_path):
@@ -338,7 +338,7 @@ def configure_image_access(image_path):
 
     if not credentials.is_file():
         raise RuntimeError(
-            "private GCS image requires the supplied zihan_gcs_token.json in "
+            "private GCS image requires the supplied allen-nd-goog-f5d46dbfa2cd.json in "
             f"the delivery directory; looked at {credentials}"
         )
 
@@ -433,7 +433,7 @@ Equivalently, from the directory containing all three delivered files, the agent
 configure the supplied credential before Python:
 
 ```bash
-export GOOGLE_APPLICATION_CREDENTIALS="$PWD/zihan_gcs_token.json"
+export GOOGLE_APPLICATION_CREDENTIALS="$PWD/allen-nd-goog-f5d46dbfa2cd.json"
 python your_analysis.py
 ```
 

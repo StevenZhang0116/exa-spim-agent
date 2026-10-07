@@ -115,7 +115,7 @@ formats are allowed, up to 128 MiB total / 256 regular files; no symlinks.
 
 Default fitting limits are 300 seconds wall/CPU and 8192 MiB address space.
 The host configures `--classifier-time-budget`, `--classifier-memory-mb` and
-`--classifier-threads` (default 1). Inference uses `--policy-time-budget` (120s
+`--classifier-threads` (default 1). Inference uses `--policy-time-budget` (300s
 by default) and 8192 MiB. The thread setting configures numerical libraries;
 the CPU/wall limits bound total work. Scratch plus artifacts are monitored with
 a 256-MiB limit; temporary/output files may briefly exceed it between checks.

@@ -34,7 +34,8 @@ def render_compact_json(value, depth=0):
 
 
 def write_train_feedback(path, parent_train, history, budgets, *, target_kind=None, memory=(),
-                         statistics_file=None, report_role='parent', selection=None, protocol=None):
+                         statistics_file=None, report_role='parent', selection=None, protocol=None,
+                         branch=None):
     """Bound the read size, retaining all feature names for the selected examples.
 
     Historical attempts carry metrics and diagnostic TRAIN comparisons, never repeated
@@ -51,7 +52,8 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
     while True:
         for per_class, prune in ((4, False), (4, True), (2, True), (1, True)):
             report = {
-                "format": "stratified-train-v4" if selection is not None else "stratified-train-v3",
+                "format": ("stratified-train-v5" if branch is not None else "stratified-train-v4")
+                if selection is not None else "stratified-train-v3",
                 "reading_guide": (
                     "TRAIN only. Feature vectors and candidate_refs align with labels and scores by index. "
                     "Use inspect_candidate with a candidate_ref to inspect TRAIN fragment geometry. "
@@ -66,7 +68,11 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                        "selection_protocol (out-of-fold on selection brains, not in-sample). "
                        f"{report_role}_train lists in-sample TRAIN metrics as diagnostics only; "
                        "they do not rank branches." if selection is not None else "")
+                    + (" Examples and ranking_delta describe the assigned search branch (search_branch); "
+                       f"{report_role}_selection/{report_role}_train describe the accepted scorer, and ranking_delta "
+                       "is the branch minus the accepted scorer." if branch is not None else "")
                 ),
+                **({"search_branch": branch} if branch is not None else {}),
                 "budgets": budgets,
                 "target_kind": target_kind,
                 f"{report_role}_train": metrics_only(parent_train),

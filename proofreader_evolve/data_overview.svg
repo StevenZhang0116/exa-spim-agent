@@ -1,0 +1,274 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080" font-family="'Helvetica Neue',Arial,'Liberation Sans',sans-serif" role="img" aria-labelledby="title description">
+  <title id="title">proofreader_evolve: the data the search runs on</title>
+  <desc id="description">Data model of proofreader_evolve as a growing table. One row per candidate of a frozen detector pool per brain and kind: a merge row is one junction node, a split row is one fragment pair with one or more occurrences. Columns: host-only identities, native predictors x_i from the detector, detector_score, agent-added columns z_i (local_* from LOCAL_CONTEXT, bank_agent_* from descriptors, image features), and the output score s_i. Labels y_i are held apart by the host. Rows are ranked by detector_score; the top band (at most 20,000 rows) carries attached contexts c_i: a 50 um fragment neighbourhood and image patches at level 1 (30 um) and level 0 (16 um). Agent code phi turns contexts into columns (describe, extract_local_features, extract_image_features) or a model reads raw patches directly in training.py; f ranks rows from x_i and z_i. Coverage differs per feature (cache band, LOCAL_CONTEXT default 5,000, descriptor scopes pilot, boundary, all_cached); uncovered rows are NaN but every row is scored. Label access by role: the agent session sees TRAIN labelled samples and label-conditional statistics; the fit worker sees TRAIN labels of the fitting rows; describe, extract and predict workers see no labels; the outer evaluator holds validation labels. New columns are judged by paired ablation on TRAIN (diagnostic), grouped out-of-fold Precision@K on the selection brain (a constraint against memorising, not proof), and the hidden-brain promotion gate with the bootstrap bound (the only gate).</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0,0 L11,6 L0,12 z" fill="#475569"/></marker>
+    <marker id="arrow-green" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M0,0 L11,6 L0,12 z" fill="#16a34a"/></marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%"><feDropShadow dx="0" dy="3" stdDeviation="5" flood-color="#0f172a" flood-opacity="0.12"/></filter>
+    <pattern id="hatch" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="8" stroke="#94a3b8" stroke-width="2" opacity="0.5"/></pattern>
+    <pattern id="hatch-amber" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="8" stroke="#f59e0b" stroke-width="2" opacity="0.35"/></pattern>
+    <style>
+      .h1 { font-size: 38px; font-weight: 700; fill: #0f172a; }
+      .h2 { font-size: 19px; fill: #64748b; }
+      .card-title { font-size: 17px; font-weight: 700; }
+      .t { font-size: 14px; fill: #475569; }
+      .ts { font-size: 12.5px; fill: #64748b; }
+      .code { font-family: monospace; font-size: 13px; fill: #3730a3; }
+      .math { font-family: 'Times New Roman', Georgia, serif; font-style: italic; font-size: 20px; fill: #0f172a; }
+    </style>
+  </defs>
+
+  <rect width="1920" height="1080" fill="#f8fafc"/>
+
+  <!-- header -->
+  <text x="70" y="66" class="h1">proofreader_evolve: the data the search runs on</text>
+  <text x="70" y="98" class="h2">Fixed candidate rows · growing columns · raw contexts attached to the top band · labels held apart · the agent searches both what to measure and how to rank</text>
+
+  <!-- formula strip -->
+  <rect x="70" y="120" width="1790" height="54" rx="12" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="96" y="154" class="math">x<tspan baseline-shift="sub" font-size="13">i</tspan></text>
+  <text x="124" y="154" class="t">table features</text>
+  <text x="262" y="154" class="math">c<tspan baseline-shift="sub" font-size="13">i</tspan></text>
+  <text x="290" y="154" class="t">image / skeleton context (band rows)</text>
+  <text x="580" y="154" class="math">y<tspan baseline-shift="sub" font-size="13">i</tspan></text>
+  <text x="608" y="154" class="t">label, stored apart</text>
+  <line x1="790" y1="130" x2="790" y2="164" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="820" y="154" class="math">z<tspan baseline-shift="sub" font-size="13">i</tspan> = φ(c<tspan baseline-shift="sub" font-size="13">i</tspan>)</text>
+  <text x="925" y="154" class="t">φ: what to measure</text>
+  <text x="1090" y="154" class="math">s<tspan baseline-shift="sub" font-size="13">i</tspan> = f(x<tspan baseline-shift="sub" font-size="13">i</tspan>, z<tspan baseline-shift="sub" font-size="13">i</tspan>)</text>
+  <text x="1220" y="154" class="t">f: how to rank</text>
+  <text x="1400" y="154" class="t" font-weight="600">both φ and f are searched; the rows never change</text>
+
+  <!-- ===================== LEFT COLUMN ===================== -->
+  <!-- rows card -->
+  <rect x="70" y="196" width="390" height="256" rx="16" fill="#eef2ff" stroke="#6366f1" stroke-width="2" filter="url(#shadow)"/>
+  <text x="90" y="224" class="card-title" fill="#3730a3">One row per candidate</text>
+  <text x="90" y="244" class="ts">fixed pool per brain and kind, frozen detector output</text>
+  <g stroke="#3730a3" stroke-width="3" fill="none" stroke-linecap="round">
+    <path d="M100 300 L128 274 L156 300"/><path d="M128 274 L128 252"/>
+  </g>
+  <circle cx="128" cy="274" r="5" fill="#dc2626"/>
+  <text x="176" y="272" class="t" font-weight="600">merge row = one junction node</text>
+  <text x="176" y="290" class="ts">identity: segment id + node id</text>
+  <g stroke="#3730a3" stroke-width="3" fill="none" stroke-linecap="round">
+    <path d="M100 360 L124 342"/><path d="M140 338 L164 320"/>
+  </g>
+  <circle cx="124" cy="342" r="5" fill="#dc2626"/><circle cx="140" cy="338" r="5" fill="#dc2626"/>
+  <text x="176" y="334" class="t" font-weight="600">split row = one fragment pair</text>
+  <text x="176" y="352" class="ts">1+ occurrences (node pairs); features may</text>
+  <text x="176" y="368" class="ts">use one of them or aggregate them</text>
+  <text x="90" y="398" class="ts">K fixed · every row gets a score</text>
+  <text x="90" y="416" class="ts">ids and positions stay host-side; the agent reaches</text>
+  <text x="90" y="432" class="ts">a TRAIN row only through a candidate_ref handle</text>
+
+  <!-- label access card -->
+  <rect x="70" y="468" width="390" height="248" rx="16" fill="#fffbeb" stroke="#f59e0b" stroke-width="2" filter="url(#shadow)"/>
+  <text x="90" y="496" class="card-title" fill="#92400e">Who sees the labels y</text>
+  <text x="90" y="516" class="ts">separated from predictors, not hidden from everyone</text>
+  <g class="t">
+    <text x="90" y="542" font-weight="600" fill="#1e3a8a">agent session</text>
+    <text x="90" y="559">TRAIN labelled samples (a few per group) and</text>
+    <text x="90" y="575">label-conditional feature statistics</text>
+    <text x="90" y="599" font-weight="600" fill="#166534">fit worker (training.py)</text>
+    <text x="90" y="616">TRAIN labels of the rows it is allowed to fit</text>
+    <text x="90" y="640" font-weight="600" fill="#475569">describe · extract · predict workers</text>
+    <text x="90" y="657">no labels at all</text>
+    <text x="90" y="681" font-weight="600" fill="#92400e">outer evaluator (host)</text>
+    <text x="90" y="698">validation labels → Precision@K and the gate</text>
+  </g>
+
+  <!-- coverage card -->
+  <rect x="70" y="732" width="390" height="162" rx="16" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#shadow)"/>
+  <text x="90" y="760" class="card-title" fill="#0f172a">Coverage per feature · rows fixed</text>
+  <g class="ts">
+    <text x="90" y="784">cache band: ≤ 20,000 rows by detector_score</text>
+    <text x="90" y="800">compute_descriptors scope: pilot 512 · boundary</text>
+    <text x="90" y="816">±2,000 around K · all_cached</text>
+    <text x="90" y="832">LOCAL_CONTEXT: default 5,000 rows, up to 20,000,</text>
+    <text x="90" y="848">any base feature and direction</text>
+    <text x="90" y="864">unreached rows hold NaN, stay in the pool and</text>
+    <text x="90" y="880">still receive a final score</text>
+  </g>
+
+  <!-- ===================== CENTER: the table ===================== -->
+  <text x="490" y="222" class="card-title" fill="#0f172a">The table of one brain and kind</text>
+  <text x="490" y="240" class="ts">rows ranked by detector_score · columns grow during the run</text>
+
+  <!-- column header bands -->
+  <g font-size="12" font-weight="700" text-anchor="middle">
+    <rect x="490" y="252" width="70" height="40" rx="6" fill="#e2e8f0" stroke="#94a3b8"/><rect x="490" y="252" width="70" height="40" rx="6" fill="url(#hatch)"/>
+    <text x="525" y="270" fill="#475569">host ids</text><text x="525" y="284" fill="#475569" font-weight="400">never input</text>
+    <rect x="566" y="252" width="360" height="40" rx="6" fill="#eef2ff" stroke="#6366f1"/>
+    <text x="746" y="270" fill="#3730a3">native predictors x (frozen detector features)</text><text x="746" y="284" fill="#3730a3" font-weight="400">tens of geometry / topology columns per kind</text>
+    <rect x="932" y="252" width="90" height="40" rx="6" fill="#eef2ff" stroke="#6366f1"/>
+    <text x="977" y="270" fill="#3730a3" font-size="11">detector_score</text><text x="977" y="284" fill="#3730a3" font-weight="400">frozen</text>
+    <rect x="1028" y="252" width="230" height="40" rx="6" fill="#dcfce7" stroke="#16a34a"/>
+    <text x="1143" y="270" fill="#166534">agent columns z = φ(c)</text><text x="1143" y="284" fill="#166534" font-weight="400">local_* · bank_agent_* · image</text>
+    <rect x="1264" y="252" width="80" height="40" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+    <text x="1304" y="270" fill="#1e3a8a">score s</text><text x="1304" y="284" fill="#1e3a8a" font-weight="400">= f(x, z)</text>
+  </g>
+  <!-- detached label column header -->
+  <rect x="1382" y="252" width="90" height="40" rx="6" fill="#fef3c7" stroke="#d97706"/>
+  <rect x="1382" y="252" width="90" height="40" rx="6" fill="url(#hatch-amber)"/>
+  <text x="1427" y="270" font-size="12" font-weight="700" fill="#92400e" text-anchor="middle">label y</text>
+  <text x="1427" y="284" font-size="11" fill="#92400e" text-anchor="middle">host only</text>
+  <rect x="1418" y="300" width="18" height="13" rx="2" fill="#92400e"/>
+  <path d="M1421 300 v-5 a6 6 0 0 1 12 0 v5" fill="none" stroke="#92400e" stroke-width="2"/>
+
+  <!-- band caption row -->
+  <text x="494" y="309" font-size="11" font-weight="700" fill="#166534">cache band · ≤ 20,000 rows · contexts c attached · agent columns computed here</text>
+
+  <!-- rows -->
+  <g font-size="11" fill="#334155" text-anchor="middle">
+    <g>
+      <rect x="490" y="316" width="854" height="24" fill="#f0fdf4"/><rect x="490" y="342" width="854" height="24" fill="#f0fdf4"/>
+      <rect x="490" y="368" width="854" height="24" fill="#f0fdf4"/><rect x="490" y="394" width="854" height="24" fill="#f0fdf4"/>
+      <rect x="490" y="420" width="854" height="24" fill="#f0fdf4"/><rect x="490" y="446" width="854" height="24" fill="#f0fdf4"/>
+      <rect x="490" y="500" width="854" height="24" fill="#ffffff"/><rect x="490" y="526" width="854" height="24" fill="#ffffff"/>
+      <rect x="490" y="552" width="854" height="24" fill="#ffffff"/><rect x="490" y="578" width="854" height="24" fill="#ffffff"/>
+    </g>
+    <g fill="#94a3b8">
+      <text x="525" y="333">id</text><text x="525" y="359">id</text><text x="525" y="385">id</text><text x="525" y="411">id</text><text x="525" y="437">id</text><text x="525" y="463">id</text>
+      <text x="525" y="517">id</text><text x="525" y="543">id</text><text x="525" y="569">id</text><text x="525" y="595">id</text>
+    </g>
+    <g fill="#c7d2fe">
+      <rect x="580" y="322" width="332" height="12" rx="3"/><rect x="580" y="348" width="332" height="12" rx="3"/><rect x="580" y="374" width="332" height="12" rx="3"/>
+      <rect x="580" y="400" width="332" height="12" rx="3"/><rect x="580" y="426" width="332" height="12" rx="3"/><rect x="580" y="452" width="332" height="12" rx="3"/>
+      <rect x="580" y="506" width="332" height="12" rx="3"/><rect x="580" y="532" width="332" height="12" rx="3"/><rect x="580" y="558" width="332" height="12" rx="3"/><rect x="580" y="584" width="332" height="12" rx="3"/>
+    </g>
+    <text x="746" y="333" fill="#3730a3">gap · tortuosity · radii · degree · path length · …</text>
+    <text x="977" y="333">0.92</text><text x="977" y="359">0.88</text><text x="977" y="385">0.81</text><text x="977" y="411">0.74</text><text x="977" y="437">0.66</text><text x="977" y="463">0.60</text>
+    <text x="977" y="517">0.21</text><text x="977" y="543">0.14</text><text x="977" y="569">0.09</text><text x="977" y="595">0.02</text>
+    <g fill="#166534">
+      <text x="1095" y="333">1.3 · 0.42 · 7</text><text x="1095" y="359">0.9 · 0.61 · 5</text><text x="1095" y="385">2.1 · 0.07 · 9</text>
+      <text x="1095" y="411">0.4 · 0.55 · 6</text><text x="1095" y="437">1.8 · 0.33 · 4</text><text x="1095" y="463">0.7 · 0.48 · 6</text>
+    </g>
+    <g fill="#16a34a"><text x="1210" y="333">0.31</text><text x="1210" y="359">0.27</text><text x="1210" y="385">0.44</text></g>
+    <g fill="#94a3b8"><text x="1210" y="411">NaN</text><text x="1210" y="437">NaN</text><text x="1210" y="463">NaN</text></g>
+    <g fill="#94a3b8">
+      <text x="1143" y="517">NaN</text><text x="1143" y="543">NaN</text><text x="1143" y="569">NaN</text><text x="1143" y="595">NaN</text>
+    </g>
+    <g fill="#1e3a8a" font-weight="600">
+      <text x="1304" y="333">2.41</text><text x="1304" y="359">1.97</text><text x="1304" y="385">2.88</text><text x="1304" y="411">1.12</text><text x="1304" y="437">1.75</text><text x="1304" y="463">0.93</text>
+      <text x="1304" y="517">0.40</text><text x="1304" y="543">0.22</text><text x="1304" y="569">0.17</text><text x="1304" y="595">0.05</text>
+    </g>
+    <g fill="#92400e">
+      <text x="1427" y="333">1</text><text x="1427" y="359">0</text><text x="1427" y="385">1</text><text x="1427" y="411">0</text><text x="1427" y="437">0</text><text x="1427" y="463">1</text>
+      <text x="1427" y="517">0</text><text x="1427" y="543">0</text><text x="1427" y="569">1</text><text x="1427" y="595">0</text>
+    </g>
+  </g>
+  <text x="917" y="490" font-size="12" fill="#94a3b8" text-anchor="middle">⋮   below the band: most of the pool · x, detector_score and s only · agent columns NaN   ⋮</text>
+  <text x="917" y="618" font-size="14" fill="#94a3b8" text-anchor="middle">⋮</text>
+  <text x="490" y="640" font-size="11" fill="#166534">agent columns: bank_agent_* cover the whole band (all_cached); local_* the top 5,000 by default; rows a feature did not reach hold NaN and are still scored</text>
+
+  <!-- ===================== RIGHT: contexts and judging ===================== -->
+  <rect x="1500" y="196" width="360" height="300" rx="16" fill="#dcfce7" stroke="#16a34a" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1520" y="224" class="card-title" fill="#166534">Context c attached to band rows</text>
+  <text x="1520" y="244" class="ts">raw inputs only, built once per brain and kind</text>
+  <rect x="1522" y="258" width="100" height="84" rx="8" fill="#ffffff" stroke="#16a34a" stroke-width="1.5"/>
+  <g stroke="#2563eb" stroke-width="2.2" fill="none" stroke-linecap="round">
+    <path d="M1532 330 C 1550 306, 1570 312, 1582 288 S 1602 272, 1614 264"/><path d="M1552 334 L 1570 314"/><path d="M1582 288 L 1598 306"/>
+  </g>
+  <circle cx="1570" cy="314" r="3.5" fill="#dc2626"/>
+  <text x="1572" y="356" font-size="11" fill="#166534" text-anchor="middle">fragments · 50 µm</text>
+  <rect x="1632" y="258" width="100" height="84" rx="8" fill="#111827" stroke="#16a34a" stroke-width="1.5"/>
+  <path d="M1642 324 C 1660 296, 1690 302, 1722 268" fill="none" stroke="#e5e7eb" stroke-width="8" stroke-linecap="round" opacity="0.85"/>
+  <text x="1682" y="356" font-size="11" fill="#166534" text-anchor="middle">level 1 · 30 µm</text>
+  <rect x="1742" y="258" width="100" height="84" rx="8" fill="#111827" stroke="#16a34a" stroke-width="1.5"/>
+  <path d="M1752 322 C 1768 296, 1796 300, 1832 268" fill="none" stroke="#f3f4f6" stroke-width="3.5" stroke-linecap="round"/>
+  <path d="M1788 300 L 1804 318" fill="none" stroke="#f3f4f6" stroke-width="2.5" stroke-linecap="round"/>
+  <text x="1792" y="356" font-size="11" fill="#166534" text-anchor="middle">level 0 · 16 µm</text>
+  <text x="1520" y="384" class="t" font-weight="600">φ = agent code, executed by the host:</text>
+  <text x="1520" y="404" class="ts">describe(context) → bank_agent_* (whole band)</text>
+  <text x="1520" y="421" class="ts">extract_local_features → local_* columns</text>
+  <text x="1520" y="438" class="ts">extract_image_features → image columns</text>
+  <text x="1520" y="455" class="ts">or a training.py model reads raw patches and</text>
+  <text x="1520" y="472" class="ts">learns a representation; no named column</text>
+  <!-- arrow from contexts into the agent-column header -->
+  <path d="M1500 236 C 1440 236, 1300 226, 1212 246" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-dasharray="6 4" marker-end="url(#arrow-green)"/>
+
+  <rect x="1500" y="514" width="360" height="200" rx="16" fill="#ffffff" stroke="#cbd5e1" stroke-width="2" filter="url(#shadow)"/>
+  <text x="1520" y="542" class="card-title" fill="#0f172a">Judging a new column or model</text>
+  <g class="ts">
+    <text x="1520" y="568" font-weight="600" fill="#166534">TRAIN diagnostic</text>
+    <text x="1520" y="584">paired ablation: full vs masked group; same</text>
+    <text x="1520" y="600">program and folds; informs the schedule</text>
+    <text x="1520" y="624" font-weight="600" fill="#166534">branch selection</text>
+    <text x="1520" y="640">grouped out-of-fold P@K on the selection brain:</text>
+    <text x="1520" y="656">curbs memorising; not proof of generalisation</text>
+    <text x="1520" y="680" font-weight="600" fill="#3730a3">the only gate</text>
+    <text x="1520" y="696">hidden brains: mean P@K gain &gt; bootstrap noise</text>
+  </g>
+
+  <rect x="1500" y="732" width="360" height="162" rx="16" fill="#fffbeb" stroke="#f59e0b" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="1500" y="732" width="360" height="162" rx="16" fill="url(#hatch-amber)"/>
+  <text x="1520" y="760" class="card-title" fill="#92400e">Hidden validation tables</text>
+  <g class="ts">
+    <text x="1520" y="786">same schema, one per hidden brain</text>
+    <text x="1520" y="804">host recomputes the agent's columns from each</text>
+    <text x="1520" y="820">brain's own cache and runs the frozen f</text>
+    <text x="1520" y="840">no row, score or label returns to the agent;</text>
+    <text x="1520" y="856">only the promotion decision is visible</text>
+    <text x="1520" y="876">development data, not an untouched final test</text>
+  </g>
+
+  <!-- ===================== CENTER BOTTOM: the five paths ===================== -->
+  <text x="490" y="672" class="card-title" fill="#0f172a">Five ways the agent turns x and c into a score</text>
+  <text x="490" y="690" class="ts">each path is code the agent writes and the host executes in a sandbox; the first and last need no explicit new column</text>
+  <g font-size="12">
+    <rect x="490" y="704" width="186" height="148" rx="12" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5" filter="url(#shadow)"/>
+    <text x="502" y="726" class="code">scorer.py</text>
+    <text x="502" y="745" class="t" font-weight="600">f over the columns</text>
+    <text x="502" y="764" fill="#64748b">formula + PARAMS literal</text>
+    <text x="502" y="780" fill="#64748b">tune: numbers only</text>
+    <text x="502" y="796" fill="#64748b">explore: new formula</text>
+    <text x="502" y="836" fill="#64748b" font-weight="600">no new column needed</text>
+
+    <rect x="686" y="704" width="186" height="148" rx="12" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5" filter="url(#shadow)"/>
+    <text x="698" y="726" class="code">LOCAL_CONTEXT</text>
+    <text x="698" y="745" class="t" font-weight="600">φ on the skeleton</text>
+    <text x="698" y="764" fill="#64748b">extract_local_features()</text>
+    <text x="698" y="780" fill="#64748b">nodes, edges, radii of</text>
+    <text x="698" y="796" fill="#64748b">the 50 µm neighbourhood</text>
+    <text x="698" y="812" fill="#64748b">5,000 rows (max 20,000)</text>
+    <text x="698" y="836" fill="#64748b" font-weight="600">adds local_* columns</text>
+
+    <rect x="882" y="704" width="186" height="148" rx="12" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5" filter="url(#shadow)"/>
+    <text x="894" y="726" class="code">descriptor.py</text>
+    <text x="894" y="745" class="t" font-weight="600">φ over the band</text>
+    <text x="894" y="764" fill="#64748b">describe(context) over</text>
+    <text x="894" y="780" fill="#64748b">skeleton and pixels</text>
+    <text x="894" y="796" fill="#64748b">scope: pilot · boundary ·</text>
+    <text x="894" y="812" fill="#64748b">all_cached · hash-cached</text>
+    <text x="894" y="836" fill="#64748b" font-weight="600">adds bank_agent_* cols</text>
+
+    <rect x="1078" y="704" width="186" height="148" rx="12" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5" filter="url(#shadow)"/>
+    <text x="1090" y="726" class="code">LOCAL_IMAGE</text>
+    <text x="1090" y="745" class="t" font-weight="600">φ on image patches</text>
+    <text x="1090" y="764" fill="#64748b">extract_image_features()</text>
+    <text x="1090" y="780" fill="#64748b">on rows a selection rule</text>
+    <text x="1090" y="796" fill="#64748b">picks (Top-K boundary)</text>
+    <text x="1090" y="812" fill="#64748b">original pixel values</text>
+    <text x="1090" y="836" fill="#64748b" font-weight="600">adds image columns</text>
+
+    <rect x="1274" y="704" width="186" height="148" rx="12" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5" filter="url(#shadow)"/>
+    <text x="1286" y="726" class="code">training.py</text>
+    <text x="1286" y="745" class="t" font-weight="600">fit / predict model</text>
+    <text x="1286" y="764" fill="#64748b">any CPU learner on x, z</text>
+    <text x="1286" y="780" fill="#64748b">may read raw patches via</text>
+    <text x="1286" y="796" fill="#64748b">the images argument and</text>
+    <text x="1286" y="812" fill="#64748b">learn a representation</text>
+    <text x="1286" y="836" fill="#64748b" font-weight="600">no new column needed</text>
+  </g>
+  <text x="490" y="872" class="ts">φ runs label-free; only the agent session and the fit worker see TRAIN labels. The host re-executes the frozen φ and f on the validation tables.</text>
+  <text x="490" y="890" class="ts">Detector columns and pools come from Stage 2 and never change inside a run; the agent's columns and models are versioned by code hash.</text>
+
+  <!-- ===================== BOTTOM: key message ===================== -->
+  <rect x="70" y="916" width="1790" height="92" rx="14" fill="#eff6ff" stroke="#bfdbfe" stroke-width="2"/>
+  <text x="90" y="946" font-size="17" font-weight="700" fill="#1e3a8a">What the agent can do that a fixed feature set cannot</text>
+  <text x="90" y="972" class="t">When the existing columns cannot separate two candidates, it proposes a new measurement from the image or the skeleton, writes it as code, and the host checks whether that</text>
+  <text x="90" y="994" class="t">measurement improves the ranking of the fixed rows. The observation space grows; the candidate set, K and labels stay put. Feature discovery and model search feed each other.</text>
+
+  <text x="70" y="1050" font-size="13" fill="#94a3b8">proofreader_evolve/data_overview.svg · companion to workflow_overview.svg (the loop) and workflow_diagram.svg (step-level detail) · cell values are illustrative</text>
+</svg>

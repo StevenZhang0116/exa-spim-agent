@@ -22,7 +22,7 @@ To inspect a chosen physical location instead:
         --center-xyz X_UM Y_UM Z_UM
 
 For a private ``gs://`` image, the script automatically uses
-``configs/zihan_gcs_token.json`` when it exists. Override it with
+``configs/allen-nd-goog-f5d46dbfa2cd.json`` when it exists. Override it with
 ``--gcp-credentials PATH`` or an existing ``GOOGLE_APPLICATION_CREDENTIALS``.
 """
 
@@ -39,7 +39,7 @@ import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PROOFREADER_SRC = PROJECT_ROOT.parent / "agentic-neuron-proofreader" / "src"
-DEFAULT_GCP_CREDENTIALS = PROJECT_ROOT / "configs" / "zihan_gcs_token.json"
+DEFAULT_GCP_CREDENTIALS = PROJECT_ROOT / "configs" / "allen-nd-goog-f5d46dbfa2cd.json"
 
 try:
     import agentic_neuron_proofreader  # noqa: F401 - registers pickle classes
@@ -94,7 +94,7 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Credentials for a private gs:// image. Precedence: this flag, "
             "GOOGLE_APPLICATION_CREDENTIALS, then "
-            "configs/zihan_gcs_token.json when present."
+            "configs/allen-nd-goog-f5d46dbfa2cd.json when present."
         ),
     )
     return parser.parse_args()

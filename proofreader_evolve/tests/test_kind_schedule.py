@@ -157,7 +157,7 @@ class DriverTests(unittest.TestCase):
         self.assertGreater(records[2]['kind_allocation']['kinds']['split']['momentum'], 0.)
         self.assertEqual(records[3]['kind_allocation']['kinds']['merge']['generations_since'], 3)
         self.assertEqual(manifest['kind_schedule']['mode'], 'adaptive')
-        self.assertEqual(manifest['search_version'], 'adaptive-kind-allocation-v16')
+        self.assertEqual(manifest['search_version'], 'branch-feedback-handoff-v17')
         self.assertEqual([plan['allocation_rule'] for plan in plans],
                          ['headroom', 'pending_followup', 'momentum', 'floor'])
         for text in [json.dumps(plan) for plan in plans] + pools:

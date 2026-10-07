@@ -9,7 +9,10 @@ edit graphs, expand candidates, retrain detectors or deploy scorers automaticall
 ![Fixed-pool scorer evolution with TRAIN search and development-validation selection](workflow_diagram.svg)
 
 A one-page visual overview (frozen inputs, the generation loop, outputs and the
-blindness boundary) is in [workflow_overview.svg](workflow_overview.svg).
+blindness boundary) is in [workflow_overview.svg](workflow_overview.svg); the data
+model the search runs on (fixed candidate rows, growing columns, contexts attached to
+the top band, labels held apart, the five paths from contexts to a score, and who sees
+labels) is in [data_overview.svg](data_overview.svg).
 
 ```mermaid
 flowchart TD
@@ -124,8 +127,49 @@ selection reads TRAIN only; the reference identity comes from the host's promoti
 decision and therefore carries indirect development-validation feedback. Only
 TRAIN measurements and diagnostics are exposed in pool/plan files; no heldout
 data, scores or decision reasons enter them. The promotion gate compares against the
-accepted parent's full-precision measurements. TRAIN feedback's `parent_train`
-also refers to that accepted parent; `search_plan.json` identifies the branch.
+accepted parent's full-precision measurements. TRAIN feedback's `parent_train` and
+`parent_selection` also refer to that accepted parent, while its examples,
+`ranking_delta` and `failure_cases.json` describe the exploration branch (v17);
+`search_plan.json` identifies the branch.
+
+### Branch-aligned feedback and research handoff (2026-10-06 / v17)
+
+Version `branch-feedback-handoff-v17` changes what the reviser is shown, not how
+candidates are measured, selected or promoted.
+
+- **Branch-aligned feedback.** The driver previously built `train_feedback.json`
+  examples and `failure_cases.json` from the accepted parent's selection
+  measurement even when the generation's search parent was another archived
+  branch, so the agent edited branch B while studying A's errors. Now the driver
+  loads the assigned branch's stored selection state (`selection_state.npz` in its
+  snapshot; the accepted state when the branch is the reference or has no stored
+  measurement) and builds both files from it. `train_feedback.json` gains
+  `search_branch` (experiment, `same_as_accepted`, selection metrics), its
+  `ranking_delta` is branch minus accepted and its format is `stratified-train-v5`
+  (per-attempt `feedback.json` stays `stratified-train-v4`); `failure_cases.json` gains `branch`
+  and `branch_vs_accepted` (`failure_cases.branch_comparison`): per-cell counts
+  and up to eight `candidate_ref`s each of positives the branch newly finds,
+  loses, or misses together with the accepted scorer. TRAIN only; no new budget.
+- **Research handoff.** `proposal.json` accepts an optional `handoff`
+  (`hypothesis_memory.validate_handoff`): up to three `open_questions`, up to
+  three `evidence` items with a `supports` / `contradicts` / `mixed` verdict and
+  conditions, and a `next_experiment` with `what`, `discriminates` and `units`;
+  300 characters per text. After each generation the driver stores the handoff
+  of the final `proposal.json` in the hypothesis record next to host facts
+  (submitted experiment, selection score, promoted) and marks it promoted when
+  the submission replaces the reference. The next session's
+  `hypothesis_memory.json` starts with `handoff`: at most three records, the
+  assigned branch's lineage first. Agent text is never rewritten by the host.
+- **Not done.** Deferring the full-TRAIN fit to submission (compute saving with a
+  snapshot-identity change) and host-planned descriptor scopes were reviewed and
+  left as they are; the scope guidance stays in the guide.
+
+Tests: `tests/test_research_handoff.py` (handoff validation and proposal
+parsing; memory storage, cap and lineage ranking; a two-generation driver run
+where the first session's handoff reaches the second with `promoted: true`) and
+the extended rejected-branch test in `tests/test_train_search.py` (feedback and
+failure cases of an unaccepted branch, `branch_vs_accepted` counts, no heldout
+wording).
 
 ### Adaptive kind allocation (2026-10-05 / v16)
 
@@ -337,7 +381,8 @@ That run motivates the revision; it does not validate it.
   them and spend no fit.
 - **Feedback.** `train_feedback.json` (`stratified-train-v4`) takes examples,
   `ranking_delta` and matched failure cases from the accepted parent's selection
-  measurement on selection brains, and shows `parent_train` in-sample metrics
+  measurement on selection brains (since v17, 2026-10-06: from the assigned
+  branch's selection measurement, format `stratified-train-v5`), and shows `parent_train` in-sample metrics
   for all TRAIN brains as diagnostics only. `selection_protocol` in the feedback
   describes the partition, fold budgets and brain roles.
 - **Charging.** One classifier configuration costs one evaluation unit, fold
@@ -760,8 +805,8 @@ training tools; operator command `cli/check_image_alignment.py`; agent guide
 ## Direct 3D exploration (2026-10-02, v10)
 
 Image exploration now starts with agent-written computation on real 3D arrays.
-The reviser edits `analysis.py` with `analyze(context)` and selects 1..4 TRAIN
-candidate occurrences in `analysis_request.json`, then calls
+The reviser edits `analysis.py` with `analyze(context)` and selects 1..16 TRAIN
+candidate occurrences in `analysis_request.json` (4 until 2026-10-06), then calls
 `run_volume_analysis({})`. A new generation receives a descriptive example and
 one matched failure pair when available. The agent chooses its algorithm and may
 revise it between calls. No fitting, feature declaration or 2D preview is required.
@@ -1082,6 +1127,7 @@ records the motivating run and the original proposals.
 | Standard grouped cross-validation practice; [scikit-learn `cross_val_predict` note on not treating concatenated out-of-fold predictions as a single scored set](https://scikit-learn.org/stable/modules/generated/sklearn.model_selection.cross_val_predict.html); **engineering reference** with **project-specific** design in v13 | Official branch selection by grouped out-of-fold precision on detector-naive selection brains with auxiliary fitting-only brains, per-fold ranking under largest-remainder fold budgets summing to K, one evaluation unit per configuration, selection-sourced feedback and failure cases, baseline auxiliary ablation, and paired Poisson-bootstrap logging of the promotion delta. [selection_protocol.py](harness/selection_protocol.py), [internal_validation.py](harness/internal_validation.py), [train_experiments.py](harness/train_experiments.py), [fixed_pool_scoring.py](harness/fixed_pool_scoring.py), [run_precision_evolution.py](cli/run_precision_evolution.py). | The fold partition is fixed and repeatedly inspected by the reviser, so the score is a development signal rather than an unbiased estimate; fragment purging and spatial blocks do not prove neuron independence; the bootstrap reflects row resampling only and, in v13, changed no decision (binding by default since v15; next row). The outer gate, K and margin were unchanged in v13. No paper is reproduced. | Implemented 2026-10-03; synthetic regression tests only (see the evidence log). Whether out-of-fold selection improves development-validation gain over in-sample selection is unmeasured; the `in_sample` flag exists for that comparison. |
 | Paired bootstrap of a model-comparison statistic (Efron and Tibshirani, *An Introduction to the Bootstrap*, 1993) with Poisson(1) weights as the large-sample approximation to multinomial resampling (Chamandy, Muralidharan, Najmi and Naidu, *Estimating uncertainty for massive data streams*, Google technical report, 2012); **engineering reference** with **project-specific** design in v15 | Promotion requires the paired Poisson-bootstrap lower bound of the equal-brain mean Precision@K delta to exceed zero in addition to the point gain over the margin ([fixed_pool_scoring.py](harness/fixed_pool_scoring.py) `bootstrap_acceptance`, [run_precision_evolution.py](cli/run_precision_evolution.py) `--promotion-gate`). | Resampling rows of the fixed pools measures row-sampling noise only; it ignores neuron-level dependence, the repeated use of the same development-validation brains and scorer nondeterminism, so it filters noise-level promotions rather than testing generalisation. Alpha and the draw count are conventions, not tuned. | Implemented 2026-10-05; synthetic tests only. Whether the stricter gate raises final development-validation precision or only reduces the number of promotions is unmeasured. |
 | Resource allocation between arms by observed progress and remaining room, in the spirit of successive-halving / bandit schedulers for configuration search (Jamieson and Talwalkar, AISTATS 2016; Li et al., Hyperband, JMLR 2018); **adapted idea**, deterministic rules with a floor rather than a probabilistic policy | Per generation the host ranks kinds by pending follow-up, a floor, the mean gate-passing validation gain of the last two generations, then the equal-brain mean of `min(positives, K)/K - precision`; saturated kinds wait for the floor ([kind_schedule.py](harness/kind_schedule.py), `CandidatePool.next_plan(order=...)`, `--kind-schedule`). | Two arms, no confidence bounds, no elimination: a heuristic allocation, not a regret-bounded algorithm. Headroom is a cap on the mean objective, not a prediction of achievable gain; momentum uses development-validation outcomes, so scheduling carries indirect validation feedback (as promotion follow-ups already do). | Implemented 2026-10-05; synthetic tests only. Whether adaptive allocation beats strict rotation on final development-validation precision is unmeasured; `--kind-schedule alternate` is the control. |
+| GEPA-style reflective lineage memory (Agrawal et al., ICLR 2026) above; **project-specific extension** in v17 | Feedback and failure cases follow the assigned search branch with an explicit branch-versus-accepted comparison; sessions leave a bounded structured handoff (open questions, evidence verdicts, next experiment) that the host stores next to measured facts and surfaces to the next session of that kind ([failure_cases.py](harness/failure_cases.py), [hypothesis_memory.py](harness/hypothesis_memory.py), [run_precision_evolution.py](cli/run_precision_evolution.py)). | The handoff is an agent claim; only the adjacent host fields are measurements. Relevance ranking is lineage and recency, not learned. No promotion or selection rule changes. | Implemented 2026-10-06; synthetic tests only. Whether branch-aligned feedback or handoffs shorten the path to accepted gains is unmeasured. |
 | Existing CodeAct-style executed analysis above; **project-specific extension** in v14 | Agent-written `describe(context)` executed by the host over a cached candidate band in parallel isolated workers, with code-hash result caching, wall-clock budgets, label-free context transport and registration as predictors. [context_cache.py](harness/context_cache.py), [descriptor_contract.py](harness/descriptor_contract.py), [descriptor_runs.py](harness/descriptor_runs.py), [precompute_context_cache.py](cli/precompute_context_cache.py). | Not a feature-selection algorithm from the literature: the host predefines no quantity; it moves the raw inputs next to the computation. Pool-scale label-conditional summaries increase adaptive use of TRAIN labels; the out-of-fold selection and outer gate are the guards. The band (top 20,000 detector-ranked rows) bounds coverage. | Implemented 2026-10-04; synthetic regression tests with real sandboxed workers (see the evidence log). Real-brain cache throughput and any ranking benefit from agent descriptors are unmeasured. |
 | No claimed paper algorithm; **project-specific** | Three label-independent folds, fragment purging, 500-um split blocks, diagnostic constant masking, matched-case sampling, exact-code evidence binding, and hypothesis stagnation penalties. [internal_validation.py](harness/internal_validation.py), [failure_cases.py](harness/failure_cases.py), [hypothesis_memory.py](harness/hypothesis_memory.py). | Internal folds are repeatedly inspected TRAIN data. Spatial blocks plus fragment purging do not prove neuron independence. Two nonpositive ablations lower priority rather than refute a hypothesis. Protected-reference cadence and the mean development-validation gate remain separate. | Implemented 2026-10-02; assumptions and thresholds require future evaluation. |
 | [CodeAct, ICML 2024](https://proceedings.mlr.press/v235/wang24h.html), `wang2024`; **adapted idea** in v10 | The agent writes executable analysis actions, observes results, then revises its investigation. [volume_analysis.py](harness/volume_analysis.py) and [volume_analysis_guide.md](artifacts/volume_analysis_guide.md) apply this pattern to TRAIN 3D pixels and aligned fragments. | A bounded microscopy analysis interface, not a general shell/interpreter agent or reproduction of CodeAct training. Our context schema, four-case batch, eight-execution allowance, sandbox and provenance are project-specific. Optional 2D previews are not required. | 37 scoped tests and real merge/split data-access checks passed on n257. No live LLM comparison, discovery gain or latency reduction has been measured. |
@@ -1092,6 +1138,9 @@ records the motivating run and the original proposals.
 
 | Date / version | Change and motivation | Verification / future evidence |
 |---|---|---|
+| 2026-10-06 / `branch-feedback-handoff-v17` | Feedback examples and failure cases now describe the assigned search branch (loaded from its stored selection state) with a `branch_vs_accepted` comparison; sessions may leave a structured `proposal.json.handoff` that the host stores next to measured facts and shows to the next session as `hypothesis_memory.handoff`. Motivation: a review of the loop found the reviser editing an archived specialist while studying the accepted scorer's failures, and cross-generation continuity resting on keyword search over free text. Project-specific; see the provenance row above. | On n257: `tests/test_research_handoff.py` (3) and the extended rejected-branch test passed with the train-search and feature-discovery suites (42 tests); full suite 283 tests OK in 20.4 min ([log](log/branch_handoff_20261006_tests.log)). No real-brain run; effect on discovery speed unmeasured. |
+| 2026-10-06 / maintenance (GCS paths and credentials) | `plotting/plot_error_contexts.py` resolves the segmentation through `scripts/dataset_config.get_segmentation_path` (explicit `configs/segmentation_paths.json` entries for the older-microscope brains, else the legacy layout) and no longer falls back to `configs/zihan_gcs_token.json`, which Google rejects (`invalid_grant`). No scoring, evolution or harness behaviour changed. | Path resolution checked for 802449, 754613 and 750318; no figure regenerated. |
+| 2026-10-06 / maintenance (3D analysis cases) | `MAX_CASES` for `run_volume_analysis` raised from 4 to 16 and the result cap from 24 KiB to 64 KiB, so one exploratory call can compare groups (for example eight missed positives against eight selected label-0 rows) rather than a few sites; the per-call worker timeout still covers all cases, so the default `--policy-time-budget` (scoring and feature workers, 3D analysis) was raised from 120 s to 300 s at the same time. Motivation: in `precision_20261005_114814_zxsbw5pj` the reviser used 7 of 80 allowed analyses, always 2 to 4 sites, and treated them as debugging for descriptors; the allowance was not binding but each call carried little evidence. Guides, prompt and tool description updated. | On n257: `tests/test_volume_analysis.py` (limit and oversize checks updated). Whether larger comparisons change the reviser's conclusions is unmeasured. |
 | 2026-10-05 / context cache level-0 extension | `IMAGE_TIERS['level0']['max_rows']` is now `None`: the 16 um / level-0 patches cover the whole 20,000-row band instead of the first 4,000 rows, so agent descriptors can read the finest resolution everywhere (`image_tier: 'level0'` was NaN on 80% of the band, and all four image descriptor sets of `precision_20261005_114814_zxsbw5pj` chose level 1). `ContextCacheBuilder.extend_tier` plus `--extend-tier` grow a tier of complete entries in place; `ContextCache.identity_key(table, tiers=...)` and the descriptor-bank identity are tier-selective so level-1 results survive the change. Motivation: the largest gains of that run were fibre-continuity questions (split gens 4 and 6) that level-1 voxels of 1.5 x 1.5 x 2 um undersample. | On n257: `tests/test_descriptor_compute.py` extension cases (kept chunks byte-identical, partial chunk rebuilt, new chunks appended, geometry and level 1 untouched, bank identities per tier, CLI flag pass-through) passed; full suite [279 tests in 4,453 s, OK](log/level0_extension_20261005_tests.log) while sharing the allocation with the build. Five-brain extension (`precompute_context_cache --brains 802449 794495 789202 794493 794491 --mcl 100 --readers 16 --extend-tier level0`, inside the user's 16-CPU n257 allocation, [log](log/context_cache_level0_extension_20261005.log.txt)): all ten entries went from 4,000 to 20,000 level-0 rows, keeping the three full existing chunks each; 0 failed patches; 543 to 909 s per entry (about 19 to 31 reads/s), 2 h 21 min in total including five fragment-graph loads; level-0 tier now 7.77 GB (was 1.55 GB), cache 19 GB on disk. Preflight `context_cache_readiness` passed afterwards. The ranking benefit of level-0 descriptors is unmeasured until the next trial. |
 | 2026-10-05 / `adaptive-kind-allocation-v16` | Generations are allocated to kinds by pending follow-up, a floor (`--kind-floor-every 4`), recent gate-passing validation gain and remaining headroom instead of strict merge/split rotation (`--kind-schedule adaptive`, default; `alternate` restores rotation); default `--generations` 15. Motivated by `precision_20261005_114814_zxsbw5pj`: five merge generations gained 0.0065 with 0.017 headroom while five split generations gained 0.048 with 0.66 headroom. Project-specific heuristic; see the provenance row above. | On n257 (inside a shared allocation, panda): `tests/test_kind_schedule.py` (8 tests: rule cases plus adaptive and alternate driver runs on a two-kind fixture) passed; full suite [276 tests in 1,331 s, OK](log/kind_schedule_20261005_tests.log) (268 pre-existing plus the 8 new ones). No real-brain run; the effect on final development-validation precision is unmeasured, and the next trial should be compared against this run's strict rotation. |
 | 2026-10-05 / maintenance (reviser I/O limits) | In run `precision_20261005_114814_zxsbw5pj`, `search_memory` results (88 to 128 KB) exceeded the Claude Code MCP output cap in every generation from the third, and `train_classifier` / `restore_candidate` results (50 to 57 KB) did so in five generations, so the reviser received errors instead of content; the feedback file sat at 45 to 47 KB against its 48 KB budget. Raised the cap to 100,000 tokens via `MAX_MCP_OUTPUT_TOKENS` in the reviser's SDK environment (`reviser_session.MCP_OUTPUT_TOKENS`), raised `MAX_FEEDBACK_BYTES` to 96 KB, and let the file guard read regular files parked by the SDK under `<config>/projects/<run>/<session>/tool-results/` so a future overflow is still readable. Tool payloads themselves are unchanged. | On n257: `tests/test_reviser_limits.py` (guard allows parked results, denies writes, symlinks and other projects; environment carries the cap; budget constant) plus the guard, feedback and trajectory suites. Extra context cost per generation is unmeasured. |
@@ -1163,6 +1212,10 @@ recorded `point_gate`/`bootstrap_gate` fields, TRAIN-archive retention and the
 absence of a promotion follow-up after a bootstrap rejection. Tiny-fixture
 driver tests pass `--promotion-gate margin` because a resampled three-row pool
 cannot separate any gain from zero.
+`tests/test_research_handoff.py` (v17) covers handoff validation, memory storage
+and lineage ranking, and a driver run in which the first session's handoff reaches
+the second; the rejected-branch test in `tests/test_train_search.py` checks that
+feedback and failure cases describe the assigned branch.
 `tests/test_kind_schedule.py` (v16) covers headroom, momentum with rejections as
 zero, the floor, pending follow-ups, saturation and pauses, plus adaptive and
 strict-rotation driver runs on a two-kind fixture; tiny-fixture driver tests

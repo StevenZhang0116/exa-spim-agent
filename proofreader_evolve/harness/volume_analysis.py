@@ -18,8 +18,10 @@ from .model_execution import run_worker
 
 VOLUME_ANALYSIS_VERSION = 'train-volume-analysis-v1'
 MAX_ANALYSES = 8
-MAX_CASES = 4
-MAX_RESULT_BYTES = 24 * 1024
+# Raised from 4 on 2026-10-06 so one exploratory call can compare groups (for example
+# eight missed positives against eight selected label-0 rows) instead of a handful of sites.
+MAX_CASES = 16
+MAX_RESULT_BYTES = 64 * 1024
 
 
 def reject_constant(value):
@@ -140,7 +142,7 @@ def execute_analysis(program, request, resolved, directory, *, timeout=120, memo
         status = run_worker(root, worker_request, log_path=directory / 'worker.log')
         output = root / 'analysis.json'
         if output.stat().st_size > MAX_RESULT_BYTES:
-            raise ValueError('Analysis results exceed 24 KiB; return summaries, not volume arrays')
+            raise ValueError(f'Analysis results exceed {MAX_RESULT_BYTES // 1024} KiB; return summaries, not volume arrays')
         results = json.loads(output.read_text(), parse_constant=reject_constant)
         if not isinstance(results, list) or len(results) != len(contexts) or any(not isinstance(r, dict) for r in results):
             raise ValueError('Analysis must return one JSON object per requested candidate')

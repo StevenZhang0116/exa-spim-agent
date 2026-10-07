@@ -416,6 +416,25 @@ class SearchDriverTests(unittest.TestCase):
                     self.assertEqual(policy.read_text(), IMPROVED)
                     self.assertEqual(experiments.parent_sources['split'], BASELINE)
                     self.assertEqual(experiments.search_plan['search_parent']['experiment'], 'gen001/attempt001')
+                    # Feedback and failure cases describe the assigned branch (IMPROVED, not accepted),
+                    # compared against the accepted scorer (BASELINE).
+                    feedback = json.loads(report.read_text())
+                    self.assertEqual(feedback['search_branch']['experiment'], 'gen001/attempt001')
+                    self.assertFalse(feedback['search_branch']['same_as_accepted'])
+                    self.assertEqual(feedback['search_branch']['selection']['macro_precision'], 1)
+                    self.assertEqual(feedback['format'], 'stratified-train-v5')
+                    self.assertEqual(feedback['parent_selection']['macro_precision'], 0)
+                    self.assertIn('assigned search branch', feedback['reading_guide'])
+                    cases = json.loads((policy.parent / 'failure_cases.json').read_text())
+                    self.assertEqual(cases['branch'], {'experiment': 'gen001/attempt001', 'same_as_accepted': False})
+                    comparison = cases['branch_vs_accepted']
+                    self.assertEqual(comparison['cells']['1/split'],
+                                     {'branch_tp': 1, 'accepted_tp': 0, 'branch_new_positives': 1,
+                                      'branch_lost_positives': 0, 'shared_missed_positives': 0})
+                    self.assertEqual(len(comparison['branch_new_positives']), 1)
+                    self.assertEqual(cases['pairs'], [])  # the branch misses no positive on TRAIN
+                    for text in (report.read_text(), json.dumps(cases)):
+                        self.assertNotIn('validation', text.lower())
                     experiments.restore('parent')
                     self.assertEqual(experiments.evaluations_used, 0)
                 return {'summary': 'TRAIN branch retained', 'cost_usd': 0}

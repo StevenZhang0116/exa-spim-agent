@@ -32,6 +32,7 @@ from ..harness.reviser_session import DEFAULT_MODEL, build_options, bind_session
 from ..harness.trajectory import Trajectory, log_metrics, save_diffs
 from ..harness.evolution_report import update_report
 from ..harness.train_feedback import write_train_feedback, render_compact_json, metrics_only, MAX_FEEDBACK_BYTES
+from ..harness.search_proposals import read_proposal
 from ..harness.selection_protocol import SelectionProtocol, load_selection, PROTOCOL_VERSION
 from ..harness.feature_ablation import CLASSIFIER_UNITS, FORMULA_UNITS
 from ..harness.context_cache import ContextCache
@@ -55,6 +56,27 @@ from ..harness.volume_analysis import VOLUME_ANALYSIS_VERSION, MAX_ANALYSES, MAX
 HERE = Path(__file__).resolve().parents[1]
 CONTRACT = (HERE / "artifacts" / "scorer_rules.md").read_text()
 DEFAULT_REVISER_MAX_TURNS = 24
+
+
+def _record_handoff(memory, gen_dir, target_kind, generation, record, trace):
+    """Store the agent's research handoff (if proposal.json carries one) next to host facts."""
+    try:
+        proposal = read_proposal(gen_dir / 'proposal.json')
+    except ValueError as exc:
+        trace.emit('research_handoff', f'No handoff recorded: {exc}')
+        return None
+    handoff = proposal.get('handoff')
+    if not handoff:
+        return None
+    host = {'experiment': record.get('submitted_experiment'),
+            'selection_precision': (record.get('selection') or {}).get('macro_precision'),
+            'promoted': bool(record.get('accepted')), 'status': 'submitted' if record.get('submitted_experiment')
+            else 'no_submission'}
+    item = memory.hypotheses.record_handoff({**proposal, 'target_kind': target_kind}, generation, handoff, host)
+    trace.emit('research_handoff', f"Handoff recorded: {len(handoff.get('open_questions', []))} open question(s), "
+               f"{len(handoff.get('evidence', []))} evidence item(s), next experiment "
+               f"{'given' if handoff.get('next_experiment') else 'absent'}", **item)
+    return item
 
 
 async def revise(run_dir, policy_path, rules_path, report_path, model, *,
@@ -94,6 +116,12 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
             f"Whole-TRAIN feature statistics are at {policy_path.parent / 'feature_statistics.json'}. "
             "Use mcp__training__search_memory to look up related previous strategies before repeating them. "
             "Read failure_cases.json, hypothesis_memory.json and feature_discovery_guide.md once. "
+            "The feedback examples and failure cases describe the search branch you start from (search_branch); "
+            "failure_cases.branch_vs_accepted lists positives it newly finds (keep them), positives it loses and "
+            "positives both it and the accepted scorer miss (the open gap). hypothesis_memory.handoff carries the "
+            "previous sessions' open questions, evidence verdicts and proposed next experiment with host-measured "
+            "outcomes; read it first. Before you finish, add proposal.json.handoff (open_questions, evidence with "
+            "verdicts, next_experiment) so the next session can continue instead of restarting. "
             "Use direct 3D analysis to investigate image evidence on a few TRAIN candidates when no pool-scale "
             "descriptor tools are offered; with a context cache attached, prefer compute_descriptors and keep "
             "run_volume_analysis for debugging describe. "
@@ -101,7 +129,8 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
             "then call run_volume_analysis({}). Your code receives full original 3D pixel arrays, "
             "valid masks, zyx voxel anchors/spacing and local fragment nodes in the same voxel frame. "
             "Choose your own analysis algorithm and return compact JSON findings; no fitting or "
-            "2D viewing is required first. Select 1..4 TRAIN candidate handles per call; eight analysis "
+            f"2D viewing is required first. Select 1..{MAX_CASES} TRAIN candidate handles per call, for example "
+            "a group of missed positives against a group of selected label-0 rows; eight analysis "
             "executions per generation have a separate budget. Repeated calls run the current code anew. "
             "The request is initially populated with one matched failure pair when available. "
             "These chosen cases need not be in the LOCAL_IMAGE scoring subset. A successful analysis "
@@ -215,8 +244,9 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
             "do not spend evaluation budget, but tool calls still consume SDK turns. Grid combinations must fit "
             "the remaining budget. Prefer one grid call to hand-editing constants across many calls. "
             "Inspect measured precision, gained/lost positives and top-K overlap before revising again. "
-            "The initial scorer is the selected exploration branch. parent_train in feedback and all "
-            "comparisons refer to the accepted parent, which can differ from this branch. "
+            "The initial scorer is the selected exploration branch. The feedback examples, ranking_delta and "
+            "failure cases describe this branch; parent_train, parent_selection and the promotion gate refer to "
+            "the accepted scorer, which can differ from it. "
             'Use mcp__training__restore_candidate({"candidate_id":"parent"}) to measure/recover the assigned '
             'branch from cache, or {"candidate_id":"best"} to restore the best measured candidate of this generation. '
             "IDs such as gen002/attempt001 restore earlier measured branches without rewriting their source. "
@@ -329,8 +359,9 @@ def parse_args(argv=None):
     p.add_argument("--split-k", type=int, default=100)
     p.add_argument("--precision-margin", type=float, default=0,
                    help="Required absolute gain in equal-weight mean validation Precision@K (default: 0)")
-    p.add_argument("--policy-time-budget", type=float, default=120,
-                   help="Scoring/feature worker budget and 3D analysis worker timeout, in seconds (default: 120)")
+    p.add_argument("--policy-time-budget", type=float, default=300,
+                   help="Scoring/feature worker budget and 3D analysis worker timeout, in seconds (default: 300; "
+                        "120 before 2026-10-06, raised with the 16-case analysis limit)")
     p.add_argument("--classifier-time-budget", type=float, default=300,
                    help="Wall/CPU fitting budget per classifier configuration, in seconds (default: 300)")
     p.add_argument("--classifier-memory-mb", type=int, default=8192,
@@ -716,8 +747,8 @@ async def _run(args, revise_fn, run_dir, trace):
                 "dataset_selection": selection,
                 "selection_protocol": protocol.describe(),
                 "reviser_max_turns": args.reviser_max_turns,
-                "feedback_format": "stratified-train-v4",
-                "search_version": "adaptive-kind-allocation-v16", "target_kind": args.target_kind,
+                "feedback_format": "stratified-train-v5",
+                "search_version": "branch-feedback-handoff-v17", "target_kind": args.target_kind,
                 "kind_schedule": {"mode": args.kind_schedule, "version": kind_schedule.SCHEDULE_VERSION,
                                   "floor_every": args.kind_floor_every,
                                   "momentum_window": kind_schedule.MOMENTUM_WINDOW,
@@ -865,6 +896,15 @@ async def _run(args, revise_fn, run_dir, trace):
         target_kind = plan['target_kind']
         branch = plan['search_parent']
         branch_dir = Path(branch['snapshot'])
+        # Feedback and failure cases describe the assigned branch; the accepted scorer is the comparison.
+        reference = pool.references.get(target_kind)
+        same_as_accepted = reference is None or branch.get('component_sha256') == reference.get('component_sha256')
+        branch_pair = parent_selection[target_kind]
+        if not same_as_accepted and (branch_dir / 'selection_state.npz').is_file():
+            branch_pair = load_selection(branch_dir)
+        elif not same_as_accepted:
+            same_as_accepted = True  # no stored measurement for this branch; fall back to the accepted scorer
+        branch_meta = {'experiment': branch['experiment'], 'same_as_accepted': same_as_accepted}
         policy_path, rules_path = gen_dir / "scorer.py", gen_dir / "rules.md"
         policy_path.write_text((branch_dir / 'scorer.py').read_text())
         rules_path.write_text((branch_dir / 'rules.md').read_text())
@@ -909,16 +949,17 @@ async def _run(args, revise_fn, run_dir, trace):
         log_metrics(gen_trace, "Parent train", parent_train)
         log_metrics(gen_trace, "Parent validation", parent_validation)
         report_path = gen_dir / "train_feedback.json"
-        # Examples come from the accepted parent's official selection measurement
-        # (out-of-fold on selection brains); in-sample TRAIN metrics stay diagnostic.
+        # Examples come from the assigned branch's official selection measurement (out-of-fold
+        # on selection brains), compared against the accepted scorer; in-sample metrics stay diagnostic.
         selection_report, selection_state = parent_selection[target_kind]
+        branch_report, branch_state = branch_pair
         feedback_selection = deepcopy(selection_report)
-        for cell, values in selection_state.items():
+        for cell, values in branch_state.items():
             brain = cell.rsplit('/', 1)[0]
             table = train[brain].tables[target_kind]
             feedback_selection['cells'][cell].update(describe(
-                table, values['scores'], values['chosen'], generation, cell,
-                features=augmented_features(parent_sources[target_kind], table, args.policy_time_budget)))
+                table, values['scores'], values['chosen'], generation, cell, selection_state.get(cell),
+                features=augmented_features(policy_path.read_text(), table, args.policy_time_budget)))
         statistics_path = gen_dir / 'feature_statistics.json'
         if statistics_version.get(target_kind) != memory.descriptor_generation:
             # Registered descriptor columns join the whole-pool label-conditional statistics.
@@ -928,7 +969,8 @@ async def _run(args, revise_fn, run_dir, trace):
         feedback_info = write_train_feedback(report_path, parent_train, [], budgets,
                                              target_kind=target_kind, memory=memory.search(target_kind),
                                              statistics_file=statistics_path, selection=feedback_selection,
-                                             protocol=protocol.describe(target_kind))
+                                             protocol=protocol.describe(target_kind),
+                                             branch={**branch_meta, 'selection': metrics_only(branch_report)})
         gen_trace.emit("feedback_ready", f"Compact TRAIN feedback: {feedback_info['bytes']} bytes; "
                        f"up to {feedback_info['examples_per_group_limit']} examples per group/cell",
                        **feedback_info)
@@ -938,7 +980,8 @@ async def _run(args, revise_fn, run_dir, trace):
             max_evaluations=args.train_evaluations_per_generation, generation=generation, search_plan=plan,
             classifier_timeout=args.classifier_time_budget, classifier_memory_mb=args.classifier_memory_mb,
             classifier_threads=args.classifier_threads, parent_selection=parent_selection[target_kind],
-            descriptor_budget=descriptor_budget)
+            descriptor_budget=descriptor_budget,
+            branch={**branch_meta, 'selection': branch_report, 'state': branch_state})
         record = {"generation": generation, "accepted": False, "target_kind": target_kind,
                   "kind_allocation": allocation,
                   "search_mode": plan['mode'], "search_reason": plan['reason'],
@@ -1039,6 +1082,7 @@ async def _run(args, revise_fn, run_dir, trace):
                 parent_validation_state = candidate_validation_state
                 parent_train, parent_validation = candidate_train, candidate_validation
                 (run_dir / "best_scorer.py").write_text(source)
+                memory.hypotheses.mark_promoted(submitted['entry']['experiment'])
                 if record['descriptors_referenced']:
                     _write(run_dir / "descriptors.json", experiments.descriptor_registry(record['descriptors_referenced']))
                 elif (run_dir / "descriptors.json").exists():
@@ -1072,6 +1116,7 @@ async def _run(args, revise_fn, run_dir, trace):
         record['image_evidence'] = generation_image_evidence(gen_dir, record)
         _write(gen_dir / 'image_evidence.json', record['image_evidence'])
         record['research_status'] = experiments.research_status()
+        record['research_handoff'] = _record_handoff(memory, gen_dir, target_kind, generation, record, gen_trace)
         receipt = record['research_status']
         gen_trace.emit('research_result', f"Research {receipt['status']}; "
                        f"new measurements={receipt['new_measurements']}; reused={receipt['reused_results']}; "

@@ -67,7 +67,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--brains", nargs="+", default=DEFAULT_BRAINS,
-        help="Brain IDs from configs/segmentation_datasets.rtf (default: %(default)s).",
+        help="Brain IDs from configs/segmentation_paths.json or segmentation_datasets.rtf (default: %(default)s).",
     )
     parser.add_argument(
         "--mcl", type=int, default=100,
@@ -121,7 +121,7 @@ def generate_caches(args: argparse.Namespace) -> None:
     print(f"GCS credentials: {os.environ['GOOGLE_APPLICATION_CREDENTIALS']}", flush=True)
 
     from dataset_config import get_img_path
-    from relabel_cache import atomic_cache_write, segmentation_path_for
+    from relabel_cache import atomic_cache_write, fragments_path_for, segmentation_path_for
     from agentic_neuron_proofreader.data_modules.datasets import BrainDataset
 
     cache = args.cache_dir.expanduser().resolve()
@@ -138,7 +138,7 @@ def generate_caches(args: argparse.Namespace) -> None:
         print(f"\nProcessing brain {brain}", flush=True)
         segmentation = segmentation_path_for(brain)
         metadata = dict(
-            fragments_path=segmentation + "swcs",
+            fragments_path=fragments_path_for(brain),
             gt_path=f"gs://allen-nd-goog/ground_truth_tracings/{brain}/voxel",
             img_path=get_img_path(
                 brain, prefixes_path=str(CONFIG_DIR / "exaspim_image_prefixes.json"),
@@ -148,6 +148,7 @@ def generate_caches(args: argparse.Namespace) -> None:
             node_spacing=args.node_spacing,
         )
         print(f"Segmentation: {segmentation}", flush=True)
+        print(f"Fragments: {metadata['fragments_path']}", flush=True)
 
         if base.exists():
             print(f"Loading existing base cache: {base}", flush=True)

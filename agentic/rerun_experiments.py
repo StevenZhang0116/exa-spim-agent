@@ -139,8 +139,12 @@ _PKL_LITERAL = re.compile(r"""["']([^"']*?\.pkl)["']""")
 # therefore links this token into each candidate location and presets the
 # standard env vars as a default for scripts that don't set them.
 GCS_TOKEN_PATH = (
-    Path(__file__).resolve().parent.parent / "configs" / "zihan_gcs_token.json"
+    Path(__file__).resolve().parent.parent / "configs" / "allen-nd-goog-f5d46dbfa2cd.json"
 )
+# Older delivery markdowns and recorded scripts look the token up as
+# ``zihan_gcs_token.json``. That key is rejected by Google since 2026-10-06, so
+# the working token above is also exposed under the legacy name.
+LEGACY_GCS_TOKEN_NAMES = ("zihan_gcs_token.json",)
 
 # Resident-payload execution. Historically every script ran in a fresh
 # subprocess that re-deserialized the multi-GB dataset itself (~minutes per
@@ -361,7 +365,8 @@ You MAY change, near the top of each script:
   `gt_edge_error`, `gt_node_canonical_label`, `gt_merge_sites`, ...).
 - Cloud-image credentials are ALSO driver-owned: the runner presets
   `GOOGLE_APPLICATION_CREDENTIALS` and `AWS_EC2_METADATA_DISABLED=true`, links
-  the GCS token under its conventional name (`zihan_gcs_token.json`) into the
+  the GCS token (`allen-nd-goog-f5d46dbfa2cd.json`, also under the legacy name
+  `zihan_gcs_token.json`) into the
   script's cwd, the cwd's parent, and the pkl's directory, and exports its
   absolute path as `$RERUN_GCS_TOKEN`. If a script's credential search still
   fails, replace it with:
@@ -596,19 +601,29 @@ runpy.run_path("experiment.py", run_name="__main__")
 
 
 def _link_gcs_token(dest_dir: Path, announce: bool = False) -> None:
-    """Expose the GCS token in ``dest_dir`` under its conventional name."""
-    dest = dest_dir / GCS_TOKEN_PATH.name
-    if dest.is_symlink() or dest.exists():
-        return
-    try:
-        dest.symlink_to(GCS_TOKEN_PATH)
-    except OSError:
+    """Expose the GCS token in ``dest_dir`` under its current and legacy names."""
+    for name in dict.fromkeys((GCS_TOKEN_PATH.name, *LEGACY_GCS_TOKEN_NAMES)):
+        dest = dest_dir / name
+        if dest.is_symlink():
+            # Re-point stale links (e.g. to the revoked legacy key); never touch
+            # regular files, which may be user-provided credentials.
+            if os.path.realpath(dest) == os.path.realpath(GCS_TOKEN_PATH):
+                continue
+            try:
+                dest.unlink()
+            except OSError:
+                continue
+        elif dest.exists():
+            continue
         try:
-            shutil.copy2(GCS_TOKEN_PATH, dest)
+            dest.symlink_to(GCS_TOKEN_PATH)
         except OSError:
-            return  # best effort — the env-var default may still suffice
-    if announce:
-        print(f"[rerun] exposed GCS token at {dest}", file=sys.stderr, flush=True)
+            try:
+                shutil.copy2(GCS_TOKEN_PATH, dest)
+            except OSError:
+                continue  # best effort — the env-var default may still suffice
+        if announce:
+            print(f"[rerun] exposed GCS token at {dest}", file=sys.stderr, flush=True)
 
 
 def _apply_inprocess_patches(payload) -> None:
@@ -839,7 +854,7 @@ def rerun_one(code: str, pkl: Path, timeout: int) -> dict:
     ``RERUN_PKL`` env var) regardless of the hardcoded paths or globs it uses.
 
     Cloud credentials get the same driver-owned treatment: when the repo token
-    at ``GCS_TOKEN_PATH`` exists, it is linked under its conventional name into
+    at ``GCS_TOKEN_PATH`` exists, it is linked under its current and legacy names into
     the script's cwd, the cwd's parent, and the pkl's directory (the places the
     recorded delivery-dir conventions look), and the standard
     ``GOOGLE_APPLICATION_CREDENTIALS`` / ``AWS_EC2_METADATA_DISABLED`` env vars

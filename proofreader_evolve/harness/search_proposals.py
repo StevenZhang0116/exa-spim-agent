@@ -8,7 +8,7 @@ import math
 import re
 
 from .classifier_contract import frozen_model, model_info, normalize_config
-from .hypothesis_memory import validate_research
+from .hypothesis_memory import validate_handoff, validate_research
 
 
 MAX_PROPOSAL_BYTES = 128_000  # Resolved classifier feature lists can exceed a small formula proposal.
@@ -36,7 +36,7 @@ def read_proposal(path):
         raise ValueError(f'Fix proposal.json JSON syntax: {exc}') from exc
     if not isinstance(proposal, dict):
         raise ValueError('proposal.json must contain a JSON object')
-    extra = set(proposal) - {'hypothesis', 'strategy', 'family', 'parameter_grid', 'classifier', 'research'}
+    extra = set(proposal) - {'hypothesis', 'strategy', 'family', 'parameter_grid', 'classifier', 'research', 'handoff'}
     if extra:
         raise ValueError(f'Unknown proposal fields: {sorted(extra)}')
     for key in ('hypothesis', 'strategy'):
@@ -57,6 +57,8 @@ def read_proposal(path):
         proposal['classifier'] = normalize_config(proposal['classifier'])
     if 'research' in proposal:
         proposal['research'] = validate_research(proposal['research'])
+    if 'handoff' in proposal:
+        proposal['handoff'] = validate_handoff(proposal['handoff'])
     return {**proposal, 'family': family, 'parameter_grid': grid}
 
 

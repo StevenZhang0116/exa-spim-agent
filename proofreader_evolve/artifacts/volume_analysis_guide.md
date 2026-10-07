@@ -2,7 +2,7 @@
 
 When a context cache is attached (`descriptor_guide.md` is present), measure
 quantities over the whole cached band with `compute_descriptors`; use this tool to
-debug `describe` on up to four rows or to look at cases outside the band.
+debug `describe` on up to 16 rows or to look at cases outside the band.
 
 Investigate image hypotheses by writing code against the real 3D volume, without
 viewing a projection or fitting a scorer first. You choose the algorithm, local
@@ -13,7 +13,9 @@ not a prescribed classifier. Replace it as needed, then call
 ## Select TRAIN observations
 
 The initial request contains one matched failure pair when available. Replace or
-extend it with 1..4 valid candidate_ref handles from TRAIN feedback/failure cases:
+extend it with 1..16 valid candidate_ref handles from TRAIN feedback/failure cases
+(a useful request compares groups, e.g. eight missed positives against eight selected
+label-0 rows, so a finding rests on more than a few sites):
 
 ```json
 {
@@ -97,7 +99,8 @@ are rejected: report null and an explanation when a measurement is undefined.
 The entire result list must fit 24 KiB. Oversized/nonserializable output produces
 an error, not a truncated measurement. No PNG is rendered or returned by this tool.
 
-Eight executions are available per generation, at most four candidates each.
+Eight executions are available per generation, at most 16 candidates each; the
+worker timeout covers all candidates of one call and results are capped at 64 KiB.
 Invalid files/handles do not spend an execution; accepted requests spend one even
 if image IO or code execution fails. Repeated calls rerun the current program;
 patch data may come from the checksum-verified cache. Executions do not consume

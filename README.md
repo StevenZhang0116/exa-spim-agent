@@ -13,8 +13,10 @@ from labeled skeleton caches, the repository
 The figure is the map for this document ([SVG source](end_to_end_workflow_diagram.svg)). Per-stage diagrams live beside their
 drivers: [`agentic/discovery_workflow_diagram.svg`](agentic/discovery_workflow_diagram.svg),
 [`agentic/detector_build_workflow_diagram.svg`](agentic/detector_build_workflow_diagram.svg),
-[`agentic/split_merge_detection_pipeline.svg`](agentic/split_merge_detection_pipeline.svg)
-and [`proofreader_evolve/workflow_diagram.svg`](proofreader_evolve/workflow_diagram.svg).
+[`agentic/split_merge_detection_pipeline.svg`](agentic/split_merge_detection_pipeline.svg),
+[`proofreader_evolve/workflow_diagram.svg`](proofreader_evolve/workflow_diagram.svg) (step-level detail) and
+[`proofreader_evolve/workflow_overview.svg`](proofreader_evolve/workflow_overview.svg) (one-page visual overview) and
+[`proofreader_evolve/data_overview.svg`](proofreader_evolve/data_overview.svg) (the data model: rows, columns, contexts, labels).
 
 ## Workflow at a glance
 
@@ -64,7 +66,7 @@ python your_script.py
 
 Agent steps need `ANTHROPIC_API_KEY`. Steps that read raw image patches from
 public S3 need `AWS_EC2_METADATA_DISABLED=true`; building caches needs GCS
-credentials at `configs/zihan_gcs_token.json`. The caches themselves load fully
+credentials at `configs/allen-nd-goog-f5d46dbfa2cd.json`. The caches themselves load fully
 offline.
 
 ### Data: labeled caches
@@ -270,7 +272,10 @@ These two are the default inputs of Stage 3. Because both were fitted on
 The evolution stage keeps everything the detectors decided and changes only the
 order in which their candidates are presented. It is an LLM-driven search: a
 fresh agent session is the mutation operator, a TRAIN-side selection score ranks
-exploration branches, and a held-out validation gate alone decides promotion.
+exploration branches, and a held-out validation gate alone decides promotion: the
+equal-brain mean Precision@K must rise by more than paired-bootstrap resampling
+noise. Generations are allocated between the merge and split components by
+pending follow-ups, a floor, recent validated gain and remaining headroom.
 The subsections below follow one generation of the loop in the figure; the
 maintained design record is
 [`proofreader_evolve/WORKFLOW_REVISION.md`](proofreader_evolve/WORKFLOW_REVISION.md).
@@ -289,29 +294,49 @@ On an allocated compute node in panda:
 
 ```bash
 python -u proofreader_evolve/prepare_feature_tables.py --brains 794495 789202 794491 794493 802449 --mcl 100
-python -m proofreader_evolve.cli.preflight --brains 794495 789202 794491 794493 802449 \
-  --train-brains 794495 802449 --mcl 100
+# Once per brain: fragment neighbourhoods plus level-1 and level-0 image patches for the
+# top 20,000 detector-ranked candidates of each kind (S3 reads; roughly 30 min per brain and kind).
 python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802449 789202 794493 794491 --mcl 100 --readers 16
-python -m proofreader_evolve.cli.run_evolution \
+python -m proofreader_evolve.cli.preflight --brains 794495 789202 794491 794493 802449 \
+  --train-brains 794495 802449 --selection-brains 802449 --mcl 100 \
+  --context-cache proofreader_evolve/context_cache
+# Full run (the settings of the recorded 2026-10-05 trial, 20 generations):
+export ANTHROPIC_API_KEY=...  AWS_EC2_METADATA_DISABLED=true
+python -u -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495,802449 --selection-brains 802449 \
   --validation-brains 789202,794493,794491 \
-  --merge-k 100 --split-k 100 --generations 1 \
-  --context-cache proofreader_evolve/context_cache --descriptor-workers auto
+  --merge-k 2000 --split-k 2000 --generations 20 \
+  --context-cache proofreader_evolve/context_cache --descriptor-workers auto \
+  --classifier-threads 4 --classifier-time-budget 1800 --reviser-max-turns 40 \
+  --skip-auxiliary-ablation
+# Controls for attribution: --kind-schedule alternate (strict merge/split rotation),
+# --promotion-gate margin (point-estimate gate), omit --context-cache (no descriptors).
 # Historical in-sample ranking with the detector-fitted TRAIN brain alone:
 python -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495 --validation-brains auto --selection-protocol in_sample \
   --merge-k 100 --split-k 100 --generations 1
 ```
 
-The default TRAIN brain is **794495**. `--validation-brains auto` (the default)
+The CLI defaults are a single TRAIN brain **794495**, the `grouped_oof` selection
+protocol, the `bootstrap` promotion gate (1000 draws, alpha 0.05), `adaptive` kind
+allocation, 15 generations and K = 100 per kind. The bare defaults do **not** start
+a run: `grouped_oof` ranks TRAIN branches on a brain the detectors were not fitted
+on, and 794495 is the detectors' training brain, so the driver aborts with
+"No eligible selection brain". Add a detector-naive TRAIN brain and name it as the
+selection brain (`--train-brains 794495,802449 --selection-brains 802449`, as
+above), or request the historical `--selection-protocol in_sample`. Evolution
+writes its log to the run directory (`runs/precision_<run>/trajectory.txt` and
+`.jsonl`, `run_status.json`, `report.html`), not to `proofreader_evolve/log/`;
+redirect stdout if you want a console log file.
+`--validation-brains auto`
 discovers other local MCL-matching `_add.pkl` caches and includes brains whose
 merge and split tables pass the existing provenance/integrity checks. TRAIN and
 detector-fitted brains are excluded. Missing tables are logged and skipped;
 corrupt tables and empty pools fail rather than silently changing the benchmark.
 At least one validation brain must be ready. The resolved split is fixed before
 the seed evaluation and recorded in `dataset_split.json` and `manifest.json`.
-To require an exact set, pass e.g. `--validation-brains 789202,794491,794493,802449`;
-then any missing input is an error. Evolution never prepares tables itself.
+To require an exact set, pass e.g. `--validation-brains 789202,794491,794493`
+(TRAIN and validation brains must be disjoint); then any missing input is an error. Evolution never prepares tables itself.
 
 Preparation now uses `dataset_cache_<brain>_mcl100_add.pkl`, preserving the native
 detector's annotation definition. Full native pools replace the previous capped
@@ -336,7 +361,10 @@ Training feedback includes labeled examples with TRAIN-only inspection handles; 
 not supplied to the reviser. Promotion uses **mean validation Precision@K only**:
 average merge/split precision within each validation brain, then average the
 brains with equal weight. The candidate must exceed the accepted parent's mean
-by more than `--precision-margin` (default 0; ties fail). Individual brain/kind
+by more than `--precision-margin` (default 0; ties fail) and, with the default
+`--promotion-gate bootstrap`, the lower bound of the paired row-resampling interval of
+that gain must be above zero (`--bootstrap-draws 1000`, `--bootstrap-alpha 0.05`);
+`--promotion-gate margin` restores the point-estimate rule. Individual brain/kind
 regressions are allowed; TRAIN gain is diagnostic, not a promotion requirement.
 Training scores still guide experiment ranking, branch retention and plateau
 scheduling. Invalid, non-deterministic or
@@ -367,7 +395,9 @@ Detector-fitted brains cannot be validation brains. The reviser requires
 
 Each generation allows up to 24 SDK interaction turns by default; use
 `--reviser-max-turns 40` to change this independently of `--generations`.
-The reviser reads a compact TRAIN feedback file capped at 48 KB. Feature names
+The reviser reads a compact TRAIN feedback file capped at 96 KB (48 KB before
+2026-10-05). Tool results may be up to 100,000 tokens; a result the SDK still
+parks on disk stays readable through the session's file guard. Feature names
 appear once per cell with aligned example vectors; values are rounded to six
 significant digits for display. It samples selected positives and label-0 rows,
 rows just below K, and missed positives. Each group keeps a fixed anchor and
@@ -376,7 +406,11 @@ reproducibly rotates other examples across generations, up to four per group
 feature quartiles by native label, so error samples are not mistaken for the
 full distribution. Candidate feedback adds gained/lost positives and Top-K overlap.
 
-Each generation edits one component: merge and split alternate by default;
+Each generation edits one component. By default the kind is chosen adaptively:
+a pending promotion follow-up first, then a floor of one revision per
+`--kind-floor-every` generations (default 4), then the kind with the larger recent
+gate-passing validation gain, then the larger remaining headroom on the validation
+cells; `--kind-schedule alternate` restores strict merge/split rotation and
 `--target-kind split` or `merge` focuses the search. The harness freezes the other
 component. The agent writes its hypothesis, strategy, formula family and numeric
 grid to `proposal.json`, then calls `evaluate_train({})` or `search_parameters({})`.
@@ -423,7 +457,8 @@ also consume one with no metric. Exact training-source/parameter repeats reuse
 the fitted model. Explore generations can rewrite the whole program; tune
 fixes its AST and nonnumeric settings while refitting numeric parameters.
 Defaults are 300 seconds wall/CPU, 8192 MiB and one numerical-library thread
-(`--classifier-time-budget`, `--classifier-memory-mb`, `--classifier-threads`).
+(`--classifier-time-budget`, `--classifier-memory-mb`, `--classifier-threads`);
+the recorded full runs use 1800 seconds and 4 threads.
 Artifact storage permits 128 MiB / 256 regular files per model. The agent chooses
 and records randomness seeds. `model_environment.json` lists installed packages
 and budgets; training stdout/stderr is saved and its last 8 KB returned to the agent.
@@ -433,7 +468,8 @@ grouped out-of-fold precision on detector-naive selection brains from host-owned
 fold refits, with auxiliary TRAIN brains as fitting-only data; in-sample TRAIN
 precision is a **resubstitution diagnostic**. The agent may still use TRAIN-only
 internal validation/CV during fitting. Final promotion requires
-improvement in mean development-validation precision. The outer evaluator calls
+improvement in mean development-validation precision that clears the paired-bootstrap
+noise gate (section 3.3). The outer evaluator calls
 frozen feature extraction and predict on validation; it never supplies validation labels to a worker.
 `best_scorer.py` binds training source, parameters, provenance and artifact hashes.
 Keep its sibling `model_artifacts/` directory when moving/resuming a run; use
@@ -463,13 +499,29 @@ existing prepared tables remain valid. See the
 [local context guide](proofreader_evolve/artifacts/local_context_guide.md) for the
 schema, feature example, limits and logs. No new launch flag is required.
 
+With `--context-cache`, the primary image path is **pool-scale agent descriptors**.
+`precompute_context_cache` stores, once per brain and kind, the raw context of the
+top 20,000 detector-ranked candidates: the fragment neighbourhood (50 um, up to
+256 nodes) and image patches at level 1 (30 um radius) and level 0 (16 um radius,
+the finest resolution), both for the whole band (level 0 covered only the first
+4,000 rows before 2026-10-05; `--extend-tier level0` grows a tier of existing
+entries in place). Nothing in the cache is a feature. The agent writes
+`descriptor.py` (`DESCRIPTOR` plus `describe(context)`) and calls
+`plan_descriptor_run` / `compute_descriptors`; the host runs the code over the
+cached rows in parallel sandboxed workers, caches results by code hash in
+`descriptor_bank/`, registers them as `bank_agent_*` predictors with
+label-conditional TRAIN quartiles, and recomputes them on validation brains at
+submission. One uncached call costs one evaluation unit under wall-clock budgets
+(`--descriptor-wall-seconds`, `--descriptor-generation-wall-seconds`). See the
+[descriptor guide](proofreader_evolve/artifacts/descriptor_guide.md).
+
 Without a context cache, the image exploration path is **agent-written analysis
-of actual 3D volumes**; with `--context-cache`, `compute_descriptors` runs agent
-code over the whole cached band and is the primary path (`descriptor_guide.md`). Edit `analysis.py` and `analysis_request.json`, then call
+of actual 3D volumes**. Edit `analysis.py` and `analysis_request.json`, then call
 `run_volume_analysis({})`. An isolated worker passes original pixels, validity
 masks, spacing, candidate anchors and aligned local fragments to `analyze(context)`.
 It returns concise JSON findings, without requiring model fitting or 2D previews.
-Each generation has eight executions, up to four TRAIN candidates each, separate
+Each generation has eight executions, up to 16 TRAIN candidates each (enough to
+compare a group of missed positives with a group of selected label-0 rows), separate
 from scoring. Code, input identities, results and logs are saved under
 `genNNN/volume_analyses/analysisNNN/`. See the
 [3D analysis guide](proofreader_evolve/artifacts/volume_analysis_guide.md).
@@ -506,7 +558,12 @@ An unavailable image fails the image-dependent measurement without dropping any
 validation brain. Existing table-only policies need no images or credentials.
 
 Feature discovery now starts from bounded matched TRAIN failures and a relevant
-hypothesis-evidence record. `inspect_failure_cases({})` batches local inspection;
+hypothesis-evidence record. Since 2026-10-06 the failure cases and feedback examples
+describe the assigned search branch rather than the accepted scorer, with a
+`branch_vs_accepted` block of positives the branch gains, loses or shares as misses;
+and each session can leave a structured `handoff` (open questions, evidence verdicts,
+next experiment) in `proposal.json`, which the host stores next to its own
+measurements and shows to the next session of that kind in `hypothesis_memory.json`. `inspect_failure_cases({})` batches local inspection;
 `evaluate_feature_ablation({})` measures full inputs against a constant-masked
 feature group using the same program and parameters. Classifier diagnostics use
 the selection protocol's three grouped, fragment-purged folds (two evaluation
@@ -536,7 +593,8 @@ accepted component, initialized from the seed and updated only after promotion.
 It does not consume a TRAIN pool slot and cannot be evicted for a low selection score
 or redundant TRAIN coverage. The same snapshot can serve both reference and TRAIN
 roles without duplication. A newly promoted component gets the **next generation
-of the same kind** in explore mode, ahead of the TRAIN champion and normal cadence.
+of the same kind** in explore mode, ahead of the TRAIN champion and normal cadence
+(the adaptive kind allocation of section 3.4 schedules pending follow-ups first).
 One new measurement from that workspace branch completes the follow-up; cached
 restores do not. At most one retry is reserved. Seeds and unchanged references do
 not enqueue follow-ups. Otherwise, every **third scheduled generation of each kind**
@@ -580,8 +638,9 @@ error grants one additional repair attempt per generation. The final submitted
 code must exactly match a successfully measured snapshot; an untested last edit
 is rejected. Only that final candidate reaches one evaluation across the fixed
 validation brains, even if its TRAIN precision did not improve. Full-precision
-validation means decide promotion; reports retain each brain/kind's result and
-any regressed cells. An evaluation failure on any selected brain rejects the
+validation means decide promotion together with the paired-bootstrap noise bound
+(section 3.3); reports retain each brain/kind's result, any regressed cells and
+the bootstrap interval. An evaluation failure on any selected brain rejects the
 candidate; it never drops that brain from the average. Exported `best_scorer.py`
 bundles both components and remains usable
 with `--start-from`.
@@ -677,8 +736,11 @@ are displayed verbatim; conversation language does not change the project langua
 
 Completed runs stay under `proofreader_evolve/runs/precision_<timestamp>_<id>/`.
 `dataset_split.json` records the brain roles, `manifest.json` the frozen
-detectors, budgets and gate, `ledger.jsonl` every generation's decision and
-`search_summary.json` the stopping reason. Treat numbers from these runs as
+detectors, budgets, gate mode and kind schedule, `ledger.jsonl` every generation's
+decision (`validation_gate` with `point_gate`, `bootstrap_gate` and the paired
+interval; `kind_allocation` with the rule, headroom and momentum; descriptor runs
+and inference) and `search_summary.json` the stopping reason. Open items that are
+deliberately deferred are listed in `proofreader_evolve/TODO.md`. Treat numbers from these runs as
 development evidence; the validation brains are queried every generation.
 
 To generate a report from an existing fixed-pool precision run, from the repo root:
@@ -719,14 +781,14 @@ same source brain + segmentation
         |
         +--> load_skeletons.py --> base .pkl --> relabel_cache.py --> _add.pkl -----+
         |                                                                         |
-        +--> evaluate_skeleton_metrics.ipynb --> official results.csv ------------+
+        +--> evaluate_skeleton_metrics.py ----> official results.csv ------------+
                                                                                   |
                                                                                   v
                                                              verify_add_cache_metrics.py
 ```
 
 Run the pipeline in the `panda` conda environment. Cloud-reading steps require
-GCS credentials in `configs/zihan_gcs_token.json`.
+GCS credentials in `configs/allen-nd-goog-f5d46dbfa2cd.json`.
 
 ### A1. Generate the base cache
 
@@ -748,9 +810,13 @@ This base cache contains skeletons but no baked-in error labels.
 
 ### A2. Generate the official reference metrics
 
-Open and run
-[`notebooks/evaluate_skeleton_metrics.ipynb`](notebooks/evaluate_skeleton_metrics.ipynb)
-for the same brain and segmentation.
+Run
+[`notebooks/evaluate_skeleton_metrics.py`](notebooks/evaluate_skeleton_metrics.py)
+for the same brain (panda env, compute node):
+
+```bash
+python -u notebooks/evaluate_skeleton_metrics.py --brains 794495
+```
 
 It runs the official `segmentation-skeleton-metrics` package and writes:
 
@@ -1013,7 +1079,8 @@ exa-spim-agent/
 │   └── detector_build/         # inventory, model policy, assembly and verification modules
 ├── autodiscovery/              # AutoDiscovery exports (*.json) plus generated reports and scripts
 ├── autodiscovery-application/  # Stage 2 deliverables, one folder per originating run
-├── proofreader_evolve/         # Stage 3: cli/, harness/, artifacts/, feature_tables/, runs/
+├── proofreader_evolve/         # Stage 3: cli/, harness/, artifacts/, plotting/, tests/, feature_tables/,
+│                               #          context_cache/, descriptor_bank/, runs/, TODO.md
 ├── markdowns/                  # task specifications and the cache schema for agents
 ├── cache/                      # dataset_cache_<brain>_mcl<N>[_add].pkl (gitignored, large)
 ├── notebooks/                  # cache building, verification, candidate-pool sweeps
@@ -1031,6 +1098,7 @@ exa-spim-agent/
 autodiscovery/<RUN>.summary.md                validated discovery report (Stage 1)
 autodiscovery-application/<RUN>/              frozen detector deliverables and runs (Stage 2)
 proofreader_evolve/feature_tables/<brain>/    detector-native candidate tables (Stage 3 input)
+proofreader_evolve/context_cache/<brain>/     cached fragment neighbourhoods and image patches (Stage 3 input)
 proofreader_evolve/runs/precision_*/          evolution runs: best_scorer.py, ledger, report.html
 cache/                                        base and labeled pickle files
 metrics_out/                                  official reference metrics

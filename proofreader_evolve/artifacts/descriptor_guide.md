@@ -16,7 +16,7 @@ the cached rows in parallel sandboxed workers and registers the results as
    'feature_names'}` and `describe(context) -> dict`. `inputs` is `geometry`,
    `image` or `both`; `kind` must be this generation's kind; at most 16 names
    matching `[a-z][a-z0-9_]{1,48}`.
-2. Optional: debug `describe` on up to four rows with `run_volume_analysis`
+2. Optional: debug `describe` on up to 16 rows with `run_volume_analysis`
    (rename `describe` to `analyze` in `analysis.py`), or call
    `plan_descriptor_run({})`, which times 64 rows with one worker and
    extrapolates each scope to the configured worker count and the remaining

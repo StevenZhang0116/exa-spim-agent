@@ -72,6 +72,7 @@ class RerunOneCredentialTests(unittest.TestCase):
         "import json, os\n"
         "from pathlib import Path\n"
         "name = 'zihan_gcs_token.json'\n"
+        "new = 'allen-nd-goog-f5d46dbfa2cd.json'\n"
         "print(json.dumps({\n"
         "    'tok_env': os.environ.get('RERUN_GCS_TOKEN'),\n"
         "    'gac': os.environ.get('GOOGLE_APPLICATION_CREDENTIALS'),\n"
@@ -80,13 +81,16 @@ class RerunOneCredentialTests(unittest.TestCase):
         "    'parent_link': (Path.cwd().parent / name).is_file(),\n"
         "    'pkl_link': (Path(os.environ['RERUN_PKL']).parent / name)"
         ".is_file(),\n"
+        "    'cwd_new': (Path.cwd() / new).is_file(),\n"
+        "    'pkl_new': (Path(os.environ['RERUN_PKL']).parent / new)"
+        ".is_file(),\n"
         "}))\n"
     )
 
     def test_rerun_one_exposes_gcs_token_and_cloud_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            token = root / "zihan_gcs_token.json"
+            token = root / "allen-nd-goog-f5d46dbfa2cd.json"
             token.write_text("{}")
             pkl_dir = root / "delivery"
             pkl_dir.mkdir()
@@ -105,7 +109,29 @@ class RerunOneCredentialTests(unittest.TestCase):
             self.assertTrue(probe["cwd_link"])
             self.assertTrue(probe["parent_link"])
             self.assertTrue(probe["pkl_link"])
+            self.assertTrue(probe["cwd_new"])
+            self.assertTrue(probe["pkl_new"])
             self.assertTrue((pkl_dir / token.name).is_symlink())
+            self.assertTrue((pkl_dir / "zihan_gcs_token.json").is_symlink())
+
+    def test_stale_legacy_token_link_is_repointed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            token = root / "allen-nd-goog-f5d46dbfa2cd.json"
+            token.write_text("{}")
+            revoked = root / "revoked.json"
+            revoked.write_text("{}")
+            delivery = root / "delivery"
+            delivery.mkdir()
+            (delivery / "zihan_gcs_token.json").symlink_to(revoked)
+            user_file = root / "user"
+            user_file.mkdir()
+            (user_file / "zihan_gcs_token.json").write_text("user")
+            with mock.patch.object(rerun, "GCS_TOKEN_PATH", token):
+                rerun._link_gcs_token(delivery)
+                rerun._link_gcs_token(user_file)
+            self.assertEqual((delivery / "zihan_gcs_token.json").resolve(), token.resolve())
+            self.assertEqual((user_file / "zihan_gcs_token.json").read_text(), "user")
 
     def test_rerun_one_without_token_still_disables_ec2_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -114,7 +140,7 @@ class RerunOneCredentialTests(unittest.TestCase):
             pkl_dir.mkdir()
             pkl = pkl_dir / "dataset_cache_test_add.pkl"
             pkl.write_bytes(b"")
-            missing = root / "zihan_gcs_token.json"  # never written
+            missing = root / "allen-nd-goog-f5d46dbfa2cd.json"  # never written
             with mock.patch.dict(rerun.os.environ):
                 rerun.os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS", None)
                 rerun.os.environ.pop("AWS_EC2_METADATA_DISABLED", None)

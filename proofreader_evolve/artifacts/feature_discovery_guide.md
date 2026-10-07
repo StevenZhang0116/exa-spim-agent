@@ -17,9 +17,14 @@ and native label 0 does not establish biological absence of an error.
 
 Call `inspect_failure_cases({})` to inspect the panel in one tool call. It shares
 the existing eight-neighborhood budget with `inspect_candidate`. The same local
-geometry bounds and TRAIN-only access rules apply. The cases describe the accepted
-parent, which can differ from the assigned exploration branch. Existing
-`train_feedback.json` supplies additional positive, negative and boundary examples.
+geometry bounds and TRAIN-only access rules apply. The cases describe the search
+branch you start from (`failure_cases.branch.experiment`), measured under the
+official selection protocol; when that branch is not the accepted scorer,
+`branch_vs_accepted` lists the positives it newly finds (keep them), the positives
+it loses, and the positives both miss, which is the open gap worth a hypothesis.
+`train_feedback.json` describes the same branch (`search_branch`) and its
+`ranking_delta` is the branch minus the accepted scorer; `parent_selection` and
+`parent_train` remain the accepted scorer's numbers.
 
 Write a falsifiable prediction before adding features. For example, test whether
 endpoint tangent consistency across path lengths distinguishes otherwise similar
@@ -27,7 +32,8 @@ split candidates. This is an example hypothesis, not an established result.
 Expose new geometry measurements using `LOCAL_CONTEXT` and
 `extract_local_features`; see `local_context_guide.md`.
 For new image information, write `analysis.py` and `analysis_request.json` and
-call `run_volume_analysis({})`. Analyze up to four TRAIN 3D patches per call,
+call `run_volume_analysis({})`. Analyze up to 16 TRAIN 3D patches per call (compare
+groups, e.g. missed positives vs selected label-0 rows),
 using aligned fragment nodes and original pixels; see `volume_analysis_guide.md`.
 Its eight-execution allowance is independent of scoring and optional 2D previews.
 The initial request selects a matched failure pair when available. Compare
@@ -126,6 +132,16 @@ equal-weight validation promotion gate is unchanged, and no other brain is made
 visible to this tool. Feature diagnostics are advisory, not a new promotion veto.
 
 ## Reuse evidence without repeating an entire conversation
+
+`hypothesis_memory.json` starts with `handoff`: up to three records left by earlier
+sessions, each with the agent's `open_questions`, `evidence` verdicts
+(`supports`, `contradicts`, `mixed`, with conditions) and `next_experiment`, placed
+next to host-measured facts (selection score, whether that submission was
+promoted). Records related to your assigned branch come first. Treat the agent
+fields as claims to check, the host fields as facts. Before you finish, add
+`proposal.json.handoff` with the same three fields (each at most three items,
+300 characters per text) so the next session continues your line of work instead
+of restarting from keyword search.
 
 `hypothesis_memory.json` is a bounded host-written view refreshed after measurements.
 It records declarations, fresh measurements, repeated rankings, execution failures,

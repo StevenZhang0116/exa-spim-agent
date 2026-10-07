@@ -22,6 +22,8 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 
+from dataset_config import load_segmentation_paths
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NEURON_PROOFREADER_SRC = REPO_ROOT / "neuron-proofreader" / "src"
@@ -94,6 +96,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def default_fragments_path(brain_id: str, segmentation_id: str) -> str:
+    # Brains in configs/segmentation_paths.json use a different GCS layout.
+    explicit = load_segmentation_paths().get(str(brain_id))
+    if explicit is not None:
+        return explicit["fragments"].rstrip("/")
     return (
         f"gs://allen-nd-goog/from_google/{brain_id}/whole_brain/"
         f"{segmentation_id}/swcs"
@@ -105,6 +111,9 @@ def default_gt_path(brain_id: str) -> str:
 
 
 def default_segmentation_path(brain_id: str, segmentation_id: str) -> str:
+    explicit = load_segmentation_paths().get(str(brain_id))
+    if explicit is not None:
+        return explicit["segmentation"].rstrip("/") + "/"
     return (
         f"gs://allen-nd-goog/from_google/{brain_id}/whole_brain/"
         f"{segmentation_id}/"

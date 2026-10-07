@@ -35,7 +35,7 @@ in the current generation's `proposal.json`.
   volume_analysis_guide.md; edit analysis.py and analysis_request.json, then call
   run_volume_analysis({}). Your code receives actual TRAIN voxels, validity,
   spacing, anchors and aligned local fragments. Eight independent executions
-  per generation support up to four cases each, without fitting a scorer first.
+  per generation support up to 16 cases each, without fitting a scorer first.
   Returned findings are exploration evidence; implement useful measurements in
   scoring code and evaluate them before claiming a gain. 2D previews through
   inspect_candidate_image or inspect_failure_images are optional, with a separate
@@ -71,7 +71,9 @@ in the current generation's `proposal.json`.
   `tune` fixes the formula and permits only numeric values in a top-level literal
   `PARAMS` dictionary to change. Reference those values inside the scorer.
   Do not mutate or reassign PARAMS at runtime.
-- Write `proposal.json` with nonempty `hypothesis` and `strategy`, a short `family`
+- Write `proposal.json` with nonempty `hypothesis` and `strategy`, a short `family`,
+  and before finishing an optional `handoff` (open_questions, evidence with verdicts,
+  next_experiment) for the next session; see feature_discovery_guide.md. Also
   name, and optional `parameter_grid` mapping PARAMS keys to numeric lists.
   Call `evaluate_train({})` for a single experiment or `search_parameters({})`
   for a grid. The harness substitutes constants without executing code in the
@@ -142,7 +144,9 @@ in the current generation's `proposal.json`.
   method using its TRAIN diagnostics; do not discard it solely because another
   archived method has a higher selection score. Shared roles reuse one snapshot.
   The selected exploration parent can differ from the accepted parent used in
-  `parent_train` feedback and promotion gates. A new selection-score best,
+  `parent_train` / `parent_selection` and promotion gates; examples,
+  `ranking_delta`, failure cases and `search_branch` describe the exploration
+  parent. A new selection-score best,
   previously uncovered positive retained in the pool, or new slice-hit best
   resets plateau counters. Repeated coverage does not count as new progress.
   The reference also needs a newly measured exploration before its kind can

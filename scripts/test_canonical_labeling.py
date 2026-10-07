@@ -20,7 +20,7 @@ with ``BrainDataset.label_gt_from_segmentation``, and checks the result two ways
      comparison is a sanity band (same order of magnitude, omits an upper bound),
      not an equality assert.
 
-Requires GCS credentials (configs/zihan_gcs_token.json) and read access to
+Requires GCS credentials (configs/allen-nd-goog-f5d46dbfa2cd.json) and read access to
 gs://allen-nd-goog/... . Run in the `panda` env.
 
 Usage
@@ -47,11 +47,11 @@ _CONFIG = os.path.join(REPO, "exa-spim-agent/configs")
 sys.path.insert(0, _SCRIPTS)
 
 os.environ.setdefault(
-    "GOOGLE_APPLICATION_CREDENTIALS", os.path.join(_CONFIG, "zihan_gcs_token.json")
+    "GOOGLE_APPLICATION_CREDENTIALS", os.path.join(_CONFIG, "allen-nd-goog-f5d46dbfa2cd.json")
 )
 os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
 
-from dataset_config import get_segmentation_id  # noqa: E402
+from dataset_config import get_segmentation_path  # noqa: E402
 
 from agentic_neuron_proofreader.data_modules import canonical_labeling as cl  # noqa: E402
 from agentic_neuron_proofreader.data_modules.datasets import BrainDataset  # noqa: E402
@@ -61,8 +61,7 @@ _CONFIG_RTF = os.path.join(_CONFIG, "segmentation_datasets.rtf")
 
 
 def segmentation_path_for(brain_id):
-    seg_id = get_segmentation_id(brain_id, rtf_path=_CONFIG_RTF)
-    return f"gs://allen-nd-goog/from_google/{brain_id}/whole_brain/{seg_id}/"
+    return get_segmentation_path(brain_id, rtf_path=_CONFIG_RTF)
 
 
 def patch_cross_check(dataset, segmentation, patch_shape=(256, 256, 256), n_patches=4):

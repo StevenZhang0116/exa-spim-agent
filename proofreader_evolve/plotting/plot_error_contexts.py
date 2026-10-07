@@ -50,9 +50,8 @@ from proofreader_evolve.harness.native_pool import cache_path, ensure_native_tab
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CACHE = PROJECT_ROOT / "proofreader_evolve" / "context_cache"
 DEFAULT_FIGS = PROJECT_ROOT / "figs"
-DEFAULT_CREDENTIALS = (PROJECT_ROOT / "configs" / "allen-nd-goog-f5d46dbfa2cd.json",
-                       PROJECT_ROOT / "configs" / "zihan_gcs_token.json")
-SEGMENTATION_TEMPLATE = "gs://allen-nd-goog/from_google/{brain}/whole_brain/{segmentation_id}/"
+# configs/zihan_gcs_token.json is rejected by Google (invalid_grant) since 2026-10-06.
+DEFAULT_CREDENTIALS = (PROJECT_ROOT / "configs" / "allen-nd-goog-f5d46dbfa2cd.json",)
 KINDS = ("split", "merge")
 ROW_NAMES = ("image + fragment skeleton", "fragment neighbourhood", "ground truth", "segmentation")
 GT_PALETTE = plt.cm.Dark2
@@ -77,10 +76,10 @@ def load_graphs(brain, mcl=100):
 
 
 def segmentation_path(brain):
+    """Explicit configs/segmentation_paths.json entry, else the legacy GCS layout."""
     sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
-    from dataset_config import get_segmentation_id
-    segmentation_id = get_segmentation_id(str(brain), str(PROJECT_ROOT / "configs" / "segmentation_datasets.rtf"))
-    return SEGMENTATION_TEMPLATE.format(brain=brain, segmentation_id=segmentation_id)
+    from dataset_config import get_segmentation_path
+    return get_segmentation_path(str(brain), str(PROJECT_ROOT / "configs" / "segmentation_datasets.rtf"))
 
 
 def open_segmentation(path, credentials=None):

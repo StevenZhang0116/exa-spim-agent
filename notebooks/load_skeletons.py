@@ -29,13 +29,15 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 os.environ.setdefault(
     "GOOGLE_APPLICATION_CREDENTIALS",
-    str(CONFIG_DIR / "zihan_gcs_token.json"),
+    str(CONFIG_DIR / "allen-nd-goog-f5d46dbfa2cd.json"),
 )
 os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
 
 from agentic_neuron_proofreader.data_modules.datasets import BrainDataset
 from agentic_neuron_proofreader.utils import img_util, util
-from dataset_config import get_img_path, get_segmentation_id
+from dataset_config import (
+    get_fragments_path, get_img_path, get_segmentation_id, get_segmentation_path,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -120,13 +122,11 @@ def main() -> None:
     gt_path = (
         f"gs://allen-nd-goog/ground_truth_tracings/{args.brain_id}/voxel"
     )
-    fragments_path = (
-        f"gs://allen-nd-goog/from_google/{args.brain_id}/whole_brain/"
-        f"{segmentation_id}/swcs"
+    fragments_path = get_fragments_path(
+        args.brain_id, rtf_path=str(CONFIG_DIR / "segmentation_datasets.rtf"),
     )
-    segmentation_path = (
-        f"gs://allen-nd-goog/from_google/{args.brain_id}/whole_brain/"
-        f"{segmentation_id}/"
+    segmentation_path = get_segmentation_path(
+        args.brain_id, rtf_path=str(CONFIG_DIR / "segmentation_datasets.rtf"),
     )
     img_path = get_img_path(
         args.brain_id,

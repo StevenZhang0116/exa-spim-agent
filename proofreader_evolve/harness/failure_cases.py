@@ -6,6 +6,7 @@ from .local_context import candidate_ref
 
 
 CASE_VERSION = 'matched-train-failures-v1'
+COMPARISON_VERSION = 'branch-vs-accepted-v1'
 
 
 def matched_failure_cases(train, kind, state, *, max_pairs=4):
@@ -68,7 +69,47 @@ def matched_failure_cases(train, kind, state, *, max_pairs=4):
             if index < len(panels[brain]) and len(pairs) < max_pairs:
                 pairs.append({'pair_id': f'pair{len(pairs) + 1:02d}', **panels[brain][index]})
     return {'version': CASE_VERSION, 'target_kind': kind, 'pairs': pairs,
-            'scope': 'Selection-brain TRAIN only; accepted-parent errors under the official selection '
-                     'measurement; native label 0 is not verified biological absence',
+            'scope': 'Selection-brain TRAIN only; errors of the assigned search branch under the official '
+                     'selection measurement (the accepted parent when the branch is the reference); '
+                     'native label 0 is not verified biological absence',
             'note': 'Pairs are diagnostic examples, not an evaluation dataset or proof of a mechanism. '
                     'Inspect local geometry, propose a falsifiable feature, then measure its incremental value.'}
+
+
+def branch_comparison(train, kind, branch_state, accepted_state, *, same_as_accepted=False, max_refs=8):
+    """Positives the assigned branch gains or loses against the accepted scorer, and
+    positives both miss, from the two selection states (out of fold on selection brains).
+
+    Candidate handles only; scores are TRAIN selection scores. This is a TRAIN
+    diagnostic for steering the next edit, not a promotion signal.
+    """
+    groups = {'branch_new_positives': [], 'branch_lost_positives': [], 'shared_missed_positives': []}
+    cells = {}
+    for brain, bank in sorted(train.items()):
+        table = bank.tables[kind]
+        cell = f'{brain}/{kind}'
+        if cell not in branch_state or cell not in accepted_state:
+            continue
+        branch_scores = np.asarray(branch_state[cell]['scores'], dtype=float)
+        accepted_scores = np.asarray(accepted_state[cell]['scores'], dtype=float)
+        chosen_branch = set(map(int, branch_state[cell]['chosen']))
+        chosen_accepted = set(map(int, accepted_state[cell]['chosen']))
+        positives = set(np.flatnonzero(np.asarray(table.truth) == 1).tolist())
+        new = sorted((chosen_branch - chosen_accepted) & positives, key=lambda i: -branch_scores[i])
+        lost = sorted((chosen_accepted - chosen_branch) & positives, key=lambda i: -accepted_scores[i])
+        shared = sorted(positives - chosen_branch - chosen_accepted, key=lambda i: -branch_scores[i])
+        cells[cell] = {'branch_tp': len(chosen_branch & positives), 'accepted_tp': len(chosen_accepted & positives),
+                       'branch_new_positives': len(new), 'branch_lost_positives': len(lost),
+                       'shared_missed_positives': len(shared)}
+        for name, rows in (('branch_new_positives', new), ('branch_lost_positives', lost),
+                           ('shared_missed_positives', shared)):
+            for index in rows[:max_refs]:
+                groups[name].append({'candidate_ref': candidate_ref(table, int(index)), 'brain': brain,
+                                     'branch_score': float(branch_scores[index]),
+                                     'accepted_score': float(accepted_scores[index])})
+    for name in groups:
+        groups[name] = groups[name][:max_refs]
+    return {'version': COMPARISON_VERSION, 'same_as_accepted': bool(same_as_accepted), 'cells': cells, **groups,
+            'note': ('The assigned branch versus the accepted scorer on the selection brains: keep the positives '
+                     'it newly finds, understand the ones it loses, and treat positives both miss as the open gap. '
+                     'Handles are TRAIN candidate_refs for inspect_candidate; counts are not a promotion signal.')}
