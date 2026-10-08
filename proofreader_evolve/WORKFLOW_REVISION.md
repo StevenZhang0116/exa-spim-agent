@@ -149,12 +149,22 @@ candidates are measured, selected or promoted.
   (per-attempt `feedback.json` stays `stratified-train-v4`); `failure_cases.json` gains `branch`
   and `branch_vs_accepted` (`failure_cases.branch_comparison`): per-cell counts
   and up to eight `candidate_ref`s each of positives the branch newly finds,
-  loses, or misses together with the accepted scorer. TRAIN only; no new budget.
+  loses, or misses together with the accepted scorer; when the branch is the
+  accepted scorer the block only says so, since the matched pairs already
+  describe its misses. TRAIN only; no new budget.
 - **Research handoff.** `proposal.json` accepts an optional `handoff`
-  (`hypothesis_memory.validate_handoff`): up to three `open_questions`, up to
+  (`hypothesis_memory.sanitize_handoff`): up to three `open_questions`, up to
   three `evidence` items with a `supports` / `contradicts` / `mixed` verdict and
   conditions, and a `next_experiment` with `what`, `discriminates` and `units`;
-  300 characters per text. After each generation the driver stores the handoff
+  300 characters per text. Bounds are enforced leniently (2026-10-07): unknown
+  fields are dropped, lists cut to three, texts clipped, verdict variants mapped by
+  stem (`supported`, `refuted`) and other verdicts recorded as `mixed`, extra
+  evidence fields folded into `conditions`; the adjustments are
+  noted in the trace and ledger (`research_handoff.adjustments`) and a malformed
+  handoff never fails the generation. The handoff is not part of the experiment:
+  `read_proposal` accepts and discards the key, so attempt entries, the candidate
+  pool and the ledger never carry it; the driver reads it from the file once per
+  generation. After each generation the driver stores the handoff
   of the final `proposal.json` in the hypothesis record next to host facts
   (submitted experiment, selection score, promoted) and marks it promoted when
   the submission replaces the reference. The next session's
@@ -1138,6 +1148,7 @@ records the motivating run and the original proposals.
 
 | Date / version | Change and motivation | Verification / future evidence |
 |---|---|---|
+| 2026-10-07 / `branch-feedback-handoff-v17` (fix) | Run `precision_20261007_001936_i0bz0co4` (n268, v17 as of 2026-10-06, 20 generations requested) lost 8 of its first 15 generations (1, 2, 7, 8, 9, 11, 12, 13) at `submission_check` to strict handoff validation: the agent wrote four open questions, an extra `do_not_repeat` field or a `measurement` key in evidence items, the final `read_proposal` raised, and the measured candidates were discarded (7.0 h and $28.8 of 8.9 h and $49.9; no handoff was ever recorded). The accepted generations 3–5 raised the validation mean 0.085 → 0.120. Killed at generation 16. Fix: `hypothesis_memory.sanitize_handoff` clips and drops instead of raising; `read_proposal` discards the handoff key (it is read once by the driver, never stored in attempt entries); the driver records adjustments. | `tests/test_research_handoff.py` now feeds the real-run malformed shape through the driver fixture and requires promotion plus a recorded, clipped handoff; full suite 283 tests OK on n255 after the fix and again after the review simplifications ([log](log/handoff_simplified_full_20261007_tests.log)). Negative evidence for strict schemas on optional agent-written fields; whether handoffs help remains unmeasured. |
 | 2026-10-06 / `branch-feedback-handoff-v17` | Feedback examples and failure cases now describe the assigned search branch (loaded from its stored selection state) with a `branch_vs_accepted` comparison; sessions may leave a structured `proposal.json.handoff` that the host stores next to measured facts and shows to the next session as `hypothesis_memory.handoff`. Motivation: a review of the loop found the reviser editing an archived specialist while studying the accepted scorer's failures, and cross-generation continuity resting on keyword search over free text. Project-specific; see the provenance row above. | On n257: `tests/test_research_handoff.py` (3) and the extended rejected-branch test passed with the train-search and feature-discovery suites (42 tests); full suite 283 tests OK in 20.4 min ([log](log/branch_handoff_20261006_tests.log)). No real-brain run; effect on discovery speed unmeasured. |
 | 2026-10-06 / maintenance (GCS paths and credentials) | `plotting/plot_error_contexts.py` resolves the segmentation through `scripts/dataset_config.get_segmentation_path` (explicit `configs/segmentation_paths.json` entries for the older-microscope brains, else the legacy layout) and no longer falls back to `configs/zihan_gcs_token.json`, which Google rejects (`invalid_grant`). No scoring, evolution or harness behaviour changed. | Path resolution checked for 802449, 754613 and 750318; no figure regenerated. |
 | 2026-10-06 / maintenance (3D analysis cases) | `MAX_CASES` for `run_volume_analysis` raised from 4 to 16 and the result cap from 24 KiB to 64 KiB, so one exploratory call can compare groups (for example eight missed positives against eight selected label-0 rows) rather than a few sites; the per-call worker timeout still covers all cases, so the default `--policy-time-budget` (scoring and feature workers, 3D analysis) was raised from 120 s to 300 s at the same time. Motivation: in `precision_20261005_114814_zxsbw5pj` the reviser used 7 of 80 allowed analyses, always 2 to 4 sites, and treated them as debugging for descriptors; the allowance was not binding but each call carried little evidence. Guides, prompt and tool description updated. | On n257: `tests/test_volume_analysis.py` (limit and oversize checks updated). Whether larger comparisons change the reviser's conclusions is unmeasured. |
@@ -1212,7 +1223,8 @@ recorded `point_gate`/`bootstrap_gate` fields, TRAIN-archive retention and the
 absence of a promotion follow-up after a bootstrap rejection. Tiny-fixture
 driver tests pass `--promotion-gate margin` because a resampled three-row pool
 cannot separate any gain from zero.
-`tests/test_research_handoff.py` (v17) covers handoff validation, memory storage
+`tests/test_research_handoff.py` (v17) covers lenient handoff bounds (the malformed
+real-run shape is clipped, recorded and promoted, never rejected), memory storage
 and lineage ranking, and a driver run in which the first session's handoff reaches
 the second; the rejected-branch test in `tests/test_train_search.py` checks that
 feedback and failure cases describe the assigned branch.

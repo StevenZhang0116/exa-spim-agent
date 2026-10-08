@@ -33,6 +33,7 @@ from ..harness.trajectory import Trajectory, log_metrics, save_diffs
 from ..harness.evolution_report import update_report
 from ..harness.train_feedback import write_train_feedback, render_compact_json, metrics_only, MAX_FEEDBACK_BYTES
 from ..harness.search_proposals import read_proposal
+from ..harness.hypothesis_memory import sanitize_handoff
 from ..harness.selection_protocol import SelectionProtocol, load_selection, PROTOCOL_VERSION
 from ..harness.feature_ablation import CLASSIFIER_UNITS, FORMULA_UNITS
 from ..harness.context_cache import ContextCache
@@ -59,14 +60,23 @@ DEFAULT_REVISER_MAX_TURNS = 24
 
 
 def _record_handoff(memory, gen_dir, target_kind, generation, record, trace):
-    """Store the agent's research handoff (if proposal.json carries one) next to host facts."""
+    """Store the agent's research handoff (if proposal.json carries one) next to host facts.
+
+    A malformed handoff is clipped or dropped with a note in the trace and ledger; it
+    never fails the generation (see hypothesis_memory.sanitize_handoff).
+    """
+    path = gen_dir / 'proposal.json'
     try:
-        proposal = read_proposal(gen_dir / 'proposal.json')
-    except ValueError as exc:
+        proposal = read_proposal(path)
+        raw = json.loads(path.read_text()).get('handoff')
+    except (OSError, ValueError) as exc:
         trace.emit('research_handoff', f'No handoff recorded: {exc}')
         return None
-    handoff = proposal.get('handoff')
-    if not handoff:
+    if raw is None:
+        return None
+    handoff, notes = sanitize_handoff(raw)
+    if handoff is None:
+        trace.emit('research_handoff', 'No handoff recorded: ' + '; '.join(notes))
         return None
     host = {'experiment': record.get('submitted_experiment'),
             'selection_precision': (record.get('selection') or {}).get('macro_precision'),
@@ -75,8 +85,9 @@ def _record_handoff(memory, gen_dir, target_kind, generation, record, trace):
     item = memory.hypotheses.record_handoff({**proposal, 'target_kind': target_kind}, generation, handoff, host)
     trace.emit('research_handoff', f"Handoff recorded: {len(handoff.get('open_questions', []))} open question(s), "
                f"{len(handoff.get('evidence', []))} evidence item(s), next experiment "
-               f"{'given' if handoff.get('next_experiment') else 'absent'}", **item)
-    return item
+               f"{'given' if handoff.get('next_experiment') else 'absent'}"
+               + (f"; adjusted: {'; '.join(notes)}" if notes else ''), **item)
+    return {**item, 'adjustments': notes}
 
 
 async def revise(run_dir, policy_path, rules_path, report_path, model, *,
@@ -1082,6 +1093,8 @@ async def _run(args, revise_fn, run_dir, trace):
                 parent_validation_state = candidate_validation_state
                 parent_train, parent_validation = candidate_train, candidate_validation
                 (run_dir / "best_scorer.py").write_text(source)
+                # A restored earlier candidate keeps its experiment id, so a handoff recorded with it
+                # in an earlier generation is updated here; this generation's own handoff is recorded below.
                 memory.hypotheses.mark_promoted(submitted['entry']['experiment'])
                 if record['descriptors_referenced']:
                     _write(run_dir / "descriptors.json", experiments.descriptor_registry(record['descriptors_referenced']))

@@ -83,6 +83,9 @@ def branch_comparison(train, kind, branch_state, accepted_state, *, same_as_acce
     Candidate handles only; scores are TRAIN selection scores. This is a TRAIN
     diagnostic for steering the next edit, not a promotion signal.
     """
+    if same_as_accepted:
+        return {'version': COMPARISON_VERSION, 'same_as_accepted': True,
+                'note': 'The assigned branch is the accepted scorer; the matched pairs above already describe its misses.'}
     groups = {'branch_new_positives': [], 'branch_lost_positives': [], 'shared_missed_positives': []}
     cells = {}
     for brain, bank in sorted(train.items()):

@@ -14,52 +14,129 @@ HANDOFF_VERDICTS = ('supports', 'contradicts', 'mixed')
 HANDOFF_TEXT = 300
 
 
-def _short_text(value, name):
-    if not isinstance(value, str) or not 1 <= len(value.strip()) <= HANDOFF_TEXT:
-        raise ValueError(f'handoff.{name} entries must be text of 1..{HANDOFF_TEXT} characters')
-    return value.strip()
+HANDOFF_LIMIT = 3
+HANDOFF_UNITS_MAX = 64
 
 
-def validate_handoff(value):
-    """Agent-written research handoff: open questions, evidence verdicts and the next experiment.
+def _clip_text(value, name, notes):
+    """Stripped text of at most HANDOFF_TEXT characters; non-text or empty entries are dropped."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        value = str(value)
+    if not isinstance(value, str) or not value.strip():
+        notes.append(f'{name}: dropped an empty or non-text entry')
+        return None
+    text = value.strip()
+    if len(text) > HANDOFF_TEXT:
+        notes.append(f'{name}: clipped to {HANDOFF_TEXT} characters')
+        text = text[:HANDOFF_TEXT]
+    return text
 
-    Everything here is an agent claim; the host stores it next to its own measurements
-    and never rewrites it. Bounded so a few records fit in the next session's memory file.
+
+def _clip_list(value, name, notes):
+    if value is None:
+        return []
+    if isinstance(value, (str, dict)):
+        value = [value]
+    if not isinstance(value, list):
+        notes.append(f'{name}: ignored (not a list)')
+        return []
+    if len(value) > HANDOFF_LIMIT:
+        notes.append(f'{name}: kept the first {HANDOFF_LIMIT} of {len(value)}')
+    return value[:HANDOFF_LIMIT]
+
+
+def _verdict(value, notes):
+    """Canonical verdict; common variants map by stem, anything else is recorded as mixed."""
+    text = str(value or '').strip().lower()
+    if text in HANDOFF_VERDICTS:
+        return text
+    if text.startswith(('support', 'confirm')):
+        return 'supports'
+    if text.startswith(('contradict', 'refut', 'reject', 'disconfirm')):
+        return 'contradicts'
+    notes.append(f"evidence.verdict {value!r} recorded as 'mixed'")
+    return 'mixed'
+
+
+def sanitize_handoff(value):
+    """Bounded form of an agent-written research handoff, plus notes on what was clipped or dropped.
+
+    Lenient on purpose. The handoff is optional advice for the next session, so a
+    malformed one must never fail the generation that produced it: with strict
+    validation, run precision_20261007_001936 lost 8 of 15 generations at the
+    submission check to four open questions, an extra `do_not_repeat` field and a
+    `measurement` key in evidence items. Unknown fields are dropped, lists are cut to
+    HANDOFF_LIMIT items, texts to HANDOFF_TEXT characters, unknown verdicts become
+    `mixed`, and extra evidence fields are folded into `conditions` so the agent's
+    words are kept. Agent text is never rewritten beyond clipping.
+
+    Returns (handoff, notes); handoff is None when nothing usable remains.
     """
-    if not isinstance(value, dict) or not value or set(value) - HANDOFF_FIELDS:
-        raise ValueError('handoff accepts open_questions, evidence and next_experiment only')
-    result = {}
-    questions = value.get('open_questions', [])
-    if not isinstance(questions, list) or len(questions) > 3:
-        raise ValueError('handoff.open_questions must be a list of at most 3 questions')
-    result['open_questions'] = [_short_text(q, 'open_questions') for q in questions]
-    evidence = value.get('evidence', [])
-    if not isinstance(evidence, list) or len(evidence) > 3:
-        raise ValueError('handoff.evidence must be a list of at most 3 items')
-    result['evidence'] = []
-    for item in evidence:
-        if not isinstance(item, dict) or set(item) - {'claim', 'verdict', 'conditions'} or 'claim' not in item:
-            raise ValueError('handoff.evidence items need claim, verdict and optional conditions')
-        if item.get('verdict') not in HANDOFF_VERDICTS:
-            raise ValueError(f'handoff.evidence.verdict must be one of {HANDOFF_VERDICTS}')
-        entry = {'claim': _short_text(item['claim'], 'evidence.claim'), 'verdict': item['verdict']}
-        if 'conditions' in item:
-            entry['conditions'] = _short_text(item['conditions'], 'evidence.conditions')
+    notes = []
+    if isinstance(value, str):
+        value = {'open_questions': [value]}
+    if not isinstance(value, dict):
+        notes.append('handoff ignored: not an object')
+        return None, notes
+    extra = sorted(set(value) - HANDOFF_FIELDS)
+    if extra:
+        notes.append(f'dropped unknown handoff fields {extra}')
+    result = {'open_questions': [], 'evidence': []}
+    for question in _clip_list(value.get('open_questions'), 'open_questions', notes):
+        if isinstance(question, dict):
+            question = question.get('question', question.get('text'))
+        text = _clip_text(question, 'open_questions', notes)
+        if text:
+            result['open_questions'].append(text)
+    for item in _clip_list(value.get('evidence'), 'evidence', notes):
+        if isinstance(item, str):
+            item = {'claim': item}
+        if not isinstance(item, dict):
+            notes.append('evidence: dropped a non-object item')
+            continue
+        claim = _clip_text(item.get('claim'), 'evidence.claim', notes)
+        if not claim:
+            continue
+        verdict = _verdict(item.get('verdict'), notes)
+        entry = {'claim': claim, 'verdict': verdict}
+        conditions = item.get('conditions')
+        others = {k: v for k, v in item.items() if k not in ('claim', 'verdict', 'conditions')}
+        if conditions is None and others:
+            conditions = '; '.join(f'{k}: {v}' for k, v in others.items() if isinstance(v, (str, int, float)))
+            notes.append(f'evidence: folded {sorted(others)} into conditions')
+        elif others:
+            notes.append(f'evidence: dropped fields {sorted(others)}')
+        if conditions is not None:
+            text = _clip_text(conditions, 'evidence.conditions', notes)
+            if text:
+                entry['conditions'] = text
         result['evidence'].append(entry)
     nxt = value.get('next_experiment')
-    if nxt is not None:
-        if not isinstance(nxt, dict) or set(nxt) - {'what', 'discriminates', 'units'} or 'what' not in nxt:
-            raise ValueError('handoff.next_experiment needs what, optional discriminates and units')
-        result['next_experiment'] = {'what': _short_text(nxt['what'], 'next_experiment.what')}
-        if 'discriminates' in nxt:
-            result['next_experiment']['discriminates'] = _short_text(nxt['discriminates'], 'next_experiment.discriminates')
-        if 'units' in nxt:
-            if type(nxt['units']) is not int or not 0 <= nxt['units'] <= 64:
-                raise ValueError('handoff.next_experiment.units must be an integer 0..64')
-            result['next_experiment']['units'] = nxt['units']
-    if not (result['open_questions'] or result['evidence'] or nxt is not None):
-        raise ValueError('handoff must contain at least one question, evidence item or next experiment')
-    return result
+    if isinstance(nxt, str):
+        nxt = {'what': nxt}
+    if isinstance(nxt, dict):
+        what = _clip_text(nxt.get('what'), 'next_experiment.what', notes)
+        if what:
+            result['next_experiment'] = {'what': what}
+            if nxt.get('discriminates') is not None:
+                text = _clip_text(nxt['discriminates'], 'next_experiment.discriminates', notes)
+                if text:
+                    result['next_experiment']['discriminates'] = text
+            units = nxt.get('units')
+            if units is not None:
+                if type(units) is int and 0 <= units <= HANDOFF_UNITS_MAX:
+                    result['next_experiment']['units'] = units
+                else:
+                    notes.append(f'next_experiment.units {units!r} dropped (integer 0..{HANDOFF_UNITS_MAX})')
+            extra = sorted(set(nxt) - {'what', 'discriminates', 'units'})
+            if extra:
+                notes.append(f'next_experiment: dropped fields {extra}')
+    elif nxt is not None:
+        notes.append('next_experiment ignored: not an object')
+    if not (result['open_questions'] or result['evidence'] or result.get('next_experiment')):
+        notes.append('handoff ignored: no usable question, evidence item or next experiment')
+        return None, notes
+    return result, notes
 
 
 def validate_research(value):

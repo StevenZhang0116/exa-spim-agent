@@ -8,7 +8,7 @@ import math
 import re
 
 from .classifier_contract import frozen_model, model_info, normalize_config
-from .hypothesis_memory import validate_handoff, validate_research
+from .hypothesis_memory import validate_research
 
 
 MAX_PROPOSAL_BYTES = 128_000  # Resolved classifier feature lists can exceed a small formula proposal.
@@ -57,8 +57,10 @@ def read_proposal(path):
         proposal['classifier'] = normalize_config(proposal['classifier'])
     if 'research' in proposal:
         proposal['research'] = validate_research(proposal['research'])
-    if 'handoff' in proposal:
-        proposal['handoff'] = validate_handoff(proposal['handoff'])
+    # The optional research handoff is advice for the next session, not part of the experiment:
+    # it never enters attempt entries and the driver reads it from the file once
+    # (hypothesis_memory.sanitize_handoff), so it can never make a proposal invalid.
+    proposal.pop('handoff', None)
     return {**proposal, 'family': family, 'parameter_grid': grid}
 
 

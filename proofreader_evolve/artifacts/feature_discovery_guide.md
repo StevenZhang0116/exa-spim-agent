@@ -140,8 +140,9 @@ next to host-measured facts (selection score, whether that submission was
 promoted). Records related to your assigned branch come first. Treat the agent
 fields as claims to check, the host fields as facts. Before you finish, add
 `proposal.json.handoff` with the same three fields (each at most three items,
-300 characters per text) so the next session continues your line of work instead
-of restarting from keyword search.
+300 characters per text; extra items or fields are clipped or dropped, never an
+error) so the next session continues your line of work instead of restarting from
+keyword search.
 
 `hypothesis_memory.json` is a bounded host-written view refreshed after measurements.
 It records declarations, fresh measurements, repeated rankings, execution failures,

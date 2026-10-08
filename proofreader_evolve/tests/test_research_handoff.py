@@ -1,4 +1,4 @@
-"""Branch-aligned feedback and the research handoff (2026-10-06).
+"""Branch-aligned feedback and the research handoff (2026-10-06; lenient handoff bounds 2026-10-07).
 
 The first generation of the driver fixture promotes IMPROVED and leaves a handoff in
 proposal.json; the second generation (same kind, strict rotation disabled) must see
@@ -26,22 +26,40 @@ HANDOFF = {'open_questions': ['Do missed positives share a low evidence value?']
                                'units': 2}}
 
 
+MALFORMED = {'open_questions': HANDOFF['open_questions'] + ['second', 'third', 'fourth'],
+             'do_not_repeat': ['the retired formula branch'],
+             'evidence': [{'claim': 'band GBM beats the formula', 'verdict': 'Supports', 'measurement': 'OOF 0.55 vs 0.52'}],
+             'next_experiment': {'what': 'tune nonband_weight', 'units': 99, 'why': 'extra'}}
+
+
 class HandoffValidationTests(unittest.TestCase):
-    def test_accepts_bounded_handoff_and_rejects_malformed_ones(self):
-        clean = hm.validate_handoff(HANDOFF)
+    def test_bounds_handoffs_without_rejecting_them(self):
+        clean, notes = hm.sanitize_handoff(HANDOFF)
+        self.assertEqual(notes, [])
         self.assertEqual(clean['next_experiment']['units'], 2)
         self.assertEqual(clean['evidence'][0]['verdict'], 'supports')
-        for bad in ({}, {'unknown': 1}, {'open_questions': ['x'] * 4}, {'evidence': [{'claim': 'c', 'verdict': 'maybe'}]},
-                    {'next_experiment': {'what': 'w', 'units': 99}}, {'open_questions': ['x' * 400]}):
-            with self.assertRaises(ValueError):
-                hm.validate_handoff(bad)
+        # The shapes that failed run precision_20261007_001936 at the submission check are kept, bounded.
+        clean, notes = hm.sanitize_handoff(MALFORMED)
+        self.assertEqual(len(clean['open_questions']), hm.HANDOFF_LIMIT)
+        self.assertEqual(clean['evidence'], [{'claim': 'band GBM beats the formula', 'verdict': 'supports',
+                                              'conditions': 'measurement: OOF 0.55 vs 0.52'}])
+        self.assertEqual(clean['next_experiment'], {'what': 'tune nonband_weight'})
+        self.assertTrue(any('do_not_repeat' in n for n in notes) and any('kept the first 3 of 4' in n for n in notes))
+        self.assertEqual(hm.sanitize_handoff({'evidence': [{'claim': 'c', 'verdict': 'maybe'}]})[0]['evidence'][0]['verdict'], 'mixed')
+        self.assertEqual([e['verdict'] for e in hm.sanitize_handoff({'evidence': [{'claim': 'a', 'verdict': 'Supported'}, {'claim': 'b', 'verdict': 'refuted'}]})[0]['evidence']],
+                         ['supports', 'contradicts'])
+        self.assertEqual(len(hm.sanitize_handoff({'open_questions': ['x' * 400]})[0]['open_questions'][0]), hm.HANDOFF_TEXT)
+        self.assertEqual(hm.sanitize_handoff('one bare question')[0]['open_questions'], ['one bare question'])
+        self.assertEqual(hm.sanitize_handoff({'evidence': 'bare claim'})[0]['evidence'], [{'claim': 'bare claim', 'verdict': 'mixed'}])
+        for unusable in ({}, {'unknown': 1}, 7, {'evidence': 42}, {'open_questions': [None, '']}):
+            self.assertIsNone(hm.sanitize_handoff(unusable)[0])
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'proposal.json'
-            path.write_text(json.dumps({'hypothesis': 'h', 'strategy': 's', 'handoff': HANDOFF}))
-            self.assertEqual(read_proposal(path)['handoff']['open_questions'], HANDOFF['open_questions'])
-            path.write_text(json.dumps({'hypothesis': 'h', 'strategy': 's', 'handoff': {'evidence': 'not a list'}}))
-            with self.assertRaises(ValueError):
-                read_proposal(path)
+            # The handoff is not part of the experiment: read_proposal accepts the key, never returns it
+            # and never fails on it; the driver reads it from the file once.
+            for handoff in (HANDOFF, MALFORMED, {'evidence': 42}, 'a bare string'):
+                path.write_text(json.dumps({'hypothesis': 'h', 'strategy': 's', 'handoff': handoff}))
+                self.assertNotIn('handoff', read_proposal(path))
 
     def test_memory_keeps_handoffs_next_to_host_facts_and_ranks_the_assigned_branch_first(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -87,7 +105,7 @@ class DriverHandoffTests(unittest.TestCase):
                         'family': 'evidence', 'parameter_grid': {},
                         'research': {'hypothesis_id': 'evidence-first', 'information_source': 'table',
                                      'failure_mode': 'missed positive', 'prediction': 'evidence high for positives'},
-                        'handoff': HANDOFF}))
+                        'handoff': MALFORMED}))  # the real-run shape; must not fail the generation
                     experiments.evaluate()
                 else:
                     seen['handoff'] = memory_file['handoff']
@@ -102,11 +120,15 @@ class DriverHandoffTests(unittest.TestCase):
         self.assertTrue(records[0]['accepted'])
         self.assertEqual(records[0]['research_handoff']['host']['promoted'], True)
         self.assertEqual(records[0]['research_handoff']['experiment'], 'gen001/attempt001')
+        self.assertTrue(any('do_not_repeat' in n for n in records[0]['research_handoff']['adjustments']))
+        self.assertTrue(all('handoff' not in entry for entry in records[0]['experiments']))  # entries stay experiment-only
         self.assertIsNone(records[1]['research_handoff'])  # the second session wrote no handoff
         items = seen['handoff']
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]['hypothesis_id'], 'evidence-first')
-        self.assertEqual(items[0]['agent']['next_experiment']['what'], HANDOFF['next_experiment']['what'])
+        self.assertEqual(items[0]['agent']['next_experiment'], {'what': 'tune nonband_weight'})
+        self.assertEqual(len(items[0]['agent']['open_questions']), 3)
+        self.assertEqual(items[0]['agent']['evidence'][0]['conditions'], 'measurement: OOF 0.55 vs 0.52')
         self.assertTrue(items[0]['host']['promoted'])
         self.assertTrue(items[0]['related_to_assigned_branch'])  # gen2 starts from the promoted reference
         self.assertTrue(seen['feedback']['search_branch']['same_as_accepted'])
