@@ -8,7 +8,12 @@ checks the per-neuron edge metrics broadly). Here we only look at merges, and we
 compare against the two canonical merge artifacts:
 
   * ``merge_sites.csv`` -- one row per detected merge site (the geometric walk):
-    ``Segment_ID``, ``GroundTruth_ID`` (neuron name), ``World`` = (x, y, z) µm.
+    ``Segment_ID``, ``GroundTruth_ID`` (neuron name), ``Voxel`` = (x, y, z) image
+    voxels and ``World``. The reference point is ``Voxel * anisotropy`` (x, y, z)
+    µm. The package's ``World`` column is NOT that: it is
+    ``(Voxel[2]*0.748, Voxel[1]*0.748, Voxel[0]*1.0)`` -- axes reversed with the
+    anisotropy applied in the original order -- so it matches no physical frame
+    and is only kept as a diagnostic candidate.
   * ``results.csv``     -- per-neuron ``# Merges`` (== count of merge_sites rows
     for that neuron) and ``% Merged Edges``.
 
@@ -32,9 +37,9 @@ What we assert / report (see the canonical vs cache mapping in
      parts that must be read separately:
        C1. FRAME. Which coordinate frame is the cache's site xyz actually in? Every
            candidate is scored by the residual against the canonical site of the
-           SAME segment, using both coordinate columns the CSV carries (World =
-           (x,y,z) µm, Voxel = (z,y,x) ints) and their reversals. Anything but the
-           documented World frame is a HARD failure: the cache computes every
+           SAME segment: Voxel * anisotropy (the contract), its reversal, raw
+           Voxel (anisotropy not applied) and the CSV's World column as written.
+           Anything but the contract frame is a HARD failure: the cache computes every
            distance in that same frame, so cable lengths, edge jumps and the walk's
            own 50 µm / 6 µm thresholds are all affected, not just this comparison.
        C2. PLACEMENT. For the segments both sides flagged, how far apart are the
@@ -65,12 +70,19 @@ Kernel / env: run under the ``panda`` conda env (numpy/scipy binary-compatible s
     python notebooks/verify_add_cache_merge_info.py                    # brain 794495, mcl100
     python notebooks/verify_add_cache_merge_info.py --brain 789202 --mcl 100
     python notebooks/verify_add_cache_merge_info.py --tol 50 --brain 794495
+    python notebooks/verify_add_cache_merge_info.py --brain 789202 794491 754613  # several, one at a time
+    python notebooks/verify_add_cache_merge_info.py --all                          # every *_mcl<N>_add.pkl
+
+With several brains, caches are loaded one at a time and a summary table is printed
+at the end; the exit code is 1 if any brain has a hard failure or errors.
 """
 
 import argparse
 import ast
+import gc
 import glob
 import os
+import re
 import pickle
 import sys
 from collections import defaultdict
@@ -149,10 +161,11 @@ def load_cache_merges(add_path):
         "node_label": node_label,
         "merge_labels": merge_labels,
         "merge_sites": list(merge_sites),
+        "anisotropy": tuple(float(v) for v in payload["anisotropy"]),
     }
 
 
-def load_canonical_merges(metrics_dir, brain_id):
+def load_canonical_merges(metrics_dir, brain_id, anisotropy):
     """
     Loads canonical ``merge_sites.csv`` and ``results.csv`` for a brain.
 
@@ -161,14 +174,18 @@ def load_canonical_merges(metrics_dir, brain_id):
     dict with:
       "merge_sites_csv" -- path used
       "sites"           -- list[{"segment_id", "gt_neuron",
-                                 "xyz"=(x,y,z) µm from the World column,
-                                 "voxel"=(z,y,x) ints from the Voxel column}]
+                                 "xyz"=Voxel * anisotropy, (x,y,z) µm (reference),
+                                 "voxel"=(x,y,z) ints from the Voxel column,
+                                 "world_col"=the World column as written}]
       "results"         -- results.csv DataFrame indexed by neuron name (or None)
 
-    Both coordinate columns are kept, not just World. They are the same point in
-    two frames -- ``World = (Voxel[2], Voxel[1], Voxel[0]) * (0.748, 0.748, 1.0)``
-    on this data -- which lets ``infer_frame`` below identify which frame the cache
-    is actually in from the CSV alone, instead of guessing at a scale factor.
+    ``Voxel`` is (x, y, z) in the same order as the GT SWCs, so ``Voxel *
+    anisotropy`` is the (x, y, z) µm frame the cache's ``node_xyz`` and
+    ``gt_merge_sites`` use. The ``World`` column equals ``(Voxel[2], Voxel[1],
+    Voxel[0]) * (0.748, 0.748, 1.0)``: reversed axes, anisotropy in the original
+    order. It is kept only so ``infer_frame`` can name that mistake if a cache ever
+    matched it. (Verified on 789202, 754613 and others: cache sites lie ~3 µm from
+    ``Voxel * anisotropy`` of the same segment.)
     """
     site_hits = sorted(
         glob.glob(os.path.join(metrics_dir, brain_id, "*", "merge_sites.csv"))
@@ -182,14 +199,15 @@ def load_canonical_merges(metrics_dir, brain_id):
 
     sites = []
     for _, row in raw.iterrows():
-        world = ast.literal_eval(str(row["World"]))  # "(x, y, z)" µm -> tuple
-        voxel = ast.literal_eval(str(row["Voxel"]))  # "(z, y, x)" ints -> tuple
+        world = ast.literal_eval(str(row["World"]))  # mislabeled, see docstring
+        voxel = ast.literal_eval(str(row["Voxel"]))  # "(x, y, z)" ints -> tuple
         sites.append(
             {
                 "segment_id": int(float(row["Segment_ID"])),
                 "gt_neuron": str(row["GroundTruth_ID"]),
-                "xyz": (float(world[0]), float(world[1]), float(world[2])),
+                "xyz": tuple(float(v) * a for v, a in zip(voxel, anisotropy)),
                 "voxel": (float(voxel[0]), float(voxel[1]), float(voxel[2])),
+                "world_col": (float(world[0]), float(world[1]), float(world[2])),
             }
         )
 
@@ -299,16 +317,15 @@ def check_per_neuron_counts(rep, cache, canon):
     return df
 
 
-# The frames the cache's site xyz could plausibly be in, expressed as transforms of
-# the two columns the canonical CSV already carries. "world" is (x,y,z) µm, "voxel"
-# is (z,y,x) integer voxels; reversing either covers the axis-order mistake. The
-# contract -- what the package documents ``node_xyz`` to be -- is the first entry,
-# so anything else winning is a real convention bug and not a tolerance question.
+# The frames the cache's site xyz could plausibly be in, expressed from the CSV's
+# columns. "xyz" is Voxel * anisotropy, the (x,y,z) µm contract that ``node_xyz``
+# uses, and is the first entry, so anything else winning is a real convention bug
+# and not a tolerance question. The others name specific mistakes.
 CANDIDATE_FRAMES = (
-    ("World (x,y,z) µm  [the documented contract]", "xyz", False),
-    ("World reversed (z,y,x) µm  [axis order only]", "xyz", True),
-    ("Voxel (z,y,x)  [axis order + anisotropy NOT applied]", "voxel", False),
-    ("Voxel reversed (x,y,z)  [anisotropy NOT applied]", "voxel", True),
+    ("Voxel * anisotropy (x,y,z) µm  [the documented contract]", "xyz", False),
+    ("Voxel * anisotropy reversed (z,y,x)  [axis order only]", "xyz", True),
+    ("Voxel (x,y,z)  [anisotropy NOT applied]", "voxel", False),
+    ("CSV World column as written  [mislabeled package column]", "world_col", False),
 )
 
 
@@ -381,7 +398,7 @@ def infer_frame(rep, cache, canon):
     detail = (f"contract frame residual {contract['median']:.1f} µm"
               if ok else
               f"cache appears to be in '{best['label'].strip()}' "
-              f"({best['median']:.1f} µm) rather than the documented World (x,y,z) µm "
+              f"({best['median']:.1f} µm) rather than the documented (x,y,z) µm frame "
               f"({contract['median']:.1f} µm)")
     rep.check("cache site coordinates are in the documented (x,y,z) µm frame",
               ok, detail)
@@ -519,32 +536,17 @@ def check_totals(rep, cache, canon):
 
 
 # --- Main ----------------------------------------------------------------------
-def main():
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--brain", default="794495", help="brain id (default 794495)")
-    parser.add_argument("--mcl", type=int, default=100,
-                        help="min_cable_length in the cache filename (default 100)")
-    parser.add_argument("--tol", type=float, default=50.0,
-                        help="site match tolerance in µm (default 50; dedup is 30, "
-                             "branch-snapping adds a little)")
-    parser.add_argument("--cache-dir",
-                        default=os.path.join(REPO, "exa-spim-agent/cache"))
-    parser.add_argument("--metrics-dir",
-                        default=os.path.join(REPO, "exa-spim-agent/metrics_out"))
-    args = parser.parse_args()
-
-    add_path = os.path.join(
-        args.cache_dir, f"dataset_cache_{args.brain}_mcl{args.mcl}_add.pkl"
-    )
+def verify_brain(brain, mcl, tol, cache_dir, metrics_dir):
+    """Run every check for one brain; returns a summary row."""
+    add_path = os.path.join(cache_dir, f"dataset_cache_{brain}_mcl{mcl}_add.pkl")
     print("=" * 78)
-    print(f"Verify merge info: brain {args.brain} (mcl{args.mcl}), tol={args.tol:.0f}µm")
+    print(f"Verify merge info: brain {brain} (mcl{mcl}), tol={tol:.0f}µm")
     print("=" * 78)
     print(f"cache      : {add_path}")
     assert os.path.exists(add_path), f"cache not found: {add_path}"
 
     cache = load_cache_merges(add_path)
-    canon = load_canonical_merges(args.metrics_dir, args.brain)
+    canon = load_canonical_merges(metrics_dir, brain, cache["anisotropy"])
     print(f"canonical  : {canon['merge_sites_csv']}")
     print(f"\ncache: {len(cache['merge_sites'])} merge sites, "
           f"{len(cache['merge_labels'])} merge labels | "
@@ -553,7 +555,7 @@ def main():
     rep = Reporter()
     check_segment_ids(rep, cache, canon)
     check_per_neuron_counts(rep, cache, canon)
-    check_site_localization(rep, cache, canon, args.tol)
+    loc = check_site_localization(rep, cache, canon, tol) or {}
     check_totals(rep, cache, canon)
 
     print("\n" + "=" * 78)
@@ -565,8 +567,50 @@ def main():
     else:
         print(f"RESULT: {rep.hard_failures} HARD FAILURE(S) -- the cache merge "
               "information does NOT match metrics_out. Investigate above.")
-    print("=" * 78)
-    return 1 if rep.hard_failures else 0
+    print("=" * 78, flush=True)
+    return {"brain": brain, "result": "PASS" if rep.hard_failures == 0 else "FAIL",
+            "cache_sites": len(cache["merge_sites"]), "canon_sites": len(canon["sites"]),
+            "placement_median_um": loc.get("placement_median"),
+            "recall": loc.get("recall"), "precision": loc.get("precision")}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--brain", nargs="+", default=["794495"],
+                        help="brain id(s) (default 794495)")
+    parser.add_argument("--all", action="store_true",
+                        help="every dataset_cache_<brain>_mcl<N>_add.pkl in --cache-dir")
+    parser.add_argument("--mcl", type=int, default=100,
+                        help="min_cable_length in the cache filename (default 100)")
+    parser.add_argument("--tol", type=float, default=50.0,
+                        help="site match tolerance in µm (default 50; dedup is 30, "
+                             "branch-snapping adds a little)")
+    parser.add_argument("--cache-dir",
+                        default=os.path.join(REPO, "exa-spim-agent/cache"))
+    parser.add_argument("--metrics-dir",
+                        default=os.path.join(REPO, "exa-spim-agent/metrics_out"))
+    args = parser.parse_args()
+
+    if args.all:
+        pattern = re.compile(rf"dataset_cache_(\d+)_mcl{args.mcl}_add\.pkl$")
+        brains = sorted(m.group(1) for m in map(pattern.search, os.listdir(args.cache_dir)) if m)
+    else:
+        brains = list(dict.fromkeys(args.brain))
+
+    rows = []
+    for brain in brains:
+        try:
+            rows.append(verify_brain(brain, args.mcl, args.tol, args.cache_dir, args.metrics_dir))
+        except Exception as exc:  # keep going; report at the end
+            print(f"ERROR: {brain}: {type(exc).__name__}: {exc}", flush=True)
+            rows.append({"brain": brain, "result": "ERROR"})
+        gc.collect()
+
+    if len(rows) > 1:
+        print("\nSummary")
+        print(pd.DataFrame(rows).set_index("brain").to_string(float_format=lambda v: f"{v:.3f}"))
+    return 0 if rows and all(r["result"] == "PASS" for r in rows) else 1
 
 
 if __name__ == "__main__":
