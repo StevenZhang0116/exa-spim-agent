@@ -20,7 +20,7 @@ import numpy as np
 
 from .descriptor_contract import DESCRIPTOR_VERSION
 from .image_context import file_hash
-from .model_execution import ModelExecutionError, run_worker
+from .model_execution import ModelExecutionError, run_worker, DEFAULT_MEMORY_MB
 
 
 RUN_VERSION = 'agent-descriptor-compute-v1'
@@ -59,7 +59,7 @@ def stage_batch(root, contexts, patches):
 
 
 class DescriptorRuns:
-    def __init__(self, cache, bank_dir, *, workers='auto', memory_mb=8192, trace=None):
+    def __init__(self, cache, bank_dir, *, workers='auto', memory_mb=DEFAULT_MEMORY_MB, trace=None):
         self.cache, self.bank_dir, self.trace = cache, Path(bank_dir), trace
         self.workers = available_workers() if workers == 'auto' else max(1, int(workers))
         self.memory_mb = memory_mb
@@ -228,7 +228,7 @@ class DescriptorRuns:
     def summarize(table, columns, rows, values, *, labels=True):
         """Host-only distribution summary; TRAIN labels are used here and nowhere upstream."""
         rows = np.asarray(rows, dtype=int)
-        truth = np.asarray(table.truth)
+        truth = np.asarray(table.truth, dtype=float)  # 1 / 0 / NaN; NaN rows are only counted
         result = {}
         for position, column in enumerate(columns):
             series = values[:, position]
@@ -236,6 +236,7 @@ class DescriptorRuns:
             entry = {'computed_rows': int(len(rows)), 'pool_rows': int(len(table.features)),
                      'finite_fraction': float(finite.mean()) if len(series) else None}
             if labels:
+                entry['unlabeled_count'] = int(np.isnan(truth[rows]).sum())
                 for label in (0, 1):
                     mask = truth[rows] == label
                     selected = series[finite & mask]

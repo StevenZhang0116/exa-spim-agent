@@ -17,7 +17,7 @@ in the current generation's `proposal.json`.
 - Hand-written formula code executes in a separate Linux worker with preloaded NumPy, pandas and
   math. File/network access, subprocesses and further on-disk imports are blocked
   by seccomp; credentials and labels do not enter this process. Use vectorized
-  numerical operations within the fixed wall-time and 8 GiB address-space limits.
+  numerical operations within the fixed wall-time and 16 GiB address-space limits.
 - Candidate geometry, occurrences, native labels, original detector weights, pool membership,
   K, evaluator and train/validation assignments are fixed by the harness.
 - No `ENUM_PARAMS`, `propose_edits`, candidate expansion or post-edit enumeration.
@@ -55,7 +55,12 @@ in the current generation's `proposal.json`.
 - Learn feature combinations, missingness handling, re-ranking rules, nonlinear
   transformations and per-kind policies from TRAIN feedback only. Do not memorize
   examples. Validation is an adaptive development gate, not a final test set.
-- Promotion gate: improve equal-weight mean native-label Precision@K on the fixed
+- Labels are three-valued: 1 = error, 0 = GT-confirmed no error, NaN = not judgeable
+  by GT. The scorer returns one score for every row, but Top-K, Precision@K, recall
+  and the bootstrap use GT-labeled rows only; NaN rows are never hits or false
+  positives. Fitted models receive only labeled rows (plus optional `X_unlabeled`,
+  see `classifier_guide.md`).
+- Promotion gate: improve equal-weight mean Precision@K over GT-labeled rows on the fixed
   development-validation brains. First average merge/split precision within each
   brain, then average the brains. Individual brain/kind regressions are allowed.
   The mean gain must also clear row-resampling noise: the host requires the lower
@@ -77,9 +82,10 @@ in the current generation's `proposal.json`.
   name, and optional `parameter_grid` mapping PARAMS keys to numeric lists.
   Call `evaluate_train({})` for a single experiment or `search_parameters({})`
   for a grid. The harness substitutes constants without executing code in the
-  agent process, measures each configuration and restores the grid's best
-  successful candidate by the official selection score (`selection_protocol`
-  in the feedback).
+  agent process, measures each configuration until the first execution error of
+  the formula (remaining configurations are skipped and not charged; the reply's
+  `stopped_early` says so) and restores the grid's best successful candidate by
+  the official selection score (`selection_protocol` in the feedback).
   Grid combinations must fit the remaining budget (8 new evaluations by default).
   Format errors and cached results spend no scoring budget; all calls still use
   SDK turns. The first execution error permits one extra repair evaluation.
@@ -168,6 +174,6 @@ in the current generation's `proposal.json`.
   Stratified examples are diagnostic, not representative samples. Use whole-pool
   feature statistics for distribution claims. Measure gained and lost positives
   when assessing ranking tradeoffs.
-- These labels follow the frozen detector's annotation convention. Sparse GT
-  limits their interpretation; native-label precision is not exhaustive biological
-  precision. Actual graph edits require a separate structural evaluation stage.
+- These labels follow the frozen detector's annotation convention. Sparse GT is
+  handled by ranking labeled rows only, so precision describes the GT-traced
+  neurons, not the whole brain. Actual graph edits require a separate structural evaluation stage.

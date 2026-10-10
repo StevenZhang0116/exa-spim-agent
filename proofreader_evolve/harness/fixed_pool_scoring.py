@@ -1,4 +1,10 @@
-"""Fixed-budget ranking benchmark. Scorers never receive labels or candidate IDs."""
+"""Fixed-budget ranking benchmark. Scorers never receive labels or candidate IDs.
+
+Labels are three-valued (harness/label_availability.py): 1 = error, 0 = GT-confirmed
+no error, NaN = not judgeable by GT. Scorers score every row; ranking, Precision@K,
+recall and the bootstrap use GT-labeled rows only, so NaN rows never count as hits
+or false positives.
+"""
 
 import hashlib
 import math
@@ -9,12 +15,14 @@ from .isolated_scoring import score
 from .scorer_components import components
 from .training_diagnostics import describe
 from .local_features import augmented_features
+from .model_execution import DEFAULT_MEMORY_MB
+from .label_availability import labeled_rows, labels_digest
 
 
-SCORING_VERSION = "native-precision-at-k-v1"
+SCORING_VERSION = "native-precision-at-k-v2-three-valued"
 AGGREGATION = "equal-brain-mean-kind-precision"
-VALIDATION_GATE_VERSION = "mean-validation-precision-v1"
-BOOTSTRAP_GATE_VERSION = "mean-validation-bootstrap-v1"
+VALIDATION_GATE_VERSION = "mean-validation-precision-v2-three-valued"
+BOOTSTRAP_GATE_VERSION = "mean-validation-bootstrap-v2-three-valued"
 GATE_MODES = ("bootstrap", "margin")
 
 
@@ -39,31 +47,40 @@ def aggregate_precision(cells):
         raise ValueError("Every evaluated brain must have the same candidate kinds")
     per_brain = {brain: math.fsum(values.values()) / len(values)
                  for brain, values in grouped.items()}
-    return {"aggregation": AGGREGATION, "per_brain_precision": per_brain,
-            "macro_precision": math.fsum(per_brain.values()) / len(per_brain)}
+    result = {"aggregation": AGGREGATION, "per_brain_precision": per_brain,
+              "macro_precision": math.fsum(per_brain.values()) / len(per_brain)}
+    return result
+
+
+def labeled_order(scores, truth, keys):
+    """GT-labeled rows in ranking order; candidate identity resolves ties reproducibly."""
+    rows = labeled_rows(truth)
+    return rows[np.lexsort((np.asarray(keys, dtype=str)[rows], -np.asarray(scores, dtype=float)[rows]))]
 
 
 def rank_metrics(scores, truth, keys, k):
-    scores, truth = np.asarray(scores, dtype=float), np.asarray(truth)
+    """Precision@K over GT-labeled rows: the Top-K is taken among rows labeled 1 or 0."""
+    scores, truth = np.asarray(scores, dtype=float), np.asarray(truth, dtype=float)
     if type(k) is not int or k < 1:
         raise ValueError("K must be a positive integer")
     if (scores.shape != truth.shape or scores.ndim != 1 or len(keys) != len(scores)
-            or not len(scores) or len(set(keys)) != len(keys)
-            or not np.isfinite(scores).all() or not np.isin(truth, [0, 1]).all()):
+            or not len(scores) or len(set(keys)) != len(keys) or not np.isfinite(scores).all()):
         raise ValueError("Return one finite score per candidate in original row order; no dropping/abstention")
-    # Candidate identity, not policy output order, resolves ties reproducibly.
-    order = np.lexsort((np.asarray(keys, dtype=str), -scores))
+    order = labeled_order(scores, truth, keys)
+    if not len(order):
+        raise ValueError("No GT-labeled rows in this pool")
     chosen = order[:min(k, len(order))]
     tp = int(truth[chosen].sum())
-    positives = int(truth.sum())
-    return {"requested_k": k, "effective_k": len(chosen), "pool_size": len(order),
+    positives = int(np.nansum(truth))
+    return {"requested_k": k, "effective_k": len(chosen), "pool_size": len(scores),
+            "n_labeled": len(order), "n_unlabeled": len(scores) - len(order),
             "tp": tp, "fp": len(chosen) - tp, "precision": tp / len(chosen),
             "recall": tp / positives if positives else None,
             "positives": positives}, chosen
 
 
 def evaluate(source, tables_by_brain, budgets, timeout=120, examples=False, *,
-             state=None, parent_state=None, generation=0, artifact_store=None):
+             state=None, parent_state=None, generation=0, artifact_store=None, memory_mb=DEFAULT_MEMORY_MB):
     """Score features in a restricted worker; labels and ranking stay here."""
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("Scorer timeout must be positive and finite")
@@ -73,8 +90,8 @@ def evaluate(source, tables_by_brain, budgets, timeout=120, examples=False, *,
     for brain, banks in tables_by_brain.items():
         for kind, table in banks.tables.items():
             features = augmented_features(sources[kind], table, timeout)
-            scores = (score(sources[kind], features, kind, timeout, artifact_store=artifact_store)
-                      if artifact_store is not None else score(sources[kind], features, kind, timeout))
+            scores = (score(sources[kind], features, kind, timeout, memory_mb=memory_mb, artifact_store=artifact_store)
+                      if artifact_store is not None else score(sources[kind], features, kind, timeout, memory_mb=memory_mb))
             metrics, chosen = rank_metrics(scores, table.truth, table.keys, budgets[kind])
             if 'local_context' in features.attrs:
                 metrics['local_context'] = features.attrs['local_context']
@@ -83,7 +100,7 @@ def evaluate(source, tables_by_brain, budgets, timeout=120, examples=False, *,
                 metrics['image_context'] = {**features.attrs['image_context'],
                     'scoring_coverage': scoring_coverage(features, chosen, table.truth, budgets[kind])}
             metrics["pool_sha256"] = table.meta["pool_sha256"]
-            metrics["labels_sha256"] = hashlib.sha256(np.asarray(table.truth, dtype=np.int8).tobytes()).hexdigest()
+            metrics["labels_sha256"] = labels_digest(table.truth)
             cell = f"{brain}/{kind}"
             report["cells"][cell] = metrics
             if state is not None:
@@ -103,7 +120,8 @@ def acceptance(parent, candidate, margin=0, *, require_no_cell_regression=True):
         raise ValueError("Cannot compare different evaluation contracts")
     for cell, before in parent["cells"].items():
         after = candidate["cells"][cell]
-        for key in ("pool_sha256", "labels_sha256", "pool_size", "requested_k", "effective_k", "positives"):
+        for key in ("pool_sha256", "labels_sha256", "pool_size", "n_labeled", "requested_k", "effective_k",
+                    "positives"):
             if before[key] != after[key]:
                 raise ValueError(f"Candidate changed fixed benchmark: {cell}/{key}")
     before_mean = aggregate_precision(parent["cells"])["macro_precision"]
@@ -119,7 +137,7 @@ def acceptance(parent, candidate, margin=0, *, require_no_cell_regression=True):
                     f"delta={gain:+.6f}, margin={margin:g}")
 
 
-BOOTSTRAP_VERSION = "paired-poisson-bootstrap-v1"
+BOOTSTRAP_VERSION = "paired-poisson-bootstrap-v2-three-valued"
 
 
 def _prefix_hits(order, truth, counts, k):
@@ -135,7 +153,7 @@ def _prefix_hits(order, truth, counts, k):
 
 
 def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *, draws=1000, seed=0, alpha=.05):
-    """Paired resampling of candidate rows for the promotion delta.
+    """Paired resampling of GT-labeled candidate rows for the promotion delta.
 
     Both scorers are re-ranked on the same Poisson(1)-weighted multiset per cell,
     so the interval reflects row sampling noise, not scorer nondeterminism. The
@@ -151,13 +169,19 @@ def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *,
     for brain, banks in tables_by_brain.items():
         for kind, table in banks.tables.items():
             cell = f"{brain}/{kind}"
-            truth = np.asarray(table.truth, dtype=np.int64)
-            keys = np.asarray(table.keys, dtype=str)
+            truth = np.asarray(table.truth, dtype=float)
             before = np.asarray(parent_state[cell]["scores"], dtype=float)
             after = np.asarray(candidate_state[cell]["scores"], dtype=float)
             if before.shape != truth.shape or after.shape != truth.shape:
                 raise ValueError(f"Bootstrap scores do not align with {cell}")
-            cells[cell] = (truth, np.lexsort((keys, -before)), np.lexsort((keys, -after)), budgets[kind])
+            # Resample labeled rows only: weights are drawn per labeled row and unlabeled
+            # rows never enter either ranking, matching rank_metrics.
+            rows = labeled_rows(truth)
+            position = np.full(len(truth), -1, dtype=np.int64)
+            position[rows] = np.arange(len(rows))
+            labels = truth[rows].astype(np.int64)
+            cells[cell] = (labels, position[labeled_order(before, truth, table.keys)],
+                           position[labeled_order(after, truth, table.keys)], budgets[kind])
     deltas = np.empty(draws)
     per_cell = {cell: np.empty(draws) for cell in cells}
     for draw in range(draws):

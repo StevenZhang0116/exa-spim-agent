@@ -25,6 +25,7 @@ def matched_failure_cases(train, kind, state, *, max_pairs=4):
         selected = np.zeros(len(scores), dtype=bool)
         selected[chosen] = True
         positives = np.flatnonzero((table.truth == 1) & ~selected)
+        # Label 0 = GT-confirmed no error; NaN rows (not GT-judgeable) are never paired.
         negatives = chosen[table.truth[chosen] == 0]
         order = positives[np.argsort(-scores[positives], kind='stable')]
         # Include near-boundary and farther missed cases, rather than only extremes.
@@ -71,7 +72,7 @@ def matched_failure_cases(train, kind, state, *, max_pairs=4):
     return {'version': CASE_VERSION, 'target_kind': kind, 'pairs': pairs,
             'scope': 'Selection-brain TRAIN only; errors of the assigned search branch under the official '
                      'selection measurement (the accepted parent when the branch is the reference); '
-                     'native label 0 is not verified biological absence',
+                     'labels are three-valued and every case is GT-labeled (label 0 = GT-confirmed no error)',
             'note': 'Pairs are diagnostic examples, not an evaluation dataset or proof of a mechanism. '
                     'Inspect local geometry, propose a falsifiable feature, then measure its incremental value.'}
 

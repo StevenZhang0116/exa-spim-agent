@@ -86,7 +86,7 @@ def analyze_volume(module, contexts, images, request, output, np):
         raise TypeError(f'Unsupported analysis result type: {type(value).__name__}')
     encoded = json.dumps(results, default=convert, allow_nan=False).encode('utf-8')
     if len(encoded) > request['max_result_bytes']:
-        raise ValueError('Analysis results exceed 24 KiB; return summaries, not volume arrays')
+        raise ValueError(f"Analysis results exceed {request['max_result_bytes'] // 1024} KiB; return summaries, not volume arrays")
     output.write(encoded)
     output.flush()
 
@@ -190,6 +190,8 @@ def main():
             reads.append(root / 'y.npy')
             if (root / 'groups.npy').exists():
                 reads.append(root / 'groups.npy')
+            if request.get('unlabeled_inputs'):
+                reads.append(root / 'X_unlabeled.npy')
         if request.get('image_inputs'):
             reads.append(root / 'images')
         sandbox.isolate(reads, [scratch, artifacts] if request['mode'] == 'fit' else [scratch])
@@ -238,6 +240,11 @@ def main():
                         raise ValueError('Invalid TRAIN group alignment')
                     names = np.asarray(request['group_names'], dtype=str)
                     extra['groups'] = pd.Series(names[codes], name='train_brain')
+            # Optional features of NaN-label (not GT-judgeable) TRAIN rows; the host stages
+            # them only for programs whose `fit` declares `X_unlabeled` explicitly.
+            if request.get('unlabeled_inputs'):
+                extra['X_unlabeled'] = pd.DataFrame(np.load(root / 'X_unlabeled.npy', allow_pickle=False),
+                                                    columns=request['columns'])
             module.fit(x, y, artifacts, copy.deepcopy(params), **extra)
         else:
             values = []

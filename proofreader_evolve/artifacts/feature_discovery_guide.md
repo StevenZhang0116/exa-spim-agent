@@ -12,8 +12,9 @@ Read `failure_cases.json`: up to four pairs match a missed TRAIN positive to a
 selected label-0 row using detector score and gap (split) or degree (merge).
 Distances are scaled by whole-TRAIN interquartile ranges; poor matches are still
 reported with their distances. Examples include both near-boundary and farther
-missed positives. These diagnostic cases are not a representative evaluation set,
-and native label 0 does not establish biological absence of an error.
+missed positives. These diagnostic cases are not a representative evaluation set.
+Labels are three-valued (1 / 0 / NaN); every case here is GT-labeled, so label 0
+means GT confirms no error at that candidate. NaN rows never appear.
 
 Call `inspect_failure_cases({})` to inspect the panel in one tool call. It shares
 the existing eight-neighborhood budget with `inspect_candidate`. The same local
@@ -69,7 +70,10 @@ This example is not executable until you implement the named feature and your
 training program. `information_source` is a free short identifier, not a model
 whitelist. Reuse `hypothesis_id` for numeric variants of the same mechanism; use
 a new ID when the mechanism changes. The declaration is stored as an agent claim,
-separately from host-measured evidence. Legacy proposals without `research` still
+separately from host-measured evidence. It is bounded, never rejected: unknown
+fields are dropped, identifiers are normalised to letters, digits, `_` and `-`,
+long texts are clipped, and a declaration without a usable `hypothesis_id` is
+treated as absent. Legacy proposals without `research` still
 work but receive text-derived IDs with weaker cross-variant grouping.
 
 ## Measure incremental value
@@ -139,8 +143,8 @@ sessions, each with the agent's `open_questions`, `evidence` verdicts
 next to host-measured facts (selection score, whether that submission was
 promoted). Records related to your assigned branch come first. Treat the agent
 fields as claims to check, the host fields as facts. Before you finish, add
-`proposal.json.handoff` with the same three fields (each at most three items,
-300 characters per text; extra items or fields are clipped or dropped, never an
+`proposal.json.handoff` with the same three fields (each at most five items,
+600 characters per text; extra items or fields are clipped or dropped, never an
 error) so the next session continues your line of work instead of restarting from
 keyword search.
 

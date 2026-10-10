@@ -26,6 +26,7 @@ from proofreader_evolve.harness.native_pool import NativeTable, NativeTables, po
 from proofreader_evolve.harness.scorer_components import components
 from proofreader_evolve.harness.train_experiments import ExperimentMemory, TrainingExperiments
 from proofreader_evolve.harness import train_feedback as feedback
+from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
 
 
 FORMULA = 'def score_candidates(features, ctx):\n    return features["detector_score"].to_numpy(dtype=float)\n'

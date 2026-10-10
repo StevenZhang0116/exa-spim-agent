@@ -92,6 +92,8 @@ frag, gt = payload["fragments_graph"], payload["gt_graph"]
 The GT graphs cover tens of neurons per brain, so GT-derived labels are sparse
 annotations rather than exhaustive truth: label 0 means "no recorded error
 here", not a verified clean location. Every downstream metric inherits this.
+`proofreader_evolve` handles it with availability sidecars: rows GT cannot judge get
+label NaN and are excluded from ranking and fitting (three-valued labels, Stage 3).
 
 ## Stage 1. Discover: from AutoDiscovery exports to a validated report
 
@@ -282,7 +284,7 @@ maintained design record is
 
 ### 3.1 What is evolved and what stays fixed
 
-`proofreader_evolve` improves **native-label Precision@K on the
+`proofreader_evolve` improves **Precision@K over GT-labeled rows on the
 same candidate pool** as the selected `merge_junction_detector.py` and
 `split_site_detector.py`. The frozen scripts define candidate enumeration,
 including split occurrences and junction NMS; evolution cannot change the pool.
@@ -295,17 +297,23 @@ On an allocated compute node in panda:
 ```bash
 python -u proofreader_evolve/prepare_feature_tables.py --brains 794495 789202 794491 794493 802449 --mcl 100
 # Once per brain: fragment neighbourhoods plus level-1 and level-0 image patches for the
-# top 20,000 detector-ranked candidates of each kind (S3 reads; roughly 30 min per brain and kind).
-python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802449 789202 794493 794491 --mcl 100 --readers 16
+# top detector-ranked candidates of each kind (default 20,000; S3 reads; roughly 30 min per brain and kind at 20,000).
+# --band-rows 50000 grows an existing complete entry in place, reading only the new rows; older-microscope
+# brains with feature tables (747807 750318 754610 754612 754613) are cached the same way, one brain at a time.
+python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802449 789202 794493 794491 --mcl 100 --readers 16 --band-rows 50000
+# REQUIRED before evolution/preflight: label-availability sidecars (minutes per brain). Labels become
+# three-valued (1 error / 0 GT-confirmed no error / NaN not judgeable); ranking, Precision@K, bootstrap and
+# fitting use GT-labeled rows only (see WORKFLOW_REVISION "Three-valued labels throughout").
+python -u -m proofreader_evolve.cli.precompute_availability --brains 794495 802449 789202 794493 794491 --mcl 100
 python -m proofreader_evolve.cli.preflight --brains 794495 789202 794491 794493 802449 \
   --train-brains 794495 802449 --selection-brains 802449 --mcl 100 \
   --context-cache proofreader_evolve/context_cache
-# Full run (the settings of the recorded 2026-10-05 trial, 20 generations):
+# Full run (settings of the recorded 2026-10-05 trial except K, which that trial set to 2000; 20 generations):
 export ANTHROPIC_API_KEY=...  AWS_EC2_METADATA_DISABLED=true
 python -u -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495,802449 --selection-brains 802449 \
   --validation-brains 789202,794493,794491 \
-  --merge-k 2000 --split-k 2000 --generations 20 \
+  --merge-k 300 --split-k 500 --generations 20 \
   --context-cache proofreader_evolve/context_cache --descriptor-workers auto \
   --classifier-threads 4 --classifier-time-budget 1800 --reviser-max-turns 40 \
   --skip-auxiliary-ablation
@@ -314,12 +322,12 @@ python -u -m proofreader_evolve.cli.run_evolution \
 # Historical in-sample ranking with the detector-fitted TRAIN brain alone:
 python -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495 --validation-brains auto --selection-protocol in_sample \
-  --merge-k 100 --split-k 100 --generations 1
+  --merge-k 300 --split-k 500 --generations 1
 ```
 
 The CLI defaults are a single TRAIN brain **794495**, the `grouped_oof` selection
 protocol, the `bootstrap` promotion gate (1000 draws, alpha 0.05), `adaptive` kind
-allocation, 15 generations and K = 100 per kind. The bare defaults do **not** start
+allocation, 15 generations, and K = 300 (merge) / 500 (split) over GT-labeled rows (100 / 100 before 2026-10-09). The bare defaults do **not** start
 a run: `grouped_oof` ranks TRAIN branches on a brain the detectors were not fitted
 on, and 794495 is the detectors' training brain, so the driver aborts with
 "No eligible selection brain". Add a detector-naive TRAIN brain and name it as the
@@ -347,7 +355,7 @@ to `proofreader_evolve/log/prepare_feature_tables_<timestamp>_<pid>.log.txt`.
 Each run gets a separate log with invocation, timing and exit status. Use
 `--log-txt PATH` to append to a specific file; `--dry-run` creates no log.
 
-Evolution and preflight default to `claude-opus-5` (Claude Opus 5).
+Evolution and preflight default to `claude-opus-5-5` (Claude Opus 5.5).
 Use `--model MODEL_ID` to override the model for a run.
 
 ### 3.3 Scorer contract and promotion gate
@@ -373,7 +381,8 @@ timed-out scorers are rejected without substituting parent measurements.
 K is fixed per run. Both raw detector and evolved scorer are compared on identical
 pools and budgets. Returning fewer candidates cannot improve the metric. No graph
 edits, pool expansion, on-demand detector queries or post-cut re-enumeration occur.
-These are sparse-annotation native labels, not exhaustive biological truth; a
+Labels are three-valued (1 / 0 / NaN = not judgeable by GT), so precision describes
+candidates near traced neurons, not exhaustive biological truth; a
 better ranking does not establish safe graph repairs. Repeated validation is
 development data, not a final untouched test. Scorer execution uses a separate
 feature-only Linux worker with a seccomp syscall filter, wall-time/CPU/memory
@@ -393,17 +402,20 @@ Detector-fitted brains cannot be validation brains. The reviser requires
 
 ### 3.4 One generation: the reviser session
 
-Each generation allows up to 24 SDK interaction turns by default; use
-`--reviser-max-turns 40` to change this independently of `--generations`.
-The reviser reads a compact TRAIN feedback file capped at 96 KB (48 KB before
-2026-10-05). Tool results may be up to 100,000 tokens; a result the SDK still
-parks on disk stays readable through the session's file guard. Feature names
+Each generation allows up to 60 SDK interaction turns by default (24 before
+2026-10-07, 40 until 2026-10-08); use `--reviser-max-turns` to change this independently of
+`--generations`. The reviser reads a compact TRAIN feedback file capped at 128 KB
+(48 KB before 2026-10-05, 96 KB until 2026-10-07). Tool results may be up to
+100,000 tokens; a result the SDK parks on disk (above about 50 KB) stays readable
+through the session's file guard, and file reads allow 100,000 tokens instead of
+the SDK default of 25,000. The session may also read its own generation's
+`experiments/`, `classifier_fits/` and `descriptor_runs/` directories. Feature names
 appear once per cell with aligned example vectors; values are rounded to six
 significant digits for display. It samples selected positives and label-0 rows,
 rows just below K, and missed positives. Each group keeps a fixed anchor and
 reproducibly rotates other examples across generations, up to four per group
 (fewer when needed to fit). `feature_statistics.json` provides whole-TRAIN
-feature quartiles by native label, so error samples are not mistaken for the
+feature quartiles by label (1 / 0; NaN rows counted), so error samples are not mistaken for the
 full distribution. Candidate feedback adds gained/lost positives and Top-K overlap.
 
 Each generation edits one component. By default the kind is chosen adaptively:
@@ -426,8 +438,9 @@ The scheduler separates `explore` (design a formula, features or model program)
 from `tune` (change numeric values only). Formula scorers expose a literal
 `PARAMS = {'weight': 1.0}` dictionary and
 reference its values. `search_parameters` enumerates the proposed grid while
-keeping the formula fixed, snapshots every configuration and restores the best
-successful one by the official selection score. In tune
+keeping the formula fixed, snapshots each configuration up to the first execution
+error of the formula (`stopped_early` lists the skipped, uncharged configurations)
+and restores the best successful one by the official selection score. In tune
 generations an AST fingerprint enforces the assigned formula. Grid sizes must fit
 the remaining budget; oversized grids fail before scoring.
 
@@ -456,7 +469,7 @@ One new fit plus TRAIN evaluation consumes one shared budget unit; failed fits
 also consume one with no metric. Exact training-source/parameter repeats reuse
 the fitted model. Explore generations can rewrite the whole program; tune
 fixes its AST and nonnumeric settings while refitting numeric parameters.
-Defaults are 300 seconds wall/CPU, 8192 MiB and one numerical-library thread
+Defaults are 300 seconds wall/CPU, 16384 MiB (8192 before 2026-10-08) and one numerical-library thread
 (`--classifier-time-budget`, `--classifier-memory-mb`, `--classifier-threads`);
 the recorded full runs use 1800 seconds and 4 threads.
 Artifact storage permits 128 MiB / 256 regular files per model. The agent chooses
@@ -501,7 +514,7 @@ schema, feature example, limits and logs. No new launch flag is required.
 
 With `--context-cache`, the primary image path is **pool-scale agent descriptors**.
 `precompute_context_cache` stores, once per brain and kind, the raw context of the
-top 20,000 detector-ranked candidates: the fragment neighbourhood (50 um, up to
+top detector-ranked candidates (the band: 50,000 rows since 2026-10-08, 20,000 before): the fragment neighbourhood (50 um, up to
 256 nodes) and image patches at level 1 (30 um radius) and level 0 (16 um radius,
 the finest resolution), both for the whole band (level 0 covered only the first
 4,000 rows before 2026-10-05; `--extend-tier level0` grows a tier of existing
@@ -635,8 +648,10 @@ Controls: `--candidate-pool-size`,
 Before full evaluation, a small feature-only check exercises the real schema,
 missing predictor values and deterministic scoring. The first scorer execution
 error grants one additional repair attempt per generation. The final submitted
-code must exactly match a successfully measured snapshot; an untested last edit
-is rejected. Only that final candidate reaches one evaluation across the fixed
+code must exactly match a successfully measured snapshot; when it does not (an
+untested last edit, or a session cut off at the turn cap), the host ignores the edit
+and submits the generation's best measured candidate, recorded as
+`submission_fallback` in the ledger (2026-10-08). Only that final candidate reaches one evaluation across the fixed
 validation brains, even if its TRAIN precision did not improve. Full-precision
 validation means decide promotion together with the paired-bootstrap noise bound
 (section 3.3); reports retain each brain/kind's result, any regressed cells and
@@ -685,7 +700,7 @@ under `proofreader_evolve/runs/precision_*/`. Each `genNNN/` also saves:
   `*.from_edit_base.diff` relative to the last observed workspace checkpoint;
   this differs from the generation's assigned search branch and accepted policy.
 - `parameter_searches/batchNNN/`: the fixed `formula.py`, proposed grid and a
-  results table for every configuration in that search.
+  results table for every configuration that ran (a grid stops at its first execution error).
 - `training.py`: editable fit/predict program, restored together with the measured model.
 - `classifier_guide.md`, `model_environment.json`: interface, installed packages and budgets.
 - `model_artifacts/<digest>/` (run level): hashed model/preprocessing files, required for resume.

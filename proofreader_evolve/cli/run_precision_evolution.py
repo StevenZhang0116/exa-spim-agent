@@ -28,6 +28,7 @@ import time
 from . import precompute_error_scores as pc
 from ..harness import fixed_pool_scoring as scoring
 from ..harness.native_pool import cache_path, ensure_native_tables
+from ..harness import label_availability
 from ..harness.reviser_session import DEFAULT_MODEL, build_options, bind_session_options
 from ..harness.trajectory import Trajectory, log_metrics, save_diffs
 from ..harness.evolution_report import update_report
@@ -56,7 +57,8 @@ from ..harness.volume_analysis import VOLUME_ANALYSIS_VERSION, MAX_ANALYSES, MAX
 
 HERE = Path(__file__).resolve().parents[1]
 CONTRACT = (HERE / "artifacts" / "scorer_rules.md").read_text()
-DEFAULT_REVISER_MAX_TURNS = 24
+DEFAULT_REVISER_MAX_TURNS = 60  # 24 -> 40 (2026-10-07) -> 60 (2026-10-08): an exploration round that wrote a new
+# descriptor family needed 44 tool calls and was cut off at 40.
 
 
 def _record_handoff(memory, gen_dir, target_kind, generation, record, trace):
@@ -106,9 +108,11 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
         readable.extend(policy_path.parent / name for name in (
             'image_context_guide.md', 'volume_analysis_guide.md', 'image_scoring_plan.json',
             'descriptor_guide.md'))
+    readable_dirs = ([policy_path.parent / name for name in ('experiments', 'classifier_fits', 'descriptor_runs')]
+                     if experiments is not None else [])
     options = bind_session_options(
         options, policy_path, rules_path, report_path,
-        readable_paths=readable,
+        readable_paths=readable, readable_dirs=readable_dirs,
         training_server=experiments.mcp_server() if experiments else None)
     result = None
     prompt = (
@@ -117,6 +121,7 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
         f"You have at most {max_turns} SDK turns. The compact feedback is at most {MAX_FEEDBACK_BYTES // 1000} KB; read it once. "
         "Feature vectors align with example labels/scores by index. Groups are diagnostic samples, not a dataset. "
         "Reserve turns to write scorer.py and rules.md and return your summary; avoid repeated tiny reads. "
+        "Read a file before you Edit or Write it; the tools reject edits to files not read in this session. "
         "Briefly describe the planned change before editing. "
         "At the end, summarize what changed, the TRAIN evidence motivating it, "
         "and the expected effect. Do not claim evaluation results you have not observed."
@@ -125,6 +130,9 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
         prompt += (
             f" This generation changes ONLY the {experiments.target_kind} component; the harness freezes the other kind. "
             f"Whole-TRAIN feature statistics are at {policy_path.parent / 'feature_statistics.json'}. "
+            "Your measured attempts, classifier fits and descriptor runs in this generation directory "
+            "(experiments/, classifier_fits/, descriptor_runs/) are readable; a tool result the SDK parks on disk "
+            "is also readable, or read the attempt's result.json instead. "
             "Use mcp__training__search_memory to look up related previous strategies before repeating them. "
             "Read failure_cases.json, hypothesis_memory.json and feature_discovery_guide.md once. "
             "The feedback examples and failure cases describe the search branch you start from (search_branch); "
@@ -229,7 +237,8 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
             "set proposal.json.classifier.parameters, and call mcp__training__train_classifier({}). "
             "Read model_environment.json for installed packages and resource limits. "
             "Choose any CPU model supported by installed packages and the resource budget. "
-            "The harness supplies TRAIN labels only, saves your artifacts, and writes measured scorer.py. "
+            "The harness supplies TRAIN rows labeled 1 or 0 only (NaN-label rows are withheld; declare an X_unlabeled "
+            "keyword in fit to receive a sample of their predictors), saves your artifacts, and writes measured scorer.py. "
             "Save fitted preprocessing with the model; predict receives read-only artifacts and no labels. "
             "Do not edit the generated manifest. No network, package installation or child processes. "
             f"Branch ranking, grid winners, specialists and stall counters use the official selection score "
@@ -261,7 +270,8 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
             'Use mcp__training__restore_candidate({"candidate_id":"parent"}) to measure/recover the assigned '
             'branch from cache, or {"candidate_id":"best"} to restore the best measured candidate of this generation. '
             "IDs such as gen002/attempt001 restore earlier measured branches without rewriting their source. "
-            "Finish with scorer.py exactly matching a successfully evaluated snapshot. An untested final edit is rejected. "
+            "Finish with scorer.py exactly matching a successfully evaluated snapshot; otherwise the host ignores the untested "
+            "edit and submits this generation's best measured candidate. "
             "Summarize observed TRAIN evidence and "
             "remaining uncertainty in rules.md. Validation is unavailable to this session."
         )
@@ -298,7 +308,13 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
                           "stop_reason": getattr(message, "stop_reason", None),
                           "api_error_status": getattr(message, "api_error_status", None)}
                 _write(policy_path.parent / "reviser_result.json", result)
-                if message.is_error:
+                if message.is_error and message.subtype == "error_max_turns":
+                    # Measured work survives the turn cap: the submission check runs on the files as left,
+                    # falling back to the generation's best measured candidate (generation 15 of
+                    # run precision_20261008_001127 lost six measured candidates this way).
+                    trace.emit("reviser_turn_limit", f"Session ended at the {max_turns}-turn cap; submitting the files as left",
+                               num_turns=message.num_turns, max_turns=max_turns)
+                elif message.is_error:
                     detail = "; ".join(str(e) for e in (result["errors"] or [])) or message.result or ""
                     raise RuntimeError(
                         f"Scorer reviser SDK error: subtype={message.subtype}; "
@@ -366,8 +382,11 @@ def parse_args(argv=None):
                    help="Wall-clock budget for all uncached descriptor computations in one generation (default: 5400)")
     p.add_argument("--mcl", type=int, default=100)
     p.add_argument("--generations", type=int, default=15)
-    p.add_argument("--merge-k", type=int, default=100)
-    p.add_argument("--split-k", type=int, default=100)
+    # Three-valued defaults (2026-10-09 K sweep, TODO.md): K must stay well below the GT-labeled rows per cell.
+    p.add_argument("--merge-k", type=int, default=300,
+                   help="Top-K budget per merge cell over GT-labeled rows (default: 300; 100 before 2026-10-09)")
+    p.add_argument("--split-k", type=int, default=500,
+                   help="Top-K budget per split cell over GT-labeled rows (default: 500; 100 before 2026-10-09)")
     p.add_argument("--precision-margin", type=float, default=0,
                    help="Required absolute gain in equal-weight mean validation Precision@K (default: 0)")
     p.add_argument("--policy-time-budget", type=float, default=300,
@@ -375,16 +394,16 @@ def parse_args(argv=None):
                         "120 before 2026-10-06, raised with the 16-case analysis limit)")
     p.add_argument("--classifier-time-budget", type=float, default=300,
                    help="Wall/CPU fitting budget per classifier configuration, in seconds (default: 300)")
-    p.add_argument("--classifier-memory-mb", type=int, default=8192,
-                   help="Address-space limit for fitting, fit-time extraction, diagnostics and 3D analysis "
-                        "(default: 8192 MiB); ordinary inference uses 8192 MiB")
+    p.add_argument("--classifier-memory-mb", type=int, default=16384,
+                   help="Address-space limit for fitting, fit-time extraction, diagnostics, 3D analysis and "
+                        "fixed-pool scoring (default: 16384 MiB; 8192 before 2026-10-08)")
     p.add_argument("--classifier-threads", type=int, default=1,
                    help="Numerical library CPU threads for fit/predict and 3D analysis (default: 1)")
     p.add_argument("--start-from-artifacts", type=Path,
                    help="Model artifact store for --start-from (default: sibling model_artifacts directory)")
     p.add_argument("--model", default=DEFAULT_MODEL)
     p.add_argument("--reviser-max-turns", type=int, default=DEFAULT_REVISER_MAX_TURNS,
-                   help="Maximum SDK interaction turns per generation (default: 24)")
+                   help=f"Maximum SDK interaction turns per generation (default: {DEFAULT_REVISER_MAX_TURNS})")
     p.add_argument("--train-evaluations-per-generation", type=int, default=8,
                    help="Shared TRAIN evaluation units (default: 8); each ablation fold/arm costs one. "
                         "Cache hits are free; the first scorer execution error allows one extra repair")
@@ -665,6 +684,12 @@ async def run(args, revise_fn=None):
 async def _run(args, revise_fn, run_dir, trace):
     selected = pc.resolve_detector_runs(args.merge_dir, args.split_dir)
     banks, selection = _load_evaluation_banks(args, selected, trace)
+    # Three-valued labels everywhere (TRAIN, selection, validation): 1 / 0 / NaN from the
+    # required GT-availability sidecars; a missing or mismatched sidecar stops the run.
+    availability_summary = label_availability.apply(banks)
+    trace.emit("label_availability", "Three-valued labels (1 / 0 / NaN) attached to every table; ranking and "
+               "fitting use GT-labeled rows only",
+               version=label_availability.AVAILABILITY_VERSION, summary=availability_summary)
     attach_local_context(banks, run_dir / 'local_feature_cache', trace)
     image_store = attach_image_context(banks, run_dir / 'image_cache', args.image_alignment, trace)
     _write(run_dir / 'image_alignment.json', {'brains': image_store.reviews})
@@ -675,7 +700,9 @@ async def _run(args, revise_fn, run_dir, trace):
                   if args.promotion_gate == "bootstrap" else ""),
                gate_version=scoring.gate_version(args.promotion_gate), gate_mode=args.promotion_gate,
                aggregation=scoring.AGGREGATION)
-    trace.emit("metric_definitions", "discoverable_pool_positives = GT-positive candidate rows in the fixed pool; "
+    trace.emit("metric_definitions", "Labels are three-valued (1 error / 0 GT-confirmed no error / NaN not "
+               "judgeable by GT); Top K is taken among GT-labeled rows (gt_labeled), NaN rows are never ranked. "
+               "discoverable_pool_positives = GT-positive candidate rows in the fixed pool; "
                "top_k_hits = GT-positive rows selected in Top K; Precision@K = hits / effective_k; "
                "Recall@K = hits / pool positives (N/A when zero). Merge counts are candidate sites; "
                "split counts are segment pairs. These are not total GT error counts or reachable-GT counts. "
@@ -683,6 +710,12 @@ async def _run(args, revise_fn, run_dir, trace):
     train = {b: banks[b] for b in args.train_brains}
     validation = {b: banks[b] for b in args.validation_brains}
     budgets = {"merge": args.merge_k, "split": args.split_k}
+    crowded = sorted(f"{cell} (K={budgets[cell.rsplit('/', 1)[1]]}, labeled={info['counts']['1'] + info['counts']['0']})"
+                     for cell, info in availability_summary.items()
+                     if budgets[cell.rsplit('/', 1)[1]] * 2 > info['counts']['1'] + info['counts']['0'])
+    if crowded:
+        trace.emit("label_availability_warning", "K exceeds half of the GT-labeled rows; Precision@K there "
+                   "approaches the labeled base rate: " + "; ".join(crowded), cells=crowded)
     artifact_store = run_dir / "model_artifacts"
     source = args.start_from.read_text()
     parent_sources = components(source)
@@ -730,17 +763,17 @@ async def _run(args, revise_fn, run_dir, trace):
     trace.emit("seed_evaluation", "Evaluating seed scorer on train and validation")
     parent_state = {}
     parent_train = scoring.evaluate(source, train, budgets, args.policy_time_budget, examples=True,
-                                    state=parent_state, artifact_store=artifact_store)
+                                    state=parent_state, artifact_store=artifact_store, memory_mb=args.classifier_memory_mb)
     log_metrics(trace, "Seed train", parent_train)
     parent_validation_state = {}
     parent_validation = scoring.evaluate(source, validation, budgets, args.policy_time_budget,
-                                         state=parent_validation_state, artifact_store=artifact_store)
+                                         state=parent_validation_state, artifact_store=artifact_store, memory_mb=args.classifier_memory_mb)
     log_metrics(trace, "Seed validation", parent_validation)
     # Record the original frozen-score comparator even when resuming from a custom policy.
     baseline_source = (HERE / "artifacts" / "scorer.py").read_text()
     trace.emit("baseline_evaluation", "Evaluating frozen detector-score baseline")
-    baseline = {"train": scoring.evaluate(baseline_source, train, budgets, args.policy_time_budget),
-                "validation": scoring.evaluate(baseline_source, validation, budgets, args.policy_time_budget)}
+    baseline = {"train": scoring.evaluate(baseline_source, train, budgets, args.policy_time_budget, memory_mb=args.classifier_memory_mb),
+                "validation": scoring.evaluate(baseline_source, validation, budgets, args.policy_time_budget, memory_mb=args.classifier_memory_mb)}
     log_metrics(trace, "Baseline train", baseline["train"])
     log_metrics(trace, "Baseline validation", baseline["validation"])
     baseline["auxiliary_ablation"] = _auxiliary_ablation(args, protocol, kinds, run_dir, fit_limits, trace)
@@ -756,6 +789,11 @@ async def _run(args, revise_fn, run_dir, trace):
                                                          "of the paired mean delta must exceed zero",
                                                  "affects_decision": args.promotion_gate == "bootstrap"}},
                 "dataset_selection": selection,
+                "labels": {"semantics": "three-valued: 1 = error, 0 = GT-confirmed no error, NaN = not "
+                                        "judgeable by GT; ranking, metrics, bootstrap and fitting use labeled rows",
+                           "version": label_availability.AVAILABILITY_VERSION,
+                           "definitions": label_availability.DEFAULT_DEFINITION,
+                           "tables": availability_summary},
                 "selection_protocol": protocol.describe(),
                 "reviser_max_turns": args.reviser_max_turns,
                 "feedback_format": "stratified-train-v5",
@@ -816,7 +854,7 @@ async def _run(args, revise_fn, run_dir, trace):
                 "evaluator_sha256": pc._sha256(Path(scoring.__file__)),
                 "harness_sha256": {p.name: pc._sha256(p) for p in sorted((HERE / 'harness').glob('*.py'))},
                 "driver_sha256": pc._sha256(Path(__file__)),
-                "note": "Native-label precision, not proof of repair efficacy; seccomp formula workers and Landlock/seccomp model workers"}
+                "note": "Precision over GT-labeled rows (three-valued labels), not proof of repair efficacy; seccomp formula workers and Landlock/seccomp model workers"}
     _write(run_dir / "manifest.json", manifest)
     _write(run_dir / "baseline.json", baseline)
     _write(run_dir / "seed.json", {"train": parent_train, "validation": parent_validation})
@@ -862,7 +900,7 @@ async def _run(args, revise_fn, run_dir, trace):
                                for dist in importlib.metadata.distributions() if dist.metadata['Name'])),
         'device': 'cpu', 'network': False, 'child_processes': False,
         'fit_timeout_seconds': args.classifier_time_budget, 'fit_memory_mb': args.classifier_memory_mb,
-        'predict_timeout_seconds': args.policy_time_budget, 'predict_memory_mb': 8192,
+        'predict_timeout_seconds': args.policy_time_budget, 'predict_memory_mb': args.classifier_memory_mb,
         'volume_analysis_timeout_seconds': args.policy_time_budget,
         'volume_analysis_memory_mb': args.classifier_memory_mb,
         'numerical_threads': args.classifier_threads, 'max_artifact_bytes': 128 * 1024**2,
@@ -1013,7 +1051,20 @@ async def _run(args, revise_fn, run_dir, trace):
             gen_trace.emit("revision_complete", record["reviser"].get("summary") or "Revision completed",
                            usage=record["reviser"].get("usage"), cost_usd=record["reviser"].get("cost_usd"))
             stage = "submission_check"
-            submitted, candidate_rules = experiments.submitted()
+            try:
+                submitted, candidate_rules = experiments.submitted()
+            except ValueError as exc:
+                # An untested final edit (or a session cut off mid-edit) must not discard measured work:
+                # submit the generation's best measured candidate instead, or fail as before if none exists.
+                try:
+                    experiments.restore('best')
+                except ValueError:
+                    raise exc from None
+                submitted, candidate_rules = experiments.submitted()
+                record['submission_fallback'] = {'reason': str(exc)[:300], 'restored': experiments.restored_from}
+                gen_trace.emit("submission_fallback", f"Final files did not match a measured snapshot "
+                               f"({str(exc)[:160]}); submitted {experiments.restored_from} instead",
+                               restored=experiments.restored_from)
             candidate_source = submitted['source']
             record["candidate_policy_sha256"] = hashlib.sha256(candidate_source.encode()).hexdigest()
             record['submitted_experiment'] = submitted['entry']['experiment']
@@ -1045,7 +1096,7 @@ async def _run(args, revise_fn, run_dir, trace):
                            "regardless of TRAIN gain")
             candidate_validation_state = {}
             candidate_validation = scoring.evaluate(candidate_source, validation, budgets, args.policy_time_budget,
-                                                    state=candidate_validation_state, artifact_store=artifact_store)
+                                                    state=candidate_validation_state, artifact_store=artifact_store, memory_mb=args.classifier_memory_mb)
             record["validation"] = candidate_validation
             log_metrics(gen_trace, "Candidate validation", candidate_validation, parent_validation)
             point_passed, point_reason = scoring.acceptance(parent_validation, candidate_validation,

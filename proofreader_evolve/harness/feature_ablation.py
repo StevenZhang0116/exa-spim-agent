@@ -11,10 +11,11 @@ from .classifier_contract import config_identity, frozen_model
 from .classifier_training import fit_classifier
 from .fixed_pool_scoring import rank_metrics
 from .internal_validation import FOLDS, fold_assignments, grouped_folds
+from .label_availability import labels_digest
 from .isolated_scoring import score
 from .local_feature_contract import local_feature_spec
 from .local_features import augmented_features
-from .model_execution import predict_model
+from .model_execution import predict_model, DEFAULT_MEMORY_MB
 from .image_contract import image_spec
 from .image_features import subset_features
 from .image_selection import scoring_coverage
@@ -52,7 +53,7 @@ def prepare_ablation(train, kind, source, columns, *, classifier, config,
         table = train[brain].tables[kind]
         fingerprints[brain] = {'pool': table.meta['pool_sha256'], 'columns': list(frame.columns),
                               'features': fingerprint.hexdigest(),
-                              'labels': hashlib.sha256(np.asarray(table.truth, dtype=np.int8).tobytes()).hexdigest()}
+                              'labels': labels_digest(table.truth)}
         if 'image_context' in frame.attrs:
             fingerprints[brain]['image_inputs'] = frame.attrs['image_context']['feature_cache_key']
     identity = {'version': ABLATION_VERSION, 'kind': kind, 'classifier': classifier,
@@ -72,7 +73,7 @@ def prepare_ablation(train, kind, source, columns, *, classifier, config,
 
 def measure_ablation(train, kind, source, config, frames, columns, split, identity,
                      budgets, directory, *, classifier, charge, fit_timeout=300,
-                     score_timeout=120, memory_mb=8192, threads=1):
+                     score_timeout=120, memory_mb=DEFAULT_MEMORY_MB, threads=1):
     """The identical program is refit for both arms; removed inputs become constants.
 
     Constant replacement preserves the input schema for arbitrary agent programs.
@@ -138,8 +139,8 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
         cells[f'{brain}/{kind}'] = {
             'full': full, 'without_features': removed,
             'delta_precision': full['precision'] - removed['precision'],
-            'gained_positives': int(table.truth[gained].sum()),
-            'lost_positives': int(table.truth[lost].sum()),
+            'gained_positives': int(np.nansum(table.truth[gained])),
+            'lost_positives': int(np.nansum(table.truth[lost])),
             'top_k_overlap': len(np.intersect1d(chosen, control))}
         if 'image_context' in frames[brain].attrs:
             cells[f'{brain}/{kind}']['image_coverage'] = {

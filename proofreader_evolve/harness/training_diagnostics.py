@@ -1,4 +1,8 @@
-"""Stratified TRAIN diagnostics and parent-relative top-K changes."""
+"""Stratified TRAIN diagnostics and parent-relative top-K changes.
+
+Labels are three-valued (1 / 0 / NaN); every example group is drawn from GT-labeled
+rows, and the boundary panel follows the labeled-row ranking used by Precision@K.
+"""
 
 import hashlib
 import numpy as np
@@ -24,7 +28,8 @@ def example(table, scores, index, group, features=None):
 
 
 def describe(table, scores, chosen, generation=0, cell='', parent=None, *, features=None):
-    order = np.lexsort((np.asarray(table.keys, dtype=str), -scores))
+    from .fixed_pool_scoring import labeled_order
+    order = labeled_order(scores, table.truth, table.keys)
     mask = np.zeros(len(scores), dtype=bool)
     mask[chosen] = True
     # Boundary panel is outside top-K, distinct from currently selected rows.
@@ -65,9 +70,10 @@ def feature_statistics(tables_by_brain, target_kind):
     for brain, bank in tables_by_brain.items():
         table = bank.tables[target_kind]
         cells = {}
+        unlabeled = int(np.isnan(np.asarray(table.truth, dtype=float)).sum())
         for name in table.features.columns:
             values = table.features[name].to_numpy(dtype=float)
-            entry = {}
+            entry = {'unlabeled_count': unlabeled}
             for label in (0, 1):
                 selected = values[table.truth == label]
                 finite = selected[np.isfinite(selected)]
@@ -76,6 +82,6 @@ def feature_statistics(tables_by_brain, target_kind):
                                     if len(finite) else None}
             cells[name] = entry
         result[f'{brain}/{target_kind}'] = cells
-    return {'note': 'Whole TRAIN pool grouped by native labels; quartiles rounded to 6 significant digits. '
-                    'Label 0 is not verified biological truth.',
+    return {'note': 'Whole TRAIN pool grouped by three-valued labels: 1 = error, 0 = GT-confirmed no error; '
+                    'NaN rows (not judgeable by GT) are only counted. Quartiles rounded to 6 significant digits.',
             'cells': result}

@@ -39,10 +39,10 @@
   function metricsView(box, report, title) {
     box.append(el("h4",title));if(!report){box.append(el("p","Not measured / not recorded","muted"));return;}
     label(box,"Mean Precision@K",fmt(report.macro_precision));
-    const headers=["Brain / kind","Pool candidates","Pool positives","Top-K hits","Effective K / requested K","Precision@K","Recall@K"];
-    box.append(table(headers,Object.entries(report.cells||{}).map(([name,c])=>{
-      const row=[name,count(c.pool_size),count(c.positives),count(c.tp),`${count(c.effective_k)} / ${count(c.requested_k)}`,fmt(c.precision),c.positives===0?"N/A (no pool positives)":fmt(c.recall)];
-      return row;})));
+    // Labels are three-valued; Top-K and precision use GT-labeled rows only (older runs lack n_labeled).
+    const headers=["Brain / kind","Pool candidates","GT-labeled rows","Pool positives","Top-K hits","Effective K / requested K","Precision@K","Recall@K"];
+    box.append(table(headers,Object.entries(report.cells||{}).map(([name,c])=>
+      [name,count(c.pool_size),c.n_labeled==null?"N/A":count(c.n_labeled),count(c.positives),count(c.tp),`${count(c.effective_k)} / ${count(c.requested_k)}`,fmt(c.precision),c.positives===0?"N/A (no pool positives)":fmt(c.recall)])));
     for(const [name,c] of Object.entries(report.cells||{}))if(c.local_context){
       const context=c.local_context;
       label(box,`${name} local geometry`,`${count(context.selected_rows)} / ${count(context.pool_rows)} rows; ${count(context.truncated_sites)} truncated sites; ${context.cached?"cached":"extracted"}`);

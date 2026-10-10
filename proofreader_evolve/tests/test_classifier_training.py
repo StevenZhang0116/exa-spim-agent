@@ -25,6 +25,7 @@ from proofreader_evolve.harness.isolated_scoring import score
 from proofreader_evolve.harness.scorer_components import components
 from proofreader_evolve.harness.train_experiments import ExperimentMemory, TrainingExperiments
 from proofreader_evolve.tests.test_fixed_pool_scoring import fixture, BASELINE
+from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
 
 # A custom learner with its own persistence format, not a framework-selected classifier.
 PROGRAM = '''import numpy as np
@@ -120,6 +121,34 @@ class ProgramContractTests(unittest.TestCase):
             artifact.write_bytes(b'changed')
             with self.assertRaisesRegex(ValueError, 'differ'):
                 verify_artifacts(model, root / 'model_artifacts')
+
+    def test_fit_receives_labeled_rows_and_optional_unlabeled_features(self):
+        program = """import numpy as np
+
+def fit(X_train, y_train, artifact_dir, params, X_unlabeled=None):
+    assert set(np.unique(y_train)) == {0, 1}, y_train
+    np.save(artifact_dir / 'seen.npy', np.array([len(X_train), len(X_unlabeled),
+            X_unlabeled['evidence'].iloc[0]]), allow_pickle=False)
+
+
+def predict(X, artifact_dir, params):
+    return X['evidence'].fillna(0).to_numpy()
+"""
+        table_bank = fixture()
+        table = table_bank.tables['split']
+        table.truth = np.array([0., 1., np.nan])  # row 2 is not judgeable by GT
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, summary = fit_classifier({'1': table_bank}, 'split', {'parameters': {}}, root / 'fit',
+                                             program=program, artifact_store=root / 'store')
+            seen = np.load(verify_artifacts(frozen_model(source), root / 'store') / 'seen.npy')
+            self.assertEqual(seen.tolist(), [2., 1., .2])
+            self.assertEqual(summary['class_counts'], {'0': 1, '1': 1})
+            self.assertEqual(summary['unlabeled_rows'], 1)
+            # Without the declared parameter, no unlabeled rows are staged at all.
+            _, plain = fit_classifier({'1': table_bank}, 'split', {'parameters': {}}, root / 'fit2',
+                                      program=PROGRAM, artifact_store=root / 'store2')
+            self.assertEqual((plain['training_rows'], plain['unlabeled_rows']), (2, None))
 
     def test_installed_estimator_and_serialized_custom_class(self):
         program = '''import joblib
@@ -222,6 +251,20 @@ class ClassifierToolTests(unittest.TestCase):
         with patch('proofreader_evolve.harness.train_experiments.fit_classifier', wraps=fit_classifier) as fit:
             self.session.train_classifier()
         self.assertEqual(fit.call_count, 1)
+
+    def test_grid_stops_after_the_first_failed_fit(self):
+        proposal(self.session, grid={'scale': [1, 2]})
+        with patch('proofreader_evolve.harness.train_experiments.fit_classifier',
+                   side_effect=ClassifierTrainingError('killed')) as fit:
+            response = self.session.train_classifier()
+        self.assertEqual(fit.call_count, 1)  # the second configuration was never attempted
+        self.assertEqual(response['status'], 'no_successful_candidate')
+        self.assertEqual(response['stopped_early']['skipped_configurations'], 1)
+        self.assertIn('killed', response['stopped_early']['error'])
+        self.assertEqual(self.session.evaluations_used, 1)
+        from proofreader_evolve.harness.model_execution import exit_detail
+        self.assertIn('16384 MiB', exit_detail(-9, {'memory_mb': 16384}, 'tail'))
+        self.assertEqual(exit_detail(1, {'memory_mb': 16384}, 'tail'), 'tail')
 
     def test_invalid_requests_and_failed_fits(self):
         proposal(self.session, program='def fit(): pass')

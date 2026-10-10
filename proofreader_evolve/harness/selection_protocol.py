@@ -11,7 +11,6 @@ The selection score is queried repeatedly by the reviser, so it is a development
 signal, not an unbiased estimate of generalization.
 """
 
-import hashlib
 import json
 import math
 from pathlib import Path
@@ -23,11 +22,12 @@ from .classifier_training import fit_classifier
 from .fixed_pool_scoring import aggregate_precision, rank_metrics
 from .image_features import subset_features
 from .internal_validation import FOLDS, fold_assignments, grouped_folds
+from .label_availability import labeled_rows, labels_digest
 from .local_features import augmented_features
-from .model_execution import predict_model
+from .model_execution import predict_model, DEFAULT_MEMORY_MB
 
 
-PROTOCOL_VERSION = 'grouped-cv-precision-v1'
+PROTOCOL_VERSION = 'grouped-cv-precision-v2-three-valued'
 MODES = ('grouped_oof', 'in_sample')
 
 
@@ -64,30 +64,37 @@ def partitioned_rank_metrics(scores, truth, keys, fold_ids, k):
     Fold models can emit differently scaled scores, so out-of-fold scores are
     never pooled into one global ranking. The same partition and budgets apply
     to every candidate and to the reference, including non-fitted formulas.
+    Only GT-labeled rows (label 1 or 0; NaN = not judgeable) are ranked, and fold
+    budgets are proportional to each fold's labeled rows.
     """
-    scores, truth = np.asarray(scores, dtype=float), np.asarray(truth)
+    scores, truth = np.asarray(scores, dtype=float), np.asarray(truth, dtype=float)
     fold_ids = np.asarray(fold_ids)
     if type(k) is not int or k < 1:
         raise ValueError('K must be a positive integer')
     if (scores.shape != truth.shape or scores.ndim != 1 or len(keys) != len(scores) or not len(scores)
-            or len(set(keys)) != len(keys) or not np.isfinite(scores).all() or not np.isin(truth, [0, 1]).all()):
+            or len(set(keys)) != len(keys) or not np.isfinite(scores).all()):
         raise ValueError('Return one finite score per candidate in original row order; no dropping/abstention')
     if fold_ids.shape != scores.shape or not np.issubdtype(fold_ids.dtype, np.integer) or (fold_ids < 0).any():
         raise ValueError('Every selection row needs exactly one nonnegative fold assignment')
+    labeled = np.zeros(len(truth), dtype=bool)
+    labeled[labeled_rows(truth)] = True
+    if not labeled.any():
+        raise ValueError('No GT-labeled rows in this selection pool')
     n_folds = int(fold_ids.max()) + 1
-    held_counts = [int(np.count_nonzero(fold_ids == fold)) for fold in range(n_folds)]
+    held_counts = [int(np.count_nonzero(labeled & (fold_ids == fold))) for fold in range(n_folds)]
     budgets = fold_budgets(held_counts, k)
     keys = np.asarray(keys, dtype=str)
     parts, fold_tp = [], []
     for fold in range(n_folds):
-        rows = np.flatnonzero(fold_ids == fold)
+        rows = np.flatnonzero(labeled & (fold_ids == fold))
         order = rows[np.lexsort((keys[rows], -scores[rows]))]
         picked = order[:budgets[fold]]
         parts.append(picked)
         fold_tp.append(int(truth[picked].sum()))
     chosen = np.concatenate(parts) if parts else np.zeros(0, dtype=int)
-    tp, positives, effective = int(sum(fold_tp)), int(truth.sum()), len(chosen)
+    tp, positives, effective = int(sum(fold_tp)), int(np.nansum(truth)), len(chosen)
     return {'requested_k': k, 'effective_k': effective, 'pool_size': len(scores),
+            'n_labeled': int(labeled.sum()), 'n_unlabeled': int((~labeled).sum()),
             'tp': tp, 'fp': effective - tp, 'precision': tp / effective if effective else 0.,
             'recall': tp / positives if positives else None, 'positives': positives,
             'protocol': PROTOCOL_VERSION, 'fold_budgets': budgets, 'fold_tp': fold_tp,
@@ -200,7 +207,7 @@ class SelectionProtocol:
                                                            self.fold_ids(kind, brain), self.budgets[kind])
                 metrics['partition_sha256'] = self.partition_sha256(kind)
             metrics['pool_sha256'] = table.meta['pool_sha256']
-            metrics['labels_sha256'] = hashlib.sha256(np.asarray(table.truth, dtype=np.int8).tobytes()).hexdigest()
+            metrics['labels_sha256'] = labels_digest(table.truth)
             report['cells'][cell] = metrics
             state[cell] = {'scores': scores, 'chosen': chosen}
         report.update(aggregate_precision(report['cells']))
@@ -212,7 +219,7 @@ class SelectionProtocol:
                                  policy_sha256)
 
     def measure_classifier(self, kind, program, config, directory, *, frames=None, fit_timeout=300,
-                           score_timeout=120, memory_mb=8192, threads=1, include_auxiliary=True):
+                           score_timeout=120, memory_mb=DEFAULT_MEMORY_MB, threads=1, include_auxiliary=True):
         """Fit the agent program per fold on fitting rows only; predict every held row once.
 
         Fold models stay under ``directory`` and never enter the resumable artifact

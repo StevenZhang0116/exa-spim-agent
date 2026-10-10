@@ -7,10 +7,11 @@ in_sample) and uses the protocol's chosen rows, never heldout data.
 """
 
 from copy import deepcopy
-import hashlib
 import math
 
 import numpy as np
+
+from .label_availability import labeled_rows, labels_digest
 
 
 COVERAGE_VERSION = 'train-positive-coverage-v1'
@@ -28,9 +29,8 @@ class TrainingCoverage:
         self._cells, self._hits = {}, {}
         for brain, bank in train.items():
             for kind, table in bank.tables.items():
-                truth = np.asarray(table.truth)
-                if truth.ndim != 1 or not np.isin(truth, [0, 1]).all():
-                    raise ValueError('Specialist coverage requires binary TRAIN labels')
+                truth = np.asarray(table.truth, dtype=float)
+                labeled_rows(truth)  # 1 / 0 / NaN only
                 if len(table.candidates) != len(truth):
                     raise ValueError('TRAIN geometry and labels must have identical rows')
                 positives = frozenset(map(int, np.flatnonzero(truth == 1)))
@@ -57,7 +57,7 @@ class TrainingCoverage:
                 self._cells[f'{brain}/{kind}'] = {
                     'kind': kind, 'pool_size': len(truth), 'positive_rows': positives,
                     'slices': slices, 'pool_sha256': table.meta['pool_sha256'],
-                    'labels_sha256': hashlib.sha256(truth.astype(np.int8).tobytes()).hexdigest(),
+                    'labels_sha256': labels_digest(truth),
                 }
 
     def record(self, component_sha256, kind, cells, state):

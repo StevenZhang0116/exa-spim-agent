@@ -52,13 +52,18 @@ def selection_coverage(frame, spec, selected, keys=None):
 
 
 def scoring_coverage(frame, chosen, truth, requested_k):
-    """Labels are used only after selection/scoring, inside the host evaluator."""
+    """Labels are used only after selection/scoring, inside the host evaluator.
+
+    Labels are three-valued; NaN (not GT-judgeable) rows never count as hits.
+    """
     available = frame['image_available'].to_numpy() == 1
     selected = np.flatnonzero(available)
     chosen_with_images = np.asarray(chosen)[available[chosen]]
+    truth = np.asarray(truth, dtype=float)
     return {'requested_k': requested_k, 'effective_k': len(chosen),
-            'selected_rows': len(selected), 'selected_pool_positives': int(np.asarray(truth)[selected].sum()),
+            'selected_rows': len(selected), 'selected_labeled_rows': int((~np.isnan(truth[selected])).sum()),
+            'selected_pool_positives': int(np.nansum(truth[selected])),
             'top_k_with_images': len(chosen_with_images),
             'top_k_image_fraction': len(chosen_with_images) / len(chosen) if len(chosen) else None,
-            'top_k_hits_with_images': int(np.asarray(truth)[chosen_with_images].sum()),
+            'top_k_hits_with_images': int(np.nansum(truth[chosen_with_images])),
             'scope': 'Input coverage only; image contribution requires a paired removal measurement'}

@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from proofreader_evolve.cli import preflight
+from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
 
 
 class PreflightTests(unittest.TestCase):
@@ -31,9 +32,21 @@ class PreflightTests(unittest.TestCase):
         with patch.dict("os.environ", {}, clear=True):
             self.assertEqual(preflight.api_probe("chosen")["status"], "missing_key")
 
+    def test_missing_label_sidecar_blocks(self):
+        from proofreader_evolve.harness import label_availability
+        table = SimpleNamespace(meta={}, truth=[0, 1])
+        bank = SimpleNamespace(meta={"table_paths": {}}, tables={"split": table})
+        with patch.object(preflight.pc, "resolve_detector_runs", return_value={}), \
+                patch.object(preflight, "ensure_native_tables", return_value=bank), \
+                patch.object(label_availability, "apply",
+                             side_effect=label_availability.AvailabilityMismatch("no sidecar")):
+            result = preflight.inspect_readiness(["802449"], selection_protocol="in_sample")
+        self.assertEqual(result["status"], "blocked")
+        self.assertIn("no sidecar", result["brains"]["802449"]["reason"])
+
     def test_selection_roles_block_detector_fitted_selection_brains(self):
         def bank(brain, *args, **kwargs):
-            table = SimpleNamespace(meta={"training_brain": "794495"})
+            table = SimpleNamespace(meta={"training_brain": "794495"}, truth=[0, 1])
             return SimpleNamespace(meta={"table_paths": {}}, tables={"merge": table, "split": table})
         with patch.object(preflight.pc, "resolve_detector_runs", return_value={}), \
                 patch.object(preflight, "ensure_native_tables", side_effect=bank):

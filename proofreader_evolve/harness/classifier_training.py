@@ -9,7 +9,7 @@ import numpy as np
 
 from .classifier_contract import (MODEL_VERSION, normalize_config, render_model, validate_program,
                                   artifact_files, config_identity, verify_artifacts)
-from .model_execution import ModelExecutionError, run_worker
+from .model_execution import ModelExecutionError, run_worker, DEFAULT_MEMORY_MB
 from .local_features import augmented_features
 
 
@@ -17,11 +17,36 @@ class ClassifierTrainingError(ModelExecutionError):
     pass
 
 
-def fit_classifier(train, kind, config, output_dir, *, program, artifact_store,
-                   timeout=300, memory_mb=8192, threads=1, feature_frames=None,
-                   fit_rows=None, random_seed=None):
-    """Fit TRAIN rows; optional host-owned subsets support isolated internal folds.
+# Unlabeled (NaN-label) rows passed to `fit(..., X_unlabeled=...)`, per TRAIN brain:
+# a deterministic sample, so million-row pools stay transportable.
+UNLABELED_ROWS_PER_BRAIN = 100_000
 
+
+def declares_parameter(program, name):
+    """True when the program's top-level `fit` names `name` as an explicit parameter."""
+    import ast
+    for node in ast.parse(program).body:
+        if isinstance(node, ast.FunctionDef) and node.name == 'fit':
+            arguments = node.args
+            return name in {a.arg for a in [*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs]}
+    return False
+
+
+def _unlabeled_sample(rows, seed_text):
+    if len(rows) <= UNLABELED_ROWS_PER_BRAIN:
+        return rows
+    seed = int.from_bytes(hashlib.sha256(seed_text.encode()).digest()[:8], 'big')
+    return np.sort(np.random.default_rng(seed).choice(rows, UNLABELED_ROWS_PER_BRAIN, replace=False))
+
+
+def fit_classifier(train, kind, config, output_dir, *, program, artifact_store,
+                   timeout=300, memory_mb=DEFAULT_MEMORY_MB, threads=1, feature_frames=None,
+                   fit_rows=None, random_seed=None):
+    """Fit GT-labeled TRAIN rows; optional host-owned subsets support isolated internal folds.
+
+    Labels are three-valued (1 / 0 / NaN): `X`/`y` hold only rows labeled 1 or 0. A
+    program whose `fit` declares `X_unlabeled` also receives features (no labels, no
+    images) of a deterministic sample of the NaN rows among the selected rows.
     No heldout features or labels enter the fit worker. These optional arguments
     are framework transport controls, not agent-configurable data paths.
     """
@@ -34,14 +59,22 @@ def fit_classifier(train, kind, config, output_dir, *, program, artifact_store,
                for brain, bank in train.items()})
     if set(frames) != set(train) or (fit_rows is not None and set(fit_rows) != set(train)):
         raise ClassifierTrainingError('Internal feature/subset transport must match the TRAIN brains')
-    selections = {}
+    selections, unlabeled = {}, {}
+    wants_unlabeled = declares_parameter(program, 'X_unlabeled')
     for brain, bank in train.items():
-        size = len(bank.tables[kind].features)
+        table = bank.tables[kind]
+        size = len(table.features)
         rows = np.asarray(fit_rows[brain]) if fit_rows is not None else np.arange(size)
         if (len(frames[brain]) != size or rows.ndim != 1 or rows.dtype.kind not in 'iu'
                 or (rows < 0).any() or (rows >= size).any() or len(np.unique(rows)) != len(rows)):
             raise ClassifierTrainingError('Invalid host TRAIN row selection or feature alignment')
-        selections[brain] = rows
+        truth = np.asarray(table.truth, dtype=float)
+        if len(truth) != size:
+            raise ClassifierTrainingError('Invalid TRAIN labels or row alignment')
+        known = ~np.isnan(truth[rows])
+        selections[brain] = rows[known]
+        if wants_unlabeled:
+            unlabeled[brain] = _unlabeled_sample(np.sort(rows[~known]), f"{brain}/{kind}/{table.meta['pool_sha256']}")
     first = frames[sorted(frames)[0]]
     columns = [name for name in first.columns if all(name in frame.columns for frame in frames.values())]
     output_dir = Path(output_dir)
@@ -61,7 +94,7 @@ def fit_classifier(train, kind, config, output_dir, *, program, artifact_store,
         provenance, offset, positives = [], 0, 0
         for brain in sorted(train):
             table = train[brain].tables[kind]
-            if len(table.truth) != len(table.features) or not np.isin(table.truth, [0, 1]).all():
+            if not np.isin(np.asarray(table.truth, dtype=float)[selections[brain]], [0., 1.]).all():
                 raise ClassifierTrainingError('Invalid TRAIN labels or row alignment')
             feature_hash = hashlib.sha256()
             rows = selections[brain]
@@ -70,7 +103,7 @@ def fit_classifier(train, kind, config, output_dir, *, program, artifact_store,
                 values = frames[brain].iloc[rows[start:stop]][columns].to_numpy(dtype=float, copy=True)
                 x[offset + start:offset + stop] = values
                 feature_hash.update(values.astype('<f8', copy=False).tobytes())
-            labels = np.asarray(table.truth, dtype=np.int8)[rows]
+            labels = np.asarray(table.truth, dtype=float)[rows].astype(np.int8)
             y[offset:offset + len(rows)] = labels
             groups[offset:offset + len(rows)] = group_names.index(brain)
             positives += int(labels.sum())
@@ -78,14 +111,31 @@ def fit_classifier(train, kind, config, output_dir, *, program, artifact_store,
                                'features_sha256': feature_hash.hexdigest(),
                                **({'fit_rows_sha256': hashlib.sha256(rows.astype('<i8').tobytes()).hexdigest()}
                                   if fit_rows is not None else {}),
-                               'labels_sha256': hashlib.sha256(labels.tobytes()).hexdigest()})
+                               'labels_sha256': hashlib.sha256(labels.tobytes()).hexdigest(),
+                               **({'unlabeled_rows': len(unlabeled[brain]),
+                                   'unlabeled_rows_sha256': hashlib.sha256(
+                                       unlabeled[brain].astype('<i8').tobytes()).hexdigest()}
+                                  if wants_unlabeled else {})})
             offset += len(rows)
         x.flush()
         y.flush()
         groups.flush()
         del x, y, groups
+        unlabeled_count = sum(len(rows) for rows in unlabeled.values())
+        if wants_unlabeled:
+            xu = np.lib.format.open_memmap(root / 'X_unlabeled.npy', mode='w+', dtype=np.float64,
+                                           shape=(unlabeled_count, len(columns)))
+            start = 0
+            for brain in sorted(train):
+                for chunk in range(0, len(unlabeled[brain]), 65536):
+                    part = unlabeled[brain][chunk:chunk + 65536]
+                    xu[start:start + len(part)] = frames[brain].iloc[part][columns].to_numpy(dtype=float, copy=True)
+                    start += len(part)
+            xu.flush()
+            del xu
         request = {'mode': 'fit', 'columns': columns, 'config': config, 'group_names': group_names,
                    'timeout': timeout, 'memory_mb': memory_mb, 'threads': threads,
+                   **({'unlabeled_inputs': True} if wants_unlabeled else {}),
                    **({'random_seed': random_seed} if random_seed is not None else {})}
         from .image_contract import image_spec
         from .image_features import stage_images
@@ -117,6 +167,7 @@ def fit_classifier(train, kind, config, output_dir, *, program, artifact_store,
         summary = {key: model[key] for key in ('config', 'training_brains', 'training_rows',
                     'training_fingerprint', 'artifact_sha256', 'threads')}
         summary.update(class_counts={'0': count - positives, '1': positives},
+                       unlabeled_rows=unlabeled_count if wants_unlabeled else None,
                        image_transport=image_transport,
                        image_context={brain: frame.attrs['image_context'] for brain, frame in frames.items()
                                       if 'image_context' in frame.attrs},

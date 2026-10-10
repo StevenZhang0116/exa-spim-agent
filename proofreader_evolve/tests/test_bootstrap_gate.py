@@ -20,6 +20,7 @@ import pandas as pd
 
 from proofreader_evolve.harness import fixed_pool_scoring as scoring
 from proofreader_evolve.harness.native_pool import NativeTable, NativeTables, pool_digest
+from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
 
 K = 200
 DETECTOR = 'def score_candidates(features, ctx):\n    return features["detector_score"].fillna(0).to_numpy(dtype=float)\n'

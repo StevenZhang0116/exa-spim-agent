@@ -91,11 +91,13 @@ def grouped_folds(train, kind, *, selection_brains=None):
                 fitted = np.arange(len(table.truth))
                 keep = np.ones(len(fitted), dtype=bool)
             fit_rows[brain], held_rows[brain] = fitted, held
-            fit_labels.extend(np.asarray(table.truth)[fitted])
+            truth = np.asarray(table.truth, dtype=float)
+            fit_labels.extend(truth[fitted][~np.isnan(truth[fitted])])
             cells[brain] = {'role': 'selection' if brain in selection else 'auxiliary',
                             'fit_rows': len(fitted), 'held_rows': len(held),
+                            'held_labeled_rows': int((~np.isnan(truth[held])).sum()),
                             'purged_rows': int((~keep).sum()),
-                            'held_positives': int(np.asarray(table.truth)[held].sum())}
+                            'held_positives': int(np.nansum(truth[held]))}
         if set(map(int, fit_labels)) != {0, 1}:
             raise ValueError(f'Internal fold {fold} lacks both fitting classes after grouping/purging')
         partitions.append((fit_rows, held_rows))

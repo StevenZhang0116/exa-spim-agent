@@ -15,6 +15,7 @@ import numpy as np
 from proofreader_evolve.cli import run_precision_evolution as driver
 from proofreader_evolve.harness import fixed_pool_scoring as scoring
 from proofreader_evolve.tests.test_fixed_pool_scoring import fixture, IMPROVED
+from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
 
 
 def report(precisions):
@@ -24,7 +25,7 @@ def report(precisions):
             cells[f"{brain}/{kind}"] = {
                 "precision": precision, "pool_sha256": f"pool-{brain}-{kind}",
                 "labels_sha256": f"labels-{brain}-{kind}", "pool_size": 1000,
-                "requested_k": 100, "effective_k": 100, "positives": 100,
+                "n_labeled": 1000, "requested_k": 100, "effective_k": 100, "positives": 100,
             }
     return {"version": scoring.SCORING_VERSION, "cells": cells,
             **scoring.aggregate_precision(cells)}
@@ -53,7 +54,7 @@ class MeanGateTests(unittest.TestCase):
         before = report({"a": {"split": .8}, "b": {"split": .1}})
         after = report({"a": {"split": .7}, "b": {"split": .5}})
         for key, changed_value in (("pool_sha256", "other"), ("labels_sha256", "other"),
-                                   ("pool_size", 1001), ("requested_k", 101),
+                                   ("pool_size", 1001), ("n_labeled", 999), ("requested_k", 101),
                                    ("effective_k", 99), ("positives", 101)):
             changed = deepcopy(after)
             changed["cells"]["b/split"][key] = changed_value

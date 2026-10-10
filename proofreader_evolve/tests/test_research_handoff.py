@@ -18,6 +18,7 @@ from unittest.mock import patch
 from proofreader_evolve.harness import hypothesis_memory as hm
 from proofreader_evolve.harness.search_proposals import read_proposal
 from proofreader_evolve.tests.test_fixed_pool_scoring import fixture, BASELINE, IMPROVED
+from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
 
 HANDOFF = {'open_questions': ['Do missed positives share a low evidence value?'],
            'evidence': [{'claim': 'evidence separates the labels on TRAIN', 'verdict': 'supports',
@@ -26,7 +27,7 @@ HANDOFF = {'open_questions': ['Do missed positives share a low evidence value?']
                                'units': 2}}
 
 
-MALFORMED = {'open_questions': HANDOFF['open_questions'] + ['second', 'third', 'fourth'],
+MALFORMED = {'open_questions': HANDOFF['open_questions'] + ['second', 'third', 'fourth', 'fifth', 'sixth'],
              'do_not_repeat': ['the retired formula branch'],
              'evidence': [{'claim': 'band GBM beats the formula', 'verdict': 'Supports', 'measurement': 'OOF 0.55 vs 0.52'}],
              'next_experiment': {'what': 'tune nonband_weight', 'units': 99, 'why': 'extra'}}
@@ -44,11 +45,11 @@ class HandoffValidationTests(unittest.TestCase):
         self.assertEqual(clean['evidence'], [{'claim': 'band GBM beats the formula', 'verdict': 'supports',
                                               'conditions': 'measurement: OOF 0.55 vs 0.52'}])
         self.assertEqual(clean['next_experiment'], {'what': 'tune nonband_weight'})
-        self.assertTrue(any('do_not_repeat' in n for n in notes) and any('kept the first 3 of 4' in n for n in notes))
+        self.assertTrue(any('do_not_repeat' in n for n in notes) and any('kept the first 5 of 6' in n for n in notes))
         self.assertEqual(hm.sanitize_handoff({'evidence': [{'claim': 'c', 'verdict': 'maybe'}]})[0]['evidence'][0]['verdict'], 'mixed')
         self.assertEqual([e['verdict'] for e in hm.sanitize_handoff({'evidence': [{'claim': 'a', 'verdict': 'Supported'}, {'claim': 'b', 'verdict': 'refuted'}]})[0]['evidence']],
                          ['supports', 'contradicts'])
-        self.assertEqual(len(hm.sanitize_handoff({'open_questions': ['x' * 400]})[0]['open_questions'][0]), hm.HANDOFF_TEXT)
+        self.assertEqual(len(hm.sanitize_handoff({'open_questions': ['x' * 900]})[0]['open_questions'][0]), hm.HANDOFF_TEXT)
         self.assertEqual(hm.sanitize_handoff('one bare question')[0]['open_questions'], ['one bare question'])
         self.assertEqual(hm.sanitize_handoff({'evidence': 'bare claim'})[0]['evidence'], [{'claim': 'bare claim', 'verdict': 'mixed'}])
         for unusable in ({}, {'unknown': 1}, 7, {'evidence': 42}, {'open_questions': [None, '']}):
@@ -84,6 +85,32 @@ class HandoffValidationTests(unittest.TestCase):
             snapshot = memory.snapshot('split', parent={'experiment': 'gen002/attempt001', 'research': entry_b['research']})
             self.assertEqual(snapshot['handoff'][0]['hypothesis_id'], 'gap-b')
             self.assertNotIn('validation', json.dumps(snapshot).lower())
+
+
+class ResearchSanitizerTests(unittest.TestCase):
+    """The research declaration is bounded like the handoff, never a proposal error (2026-10-08)."""
+
+    GOOD = {'hypothesis_id': 'gap-a', 'information_source': 'table', 'failure_mode': 'missed',
+            'prediction': 'p', 'feature_columns': ['x']}
+
+    def test_research_is_bounded_not_rejected(self):
+        self.assertEqual(hm.sanitize_research(self.GOOD), (self.GOOD, []))
+        clean, notes = hm.sanitize_research({**self.GOOD, 'outcome': 'refuted', 'hypothesis_id': 'Gap A!',
+                                             'feature_columns': ['x', 'x', 7, 'y' * 200], 'prediction': 'p' * 2000})
+        self.assertEqual(clean['hypothesis_id'], 'Gap-A')
+        self.assertNotIn('outcome', clean)
+        self.assertEqual(clean['feature_columns'], ['x', 'y' * 128])
+        self.assertEqual(len(clean['prediction']), hm.RESEARCH_TEXT)
+        self.assertTrue(any('outcome' in n for n in notes))
+        self.assertEqual(hm.sanitize_research({**self.GOOD, 'failure_mode': ''})[0]['failure_mode'], 'unspecified')
+        for unusable in (7, {'prediction': 'p'}, {'hypothesis_id': '!!!'}):
+            self.assertIsNone(hm.sanitize_research(unusable)[0])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'proposal.json'
+            path.write_text(json.dumps({'hypothesis': 'h', 'strategy': 's', 'research': {**self.GOOD, 'outcome': 'refuted'}}))
+            self.assertEqual(read_proposal(path)['research'], self.GOOD)  # the generation-16 shape now parses
+            path.write_text(json.dumps({'hypothesis': 'h', 'strategy': 's', 'research': {'prediction': 'no id'}}))
+            self.assertNotIn('research', read_proposal(path))
 
 
 class DriverHandoffTests(unittest.TestCase):
@@ -127,7 +154,7 @@ class DriverHandoffTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]['hypothesis_id'], 'evidence-first')
         self.assertEqual(items[0]['agent']['next_experiment'], {'what': 'tune nonband_weight'})
-        self.assertEqual(len(items[0]['agent']['open_questions']), 3)
+        self.assertEqual(len(items[0]['agent']['open_questions']), hm.HANDOFF_LIMIT)
         self.assertEqual(items[0]['agent']['evidence'][0]['conditions'], 'measurement: OOF 0.55 vs 0.52')
         self.assertTrue(items[0]['host']['promoted'])
         self.assertTrue(items[0]['related_to_assigned_branch'])  # gen2 starts from the promoted reference

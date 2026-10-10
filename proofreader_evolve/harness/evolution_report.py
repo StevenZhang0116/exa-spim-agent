@@ -17,7 +17,7 @@ from .run_records import PRECISION
 
 ASSETS = Path(__file__).resolve().parents[1] / 'plotting' / 'report_assets'
 CELL_FIELDS = ('pool_size', 'positives', 'requested_k', 'effective_k', 'tp', 'fp',
-               'precision', 'recall')
+               'precision', 'recall', 'n_labeled', 'n_unlabeled')
 ATTEMPT_FIELDS = ('experiment', 'sequence', 'target_kind', 'status', 'hypothesis', 'strategy',
                   'family', 'parameters', 'classifier', 'candidate_type', 'component_sha256',
                   'candidate_sha256', 'search_parent', 'search_mode', 'lineage', 'cached',

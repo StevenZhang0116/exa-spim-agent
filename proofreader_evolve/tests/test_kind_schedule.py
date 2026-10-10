@@ -21,6 +21,7 @@ import pandas as pd
 
 from proofreader_evolve.harness import kind_schedule as ks
 from proofreader_evolve.harness.native_pool import NativeTable, NativeTables, pool_digest
+from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
 
 BASELINE = "def score_candidates(features, ctx):\n    return features['detector_score'].to_numpy()\n"
 IMPROVED = "def score_candidates(features, ctx):\n    return features['evidence'].fillna(0).to_numpy()\n"

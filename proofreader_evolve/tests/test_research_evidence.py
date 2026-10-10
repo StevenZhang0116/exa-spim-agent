@@ -16,6 +16,7 @@ from proofreader_evolve.harness.research_evidence import (
 from proofreader_evolve.harness.train_experiments import TrainingExperiments, ExperimentMemory
 from proofreader_evolve.harness.trajectory import Trajectory
 from proofreader_evolve.tests.test_fixed_pool_scoring import fixture, BASELINE
+from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
 
 
 def entry(number, kind='split', precision=.5):

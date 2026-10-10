@@ -23,6 +23,7 @@ from proofreader_evolve.harness.search_proposals import formula_info, parameteri
 from proofreader_evolve.harness.candidate_pool import CandidatePool
 from proofreader_evolve.harness.training_diagnostics import describe, feature_statistics
 from proofreader_evolve.tests.test_fixed_pool_scoring import fixture, BASELINE, IMPROVED
+from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
 
 
 PARAMETERIZED = ("PARAMS = {'weight': 0.0}\n"

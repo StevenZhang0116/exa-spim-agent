@@ -28,14 +28,27 @@ coverage before attributing any improvement to pixels. See image_context_guide.m
 GPU access, network, package installation and child processes are unavailable;
 use in-process training and threads rather than multiprocessing/joblib processes.
 
+## Three-valued labels
+
+TRAIN, selection and validation labels are three-valued: 1 = error, 0 = no error
+confirmed by GT, NaN = not judgeable (no GT tracing near the candidate; most rows).
+Top-K, precision, recall and the bootstrap use GT-labeled rows only: NaN rows are
+scored but never ranked or counted. `fit` receives only labeled rows; `predict` still
+scores every row. Because every ranked row is GT-labeled, a feature that only tells
+"near a GT tracing" from "far from GT" earns nothing; separate 1 from 0.
+
 ## Interface
 
 Write these functions in `training.py`:
 
 ```python
 def fit(X_train, y_train, artifact_dir, params):
-    # X_train: DataFrame of common TRAIN predictors, including detector_score.
-    # y_train: aligned binary native labels; normal fits use all TRAIN rows.
+    # X_train: DataFrame of common TRAIN predictors, including detector_score,
+    #   for GT-labeled rows only (see "Three-valued labels" below).
+    # y_train: aligned 0/1 labels of those rows (1 = error, 0 = GT-confirmed no error).
+    # Optional: declare X_unlabeled=None to also receive predictors (no labels,
+    #   no images) of a deterministic sample of NaN-label rows, up to 100,000
+    #   per TRAIN brain, e.g. for semi-supervised or domain-aware preprocessing.
     # Framework feature diagnostics supply only the fitting rows of each fold.
     # Fit any model/preprocessing and save whatever predict needs here.
     # fit's return value is ignored; persist the fitted state as files.
@@ -91,8 +104,10 @@ below) alongside in-sample TRAIN Precision@K, and restores the best successful c
 the selection score. Selection comparisons guide search;
 only the outer mean validation Precision@K, with its resampling-noise bound, controls
 promotion. With no
-grid, it measures one fit. To try a different method, edit training.py and explain
-the change in proposal.json/rules.md.
+grid, it measures one fit. A grid stops at the first failed fit or execution error of
+the program; the reply's `stopped_early` lists the skipped configurations, which are not
+charged, so fix the program or its memory use before resubmitting them. To try a
+different method, edit training.py and explain the change in proposal.json/rules.md.
 
 - In **explore**, change the entire program and any parameters.
 - In **tune**, keep the program AST and nonnumeric parameters fixed; change
@@ -113,10 +128,10 @@ edit training.py and refit. Model files are stored in the run's
 `model_artifacts/<digest>/` directory and verified before reuse. Arbitrary file
 formats are allowed, up to 128 MiB total / 256 regular files; no symlinks.
 
-Default fitting limits are 300 seconds wall/CPU and 8192 MiB address space.
+Default fitting limits are 300 seconds wall/CPU and 16384 MiB address space.
 The host configures `--classifier-time-budget`, `--classifier-memory-mb` and
 `--classifier-threads` (default 1). Inference uses `--policy-time-budget` (300s
-by default) and 8192 MiB. The thread setting configures numerical libraries;
+by default) and the same 16384 MiB. The thread setting configures numerical libraries;
 the CPU/wall limits bound total work. Scratch plus artifacts are monitored with
 a 256-MiB limit; temporary/output files may briefly exceed it between checks.
 Libraries and inputs are readable, fit artifacts/scratch writable, and prediction
@@ -161,7 +176,7 @@ partition as the selection protocol; only selection brains are scored, with the
 partitioned fold budgets. It preserves the feature schema and
 does not force a model family. It seeds Python/NumPy per fold in this diagnostic;
 agent seed overrides or other random generators can still affect reproducibility.
-Afterward, call train_classifier({}) to fit the chosen program on all TRAIN rows.
+Afterward, call train_classifier({}) to fit the chosen program on all GT-labeled TRAIN rows.
 Diagnostic fold models cannot be submitted. See feature_discovery_guide.md for
 split grouping, unavailable-diagnostic behavior, cache identity and limits.
 

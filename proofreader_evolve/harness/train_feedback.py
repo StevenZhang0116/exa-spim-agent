@@ -3,8 +3,10 @@
 import json
 
 
-MAX_FEEDBACK_BYTES = 96_000  # raised from 48 KB on 2026-10-05; the ladder below still prunes when exceeded
-METRICS = ("precision", "tp", "fp", "requested_k", "effective_k", "pool_size", "positives", "recall")
+MAX_FEEDBACK_BYTES = 128_000  # 48 KB -> 96 KB (2026-10-05) -> 128 KB (2026-10-07, with the SDK file-read cap raised);
+# in run precision_20261007_112554 six of ten generations were pruned to one or two examples per group at 96 KB.
+METRICS = ("precision", "tp", "fp", "requested_k", "effective_k", "pool_size", "n_labeled", "n_unlabeled",
+           "positives", "recall")
 SELECTION_METRICS = ("protocol", "fold_budgets", "fold_tp", "fold_held_rows")
 
 
@@ -55,7 +57,10 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                 "format": ("stratified-train-v5" if branch is not None else "stratified-train-v4")
                 if selection is not None else "stratified-train-v3",
                 "reading_guide": (
-                    "TRAIN only. Feature vectors and candidate_refs align with labels and scores by index. "
+                    "TRAIN only. Labels are three-valued: 1 = error, 0 = GT-confirmed no error, NaN = not "
+                    "judgeable by GT (n_unlabeled). Top-K, precision and recall use GT-labeled rows only "
+                    "(n_labeled); NaN rows are scored but never ranked or counted, and every example is a "
+                    "labeled row. Feature vectors and candidate_refs align with labels and scores by index. "
                     "Use inspect_candidate with a candidate_ref to inspect TRAIN fragment geometry. "
                     "Each example has a sampling group: selected positives/label0, just-below-K boundary "
                     "positives/label0, and missed positives; candidate reports also show gained/lost positives. "

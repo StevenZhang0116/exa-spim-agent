@@ -1,6 +1,8 @@
 # Agent descriptors: measure any quantity over the cached band in one call
 
-The host caches, once per brain and kind, the raw context of the top 20,000
+The host caches, once per brain and kind, the raw context of the top detector-ranked
+candidates (the band; its size per brain is in `model_environment.json`, 50,000 rows in
+the current build, 20,000 before 2026-10-08)
 detector-ranked candidates: the fragment neighbourhood (50 um, up to 256 nodes)
 and image patches for the whole band at two resolutions (`level1`: level 1,
 30 um radius, about 1.5 x 1.5 x 2 um voxels; `level0`: level 0, 16 um radius,
@@ -14,7 +16,7 @@ the cached rows in parallel sandboxed workers and registers the results as
 
 1. Edit `descriptor.py`: a literal `DESCRIPTOR = {'kind', 'inputs', 'image_tier',
    'feature_names'}` and `describe(context) -> dict`. `inputs` is `geometry`,
-   `image` or `both`; `kind` must be this generation's kind; at most 16 names
+   `image` or `both`; `kind` must be this generation's kind; at most 32 names
    matching `[a-z][a-z0-9_]{1,48}`.
 2. Optional: debug `describe` on up to 16 rows with `run_volume_analysis`
    (rename `describe` to `analyze` in `analysis.py`), or call
@@ -25,7 +27,8 @@ the cached rows in parallel sandboxed workers and registers the results as
    rows on each side of rank K) or `"all_cached"` (the whole band). One
    uncached call costs one evaluation unit plus wall time from the per-call and
    per-generation descriptor budgets in `model_environment.json`. The reply
-   gives, for each column on each TRAIN brain, the label-conditional quartiles,
+   gives, for each column on each TRAIN brain, the quartiles conditional on labels
+   1 and 0 (NaN-label rows are only counted, as `unlabeled_count`),
    finite fraction and coverage. Results are cached by code hash: the same
    `describe` costs nothing again in any later generation or run.
 4. Use the columns like any predictor: in a formula (handle NaN outside the

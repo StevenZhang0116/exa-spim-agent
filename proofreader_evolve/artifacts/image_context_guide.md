@@ -137,7 +137,8 @@ ordinary model signatures with a keyword argument:
 
 ```python
 def fit(X_train, y_train, artifact_dir, params, *, images):
-    # len(images) == len(X_train). images[i] is a list of occurrence patches;
+    # len(images) == len(X_train) (GT-labeled rows only; X_unlabeled gets no images).
+    # images[i] is a list of occurrence patches;
     # an empty list means this row was outside the declared image selection.
     # Fit your encoder, normalization and model using TRAIN only. Save all state.
     ...

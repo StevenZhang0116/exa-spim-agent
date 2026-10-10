@@ -14,6 +14,7 @@ import socket
 from . import precompute_error_scores as pc
 from ..harness.reviser_session import DEFAULT_MODEL
 from ..harness.native_pool import ensure_native_tables, cache_path as native_cache_path
+from ..harness import label_availability
 
 
 def api_probe(model):
@@ -116,8 +117,11 @@ def inspect_readiness(brains, mcl=100, tables_dir=pc.DEFAULT_OUT,
                                          tables_dir, prepare=False, mcl=mcl)
             loaded[brain] = bank
             tables = getattr(bank, "tables", None) or {}
+            # Evolution requires the three-valued labels; a missing/mismatched sidecar blocks.
+            labels = label_availability.apply({brain: bank}) if tables else {}
             report["brains"][brain] = {
                 "status": "passed", "table_paths": bank.meta["table_paths"],
+                "label_counts": {cell: info["counts"] for cell, info in labels.items()},
                 "detector_training_brains": sorted({str(t.meta["training_brain"]) for t in tables.values()
                                                     if getattr(t, "meta", {}).get("training_brain") is not None})}
         except (Exception, SystemExit) as exc:

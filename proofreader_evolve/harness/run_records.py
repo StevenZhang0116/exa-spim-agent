@@ -9,7 +9,8 @@ import math
 from pathlib import Path
 
 PRECISION = "native-precision-at-k-v1"
-METRIC_NAME = "macro native-label Precision@K"
+# Runs since 2026-10-09 (native-precision-at-k-v2-three-valued) rank GT-labeled rows only.
+METRIC_NAME = "macro Precision@K"
 
 
 def objective(row):

@@ -94,8 +94,8 @@ def metric_summary(report):
             "aggregation": report.get("aggregation"),
             "per_brain_precision": report.get("per_brain_precision", {}),
             "cells": {name: {k: cell[k] for k in (
-                "pool_size", "positives", "requested_k", "effective_k",
-                "tp", "fp", "precision", "recall")}
+                "pool_size", "n_labeled", "positives", "requested_k", "effective_k",
+                "tp", "fp", "precision", "recall") if k in cell}
                       for name, cell in report["cells"].items()}}
 
 
@@ -122,6 +122,7 @@ def log_metrics(trace, label, report, parent=None):
         brain, kind = name.rsplit("/", 1)
         recall = f"{cell['recall']:.4f}" if cell["recall"] is not None else "N/A (no pool positives)"
         line = (f"{label} | brain={brain} kind={kind} | pool_candidates={cell['pool_size']} "
+                f"gt_labeled={cell.get('n_labeled', 'N/A')} "
                 f"discoverable_pool_positives={cell['positives']} | "
                 f"top_k_hits={cell['tp']} effective_k={cell['effective_k']} "
                 f"requested_k={cell['requested_k']} | Precision@K={cell['precision']:.4f} "
