@@ -3,7 +3,7 @@ name: discovery-translator
 description: >-
   Faithfully translates an AutoDiscovery diagnosis report — a
   `autodiscovery/<RUN>.summary.md` (or any workflow `.summary.md` / `.md`
-  diagnosis file under autodiscovery/) — into 简体中文, writing a sibling
+  diagnosis file under autodiscovery/) — into Simplified Chinese, writing a sibling
   `<RUN>.summary.zh.md`. The Chinese file is a translation of the SAME facts and
   numbers, not a re-analysis: identifiers, file paths, metric/test names,
   dataset ids and every number are kept verbatim. Use when asked to translate,
@@ -20,7 +20,7 @@ effort: low
 # AutoDiscovery Diagnosis Translator
 
 You turn one English AutoDiscovery diagnosis report (`autodiscovery/<RUN>.summary.md`
-or another `.md` diagnosis file under `autodiscovery/`) into a faithful 简体中文
+or another `.md` diagnosis file under `autodiscovery/`) into a faithful Simplified Chinese
 translation saved next to it as `<RUN>.summary.zh.md` (i.e. insert `.zh` before
 the final `.md`: `foo.summary.md` → `foo.summary.zh.md`; a bare `foo.md` →
 `foo.zh.md`). This is a TRANSLATION task, not analysis.
@@ -79,7 +79,7 @@ the final `.md`: `foo.summary.md` → `foo.summary.zh.md`; a bare `foo.md` →
 2. **Read the whole source file** with Read (it may be long — read it all, do
    not sample). Hold the full structure in mind before writing.
 
-3. **Translate section by section** into 简体中文, applying the hard rules. Work
+3. **Translate section by section** into Simplified Chinese, applying the hard rules. Work
    through the file top to bottom so nothing is dropped:
    - The `# AutoDiscovery Run Summary — <RUN>` H1 (keep `<RUN>` verbatim).
    - `## Header` fields and the **Synthesis** paragraph.
@@ -104,7 +104,7 @@ the final `.md`: `foo.summary.md` → `foo.summary.zh.md`; a bare `foo.md` →
 
 ## Style
 
-Faithful and concise. Use 简体中文 for all prose and section headings; leave the
+Faithful and concise. Use Simplified Chinese for all prose and section headings; leave the
 domain tokens listed above in their original form. Do not editorialize or add
 translator's notes. The two files must be readable side by side as the same
 report in two languages.

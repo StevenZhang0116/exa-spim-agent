@@ -59,6 +59,8 @@ WORKFLOW_LOG_NAME = "result_analysis_workflow.log.txt"
 BLOCK_START = "<!-- BEGIN DRIVER-GENERATED RESULT EVIDENCE — preserve this block -->"
 BLOCK_END = "<!-- END DRIVER-GENERATED RESULT EVIDENCE -->"
 ENGLISH_REPORT_HEADING = "# Part I — English Report"
+# The deliverable is bilingual by design: the strings below are the Chinese-language
+# headings and banner of Part II of the report, not comments or identifiers.
 CHINESE_REPORT_HEADING = "# 第二部分——中文报告"
 ENGLISH_SECTION_HEADINGS = (
     "## Executive summary",
@@ -79,7 +81,7 @@ CHINESE_SECTION_HEADINGS = (
     "## 限制与下一步",
 )
 REPORT_PLACEHOLDER = "<!-- RESULT-ANALYST MUST REPLACE THIS PLACEHOLDER -->"
-AGENT_MODEL = os.environ.get("DETECTOR_RESULT_ANALYSIS_AGENT_MODEL", "claude-opus-4-8")
+AGENT_MODEL = os.environ.get("DETECTOR_RESULT_ANALYSIS_AGENT_MODEL", "claude-opus-5-5")
 AGENT_EFFORT = os.environ.get("DETECTOR_RESULT_ANALYSIS_AGENT_EFFORT", "xhigh")
 AGENT_TIMEOUT_S = int(os.environ.get("DETECTOR_RESULT_ANALYSIS_TIMEOUT_S", "10800"))
 

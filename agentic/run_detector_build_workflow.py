@@ -413,7 +413,7 @@ RANDOM_SEED = MODEL_POLICY["selection"]["random_seed"]
 DEFAULT_REVIEW_BUDGET = MODEL_POLICY["selection"]["review_budget"]
 PREDICTIVE_POLICY_VERSION = "exclusion-only-v1"
 
-AGENT_MODEL = os.environ.get("DETECTOR_BUILD_AGENT_MODEL", "claude-opus-4-8")
+AGENT_MODEL = os.environ.get("DETECTOR_BUILD_AGENT_MODEL", "claude-opus-5-5")
 AGENT_EFFORT = os.environ.get("DETECTOR_BUILD_AGENT_EFFORT", "xhigh")
 
 

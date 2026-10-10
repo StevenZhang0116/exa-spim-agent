@@ -1195,10 +1195,10 @@ def build_options() -> ClaudeAgentOptions:
         # Non-interactive: don't prompt for permission on each tool call. Drop to
         # "acceptEdits" if you'd rather review/limit what runs.
         permission_mode="bypassPermissions",
-        # Pin Opus 4.8 explicitly so the model is not left to the ambient session
+        # Pin Opus 5.5 explicitly so the model is not left to the ambient session
         # default. Subagents with `model: inherit` follow this; agents that name a
         # cheaper model in their frontmatter override it.
-        model="claude-opus-4-8",
+        model="claude-opus-5-5",
         # Default reasoning effort for the ORCHESTRATOR turns (levels:
         # low|medium|high|xhigh|max). Per-subagent effort is set in each
         # .claude/agents/*.md frontmatter and takes precedence for that subagent's

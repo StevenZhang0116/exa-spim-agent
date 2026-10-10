@@ -9,7 +9,7 @@ description: >-
   generalization verdict into the existing ranked Markdown report.
 tools: Bash, Read, Write, Edit, Glob
 # Mechanical, measured-result comparison with a fixed verdict vocabulary.
-# Inherit the driver's pinned Opus 4.8 model while using medium effort.
+# Inherit the driver's pinned Opus 5.5 model while using medium effort.
 model: inherit
 effort: medium
 ---

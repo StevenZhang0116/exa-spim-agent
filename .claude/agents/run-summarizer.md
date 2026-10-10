@@ -79,7 +79,7 @@ did it actually help?**
    - **Pointers** — relative paths to the final accepted scorer / rules
      and the ledger, so the reader can dig in.
 
-4. **Write `<run_dir>/SUMMARY.zh.md`** — a faithful Chinese (简体中文) translation
+4. **Write `<run_dir>/SUMMARY.zh.md`** — a faithful Chinese (Simplified) translation
    of the English SUMMARY.md: same sections, same trajectory table, same numbers
    and bolded parameter values. Translate the prose and section headers; keep
    verbatim (do NOT translate) all identifiers, file paths, metric names as they

@@ -58,7 +58,7 @@ GROUP_FIELDS = {
     "reason", "shared_computation_with", "optimization_note",
 }
 
-AGENT_MODEL = os.environ.get("FEATURE_COST_AGENT_MODEL", "claude-opus-4-8")
+AGENT_MODEL = os.environ.get("FEATURE_COST_AGENT_MODEL", "claude-opus-5-5")
 AGENT_EFFORT = os.environ.get("FEATURE_COST_AGENT_EFFORT", "high")
 AGENT_TIMEOUT_S = int(os.environ.get("FEATURE_COST_TIMEOUT_S", "3600"))
 

@@ -188,7 +188,7 @@ class DiscoverySmokeTests(unittest.TestCase):
             self.assertIn("effort: medium", frontmatter)
 
         driver = (PROJECT_ROOT / "agentic" / "run_discovery_workflow.py").read_text()
-        self.assertIn('model="claude-opus-4-8"', driver)
+        self.assertIn('model="claude-opus-5-5"', driver)
 
         statistical_author = (
             PROJECT_ROOT / ".claude" / "agents" / "discovery-test-fixer.md"

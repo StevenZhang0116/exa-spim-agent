@@ -246,10 +246,10 @@ def build_options() -> ClaudeAgentOptions:
         # tools to collect the reports and write the combined Markdown.
         allowed_tools=["Task", "Bash", "Read", "Write", "Edit", "Glob"],
         permission_mode="bypassPermissions",
-        # Pin Opus 4.8 explicitly so the model is not left to the ambient session
+        # Pin Opus 5.5 explicitly so the model is not left to the ambient session
         # default. Subagents are `model: inherit`, so they follow this too.
-        model="claude-opus-4-8",
-        # Run Opus 4.8 at maximum reasoning effort for the cross-report
+        model="claude-opus-5-5",
+        # Run Opus 5.5 at maximum reasoning effort for the cross-report
         # clustering/dedup work. Applies to the session + subagents.
         env={**os.environ, "CLAUDE_EFFORT": "xhigh"},
     )

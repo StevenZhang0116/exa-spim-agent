@@ -61,7 +61,7 @@ HEADINGS = (
     "## Direct versus gap truth",
     "## Limitations and next experiment",
 )
-MODEL = os.environ.get("SPLIT_CANDIDATE_REVIEW_MODEL", "claude-opus-4-8")
+MODEL = os.environ.get("SPLIT_CANDIDATE_REVIEW_MODEL", "claude-opus-5-5")
 EFFORT = os.environ.get("SPLIT_CANDIDATE_REVIEW_EFFORT", "xhigh")
 TIMEOUT_S = int(os.environ.get("SPLIT_CANDIDATE_REVIEW_TIMEOUT_S", "3600"))
 MODE_ALIASES = {

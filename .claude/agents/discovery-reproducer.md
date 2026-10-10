@@ -10,7 +10,7 @@ description: >-
 tools: Bash, Read, Write, Edit, Glob
 # Mechanical, driver-validated work: compare measured numbers, repair only
 # loading/bootstrap code, and fold fixed-token verdicts. Inherit the driver's
-# pinned Opus 4.8 model while using medium effort.
+# pinned Opus 5.5 model while using medium effort.
 model: inherit
 effort: medium
 ---
