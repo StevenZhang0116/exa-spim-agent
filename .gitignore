@@ -115,4 +115,5 @@ notebooks/merge_diagnosis_oldscope/
 notebooks/merge_site_counts/
 notebooks/log/
 notebooks/merge_label_shadow/
+notebooks/evaluable_precision_test/
 docs/image_alignment_review_20261006/
