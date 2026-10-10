@@ -11,7 +11,7 @@ import numpy as np
 from .image_contract import image_spec
 from .image_context import digest_json, file_hash
 from .image_selection import select_image_rows, selection_coverage
-from .model_execution import run_worker
+from .model_execution import run_worker, DEFAULT_MEMORY_MB
 
 MAX_STAGE_BYTES = 1024**3
 
@@ -64,7 +64,7 @@ def stage_images(root, frames_and_rows):
             'content_sha256': digest_json({'rows': offset, 'patches': mapping, 'checksums': checksums})}
 
 
-def augmented_image_features(source, table, frame, timeout=120, memory_mb=8192):
+def augmented_image_features(source, table, frame, timeout=120, memory_mb=DEFAULT_MEMORY_MB):
     contract = image_spec(source)
     if contract is None:
         return frame

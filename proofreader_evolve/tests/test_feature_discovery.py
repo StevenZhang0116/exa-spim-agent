@@ -78,10 +78,13 @@ class FeatureDiscoveryTests(unittest.TestCase):
         proposal['research'] = RESEARCH
         path.write_text(json.dumps(proposal))
         self.assertEqual(read_proposal(path)['research'], RESEARCH)
-        proposal['research'] = {**RESEARCH, 'feature_columns': ['same', 'same']}
+        # Declarations are bounded, never rejected (2026-10-08): duplicates and unknown keys are cleaned up.
+        proposal['research'] = {**RESEARCH, 'feature_columns': ['same', 'same'], 'outcome': 'extra'}
         path.write_text(json.dumps(proposal))
-        with self.assertRaises(ValueError):
-            read_proposal(path)
+        self.assertEqual(read_proposal(path)['research'], {**RESEARCH, 'feature_columns': ['same']})
+        proposal['research'] = {'prediction': 'no hypothesis id'}
+        path.write_text(json.dumps(proposal))
+        self.assertNotIn('research', read_proposal(path))
 
     def test_failure_panel_contains_only_resolvable_train_roles(self):
         train = training_fixture()

@@ -10,8 +10,20 @@ import time
 from .classifier_contract import MAX_ARTIFACT_BYTES
 
 
+DEFAULT_MEMORY_MB = 16384  # 8192 until 2026-10-08; raised with --classifier-memory-mb after 16-member ensembles were killed
+
+
 class ModelExecutionError(RuntimeError):
     pass
+
+
+def exit_detail(returncode, request, tail):
+    """Explain a worker that died without writing status; SIGKILL almost always means the memory cap."""
+    if returncode == -9:
+        return (f"killed by SIGKILL, most likely the {request.get('memory_mb')} MiB address-space cap "
+                f"(--classifier-memory-mb) or the job's memory limit; reduce model size, members or batch rows. "
+                + tail)
+    return tail
 
 
 def run_worker(root, request, *, log_path=None):
@@ -63,7 +75,8 @@ def run_worker(root, request, *, log_path=None):
     except (OSError, ValueError) as exc:
         with log_path.open('rb') as stream:
             detail = stream.read(2000).decode(errors='replace')
-        raise ModelExecutionError(f'Model worker exited {process.returncode} without status: {detail}') from exc
+        raise ModelExecutionError(f'Model worker exited {process.returncode} without status: '
+                                  f'{exit_detail(process.returncode, request, detail)}') from exc
     if process.returncode or status.get('status') != 'ok':
         raise ModelExecutionError(f"{status.get('error', 'Model worker failed')}; frames={status.get('frames', [])}")
     with log_path.open('rb') as stream:
@@ -72,7 +85,7 @@ def run_worker(root, request, *, log_path=None):
     return status
 
 
-def predict_model(model, store, frame, kind, timeout=120, memory_mb=8192):
+def predict_model(model, store, frame, kind, timeout=120, memory_mb=DEFAULT_MEMORY_MB):
     import tempfile
     import numpy as np
     from .classifier_contract import verify_artifacts

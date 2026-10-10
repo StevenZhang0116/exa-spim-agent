@@ -11,11 +11,15 @@ from pathlib import Path
 from .reviser_access import canonical_file, make_guard, pre_tool_hook
 
 
-DEFAULT_MODEL = "claude-opus-5"
+DEFAULT_MODEL = "claude-opus-5-5"
 # Claude Code truncates MCP tool results above this many tokens and parks them in a
 # file; the default (25,000, about 50 KB of our JSON) lost train_classifier,
 # restore_candidate and search_memory results in run precision_20261005_114814_zxsbw5pj.
 MCP_OUTPUT_TOKENS = 100_000
+# The CLI parks tool results above about 50 KB on disk and the agent must Read them; its
+# file-read default of 25,000 tokens then rejected 60-130 KB parked train_classifier results
+# (4 failed reads, 13 of 34 results parked) in run precision_20261007_112554_t33clknu.
+FILE_READ_TOKENS = 100_000
 
 
 def anthropic_api_env():
@@ -29,6 +33,7 @@ def anthropic_api_env():
         "CLAUDE_CODE_USE_VERTEX": "0",
         "CLAUDE_EFFORT": "high",
         "MAX_MCP_OUTPUT_TOKENS": str(MCP_OUTPUT_TOKENS),
+        "CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS": str(FILE_READ_TOKENS),
     }
 
 
@@ -53,8 +58,13 @@ def build_options(*, run_dir, system_prompt, model=DEFAULT_MODEL,
     return options, state
 
 
-def bind_session_options(options, policy_path, rules_path, report_path, *, readable_paths=(), training_server=None):
-    """Bind generation files and TRAIN tools, including analysis and descriptor code; explicit reads only."""
+def bind_session_options(options, policy_path, rules_path, report_path, *, readable_paths=(), readable_dirs=(),
+                         training_server=None):
+    """Bind generation files and TRAIN tools, including analysis and descriptor code; explicit reads only.
+
+    `readable_dirs` are this generation's host-written TRAIN artefact trees (attempt snapshots,
+    classifier fits, descriptor runs): readable recursively, never writable.
+    """
     from claude_agent_sdk import HookMatcher
 
     run_dir = Path(options.cwd).resolve()
@@ -78,6 +88,7 @@ def bind_session_options(options, policy_path, rules_path, report_path, *, reada
         run_dir, policy.parent, readable, run_dir / "tool_audit.jsonl",
         state=getattr(options, "_isolation_state", None), policy_filename=policy.name,
         allowed_tools=training_tools, allow_proposal=training_server is not None,
+        readable_dirs=readable_dirs,
     )
     bound = replace(options, can_use_tool=guard, permission_mode="default",
                     hooks={"PreToolUse": [HookMatcher(hooks=[pre_tool_hook(guard)])]},

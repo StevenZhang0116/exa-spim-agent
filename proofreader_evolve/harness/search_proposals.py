@@ -8,10 +8,13 @@ import math
 import re
 
 from .classifier_contract import frozen_model, model_info, normalize_config
-from .hypothesis_memory import validate_research
+from .hypothesis_memory import sanitize_research
 
 
 MAX_PROPOSAL_BYTES = 128_000  # Resolved classifier feature lists can exceed a small formula proposal.
+# Agents' final strategies ran to 1,700-2,000 characters and a 1,500 bound failed two generations of
+# run precision_20261007_112554 at the submission check; 3,000 leaves room without unbounding the field.
+MAX_PROPOSAL_TEXT = 3000
 
 
 def _number(value):
@@ -41,8 +44,8 @@ def read_proposal(path):
         raise ValueError(f'Unknown proposal fields: {sorted(extra)}')
     for key in ('hypothesis', 'strategy'):
         value = proposal.get(key)
-        if not isinstance(value, str) or not value.strip() or len(value) > 1500:
-            raise ValueError(f'Fill proposal.json.{key} with 1–1500 characters')
+        if not isinstance(value, str) or not value.strip() or len(value) > MAX_PROPOSAL_TEXT:
+            raise ValueError(f'Fill proposal.json.{key} with 1–{MAX_PROPOSAL_TEXT} characters')
     family = proposal.get('family', 'unspecified')
     if not isinstance(family, str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', family):
         raise ValueError('proposal.json.family must be a short name using letters, digits, _ or -')
@@ -56,7 +59,10 @@ def read_proposal(path):
     if 'classifier' in proposal:
         proposal['classifier'] = normalize_config(proposal['classifier'])
     if 'research' in proposal:
-        proposal['research'] = validate_research(proposal['research'])
+        # Agent-written declaration: bounded, never a proposal error (see sanitize_research).
+        research, _notes = sanitize_research(proposal.pop('research'))
+        if research is not None:
+            proposal['research'] = research
     # The optional research handoff is advice for the next session, not part of the experiment:
     # it never enters attempt entries and the driver reads it from the file once
     # (hypothesis_memory.sanitize_handoff), so it can never make a proposal invalid.

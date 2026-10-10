@@ -1,5 +1,6 @@
-"""Reviser I/O limits (2026-10-05): larger MCP output cap, larger feedback budget,
-and read access to tool results the SDK parks when a result still overflows."""
+"""Reviser I/O limits (2026-10-05, raised again 2026-10-07): MCP output and file-read caps,
+feedback budget, read access to SDK-parked tool results and to this generation's own TRAIN
+artefact directories."""
 
 import asyncio
 import os
@@ -19,9 +20,12 @@ class LimitTests(unittest.TestCase):
             env = session.anthropic_api_env()
         self.assertEqual(env["MAX_MCP_OUTPUT_TOKENS"], str(session.MCP_OUTPUT_TOKENS))
         self.assertGreaterEqual(session.MCP_OUTPUT_TOKENS, 100_000)
+        # Parked results must be readable in one Read: the file-read cap matches the MCP cap.
+        self.assertEqual(env["CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS"], str(session.FILE_READ_TOKENS))
+        self.assertGreaterEqual(session.FILE_READ_TOKENS, session.MCP_OUTPUT_TOKENS)
 
     def test_feedback_budget(self):
-        self.assertEqual(feedback.MAX_FEEDBACK_BYTES, 96_000)
+        self.assertEqual(feedback.MAX_FEEDBACK_BYTES, 128_000)
 
 
 class ParkedToolResultTests(unittest.TestCase):
@@ -78,6 +82,45 @@ class ParkedToolResultTests(unittest.TestCase):
         guard, _ = access.make_guard(self.run_dir, self.run_dir / "gen001", [], self.run_dir / "audit.jsonl",
                                      sdk_tool_results=False)
         self.assertEqual(asyncio.run(guard("Read", {"file_path": str(self.parked)}, None)).behavior, "deny")
+
+
+class ReadableDirectoryTests(unittest.TestCase):
+    """This generation's experiments/, classifier_fits/ and descriptor_runs/ are readable, never writable."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.run_dir = Path(self.temp.name) / "runs" / "precision-x"
+        self.gen = self.run_dir / "gen001"
+        self.attempt = self.gen / "experiments" / "attempt001"
+        self.attempt.mkdir(parents=True)
+        (self.attempt / "result.json").write_text("{}")
+        (self.gen / "scorer.py").write_text("")
+        self.outside = Path(self.temp.name) / "secret.txt"
+        self.outside.write_text("x")
+        guard, _ = access.make_guard(self.run_dir, self.gen, [], self.run_dir / "audit.jsonl", sdk_tool_results=False,
+                                     readable_dirs=[self.gen / "experiments", self.gen / "classifier_fits"])
+        self.guard = guard
+
+    def decision(self, tool, path):
+        return asyncio.run(self.guard(tool, {"file_path": str(path)}, None)).behavior
+
+    def test_files_below_the_directories_are_readable_only(self):
+        self.assertEqual(self.decision("Read", self.attempt / "result.json"), "allow")
+        self.assertEqual(self.decision("Write", self.attempt / "result.json"), "deny")
+        self.assertEqual(self.decision("Edit", self.attempt / "result.json"), "deny")
+        self.assertEqual(self.decision("Read", self.attempt), "deny")  # directories themselves are not files
+        self.assertEqual(self.decision("Read", self.gen / "classifier_fits" / "fit001" / "worker.log"), "deny")  # absent
+        self.assertEqual(self.decision("Read", self.gen / "search_plan.json"), "deny")  # not listed, not in a tree
+
+    def test_symlinks_out_of_the_tree_and_other_runs_are_denied(self):
+        link = self.attempt / "escape.txt"
+        link.symlink_to(self.outside)
+        self.assertEqual(self.decision("Read", link), "deny")
+        self.assertEqual(self.decision("Read", self.outside), "deny")
+        with self.assertRaises(ValueError):
+            access.make_guard(self.run_dir, self.gen, [], self.run_dir / "audit.jsonl",
+                              readable_dirs=[Path(self.temp.name)])
 
 
 if __name__ == "__main__":

@@ -113,7 +113,7 @@ or model family. Reducing nodes/occurrences/rows can resolve a budget error.
 Geometry preparation plus worker execution has its own time budget per brain:
 `--policy-time-budget` for scoring, `--classifier-time-budget` during fitting.
 A blocking host cache load is checked after it returns; the isolated worker has
-a hard wall timeout. Feature extraction uses one CPU library thread and an 8 GiB
+a hard wall timeout. Feature extraction uses one CPU library thread and a 16 GiB
 address-space limit (the classifier memory setting applies during fit extraction).
 Scoring/fitting then uses its existing, separate budget. No network, GPU, child
 processes, model artifacts, labels or raw graph files are accessible to extraction.

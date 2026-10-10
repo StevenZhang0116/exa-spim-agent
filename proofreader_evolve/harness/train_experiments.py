@@ -29,7 +29,7 @@ from .descriptor_contract import descriptor_spec, referenced_columns, COLUMN_PRE
 from .descriptor_runs import SCOPES as DESCRIPTOR_SCOPES
 from .local_context import resolve_train_candidate
 from .local_features import augmented_features
-from .model_execution import ModelExecutionError
+from .model_execution import ModelExecutionError, DEFAULT_MEMORY_MB
 from .scorer_components import compose, components
 from .search_proposals import read_proposal, formula_info, parameter_candidates
 from .train_feedback import metrics_only, write_train_feedback
@@ -189,7 +189,7 @@ class TrainingExperiments:
     def __init__(self, gen_dir, policy_path, rules_path, target_kind, parent_sources,
                  train, parent_report, parent_state, budgets, timeout, margin,
                  memory, max_evaluations=8, generation=0, search_plan=None,
-                 classifier_timeout=300, classifier_memory_mb=8192, classifier_threads=1,
+                 classifier_timeout=300, classifier_memory_mb=DEFAULT_MEMORY_MB, classifier_threads=1,
                  parent_selection=None, descriptor_budget=None, branch=None):
         self.gen_dir, self.policy_path, self.rules_path = gen_dir, policy_path, rules_path
         self.proposal_path = gen_dir / 'proposal.json'
@@ -480,7 +480,7 @@ class TrainingExperiments:
                 target_tables = {brain: SimpleNamespace(tables={self.target_kind: bank.tables[self.target_kind]})
                                  for brain, bank in self.train.items()}
                 measured = scoring.evaluate(component, target_tables, self.budgets, self.timeout,
-                                            state=measured_state, artifact_store=self.memory.artifact_store)
+                                            state=measured_state, artifact_store=self.memory.artifact_store, memory_mb=self.classifier_memory_mb)
             stage = 'selection'
             if cached:
                 selection_report, selection_state = self._cached_selection(cached, component, model, measured_state)
@@ -646,18 +646,34 @@ class TrainingExperiments:
         batch.mkdir(parents=True)
         (batch / 'formula.py').write_text(component)
         (batch / 'proposal.json').write_text(json.dumps(proposal, indent=2))
-        responses = [self._evaluate(candidate, rules, proposal) for candidate in candidates]
+        responses, stopped = [], None
+        for index, candidate in enumerate(candidates):
+            responses.append(self._evaluate(candidate, rules, proposal))
+            if responses[-1].get('status') == 'execution_error':
+                stopped = self._grid_stop(responses[-1], len(candidates) - index - 1)
+                break
         rows = [{k: r.get(k) for k in ('experiment', 'status', 'parameters', 'target_precision',
                                        'train_gate', 'cached', 'error')} for r in responses]
         (batch / 'results.json').write_text(json.dumps(rows, indent=2, allow_nan=False))
-        successful = [self.results[digest(c)] for c in candidates if self.results[digest(c)]['report'] is not None]
+        successful = [self.results[digest(c)] for c in candidates
+                      if digest(c) in self.results and self.results[digest(c)]['report'] is not None]
         restored = self._restore_result(self._best(successful)) if successful else None
         # The full proposal and metrics already live in snapshots; avoid echoing them for every grid row.
         best = ({key: restored[key] for key in ('restored', 'parameters', 'train_gate', 'feedback')}
                 if restored else None)
         return {'status': 'searched' if restored else 'no_successful_candidate', 'candidates': rows,
-                'best': best, 'evaluations_used': self.evaluations_used,
+                'best': best, 'stopped_early': stopped, 'evaluations_used': self.evaluations_used,
                 'evaluations_remaining': self.remaining}
+
+    @staticmethod
+    def _grid_stop(response, skipped):
+        """Generation 17 of run precision_20261008_001127 ran four grid cells into the same worker
+        kill (2 h 10 min); a grid now stops at the first execution error of its program."""
+        return {'after': response.get('experiment'), 'error': (response.get('error') or '')[:300],
+                'skipped_configurations': int(skipped),
+                'note': 'The grid stopped after the first execution error of this program; the remaining '
+                        'configurations were not run or charged. Fix the program or its memory/time use before '
+                        'resubmitting them.'}
 
     def _training_failure(self, directory, proposal, config, program, exc, started):
         entry = {**proposal, 'classifier': config, **classifier_info(config, program),
@@ -715,8 +731,8 @@ class TrainingExperiments:
         batch.mkdir(parents=True)
         (batch / 'proposal.json').write_text(json.dumps(proposal, indent=2, allow_nan=False))
         (batch / 'training.py').write_text(program)
-        responses, successful = [], []
-        for config in configurations:
+        responses, successful, stopped = [], [], None
+        for index, config in enumerate(configurations):
             key = (self.target_kind, digest(program), config_identity(config))
             cached = self.memory.fit_cache.get(key)
             charged = False
@@ -763,7 +779,8 @@ class TrainingExperiments:
                                     training_summary=summary)
                 except Exception as exc:
                     responses.append(self._training_failure(directory, actual_proposal, config, program, exc, started))
-                    continue
+                    stopped = self._grid_stop(responses[-1], len(configurations) - index - 1)
+                    break
             else:
                 component = (Path(cached['snapshot']) / 'scorer.py').read_text()
                 if digest(component) != cached['component_sha256']:
@@ -776,6 +793,9 @@ class TrainingExperiments:
             result = self.results.get(digest(component))
             if result is not None and result['report'] is not None:
                 successful.append(result)
+            if response.get('status') == 'execution_error':
+                stopped = self._grid_stop(response, len(configurations) - index - 1)
+                break
         rows = [{key: response.get(key) for key in ('experiment', 'status', 'classifier', 'target_precision',
                                                    'train_gate', 'cached', 'error', 'training_output_tail')} for response in responses]
         (batch / 'results.json').write_text(json.dumps(rows, indent=2, allow_nan=False))
@@ -786,6 +806,7 @@ class TrainingExperiments:
         best = ({key: restored[key] for key in ('restored', 'classifier', 'train_gate', 'feedback', 'training')}
                 if restored else None)
         return {'status': 'trained' if restored else 'no_successful_candidate', 'candidates': public_rows, 'best': best,
+                'stopped_early': stopped,
                 'training_metric_protocol': ('grouped_cv_precision' if self.protocol.requires_fold_fits
                                              else 'in_sample_resubstitution'),
                 'selection_protocol': self.protocol.mode,
@@ -1321,7 +1342,9 @@ class TrainingExperiments:
             return await invoke(self.evaluate, arguments)
 
         @tool('search_parameters', 'Read proposal.json.parameter_grid and enumerate numeric PARAMS values '
-              'with the formula fixed. Call with {}. Automatically restore the best successful grid candidate.', {})
+              'with the formula fixed. Call with {}. Automatically restore the best successful grid candidate. '
+              'The grid stops at the first execution error of the formula; stopped_early lists the skipped, '
+              'uncharged configurations.', {})
         async def search_parameters(arguments):
             return await invoke(self.search_parameters, arguments)
 
@@ -1330,6 +1353,8 @@ class TrainingExperiments:
               'the best successful model. Under grouped_oof selection each configuration is first refit in '
               'three host-owned folds and ranked by out-of-fold precision on the selection brains; the full '
               'fit is the frozen candidate. One configuration costs one evaluation unit, folds included. '
+              'The grid stops at the first failed fit or execution error of the program; stopped_early lists '
+              'the skipped, uncharged configurations. '
               'Validation is never supplied.', {})
         async def train_classifier(arguments):
             return await invoke(self.train_classifier, arguments)

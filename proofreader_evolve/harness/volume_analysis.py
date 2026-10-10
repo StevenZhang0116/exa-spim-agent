@@ -14,7 +14,7 @@ from .image_context import digest_json, file_hash
 from .image_coordinates import ImageGeometry
 from .image_features import stage_images
 from .local_context import resolve_train_candidate
-from .model_execution import run_worker
+from .model_execution import run_worker, DEFAULT_MEMORY_MB
 
 VOLUME_ANALYSIS_VERSION = 'train-volume-analysis-v1'
 MAX_ANALYSES = 8
@@ -106,7 +106,7 @@ def aligned_context(table, index, occurrence, request, metadata, patch_path):
                 'intensity': 'original fused-volume pixels; no preview normalization'}}
 
 
-def execute_analysis(program, request, resolved, directory, *, timeout=120, memory_mb=8192, threads=1):
+def execute_analysis(program, request, resolved, directory, *, timeout=120, memory_mb=DEFAULT_MEMORY_MB, threads=1):
     """One isolated program, applied to each requested 3D context; never rank or fit a policy."""
     directory = Path(directory)
     started = time.monotonic()

@@ -1,4 +1,5 @@
 """Dispatch isolated formula/model inference, including declared raw image inputs."""
+from .model_execution import DEFAULT_MEMORY_MB
 
 import json
 from pathlib import Path
@@ -13,7 +14,7 @@ class ScorerExecutionError(ValueError):
     pass
 
 
-def score(source, frame, kind, timeout=120, memory_mb=8192, *, artifact_store=None):
+def score(source, frame, kind, timeout=120, memory_mb=DEFAULT_MEMORY_MB, *, artifact_store=None):
     from .classifier_contract import frozen_model, MODEL_VERSION
     from .model_execution import predict_model, ModelExecutionError
     try:

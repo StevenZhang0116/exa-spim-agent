@@ -9,7 +9,7 @@ import numpy as np
 
 from .local_context import CONTEXT_VERSION, cache_identity
 from .local_feature_contract import local_feature_spec
-from .model_execution import ModelExecutionError, run_worker
+from .model_execution import ModelExecutionError, run_worker, DEFAULT_MEMORY_MB
 
 
 MAX_CONTEXT_BYTES = 128 * 1024**2
@@ -30,13 +30,13 @@ def select_rows(frame, spec):
     return np.lexsort((np.arange(len(frame)), priority))[:spec['max_candidates']]
 
 
-def augmented_features(source, table, timeout=120, memory_mb=8192):
+def augmented_features(source, table, timeout=120, memory_mb=DEFAULT_MEMORY_MB):
     from .image_features import augmented_image_features
     frame = _geometry_features(source, table, timeout, memory_mb)
     return augmented_image_features(source, table, frame, timeout, memory_mb)
 
 
-def _geometry_features(source, table, timeout=120, memory_mb=8192):
+def _geometry_features(source, table, timeout=120, memory_mb=DEFAULT_MEMORY_MB):
     started = time.monotonic()
     contract = local_feature_spec(source)
     if contract is None:

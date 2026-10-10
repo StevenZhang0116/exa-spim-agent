@@ -11,7 +11,7 @@ import re
 
 DESCRIPTOR_VERSION = 'agent-descriptor-v1'
 MAX_DESCRIPTOR_BYTES = 128_000
-MAX_NAMES = 16
+MAX_NAMES = 32  # programs reached 14-15 names in the 2026-10 runs
 COLUMN_PREFIX = 'bank_agent_'
 NAME_PATTERN = re.compile(r'[a-z][a-z0-9_]{1,48}')
 INPUTS = ('geometry', 'image', 'both')

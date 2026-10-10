@@ -74,7 +74,7 @@ class FeedbackTests(unittest.TestCase):
             self.assertFalse(path.exists())
 
     def test_reviser_turn_budget_is_configurable_and_forwarded(self):
-        self.assertEqual(driver.parse_args(['--selection-protocol', 'in_sample']).reviser_max_turns, 24)
+        self.assertEqual(driver.parse_args(['--selection-protocol', 'in_sample']).reviser_max_turns, 60)
         with self.assertRaises(SystemExit):
             driver.parse_args(['--selection-protocol', 'in_sample', '--promotion-gate', 'margin', '--kind-schedule', 'alternate', "--reviser-max-turns", "0"])
         with tempfile.TemporaryDirectory() as tmp:

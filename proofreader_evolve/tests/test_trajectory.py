@@ -17,8 +17,8 @@ from proofreader_evolve.harness.trajectory import Trajectory
 from proofreader_evolve.harness.reviser_access import make_guard
 
 
-def result_message(error=False):
-    return ResultMessage(subtype="error_max_turns" if error else "success", duration_ms=12,
+def result_message(error=False, subtype=None):
+    return ResultMessage(subtype=subtype or ("error_max_turns" if error else "success"), duration_ms=12,
                          duration_api_ms=10, is_error=error, num_turns=2,
                          session_id="fixture-session", total_cost_usd=.01,
                          usage={"input_tokens": 10}, result="Used evidence feature")
@@ -67,8 +67,10 @@ class TrajectoryTests(unittest.TestCase):
         self.assertIn('Generation 1: split explore', self.output.getvalue())
 
     def test_revise_logs_messages_and_preserves_result_before_sdk_error(self):
-        for error in (False, True):
-            with self.subTest(error=error):
+        # success: result returned; error_max_turns: soft end, result returned (2026-10-08); other errors raise.
+        for subtype in ("success", "error_max_turns", "error_during_execution"):
+            error = subtype != "success"
+            with self.subTest(subtype=subtype):
                 class Client:
                     def __init__(self, **kwargs):
                         pass
@@ -84,24 +86,31 @@ class TrajectoryTests(unittest.TestCase):
 
                     async def receive_response(self):
                         yield AssistantMessage(model="test", content=[TextBlock(text="Plan: adjust evidence")])
-                        yield result_message(error)
+                        yield result_message(error, subtype)
 
+                # The trajectory file accumulates across subtests and does not exist before the first one.
+                before = len(self.events()) if (self.gen / "trajectory.jsonl").exists() else 0
                 with patch("claude_agent_sdk.ClaudeSDKClient", Client), \
                         patch.object(driver, "build_options", return_value=(object(), {})) as options, \
                         patch.object(driver, "bind_session_options", return_value=object()):
                     call = driver.revise(self.root, self.gen / "scorer.py", self.gen / "rules.md",
                                          self.gen / "train_feedback.json", "fixture-model", max_turns=37)
-                    if error:
-                        with self.assertRaisesRegex(RuntimeError, "subtype=error_max_turns; turns=2; max_turns=37"):
+                    if subtype == "error_during_execution":
+                        with self.assertRaisesRegex(RuntimeError, "subtype=error_during_execution; turns=2; max_turns=37"):
                             asyncio.run(call)
                     else:
-                        self.assertEqual(asyncio.run(call)["cost_usd"], .01)
+                        returned = asyncio.run(call)
+                        self.assertEqual(returned["cost_usd"], .01)
+                        self.assertEqual(returned["subtype"], subtype)
                 saved = json.loads((self.gen / "reviser_result.json").read_text())
                 self.assertEqual(saved["cost_usd"], .01)
-                self.assertEqual(saved["subtype"], "error_max_turns" if error else "success")
+                self.assertEqual(saved["subtype"], subtype)
                 self.assertEqual(saved["max_turns"], 37)
                 self.assertEqual(options.call_args.kwargs["max_turns"], 37)
-                self.assertEqual(self.events()[-1]["is_error"], error)
+                events = self.events()[before:]
+                sdk_events = [e for e in events if "is_error" in e]
+                self.assertEqual(sdk_events[-1]["is_error"], error)
+                self.assertEqual(any(e.get("event") == "reviser_turn_limit" for e in events), subtype == "error_max_turns")
                 self.assertIn("TRAIN feedback", (self.gen / "reviser_prompt.txt").read_text())
 
     def test_transport_failure_keeps_already_received_actions(self):

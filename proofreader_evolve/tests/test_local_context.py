@@ -245,7 +245,7 @@ class FeatureTransportTests(unittest.TestCase):
             def augment(source, table, timeout):
                 seen.append((source, table.meta['provenance']['brain']))
                 return table.features.assign(local_size=[0., 1., 0.])
-            def scorer(source, frame, kind, timeout):
+            def scorer(source, frame, kind, timeout, memory_mb=None):
                 self.assertNotIn('label', frame)
                 return frame['local_size'].to_numpy()
             with patch.object(scoring, 'augmented_features', side_effect=augment), patch.object(scoring, 'score', side_effect=scorer):

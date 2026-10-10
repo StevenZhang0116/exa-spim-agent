@@ -11,11 +11,14 @@ MEMORY_VERSION = 'train-hypothesis-evidence-v1'
 RESEARCH_FIELDS = {'hypothesis_id', 'failure_mode', 'information_source', 'prediction', 'feature_columns'}
 HANDOFF_FIELDS = {'open_questions', 'evidence', 'next_experiment'}
 HANDOFF_VERDICTS = ('supports', 'contradicts', 'mixed')
-HANDOFF_TEXT = 300
+HANDOFF_TEXT = 600  # 300 clipped 5-8 texts per generation in run precision_20261007_112554
 
 
-HANDOFF_LIMIT = 3
+HANDOFF_LIMIT = 5  # agents wrote four or five questions or evidence items in most sessions
 HANDOFF_UNITS_MAX = 64
+RESEARCH_TEXT = 1500  # same bound as proposal hypothesis/strategy; 600 was a submission-time hard check
+SNAPSHOT_BYTES = 40_000  # the 20 KB snapshot omitted 1-5 records per generation in the same run
+SNAPSHOT_RECORDS = 8
 
 
 def _clip_text(value, name, notes):
@@ -139,21 +142,75 @@ def sanitize_handoff(value):
     return result, notes
 
 
-def validate_research(value):
-    if not isinstance(value, dict) or set(value) - RESEARCH_FIELDS:
-        raise ValueError('research accepts hypothesis_id, failure_mode, information_source, prediction and feature_columns')
-    for name in ('hypothesis_id', 'information_source'):
-        if not isinstance(value.get(name), str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', value[name]):
-            raise ValueError(f'research.{name} must be a short identifier (letters, digits, _ or -)')
+RESEARCH_ID = re.compile(r'[^a-zA-Z0-9_-]+')
+
+
+def _research_id(value, name, notes):
+    """Identifier of letters, digits, _ and -, at most 64 characters; None when nothing usable remains."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        value = str(value)
+    if not isinstance(value, str):
+        return None
+    slug = RESEARCH_ID.sub('-', value.strip()).strip('-')[:64]
+    if slug != value:
+        notes.append(f'research.{name}: normalised to {slug!r}')
+    return slug or None
+
+
+def sanitize_research(value):
+    """Bounded form of an agent-written research declaration, plus notes on what was changed.
+
+    Lenient on purpose, like `sanitize_handoff`: generation 16 of run
+    precision_20261008_001127 finished with a measured candidate and was discarded only
+    because the agent added an `outcome` key here. Unknown fields are dropped, identifiers
+    are normalised, texts clipped to RESEARCH_TEXT characters, feature columns deduplicated
+    and cut to 64. Returns (research, notes); research is None when there is no usable
+    `hypothesis_id`, in which case the proposal simply carries no declaration.
+    """
+    notes = []
+    if not isinstance(value, dict):
+        notes.append('research ignored: not an object')
+        return None, notes
+    extra = sorted(set(value) - RESEARCH_FIELDS)
+    if extra:
+        notes.append(f'dropped unknown research fields {extra}')
+    hypothesis_id = _research_id(value.get('hypothesis_id'), 'hypothesis_id', notes)
+    if hypothesis_id is None:
+        notes.append('research ignored: no usable hypothesis_id')
+        return None, notes
+    result = {'hypothesis_id': hypothesis_id,
+              'information_source': _research_id(value.get('information_source'), 'information_source', notes) or 'unspecified'}
     for name in ('failure_mode', 'prediction'):
-        if not isinstance(value.get(name), str) or not 1 <= len(value[name].strip()) <= 600:
-            raise ValueError(f'research.{name} requires a testable description of 1..600 characters')
+        text = value.get(name)
+        if isinstance(text, (int, float)) and not isinstance(text, bool):
+            text = str(text)
+        text = text.strip() if isinstance(text, str) else ''
+        if not text:
+            notes.append(f'research.{name}: missing, recorded as unspecified')
+            text = 'unspecified'
+        if len(text) > RESEARCH_TEXT:
+            notes.append(f'research.{name}: clipped to {RESEARCH_TEXT} characters')
+            text = text[:RESEARCH_TEXT]
+        result[name] = text
     columns = value.get('feature_columns', [])
-    if (not isinstance(columns, list) or len(columns) > 64
-            or any(not isinstance(c, str) or not 1 <= len(c) <= 128 for c in columns)
-            or len(set(columns)) != len(columns)):
-        raise ValueError('research.feature_columns must contain at most 64 distinct predictor names')
-    return {**value, 'feature_columns': columns}
+    if isinstance(columns, str):
+        columns = [columns]
+    if not isinstance(columns, list):
+        notes.append('research.feature_columns: ignored (not a list)')
+        columns = []
+    cleaned = []
+    for column in columns:
+        if not isinstance(column, str) or not column.strip():
+            notes.append('research.feature_columns: dropped a non-text entry')
+            continue
+        column = column.strip()[:128]
+        if column not in cleaned:
+            cleaned.append(column)
+    if len(cleaned) > 64:
+        notes.append(f'research.feature_columns: kept the first 64 of {len(cleaned)}')
+        cleaned = cleaned[:64]
+    result['feature_columns'] = cleaned
+    return result, notes
 
 
 def identity(entry):
@@ -314,7 +371,7 @@ class HypothesisMemory:
         return [{k: deepcopy(report[k]) for k in ('experiment', 'protocol', 'feature_columns',
                     'delta_precision', 'conclusion', 'signature')} for report in matches[-3:]]
 
-    def snapshot(self, kind, query='', limit=5, parent=None):
+    def snapshot(self, kind, query='', limit=SNAPSHOT_RECORDS, parent=None):
         tokens = set(re.findall(r'\w+', query.lower()))
         records = [r for r in self.records.values() if r['target_kind'] == kind]
         def key(record):
@@ -325,7 +382,7 @@ class HypothesisMemory:
             record['declarations'] = record['declarations'][-1:]
             record['recent_evidence'] = record['recent_evidence'][-2:]
             record['feature_evidence'] = record['feature_evidence'][-1:]
-        while selected and len(json.dumps(selected).encode()) > 20_000:
+        while selected and len(json.dumps(selected).encode()) > SNAPSHOT_BYTES:
             selected.pop()
         return {'version': MEMORY_VERSION, 'scope': 'TRAIN only; no heldout metrics, labels or decisions',
                 'handoff': self.handoffs(kind, parent),
