@@ -5,7 +5,8 @@ Run with panda on an allocated compute node, for example n257:
 
 Launcher mode runs one brain per fresh subprocess (single-brain mode, `--brain`) so
 the fragment graph of each brain is released before the next. Each entry covers the
-top detector-ranked band of every kind (default 20,000 rows): geometry at 50 um /
+top detector-ranked band of every kind (default 20,000 rows; `--band-rows 50000` grows a
+complete smaller entry in place, re-reading only the new rows): geometry at 50 um /
 256 nodes, images at level 1 / 30 um and level 0 / 16 um, both for the whole band
 (level 0 covered only the first 4,000 rows before 2026-10-05). Existing complete entries
 are reused. `--extend-tier level0` grows one image tier of complete entries in place,
@@ -155,6 +156,7 @@ def build_brain(args):
                 manifest = builder.build(table, provider, reader, band=band, geometry=GEOMETRY_SPEC, tiers=IMAGE_TIERS,
                                          probe_rows=args.probe, force=args.force)
             summary = {'brain': brain, 'kind': kind, 'band_rows': manifest['band_rows'],
+                       'extended': manifest.get('extended'),
                        'geometry_seconds': manifest['geometry'].get('seconds'),
                        'image_tiers': {name: {k: tier.get(k) for k in ('rows', 'failures', 'bytes', 'seconds', 'seconds_per_read')}
                                        for name, tier in manifest['image_tiers'].items()},

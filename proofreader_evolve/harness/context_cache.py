@@ -119,7 +119,14 @@ class ContextCacheBuilder:
         if not force and probe_rows is None:
             manifest = self.existing(table)
             if manifest is not None:
-                self.log(f"[context-cache] {identity['brain']}/{table.kind}: complete entry reused")
+                for key in ('selection_feature', 'selection_largest'):
+                    if manifest['band'].get(key) != band.get(key):
+                        raise ValueError(f'Band selection changed ({key}); rebuild the entry with --force')
+                wanted = min(int(band['max_candidates']), int(len(table.features)))
+                if int(manifest['band_rows']) < wanted:
+                    return self.extend_band(table, provider, image_reader, band, tiers)
+                self.log(f"[context-cache] {identity['brain']}/{table.kind}: complete entry reused "
+                         f"({manifest['band_rows']} rows cached, {wanted} requested; bands never shrink)")
                 return manifest
         rows = select_rows(table.features, band)
         if probe_rows is not None:
@@ -157,12 +164,17 @@ class ContextCacheBuilder:
             _remove_tree(staging)
             raise
 
-    def _build_geometry(self, table, provider, rows, geometry, staging, manifest):
+    def _build_geometry(self, table, provider, rows, geometry, staging, manifest, *, start_row=0, kept=None):
+        """Neighbourhood geometry for the band into `staging/geometry`. With `start_row` > 0 the
+        leading chunks come from `kept` (chunks, truncated) and the returned site, center and
+        total lists cover the rows from `start_row` on."""
         started = time.monotonic()
         directory = staging / 'geometry'
-        directory.mkdir()
-        sites, centers, totals, chunks, truncated = [], [], [], [], 0
-        for start in range(0, len(rows), CHUNK_ROWS):
+        directory.mkdir(exist_ok=True)
+        kept = kept or {}
+        sites, centers, totals = [], [], []
+        chunks, truncated = list(kept.get('chunks', [])), int(kept.get('truncated', 0))
+        for start in range(int(start_row), len(rows), CHUNK_ROWS):
             block = rows[start:start + CHUNK_ROWS]
             block_sites, block_totals = [], []
             for row in block:
@@ -279,6 +291,116 @@ class ContextCacheBuilder:
             'seconds_per_read': {'median': float(np.median(per_read)) if per_read else None,
                                  'max': float(np.max(per_read)) if per_read else None},
             'readers': self.readers, 'chunk_rows': CHUNK_ROWS}
+
+    def extend_band(self, table, provider, image_reader, band, tiers=IMAGE_TIERS):
+        """Grow a complete entry to a larger detector-ranked band in place.
+
+        The band order is a deterministic prefix order (`select_rows`), so the rows already
+        cached keep their positions: leading full chunks of the geometry and of every cached
+        image tier are kept byte-for-byte, the trailing partial chunk is rebuilt and new
+        chunks are appended, as `extend_tier` does for one tier. Only the new rows are read
+        from the fragment graph and the image source. Directories are swapped atomically,
+        then `rows.npy`, then the manifest. A reader holding the previous manifest keeps
+        working because kept chunks are unchanged and the rebuilt chunk starts with the
+        same rows at the same positions.
+        """
+        identity = table_identity(table)
+        final = entry_directory(self.root, table)
+        manifest = self.existing(table)
+        if manifest is None:
+            raise ValueError(f"No complete context cache entry for {identity['brain']}/{table.kind}; build it first")
+        for key in ('selection_feature', 'selection_largest'):
+            if manifest['band'].get(key) != band.get(key):
+                raise ValueError(f'Band selection changed ({key}); rebuild the entry with --force')
+        if manifest['geometry'].get('chunk_rows', CHUNK_ROWS) != CHUNK_ROWS:
+            raise ValueError('Chunk size changed since the entry was built; rebuild the entry with --force')
+        entry = ContextEntry(final, manifest)
+        old_rows = np.asarray(entry.rows, dtype=np.int64)
+        rows = np.asarray(select_rows(table.features, band), dtype=np.int64)
+        if len(rows) <= len(old_rows):
+            self.log(f"[context-cache] {identity['brain']}/{table.kind}: band already covers {len(old_rows)} rows")
+            return manifest
+        if not np.array_equal(rows[:len(old_rows)], old_rows):
+            raise ValueError('Band order changed since the entry was built; rebuild the entry with --force')
+        if manifest.get('image_tiers') and image_reader is None:
+            raise ValueError('This entry caches image tiers; extending the band needs an image reader (drop --no-images)')
+
+        def kept_prefix(chunks, directory):
+            kept = []
+            for chunk in chunks:
+                path = directory / chunk['file']
+                if chunk['rows'] != CHUNK_ROWS or not path.is_file() or path.stat().st_size != chunk['bytes']:
+                    break
+                kept.append(chunk)
+            return kept
+
+        geometry_kept = kept_prefix(manifest['geometry']['chunks'], final / 'geometry')
+        geometry_start = len(geometry_kept) * CHUNK_ROWS
+        staging = Path(tempfile.mkdtemp(prefix='.extend_band_', dir=final))
+        started = time.monotonic()
+        swapped = []
+        try:
+            (staging / 'geometry').mkdir()
+            for chunk in geometry_kept:
+                shutil.copy2(final / 'geometry' / chunk['file'], staging / 'geometry' / chunk['file'])
+            updated = json.loads(json.dumps(manifest))
+            geometry_spec = {k: manifest['geometry'][k] for k in ('radius_um', 'max_nodes')}
+            sites_tail, _, _ = self._build_geometry(
+                table, provider, rows, geometry_spec, staging, updated, start_row=geometry_start,
+                kept={'chunks': geometry_kept, 'truncated': manifest['geometry'].get('truncated_sites', 0)})
+            swapped.append(('geometry', final / 'geometry', staging / 'geometry'))
+            for name, current in manifest['image_tiers'].items():
+                limit = (tiers.get(name) or {}).get('max_rows')
+                tier = {k: current[k] for k in ('level', 'radius_um', 'channel', 'timepoint')}
+                tier['max_rows'] = limit
+                tier_rows = rows if limit is None else rows[:int(limit)]
+                if int(current['rows']) >= len(tier_rows):
+                    continue  # this tier is capped below the old band; it stays as it is
+                if current.get('chunk_rows', CHUNK_ROWS) != CHUNK_ROWS:
+                    raise ValueError('Chunk size changed since the entry was built; rebuild the entry with --force')
+                tier_kept = kept_prefix(current.get('chunks', []), final / 'images' / name)
+                start_row = len(tier_kept) * CHUNK_ROWS
+                kept_rows = set(int(r) for r in tier_rows[:start_row])
+                kept = {'chunks': tier_kept, 'bytes': sum(c['bytes'] for c in tier_kept), 'metadata': current.get('metadata'),
+                        'failures': [f for f in current.get('failed_rows', []) if int(f['row']) in kept_rows]}
+                # Sites by position: rows before the new geometry come from the old entry, the rest were just built.
+                middle, _ = entry.geometry(rows[start_row:geometry_start]) if start_row < geometry_start else ([], [])
+                sites = [None] * start_row + list(middle) + list(sites_tail)
+                (staging / 'images' / name).mkdir(parents=True)
+                for chunk in tier_kept:
+                    shutil.copy2(final / 'images' / name / chunk['file'], staging / 'images' / name / chunk['file'])
+                tier_started = time.monotonic()
+                self._build_tier(table, image_reader, rows, sites, None, name, tier, staging, updated,
+                                 start_row=start_row, kept=kept)
+                updated['image_tiers'][name].update(
+                    extended_at=datetime.now().astimezone().isoformat(timespec='seconds'),
+                    extended_from_rows=int(current['rows']), extend_seconds=time.monotonic() - tier_started,
+                    max_rows=limit)
+                swapped.append((f'images/{name}', final / 'images' / name, staging / 'images' / name))
+            updated.update(band=dict(band), band_rows=int(len(rows)), implementation=implementation_hashes(),
+                           extended={'from_rows': int(len(old_rows)), 'to_rows': int(len(rows)),
+                                     'at': datetime.now().astimezone().isoformat(timespec='seconds'),
+                                     'seconds': time.monotonic() - started})
+            np.save(staging / 'rows.npy', rows, allow_pickle=False)
+            previous_dirs = []
+            for label, target, source in swapped:
+                previous = target.parent / f'.{target.name}.previous'
+                if previous.exists():
+                    _remove_tree(previous)
+                target.rename(previous)
+                source.rename(target)
+                previous_dirs.append(previous)
+            (staging / 'rows.npy').replace(final / 'rows.npy')
+            (final / 'manifest.json.tmp').write_text(json.dumps(updated, indent=2, allow_nan=False))
+            (final / 'manifest.json.tmp').replace(final / 'manifest.json')
+            for previous in previous_dirs:
+                _remove_tree(previous)
+            self.log(f"[context-cache] {identity['brain']}/{table.kind}: band extended "
+                     f"{len(old_rows)}->{len(rows)} rows in {time.monotonic() - started:.0f}s "
+                     f"({', '.join(label for label, _, _ in swapped)} rebuilt from their partial chunks)")
+            return updated
+        finally:
+            _remove_tree(staging)
 
     def extend_tier(self, table, image_reader, name, tier):
         """Grow one image tier of a complete entry to `tier['max_rows']` without

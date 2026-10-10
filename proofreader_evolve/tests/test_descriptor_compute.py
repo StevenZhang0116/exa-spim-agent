@@ -18,6 +18,7 @@ from proofreader_evolve.harness import descriptor_runs as dr
 from proofreader_evolve.harness.descriptor_contract import descriptor_spec, referenced_columns
 from proofreader_evolve.harness.model_execution import ModelExecutionError
 from proofreader_evolve.tests.test_selection_protocol import brain_table
+from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
 
 
 GEOMETRY_DESCRIPTOR = '''DESCRIPTOR = {'kind': 'merge', 'inputs': 'geometry', 'feature_names': ['node_count', 'mean_radius']}
@@ -133,7 +134,8 @@ class ContextCacheTests(unittest.TestCase):
         entry = cc.ContextCache(self.root / 'cache').entry(self.table)
         self.assertEqual(len(entry.rows), 12)
         with patch.object(FakeProvider, 'context', side_effect=AssertionError('must not rebuild')):
-            reused = builder.build(self.table, FakeProvider(), fake_image_reader)
+            reused = builder.build(self.table, FakeProvider(), fake_image_reader,
+                                   band={**cc.BAND_SPEC, 'max_candidates': 12})  # same band: reused
         self.assertTrue(reused['complete'])
 
 
@@ -507,6 +509,73 @@ class PreflightContextCacheTests(unittest.TestCase):
         self.assertEqual(missing['context_cache']['brains']['802449']['merge']['status'], 'blocked')
         self.assertEqual(ready['status'], 'checks_passed')
         self.assertEqual(ready['context_cache']['brains']['802449']['merge']['band_rows'], 12)
+
+
+
+class ExtendBandTests(unittest.TestCase):
+    """Growing the detector-ranked band of a complete entry in place (2026-10-08)."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.table = brain_table('802449').tables['merge']
+        self.chunk_patch = patch.object(cc, 'CHUNK_ROWS', 4)
+        self.chunk_patch.start()
+        self.addCleanup(self.chunk_patch.stop)
+        self.builder = cc.ContextCacheBuilder(self.root / 'cache', readers=2, log=lambda *_: None)
+        self.tiers = {'level1': cc.IMAGE_TIERS['level1'], 'level0': cc.IMAGE_TIERS['level0']}
+        self.before = self.build(6)
+
+    def build(self, band_rows, reader=fake_image_reader, **band_overrides):
+        band = {**cc.BAND_SPEC, 'max_candidates': band_rows, **band_overrides}
+        return self.builder.build(self.table, FakeProvider(), reader, band=band, tiers=self.tiers)
+
+    def files(self, group):
+        directory = self.root / 'cache' / cc.entry_directory('x', self.table).relative_to('x') / group
+        return {p.name: cc.file_hash(p) for p in sorted(directory.glob('*.npz'))}
+
+    def test_a_larger_band_grows_the_entry_in_place_and_never_shrinks_it(self):
+        groups = ('geometry', 'images/level1', 'images/level0')
+        before = {g: self.files(g) for g in groups}
+        self.assertEqual(self.before['band_rows'], 6)
+        key_before = cc.ContextCache(self.root / 'cache').identity_key(self.table)
+        after = self.build(12)
+        self.assertEqual((after['band_rows'], after['extended']['from_rows']), (12, 6))
+        self.assertEqual([c['rows'] for c in after['geometry']['chunks']], [4, 4, 4])
+        for name in ('level1', 'level0'):
+            info = after['image_tiers'][name]
+            self.assertEqual((info['rows'], info['extended_from_rows'], [c['rows'] for c in info['chunks']]), (12, 6, [4, 4, 4]))
+            self.assertEqual(info['failures'], 1)  # row 7 lies in the newly read range
+        for group in groups:
+            now = self.files(group)
+            self.assertEqual(now['chunk_00000.npz'], before[group]['chunk_00000.npz'])  # full chunk kept
+            self.assertNotEqual(now['chunk_00001.npz'], before[group]['chunk_00001.npz'])  # partial chunk rebuilt
+            self.assertEqual(sorted(now), ['chunk_00000.npz', 'chunk_00001.npz', 'chunk_00002.npz'])
+        self.assertFalse(list((self.root / 'cache').rglob('.extend_*')))
+        self.assertFalse(list((self.root / 'cache').rglob('.*.previous')))
+        entry = cc.ContextCache(self.root / 'cache').entry(self.table)
+        self.assertEqual(len(entry.rows), 12)
+        np.testing.assert_array_equal(entry.rows[:6], cc.select_rows(self.table.features, {**cc.BAND_SPEC, 'max_candidates': 6}))
+        self.assertEqual(len(entry.geometry(list(range(12)))[0]), 12)
+        patches = entry.image(list(range(12)), 'level0')
+        self.assertEqual([p is None for p in patches], [i == 7 for i in range(12)])
+        contexts, _ = entry.contexts(self.table, [9], inputs='image', tier='level1')
+        np.testing.assert_allclose(np.asarray(contexts[0]['fragment']['nodes_zyx'])[0], patches[9]['anchors_zyx'][0])
+        self.assertNotEqual(cc.ContextCache(self.root / 'cache').identity_key(self.table), key_before)
+        self.assertEqual(self.build(12)['band_rows'], 12)  # same band: reused
+        self.assertEqual(self.build(8)['band_rows'], 12)  # smaller band: reused, never shrunk
+        with self.assertRaisesRegex(ValueError, 'Band selection changed'):
+            self.build(12, selection_largest=False)
+        if len(self.table.features) > 12:
+            with self.assertRaisesRegex(ValueError, 'image reader'):
+                self.build(len(self.table.features), reader=None)
+
+    def test_cli_band_rows_is_passed_to_every_brain(self):
+        from proofreader_evolve.cli import precompute_context_cache as cli
+        with redirect_stdout(io.StringIO()) as out, patch.object(cli, 'cache_path', return_value=Path('/nonexistent')):
+            self.assertEqual(cli.main(['--brains', '754612', '754613', '--band-rows', '50000', '--dry-run']), 0)
+        self.assertEqual(out.getvalue().count('--band-rows 50000'), 2)
 
 
 class ExtendTierTests(unittest.TestCase):
