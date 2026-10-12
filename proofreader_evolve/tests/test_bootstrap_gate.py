@@ -126,7 +126,7 @@ class DriverGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
             seed = Path(tmp) / 'seed.py'
             seed.write_text(DETECTOR)
-            args = driver.parse_args(['--selection-protocol', 'in_sample', '--train-brains', '1',
+            args = driver.parse_args(['--min-positives', '0', '--selection-protocol', 'in_sample', '--train-brains', '1',
                                       '--validation-brains', '2', '--merge-k', str(K), '--split-k', '1',
                                       '--generations', str(len(attempts)), '--runs-dir', tmp,
                                       '--start-from', str(seed), '--bootstrap-draws', '200', *extra])
@@ -186,10 +186,10 @@ class DriverGateTests(unittest.TestCase):
         from proofreader_evolve.cli import run_precision_evolution as driver
         with redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
-                driver.parse_args(['--bootstrap-draws', '0'])
+                driver.parse_args(['--min-positives', '0', '--bootstrap-draws', '0'])
             with self.assertRaises(SystemExit):
-                driver.parse_args(['--bootstrap-alpha', '1.5'])
-        self.assertEqual(driver.parse_args(['--promotion-gate', 'margin', '--kind-schedule', 'alternate', '--bootstrap-draws', '0']).bootstrap_draws, 0)
+                driver.parse_args(['--min-positives', '0', '--bootstrap-alpha', '1.5'])
+        self.assertEqual(driver.parse_args(['--min-positives', '0', '--promotion-gate', 'margin', '--kind-schedule', 'alternate', '--bootstrap-draws', '0']).bootstrap_draws, 0)
         self.assertEqual(driver.parse_args([]).promotion_gate, 'bootstrap')
         self.assertEqual(driver.parse_args([]).bootstrap_draws, 1000)
 

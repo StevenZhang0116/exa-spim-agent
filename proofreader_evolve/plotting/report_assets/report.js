@@ -40,9 +40,9 @@
     box.append(el("h4",title));if(!report){box.append(el("p","Not measured / not recorded","muted"));return;}
     label(box,"Mean Precision@K",fmt(report.macro_precision));
     // Labels are three-valued; Top-K and precision use GT-labeled rows only (older runs lack n_labeled).
-    const headers=["Brain / kind","Pool candidates","GT-labeled rows","Pool positives","Top-K hits","Effective K / requested K","Precision@K","Recall@K"];
+    const headers=["Brain / kind","Pool candidates","GT-labeled rows","Pool positives","Top-K hits","Effective K / requested K","Precision@K","Recall@K","In mean"];
     box.append(table(headers,Object.entries(report.cells||{}).map(([name,c])=>
-      [name,count(c.pool_size),c.n_labeled==null?"N/A":count(c.n_labeled),count(c.positives),count(c.tp),`${count(c.effective_k)} / ${count(c.requested_k)}`,fmt(c.precision),c.positives===0?"N/A (no pool positives)":fmt(c.recall)])));
+      [name,count(c.pool_size),c.n_labeled==null?"N/A":count(c.n_labeled),count(c.positives),count(c.tp),`${count(c.effective_k)} / ${count(c.requested_k)}`,fmt(c.precision),c.positives===0?"N/A (no pool positives)":fmt(c.recall),c.in_mean==null?"Yes (fixed K)":c.in_mean?"Yes":"No (below positive floor)"])));
     for(const [name,c] of Object.entries(report.cells||{}))if(c.local_context){
       const context=c.local_context;
       label(box,`${name} local geometry`,`${count(context.selected_rows)} / ${count(context.pool_rows)} rows; ${count(context.truncated_sites)} truncated sites; ${context.cached?"cached":"extracted"}`);
@@ -178,7 +178,7 @@
     ["Recorded generations / promoted",`${data.generations.length} / ${data.generations.filter(g=>g.status==="accepted").length}`],
     ["TRAIN brains",(data.manifest.train_brains||[]).join(", ")||"Not recorded"],
     ["Validation brains",(data.manifest.development_validation_brains||[]).join(", ")||"Not recorded"],
-    ["K: merge / split",`${data.manifest.budgets?.merge??"?"} / ${data.manifest.budgets?.split??"?"}`],
+    ["K cap: merge / split",`${(data.manifest.budgets?.caps??data.manifest.budgets)?.merge??"?"} / ${(data.manifest.budgets?.caps??data.manifest.budgets)?.split??"?"}${data.manifest.budgets?.k_rule?` · ${data.manifest.budgets.k_rule}; ${data.manifest.budgets.mean_rule}`:""}`],
     ["Promotion gate",data.manifest.promotion_gate?`${data.manifest.promotion_gate.mode||"margin"}${data.manifest.promotion_gate.bootstrap?.affects_decision?` (${data.manifest.promotion_gate.bootstrap.draws} draws, alpha ${data.manifest.promotion_gate.bootstrap.alpha})`:""}`:"Not recorded"],
     ["Kind schedule",data.manifest.kind_schedule?`${data.manifest.kind_schedule.mode}${data.manifest.kind_schedule.mode==="adaptive"?` (floor every ${data.manifest.kind_schedule.floor_every})`:""}`:"Not recorded"],
     [total.evaluations_complete?"Evaluation units used":"Recorded evaluation units (incomplete)",count(total.train_evaluations)],

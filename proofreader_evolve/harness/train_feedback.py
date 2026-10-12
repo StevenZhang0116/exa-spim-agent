@@ -6,7 +6,7 @@ import json
 MAX_FEEDBACK_BYTES = 128_000  # 48 KB -> 96 KB (2026-10-05) -> 128 KB (2026-10-07, with the SDK file-read cap raised);
 # in run precision_20261007_112554 six of ten generations were pruned to one or two examples per group at 96 KB.
 METRICS = ("precision", "tp", "fp", "requested_k", "effective_k", "pool_size", "n_labeled", "n_unlabeled",
-           "positives", "recall")
+           "positives", "recall", "in_mean")
 SELECTION_METRICS = ("protocol", "fold_budgets", "fold_tp", "fold_held_rows")
 
 
@@ -48,6 +48,10 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
     TRAIN numbers remain visible as diagnostics only.
     """
     example_source = selection if selection is not None else parent_train
+    # Per-kind Top-K caps stay the agent-facing `budgets`; each pool's resolved K is its
+    # requested_k, and the rule that produced it is spelled out in k_rule.
+    caps = dict(budgets)
+    k_rule = budgets.describe() if hasattr(budgets, "describe") else None
     attempts = [{"generation": h["generation"],
                  "train": metrics_only(h["train"]), "train_gate": h.get("train_gate")}
                 for h in history[-5:]]
@@ -68,6 +72,9 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                     "Do not infer global score/label correlation from selected errors. Preserve current true positives. "
                     "Numbers are rounded to 6 significant digits for display only; null means missing. "
                     "All feature columns of the selected examples are included. "
+                    "budgets are the per-kind Top-K caps; each pool's requested_k is the K actually ranked there "
+                    "(k_rule explains how it follows from the pool's GT positives), and in_mean says whether the "
+                    "pool counts toward the mean. "
                     "The scorer contract is in the system prompt and rules.md."
                     + (" Examples, ranking_delta and the official selection score come from "
                        "selection_protocol (out-of-fold on selection brains, not in-sample). "
@@ -78,7 +85,8 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                        "is the branch minus the accepted scorer." if branch is not None else "")
                 ),
                 **({"search_branch": branch} if branch is not None else {}),
-                "budgets": budgets,
+                "budgets": caps,
+                "k_rule": k_rule,
                 "target_kind": target_kind,
                 f"{report_role}_train": metrics_only(parent_train),
                 **({f"{report_role}_selection": metrics_only(selection),

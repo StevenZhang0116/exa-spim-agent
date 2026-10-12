@@ -4,8 +4,18 @@ Labels are three-valued (harness/label_availability.py): 1 = error, 0 = GT-confi
 no error, NaN = not judgeable by GT. Scorers score every row; ranking, Precision@K,
 recall and the bootstrap use GT-labeled rows only, so NaN rows never count as hits
 or false positives.
+
+Since 2026-10-12 (v3) each pool's K is resolved from its own GT positives through
+``Budgets``: ``K = min(cap, ceil(positive_ratio * positives))``, so every pool that
+counts has the same attainable ceiling (1 / positive_ratio when the ratio binds), and
+pools with fewer than ``min_positives`` GT positives are scored and reported but
+excluded from the promotion mean, the bootstrap and kind headroom. Both inputs are
+label counts, so every K is fixed for a run. The mean is taken per kind over the
+counted brains and then over kinds; with every pool counted this equals the former
+equal-brain mean of per-brain kind means.
 """
 
+from collections.abc import Mapping
 import hashlib
 import math
 
@@ -19,11 +29,82 @@ from .model_execution import DEFAULT_MEMORY_MB
 from .label_availability import labeled_rows, labels_digest
 
 
-SCORING_VERSION = "native-precision-at-k-v2-three-valued"
-AGGREGATION = "equal-brain-mean-kind-precision"
-VALIDATION_GATE_VERSION = "mean-validation-precision-v2-three-valued"
-BOOTSTRAP_GATE_VERSION = "mean-validation-bootstrap-v2-three-valued"
+SCORING_VERSION = "native-precision-at-k-v3-positive-scaled-k"
+AGGREGATION = "equal-kind-mean-of-equal-brain-precision"
+VALIDATION_GATE_VERSION = "mean-validation-precision-v3-positive-scaled-k"
+BOOTSTRAP_GATE_VERSION = "mean-validation-bootstrap-v3-positive-scaled-k"
 GATE_MODES = ("bootstrap", "margin")
+
+
+class Budgets(Mapping):
+    """Per-kind Top-K caps plus the rule resolving each pool's K from its GT positives.
+
+    ``budgets[kind]`` is the cap (the historical fixed K). ``k_for(kind, truth)`` is the
+    K ranked on one pool: ``min(cap, ceil(positive_ratio * positives))`` when
+    ``positive_ratio > 0``, otherwise the cap. ``in_mean(truth)`` is False for pools with
+    fewer than ``min_positives`` GT positives; those pools are scored and reported but
+    never enter the promotion mean, the bootstrap or kind headroom. Both depend on
+    label counts only, so every pool's K is fixed for a run. A plain ``{kind: K}``
+    mapping coerces to fixed-K budgets that count every pool (the pre-v3 behaviour).
+    """
+
+    def __init__(self, caps, positive_ratio=0., min_positives=0):
+        caps = dict(caps)
+        for kind, cap in caps.items():
+            if type(cap) is not int or cap < 1:
+                raise ValueError(f"Top-K cap for {kind} must be a positive integer")
+        if (isinstance(positive_ratio, bool) or not isinstance(positive_ratio, (int, float))
+                or not math.isfinite(positive_ratio) or positive_ratio < 0):
+            raise ValueError("positive_ratio must be a finite nonnegative number (0 keeps the fixed cap)")
+        if type(min_positives) is not int or min_positives < 0:
+            raise ValueError("min_positives must be a nonnegative integer (0 counts every pool)")
+        self.caps, self.positive_ratio, self.min_positives = caps, float(positive_ratio), min_positives
+
+    @classmethod
+    def coerce(cls, value):
+        return value if isinstance(value, cls) else cls(value)
+
+    def __getitem__(self, kind):
+        return self.caps[kind]
+
+    def __iter__(self):
+        return iter(self.caps)
+
+    def __len__(self):
+        return len(self.caps)
+
+    @staticmethod
+    def positives(truth):
+        return int(np.nansum(np.asarray(truth, dtype=float)))
+
+    def k_for(self, kind, truth):
+        cap = self.caps[kind]
+        if self.positive_ratio <= 0:
+            return cap
+        return max(1, min(cap, math.ceil(self.positive_ratio * self.positives(truth))))
+
+    def in_mean(self, truth):
+        return self.positives(truth) >= self.min_positives
+
+    def describe(self):
+        return {"caps": dict(self.caps), "positive_ratio": self.positive_ratio,
+                "min_positives": self.min_positives,
+                "k_rule": ("K per pool = min(cap, ceil(positive_ratio x GT positives))"
+                           if self.positive_ratio > 0 else "K per pool = cap (fixed)"),
+                "mean_rule": (f"pools with fewer than {self.min_positives} GT positives are scored and "
+                              "reported but excluded from the mean"
+                              if self.min_positives > 0 else "every pool counts toward the mean")}
+
+    def resolve(self, tables_by_brain):
+        """Per-pool K and mean membership for a bank mapping; depends on labels only."""
+        cells = {}
+        for brain, banks in tables_by_brain.items():
+            for kind, table in banks.tables.items():
+                if kind in self.caps:
+                    cells[f"{brain}/{kind}"] = {"positives": self.positives(table.truth), "cap": self.caps[kind],
+                                                "requested_k": self.k_for(kind, table.truth),
+                                                "in_mean": self.in_mean(table.truth)}
+        return cells
 
 
 def gate_version(mode):
@@ -33,23 +114,40 @@ def gate_version(mode):
 
 
 def aggregate_precision(cells):
-    """Give each brain equal weight, with the same kinds represented in each."""
-    grouped = {}
+    """Equal-kind mean of the equal-brain mean precision over the pools that count.
+
+    Pools flagged ``in_mean: false`` (too few GT positives) are reported but skipped.
+    Every evaluated brain must still carry the same kinds, so the grid stays complete;
+    when every pool counts this equals the former equal-brain mean of per-brain means.
+    """
+    grouped, by_kind, excluded = {}, {}, []
     for name, cell in cells.items():
         brain, kind = name.rsplit("/", 1)
         precision = float(cell["precision"])
         if not math.isfinite(precision) or not 0 <= precision <= 1:
             raise ValueError(f"Invalid precision on {name}")
-        grouped.setdefault(brain, {})[kind] = precision
+        grouped.setdefault(brain, set()).add(kind)
+        if not cell.get("in_mean", True):
+            excluded.append(name)
+            continue
+        by_kind.setdefault(kind, {})[brain] = precision
     if not grouped:
         raise ValueError("No candidate pools supplied")
     if len({tuple(sorted(values)) for values in grouped.values()}) != 1:
         raise ValueError("Every evaluated brain must have the same candidate kinds")
-    per_brain = {brain: math.fsum(values.values()) / len(values)
-                 for brain, values in grouped.items()}
-    result = {"aggregation": AGGREGATION, "per_brain_precision": per_brain,
-              "macro_precision": math.fsum(per_brain.values()) / len(per_brain)}
-    return result
+    missing = [kind for kind in sorted(next(iter(grouped.values()))) if kind not in by_kind]
+    if missing:
+        raise ValueError(f"No {missing[0]} pool counts toward the mean: every {missing[0]} pool is below "
+                         "the GT-positive floor")
+    per_kind = {kind: math.fsum(values.values()) / len(values) for kind, values in sorted(by_kind.items())}
+    per_brain = {}
+    for values in by_kind.values():
+        for brain, precision in values.items():
+            per_brain.setdefault(brain, []).append(precision)
+    per_brain = {brain: math.fsum(v) / len(v) for brain, v in sorted(per_brain.items())}
+    return {"aggregation": AGGREGATION, "per_kind_precision": per_kind, "per_brain_precision": per_brain,
+            "excluded_cells": sorted(excluded),
+            "macro_precision": math.fsum(per_kind.values()) / len(per_kind)}
 
 
 def labeled_order(scores, truth, keys):
@@ -58,8 +156,12 @@ def labeled_order(scores, truth, keys):
     return rows[np.lexsort((np.asarray(keys, dtype=str)[rows], -np.asarray(scores, dtype=float)[rows]))]
 
 
-def rank_metrics(scores, truth, keys, k):
-    """Precision@K over GT-labeled rows: the Top-K is taken among rows labeled 1 or 0."""
+def rank_metrics(scores, truth, keys, k, *, in_mean=True):
+    """Precision@K over GT-labeled rows: the Top-K is taken among rows labeled 1 or 0.
+
+    ``k`` is this pool's resolved K (see ``Budgets.k_for``); ``in_mean`` records whether
+    the pool counts toward the mean (``Budgets.in_mean``).
+    """
     scores, truth = np.asarray(scores, dtype=float), np.asarray(truth, dtype=float)
     if type(k) is not int or k < 1:
         raise ValueError("K must be a positive integer")
@@ -76,7 +178,7 @@ def rank_metrics(scores, truth, keys, k):
             "n_labeled": len(order), "n_unlabeled": len(scores) - len(order),
             "tp": tp, "fp": len(chosen) - tp, "precision": tp / len(chosen),
             "recall": tp / positives if positives else None,
-            "positives": positives}, chosen
+            "positives": positives, "in_mean": bool(in_mean)}, chosen
 
 
 def evaluate(source, tables_by_brain, budgets, timeout=120, examples=False, *,
@@ -84,7 +186,8 @@ def evaluate(source, tables_by_brain, budgets, timeout=120, examples=False, *,
     """Score features in a restricted worker; labels and ranking stay here."""
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError("Scorer timeout must be positive and finite")
-    report = {"version": SCORING_VERSION,
+    budgets = Budgets.coerce(budgets)
+    report = {"version": SCORING_VERSION, "budgets": budgets.describe(),
               "policy_sha256": hashlib.sha256(source.encode()).hexdigest(), "cells": {}}
     sources = components(source)
     for brain, banks in tables_by_brain.items():
@@ -92,13 +195,14 @@ def evaluate(source, tables_by_brain, budgets, timeout=120, examples=False, *,
             features = augmented_features(sources[kind], table, timeout)
             scores = (score(sources[kind], features, kind, timeout, memory_mb=memory_mb, artifact_store=artifact_store)
                       if artifact_store is not None else score(sources[kind], features, kind, timeout, memory_mb=memory_mb))
-            metrics, chosen = rank_metrics(scores, table.truth, table.keys, budgets[kind])
+            k = budgets.k_for(kind, table.truth)
+            metrics, chosen = rank_metrics(scores, table.truth, table.keys, k, in_mean=budgets.in_mean(table.truth))
             if 'local_context' in features.attrs:
                 metrics['local_context'] = features.attrs['local_context']
             if 'image_context' in features.attrs:
                 from .image_selection import scoring_coverage
                 metrics['image_context'] = {**features.attrs['image_context'],
-                    'scoring_coverage': scoring_coverage(features, chosen, table.truth, budgets[kind])}
+                    'scoring_coverage': scoring_coverage(features, chosen, table.truth, k)}
             metrics["pool_sha256"] = table.meta["pool_sha256"]
             metrics["labels_sha256"] = labels_digest(table.truth)
             cell = f"{brain}/{kind}"
@@ -124,6 +228,8 @@ def acceptance(parent, candidate, margin=0, *, require_no_cell_regression=True):
                     "positives"):
             if before[key] != after[key]:
                 raise ValueError(f"Candidate changed fixed benchmark: {cell}/{key}")
+        if before.get("in_mean", True) != after.get("in_mean", True):
+            raise ValueError(f"Candidate changed fixed benchmark: {cell}/in_mean")
     before_mean = aggregate_precision(parent["cells"])["macro_precision"]
     after_mean = aggregate_precision(candidate["cells"])["macro_precision"]
     if require_no_cell_regression:
@@ -137,7 +243,7 @@ def acceptance(parent, candidate, margin=0, *, require_no_cell_regression=True):
                     f"delta={gain:+.6f}, margin={margin:g}")
 
 
-BOOTSTRAP_VERSION = "paired-poisson-bootstrap-v2-three-valued"
+BOOTSTRAP_VERSION = "paired-poisson-bootstrap-v3-positive-scaled-k"
 
 
 def _prefix_hits(order, truth, counts, k):
@@ -158,12 +264,15 @@ def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *,
     Both scorers are re-ranked on the same Poisson(1)-weighted multiset per cell,
     so the interval reflects row sampling noise, not scorer nondeterminism. The
     two-sided (1 - alpha) interval is what `bootstrap_acceptance` reads; the 95%
-    interval is always recorded as well.
+    interval is always recorded as well. Each cell uses its own resolved K; cells
+    below the GT-positive floor get a per-cell interval but never enter the mean
+    delta, matching `aggregate_precision`.
     """
     if type(draws) is not int or draws < 1:
         raise ValueError("Bootstrap draws must be a positive integer")
     if not (isinstance(alpha, float) and math.isfinite(alpha) and 0. < alpha < 1.):
         raise ValueError("Bootstrap alpha must be a float in (0, 1)")
+    budgets = Budgets.coerce(budgets)
     rng = np.random.default_rng(seed)
     cells = {}
     for brain, banks in tables_by_brain.items():
@@ -181,12 +290,16 @@ def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *,
             position[rows] = np.arange(len(rows))
             labels = truth[rows].astype(np.int64)
             cells[cell] = (labels, position[labeled_order(before, truth, table.keys)],
-                           position[labeled_order(after, truth, table.keys)], budgets[kind])
+                           position[labeled_order(after, truth, table.keys)],
+                           budgets.k_for(kind, table.truth), budgets.in_mean(table.truth))
+    counted = {cell for cell, values in cells.items() if values[4]}
+    if not counted:
+        raise ValueError("No candidate pool counts toward the bootstrap mean")
     deltas = np.empty(draws)
     per_cell = {cell: np.empty(draws) for cell in cells}
     for draw in range(draws):
         sampled = {}
-        for cell, (truth, order_before, order_after, k) in cells.items():
+        for cell, (truth, order_before, order_after, k, _) in cells.items():
             counts = rng.poisson(1., len(truth)).astype(np.int64)
             hits_before, k_before = _prefix_hits(order_before, truth, counts, k)
             hits_after, k_after = _prefix_hits(order_after, truth, counts, k)
@@ -194,14 +307,15 @@ def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *,
             precision_after = hits_after / k_after if k_after else 0.
             per_cell[cell][draw] = precision_after - precision_before
             sampled[cell] = precision_after - precision_before
-        grouped = {}
-        for cell, value in sampled.items():
-            brain, _ = cell.rsplit("/", 1)
-            grouped.setdefault(brain, []).append(value)
-        deltas[draw] = math.fsum(math.fsum(v) / len(v) for v in grouped.values()) / len(grouped)
+        by_kind = {}
+        for cell in counted:
+            _, kind = cell.rsplit("/", 1)
+            by_kind.setdefault(kind, []).append(sampled[cell])
+        deltas[draw] = math.fsum(math.fsum(v) / len(v) for v in by_kind.values()) / len(by_kind)
     bounds = [100. * alpha / 2., 100. * (1. - alpha / 2.)]
     low, high = np.percentile(deltas, bounds)
     return {"version": BOOTSTRAP_VERSION, "draws": draws, "seed": seed, "alpha": alpha,
+            "aggregation": AGGREGATION, "excluded_cells": sorted(set(cells) - counted),
             "macro_delta_ci": [float(low), float(high)],
             "macro_delta_ci95": [float(v) for v in np.percentile(deltas, [2.5, 97.5])],
             "macro_delta_point": float(np.mean(deltas)),

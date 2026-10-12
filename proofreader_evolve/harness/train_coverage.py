@@ -74,7 +74,7 @@ class TrainingCoverage:
                 raise ValueError('TRAIN positive count changed')
             budget = (metrics['requested_k'], metrics['effective_k'])
             if cell.get('budget', budget) != budget:
-                raise ValueError('TRAIN coverage requires the same fixed K for all candidates')
+                raise ValueError('TRAIN coverage requires the same K per TRAIN cell for all candidates')
             indices = np.asarray(state[name]['chosen'])
             if (indices.ndim != 1 or not np.issubdtype(indices.dtype, np.integer)
                     or len(indices) != metrics['effective_k']

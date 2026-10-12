@@ -117,7 +117,7 @@ class DriverTests(unittest.TestCase):
         from proofreader_evolve.cli import run_precision_evolution as driver
         targets = []
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
-            args = driver.parse_args(['--selection-protocol', 'in_sample', '--promotion-gate', 'margin',
+            args = driver.parse_args(['--min-positives', '0', '--selection-protocol', 'in_sample', '--promotion-gate', 'margin',
                                       '--train-brains', '1', '--validation-brains', '2', '--merge-k', '1',
                                       '--split-k', '2', '--generations', str(generations), '--runs-dir', tmp, *extra])
 
@@ -181,7 +181,7 @@ class DriverTests(unittest.TestCase):
         args = driver.parse_args([])
         self.assertEqual((args.kind_schedule, args.kind_floor_every, args.generations), ('adaptive', 4, 15))
         with redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
-            driver.parse_args(['--kind-floor-every', '0'])
+            driver.parse_args(['--min-positives', '0', '--kind-floor-every', '0'])
 
 
 if __name__ == '__main__':

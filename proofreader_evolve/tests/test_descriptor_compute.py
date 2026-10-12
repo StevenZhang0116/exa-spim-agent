@@ -355,7 +355,7 @@ class DriverDescriptorTests(unittest.TestCase):
             banks = three_brain_cache(root / 'cache')
             seed = root / 'seed.py'
             seed.write_text(FORMULA)
-            args = driver.parse_args(['--train-brains', '794495,802449', '--validation-brains', '2',
+            args = driver.parse_args(['--min-positives', '0', '--train-brains', '794495,802449', '--validation-brains', '2',
                                       '--merge-k', '3', '--split-k', '1', '--generations', '1', '--runs-dir', tmp,
                                       '--start-from', str(seed), '--bootstrap-draws', '5', '--promotion-gate', 'margin', '--kind-schedule', 'alternate', '--skip-auxiliary-ablation',
                                       '--context-cache', str(root / 'cache'), '--descriptor-bank', str(root / 'bank'),
@@ -427,7 +427,7 @@ class DriverDescriptorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
             seed = Path(tmp) / 'seed.py'
             seed.write_text(FORMULA)
-            args = driver.parse_args(['--train-brains', '794495,802449', '--validation-brains', '2', '--merge-k', '3',
+            args = driver.parse_args(['--min-positives', '0', '--train-brains', '794495,802449', '--validation-brains', '2', '--merge-k', '3',
                                       '--generations', '1', '--runs-dir', tmp, '--start-from', str(seed),
                                       '--skip-auxiliary-ablation', '--bootstrap-draws', '0', '--promotion-gate', 'margin'])
             async def revise(run_dir, policy, rules, report, model, *, experiments):

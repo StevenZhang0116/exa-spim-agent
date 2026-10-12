@@ -10,10 +10,14 @@ from pathlib import Path
 
 # Current fixed-pool objective; must equal fixed_pool_scoring.SCORING_VERSION (a test guards this;
 # this module stays standard-library only). v1 runs (before 2026-10-09) ranked every row with
-# two-valued labels; v2 ranks GT-labeled rows only (three-valued labels). Both are read.
-PRECISION = "native-precision-at-k-v2-three-valued"
+# two-valued labels; v2 (2026-10-09 to 2026-10-11) ranks GT-labeled rows only (three-valued
+# labels) at one fixed K per kind; v3 (2026-10-12) resolves each pool's K from its GT positives
+# and excludes pools below a positive floor from the mean. All three are read; their numbers
+# are not comparable across versions.
+PRECISION = "native-precision-at-k-v3-positive-scaled-k"
+PRECISION_V2 = "native-precision-at-k-v2-three-valued"
 LEGACY_PRECISION = "native-precision-at-k-v1"
-PRECISION_VERSIONS = frozenset({LEGACY_PRECISION, PRECISION})
+PRECISION_VERSIONS = frozenset({LEGACY_PRECISION, PRECISION_V2, PRECISION})
 METRIC_NAME = "macro Precision@K"
 
 

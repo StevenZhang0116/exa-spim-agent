@@ -9,7 +9,7 @@ import numpy as np
 
 from .classifier_contract import config_identity, frozen_model
 from .classifier_training import fit_classifier
-from .fixed_pool_scoring import rank_metrics
+from .fixed_pool_scoring import Budgets, rank_metrics
 from .internal_validation import FOLDS, fold_assignments, grouped_folds
 from .label_availability import labels_digest
 from .isolated_scoring import score
@@ -82,6 +82,7 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
     Diagnostic models cannot be submitted through the normal candidate registry.
     """
     started = time.monotonic()
+    budgets = Budgets.coerce(budgets)
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     (directory / 'program.py').write_text(source)
@@ -125,15 +126,18 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
     cells = {}
     for brain in sorted(predictions['full']):
         table = train[brain].tables[kind]
+        k, in_mean = budgets.k_for(kind, table.truth), budgets.in_mean(table.truth)
         if classifier:
             from .selection_protocol import partitioned_rank_metrics
             ids = fold_assignments(split[0], brain, len(table.truth))
-            full, chosen = partitioned_rank_metrics(predictions['full'][brain], table.truth, table.keys, ids, budgets[kind])
+            full, chosen = partitioned_rank_metrics(predictions['full'][brain], table.truth, table.keys, ids, k,
+                                                    in_mean=in_mean)
             removed, control = partitioned_rank_metrics(predictions['without_features'][brain], table.truth,
-                                                       table.keys, ids, budgets[kind])
+                                                       table.keys, ids, k, in_mean=in_mean)
         else:
-            full, chosen = rank_metrics(predictions['full'][brain], table.truth, table.keys, budgets[kind])
-            removed, control = rank_metrics(predictions['without_features'][brain], table.truth, table.keys, budgets[kind])
+            full, chosen = rank_metrics(predictions['full'][brain], table.truth, table.keys, k, in_mean=in_mean)
+            removed, control = rank_metrics(predictions['without_features'][brain], table.truth, table.keys, k,
+                                            in_mean=in_mean)
         gained = np.setdiff1d(chosen, control)
         lost = np.setdiff1d(control, chosen)
         cells[f'{brain}/{kind}'] = {
@@ -145,7 +149,7 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
         if 'image_context' in frames[brain].attrs:
             cells[f'{brain}/{kind}']['image_coverage'] = {
                 'selection': frames[brain].attrs['image_context'].get('selection_coverage'),
-                'full': scoring_coverage(frames[brain], chosen, table.truth, budgets[kind])}
+                'full': scoring_coverage(frames[brain], chosen, table.truth, k)}
     delta = sum(cell['delta_precision'] for cell in cells.values()) / len(cells)
     arrays = {f'{arm}:{brain}': values for arm, brains in predictions.items() for brain, values in brains.items()}
     np.savez(directory / 'predictions.npz', **arrays)

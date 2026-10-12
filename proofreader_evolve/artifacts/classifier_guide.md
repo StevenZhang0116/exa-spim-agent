@@ -21,7 +21,7 @@ the local patches for that input row. You may learn image preprocessing and
 encoders in fit and save their frozen state alongside your model. Internal folds
 receive only their own row subsets, including images. Handle empty patch lists.
 For coverage beyond a few investigated cases, declare top_k_boundary selection at
-this kind's K and call plan_image_scoring({}) before IO. Numeric image extraction
+this kind's K budget (feedback.budgets) and call plan_image_scoring({}) before IO. Numeric image extraction
 uses bounded batches; raw-patch models retain a 1 GiB staging limit. Inspect actual
 Top-K image coverage, then measure an image-only ablation at the intended final
 coverage before attributing any improvement to pixels. See image_context_guide.md.

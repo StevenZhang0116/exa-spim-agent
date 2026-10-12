@@ -19,7 +19,8 @@ in the current generation's `proposal.json`.
   by seccomp; credentials and labels do not enter this process. Use vectorized
   numerical operations within the fixed wall-time and 16 GiB address-space limits.
 - Candidate geometry, occurrences, native labels, original detector weights, pool membership,
-  K, evaluator and train/validation assignments are fixed by the harness.
+  each pool's K (set from its GT positives), evaluator and train/validation assignments are
+  fixed by the harness.
 - No `ENUM_PARAMS`, `propose_edits`, candidate expansion or post-edit enumeration.
 - Read local_context_guide.md to inspect TRAIN candidate neighborhoods using
   inspect_candidate(candidate_ref, radius_um, occurrence_index), at most eight
@@ -47,7 +48,8 @@ in the current generation's `proposal.json`.
   Models cannot choose cloud paths or view validation labels. No GT overlay is
   supplied. A missing/unreviewed image rejects the measurement, never a brain.
   Bridge a useful 3D finding to scoring with a literal top_k_boundary selection
-  at this kind's K. Call plan_image_scoring({}) before IO to preview TRAIN coverage.
+  at this kind's K budget (feedback.budgets). Call plan_image_scoring({}) before IO to
+  preview TRAIN coverage.
   Measure a small boundary pilot, expand max_candidates if justified, then ablate
   exactly the image features plus image_available at the final coverage. Numeric
   extraction uses bounded batches; raw model inputs retain their 1 GiB stage cap.
@@ -60,16 +62,19 @@ in the current generation's `proposal.json`.
   and the bootstrap use GT-labeled rows only; NaN rows are never hits or false
   positives. Fitted models receive only labeled rows (plus optional `X_unlabeled`,
   see `classifier_guide.md`).
-- Promotion gate: improve equal-weight mean Precision@K over GT-labeled rows on the fixed
-  development-validation brains. First average merge/split precision within each
-  brain, then average the brains. Individual brain/kind regressions are allowed.
+- Promotion gate: improve the mean Precision@K over GT-labeled rows on the fixed
+  development-validation brains. Each pool ranks its own K = min(this kind's budget,
+  ceil(ratio x the pool's GT positives)); pools below the GT-positive floor are scored
+  and reported but excluded (`in_mean` in feedback). First average each kind over the
+  counted brains, then average the kinds. Individual brain/kind regressions are allowed.
   The mean gain must also clear row-resampling noise: the host requires the lower
   bound of a paired bootstrap interval of that gain to be above zero, so a change
   worth one or two extra Top-K hits will not be promoted.
   The selection score guides exploration and is not a hard promotion requirement;
   `train_gate` in tool feedback is a diagnostic comparison only.
   Returning fewer candidates cannot inflate precision; the harness always takes
-  min(K, pool size). A ranking gain does not prove an executable repair is safe.
+  min(K, GT-labeled rows) at each pool's K. A ranking gain does not prove an executable
+  repair is safe.
 - Each generation edits only its assigned kind; the other component is frozen
   by the harness. Read `search_plan.json`: `explore` designs feature combinations,
   transformations, gates or a new supervised classifier. For hand-written formulas,

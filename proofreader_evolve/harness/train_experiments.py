@@ -127,6 +127,9 @@ class ExperimentMemory:
         (directory / 'train_evaluation.json').write_text(json.dumps(report, allow_nan=False))
         save_state(directory / 'train_state.npz', state)
         model = frozen_model(component)
+        # The driver always supplies a protocol built from the run's Budgets, which
+        # ensure_protocol keeps; these one-K-per-kind caps only serve sessions created
+        # without a protocol (fixed-K in-sample fallback).
         selection_report, selection_state = self.selection_measurement(
             kind, component, state, directory, model=model,
             budgets={name.rsplit('/', 1)[1]: cell['requested_k'] for name, cell in report['cells'].items()})
@@ -150,12 +153,12 @@ class ExperimentMemory:
         self.register(entry)
         self.hypotheses.register_seed(entry)
         if self.train:
-            cells = [cell for name, cell in report['cells'].items() if name.endswith('/' + kind)]
             self.research.record(kind=kind, generation=0, tool='evaluate_train', source=scoring_source(report, kind),
                 category='measurement', identity={'program': program_identity((model or {}).get('program') or component),
                     'model_config': model['config'] if model else None,
                     'train': {brain: bank.tables[kind].meta for brain, bank in self.train.items()},
-                    'k': cells[0]['requested_k']}, success=True, cached=True,
+                    'k_by_cell': {name: cell['requested_k'] for name, cell in report['cells'].items()
+                                  if name.endswith('/' + kind)}}, success=True, cached=True,
                 artifact=directory / 'result.json')
         (directory / 'result.json').write_text(json.dumps(entry, indent=2, allow_nan=False))
         return entry
@@ -338,6 +341,10 @@ class TrainingExperiments:
                 'parent': before, 'candidate': after, 'delta': after - before,
                 'passed': after > before + 1e-12, 'required_for_promotion': False,
                 'scope': 'Development selection signal on selection brains; the outer promotion gate decides acceptance'}
+
+    def _k(self, kind, truth):
+        """This pool's resolved Top-K (Budgets.k_for); plain {kind: K} budgets mean a fixed K."""
+        return scoring.Budgets.coerce(self.budgets).k_for(kind, truth)
 
     def _cached_selection(self, cached, component, model, measured_state):
         directory = Path(cached['snapshot'])
@@ -556,7 +563,7 @@ class TrainingExperiments:
             {'program': program_identity((model or {}).get('program') or component)
                 if entry['status'] == 'evaluated' else component_hash,
              'model_config': model['config'] if model else None,
-             'train': self._train_identity(), 'k': self.budgets[self.target_kind]},
+             'train': self._train_identity(), 'budgets': scoring.Budgets.coerce(self.budgets).describe()},
             entry['status'] == 'evaluated', trial_dir / 'result.json', cached=bool(cached),
             outcome={'precision': entry.get('target_precision'), 'in_sample_precision': entry.get('in_sample_precision'),
                      'error': entry.get('error')})
@@ -935,16 +942,18 @@ class TrainingExperiments:
             table = bank.tables[self.target_kind]
             selected = select_image_rows(table.features, spec, table.keys)
             cells[f'{brain}/{self.target_kind}'] = selection_coverage(table.features, spec, selected, table.keys)
-        k = self.budgets[self.target_kind]
+        # Image selection is one literal selection_k applied to every TRAIN brain, so it is
+        # compared with this kind's K budget (feedback.budgets), not a pool's resolved K.
+        cap = self.budgets[self.target_kind]
         warnings = []
         if spec['selection_mode'] != 'top_k_boundary':
             warnings.append('Top-only sampling does not deliberately cover candidates just outside K')
-        elif spec['selection_k'] != k:
-            warnings.append('selection_k differs from this run\'s scoring K')
-        if spec['max_candidates'] < 2 * k:
+        elif spec['selection_k'] != cap:
+            warnings.append('selection_k differs from this kind\'s K budget (feedback.budgets)')
+        if spec['max_candidates'] < 2 * cap:
             warnings.append('Coverage is a pilot near K, not the complete Top-K plus K outside candidates')
         report = {'status': 'planned', 'scope': 'TRAIN predictors only; no images read, no labels used, no score gain measured',
-            'target_kind': self.target_kind, 'scoring_k': k, 'contract': spec, 'cells': cells,
+            'target_kind': self.target_kind, 'k_budget': cap, 'contract': spec, 'cells': cells,
             'warnings': warnings, 'evaluations_used': 0,
             'resource_note': 'Numeric extraction batches share one preparation/extraction timeout. '
                 'Actual byte and cache limits are enforced during IO; raw-patch transport still has a 1 GiB limit.',
@@ -1063,7 +1072,7 @@ class TrainingExperiments:
                             or self.memory.internal_folds.get(self.target_kind)),
                 selection_brains=self.protocol.selection_brains)
             preparation_seconds = time.monotonic() - started
-            identity.update(requested_k=self.budgets[self.target_kind],
+            identity.update(budgets=scoring.Budgets.coerce(self.budgets).describe(),
                             worker_limits={'fit_timeout': self.classifier_timeout,
                                 'score_timeout': self.timeout, 'memory_mb': self.classifier_memory_mb,
                                 'threads': self.classifier_threads})
@@ -1154,8 +1163,8 @@ class TrainingExperiments:
         brain = self.protocol.selection_brains[0]
         table = self.train[brain].tables[self.target_kind]
         per_call = self.descriptor_budget['per_call_seconds']
-        plan = runs.plan(table, program, spec, k=self.budgets[self.target_kind], timeout=min(600., per_call))
-        k = self.budgets[self.target_kind]
+        k = self._k(self.target_kind, table.truth)
+        plan = runs.plan(table, program, spec, k=k, timeout=min(600., per_call))
         allowance = min(per_call, self.descriptor_seconds_remaining)
         response = {'status': 'planned', 'code_sha256': spec['code_sha256'], 'columns': spec['columns'],
                     'inputs': spec['inputs'], 'image_tier': spec['image_tier'] if spec['inputs'] != 'geometry' else None,
@@ -1184,8 +1193,8 @@ class TrainingExperiments:
         program, spec = self._read_descriptor()
         runs = self.memory.descriptor_runs
         tables = self._descriptor_tables()
-        k = self.budgets[self.target_kind]
-        cached = all(runs.cached(table, spec, scope, k) for table in tables.values())
+        cached = all(runs.cached(table, spec, scope, self._k(self.target_kind, table.truth))
+                     for table in tables.values())
         per_call = self.descriptor_budget['per_call_seconds']
         if not cached:
             if self.descriptor_seconds_remaining <= 0:
@@ -1212,7 +1221,8 @@ class TrainingExperiments:
             for brain, table in sorted(tables.items()):
                 allowance = per_call if cached else max(1., min(per_call, self.descriptor_seconds_remaining)
                                                         - (time.monotonic() - started))
-                results[brain] = runs.compute(table, program, spec, scope, k=k, wall_budget=allowance,
+                results[brain] = runs.compute(table, program, spec, scope, k=self._k(self.target_kind, table.truth),
+                                              wall_budget=allowance,
                                               log_dir=directory / brain)
             for brain, table in tables.items():
                 runs.register(table, spec['columns'], results[brain]['rows'], results[brain]['values'])
@@ -1296,7 +1306,7 @@ class TrainingExperiments:
                 table = bank.tables[spec['kind']]
                 if all(c in table.features.columns for c in spec['columns']):
                     continue
-                result = runs.compute(table, program, spec, scope, k=self.budgets[spec['kind']],
+                result = runs.compute(table, program, spec, scope, k=self._k(spec['kind'], table.truth),
                                       wall_budget=self.descriptor_budget['per_call_seconds'],
                                       log_dir=(log_dir or self.gen_dir / 'descriptor_runs' / 'inference') / brain / code[:12])
                 runs.register(table, spec['columns'], result['rows'], result['values'])

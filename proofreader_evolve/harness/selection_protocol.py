@@ -19,7 +19,7 @@ import numpy as np
 
 from .classifier_contract import frozen_model
 from .classifier_training import fit_classifier
-from .fixed_pool_scoring import aggregate_precision, rank_metrics
+from .fixed_pool_scoring import Budgets, aggregate_precision, rank_metrics
 from .image_features import subset_features
 from .internal_validation import FOLDS, fold_assignments, grouped_folds
 from .label_availability import labeled_rows, labels_digest
@@ -27,7 +27,7 @@ from .local_features import augmented_features
 from .model_execution import predict_model, DEFAULT_MEMORY_MB
 
 
-PROTOCOL_VERSION = 'grouped-cv-precision-v2-three-valued'
+PROTOCOL_VERSION = 'grouped-cv-precision-v3-positive-scaled-k'
 MODES = ('grouped_oof', 'in_sample')
 
 
@@ -58,14 +58,16 @@ def fold_budgets(held_counts, k):
     return budgets
 
 
-def partitioned_rank_metrics(scores, truth, keys, fold_ids, k):
+def partitioned_rank_metrics(scores, truth, keys, fold_ids, k, *, in_mean=True):
     """Rank inside each fold with its own budget; fold budgets sum to K.
 
     Fold models can emit differently scaled scores, so out-of-fold scores are
     never pooled into one global ranking. The same partition and budgets apply
     to every candidate and to the reference, including non-fitted formulas.
     Only GT-labeled rows (label 1 or 0; NaN = not judgeable) are ranked, and fold
-    budgets are proportional to each fold's labeled rows.
+    budgets are proportional to each fold's labeled rows. ``k`` is this pool's
+    resolved K (``Budgets.k_for``) and ``in_mean`` whether the pool counts toward
+    the mean (``Budgets.in_mean``).
     """
     scores, truth = np.asarray(scores, dtype=float), np.asarray(truth, dtype=float)
     fold_ids = np.asarray(fold_ids)
@@ -97,6 +99,7 @@ def partitioned_rank_metrics(scores, truth, keys, fold_ids, k):
             'n_labeled': int(labeled.sum()), 'n_unlabeled': int((~labeled).sum()),
             'tp': tp, 'fp': effective - tp, 'precision': tp / effective if effective else 0.,
             'recall': tp / positives if positives else None, 'positives': positives,
+            'in_mean': bool(in_mean),
             'protocol': PROTOCOL_VERSION, 'fold_budgets': budgets, 'fold_tp': fold_tp,
             'fold_held_rows': held_counts}, chosen
 
@@ -122,7 +125,7 @@ class SelectionProtocol:
             raise ValueError(f'Unknown selection protocol {mode!r}; use one of {MODES}')
         if not train:
             raise ValueError('The selection protocol needs at least one TRAIN brain')
-        self.train, self.budgets, self.mode = train, dict(budgets), mode
+        self.train, self.budgets, self.mode = train, Budgets.coerce(budgets), mode
         available = set.intersection(*(set(bank.tables) for bank in train.values()))
         self.kinds = [k for k in (kinds or sorted(available)) if k in available and k in self.budgets]
         if mode == 'in_sample':
@@ -172,8 +175,8 @@ class SelectionProtocol:
                 'auxiliary_role': ('Auxiliary brains join every fitting set and are never held out; their '
                                    'in-sample scores are diagnostics only.' if grouped else None),
                 'scope': ('Development selection signal for TRAIN branches, used repeatedly by the reviser; '
-                          'not an unbiased generalization estimate. The outer equal-weight promotion '
-                          'gate is unchanged.')}
+                          'not an unbiased generalization estimate. The outer promotion gate (each '
+                          'kind averaged over the pools that count, then kinds averaged) is separate.')}
         if grouped:
             info['partitions'] = {}
             for name, (partitions, description) in self.partitions.items():
@@ -183,7 +186,8 @@ class SelectionProtocol:
                 for brain in self.selection_brains:
                     ids = self.fold_ids(name, brain)
                     counts = [int(np.count_nonzero(ids == fold)) for fold in range(FOLDS)]
-                    budgets[f'{brain}/{name}'] = fold_budgets(counts, self.budgets[name])
+                    budgets[f'{brain}/{name}'] = fold_budgets(
+                        counts, self.budgets.k_for(name, self.train[brain].tables[name].truth))
                 info['partitions'][name] = {'partition_sha256': description['partition_sha256'],
                                             'grouping': description['grouping'],
                                             'fold_details': description['fold_details'],
@@ -199,12 +203,13 @@ class SelectionProtocol:
             cell = f'{brain}/{kind}'
             table = self.train[brain].tables[kind]
             scores = np.asarray(scores_by_cell[cell], dtype=float)
+            k, in_mean = self.budgets.k_for(kind, table.truth), self.budgets.in_mean(table.truth)
             if self.mode == 'in_sample':
-                metrics, chosen = rank_metrics(scores, table.truth, table.keys, self.budgets[kind])
+                metrics, chosen = rank_metrics(scores, table.truth, table.keys, k, in_mean=in_mean)
                 metrics['protocol'] = 'in_sample'
             else:
                 metrics, chosen = partitioned_rank_metrics(scores, table.truth, table.keys,
-                                                           self.fold_ids(kind, brain), self.budgets[kind])
+                                                           self.fold_ids(kind, brain), k, in_mean=in_mean)
                 metrics['partition_sha256'] = self.partition_sha256(kind)
             metrics['pool_sha256'] = table.meta['pool_sha256']
             metrics['labels_sha256'] = labels_digest(table.truth)

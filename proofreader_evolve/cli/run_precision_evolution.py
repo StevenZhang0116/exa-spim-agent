@@ -387,8 +387,15 @@ def parse_args(argv=None):
                    help="Top-K budget per merge cell over GT-labeled rows (default: 300; 100 before 2026-10-09)")
     p.add_argument("--split-k", type=int, default=500,
                    help="Top-K budget per split cell over GT-labeled rows (default: 500; 100 before 2026-10-09)")
+    p.add_argument("--k-positive-ratio", type=float, default=2.0,
+                   help="Each pool ranks K = min(kind budget, ceil(ratio x its GT positives)), so every counted "
+                        "pool has the same attainable ceiling; 0 keeps the fixed kind budget (default: 2.0, 2026-10-12)")
+    p.add_argument("--min-positives", type=int, default=20,
+                   help="Pools with fewer GT positives are scored and reported but excluded from the promotion "
+                        "mean, the bootstrap and kind headroom; 0 counts every pool (default: 20, 2026-10-12)")
     p.add_argument("--precision-margin", type=float, default=0,
-                   help="Required absolute gain in equal-weight mean validation Precision@K (default: 0)")
+                   help="Required absolute gain in the mean validation Precision@K (each kind over its counted "
+                        "pools, then over kinds) (default: 0)")
     p.add_argument("--policy-time-budget", type=float, default=300,
                    help="Scoring/feature worker budget and 3D analysis worker timeout, in seconds (default: 300; "
                         "120 before 2026-10-06, raised with the 16-case analysis limit)")
@@ -462,6 +469,10 @@ def parse_args(argv=None):
         p.error("Descriptor wall budgets must be positive and finite")
     if args.generations < 0 or args.mcl < 0 or min(args.merge_k, args.split_k) < 1:
         p.error("generations/MCL must be >= 0; K must be >= 1")
+    if not math.isfinite(args.k_positive_ratio) or args.k_positive_ratio < 0:
+        p.error("k-positive-ratio must be a finite number >= 0 (0 keeps the fixed K)")
+    if args.min_positives < 0:
+        p.error("min-positives must be >= 0 (0 counts every pool)")
     if args.reviser_max_turns < 1:
         p.error("reviser-max-turns must be >= 1")
     if args.train_evaluations_per_generation < 1:
@@ -612,7 +623,7 @@ def _restore_descriptors(args, banks, kinds, parent_sources, descriptor_runs, bu
         scope = next(record['scope'] for record in columns.values() if record['code_sha256'] == code)
         for brain, bank in banks.items():
             table = bank.tables[spec['kind']]
-            result = descriptor_runs.compute(table, program, spec, scope, k=budgets[spec['kind']],
+            result = descriptor_runs.compute(table, program, spec, scope, k=budgets.k_for(spec['kind'], table.truth),
                                              wall_budget=args.descriptor_wall_seconds,
                                              log_dir=args.runs_dir / '.descriptor_restore' / brain / code[:12])
             descriptor_runs.register(table, spec['columns'], result['rows'], result['values'])
@@ -694,7 +705,8 @@ async def _run(args, revise_fn, run_dir, trace):
     image_store = attach_image_context(banks, run_dir / 'image_cache', args.image_alignment, trace)
     _write(run_dir / 'image_alignment.json', {'brains': image_store.reviews})
     _write(run_dir / "dataset_split.json", selection)
-    trace.emit("promotion_rule", "Promotion uses equal-weight mean validation Precision@K only; "
+    trace.emit("promotion_rule", "Promotion uses the mean validation Precision@K only (each kind averaged over "
+               "the pools that count toward the mean, then kinds averaged; each pool at its own K); "
                "TRAIN improvement is diagnostic, and individual validation regressions are allowed"
                + ("; the mean gain must also clear row-resampling noise (paired bootstrap lower bound above zero)"
                   if args.promotion_gate == "bootstrap" else ""),
@@ -706,16 +718,38 @@ async def _run(args, revise_fn, run_dir, trace):
                "top_k_hits = GT-positive rows selected in Top K; Precision@K = hits / effective_k; "
                "Recall@K = hits / pool positives (N/A when zero). Merge counts are candidate sites; "
                "split counts are segment pairs. These are not total GT error counts or reachable-GT counts. "
+               "requested_k is each pool's own K: min(kind budget, ceil(k_positive_ratio x pool positives)) when "
+               "the ratio is positive, else the kind budget; pools with fewer than min_positives GT positives "
+               "are scored and reported but excluded from the promotion mean (in_mean=false). "
+               "The mean is taken per kind over counted brains, then over kinds. "
                "Evaluation datasets are logged as validation.")
     train = {b: banks[b] for b in args.train_brains}
     validation = {b: banks[b] for b in args.validation_brains}
-    budgets = {"merge": args.merge_k, "split": args.split_k}
-    crowded = sorted(f"{cell} (K={budgets[cell.rsplit('/', 1)[1]]}, labeled={info['counts']['1'] + info['counts']['0']})"
-                     for cell, info in availability_summary.items()
-                     if budgets[cell.rsplit('/', 1)[1]] * 2 > info['counts']['1'] + info['counts']['0'])
-    if crowded:
-        trace.emit("label_availability_warning", "K exceeds half of the GT-labeled rows; Precision@K there "
-                   "approaches the labeled base rate: " + "; ".join(crowded), cells=crowded)
+    budgets = scoring.Budgets({"merge": args.merge_k, "split": args.split_k},
+                              positive_ratio=args.k_positive_ratio, min_positives=args.min_positives)
+    pool_budgets = budgets.resolve(banks)
+    trace.emit("pool_budgets", "Per-pool Top-K from GT positives: " + "; ".join(
+        f"{cell} K={info['requested_k']}/{info['cap']} positives={info['positives']}"
+        + ("" if info['in_mean'] else " (excluded from mean)") for cell, info in sorted(pool_budgets.items())),
+        **budgets.describe(), cells=pool_budgets)
+    excluded = sorted(cell for cell, info in pool_budgets.items() if not info['in_mean'])
+    if excluded:
+        trace.emit("pool_budgets_excluded", f"{len(excluded)} pool(s) below the GT-positive floor "
+                   f"({args.min_positives}) are reported but do not count toward the mean: " + ", ".join(excluded),
+                   cells=excluded, min_positives=args.min_positives)
+    for role, group in (("TRAIN", args.train_brains), ("evaluation", args.validation_brains)):
+        for kind in ("merge", "split"):
+            cells = [f"{b}/{kind}" for b in group if f"{b}/{kind}" in pool_budgets]
+            if cells and not any(pool_budgets[c]['in_mean'] for c in cells):
+                raise ValueError(f"Every {role} {kind} pool is below --min-positives {args.min_positives} "
+                                 f"({', '.join(cells)}); lower the floor or choose other brains")
+    if args.k_positive_ratio <= 0:
+        crowded = sorted(f"{cell} (K={budgets[cell.rsplit('/', 1)[1]]}, labeled={info['counts']['1'] + info['counts']['0']})"
+                         for cell, info in availability_summary.items()
+                         if budgets[cell.rsplit('/', 1)[1]] * 2 > info['counts']['1'] + info['counts']['0'])
+        if crowded:
+            trace.emit("label_availability_warning", "K exceeds half of the GT-labeled rows; Precision@K there "
+                       "approaches the labeled base rate: " + "; ".join(crowded), cells=crowded)
     artifact_store = run_dir / "model_artifacts"
     source = args.start_from.read_text()
     parent_sources = components(source)
@@ -777,7 +811,8 @@ async def _run(args, revise_fn, run_dir, trace):
     log_metrics(trace, "Baseline train", baseline["train"])
     log_metrics(trace, "Baseline validation", baseline["validation"])
     baseline["auxiliary_ablation"] = _auxiliary_ablation(args, protocol, kinds, run_dir, fit_limits, trace)
-    manifest = {"objective": scoring.SCORING_VERSION, "accounting_semantics": "per_generation", "budgets": budgets,
+    manifest = {"objective": scoring.SCORING_VERSION, "accounting_semantics": "per_generation",
+                "budgets": budgets.describe(), "pool_budgets": pool_budgets,
                 "promotion_gate": {"version": scoring.gate_version(args.promotion_gate),
                                    "mode": args.promotion_gate,
                                    "aggregation": scoring.AGGREGATION, "split": "development_validation",

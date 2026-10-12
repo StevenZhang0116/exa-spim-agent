@@ -101,9 +101,10 @@ label NaN and are excluded from ranking and fitting (three-valued labels, Stage 
 
 AutoDiscovery is an external autonomous-experimentation system. A run is pointed
 at one labeled cache and one task specification from `markdowns/`
-(currently `merge_detection_from_fragmentsv2.md`, `split_detection_from_fragmentsv3.md`
-and their image-centred variants; `markdowns/README.md` lists every document, and
-superseded versions are in `markdowns/archive/`). The specification separates GT-informed
+(currently `merge_features_for_proofreader_evolve.md` and
+`split_features_for_proofreader_evolve.md`, one submission per error type, each with its
+companion files; `markdowns/README.md` lists every document, and superseded versions,
+including the earlier detector-discovery specifications, are in `markdowns/archive/`). The specification separates GT-informed
 characterization from GT-blind detection and names the cache fields a detector
 may never read. Each experiment the system performs records its hypothesis,
 analysis code, numerical result and interpretation; the whole run is exported
@@ -276,8 +277,12 @@ The evolution stage keeps everything the detectors decided and changes only the
 order in which their candidates are presented. It is an LLM-driven search: a
 fresh agent session is the mutation operator, a TRAIN-side selection score ranks
 exploration branches, and a held-out validation gate alone decides promotion: the
-equal-brain mean Precision@K must rise by more than paired-bootstrap resampling
-noise. Generations are allocated between the merge and split components by
+mean Precision@K (per kind over the counted brains, then over kinds) must rise by
+more than paired-bootstrap resampling noise. Since 2026-10-12 each pool ranks its
+own K = min(kind budget, ceil(2 x its GT positives)), so every counted pool has the
+same attainable ceiling, and pools with fewer than 20 GT positives are reported but
+excluded from the mean (`--k-positive-ratio`, `--min-positives`).
+Generations are allocated between the merge and split components by
 pending follow-ups, a floor, recent validated gain and remaining headroom.
 The subsections below follow one generation of the loop in the figure; the
 maintained design record is
@@ -318,6 +323,9 @@ python -u -m proofreader_evolve.cli.run_evolution \
   --context-cache proofreader_evolve/context_cache --descriptor-workers auto \
   --classifier-threads 4 --classifier-time-budget 1800 --reviser-max-turns 40 \
   --skip-auxiliary-ablation
+# --merge-k / --split-k are per-kind caps. Each pool ranks K = min(cap, ceil(--k-positive-ratio x its GT
+# positives)) (default ratio 2.0; 0 restores one fixed K per kind) and pools with fewer than --min-positives
+# GT positives (default 20) are scored and reported but excluded from the promotion mean (2026-10-12).
 # Controls for attribution: --kind-schedule alternate (strict merge/split rotation),
 # --promotion-gate margin (point-estimate gate), omit --context-cache (no descriptors).
 # Historical in-sample ranking with the detector-fitted TRAIN brain alone:
@@ -328,7 +336,7 @@ python -m proofreader_evolve.cli.run_evolution \
 
 The CLI defaults are a single TRAIN brain **794495**, the `grouped_oof` selection
 protocol, the `bootstrap` promotion gate (1000 draws, alpha 0.05), `adaptive` kind
-allocation, 15 generations, and K = 300 (merge) / 500 (split) over GT-labeled rows (100 / 100 before 2026-10-09). The bare defaults do **not** start
+allocation, 15 generations, and K caps of 300 (merge) / 500 (split) over GT-labeled rows (100 / 100 before 2026-10-09), with each pool's K scaled to 2 x its GT positives and pools under 20 positives excluded from the mean (2026-10-12). The bare defaults do **not** start
 a run: `grouped_oof` ranks TRAIN branches on a brain the detectors were not fitted
 on, and 794495 is the detectors' training brain, so the driver aborts with
 "No eligible selection brain". Add a detector-naive TRAIN brain and name it as the
@@ -368,12 +376,15 @@ fails there instead of failing every generation.
 The editable scorer is seeded from `proofreader_evolve/artifacts/scorer.py`:
 `score_candidates(features, ctx)` receives only predictor columns plus the frozen
 `detector_score` and optional custom local geometry features; `ctx` contains the candidate kind. It must return one finite
-score per row. The harness selects exactly min(K, pool size) with deterministic
-tie breaking. GT labels are stored separately and never passed to the scorer.
+score per row. The harness selects exactly min(K, GT-labeled rows) with deterministic
+tie breaking, where K is the pool's own budget: min(kind cap, ceil(`--k-positive-ratio` x the
+pool's GT positives)), fixed for the run because it depends on labels only. GT labels are
+stored separately and never passed to the scorer.
 Training feedback includes labeled examples with TRAIN-only inspection handles; validation feedback is
 not supplied to the reviser. Promotion uses **mean validation Precision@K only**:
-average merge/split precision within each validation brain, then average the
-brains with equal weight. The candidate must exceed the accepted parent's mean
+average each kind's precision over the validation brains whose pool holds at least
+`--min-positives` GT positives (equal weight; smaller pools are reported but excluded),
+then average the kinds. The candidate must exceed the accepted parent's mean
 by more than `--precision-margin` (default 0; ties fail) and, with the default
 `--promotion-gate bootstrap`, the lower bound of the paired row-resampling interval of
 that gain must be above zero (`--bootstrap-draws 1000`, `--bootstrap-alpha 0.05`);

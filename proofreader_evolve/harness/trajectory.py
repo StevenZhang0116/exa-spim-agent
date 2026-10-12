@@ -93,9 +93,11 @@ def metric_summary(report):
     return {"macro_precision": report["macro_precision"],
             "aggregation": report.get("aggregation"),
             "per_brain_precision": report.get("per_brain_precision", {}),
+            "per_kind_precision": report.get("per_kind_precision", {}),
+            "excluded_cells": report.get("excluded_cells", []),
             "cells": {name: {k: cell[k] for k in (
                 "pool_size", "n_labeled", "positives", "requested_k", "effective_k",
-                "tp", "fp", "precision", "recall") if k in cell}
+                "tp", "fp", "precision", "recall", "in_mean") if k in cell}
                       for name, cell in report["cells"].items()}}
 
 

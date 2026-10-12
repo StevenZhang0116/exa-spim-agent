@@ -342,7 +342,7 @@ class DriverRoleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
             seed = Path(tmp) / 'seed.py'
             seed.write_text(FORMULA)
-            args = driver.parse_args(['--train-brains', '794495,802449', '--validation-brains', '2',
+            args = driver.parse_args(['--min-positives', '0', '--train-brains', '794495,802449', '--validation-brains', '2',
                                       '--merge-k', '3', '--split-k', '1', '--generations', '1', '--runs-dir', tmp,
                                       '--start-from', str(seed), '--bootstrap-draws', '20', '--promotion-gate', 'margin'])
             seen = {}
@@ -404,18 +404,18 @@ class DriverRoleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()), \
                 patch.object(driver.pc, 'resolve_detector_runs', return_value={}), \
                 patch.object(driver, 'ensure_native_tables', side_effect=lambda brain, *a, **k: banks[brain]):
-            args = driver.parse_args(['--train-brains', '794495', '--validation-brains', '2',
+            args = driver.parse_args(['--min-positives', '0', '--train-brains', '794495', '--validation-brains', '2',
                                       '--merge-k', '3', '--generations', '0', '--runs-dir', tmp])
             with self.assertRaisesRegex(ValueError, 'No eligible selection brain'):
                 asyncio.run(driver.run(args))
-            args = driver.parse_args(['--train-brains', '794495,802449', '--selection-brains', '794495',
+            args = driver.parse_args(['--min-positives', '0', '--train-brains', '794495,802449', '--selection-brains', '794495',
                                       '--validation-brains', '2', '--merge-k', '3', '--generations', '0',
                                       '--runs-dir', tmp])
             with self.assertRaisesRegex(ValueError, 'detector training brains'):
                 asyncio.run(driver.run(args))
             with self.assertRaises(SystemExit):
-                driver.parse_args(['--train-brains', '794495', '--selection-brains', '802449'])
-            legacy = driver.parse_args(['--train-brains', '794495', '--validation-brains', '2', '--merge-k', '3',
+                driver.parse_args(['--min-positives', '0', '--train-brains', '794495', '--selection-brains', '802449'])
+            legacy = driver.parse_args(['--min-positives', '0', '--train-brains', '794495', '--validation-brains', '2', '--merge-k', '3',
                                         '--generations', '0', '--runs-dir', tmp, '--selection-protocol', 'in_sample'])
             with patch.object(driver, 'attach_local_context', return_value=None):
                 path = asyncio.run(driver.run(legacy))

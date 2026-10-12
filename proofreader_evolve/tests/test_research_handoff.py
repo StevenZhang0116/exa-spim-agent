@@ -118,7 +118,7 @@ class DriverHandoffTests(unittest.TestCase):
         from proofreader_evolve.cli import run_precision_evolution as driver
         seen = {}
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
-            args = driver.parse_args(['--selection-protocol', 'in_sample', '--promotion-gate', 'margin',
+            args = driver.parse_args(['--min-positives', '0', '--selection-protocol', 'in_sample', '--promotion-gate', 'margin',
                                       '--kind-schedule', 'alternate', '--train-brains', '1', '--validation-brains', '2',
                                       '--split-k', '1', '--generations', '2', '--runs-dir', tmp, '--target-kind', 'split'])
 

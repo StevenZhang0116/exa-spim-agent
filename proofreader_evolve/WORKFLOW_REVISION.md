@@ -133,6 +133,72 @@ accepted parent's full-precision measurements. TRAIN feedback's `parent_train` a
 `ranking_delta` and `failure_cases.json` describe the exploration branch (v17);
 `search_plan.json` identifies the branch.
 
+### Per-pool Top-K from GT positives (2026-10-12, objective v3)
+
+**Motivation (evidence from runs `precision_20261011_230334_62sb04xi` and
+`precision_20261011_234710_sssj3jpw`, 10 generations each, identical settings).**
+Both runs reached the same final mean (0.5039 / 0.5050 from the seed 0.4229), and the
+third concurrent run (`precision_20261011_235340_phg8xri5`, 20 generations) sat at 0.509
+after 16. At one fixed K = 300 the nine validation merge pools had hard ceilings
+`min(positives, K) / K` of 0.030 to 0.293 and three of them (754610, 754612, 754613 with
+9, 17 and 9 GT positives) were already at that ceiling, yet carried one third of the
+merge weight. The merge mean could therefore not exceed about 0.17, and the late
+generations of both runs were rejected with gains of one or two hits "within
+resampling noise" (gen 7, 8, 9 of `sssj3jpw`; gen 10 of `62sb04xi`). The 2026-10-09
+`label_availability_warning` already flagged 754613 (K above half of its 449 labeled
+rows). TODO.md items "K for three-valued runs" and "Merge validation cells" asked for
+K scaled to positives.
+
+**Rule.** `--merge-k` / `--split-k` become per-kind caps. Every pool (brain x kind)
+ranks its own `K = min(cap, ceil(--k-positive-ratio x GT positives in that pool))`
+(default ratio 2.0; 0 restores one fixed K per kind), so every counted pool has the same
+attainable ceiling `1 / ratio` when the ratio binds. Pools with fewer than
+`--min-positives` GT positives (default 20) are still scored, traced and reported, with
+`in_mean: false`, but are excluded from the promotion mean, the paired bootstrap and the
+kind headroom used by the adaptive schedule. The mean is taken per kind over the counted
+brains and then over kinds; with every pool counted this is algebraically the former
+equal-brain mean of per-brain kind means, so fixed-K runs (`--k-positive-ratio 0
+--min-positives 0`) reproduce the v2 numbers. Both inputs are label counts, so every K is
+fixed for the run and the "fixed benchmark" identity check (`requested_k`, `effective_k`,
+`positives`, now also `in_mean`) still applies between parent and candidate. With the
+current tables: validation merge K becomes 162 / 152 / 172 / 124 / 176 / 58 on
+747807 / 750318 / 751473 / 789202 / 794491 / 794493 (all ceiling 0.5), the three small
+merge pools (K 18 / 34 / 18) are excluded, every split pool keeps K = 500 (1,020 to 6,393
+positives), the selection brain 802449 merge keeps K = 300 (825 positives) and the
+auxiliary TRAIN brain 794495 merge drops to 228 (114 positives; scored only under
+`--selection-protocol in_sample`).
+
+**Implementation.** `fixed_pool_scoring.Budgets` (a `Mapping`: `budgets[kind]` is the cap,
+`k_for(kind, truth)`, `in_mean(truth)`, `describe()`, `resolve(banks)`; plain `{kind: K}`
+dicts coerce to fixed-K budgets that count every pool). `rank_metrics` and
+`selection_protocol.partitioned_rank_metrics` take the resolved K and an `in_mean` flag
+and record it; `evaluate`, `paired_bootstrap`, `SelectionProtocol` (fold budgets and
+`score_report`), `feature_ablation.measure_ablation`, `TrainingExperiments._k` (descriptor
+plan/compute/cache keys, inference and the ablation identity's `k_rule`) and the driver's
+`_restore_descriptors` resolve K per table; the research-evidence and ablation identities
+record the `Budgets` description instead of one K per kind, and `plan_image_scoring` compares
+the literal `selection_k` with the kind's K budget (reported as `k_budget`, formerly `scoring_k`). `aggregate_precision` returns
+`per_kind_precision`, `per_brain_precision` (over counted cells), `excluded_cells` and
+`macro_precision`; `paired_bootstrap` returns `excluded_cells` and averages kind-first over
+counted cells. `kind_schedule.headroom` skips excluded cells and saturation uses the mean
+resolved K of the counted cells (`kind_schedule.mean_k`). The driver emits `pool_budgets`
+(every pool's positives, cap, K, membership) and `pool_budgets_excluded`, refuses to start
+when every TRAIN or evaluation pool of a kind is below the floor, keeps the crowding
+warning only in fixed-K mode, and records `budgets` (`caps`, `positive_ratio`,
+`min_positives`, `k_rule`, `mean_rule`) and `pool_budgets` in `manifest.json`. Agent-facing
+TRAIN feedback keeps `budgets` as the per-kind caps (the `selection_k` literal for image
+scoring), adds `k_rule`, exposes `in_mean` per cell and explains `requested_k` in the
+reading guide. Versions: `SCORING_VERSION`, the gate versions, `BOOTSTRAP_VERSION` and
+`selection_protocol.PROTOCOL_VERSION` are `*-v3-positive-scaled-k`; `run_records` reads v1, v2
+and v3 (`PRECISION_V2` added) and the
+report shows `in_mean` per cell and the K rule. Numbers are not comparable across
+versions; the two 2026-10-11 runs remain v2 records.
+
+**Not changed.** Candidate pools, labels, the scorer contract, classifier training, fold
+construction, the bootstrap draw procedure, the point gate's margin, kind scheduling rules
+other than the headroom inputs, and all agent tools. Per-cell `requested_k` was already the
+quantity every consumer read, so no agent-visible file format changed shape.
+
 ### Three-valued labels throughout (2026-10-09, supersedes the report-only step below)
 
 Every table's label is now three-valued: 1 = error, 0 = no error confirmed by GT,
@@ -379,7 +445,8 @@ against 0.66 for split.
 
 - **Inputs (`harness/kind_schedule.py`, host-side).** Per kind: headroom, the
   equal-brain mean remaining precision on the accepted parent's development-
-  validation cells; momentum, the mean gate-passing validation gain over the
+  validation cells (since 2026-10-12 over the counted cells only, each at its own
+  resolved K; see "Per-pool Top-K from GT positives"); momentum, the mean gate-passing validation gain over the
   kind's last two scheduled generations (rejected or failed generations count as
   zero); generations since the kind was last scheduled; pause and pending state
   from the candidate pool.
@@ -423,7 +490,9 @@ negative TRAIN ablation (-0.004) and still replaced the parent, and every
 promotion scheduled a same-kind follow-up generation.
 
 - **Rule (`fixed_pool_scoring.bootstrap_acceptance`).** The candidate must beat
-  the accepted parent's equal-brain mean Precision@K by more than
+  the accepted parent's mean Precision@K (the equal-brain mean at the time; since
+  2026-10-12 the kind-first mean over counted pools, see "Per-pool Top-K from GT
+  positives") by more than
   `--precision-margin` (the unchanged point test with its benchmark identity
   checks) AND the lower bound of the two-sided (1 - alpha) paired
   Poisson-bootstrap interval of that mean delta must exceed zero
@@ -653,8 +722,9 @@ validate the revised workflow.
 
 The registry is `research_evidence.jsonl`; per-generation status is saved in the
 ledger and human report. It does not expose validation examples, labels or scores
-to the agent. The outer equal-brain mean validation gate, fixed K, candidate pools,
-model flexibility and the compact report layout are unchanged. Source declarations
+to the agent. The outer mean validation gate, K, candidate pools, model flexibility and
+the compact report layout were unchanged by this revision (the mean and the K rule
+changed on 2026-10-12; see "Per-pool Top-K from GT positives"). Source declarations
 in hypothesis memory remain claims; `observed_sources` records actual tool evidence.
 
 ### Failure-driven feature discovery and hypothesis memory (2026-10-02)
@@ -1336,6 +1406,7 @@ records the motivating run and the original proposals.
 
 | Date / version | Change and motivation | Verification / future evidence |
 |---|---|---|
+| 2026-10-12 / per-pool Top-K from GT positives (objective v3) | `--merge-k` / `--split-k` become per-kind caps; each pool ranks `K = min(cap, ceil(--k-positive-ratio x GT positives))` (default 2.0) and pools with fewer than `--min-positives` (default 20) GT positives are reported but excluded from the promotion mean, bootstrap and kind headroom; the mean is kind-first over counted brains (equal to the former equal-brain mean when every pool counts). Motivation: in `precision_20261011_230334_62sb04xi` and `precision_20261011_234710_sssj3jpw` (identical settings, final 0.5039 / 0.5050) the nine validation merge pools at K = 300 had ceilings 0.030 to 0.293, three of them (9 to 17 positives) were already at their ceiling with one third of the merge weight, and late generations were rejected on one- or two-hit gains. See "Per-pool Top-K from GT positives". Versions `*-v3-positive-scaled-k`; v2 records stay readable, not comparable. | New `tests/test_positive_scaled_k.py`: 14 tests OK on n268 (`log/positive_scaled_k_new_tests.log`). Directly affected modules (scoring, mean, bootstrap, schedule, selection, records, report, feedback, availability, image scoring, trajectory): 117 tests OK (`log/positive_scaled_k_batch1_tests.log`). Full suite on n268: 333 tests, one error (`log/positive_scaled_k_full_tests_20261012.log`) caused by the test edit itself (the `--min-positives 0` opt-out had also been inserted into a `precompute_context_cache` CLI call in `test_descriptor_compute.py`); after reverting that one line the module passes, 19 tests OK (`log/positive_scaled_k_descriptor_compute_rerun.log`), so every suite test passes. A follow-up wording pass (agent guides, `promotion_rule` trace, `--precision-margin` help, selection-protocol scope text and version, research/ablation identities, coverage message) re-ran the 12 touched modules: 148 tests, two failures in `test_image_scoring` (`log/positive_scaled_k_batch2_tests.log`) from one leftover variable name in `plan_image_scoring` after its K variable was renamed; fixed, module re-run 15 tests OK (`log/positive_scaled_k_image_scoring_rerun.log`). A static undefined-name check over the changed modules is recorded in `log/positive_scaled_k_pyflakes.log`. Expected effect with the current tables (labels only, no run): validation merge K 58 to 176 with ceiling 0.5 on six brains, 754610 / 754612 / 754613 merge excluded, every split K 500, selection brain 802449 merge K 300. Future evidence: re-score both 2026-10-11 best scorers under v3 (`run_evolution --generations 0 --start-from <run>/best_scorer.py`) before the next trial. |
 | 2026-10-11 / run `precision_20261009_235526_ispymdwn` (first Opus 5.5 launch) | n268-class host, 9 validation brains (three current plus six older-microscope), K merge 300 / split 500, three-valued labels. Every generation failed in seconds with `API Error: 400 Claude Code 2.1.148 does not support this model; version 2.1.280 or newer is required`: `claude-agent-sdk` 0.2.85 launches its bundled CLI (2.1.148) rather than the `claude` on PATH (2.1.296). After two failures per kind the adaptive allocation paused both kinds and the run ended after 9 minutes with the seed retained (validation macro Precision@K 0.4229 = baseline). The HTML report also never built (see the next row). | Evidence: [driver log](log/precision_run_20261009_235521.log) (the run directory was removed by the user on 2026-10-11; the log mirrors its trajectory). No scorer was evaluated; the run carries no search evidence. |
 | 2026-10-11 / maintenance (SDK upgrade, SDK-path preflight, report objective) | `claude-agent-sdk` upgraded in panda from 0.2.85 to 0.2.165 (bundled CLI 2.1.294). `preflight --check-api` now sends its one-turn request through the reviser's SDK path ([preflight.py](cli/preflight.py) `api_probe`) instead of a direct Anthropic client, so a CLI/model mismatch is caught before launch. `run_records.PRECISION` is now `native-precision-at-k-v2-three-valued` with the v1 objective kept readable (`PRECISION_VERSIONS`), because the 2026-10-09 three-valued revision bumped `fixed_pool_scoring.SCORING_VERSION` without updating the record readers: `run_status.json` was written with v1 next to a v2 manifest and `evolution_report` refused the run (10 `report_warning` events). A test now pins the two constants together. Project configuration and reporting only; search and evaluation unchanged. | End-to-end: a one-turn Opus 5.5 request through the upgraded SDK returned `OK` (subtype success, $0.0036); real `preflight --brains 794495 --check-api` passed with `cli_version 2.1.294` ([log](log/sdk_upgrade_opus55_20261011_tests.log)); the failed run's report rebuilt with `build_evolution_report`. Focused tests: 37 record/report/image-scoring, 24 SDK-touching, 6 preflight passed on n268; [full suite](log/sdk_upgrade_opus55_20261011_full_tests.log): 319 tests passed in 1514 s on n268 (slower than the usual ~600 s because the node was shared). |
 | 2026-10-09 / reviser model configuration | Change the shared evolution/preflight default from `claude-opus-5` to `claude-opus-5-5` (Claude Opus 5.5) in [reviser_session.py](harness/reviser_session.py), as requested. Explicit `--model` overrides remain available; the SDK environment already requests `CLAUDE_EFFORT=high`, which Opus 5.5 honours (its thinking cannot be disabled). Project configuration only; the literature relationships and search/evaluation algorithms are unchanged. | Model ID checked against the official Opus 5.5 documentation. Static inspection confirms both CLIs import the shared default and the SDK receives it; [19 focused tests](log/default_model_opus55_20261009_tests.log) (reviser limits, train feedback, submission fallback, preflight) passed on n268. No API probe or evolution run yet; the first Opus 5.5 run will add evidence here. |
@@ -1431,7 +1502,16 @@ feedback and failure cases describe the assigned branch.
 `tests/test_kind_schedule.py` (v16) covers headroom, momentum with rejections as
 zero, the floor, pending follow-ups, saturation and pauses, plus adaptive and
 strict-rotation driver runs on a two-kind fixture; tiny-fixture driver tests
-pass `--kind-schedule alternate`. `tests/test_reviser_limits.py` covers the MCP
+pass `--kind-schedule alternate`. `tests/test_positive_scaled_k.py` (2026-10-12,
+objective v3) covers `Budgets` (ratio-bound and cap-bound K, the zero-ratio fixed K,
+coercion of plain mappings, label-only resolution), `evaluate` at per-pool K with
+membership flags, the kind-first mean equalling the legacy mean on a complete grid and
+skipping excluded cells, the pinned `in_mean` benchmark identity, bootstrap intervals
+that ignore excluded cells, headroom and saturation on counted cells only, feedback
+caps/`k_rule`/`in_mean` without validation text, the three readable objective versions,
+and driver runs recording `pool_budgets`, keeping the crowding warning in fixed-K mode and
+refusing a kind whose every pool is below the floor. Tiny-fixture driver tests pass
+`--min-positives 0` because their pools hold one or two GT positives. `tests/test_reviser_limits.py` covers the MCP
 output and file-read caps in the reviser environment, the 128 KB feedback budget,
 read access to SDK-parked tool results and to the generation's own artefact
 directories (writes, symlinks, other projects and other runs denied).

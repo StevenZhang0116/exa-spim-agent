@@ -35,12 +35,121 @@ guides use GT-labeled rows; optional `X_unlabeled` for `fit`. Still open:
   (K = 2000 had ceiling 0.0145 there, baseline 0.013). Merge stays noisy whatever K;
   see the next item. Older-microscope merge cells (e.g. 754613: 449 labeled, 9
   positives) are unusable for merge validation.
+  Done 2026-10-12 (WORKFLOW_REVISION evidence log): `--merge-k` / `--split-k` are now caps;
+  each pool ranks K = min(cap, ceil(`--k-positive-ratio` x its GT positives)), default 2.0.
 - **Merge validation cells.** Labeled merge cells hold 9-825 positives; decide together
   with the merge-gate proposals (pooled validation merge cells, K scaled to positives).
+  Done 2026-10-12: K scaled to positives (above) and pools with fewer than `--min-positives`
+  (default 20) GT positives are reported but excluded from the mean, the bootstrap and kind
+  headroom (754610 / 754612 / 754613 merge with the current tables). Pooling merge cells
+  across brains remains open.
 - **Definitions.** Whether the merge 20-150 um ambiguous ring should also be NaN, and
   whether split needs a distance condition like merge.
 - **Unlabeled sample size.** `UNLABELED_ROWS_PER_BRAIN` = 100,000 is a transport bound,
   not tuned.
+
+## Context cache misses many GT-labeled rows: NaN descriptors where the metric is measured (2026-10-11)
+
+**Current behaviour.** The context cache stores the top 50,000 detector-ranked rows per
+brain and kind (`BAND_SPEC`). Rows outside the band get NaN in every `bank_agent_*`
+descriptor column and 0 in `bank_context_available`. With three-valued labels,
+Precision@K is measured on GT-labeled rows only, and many of them lie outside the
+band.
+
+**Measured** (n268, 2026-10-11; GT-labeled = sidecar `near_gt_150` for merge,
+`segment_on_gt` for split):
+
+| Cell | Pool rows | Band rows | Labeled rows | Labeled in band | Positives in band |
+|---|---|---|---|---|---|
+| 794495 merge | 58,120 | 50,000 | 6,212 | 99% | 100% |
+| 794495 split | 500,111 | 50,000 | 4,001 | 73% | 94% |
+| 802449 merge | 299,339 | 50,000 | 18,564 | 63% | 79% |
+| 802449 split | 890,547 | 50,000 | 13,074 | 45% | 66% |
+| 789202 merge / split | 43,737 / 37,354 | whole pool | 3,582 / 4,162 | 100% | 100% |
+| 794493 merge | 74,051 | 50,000 | 2,363 | 98% | 100% |
+| 794493 split | 375,611 | 50,000 | 3,596 | 55% | 75% |
+| 794491 merge | 203,956 | 50,000 | 3,467 | 74% | 76% |
+| 794491 split | 990,296 | 50,000 | 3,650 | 29% | 41% |
+
+The older-microscope brains were not measured; their split pools (up to 1.9M rows)
+make coverage likely as low as 794491.
+
+**Effect.**
+- A descriptor can only help on in-band labeled rows. On 794491 split, 59% of the
+  positives always score with NaN descriptor inputs.
+- The selection brain 802449 split has 34% of its positives outside the band, so
+  descriptor gains are measured on a subset.
+- Out-of-band labeled rows are the ones the frozen detector ranks low, which is
+  exactly where re-ranking could recover missed positives.
+
+**Options.**
+- **(a) Add the GT-labeled rows to the cache** (an explicit row list next to the
+  band).
+  - Few extra rows per cell: about 7,000 each for 802449 merge and split; about
+    900 to 2,600 for the other split and merge cells above.
+  - Caveat: row selection then depends on GT availability. `bank_context_available`
+    would become a GT-coverage proxy for unlabeled rows. That is harmless for the
+    metric, since it is constant (1) across the labeled rows that are ranked, but
+    it leaks the availability mask into a feature column. Fix by dropping or
+    zeroing that column for these extra rows, or by not exposing it as a predictor.
+- **(b) Grow the band by detector rank** (label-free).
+  - Covering 90% of labeled split rows would need far larger bands (794491 split's
+    labeled rows reach deep into a 990k-row pool).
+  - Image reads scale with band size (about 18 min per 24k rows per tier with 16
+    readers), so this is days of S3 reads per brain.
+- Recommended: (a) with the context-available column handled explicitly; validation
+  brains need the same extension for frozen inference.
+
+**Suggested solution (option a), step by step.**
+1. **Rows to add.** For each brain and kind, take the GT-labeled rows that are not in
+   the band (sidecar mask from `label_availability.load`, the merge `near_gt_150`
+   and split `segment_on_gt` definitions). Do this for TRAIN, selection and
+   validation brains alike: frozen inference must see the same coverage the scorer
+   was fitted on.
+2. **Cache layout.**
+   - Append these rows after the band as a separate, sorted "labeled extension"
+     block. Reuse the in-place growth path of `ContextCacheBuilder.extend_band`
+     (existing chunks kept byte-for-byte, only new rows read).
+   - Record in the manifest: `band_rows` (unchanged), `extension_rows`,
+     `extension_source` (sidecar version and labels digest) and
+     `extension_rows_sha256`.
+   - Keep the band block first, in detector-rank order, because
+     `DescriptorRuns.scope_rows` uses that order for the `pilot` and `boundary`
+     scopes. Those two scopes must read the band block only; `all_cached` reads
+     both blocks.
+3. **Identity.** Add `extension_rows_sha256` to `ContextCache.identity_key`, so
+   descriptor bank results computed on the band alone are not reused for the
+   extended entry. Descriptor runs over the extension block are new work units;
+   band results keep their own identity if the band block is keyed separately.
+   Prefer keying per block, so existing bank results stay valid.
+4. **`bank_context_available` stays label-free.** Set it to 1 for band rows only
+   (`entry.band_rows`), not for extension rows. It then means "inside the top-N
+   detector band", a function of `detector_score` alone, and carries no GT
+   availability. Descriptor values on extension rows remain usable.
+5. **Leakage check.**
+   - Only labeled rows are ranked, and every labeled row then has descriptor
+     values, so NaN-ness carries no availability signal among ranked rows.
+   - Unlabeled out-of-band rows stay NaN. Where they appear (`fit`'s optional
+     `X_unlabeled`, whole-pool statistics), document that descriptor coverage
+     there follows GT availability.
+   - Add a test that a scorer cannot gain Precision@K from descriptor missingness.
+6. **CLI.** `precompute_context_cache --labeled-extension` reads the sidecars (fails
+   if one is missing or mismatched, same bindings as `label_availability.apply`).
+   Run it one brain at a time as before. Expected reads: about 7,000 rows each for
+   802449 merge and split, 900 to 2,600 for other cells, plus the older-microscope
+   brains (not yet measured).
+7. **Verification before a run.**
+   - Re-measure the coverage table above; it should reach 100% labeled-in-cache.
+   - Rerun one registered descriptor and compare in-band values byte-for-byte
+     with the band-only result.
+   - Full test suite on n268.
+8. **Docs.** WORKFLOW_REVISION entry (cache version bump if the manifest format
+   changes), `descriptor_guide.md` (what `all_cached` covers), and this entry
+   marked done.
+
+**Touches.** `harness/context_cache.py` (extension block, manifest, `identity_key`),
+`cli/precompute_context_cache.py` (`--labeled-extension`), `harness/descriptor_runs.py`
+(`register_context_column`, `scope_rows`), descriptor bank identities, and tests.
 
 ## Merge labels are conservative: GT-node-count thresholds not rescaled (2026-10-07)
 

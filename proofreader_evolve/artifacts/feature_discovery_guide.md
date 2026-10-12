@@ -132,8 +132,9 @@ repair units.
 The tool does not change the current scorer or register fold models as candidates.
 After interpreting the comparison, call `train_classifier({})` or
 `evaluate_train({})` normally and submit an exactly measured snapshot. The outer
-equal-weight validation promotion gate is unchanged, and no other brain is made
-visible to this tool. Feature diagnostics are advisory, not a new promotion veto.
+promotion gate (each kind's mean over the pools that count) is separate from this
+tool, and no other brain is made visible to it. Feature diagnostics are advisory,
+not a new promotion veto.
 
 ## Reuse evidence without repeating an entire conversation
 
