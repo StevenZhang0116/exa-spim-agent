@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 import pandas as pd
 
+from proofreader_evolve.harness.run_records import PRECISION
 from proofreader_evolve.harness.image_contract import image_spec
 from proofreader_evolve.harness.image_selection import select_image_rows, selection_coverage, scoring_coverage
 from proofreader_evolve.harness.image_features import augmented_image_features
@@ -259,7 +260,7 @@ class ImageScoringTests(unittest.TestCase):
         self.assertEqual(evidence['volume_analyses_succeeded'],1)
         self.assertEqual(len(evidence['image_scored_attempts']),1)
         self.assertEqual(evidence['paired_diagnostics'],[])
-        (self.root/'manifest.json').write_text('{"objective":"native-precision-at-k-v1"}')
+        (self.root/'manifest.json').write_text(json.dumps({'objective': PRECISION}))
         (directory/'evaluation.json').write_text(json.dumps({'generation':1,'accepted':False,
             'train':{'macro_precision':.1,'cells':{'794495/merge':cell}},'image_evidence':evidence}))
         report=build_report_data(self.root)
