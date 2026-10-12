@@ -82,6 +82,10 @@ Usage (from the ``exa-spim-agent/`` project root):
     # Also test generalization onto other datasets:
     python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl ORIGIN.pkl \
         --extra-pkl OTHER1.pkl --extra-pkl OTHER2.pkl --direction predictive
+    # Runs from markdowns/{merge,split}_features_for_proofreader_evolve.md: give the
+    # companion of each pkl (bound by its manifest; the .json half is found too):
+    python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl ORIGIN.pkl \
+        --companion markdowns/rerank_companion_794495_split.npz --direction predictive
 """
 
 from __future__ import annotations
@@ -270,6 +274,9 @@ RANK_BY: str = "posterior-surprise"
 TOP_K: int | None = TOP_K_MAX  # overridden at startup; see main()
 DIRECTION: str = "both"       # overridden at startup from --direction; see main()
 PREDICTIVE_MANIFEST: str | None = None
+# Companion files (--companion), passed to every rerun_experiments.py call; the
+# helper binds each to the --pkl / --extra-pkl its manifest names.
+COMPANIONS: list[str] = []
 # Bump this whenever predictive_selection_instruction changes semantically.
 PREDICTIVE_POLICY_VERSION: str = "exclusion-only-v1"
 PREDICTIVE_MANIFEST_SUFFIX: str = ".predictive-selection.json"
@@ -447,6 +454,8 @@ def rerun_argv(
     """
     argv = ["python", "agentic/rerun_experiments.py", json_rel,
             "--pkl", pkl_rel, "--rank-by", RANK_BY, "--direction", DIRECTION]
+    for companion in COMPANIONS:
+        argv += ["--companion", companion]
     if DIRECTION == "predictive":
         if PREDICTIVE_MANIFEST is None:
             raise RuntimeError("predictive direction requires a selection manifest")
@@ -2393,6 +2402,21 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--companion",
+        type=Path,
+        action="extend",
+        nargs="+",
+        default=[],
+        metavar="FILE",
+        help=(
+            "Companion files rerank_companion_<brain>_<kind>.npz/.json of runs "
+            "that follow markdowns/{merge,split}_features_for_proofreader_evolve.md. "
+            "Each is bound to the --pkl / --extra-pkl its manifest names; every "
+            "re-run links it into the script cwd under the companion names the "
+            "code uses."
+        ),
+    )
+    parser.add_argument(
         "--extra-pkl",
         type=Path,
         action="extend",
@@ -2501,6 +2525,21 @@ def main() -> int:
 
     global DIRECTION
     DIRECTION = args.direction or "predictive"
+
+    global COMPANIONS
+    companion_paths = [_resolve_existing(p, "companion file") for p in args.companion]
+    if companion_paths:
+        if pkl_path is None:
+            parser.error("--companion requires --pkl.")
+        try:
+            from agentic.rerun_experiments import bind_companions
+        except ModuleNotFoundError:  # direct: python agentic/run_discovery_workflow.py
+            from rerun_experiments import bind_companions  # type: ignore[no-redef]
+        try:  # fail before any agent step, not inside the first compute step
+            bind_companions(companion_paths, [pkl_path, *extra_pkl_paths])
+        except ValueError as exc:
+            parser.error(f"--companion: {exc}")
+    COMPANIONS = [_rel_to_root(p) for p in companion_paths]
 
     if args.split_feature_labels_only:
         asyncio.run(run_split_feature_labeling_only(json_path))

@@ -276,7 +276,7 @@ class RerunWorkItemTests(unittest.TestCase):
             checkpoint = rerun._load_checkpoint(checkpoint_path)
             calls = []
 
-            def fake_run(code, path, timeout):
+            def fake_run(code, path, timeout, companions=()):
                 calls.append((code, path.read_bytes(), timeout))
                 return {
                     "timed_out": False,
@@ -337,7 +337,7 @@ class RerunWorkItemTests(unittest.TestCase):
                 )
             )
 
-            def fake_run(code, path, timeout):
+            def fake_run(code, path, timeout, companions=()):
                 return {
                     "timed_out": False,
                     "exitcode": 0,
@@ -399,7 +399,7 @@ class RerunWorkItemTests(unittest.TestCase):
             )
             called_paths = []
 
-            def fake_run(code, path, timeout):
+            def fake_run(code, path, timeout, companions=()):
                 called_paths.append(path.resolve())
                 return {
                     "timed_out": False,
@@ -479,6 +479,90 @@ class RerunWorkItemTests(unittest.TestCase):
             self.assertEqual(run_one.call_count, 1)
             self.assertEqual([item["id"] for item in payload["results"]], [2])
             self.assertEqual(payload["results"][0]["code_source"], "corrected")
+
+
+class CompanionTests(unittest.TestCase):
+    """--companion: binding by manifest, digest check, and per-brain linking."""
+
+    @staticmethod
+    def _companion(root: Path, brain: str, kind: str, pkl_name: str, marker: int) -> Path:
+        import hashlib
+        import numpy as np
+        npz = root / f"rerank_companion_{brain}_{kind}.npz"
+        np.savez(npz, marker=np.array([marker]))
+        (root / f"rerank_companion_{brain}_{kind}.json").write_text(json.dumps({
+            "brain": brain, "kind": kind, "source_cache": {"file": pkl_name},
+            "npz_sha256": hashlib.sha256(npz.read_bytes()).hexdigest()}))
+        return npz
+
+    def _datasets(self, root: Path) -> tuple[Path, Path]:
+        a, b = root / "dataset_cache_111_mcl100_add.pkl", root / "dataset_cache_222_mcl100_add.pkl"
+        for pkl in (a, b):
+            pkl.write_bytes(rerun.pickle.dumps({}))
+        return a, b
+
+    def test_bind_by_manifest_and_link_under_code_names(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            a, b = self._datasets(root)
+            ca = self._companion(root, "111", "split", a.name, 1)
+            cb = self._companion(root, "222", "split", b.name, 2)
+            bound = rerun.bind_companions([ca, cb.with_suffix(".json")], [a, b])
+            self.assertEqual([f.name for f in bound[a]],
+                             ["rerank_companion_111_split.npz", "rerank_companion_111_split.json"])
+            self.assertEqual(bound[b][0].name, "rerank_companion_222_split.npz")
+            # Code written for brain 111, re-run on 222: the 111 name points at 222's file.
+            links = rerun.companion_links("np.load('rerank_companion_111_split.npz')", bound[b])
+            self.assertEqual(links["rerank_companion_111_split.npz"], str(bound[b][0]))
+            self.assertEqual(links["rerank_companion_222_split.json"], str(bound[b][1]))
+
+    def test_bind_rejects_unknown_pkl_digest_mismatch_and_duplicates(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            a, b = self._datasets(root)
+            c = self._companion(root, "222", "split", b.name, 2)
+            with self.assertRaisesRegex(ValueError, "not among the dataset pkls"):
+                rerun.bind_companions([c], [a])
+            d = self._companion(root, "333", "merge", a.name, 3)
+            d.write_bytes(d.read_bytes() + b"x")
+            with self.assertRaisesRegex(ValueError, "digest"):
+                rerun.bind_companions([d], [a])
+            e = self._companion(root, "111", "split", a.name, 1)
+            f = self._companion(root, "111b", "split", a.name, 4)
+            with self.assertRaisesRegex(ValueError, "Two split companions"):
+                rerun.bind_companions([e, f], [a])
+            with self.assertRaisesRegex(ValueError, "Not a companion"):
+                rerun.bind_companions([a], [a])
+
+    def test_rerun_one_reads_the_bound_companion_on_both_paths(self) -> None:
+        code = ("import numpy as np, os\n"
+                "m = int(np.load('rerank_companion_111_split.npz')['marker'][0])\n"
+                "n = int(np.load('/elsewhere/rerank_companion_111_split.npz')['marker'][0])\n"
+                "print('marker', m, n, os.path.exists('/elsewhere/rerank_companion_111_split.json'))\n")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            a, b = self._datasets(root)
+            self._companion(root, "111", "split", a.name, 1)
+            cb = self._companion(root, "222", "split", b.name, 2)
+            bound = rerun.bind_companions([cb], [a, b])
+            for preload in (False, True):
+                if preload and not hasattr(rerun.os, "fork"):
+                    continue
+                with mock.patch.object(rerun, "_PRELOAD_ENABLED", preload), \
+                        mock.patch.dict(rerun._PAYLOAD_CACHE, {str(b.resolve()): {}}, clear=True):
+                    run = rerun.rerun_one(code, b, timeout=60, companions=bound[b])
+                self.assertEqual(run["exitcode"], 0, run["stderr"])
+                self.assertIn("marker 2 2 True", run["stdout"])
+
+    def test_work_key_depends_on_companions_only_when_given(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            a, _ = self._datasets(root)
+            c = self._companion(root, "111", "split", a.name, 1)
+            base = dict(run_sha256="r", record_id=1, code_hash="c", dataset=a, timeout=5)
+            plain = rerun._work_key(**base)
+            self.assertEqual(plain, rerun._work_key(**base, companions=()))
+            self.assertNotEqual(plain, rerun._work_key(**base, companions=[c]))
 
 
 if __name__ == "__main__":

@@ -146,6 +146,67 @@ GCS_TOKEN_PATH = (
 # the working token above is also exposed under the legacy name.
 LEGACY_GCS_TOKEN_NAMES = ("zihan_gcs_token.json",)
 
+# Companion files of the proofreader_evolve feature specifications
+# (markdowns/{merge,split}_features_for_proofreader_evolve.md):
+# ``rerank_companion_<brain>_<kind>.{npz,json}``. Recorded scripts open them by
+# name. ``rerun_one`` links the companion bound to the pkl being run under every
+# companion name the code mentions, so a script written for one brain reads the
+# other brain's candidates when it is re-run there (``--companion``).
+_COMPANION_NAME = re.compile(r"rerank_companion_[A-Za-z0-9-]+_(merge|split)\.(npz|json)")
+
+
+def bind_companions(paths, pkls) -> dict:
+    """Bind each companion (an npz/json pair) to the pkl its manifest names.
+
+    Returns ``{pkl: [companion files]}`` for every pkl in ``pkls``. Raises
+    ``ValueError`` for a malformed name, a missing half of a pair, a manifest
+    whose ``source_cache.file`` matches none of the pkls, an npz that differs
+    from its manifest digest, or two companions of one kind for one pkl.
+    """
+    by_name = {Path(p).name: Path(p) for p in pkls}
+    bound = {Path(p): [] for p in pkls}
+    seen = set()
+    for path in paths:
+        path = Path(path).resolve()
+        match = _COMPANION_NAME.fullmatch(path.name)
+        if match is None:
+            raise ValueError(f"Not a companion file name: {path.name}")
+        stem = path.with_suffix("")
+        if stem in seen:
+            continue
+        seen.add(stem)
+        npz, manifest_path = stem.with_suffix(".npz"), stem.with_suffix(".json")
+        for f in (npz, manifest_path):
+            if not f.is_file():
+                raise ValueError(f"Missing companion file: {f}")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        source = (manifest.get("source_cache") or {}).get("file")
+        if source not in by_name:
+            raise ValueError(
+                f"{manifest_path.name} belongs to {source!r}, which is not among "
+                f"the dataset pkls {sorted(by_name)}"
+            )
+        if hashlib.sha256(npz.read_bytes()).hexdigest() != manifest.get("npz_sha256"):
+            raise ValueError(f"{npz.name} does not match the digest in its manifest")
+        target = bound[by_name[source]]
+        kind = match.group(1)
+        if any(_COMPANION_NAME.fullmatch(f.name).group(1) == kind for f in target):
+            raise ValueError(f"Two {kind} companions for {source}")
+        target += [npz, manifest_path]
+    return bound
+
+
+def companion_links(code: str, companions) -> dict:
+    """Companion name -> bound file: each file's own name plus every companion
+    name of the same kind and extension that ``code`` mentions."""
+    files = {_COMPANION_NAME.fullmatch(Path(c).name).groups(): str(c) for c in companions}
+    links = {Path(c).name: str(c) for c in companions}
+    for match in _COMPANION_NAME.finditer(code or ""):
+        target = files.get(match.groups())
+        if target is not None:
+            links[match.group(0)] = target
+    return links
+
 # Resident-payload execution. Historically every script ran in a fresh
 # subprocess that re-deserialized the multi-GB dataset itself (~minutes per
 # script; 42 scripts ≈ hours of pure pickle.load). The driver now loads each
@@ -282,7 +343,8 @@ def _environment_fingerprint() -> dict:
 
 
 def _work_key(
-    *, run_sha256: str, record_id, code_hash: str, dataset: Path, timeout: int
+    *, run_sha256: str, record_id, code_hash: str, dataset: Path, timeout: int,
+    companions=(),
 ) -> str:
     identity = {
         "runner_version": _RUNNER_VERSION,
@@ -293,6 +355,8 @@ def _work_key(
         "dataset": file_fingerprint(dataset),
         "timeout": timeout,
     }
+    if companions:  # absent key keeps checkpoints written without companions valid
+        identity["companions"] = [file_fingerprint(Path(c)) for c in companions]
     return _sha256_text(json.dumps(identity, sort_keys=True, separators=(",", ":")))
 
 
@@ -305,6 +369,7 @@ def _run_work_item(
     record_id,
     checkpoint: dict,
     checkpoint_path: Path | None,
+    companions=(),
 ) -> tuple[dict, bool]:
     """Run or reuse one code×dataset work item; persist immediately on success."""
     key = _work_key(
@@ -313,11 +378,12 @@ def _run_work_item(
         code_hash=code_sha256(code),
         dataset=dataset,
         timeout=timeout,
+        companions=companions,
     )
     cached = checkpoint["work_items"].get(key)
     if isinstance(cached, dict) and isinstance(cached.get("run"), dict):
         return cached["run"], True
-    run = rerun_one(code, dataset, timeout)
+    run = rerun_one(code, dataset, timeout, companions)
     checkpoint["work_items"][key] = {
         "record_id": record_id,
         "code_sha256": code_sha256(code),
@@ -491,6 +557,17 @@ _RUNNER = r'''
 import builtins, glob, os, runpy, subprocess, sys
 
 _PKL = os.environ["RERUN_PKL"]
+import json as _json
+_COMPANIONS = _json.loads(os.environ.get("RERUN_COMPANIONS") or "{}")
+
+
+def _companion(x):
+    """The bound companion file for a path whose basename is a linked companion name."""
+    try:
+        s = os.fspath(x)
+    except TypeError:
+        return None
+    return _COMPANIONS.get(os.path.basename(s)) if isinstance(s, str) else None
 
 
 # --- Driver owns the environment --------------------------------------------
@@ -573,14 +650,14 @@ def _is_pkl(x):
 # Any open() of a *.pkl path -> open the provided dataset instead.
 _orig_open = builtins.open
 def _open(file, *a, **k):
-    return _orig_open(_PKL if _is_pkl(file) else file, *a, **k)
+    return _orig_open(_PKL if _is_pkl(file) else (_companion(file) or file), *a, **k)
 builtins.open = _open
 
-# A *.pkl path always "exists" so the script takes its load branch.
+# A *.pkl or companion path always "exists" so the script takes its load branch.
 _orig_exists = os.path.exists
-os.path.exists = lambda p: True if _is_pkl(p) else _orig_exists(p)
+os.path.exists = lambda p: True if _is_pkl(p) or _companion(p) else _orig_exists(p)
 _orig_isfile = os.path.isfile
-os.path.isfile = lambda p: True if _is_pkl(p) else _orig_isfile(p)
+os.path.isfile = lambda p: True if _is_pkl(p) or _companion(p) else _orig_isfile(p)
 
 # Any glob for *.pkl resolves to exactly the provided dataset.
 _orig_glob = glob.glob
@@ -593,8 +670,8 @@ glob.glob = _glob
 # pathlib.Path(...).exists()/is_file() for *.pkl, in case a script uses it.
 from pathlib import Path as _Path
 _orig_p_exists, _orig_p_isfile = _Path.exists, _Path.is_file
-_Path.exists = lambda self: True if str(self).endswith(".pkl") else _orig_p_exists(self)
-_Path.is_file = lambda self: True if str(self).endswith(".pkl") else _orig_p_isfile(self)
+_Path.exists = lambda self: True if str(self).endswith(".pkl") or _companion(self) else _orig_p_exists(self)
+_Path.is_file = lambda self: True if str(self).endswith(".pkl") or _companion(self) else _orig_p_isfile(self)
 
 runpy.run_path("experiment.py", run_name="__main__")
 '''
@@ -639,6 +716,14 @@ def _apply_inprocess_patches(payload) -> None:
     from pathlib import Path as _Path
 
     pkl_path = os.environ["RERUN_PKL"]
+    companions = json.loads(os.environ.get("RERUN_COMPANIONS") or "{}")
+
+    def _companion(x):
+        try:
+            s = os.fspath(x)
+        except TypeError:
+            return None
+        return companions.get(os.path.basename(s)) if isinstance(s, str) else None
 
     def _is_install_cmd(a):
         if isinstance(a, str):
@@ -714,14 +799,14 @@ def _apply_inprocess_patches(payload) -> None:
     orig_open = builtins.open
 
     def _open(file, *a, **k):
-        return orig_open(pkl_path if _is_pkl(file) else file, *a, **k)
+        return orig_open(pkl_path if _is_pkl(file) else (_companion(file) or file), *a, **k)
 
     builtins.open = _open
 
     orig_exists = os.path.exists
-    os.path.exists = lambda p: True if _is_pkl(p) else orig_exists(p)
+    os.path.exists = lambda p: True if _is_pkl(p) or _companion(p) else orig_exists(p)
     orig_isfile = os.path.isfile
-    os.path.isfile = lambda p: True if _is_pkl(p) else orig_isfile(p)
+    os.path.isfile = lambda p: True if _is_pkl(p) or _companion(p) else orig_isfile(p)
 
     orig_glob = glob_module.glob
 
@@ -733,8 +818,8 @@ def _apply_inprocess_patches(payload) -> None:
     glob_module.glob = _glob
 
     orig_p_exists, orig_p_isfile = _Path.exists, _Path.is_file
-    _Path.exists = lambda self: True if str(self).endswith(".pkl") else orig_p_exists(self)
-    _Path.is_file = lambda self: True if str(self).endswith(".pkl") else orig_p_isfile(self)
+    _Path.exists = lambda self: True if str(self).endswith(".pkl") or _companion(self) else orig_p_exists(self)
+    _Path.is_file = lambda self: True if str(self).endswith(".pkl") or _companion(self) else orig_p_isfile(self)
 
     orig_pickle_load = pickle.load
 
@@ -844,7 +929,7 @@ def _run_forked(run_dir: Path, env: dict, timeout: int, payload) -> dict:
     }
 
 
-def rerun_one(code: str, pkl: Path, timeout: int) -> dict:
+def rerun_one(code: str, pkl: Path, timeout: int, companions=()) -> dict:
     """Execute one record's recorded ``code``, forcing every pkl load to ``pkl``.
 
     The recorded script is written verbatim to ``experiment.py`` and launched
@@ -859,6 +944,10 @@ def rerun_one(code: str, pkl: Path, timeout: int) -> dict:
     recorded delivery-dir conventions look), and the standard
     ``GOOGLE_APPLICATION_CREDENTIALS`` / ``AWS_EC2_METADATA_DISABLED`` env vars
     are preset so image-reading hypotheses can reach GCS / public S3.
+
+    Companion files bound to ``pkl`` (``--companion``) are linked into the cwd
+    under their own names and under every companion name the code mentions
+    (``companion_links``); opens of those names elsewhere are redirected too.
 
     Execution strategy: when the payload preloads (POSIX, ``--no-preload`` not
     given), the script runs in a forked child sharing the resident payload via
@@ -880,6 +969,11 @@ def rerun_one(code: str, pkl: Path, timeout: int) -> dict:
             "RERUN_PKL": str(pkl),
         }
         env.setdefault("AWS_EC2_METADATA_DISABLED", "true")
+        links = companion_links(code, companions)
+        if links:
+            env["RERUN_COMPANIONS"] = json.dumps(links)
+            for name, target in links.items():
+                (run / name).symlink_to(target)
         if GCS_TOKEN_PATH.is_file():
             env.setdefault("GOOGLE_APPLICATION_CREDENTIALS", str(GCS_TOKEN_PATH))
             env["RERUN_GCS_TOKEN"] = str(GCS_TOKEN_PATH)
@@ -1030,6 +1124,20 @@ def main(argv: list[str] | None = None) -> int:
             "after one flag and/or the flag repeated. The same code is re-run "
             "with its load redirected to each, to test generalization. Assumes "
             "the same payload structure as --pkl."
+        ),
+    )
+    parser.add_argument(
+        "--companion",
+        type=Path,
+        action="extend",
+        nargs="+",
+        default=[],
+        metavar="FILE",
+        help=(
+            "Companion files (rerank_companion_<brain>_<kind>.npz or .json; the "
+            "other half of the pair is found next to it). Each is bound to the "
+            "--pkl / --extra-pkl its manifest names and linked into the script "
+            "cwd under the companion names the code uses."
         ),
     )
     parser.add_argument(
@@ -1205,6 +1313,10 @@ def main(argv: list[str] | None = None) -> int:
         if not ep.is_file():
             parser.error(f"No such extra dataset pkl: {ep}")
         extra_pkls.append(ep.resolve())
+    try:
+        companions = bind_companions(args.companion, [pkl, *extra_pkls])
+    except ValueError as exc:
+        parser.error(f"--companion: {exc}")
 
     def load_result_payload(path: Path | None, option: str) -> dict | None:
         if path is None:
@@ -1389,6 +1501,7 @@ def main(argv: list[str] | None = None) -> int:
                 record_id=rid,
                 checkpoint=checkpoint,
                 checkpoint_path=checkpoint_path,
+                companions=companions[pkl],
             )
             n_checkpoint_reused += int(reused)
             n_executed += int(not reused)
@@ -1431,6 +1544,7 @@ def main(argv: list[str] | None = None) -> int:
                     record_id=rid,
                     checkpoint=checkpoint,
                     checkpoint_path=checkpoint_path,
+                    companions=companions[ep],
                 )
                 n_checkpoint_reused += int(reused)
                 n_executed += int(not reused)
@@ -1513,6 +1627,7 @@ def main(argv: list[str] | None = None) -> int:
         "json_file": str(args.json_file),
         "pkl": str(pkl),
         "extra_pkls": [str(p) for p in extra_pkls],
+        "companions": {str(p): [str(f) for f in fs] for p, fs in companions.items() if fs},
         "rank_by": args.rank_by,
         "top": args.top,
         "timeout_s": args.timeout,

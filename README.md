@@ -129,6 +129,12 @@ python agentic/run_discovery_workflow.py \
     --extra-pkl cache/dataset_cache_<other-brain>_mcl<N>_add.pkl   # optional transfer test
 ```
 
+Runs that follow `markdowns/{merge,split}_features_for_proofreader_evolve.md` also
+open a companion file. Pass it with `--companion markdowns/rerank_companion_<brain>_<kind>.npz`
+(the `.json` half is found next to it; repeat for each `--extra-pkl` brain). Each
+companion is bound to the pkl its manifest names, and every re-run links it into the
+script's working directory under the companion names the recorded code uses.
+
 The driver alternates agent steps, which run in fresh Claude Agent SDK sessions
 and operate only on files already on disk, with compute steps, which the driver
 runs itself as blocking subprocesses. The phases, in order:
