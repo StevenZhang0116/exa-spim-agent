@@ -127,14 +127,13 @@ provided rather than relying on any quoted figures.
   neuron is simply unlabeled, not labeled "background."
 - **Fragments are filtered.** When each cache was built, UNet fragments shorter
   than `min_cable_length` µm of total path length were dropped, removing the
-  shortest noise fragments; the caches in this collection use
-  `min_cable_length = 100` µm. Skeletons were also resampled to a target
-  inter-node spacing of `node_spacing = 5` µm, so node geometry is decimated
-  relative to the original SWCs. All caches in the collection share these build
-  parameters, so fragments are comparable across brains when several are present
-  — but always read the actual value from `payload["min_cable_length"]` per file
-  rather than assuming it, and if a run ever mixes thresholds, account for that
-  before pooling.
+  shortest noise fragments; most caches use `min_cable_length = 100` µm
+  (`mcl100`), but `mcl10` caches exist for some brains. Skeletons were also
+  resampled to a target inter-node spacing (`node_spacing`, 5 µm for the `mcl100`
+  caches, 2 µm for e.g. `789202_mcl10`), so node geometry is decimated relative to
+  the original SWCs. Fragments are comparable across brains only between caches
+  with the same build parameters: always read `payload["min_cable_length"]` and
+  `payload["node_spacing"]` per file, and never pool `mcl10` with `mcl100`.
 - **Anisotropic voxels.** ExaSPIM samples X/Y more finely than Z, so voxels are
   not cubic. Each cache stores `anisotropy = (0.748, 0.748, 1.0)` (µm per voxel
   in x, y, z) and uses it to convert between SWC physical coordinates (µm) and
@@ -151,8 +150,9 @@ provided rather than relying on any quoted figures.
 Every cache, regardless of brain, is a single dict with the **same keys** — this
 identical schema is exactly what makes the collection poolable and lets one code
 path serve a single cache or many. The full key set
-is below; the last five are the ones you will actually use — the three `*_path`
-strings just record where the source data was read from when the cache was built.
+is below; the two graphs and the build parameters are the ones you will actually
+use — the `*_path` strings just record where the source data was read from when
+the cache was built.
 (The graph contents and counts differ per brain; the keys and types do not.)
 
 | Key | Type | Meaning |
@@ -160,15 +160,21 @@ strings just record where the source data was read from when the cache was built
 | `fragments_path` | `str` | Provenance only — GCS path of the source UNet SWCs. Not needed to use the cache. |
 | `gt_path` | `str` | Provenance only — GCS path of the source GT tracings. Not needed to use the cache. |
 | `img_path` | `str` | Provenance only — S3 path of the fused ExaSPIM image. **Not** loaded; the cache is self-contained without it. |
+| `segmentation_path` | `str` | Provenance only — dense segmentation the labels would be read from. Present in caches written by the current builder; older plain caches may lack it. |
 | `anisotropy` | `tuple` | `(0.748, 0.748, 1.0)` — µm/voxel in **(x, y, z)** order. |
-| `min_cable_length` | `int` | `100` — µm threshold; shorter fragments were discarded (shared across the collection). |
-| `node_spacing` | `int` | `5` — target µm spacing between adjacent skeleton nodes. |
+| `min_cable_length` | `int` | µm threshold; shorter fragments were discarded (`100` for `mcl100` caches, `10` for `mcl10`). |
+| `node_spacing` | number | Target µm spacing between adjacent skeleton nodes (`5` for `mcl100`; `2` for `789202_mcl10`). |
+
+Caches written by the current builder also carry the label keys
+(`gt_node_canonical_label`, `gt_edge_error`, `gt_merge_labels`, `gt_merge_sites`,
+`gt_merge_site_metadata`, `gt_junction_audit`) with value `None` in a plain cache;
+the labeled `_add.pkl` fills them (see `labeled_dataset_cache.md`).
 | `fragments_graph` | `SkeletonGraph` | Automated UNet reconstruction (hundreds of thousands of fragment components; tens of millions of nodes). |
 | `gt_graph` | `SkeletonGraph` | Human ground-truth reconstruction (order tens of neurons; ~10⁶ nodes). |
 
 > **Note.** The filename pattern is `dataset_cache_<brain_id>_mcl<N>.pkl`, where
 > `<brain_id>` is the specimen and `N` is the `min_cable_length` threshold (the
-> caches provided here are all `mcl100`, i.e. 100 µm; stricter builds such as
+> caches provided here are mostly `mcl100`, i.e. 100 µm; stricter builds such as
 > `_mcl1000.pkl` would contain far fewer, longer fragments). Always read the
 > actual value from `payload["min_cable_length"]` per file rather than assuming
 > it, and read `<brain_id>` from the filename (or `gt_path`) so every pooled
@@ -212,7 +218,8 @@ import glob, pickle
 
 # Pick any dataset_cache_<brain_id>_mcl<N>.pkl present in cache/ — they all
 # work the same way. (Glob the folder; see "Loading the whole collection" below.)
-some_cache = sorted(glob.glob("cache/dataset_cache_*.pkl"))[0]
+# The pattern also matches labeled *_add.pkl files and other mcl levels; keep plain mcl100 only.
+some_cache = sorted(p for p in glob.glob("cache/dataset_cache_*_mcl100.pkl"))[0]
 with open(some_cache, "rb") as f:
     payload = pickle.load(f)   # reconstructs SkeletonGraph instances
 
@@ -242,14 +249,17 @@ import glob, os, pickle, re
 CACHE_DIR = "cache"   # adjust to wherever the collection lives
 
 def brain_id_from_path(path):
-    # dataset_cache_<brain_id>_mcl<N>.pkl  ->  "<brain_id>"
+    # dataset_cache_<brain_id>_mcl<N>.pkl  ->  "<brain_id>"; anything else is not a plain cache
     m = re.search(r"dataset_cache_(\d+)_mcl(\d+)\.pkl$", os.path.basename(path))
-    return m.group(1) if m else os.path.basename(path)
+    return m.group(1) if m else None
 
 # One entry per brain. Load lazily / one at a time if memory is tight (see below).
 caches = {}
-for path in sorted(glob.glob(os.path.join(CACHE_DIR, "dataset_cache_*.pkl"))):
+MCL = 100   # never pool caches built with different min_cable_length
+for path in sorted(glob.glob(os.path.join(CACHE_DIR, f"dataset_cache_*_mcl{MCL}.pkl"))):
     brain_id = brain_id_from_path(path)
+    if brain_id is None:   # e.g. *_add.pkl labeled caches
+        continue
     with open(path, "rb") as f:
         caches[brain_id] = pickle.load(f)
     print(f"loaded brain {brain_id} from {os.path.basename(path)}")
@@ -335,14 +345,15 @@ safe to pool:
 
 - `anisotropy = (0.748, 0.748, 1.0)` — µm/voxel in (x, y, z); used to convert
   between physical coordinates and voxel indices.
-- `min_cable_length = 100` — µm; UNet fragments shorter than this were dropped at
-  build time (the `mclN` in the filename).
-- `node_spacing = 5` — µm; target spacing the skeletons were resampled to.
+- `min_cable_length` — µm (`100` for `mcl100`, `10` for `mcl10`); UNet fragments
+  shorter than this were dropped at build time (the `mclN` in the filename).
+- `node_spacing` — µm (`5` for `mcl100`, `2` for `789202_mcl10`); target spacing
+  the skeletons were resampled to.
 
 No image is stored in the cache — only the two `SkeletonGraph` objects and these
 parameters are pickled — which is why each cache loads from skeletons alone with
-no image access, exactly the constraint this document relies on. (The three
-`*_path` strings are recorded only as provenance of where the source data came
+no image access, exactly the constraint this document relies on. (The `*_path`
+strings are recorded only as provenance of where the source data came
 from; nothing in this document reads them.)
 
 ### `SkeletonGraph` structure
@@ -467,13 +478,14 @@ for a predicted labeling of the GT center-line. The procedure:
 3. **Count splits per neuron** as `(number of distinct segment ids touching that
    GT neuron) − 1` — N segments covering one neuron implies N−1 splits.
 
-4. **Detect merges** the other direction: a *single* segment id that maps onto
-   *two or more distinct GT neurons* is a merge. Concretely, walk a fragment
-   outward from its endpoints; if part of it sits far (> ~50 µm) from the GT
-   neuron its segment was matched to and then re-approaches a *different* GT
-   neuron, that segment is fusing two neurons — flag the branch point as a merge
-   site. (Pass-throughs near very small GT components are ignored to avoid false
-   positives.)
+4. **Detect merges** the other direction, by two rules. (a) A *single* segment id
+   that labels a substantial stretch (> 50 nodes) of *two or more distinct GT
+   neurons* is a merge. (b) Geometric walk: walk a fragment outward; if a branch
+   runs > ~50 µm away from GT through untraced space and then comes back within
+   ~6 µm of GT on a stretch carrying the same segment label, that segment has
+   fused in other material — flag the branch point as a merge site. Rule (b) needs
+   only one traced neuron; the return must land in a same-label GT component of
+   at least 50 nodes (smaller components are treated as pass-throughs).
 
 **Sample code** — the four steps end-to-end, using only `gt_graph` and
 `fragments_graph` from **one** cache. If more than one brain is present, run this
@@ -487,7 +499,7 @@ scores are comparable:
 import numpy as np
 from collections import defaultdict
 
-MATCH_TOL_UM = 5.0   # the free tolerance from step 1; report whatever you pick
+MATCH_TOL_UM = 2.0   # the free tolerance from step 1 (~2 µm default); report whatever you pick
 
 # --- Step 1: label each GT node by its nearest fragment's SEGMENT id ----------
 # One vectorized KD-tree query over all GT nodes; both graphs share (x,y,z) µm.

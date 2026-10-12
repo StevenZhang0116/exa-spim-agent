@@ -38,7 +38,7 @@ systematic *topological* errors, both already identified in the `_add` cache:
 | % Split / Omit Edges | fraction of GT edges in each class | count `gt_edge_error` values |
 | Edge Accuracy | fraction of correctly reconstructed GT cable | `100 − (% Split + % Omit + % Merged Edges)`, using the node-count `% Merged Edges` — **NOT** the `% correct` fraction of `gt_edge_error` (see below) |
 | % Merged Edges | merged *cable* on a neuron, as a fraction of its edges | node-count formula over `gt_merge_labels` — **NOT** a count of `gt_edge_error == merged` (see below) |
-| # Merges | merge *events*, one per detected merge **site** | `len(gt_merge_sites)`; per neuron, group the sites by their `gt_neuron` |
+| # Merges | merge *events*, one per detected merge **site** | count the **geometric-walk** sites of `gt_merge_sites` (`"geometric_walk"` in `site["sources"]`; sites without a source field are geometric); per neuron, group them by `gt_neuron`. On refreshed caches `len(gt_merge_sites)` also counts two-GT junction sites and is larger |
 
 > **Three of these are NOT `gt_edge_error` counts.** Only `% Split Edges` and
 > `% Omit Edges` are simple per-edge class fractions of `gt_edge_error`. But
@@ -70,7 +70,8 @@ systematic *topological* errors, both already identified in the `_add` cache:
 > `results.csv["# Merges"].sum() == len(merge_sites.csv) == 168`, while
 > `total_merges` undercounts. The number is not derivable from the node labels
 > alone (sites need the fragments graph), which is why the labels-only summary
-> cannot produce it. Take `# Merges` from `len(gt_merge_sites)` instead, and note
+> cannot produce it. Take `# Merges` from the geometric-walk sites of
+`gt_merge_sites` instead (see the table above), and note
 > that `% Merged Edges` in the same function is fine — it sums `max(c−1, 0)` over
 > *every* neuron a merge label touches with no >50 filter, so walk-only merges do
 > contribute cable there.
@@ -101,8 +102,10 @@ systematic *topological* errors, both already identified in the `_add` cache:
 > than 50 µm, one that returns no closer than 6 µm, or one landing in a same-label
 > component under 50 nodes.
 >
-> Together these reproduce the canonical `labels_with_merge` set. You do
-> **not** need to rerun any of this to use the cache — it is already stored.
+> Together these approximate the canonical `labels_with_merge` set, with a known
+> **conservative** bias: fewer merges are flagged than canonical finds (see the
+> thresholds note below). You do **not** need to rerun any of this to use the
+> cache — it is already stored.
 
 > **⚠ `gt_merge_labels` is ONE GLOBAL set; canonical `labels_with_merge` is
 > PER GT NEURON.** In `segmentation_skeleton_metrics`, `labels_with_merge` is an
@@ -136,8 +139,18 @@ systematic *topological* errors, both already identified in the `_add` cache:
 > `segmentation_skeleton_metrics` instead uses the GT SWC rows as-is. Therefore
 > `MERGE_MIN_NODES = 50` and `MERGE_PASSTHRU_MIN_CC = 50` are **not the same
 > physical threshold** in the two pipelines, and "50 nodes" here corresponds to no
-> fixed length in µm. Treat them as reproducing canonical *closely, not exactly*,
-> and never convert a node count to microns by multiplying by `node_spacing`.
+> fixed length in µm. Never convert a node count to microns by multiplying by
+> `node_spacing`.
+>
+> **The error goes one way: cache merge labels are conservative.** Measured
+> cache GT node spacing is 3.99–4.36 µm, against ≈ 1 µm between canonical SWC
+> nodes, so the three 50-node thresholds (`MERGE_MIN_NODES`, `MERGE_PASSTHRU_MIN_CC`
+> and `min_gt_nodes` in the two-GT junction audit) correspond to ≈ 200 µm here
+> versus ≈ 50 µm in canonical. Short genuine merges are rejected as pass-throughs:
+> cache merge sites recover 46–89% of canonical sites (site recall at 50 µm,
+> precision 0.83–1.00), and the older-microscope brains are affected most. A merge
+> not flagged in the cache may still be a real merge. Details:
+> `notebooks/merge_label_shadow_findings.md` and `proofreader_evolve/TODO.md`.
 
 **Known gaps / things to keep in mind.**
 
@@ -169,8 +182,24 @@ systematic *topological* errors, both already identified in the `_add` cache:
   branch nodes and dedups in a specific order; expect strong agreement with a
   small residual on a few merge-heavy neurons.
 - **Ground truth is sparse and skeleton-only.** Only a handful of neurons are
-  traced per brain (named `N0XX-<brain_id>-<initials>`). There is no dense GT
-  voxel volume; a region with no traced neuron is simply unlabeled.
+  traced per brain (4–25, named `N0XX-<brain_id>-<initials>`). There is no dense
+  GT voxel volume; a region with no traced neuron is simply unlabeled.
+- **Absence of a label is not evidence of no error.** A segment or candidate that
+  is not in `gt_merge_labels` / `gt_merge_sites`, or not on a split key, is a
+  verified non-error only where GT can judge it; elsewhere it is unknown (the
+  labeling code itself treats such results as "unknown, never certified
+  non-merges"). In the detector-native candidate pools only about 0.1–11% of
+  split candidates and 0.3–11% of merge candidates are GT-judgeable. When you
+  build negatives or compute precision, restrict to GT-judgeable candidates: for
+  a split pair, both segments carry a GT node label; for a merge candidate, its
+  segment carries a GT node label and the site lies within 150 µm of a GT node.
+  `proofreader_evolve` stores exactly this as 1 / 0 / NaN labels
+  (`proofreader_evolve/harness/label_availability.py`).
+- **Verified brains.** The omit and merge comparisons above were measured on the
+  five original brains (794495, 802449, 789202, 794491, 794493). Caches also exist
+  for six older-microscope brains (747807, 750318, 751473, 754610, 754612,
+  754613); their merge-label bias was measured (above), the omit comparison was
+  not repeated in this document.
 
 ---
 
@@ -179,8 +208,10 @@ systematic *topological* errors, both already identified in the `_add` cache:
 ### On-disk layout
 
 Every `_add.pkl` is a single dict. It is a **superset** of the plain cache: all
-the original keys, plus four added by the labeling step. The last five keys are
-the ones you will actually use.
+the original keys, plus the label keys written by the labeling step
+(`gt_node_canonical_label`, `gt_edge_error`, `gt_merge_labels`, `gt_merge_sites`,
+`gt_merge_site_metadata`, `gt_junction_audit`). The four bold label keys plus the
+two graphs are the ones you will actually use.
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -188,8 +219,8 @@ the ones you will actually use.
 | `img_path` | `str` | **Public S3** path of the raw fused ExaSPIM image. Not needed for error recovery, but lets you fetch raw-image patches on demand with no credentials — see *Optionally reading the raw image*. |
 | `segmentation_path` | `str` | Provenance only — **private GCS** path of the dense segmentation the labels were read from. Not read at load time and not needed (its information is already in the stored labels). |
 | `anisotropy` | `tuple` | µm/voxel in (x, y, z) — `(0.748, 0.748, 1.0)` for this batch of caches. **Not a fixed constant:** it is stored per dataset as-passed at build time, so always read it from the payload (`payload["anisotropy"]`) rather than hard-coding this value. |
-| `min_cable_length` | `int` | µm threshold shorter fragments were dropped at — the `<N>` from the `mcl<N>` filename (`100` for this batch). |
-| `node_spacing` | `int` | Target µm spacing between skeleton nodes — **per cache, not a constant**: `5` for the `mcl100` batch, `2` for `dataset_cache_789202_mcl10_add.pkl`. Read it from `payload["node_spacing"]`. It is a *target*: each irreducible edge gets `max(int(len/node_spacing), 5)` spline-resampled points, so short edges end up denser. |
+| `min_cable_length` | `int` | µm threshold shorter fragments were dropped at — the `<N>` from the `mcl<N>` filename (`100` for most caches; `mcl10` caches exist for some brains). |
+| `node_spacing` | number | Target µm spacing between skeleton nodes — **per cache, not a constant**: `5` for the `mcl100` batch, `2` for `dataset_cache_789202_mcl10_add.pkl`. Read it from `payload["node_spacing"]`. It is a *target*: each irreducible edge gets `max(int(len/node_spacing), 5)` spline-resampled points, so short edges end up denser. |
 | `fragments_graph` | `SkeletonGraph` | Automated UNet reconstruction (unchanged from the plain cache). |
 | `gt_graph` | `SkeletonGraph` | Human ground-truth reconstruction (unchanged geometry; now also carries the label arrays below). |
 | **`gt_node_canonical_label`** | `np.ndarray (N_gt,) int64` | Predicted segment id at each GT node's voxel; `0` = unlabeled (omit). |
@@ -198,17 +229,18 @@ the ones you will actually use.
 | **`gt_merge_sites`** | `list[dict]` | One active list of geometric-walk and two-GT junction sites: `{"segment_id": int, "gt_neuron": str, "xyz": (x,y,z) µm}` plus source/evidence fields on refreshed caches. Older caches contain only geometric sites. |
 | `gt_merge_site_metadata` | `dict` or `None` | Combined-site generation parameters and counts, also on `gt_graph.merge_site_metadata`. No parallel label sets. |
 
-The four added arrays are also attached to `gt_graph` as
-`gt_graph.node_label`, `gt_graph.edge_error`, `gt_graph.merge_labels`, and
-`gt_graph.merge_sites`, so you can read them off either the payload dict or the
-graph. Their combined size is tiny (~tens of MB) next to the multi-GB graphs.
+The label arrays are also attached to `gt_graph` as
+`gt_graph.node_label`, `gt_graph.edge_error`, `gt_graph.merge_labels`,
+`gt_graph.merge_sites`, `gt_graph.merge_site_metadata` and
+`gt_graph.junction_gt_audit`, so you can read them off either the payload dict or
+the graph. Their combined size is tiny (~tens of MB) next to the multi-GB graphs.
 
 **Combined-site refresh:** `scripts/relabel_cache.py --refresh-merge-sites`
 updates an existing `_add.pkl` in place without rereading segmentation or
 rebuilding graphs. The two original segment-merge criteria are preserved;
 two-GT junction localization adds site coordinates to the same `gt_merge_sites`.
-The historical `# Merges == len(gt_merge_sites)` comparisons elsewhere in this
-document refer to geometric-only caches. Combined site counts need not match
+`# Merges` is therefore counted on the geometric-walk sites only (see the
+table in §1); `len(gt_merge_sites)` equals it only on geometric-only caches. Combined site counts need not match
 the original canonical merge-event count and may include two localizations of
 one biological event. Recompute sweep evidence and detector results after a
 refresh; old scored CSVs still carry old labels.
@@ -218,8 +250,9 @@ Optional `gt_junction_audit` stores versioned local GT branch evidence, also on
 canonical label fields. See [Junction GT Audit](../docs/junction_gt_audit.md) for the
 segment/site distinction, compute-node command, and limitations.
 
-> **`_add.pkl` vs plain `.pkl`.** A plain `dataset_cache_*.pkl` lacks the four
-> label keys; an `_add.pkl` has them. This document is about the `_add.pkl` — the
+> **`_add.pkl` vs plain `.pkl`.** In a plain `dataset_cache_*.pkl` the label keys
+> are absent (older caches) or `None` (caches written by the current `save()`); in
+> an `_add.pkl` they hold arrays. This document is about the `_add.pkl` — the
 > one with labels already baked in. The `assert` in the loader below confirms you
 > were given an `_add` cache and not a plain one.
 
@@ -239,12 +272,12 @@ Its runtime dependencies are the usual scientific stack — **`numpy`, `networkx
 `scipy`** (KD-tree), plus `tqdm`; installing the package pulls these in.
 
 Clone
-[`AllenInstitute/neuron-proofreader`](https://github.com/AllenInstitute/neuron-proofreader)
+[`AllenInstitute/agentic-neuron-proofreader`](https://github.com/AllenInstitute/agentic-neuron-proofreader)
 and `pip install` it into your environment:
 
 ```bash
-git clone https://github.com/AllenInstitute/neuron-proofreader.git
-cd neuron-proofreader
+git clone https://github.com/AllenInstitute/agentic-neuron-proofreader.git
+cd agentic-neuron-proofreader
 pip install -e .          # editable; drop -e for a normal install
 ```
 
@@ -282,7 +315,9 @@ edge_error   = np.asarray(payload["gt_edge_error"])            # (E_gt,) 0=corr 
 merge_labels = set(int(x) for x in payload["gt_merge_labels"]) # merging segment ids
 merge_sites  = payload["gt_merge_sites"]           # list of {segment_id, gt_neuron, xyz}
 
-assert node_label.size, "labels missing — this is a plain cache, not an _add cache"
+# np.asarray(None).size == 1, so test for None, not for size.
+assert payload.get("gt_node_canonical_label") is not None, \
+    "labels missing — this is a plain cache, not an _add cache"
 ```
 
 > **Why not `BrainDataset.load_from_cache`?** That convenience loader works too,
@@ -369,7 +404,8 @@ splits_per_neuron = {nm: max(len(s) - 1, 0) for nm, s in neuron_segs.items()}
 
 # --- Merges: which neurons each merging segment fuses, and # Merges -----------
 # # Merges is NOT len(merge_labels) and NOT a (k-1)-per-segment formula: canonical
-# counts one merge event per detected SITE, so it is len(gt_merge_sites).
+# counts one merge event per detected geometric-walk SITE (refreshed caches also
+# store two-GT junction sites in gt_merge_sites; filter them out for this count).
 seg_to_neurons = defaultdict(set)
 for n in gt.nodes:
     lab = int(node_label[n])
@@ -379,8 +415,10 @@ for seg, neurons in seg_to_neurons.items():
     print(f"segment {seg} merges: {sorted(neurons)}")
 
 merge_sites = payload["gt_merge_sites"]          # or gt.merge_sites
-print(f"# Merges (total): {len(merge_sites)}")
-merges_per_neuron = Counter(s["gt_neuron"] for s in merge_sites)   # matches results.csv
+geometric = [s for s in merge_sites if "geometric_walk" in (s.get("sources") or ["geometric_walk"])
+             or s.get("source") == "geometric_walk"]
+print(f"# Merges (canonical, geometric-walk sites): {len(geometric)}; all sites: {len(merge_sites)}")
+merges_per_neuron = Counter(s["gt_neuron"] for s in geometric)     # compare with results.csv
 
 # A segment can carry several sites, so this is >= the number of merge labels:
 sites_per_segment = Counter(s["segment_id"] for s in merge_sites)
@@ -608,8 +646,11 @@ reconstructions that edits the U-Net `fragments_graph` to fix the three
 topological error types, evaluated against the pooled ground-truth neurons across
 whatever `_add.pkl` caches are present.
 
-What the `_add` cache changes is the **starting point**: the errors are already
-identified, so a tool can skip the scoring step and go straight to correction.
+What the `_add` cache changes is the **starting point**: the errors *on the traced
+neurons* are already identified, so a tool can skip the scoring step and go
+straight to correction. The inventory is not exhaustive: GT covers only a few
+neurons per brain, merge labels are conservative, and anything away from traced
+neurons is unlabeled, not error-free (see *Known gaps*).
 
 - fix **splits** — re-join fragments belonging to one neuron (the split edges and
   the per-neuron segment sets are pre-computed);
@@ -618,7 +659,7 @@ identified, so a tool can skip the scoring step and go straight to correction.
 - recover **omits** — extend reconstruction into missed stretches (the omit edges
   are pre-computed).
 
-Because the labels are exact to the segmentation (not a proxy), the cache supports
+Because the labels are read from the segmentation itself (not a proxy), the cache supports
 **before/after evaluation directly**: re-derive the same skeleton metrics after a
 correction and compare to the stored baseline. The bar for "better" is a larger
 reduction in splits/merges/omits and larger ERL / edge-accuracy gains than a
