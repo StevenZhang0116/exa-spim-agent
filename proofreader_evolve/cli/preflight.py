@@ -1,9 +1,11 @@
 """Read-only launch checks; no brain loading, table building or evolution.
 
-Optional --check-api sends one tiny text-only request to the configured model.
+Optional --check-api sends one tiny tool-free request to the configured model through the
+reviser's own SDK path (bundled Claude Code CLI, API env, model id); it does not exercise the
+tool workflow. Run `precision_20261009_235526_ispymdwn` lost every generation because the
+bundled CLI was too old for the model, which a direct API request cannot detect.
 Optional --context-cache verifies that every brain/kind has a complete, identity-matching
 context cache entry (no chunk is read).
-It verifies direct Anthropic access, not the full reviser SDK/tool workflow.
 """
 
 import argparse
@@ -17,24 +19,37 @@ from ..harness.native_pool import ensure_native_tables, cache_path as native_cac
 from ..harness import label_availability
 
 
-def api_probe(model):
+def api_probe(model, timeout_s=120):
+    """One-turn, tool-free request through the reviser's SDK path (bundled CLI + model)."""
     if not os.environ.get("ANTHROPIC_API_KEY"):
         return {"status": "missing_key", "model": model}
+    import asyncio
     try:
-        from anthropic import Anthropic
-        # Pin the same provider as the reviser; never inherit a proxy base URL.
-        with Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"],
-                       base_url="https://api.anthropic.com", timeout=20, max_retries=0) as client:
-            reply = client.messages.create(model=model, max_tokens=16,
-                                           messages=[{"role": "user", "content": "Reply OK."}])
-        return {"status": "passed", "model": reply.model,
-                "input_tokens": reply.usage.input_tokens,
-                "output_tokens": reply.usage.output_tokens}
+        from claude_agent_sdk import ClaudeAgentOptions, ResultMessage, query
+        try:
+            from claude_agent_sdk._cli_version import __cli_version__ as cli_version
+        except ImportError:  # pragma: no cover - older SDK layout
+            cli_version = None
+        from ..harness.reviser_session import anthropic_api_env
+        options = ClaudeAgentOptions(model=model, env=anthropic_api_env(), max_turns=1, tools=[],
+                                     allowed_tools=[], setting_sources=[], skills=[], strict_mcp_config=True,
+                                     permission_mode="default", system_prompt="Answer with the single word OK.")
+
+        async def run():
+            async for message in query(prompt="Reply OK.", options=options):
+                if isinstance(message, ResultMessage):
+                    return message
+            raise RuntimeError("SDK session ended without a result message")
+
+        result = asyncio.run(asyncio.wait_for(run(), timeout=timeout_s))
+        report = {"model": model, "cli_version": cli_version, "subtype": result.subtype}
+        if result.is_error or result.subtype != "success":
+            # The CLI's error text (e.g. an unsupported model) is the actionable part; no headers/bodies.
+            return {"status": "failed", **report, "detail": str(result.result)[:300]}
+        return {"status": "passed", **report, "models_used": sorted((result.model_usage or {}).keys()),
+                "cost_usd": result.total_cost_usd}
     except Exception as exc:
-        # No response body/headers/request object: they may contain credentials
-        # or provider diagnostics inappropriate for a durable public report.
-        return {"status": "failed", "model": model, "error_type": type(exc).__name__,
-                "http_status": getattr(exc, "status_code", None)}
+        return {"status": "failed", "model": model, "error_type": type(exc).__name__, "detail": str(exc)[:300]}
 
 
 def selection_readiness(report, train_brains, selection_brains, protocol):
@@ -102,7 +117,7 @@ def inspect_readiness(brains, mcl=100, tables_dir=pc.DEFAULT_OUT,
               "api": {"status": "not_checked", "key_present": bool(os.environ.get("ANTHROPIC_API_KEY")),
                       "model": model},
               "warnings": ["Native mode evolves scores on fixed candidates, not graph edits or candidate expansion.",
-                           "Raw brain-cache contents and full reviser SDK/tool execution are not checked here."]}
+                           "Raw brain-cache contents and the reviser tool workflow are not checked here; --check-api covers the SDK session path only."]}
     try:
         selected = pc.resolve_detector_runs(merge_dirs, split_dirs)
     except (Exception, SystemExit) as exc:

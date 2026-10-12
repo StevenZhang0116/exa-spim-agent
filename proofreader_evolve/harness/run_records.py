@@ -8,16 +8,20 @@ import json
 import math
 from pathlib import Path
 
-PRECISION = "native-precision-at-k-v1"
-# Runs since 2026-10-09 (native-precision-at-k-v2-three-valued) rank GT-labeled rows only.
+# Current fixed-pool objective; must equal fixed_pool_scoring.SCORING_VERSION (a test guards this;
+# this module stays standard-library only). v1 runs (before 2026-10-09) ranked every row with
+# two-valued labels; v2 ranks GT-labeled rows only (three-valued labels). Both are read.
+PRECISION = "native-precision-at-k-v2-three-valued"
+LEGACY_PRECISION = "native-precision-at-k-v1"
+PRECISION_VERSIONS = frozenset({LEGACY_PRECISION, PRECISION})
 METRIC_NAME = "macro Precision@K"
 
 
 def objective(row):
     version = row.get("objective", row.get("scoring_version"))
     if version is None and "validation" in row and "train" in row:
-        version = PRECISION
-    if version != PRECISION:
+        version = LEGACY_PRECISION  # records without an objective predate v2
+    if version not in PRECISION_VERSIONS:
         raise ValueError(f"Only fixed-pool precision runs are supported, got {version!r}")
     return version
 
@@ -48,9 +52,9 @@ def run_objective(run_dir=None, rows=()):
         metadata = read_json(Path(run_dir) / "manifest.json", {})
         if "objective" in metadata:
             versions.add(metadata["objective"])
-    if versions != {PRECISION}:
+    if len(versions) != 1 or not versions <= PRECISION_VERSIONS:
         raise ValueError("Only fixed-pool precision runs with a known objective are supported")
-    return PRECISION
+    return next(iter(versions))
 
 
 def number(value):

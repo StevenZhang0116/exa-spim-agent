@@ -19,7 +19,7 @@ RUNS = Path(__file__).resolve().parents[1] / "runs"
 
 def _roles(run_dir):
     metadata = records.read_json(run_dir / "manifest.json", {})
-    if metadata.get("objective") != records.PRECISION:
+    if metadata.get("objective") not in records.PRECISION_VERSIONS:
         return {"train": [], "validation": []}
     return {"train": metadata.get("train_brains") or [],
             "validation": metadata.get("development_validation_brains") or []}

@@ -117,6 +117,14 @@ class EvolutionReportTests(unittest.TestCase):
         self.assertNotIn('must_not_be_read', json.dumps(report))
         self.assertTrue(any('escapes run directory' in w for w in report['warnings']))
 
+    def test_legacy_status_objective_beside_current_manifest_still_builds(self):
+        # Runs from 2026-10-09 to 2026-10-11 wrote the v1 objective into run_status.json next to a
+        # v2 manifest and ledger; the report must read them instead of refusing the run.
+        self.put('run_status.json', {'objective': 'native-precision-at-k-v1', 'status': 'running'})
+        row = self.generation(1)
+        (self.root / 'ledger.jsonl').write_text(json.dumps(row) + '\n')
+        self.assertEqual(len(build_report_data(self.root)['generations']), 1)
+
     def test_non_precision_and_duplicate_generations_are_rejected(self):
         self.put('manifest.json', {'objective': 'structural_repair'})
         with self.assertRaisesRegex(ValueError, 'Only fixed-pool'):

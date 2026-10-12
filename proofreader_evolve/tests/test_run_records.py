@@ -48,6 +48,24 @@ class RecordTests(unittest.TestCase):
         self.assertIsNone(records.validation_value(row))
         self.assertEqual(records.parent_values([row]), [.5])
 
+    def test_current_and_legacy_objectives_are_both_read(self):
+        from proofreader_evolve.harness import fixed_pool_scoring
+        from proofreader_evolve.harness.collect_run import _roles
+        self.assertEqual(records.PRECISION, fixed_pool_scoring.SCORING_VERSION)
+        for version in sorted(records.PRECISION_VERSIONS):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                row = precision()
+                row["objective"] = row["train"]["version"] = row["validation"]["version"] = version
+                save_run(root, [row], version)
+                self.assertEqual(records.run_objective(root, records.load_ledger(root)), version)
+                self.assertEqual(_roles(root), {"train": ["1"], "validation": ["2"]})
+        # Ledger rows without an objective predate v2.
+        self.assertEqual(records.objective({"train": {}, "validation": {}}), records.LEGACY_PRECISION)
+        with self.assertRaises(ValueError):
+            records.run_objective(rows=[precision(), {"objective": records.LEGACY_PRECISION,
+                                                       "train": {}, "validation": {}}])
+
     def test_old_unknown_and_mixed_objectives_are_rejected(self):
         for row in ({"scoring_version": "structural-v1"},
                     {"heldout_fitness": 1}, {"objective": "future-v42"}):

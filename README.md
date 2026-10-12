@@ -101,8 +101,9 @@ label NaN and are excluded from ranking and fitting (three-valued labels, Stage 
 
 AutoDiscovery is an external autonomous-experimentation system. A run is pointed
 at one labeled cache and one task specification from `markdowns/`
-(`merge_detection_from_fragments.md`, `split_detection_from_fragments.md` and
-their image-aware variants). The specification separates GT-informed
+(currently `merge_detection_from_fragmentsv2.md`, `split_detection_from_fragmentsv3.md`
+and their image-centred variants; `markdowns/README.md` lists every document, and
+superseded versions are in `markdowns/archive/`). The specification separates GT-informed
 characterization from GT-blind detection and names the cache fields a detector
 may never read. Each experiment the system performs records its hypothesis,
 analysis code, numerical result and interpretation; the whole run is exported
@@ -356,7 +357,11 @@ Each run gets a separate log with invocation, timing and exit status. Use
 `--log-txt PATH` to append to a specific file; `--dry-run` creates no log.
 
 Evolution and preflight default to `claude-opus-5-5` (Claude Opus 5.5).
-Use `--model MODEL_ID` to override the model for a run.
+Use `--model MODEL_ID` to override the model for a run. The Python SDK launches its own
+bundled Claude Code CLI, not the `claude` on `PATH`; Opus 5.5 needs CLI 2.1.280 or newer
+(`claude-agent-sdk` 0.2.165 bundles 2.1.294). Run `preflight --check-api` before a launch:
+it sends one tool-free request through that SDK path, so an unsupported model or stale CLI
+fails there instead of failing every generation.
 
 ### 3.3 Scorer contract and promotion gate
 

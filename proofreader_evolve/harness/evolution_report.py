@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 import tempfile
 
-from .run_records import PRECISION
+from .run_records import PRECISION, PRECISION_VERSIONS
 
 
 ASSETS = Path(__file__).resolve().parents[1] / 'plotting' / 'report_assets'
@@ -192,7 +192,7 @@ def build_report_data(run_dir):
     state = reader.json('run_status.json', {})
     ledger = reader.jsonl('ledger.jsonl')
     versions = {row['objective'] for row in [manifest, state, *ledger] if row.get('objective')}
-    if versions and versions != {PRECISION}:
+    if versions and not versions <= PRECISION_VERSIONS:
         raise ValueError(f'Only fixed-pool precision runs are supported; found {versions}')
     if not versions:
         # Older precision ledgers sometimes omit objective but have both scopes.
