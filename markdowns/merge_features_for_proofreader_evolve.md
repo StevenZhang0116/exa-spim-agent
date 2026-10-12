@@ -57,7 +57,8 @@ they are errors. The companion `label` column is:
 
 For this brain: 58,120 candidates; label 1: 114; label 0: 6,098; NaN: 51,908.
 
-All evaluation uses labeled rows only (label 1 or 0). Never treat NaN as 0: a NaN
+Precision and AP use labeled rows only (label 1 or 0); the one check that looks at
+unlabeled rows is described under Evaluation. Never treat NaN as 0: a NaN
 row next to no traced neuron says nothing about errors. Positives are rare (about
 1.8% of labeled rows), so the top of the ranking matters most.
 
@@ -297,9 +298,10 @@ def candidate_keys(comp):
     return np.char.add(np.char.add("merge:", comp["segment_id"].astype(str)),
                        np.char.add(":", comp["node_id"].astype(str)))
 
-def precision_at_fraction(comp, scores, fraction, keys=None):
+def precision_at_fraction(comp, scores, fraction, keys=None, counts=False):
     """Out-of-fold precision of the top `fraction` of labeled rows, summed over folds.
-    Pass `keys=candidate_keys(comp)` when calling repeatedly."""
+    Pass `keys=candidate_keys(comp)` when calling repeatedly; `counts=True` returns
+    (hits, rows ranked) instead of their ratio."""
     label, fold = comp["label"], comp["fold"]
     keys = candidate_keys(comp) if keys is None else keys
     tp = k_total = 0
@@ -310,7 +312,7 @@ def precision_at_fraction(comp, scores, fraction, keys=None):
         top = order[:k]
         tp += int(label[top].sum())
         k_total += len(top)
-    return tp / k_total
+    return (tp, k_total) if counts else tp / k_total
 
 def average_precision(comp, scores):
     label = comp["label"]
@@ -318,21 +320,44 @@ def average_precision(comp, scores):
     order = rows[np.argsort(-np.asarray(scores, dtype=float)[rows], kind="stable")]
     hits = label[order] == 1
     return float(np.sum(np.cumsum(hits)[hits] / (np.flatnonzero(hits) + 1)) / max(hits.sum(), 1))
+
+def labeled_share_at_fraction(comp, scores, fraction):
+    """Share of GT-labeled rows among the top `fraction` of ALL rows (labeled or not)."""
+    order = np.argsort(-np.asarray(scores, dtype=float), kind="stable")
+    top = order[:max(1, int(round(fraction * len(order))))]
+    return float((~np.isnan(comp["label"][top])).mean())
 ```
 
-Scores must be finite for every labeled row; for ranking, put rows whose feature
-is NaN last.
+Scores must be finite for every row (`labeled_share_at_fraction` ranks all rows):
+where a feature is NaN, use a score that ranks the row last.
 
 Report for each feature and for the model:
-- precision at 1%, 2.5%, 5% and 10% of the labeled rows, and the average precision;
+- precision at 1%, 2.5%, 5%, 10%, 15% and 20% of the labeled rows, with the hit
+  counts behind each (`counts=True`): positives are few, so a precision can rest on
+  a handful of hits;
+- the average precision of the out-of-fold scores (all folds pooled);
 - per-fold values;
 - the same numbers for the baselines below;
 - a paired bootstrap 95% interval of the difference to the strongest baseline:
   resample labeled rows with replacement within each fold, 1,000 draws, same draws
   for both scores.
 
+**Labeled versus unlabeled rows.** Only 6,212 of 58,120 rows are labeled (10.7%),
+and they are not a random sample: they lie on or near traced neurons. The ranking that is
+finally used covers all rows, and nothing above shows what a feature does to the
+unlabeled ones. For each feature, also report:
+- `labeled_share_at_fraction` at 1%, 5% and 20% of all rows, next to the overall
+  labeled share (10.7%): a feature that fills the top of the full ranking with
+  unlabeled rows, or only with labeled ones, behaves differently off the traced
+  neurons;
+- how its distribution differs between labeled and unlabeled rows (for example the
+  two-sample Kolmogorov-Smirnov statistic and the medians).
+
+Flag every feature whose labeled and unlabeled distributions differ strongly; it may
+measure "how traced-neuron-like" a candidate is rather than whether it is an error.
+
 **Baselines (compute them yourself from the data):**
-- **Random ranking**: its precision equals the share of label-1 rows.
+- **Random ranking**: its precision equals the share of label 1 among labeled rows.
 - **Junction degree** (higher ranked first). 99.9% of candidates have degree 3, but
   the few with degree >= 4 are enriched in merges, so degree helps at the very top
   of the ranking.
@@ -341,7 +366,10 @@ Report for each feature and for the model:
 
 Use the stronger of degree and cable length as the baseline. A feature is
 interesting if it beats that baseline out of fold with a bootstrap interval above
-zero, or adds to a model that already contains the baseline.
+zero, or adds to a model that already contains the baseline. With 114 positives,
+judge mainly by the average precision and the bootstrap interval; a higher precision
+at 1% alone (about 60 ranked rows, a few hits) is not evidence. Keep the number of
+variants small and report it.
 
 ### Firewall and validity checks
 
@@ -370,9 +398,12 @@ interpretation), so it can be re-run on its own. For each feature you keep:
 2. its precise definition (inputs, scope, formula, constants);
 3. an evidence record:
    - the hypothesis in one or two sentences, from your Phase 1 observations;
-   - out-of-fold precision at 1/2.5/5/10% and AP, with per-fold values and baselines;
+   - out-of-fold precision at 1/2.5/5/10/15/20% with hit counts, and AP, with
+     per-fold values and baselines;
    - bootstrap interval of the difference to the strongest baseline;
    - NaN fraction per label;
+   - labeled share in the top of the full ranking, and the labeled-versus-unlabeled
+     distribution difference;
    - wall time for all rows;
    - how many variants you compared;
    - typical failure cases (top-ranked label-0 rows, missed label-1 rows) as
