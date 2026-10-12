@@ -77,11 +77,16 @@ segmentation is not available and is not needed.
 
 ### Goal
 
-Discover measurable properties of a junction that put true merges ahead of
-non-merges, among the candidates whose label GT can decide. The deliverable is a set
-of features, each written as a deterministic function `describe(context)` of a
-candidate's local fragment geometry and raw image patch, with evidence that it
-ranks well.
+Discover measurable, GT-blind properties of a junction that put true merges ahead
+of non-merges, among the candidates whose label GT can decide. Each property is a
+**feature**: one deterministic value for every companion row.
+
+What happens to your results: every feature you record is later re-run from your
+code on this brain and on other brains, audited statistically, and the features
+that hold up are combined into a detector whose score ranks these same candidates.
+So a feature must be computable from data that exists for any brain (the fragment
+reconstruction, the candidate list and the raw image), and its code must run
+unchanged on another brain's files.
 
 Discover from the data. This document deliberately contains no list of known or
 expected features. Do not import feature ideas from outside the data you were
@@ -96,13 +101,14 @@ works on this brain's folds will not survive that confirmation.
   and labels, to understand what distinguishes merges from non-merges: inspect
   examples, compare distributions, view image patches.
 - **Phase 2, features.** Turn what you learned into features computed **only** from
-  the candidate context (below). Phase 2 features must never read GT, labels,
-  absolute coordinates, or segment/node IDs.
+  the allowed inputs (see Feature definition). Phase 2 features must never read GT
+  or labels, and never use ids or absolute coordinates as values.
 
-### Candidate context
+### Helper code (optional)
 
-A feature sees one candidate through a `context` dictionary. Build it exactly as
-below, so the same feature code can later be run on other brains.
+Two tested pieces for local features: a fragment neighbourhood and a raw-image
+patch around a candidate, combined into a `context` dictionary. They are optional:
+a feature may use any allowed input (see Feature definition).
 
 **Anchor.** `[node_id]` of the junction.
 
@@ -204,7 +210,7 @@ translation against the zarr `multiscales` metadata (`fused.zarr/.zattrs`) once.
 context = {
     "kind": "merge",
     "fragment": neighbourhood_dict,          # as returned above
-    # only when the feature declares image input:
+    # only when an image is requested (array given to make_context):
     "image_available": bool,                 # False if the read failed or the patch is empty
     "image_zyx": np.ndarray,                 # raw fluorescence, original values (no normalization)
     "valid_zyx": np.ndarray(bool),           # True where the voxel is inside the volume
@@ -226,43 +232,47 @@ def make_context(frag, comp, i, array=None, manifest=None, level=0):
     anchors = [int(comp["node_id"][i])]
     fragment, center = neighbourhood(frag, anchors)
     context = {"kind": "merge", "fragment": fragment}
-    if array is not None:                     # only for features that declare image input
+    if array is not None:                     # only when the feature uses the image
         half_width = {0: 16.0, 1: 30.0}[level]
         context.update(image_patch(array, manifest, level, frag.node_xyz[anchors], half_width))
     return context
 ```
 
-### Feature contract
+### Feature definition
 
-Write each family of features as one module:
+**Allowed inputs** for a Phase 2 feature:
+- the whole `fragments_graph`: any node, edge, segment or graph-level structure
+  (lengths, branching, orientation, radii, neighbouring segments), at any distance
+  from the candidate;
+- the candidate columns of the companion that are not labels: `degree`. Node and
+  segment ids may be used to *look up* graph elements;
+- the raw image from the manifest URI, at any level and location.
 
-```python
-DESCRIPTOR = {
-    "kind": "merge",
-    "inputs": "both",             # "geometry", "image" or "both"
-    "image_tier": "level0",       # "level0" or "level1" (ignored for geometry)
-    "feature_names": ["name_one", "name_two"],
-}
+Everything else is excluded (see Firewall and validity checks).
 
-def describe(context):
-    ...
-    return {"name_one": float_value, "name_two": float_value}
-```
+**Shape.** A feature is one value per companion row, in row order: an array of
+length n, for all rows, not only the labeled ones. Use NaN where it is undefined;
+never drop or reorder rows. The same inputs must give identical values.
 
-Rules:
-- `describe` reads only `context`. No files, network, globals carrying data,
-  labels, GT, absolute coordinates, or segment/node IDs. Relative coordinates and
-  local segment ids inside `context` are allowed.
-- Deterministic: the same context gives identical values on every call.
-- Return exactly the declared names, with finite floats or `NaN` (NaN when the
-  quantity is undefined; never infinity).
-- At most 32 names per module, matching `[a-z][a-z0-9_]{1,48}`.
-- Choose the image tier on purpose and say why:
-  - `level0`: finer voxels (0.75 um), smaller field of view (about 32 um);
-  - `level1`: coarser voxels (1.5 um), larger field of view (about 60 um).
-- Do not use quantities that only encode "close to a traced neuron" versus "far
-  from GT". Every evaluated row is already GT-judgeable, so such a quantity cannot
-  help and only signals leakage.
+**State the definition precisely**, because the feature will be re-implemented in a
+detector from your code and your description:
+- **its scope**: a property of the junction itself (candidate scope), or of its
+  whole segment (segment scope: the same value for every junction of that
+  segment);
+- **the formula** with its constants (radii, thresholds, image level and patch
+  size).
+
+**Cost.** It must be computable for every row of a brain (58,120 rows here) within
+hours: share preprocessing across rows (one pass over segments, a KD-tree built
+once, one image read per candidate) and never scan the whole graph per row. Report
+the wall time.
+
+**Code layout.** Write each experiment as a self-contained script that loads the
+three files by their names here (`dataset_cache_794495_mcl100_add.pkl`,
+`rerank_companion_794495_merge.npz` and `rerank_companion_794495_merge.json`) from
+the working directory, computes the feature for all rows, evaluates it and prints
+the results. It will be re-run with another brain's files substituted under the
+same names, so do not hard-code row counts, ids or brain-specific constants.
 
 ### Evaluation
 
@@ -335,10 +345,16 @@ zero, or adds to a model that already contains the baseline.
 
 ### Firewall and validity checks
 
-- **Phase 2 features may not read**: GT graph or GT fields, labels, folds, fit
-  masks, companion IDs or absolute coordinates, `segmentation_path`, or any file.
-  Only `context`.
-- **No availability proxies** (see the feature contract).
+- **Phase 2 features may not read**: the GT graph or any GT field (`gt_*` keys),
+  labels, folds or fit masks, `segmentation_path` or the dense segmentation, or any
+  file other than the three given ones.
+- **No ids or coordinates as values.** Ids may index the graph and absolute
+  coordinates may locate an image patch, but neither may enter a feature value: an
+  id or a position says where in this brain the candidate is, not what it looks
+  like, and does not transfer to another brain.
+- **No availability proxies**: quantities that only encode "close to a traced
+  neuron" versus "far from GT". Every evaluated row is already GT-judgeable, so such
+  a quantity cannot help and only signals leakage.
 - **Images** only from the URI in the companion manifest. Do not open any other
   image path.
 - **Sanity checks to include**: label shuffling within folds (the gain should
@@ -348,18 +364,23 @@ zero, or adds to a model that already contains the baseline.
 
 ### Deliverable
 
-For each feature family you keep:
-1. the module (`DESCRIPTOR` + `describe`) exactly as in the feature contract;
-2. the context-building code you used, if you changed anything in how it is built,
-   with the reason;
+Record each feature as its own experiment (hypothesis, code, numerical result,
+interpretation), so it can be re-run on its own. For each feature you keep:
+1. the script that computes it for all rows and evaluates it (see Code layout);
+2. its precise definition (inputs, scope, formula, constants);
 3. an evidence record:
    - the hypothesis in one or two sentences, from your Phase 1 observations;
    - out-of-fold precision at 1/2.5/5/10% and AP, with per-fold values and baselines;
    - bootstrap interval of the difference to the strongest baseline;
    - NaN fraction per label;
+   - wall time for all rows;
    - how many variants you compared;
    - typical failure cases (top-ranked label-0 rows, missed label-1 rows) as
      companion row indices.
+
+A model of several features is useful evidence (does a feature add to the
+baseline?), but the final model is refitted later, so the features matter more
+than the model.
 
 Also report the negative results: ideas that did not beat the baseline, with their
 numbers.
@@ -369,20 +390,6 @@ numbers.
 ## 3) Dataset schema
 
 ### 3.1 `dataset_cache_794495_mcl100_add.pkl`
-
-**Loading:**
-
-```python
-import json
-import pickle
-import numpy as np
-import agentic_neuron_proofreader  # noqa: F401  registers SkeletonGraph for unpickling
-
-with open("dataset_cache_794495_mcl100_add.pkl", "rb") as f:
-    payload = pickle.load(f)
-frag = payload["fragments_graph"]   # automated reconstruction (Phase 1 and Phase 2)
-gt = payload["gt_graph"]            # human GT (Phase 1 only)
-```
 
 **Install once** (Python >= 3.10; public sources, no credentials):
 
@@ -395,6 +402,20 @@ rebuild the graphs; it pulls in `numpy`, `scipy` and `networkx`, but imports
 `psutil` without declaring it, so install that too. `tensorstore` reads
 the image (§2). If importing raises `numpy.dtype size changed`, numpy and scipy are
 binary-incompatible: install them together in one environment.
+
+**Loading:**
+
+```python
+import json    # for the companion manifest
+import pickle
+import numpy as np
+import agentic_neuron_proofreader  # noqa: F401  registers SkeletonGraph for unpickling
+
+with open("dataset_cache_794495_mcl100_add.pkl", "rb") as f:
+    payload = pickle.load(f)
+frag = payload["fragments_graph"]   # automated reconstruction (Phase 1 and Phase 2)
+gt = payload["gt_graph"]            # human GT (Phase 1 only)
+```
 
 Budget > 20 GB RAM; loading needs no network (under a minute to a few minutes).
 
