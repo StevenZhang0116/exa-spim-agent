@@ -53,6 +53,28 @@ guides use GT-labeled rows; optional `X_unlabeled` for `fit`. Still open:
 - **Unlabeled sample size.** `UNLABELED_ROWS_PER_BRAIN` = 100,000 is a transport bound,
   not tuned.
 
+## 794495 ground truth: cached snapshot is stale; artifacts deleted, rebuild pending (2026-10-13)
+
+**Found.** The 794495 base dataset cache (GT skeletons) dated 2026-08-24 held 19 neurons; GCS
+`ground_truth_tracings/794495/voxel` was re-uploaded on 2026-09-01 with 22 neurons, and all 19
+shared neurons differ from the cache after identical resampling (node counts -6.1% to +2.7%).
+The 2026-09-23 `_add.pkl` reused the stale base cache (`generate_add_caches.py` reuses an
+existing base cache without checking GCS). The other ten brains match GCS neuron by neuron
+(789202 12, 794493 10, 794491 9, 802449 38; the six older-microscope brains by provenance).
+Full inventory: `cache/ground_truth_inventory_20261013.md` (not tracked).
+
+**Done 2026-10-13.** Deleted the stale 794495 artifacts: both dataset caches,
+`feature_tables/794495` (tables and sidecars), `context_cache/794495`, `descriptor_bank/794495`.
+Kept `metrics_out/794495` (June, 19 neurons) and `markdowns/rerank_companion_794495_*` (old tables).
+
+**Open (owner: user).** Rebuild in order on a compute node: `notebooks/generate_add_caches.py
+--brains 794495`, `proofreader_evolve/prepare_feature_tables.py --brains 794495 --mcl 100`,
+`cli.precompute_availability --brains 794495 --mcl 100`, `cli.precompute_context_cache --brains
+794495 --mcl 100 --readers 16 --band-rows 50000 --labeled-extension`, `cli.preflight`. The frozen
+detectors remain fitted on the August snapshot (retraining is a separate decision); 794495
+Precision@K from earlier runs is not comparable with the rebuilt tables. Consider a GCS
+`updated`-time check in `generate_add_caches.py` before reusing a base cache.
+
 ## Context cache misses many GT-labeled rows: NaN descriptors where the metric is measured (2026-10-11)
 
 **Status: done** (code 2026-10-12, builds and verification 2026-10-13; WORKFLOW_REVISION "Labeled extension of the context cache":
