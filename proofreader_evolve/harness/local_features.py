@@ -22,6 +22,9 @@ def _sha(path):
 def select_rows(frame, spec):
     feature = spec['selection_feature']
     if feature not in frame.columns:
+        if feature == 'detector_score':
+            raise ValueError("detector_score is withheld in this run (--detector-prior no-score); set "
+                             "selection_feature to another base predictor column")
         raise ValueError('selection_feature must be an existing base predictor for geometry or image selection')
     values = frame[feature].to_numpy(dtype=float, copy=True)
     priority = -values if spec['selection_largest'] else values

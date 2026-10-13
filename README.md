@@ -336,7 +336,9 @@ python -u -m proofreader_evolve.cli.run_evolution \
 # positives)) (default ratio 2.0; 0 restores one fixed K per kind) and pools with fewer than --min-positives
 # GT positives (default 20) are scored and reported but excluded from the promotion mean (2026-10-12).
 # Controls for attribution: --kind-schedule alternate (strict merge/split rotation),
-# --promotion-gate margin (point-estimate gate), omit --context-cache (no descriptors).
+# --promotion-gate margin (point-estimate gate), omit --context-cache (no descriptors),
+# --detector-prior no-score (withhold the frozen detector score: constant seed, same pools and detector
+# feature columns; with --context-cache every GT-labeled row must be cached; 2026-10-12).
 # Historical in-sample ranking with the detector-fitted TRAIN brain alone:
 python -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495 --validation-brains auto --selection-protocol in_sample \
@@ -384,7 +386,8 @@ fails there instead of failing every generation.
 
 The editable scorer is seeded from `proofreader_evolve/artifacts/scorer.py`:
 `score_candidates(features, ctx)` receives only predictor columns plus the frozen
-`detector_score` and optional custom local geometry features; `ctx` contains the candidate kind. It must return one finite
+`detector_score` and optional custom local geometry features (under `--detector-prior no-score` the
+score column is withheld and the seed is the constant `artifacts/scorer_no_score.py`); `ctx` contains the candidate kind. It must return one finite
 score per row. The harness selects exactly min(K, GT-labeled rows) with deterministic
 tie breaking, where K is the pool's own budget: min(kind cap, ceil(`--k-positive-ratio` x the
 pool's GT positives)), fixed for the run because it depends on labels only. GT labels are

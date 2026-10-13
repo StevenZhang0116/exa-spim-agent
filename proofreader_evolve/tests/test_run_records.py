@@ -97,6 +97,7 @@ class RecordTests(unittest.TestCase):
             self.assertEqual(summary["final_accepted_validation"], .8)
             self.assertEqual(summary["final_policy"], str(root / "best_scorer.py"))
             self.assertEqual(summary["brain_roles"]["train"], ["1"])
+            self.assertEqual(summary["detector_prior"], "frozen")
             (root / "ledger.jsonl").unlink()
             summary = collect(root)
             self.assertEqual(summary["n_generations"], 0)

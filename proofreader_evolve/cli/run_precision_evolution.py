@@ -29,6 +29,7 @@ from . import precompute_error_scores as pc
 from ..harness import fixed_pool_scoring as scoring
 from ..harness.native_pool import cache_path, ensure_native_tables
 from ..harness import label_availability
+from ..harness import detector_prior
 from ..harness.reviser_session import DEFAULT_MODEL, build_options, bind_session_options
 from ..harness.trajectory import Trajectory, log_metrics, save_diffs
 from ..harness.evolution_report import update_report
@@ -94,12 +95,12 @@ def _record_handoff(memory, gen_dir, target_kind, generation, record, trace):
 
 
 async def revise(run_dir, policy_path, rules_path, report_path, model, *,
-                 max_turns=DEFAULT_REVISER_MAX_TURNS, experiments=None):
+                 max_turns=DEFAULT_REVISER_MAX_TURNS, experiments=None, contract=CONTRACT):
     """A fresh SDK session with the existing per-file access guard; no subagents."""
     from claude_agent_sdk import ResultMessage, ClaudeSDKClient
     trace = Trajectory(policy_path.parent)
     options, _ = build_options(model=model, run_dir=run_dir,
-                               system_prompt=CONTRACT, max_turns=max_turns)
+                               system_prompt=contract, max_turns=max_turns)
     readable = []
     if experiments is not None:
         readable = [policy_path.parent / name for name in (
@@ -374,9 +375,10 @@ def parse_args(argv=None):
     p.add_argument("--context-cache", type=Path, default=None,
                    help="Directory built by cli.precompute_context_cache; enables pool-scale agent descriptors "
                         "(plan_descriptor_run / compute_descriptors). Omit to run without them")
-    p.add_argument("--descriptor-bank", type=Path, default=HERE / "descriptor_bank",
+    p.add_argument("--descriptor-bank", type=Path, default=None,
                    help="Persistent cache of computed descriptor values, keyed by descriptor code hash "
-                        "(default: proofreader_evolve/descriptor_bank)")
+                        "(default: proofreader_evolve/descriptor_bank; descriptor_bank_no_score with "
+                        "--detector-prior no-score)")
     p.add_argument("--descriptor-workers", default="auto", metavar="auto|N",
                    help="Parallel sandboxed workers for descriptor computation (default: available CPUs minus 2)")
     p.add_argument("--descriptor-wall-seconds", type=float, default=1800.,
@@ -451,9 +453,24 @@ def parse_args(argv=None):
                    help='Host-owned reviewed image/cache registration receipts for optional image access')
     p.add_argument("--merge-dir", action="append")
     p.add_argument("--split-dir", action="append")
-    p.add_argument("--start-from", type=Path, default=HERE / "artifacts" / "scorer.py")
+    p.add_argument("--start-from", type=Path, default=None,
+                   help="Starting scorer (default: artifacts/scorer.py, the frozen detector score; "
+                        "artifacts/scorer_no_score.py with --detector-prior no-score)")
+    p.add_argument("--detector-prior", choices=detector_prior.MODES, default="frozen",
+                   help="frozen (default): detector_score is a predictor and the default seed; no-score: "
+                        "ablation that withholds the frozen detector score from scorers, training programs, "
+                        "descriptors and the reviser (same pools, detector feature columns, labels, K, brains)")
     p.add_argument("--runs-dir", type=Path, default=HERE / "runs")
     args = p.parse_args(argv)
+    no_score = args.detector_prior == "no-score"
+    if args.start_from is None:
+        args.start_from = HERE / "artifacts" / ("scorer_no_score.py" if no_score else "scorer.py")
+    frozen_bank = HERE / "descriptor_bank"
+    if args.descriptor_bank is None:
+        args.descriptor_bank = HERE / "descriptor_bank_no_score" if no_score else frozen_bank
+    elif no_score and args.descriptor_bank.resolve() == frozen_bank.resolve():
+        p.error("--detector-prior no-score needs its own --descriptor-bank: cached values in the default bank "
+                "may have been computed from detector_score")
     if set(args.train_brains) & set(args.validation_brains or []):
         p.error("Train and validation brains must be disjoint")
     if args.selection_brains is not None and set(args.selection_brains) - set(args.train_brains):
@@ -624,6 +641,12 @@ def _restore_descriptors(args, banks, kinds, parent_sources, descriptor_runs, bu
             raise ValueError('descriptors.json program hash mismatch')
         programs[code] = {'program': program, 'spec': spec}
     columns = {c: registry['columns'][c] for c in required}
+    if detector_prior.enabled(args):
+        for column, record in columns.items():
+            if record['scope'] not in detector_prior.NO_SCORE_DESCRIPTOR_SCOPES:
+                raise ValueError(f"Descriptor column {column} uses scope {record['scope']!r}, a detector-rank "
+                                 "window; --detector-prior no-score accepts all_cached only")
+            detector_prior.check_source(programs[record['code_sha256']]['program'], f'Descriptor column {column}')
     for code in {record['code_sha256'] for record in columns.values()}:
         program, spec = programs[code]['program'], programs[code]['spec']
         scope = next(record['scope'] for record in columns.values() if record['code_sha256'] == code)
@@ -675,10 +698,16 @@ def _auxiliary_ablation(args, protocol, kinds, run_dir, fit_limits, trace):
     return results
 
 
+def _contract(args):
+    """System prompt and seed rules; the ablation appends what is withheld."""
+    return CONTRACT + detector_prior.NOTICE if detector_prior.enabled(args) else CONTRACT
+
+
 async def run(args, revise_fn=None):
     """Budgeted TRAIN search followed by mean-validation promotion; by default the mean gain
     must also clear paired-bootstrap resampling noise."""
-    revise_fn = partial(revise, max_turns=args.reviser_max_turns) if revise_fn is None else revise_fn
+    if revise_fn is None:
+        revise_fn = partial(revise, max_turns=args.reviser_max_turns, contract=_contract(args))
     args.runs_dir.mkdir(parents=True, exist_ok=True)
     run_dir = Path(tempfile.mkdtemp(prefix="precision_" + datetime.now().strftime("%Y%m%d_%H%M%S_"),
                                    dir=args.runs_dir)).resolve()
@@ -710,6 +739,7 @@ async def _run(args, revise_fn, run_dir, trace):
     attach_local_context(banks, run_dir / 'local_feature_cache', trace)
     image_store = attach_image_context(banks, run_dir / 'image_cache', args.image_alignment, trace)
     _write(run_dir / 'image_alignment.json', {'brains': image_store.reviews})
+    selection["detector_prior"] = getattr(args, "detector_prior", "frozen")
     _write(run_dir / "dataset_split.json", selection)
     trace.emit("promotion_rule", "Promotion uses the mean validation Precision@K only (each kind averaged over "
                "the pools that count toward the mean, then kinds averaged; each pool at its own K); "
@@ -757,7 +787,29 @@ async def _run(args, revise_fn, run_dir, trace):
             trace.emit("label_availability_warning", "K exceeds half of the GT-labeled rows; Precision@K there "
                        "approaches the labeled base rate: " + "; ".join(crowded), cells=crowded)
     artifact_store = run_dir / "model_artifacts"
+    no_score = detector_prior.enabled(args)
+
+    def frozen_baseline():
+        # The original frozen-score comparator, recorded even when resuming from a custom policy.
+        baseline_source = (HERE / "artifacts" / "scorer.py").read_text()
+        trace.emit("baseline_evaluation", "Evaluating frozen detector-score baseline")
+        result = {"train": scoring.evaluate(baseline_source, train, budgets, args.policy_time_budget, memory_mb=args.classifier_memory_mb),
+                  "validation": scoring.evaluate(baseline_source, validation, budgets, args.policy_time_budget, memory_mb=args.classifier_memory_mb)}
+        log_metrics(trace, "Baseline train", result["train"])
+        log_metrics(trace, "Baseline validation", result["validation"])
+        return result
+
+    baseline, stripped_cells = None, []
+    if no_score:
+        # Measure the host comparator first, then withhold the score from everything downstream.
+        baseline = frozen_baseline()
+        stripped_cells = detector_prior.strip(banks)
+        trace.emit("detector_prior", f"Ablation --detector-prior no-score: detector_score withheld from "
+                   f"{len(stripped_cells)} tables; seed {args.start_from.name}",
+                   **detector_prior.describe(args, stripped_cells))
     source = args.start_from.read_text()
+    if no_score:
+        detector_prior.check_source(source, f"Starting scorer {args.start_from}")
     parent_sources = components(source)
     available = set.intersection(*(set(bank.tables) for bank in banks.values()))
     kinds = [k for k in ("merge", "split") if k in available]
@@ -776,14 +828,19 @@ async def _run(args, revise_fn, run_dir, trace):
                **protocol.describe())
     descriptor_runs, restored_descriptors = None, None
     if args.context_cache is not None:
-        cache = ContextCache(args.context_cache)
+        cache = ContextCache(args.context_cache, expose_band=not no_score)
+        if no_score:
+            detector_prior.check_context_coverage(cache, banks, kinds)
         entries = {}
         for brain, bank in banks.items():
             for kind in kinds:
                 entries[f"{brain}/{kind}"] = cache.entry(bank.tables[kind]).summary()
-                DescriptorRuns.register_context_column(bank.tables[kind], cache.entry(bank.tables[kind]))
+                if not no_score:
+                    DescriptorRuns.register_context_column(bank.tables[kind], cache.entry(bank.tables[kind]))
         descriptor_runs = DescriptorRuns(cache, args.descriptor_bank, workers=args.descriptor_workers,
                                          memory_mb=args.classifier_memory_mb, trace=trace)
+        if no_score:
+            descriptor_runs.allowed_scopes = detector_prior.NO_SCORE_DESCRIPTOR_SCOPES
         trace.emit("context_cache", f"Context cache attached for {len(entries)} brain/kind entries; "
                    f"{descriptor_runs.workers} descriptor workers", entries=entries,
                    workers=descriptor_runs.workers, bank=str(args.descriptor_bank))
@@ -809,13 +866,8 @@ async def _run(args, revise_fn, run_dir, trace):
     parent_validation = scoring.evaluate(source, validation, budgets, args.policy_time_budget,
                                          state=parent_validation_state, artifact_store=artifact_store, memory_mb=args.classifier_memory_mb)
     log_metrics(trace, "Seed validation", parent_validation)
-    # Record the original frozen-score comparator even when resuming from a custom policy.
-    baseline_source = (HERE / "artifacts" / "scorer.py").read_text()
-    trace.emit("baseline_evaluation", "Evaluating frozen detector-score baseline")
-    baseline = {"train": scoring.evaluate(baseline_source, train, budgets, args.policy_time_budget, memory_mb=args.classifier_memory_mb),
-                "validation": scoring.evaluate(baseline_source, validation, budgets, args.policy_time_budget, memory_mb=args.classifier_memory_mb)}
-    log_metrics(trace, "Baseline train", baseline["train"])
-    log_metrics(trace, "Baseline validation", baseline["validation"])
+    if baseline is None:
+        baseline = frozen_baseline()
     baseline["auxiliary_ablation"] = _auxiliary_ablation(args, protocol, kinds, run_dir, fit_limits, trace)
     manifest = {"objective": scoring.SCORING_VERSION, "accounting_semantics": "per_generation",
                 "budgets": budgets.describe(), "pool_budgets": pool_budgets,
@@ -830,6 +882,7 @@ async def _run(args, revise_fn, run_dir, trace):
                                                          "of the paired mean delta must exceed zero",
                                                  "affects_decision": args.promotion_gate == "bootstrap"}},
                 "dataset_selection": selection,
+                "detector_prior": detector_prior.describe(args, stripped_cells),
                 "labels": {"semantics": "three-valued: 1 = error, 0 = GT-confirmed no error, NaN = not "
                                         "judgeable by GT; ranking, metrics, bootstrap and fitting use labeled rows",
                            "version": label_availability.AVAILABILITY_VERSION,
@@ -899,7 +952,7 @@ async def _run(args, revise_fn, run_dir, trace):
     _write(run_dir / "manifest.json", manifest)
     _write(run_dir / "baseline.json", baseline)
     _write(run_dir / "seed.json", {"train": parent_train, "validation": parent_validation})
-    rules = {kind: CONTRACT for kind in kinds}
+    rules = {kind: _contract(args) for kind in kinds}
     memory = ExperimentMemory(run_dir, train=train, protocol=protocol, fit_limits=fit_limits,
                               descriptor_runs=descriptor_runs)
     if restored_descriptors is not None:

@@ -27,7 +27,8 @@ def subset_features(frame, indices, *, missing_row=False):
         attrs['_image_rows'] = {new: rows[int(old)] for new, old in enumerate(indices) if int(old) in rows}
     if missing_row:
         missing = pd.DataFrame(np.nan, index=[0], columns=frame.columns)
-        missing['detector_score'] = 0.
+        if 'detector_score' in missing:
+            missing['detector_score'] = 0.
         if 'image_available' in missing:
             missing['image_available'] = 0.
         result.attrs = {}

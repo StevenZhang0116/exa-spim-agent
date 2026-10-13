@@ -1188,10 +1188,11 @@ class TrainingExperiments:
 
     def compute_descriptors(self, scope='pilot'):
         """Run describe over the cached rows of every TRAIN brain; register the columns."""
-        if scope not in DESCRIPTOR_SCOPES:
-            raise ValueError(f'scope must be one of {DESCRIPTOR_SCOPES}')
-        program, spec = self._read_descriptor()
         runs = self.memory.descriptor_runs
+        allowed = getattr(runs, 'allowed_scopes', DESCRIPTOR_SCOPES)  # all_cached only under --detector-prior no-score
+        if scope not in allowed:
+            raise ValueError(f'scope must be one of {tuple(allowed)}')
+        program, spec = self._read_descriptor()
         tables = self._descriptor_tables()
         cached = all(runs.cached(table, spec, scope, self._k(self.target_kind, table.truth))
                      for table in tables.values())

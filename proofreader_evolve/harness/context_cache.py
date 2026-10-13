@@ -571,6 +571,8 @@ class ContextEntry:
     The window holds `CHUNK_WINDOW` chunks, enough for the consecutive batches of a
     full worker pool; `release()` drops the window once a run is over.
     """
+    expose_band = True  # False under --detector-prior no-score: contexts omit row_in_band
+
     def __init__(self, directory, manifest):
         self.directory, self.manifest = Path(directory), manifest
         self.rows = np.load(self.directory / 'rows.npy', allow_pickle=False)
@@ -689,7 +691,8 @@ class ContextEntry:
                 fragment.update(nodes_zyx=nodes.tolist(),
                                 inside_patch=((nodes >= 0) & (nodes < patch['shape_zyx'])).all(axis=1).tolist())
             values = frame.iloc[row]
-            contexts.append({'kind': table.kind, 'row_in_band': bool(self.position[row] < self.band_rows),
+            in_band = {'row_in_band': bool(self.position[row] < self.band_rows)} if self.expose_band else {}
+            contexts.append({'kind': table.kind, **in_band,
                              'features': {str(k): float(v) if np.isfinite(v) else None for k, v in values.items()},
                              'fragment': fragment, 'radius_um': geometry['radius_um'],
                              'level': tier_info.get('level'), 'channel': tier_info.get('channel'),
@@ -711,10 +714,11 @@ class ContextEntry:
 
 
 class ContextCache:
-    def __init__(self, root):
+    def __init__(self, root, *, expose_band=True):
         self.root = Path(root)
         if not self.root.is_dir():
             raise FileNotFoundError(f'Context cache directory does not exist: {self.root}')
+        self.expose_band = expose_band
         self._entries = {}
 
     def entry(self, table):
@@ -739,6 +743,7 @@ class ContextCache:
                 if not path.is_file() or path.stat().st_size != chunk['bytes']:
                     raise ValueError(f'Context cache chunk missing or resized: {path}')
         entry = ContextEntry(directory, manifest)
+        entry.expose_band = self.expose_band
         self._entries[key] = entry
         return entry
 

@@ -36,6 +36,12 @@ def resolve_run_dir(arg):
     return max(matches, key=lambda p: p.stat().st_mtime)
 
 
+def _detector_prior(run_dir):
+    # Runs before 2026-10-12 have no field: they all used the frozen detector score.
+    prior = records.read_json(run_dir / "manifest.json", {}).get("detector_prior") or {}
+    return prior.get("mode", "frozen")
+
+
 def collect(run_dir):
     run_dir = Path(run_dir)
     rows = records.load_ledger(run_dir)
@@ -53,6 +59,7 @@ def collect(run_dir):
     return {
         "run_id": run_dir.name, "run_dir": str(run_dir), "objective": version,
         "metric": records.METRIC_NAME, "brain_roles": _roles(run_dir),
+        "detector_prior": _detector_prior(run_dir),
         "n_generations": len(rows), "n_accepted": len(accepted),
         "accepted_generations": [r["generation"] for r in accepted],
         "baseline_validation": baseline, "final_accepted_validation": final,

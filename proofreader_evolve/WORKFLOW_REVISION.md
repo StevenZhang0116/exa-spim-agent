@@ -136,6 +136,44 @@ accepted parent's full-precision measurements. TRAIN feedback's `parent_train` a
 `ranking_delta` and `failure_cases.json` describe the exploration branch (v17);
 `search_plan.json` identifies the branch.
 
+### Detector-prior ablation `--detector-prior no-score` (2026-10-12)
+
+**Question.** How much of the final development-validation Precision@K comes from the
+frozen detector model? Every run so far started from `detector_score` and kept it as a
+predictor, so the evolved gains cannot be separated from the frozen ranking. Plan:
+[plans/no_detector_score_ablation.md](plans/no_detector_score_ablation.md).
+
+**Rule.** `--detector-prior no-score` keeps the detector-native pools, the detector's
+feature columns (computed quantities, not fitted), labels, K, brain roles, budgets and the
+promotion gate, and withholds the frozen ranking from everything the reviser, its
+scorers, training programs and descriptors see. Replacing only the seed (`--start-from`)
+is not this ablation: the column would stay available and the contract invites its use.
+The frozen score reached the agent through more than the column:
+
+| Path | Treatment |
+|---|---|
+| `detector_score` in `table.features` | Dropped in memory after the host measures the frozen baseline (`detector_prior.strip`; table files, digests and `native_pool.py` unchanged); a host-only copy stays on `table.host_detector_score` |
+| `bank_context_available` (1 inside the detector band) | Not registered |
+| `row_in_band` in descriptor contexts | Omitted (`ContextCache(expose_band=False)`) |
+| Descriptor scopes `pilot` / `boundary` (detector-rank windows) | Refused; `all_cached` only (`DescriptorRuns.allowed_scopes`) |
+| Descriptor coverage = band without a labeled extension | `--context-cache` requires every entry to cache all GT-labeled rows, else the run stops before any LLM call |
+| Local / image `selection_feature` default `detector_score` | Fails with a message to name another base column |
+| Preflight all-missing row sets `detector_score=0` | Only when the column exists |
+| Descriptor bank values computed with the score | Separate default bank `descriptor_bank_no_score/`; the frozen default bank is refused |
+| Contract and guides mention the score | `detector_prior.NOTICE` appended to the system prompt and seed rules |
+| Starting scorer / restored descriptors | Default seed `artifacts/scorer_no_score.py` (constant); sources naming a withheld column, and restored descriptors from a detector-rank scope, are refused |
+
+The constant seed ranks GT-labeled rows by candidate identity, a label-independent
+order. The frozen baseline is still measured (first, on the unstripped tables) and
+reported as the host-only comparator; `manifest.json` (`detector_prior`),
+`dataset_split.json` and the report header record the mode. `frozen` (default) is
+unchanged.
+
+**Interpretation.** Compare absolute final validation Precision@K and the per-generation
+trajectory against a reference run with the same brains, K and budgets; promotion counts
+are not comparable (early promotions over a constant seed are easy). 794495 stays in TRAIN
+so the only difference is the prior. Project-specific design; no literature source.
+
 ### Labeled extension of the context cache (2026-10-12)
 
 **Motivation (TODO.md "Context cache misses many GT-labeled rows", measured 2026-10-11).**
@@ -183,7 +221,7 @@ measured (their split pools reach 1.9M rows). At the measured rate (about 18 min
 rows per tier with 16 readers) each cell costs minutes, the eleven brains one to a few hours
 serially. Frozen inference (`all_cached`) grows by the same rows, about 15% per brain.
 
-**Build and verification (owner: user).** One brain at a time, as before:
+**Build and verification.** One launcher call, one brain per subprocess:
 
 ```bash
 python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802449 789202 794493 794491 \
@@ -191,10 +229,14 @@ python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802
 # then 747807 750318 751473 754610 754612 754613 the same way; preflight then shows extension_rows per cell
 ```
 
-Before the next run, re-measure the coverage table in TODO.md (every labeled row cached),
-and rerun one registered descriptor to confirm band-row values are byte-identical to the
-band-only result. Split numbers after the extension are not comparable with earlier runs
-(descriptors reach rows they never saw), so the seed baseline of the next run is the
+Built 2026-10-13 by the user on n268 (`log/context_cache_labeled_extension_20261012.log`): 22 cells in
+8,291 s, 18 entries extended by 40 to 11,649 rows (802449 merge: 11,649, because `segment_on_gt` labels
+29,200 merge rows there), the four whole-pool entries unchanged, common prefix = band everywhere, 0 new
+image failures, cache 117 GB. Verified the same day (see the evidence log): every GT-labeled row of every
+cell is cached, sampled contexts load at both tiers with the right `row_in_band`, preflight reports
+`extension_rows` per cell, and two registered descriptors recomputed on 802449 are byte-identical to the
+band-only results on all 50,000 band rows. Split numbers after the extension are not comparable with
+earlier runs (descriptors reach rows they never saw), so the seed baseline of the next run is the
 reference.
 
 ### Split cap raised to 1000 (2026-10-12)
@@ -1068,6 +1110,8 @@ python -m proofreader_evolve.cli.run_evolution \
   --merge-k 300 --split-k 1000 --generations 20 \
   --context-cache proofreader_evolve/context_cache --descriptor-workers auto
 # Kinds are allocated adaptively by default; add --kind-schedule alternate for strict rotation.
+# Ablation without the frozen detector score: add --detector-prior no-score (constant seed, own descriptor
+# bank; with --context-cache every GT-labeled row must be cached: the labeled extension, built 2026-10-13).
 # On a compute node, request the CPUs you want (e.g. srun/sbatch --cpus-per-task=32 --mem=120G);
 # --descriptor-workers auto uses the granted CPUs minus 2. Omit --context-cache for the control run.
 # Historical in-sample ranking for attribution (single detector-fitted TRAIN brain):
@@ -1123,6 +1167,8 @@ pool size or positive counts. This equals the cell macro average for complete
 merge/split tables. Pool identity,
 labels, budgets, frozen weights and base feature definitions cannot change within a
 run. Returning fewer rows cannot improve precision. Ties do not pass the gate.
+Under `--detector-prior no-score` the `features` frame has no `detector_score` column and the
+seed is the constant `artifacts/scorer_no_score.py`; everything else in this contract holds.
 
 ## Local fragment context
 
@@ -1309,6 +1355,10 @@ CodeAct relationship are recorded below; discovery benefit is still unmeasured.
 - `harness/context_cache.py`, `cli/precompute_context_cache.py`: persistent, label-free
   fragment-neighbourhood and image-patch contexts for the detector-ranked band and, with
   `--labeled-extension`, for the GT-labeled rows outside it.
+- `harness/detector_prior.py`, `artifacts/scorer_no_score.py`: the `--detector-prior no-score`
+  ablation (withholds `detector_score`, `bank_context_available` and `row_in_band`, keeps a
+  host-only copy for the frozen baseline, refuses sources naming them, checks that the context
+  cache covers every GT-labeled row) and its constant seed.
 - `harness/descriptor_contract.py`, `harness/descriptor_runs.py`: the `descriptor.py`
   contract, parallel sandboxed pool-scale computation, code-hash result caching,
   column registration and host-only label summaries.
@@ -1354,7 +1404,8 @@ training.py, scorer manifest and training_summary.json, or a failed-fit result,
 plus `selection_folds/foldN/` fold models under the `grouped_oof` protocol.
 `descriptor_plans/planNNN.json` and `descriptor_runs/runNNN/` keep each descriptor
 timing and computation (code, spec, per-brain worker logs, result); computed values
-live in the shared, code-hash-keyed `descriptor_bank/` outside the run directory.
+live in the shared, code-hash-keyed `descriptor_bank/` outside the run directory
+(`descriptor_bank_no_score/` under `--detector-prior no-score`).
 Run-level `model_artifacts/<digest>/` stores the model files referenced by those
 manifests. Every generation also saves training.py, model_environment.json,
 analysis.py and analysis_request.json. Direct analyses save immutable per-call
@@ -1564,7 +1615,8 @@ records the motivating run and the original proposals.
 
 | Date / version | Change and motivation | Verification / future evidence |
 |---|---|---|
-| 2026-10-12 / labeled extension of the context cache | `precompute_context_cache --labeled-extension` appends the GT-labeled rows outside the detector band (`segment_on_gt`) after the band; `pilot` / `boundary` read the band block, `all_cached` both; `bank_context_available` marks the band only; `ContextCacheBuilder._grow` generalises `extend_band` (common-prefix chunk reuse) and `extend_labeled` is its second caller; manifest `extension_rows` / `extension`; identity key extended only for entries with an extension. Motivation: 29% to 73% of labeled split rows lay outside the band (selection brain 802449: 55% of labeled split rows, 34% of positives), so descriptors were NaN on the rows the metric ranks most needs. See "Labeled extension of the context cache". | New `LabeledExtensionTests` (4 tests: band chunks kept byte-for-byte and band contexts unchanged, extension rows appended in row order, scopes and the context column confined to the band, manifest-only no-op on repeat, rebuild from the band on different rows, band growth after the extension keeps every labeled row cached, descriptor values finite on every labeled row and NaN only on unlabeled out-of-band rows, bank entries recomputed once, CLI flag pass-through / exclusions / sidecar reading). Module run on n268 (`test_descriptor_compute` + `test_label_availability`): 47 tests, two failures from miscounted expectations in the new tests themselves (the code kept a longer common prefix than the test assumed, and the grown band absorbs four, not five, extension rows), corrected (`log/labeled_extension_module_tests.log`); the class re-run: 4 OK (`log/labeled_extension_class_tests.log`); full suite on n268: 340 tests, one failure unrelated to this change, `test_train_search.TrainingSearchTests.test_grid_restores_measured_winner_and_cache_is_free` returned `no_successful_candidate` while the suite ran 2424 s against 1897 s an hour earlier on the shared node (`log/labeled_extension_full_tests_20261012.log`); the module re-run alone passed, 29 tests OK (`log/labeled_extension_train_search_rerun.log`). No cache was rebuilt in this revision; the extension builds and the coverage re-measurement are the user's next step. A follow-up wording pass the same evening replaced the remaining band-only phrasing (the `compute_descriptors` tool description, `descriptor_template.py`, `artifacts/descriptors/README.md`, module and TODO notes), corrected the brain count to eleven (751473 has complete tables, sidecars and caches), marked the 2026-10-08 band growth as built (all 22 entries at 50,000 rows or the whole pool), and restricted `plot_error_contexts.labelled_band_rows` and its rank header to the band so extension rows are not shown with a cache position as their detector rank; `test_descriptor_compute` + `test_positive_scaled_k` re-run on n268: 37 tests OK (`log/stale_wording_tests_20261012.log`). |
+| 2026-10-12 / detector-prior ablation `--detector-prior no-score` | Ablation mode that withholds the frozen `detector_score` (and `bank_context_available`, `row_in_band`) from scorers, training data, descriptors and the reviser while keeping the detector feature columns; constant seed `artifacts/scorer_no_score.py`, separate `descriptor_bank_no_score/`, descriptors restricted to `all_cached`, context cache must cover every GT-labeled row. The host still evaluates the Frozen detector baseline on the unstripped tables before the column is dropped. Motivation: measure how much final validation Precision@K comes from the frozen detector ([plans/no_detector_score_ablation.md](plans/no_detector_score_ablation.md)). Default `frozen` is unchanged. | Full suite on n268 2026-10-13: 348 tests OK (8 new in `tests/test_detector_prior.py`), log `notebooks/log/proofreader_evolve_tests_detector_prior.log`; after adding `detector_prior` to `collect_run` and the stale-doc pass, `test_detector_prior`, `test_run_records` and `test_evolution_report` re-run on n268: 30 tests OK. No real ablation run yet; the gap between frozen and no-score final validation precision is unmeasured. |
+| 2026-10-12 / labeled extension of the context cache | `precompute_context_cache --labeled-extension` appends the GT-labeled rows outside the detector band (`segment_on_gt`) after the band; `pilot` / `boundary` read the band block, `all_cached` both; `bank_context_available` marks the band only; `ContextCacheBuilder._grow` generalises `extend_band` (common-prefix chunk reuse) and `extend_labeled` is its second caller; manifest `extension_rows` / `extension`; identity key extended only for entries with an extension. Motivation: 29% to 73% of labeled split rows lay outside the band (selection brain 802449: 55% of labeled split rows, 34% of positives), so descriptors were NaN on the rows the metric ranks most needs. See "Labeled extension of the context cache". | New `LabeledExtensionTests` (4 tests: band chunks kept byte-for-byte and band contexts unchanged, extension rows appended in row order, scopes and the context column confined to the band, manifest-only no-op on repeat, rebuild from the band on different rows, band growth after the extension keeps every labeled row cached, descriptor values finite on every labeled row and NaN only on unlabeled out-of-band rows, bank entries recomputed once, CLI flag pass-through / exclusions / sidecar reading). Module run on n268 (`test_descriptor_compute` + `test_label_availability`): 47 tests, two failures from miscounted expectations in the new tests themselves (the code kept a longer common prefix than the test assumed, and the grown band absorbs four, not five, extension rows), corrected (`log/labeled_extension_module_tests.log`); the class re-run: 4 OK (`log/labeled_extension_class_tests.log`); full suite on n268: 340 tests, one failure unrelated to this change, `test_train_search.TrainingSearchTests.test_grid_restores_measured_winner_and_cache_is_free` returned `no_successful_candidate` while the suite ran 2424 s against 1897 s an hour earlier on the shared node (`log/labeled_extension_full_tests_20261012.log`); the module re-run alone passed, 29 tests OK (`log/labeled_extension_train_search_rerun.log`). No cache was rebuilt in this revision; the extension builds and the coverage re-measurement are the user's next step. A follow-up wording pass the same evening replaced the remaining band-only phrasing (the `compute_descriptors` tool description, `descriptor_template.py`, `artifacts/descriptors/README.md`, module and TODO notes), corrected the brain count to eleven (751473 has complete tables, sidecars and caches), marked the 2026-10-08 band growth as built (all 22 entries at 50,000 rows or the whole pool), and restricted `plot_error_contexts.labelled_band_rows` and its rank header to the band so extension rows are not shown with a cache position as their detector rank; `test_descriptor_compute` + `test_positive_scaled_k` re-run on n268: 37 tests OK (`log/stale_wording_tests_20261012.log`). Build 2026-10-13 (user, n268, `log/context_cache_labeled_extension_20261012.log`): eleven brains in one launcher call, 22 cells in 8,291 s, 18 entries extended by 40 to 11,649 rows, four whole-pool entries unchanged, common prefix = band everywhere, 0 new image failures, cache 117 GB. Verification 2026-10-13 on n268: structural and read checks over all 22 entries passed (`log/labeled_extension_verify_20261013.log`: extension = `segment_on_gt` rows minus band, band order unchanged, digests and chunk counts, 100% of GT-labeled rows and positives cached under both definitions, sampled band and extension contexts at both tiers with the right `row_in_band`); `preflight --context-cache` passed with `extension_rows` per cell (`log/preflight_labeled_extension_20261013.log`); two registered descriptors of run `precision_20261011_235340_phg8xri5` recomputed on 802449 (merge geometry 18 names in 285 s, split level-0 image 7 names in 595 s, 6 workers) are byte-identical to the band-only bank values on all 50,000 band rows and finite on the extension rows (`log/labeled_extension_descriptor_compare_20261013.log`). The post-build coverage table is in TODO.md. |
 | 2026-10-12 / split cap 1000 | `--split-k` default 500 to 1000; merge cap 300 and the v3 per-pool K rule unchanged. Motivation: in `precision_20261011_235340_phg8xri5` the accepted split scorer saturated the 500-row window (selection brain 802449 out-of-fold Precision@500 0.980 champion / 0.978 generation-20 candidate, 490 / 489 hits; validation pools 0.916 to 0.984 with 10 to 46% recall), so split candidates differed by a handful of hits and generation 13 passed selection but lost on the validation brains. Every split pool has at least 1,020 GT positives, so each ranks exactly 1,000 rows at ratio 2.0. See "Split cap raised to 1000". | Default-only change. `tests/test_positive_scaled_k.py` asserts the parsed default caps (merge 300, split 1000). Full suite on n268: 336 tests OK (`log/split_cap_1000_full_tests_20261012.log`; module re-run `log/split_cap_1000_positive_scaled_k.log`, 14 OK). Frozen-baseline Precision@1000 is below Precision@500 (TODO.md sweep: 0.86 / 0.74 / 0.71 / 0.89 against 0.88 / 0.81 / 0.76 / 0.89), so split numbers at K = 1000 are not comparable with earlier runs; the next run's seed baseline is the reference. |
 | 2026-10-12 / unchanged submissions and descriptor chunk loading | A submission whose component is byte-identical to the accepted component of its kind skips descriptor inference and the validation evaluation; the generation ends as `unchanged` (ledger `submission_unchanged`, gate `skipped`, trajectory `unchanged_submission`, report status `unchanged`, handoff host status `unchanged_submission`). `ContextEntry._chunk` loads under a per-entry lock with a 12-chunk window and `release()`; `DescriptorRuns.compute` releases the entry after each run and records `chunk_loads`. Motivation: run `precision_20261011_235340_phg8xri5` generations 14 and 18 resubmitted the reference unchanged and were still evaluated; frozen inference of a new descriptor took about seven minutes per validation brain with 8.3 of 14 workers effective and 105 chunk loads for about 22 distinct chunks. See "Unchanged submissions and descriptor chunk loading". | New `tests/test_unchanged_submission.py` (3 tests: skip and bookkeeping, changed submission still evaluated, status vocabulary); `test_research_evidence` expectation updated (two outer evaluations instead of four, since its restored-parent generations are now unchanged). Focused modules on n268: 76 tests, 1 failure (the old expectation; `log/unchanged_submission_focused_tests_rerun.log`), then 21 OK (`log/unchanged_submission_research_evidence_rerun.log`). Full suite on n268: 336 tests OK in 1254 s (`log/unchanged_submission_full_tests_20261012.log`); `test_descriptor_compute` with the added chunk-load assertions re-run afterwards, 19 OK (`log/unchanged_submission_descriptor_compute_rerun.log`). A stale-text pass afterwards found the search digest (`plot_search_dynamics._outcome_reason`) still labelling unchanged generations `rejected` and the pipeline diagram without the unchanged branch; both fixed, `test_run_records` asserts the digest outcome, 22 tests OK (`log/unchanged_submission_run_records_rerun.log`). Measured inference slice (747807 split, 42 batches, 14 workers): 114.1 s / 105 loads / 8.3 effective workers before, 89.9 and 87.3 s / 22 loads / 9.3 and 8.9 after. No evolution run yet. |
 | 2026-10-12 / per-pool Top-K from GT positives (objective v3) | `--merge-k` / `--split-k` become per-kind caps; each pool ranks `K = min(cap, ceil(--k-positive-ratio x GT positives))` (default 2.0) and pools with fewer than `--min-positives` (default 20) GT positives are reported but excluded from the promotion mean, bootstrap and kind headroom; the mean is kind-first over counted brains (equal to the former equal-brain mean when every pool counts). Motivation: in `precision_20261011_230334_62sb04xi` and `precision_20261011_234710_sssj3jpw` (identical settings, final 0.5039 / 0.5050) the nine validation merge pools at K = 300 had ceilings 0.030 to 0.293, three of them (9 to 17 positives) were already at their ceiling with one third of the merge weight, and late generations were rejected on one- or two-hit gains. See "Per-pool Top-K from GT positives". Versions `*-v3-positive-scaled-k`; v2 records stay readable, not comparable. | New `tests/test_positive_scaled_k.py`: 14 tests OK on n268 (`log/positive_scaled_k_new_tests.log`). Directly affected modules (scoring, mean, bootstrap, schedule, selection, records, report, feedback, availability, image scoring, trajectory): 117 tests OK (`log/positive_scaled_k_batch1_tests.log`). Full suite on n268: 333 tests, one error (`log/positive_scaled_k_full_tests_20261012.log`) caused by the test edit itself (the `--min-positives 0` opt-out had also been inserted into a `precompute_context_cache` CLI call in `test_descriptor_compute.py`); after reverting that one line the module passes, 19 tests OK (`log/positive_scaled_k_descriptor_compute_rerun.log`), so every suite test passes. A follow-up wording pass (agent guides, `promotion_rule` trace, `--precision-margin` help, selection-protocol scope text and version, research/ablation identities, coverage message) re-ran the 12 touched modules: 148 tests, two failures in `test_image_scoring` (`log/positive_scaled_k_batch2_tests.log`) from one leftover variable name in `plan_image_scoring` after its K variable was renamed; fixed, module re-run 15 tests OK (`log/positive_scaled_k_image_scoring_rerun.log`). A static undefined-name check over the changed modules is recorded in `log/positive_scaled_k_pyflakes.log`. Expected effect with the current tables (labels only, no run): validation merge K 58 to 176 with ceiling 0.5 on six brains, 754610 / 754612 / 754613 merge excluded, every split K 500, selection brain 802449 merge K 300. Future evidence: re-score both 2026-10-11 best scorers under v3 (`run_evolution --generations 0 --start-from <run>/best_scorer.py`) before the next trial. |
@@ -1688,6 +1740,13 @@ extension (`LabeledExtensionTests`, 2026-10-12: labeled rows outside the band ap
 it with band chunks and contexts unchanged, scopes and `bank_context_available` confined to
 the band, repeat as a manifest-only no-op, band growth after the extension, descriptor
 values on every labeled row, `--labeled-extension` pass-through and sidecar reading).
+`tests/test_detector_prior.py` (2026-10-12) covers `--detector-prior no-score`: mode-dependent
+seed and bank defaults and the refused frozen bank, one strip per shared table with a host copy,
+refusal of sources naming a withheld column, the preflight missing row without the score,
+context-cache coverage and the hidden `row_in_band`, a driver run whose agent-visible JSON files
+carry neither `detector_score` nor `bank_context_available` while the baseline still uses the
+frozen score (manifest, `dataset_split.json` and `collect_run` record the mode), a refused seed
+that reads the score, and a context-cache run that accepts only the `all_cached` scope.
 These cases were initially left unexecuted in v8. In the subsequent v9 image
 revision, `test_image_context`, `test_feature_discovery` and `test_trajectory`
 ran on n257: 27 tests passed. This scoped run used synthetic fixtures and mocked

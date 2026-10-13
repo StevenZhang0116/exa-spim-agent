@@ -55,7 +55,7 @@ guides use GT-labeled rows; optional `X_unlabeled` for `fit`. Still open:
 
 ## Context cache misses many GT-labeled rows: NaN descriptors where the metric is measured (2026-10-11)
 
-**Status: code done 2026-10-12** (WORKFLOW_REVISION "Labeled extension of the context cache":
+**Status: done** (code 2026-10-12, builds and verification 2026-10-13; WORKFLOW_REVISION "Labeled extension of the context cache":
 `ContextCacheBuilder._grow` / `extend_labeled`, `precompute_context_cache --labeled-extension`,
 scopes and `bank_context_available` confined to the band, `LabeledExtensionTests`). Deviations
 from the plan below: the extension is appended to the one row list instead of a separate
@@ -63,9 +63,43 @@ block, so `extend_band` and `extend_labeled` share one in-place growth path; the
 changes only for entries that carry an extension (bank results of extended entries are
 recomputed once, which the changed `all_cached` rows force anyway); the extension uses
 `segment_on_gt` for both kinds so it does not depend on the label definition a run selects.
-**Builds not yet run** (owner: user): `--labeled-extension` for all eleven brains (the five
-current ones and 747807 750318 751473 754610 754612 754613), one at a time,
-then re-measure the coverage table and the band-row byte-identity check.
+**Built 2026-10-13** (user, n268, `log/context_cache_labeled_extension_20261012.log`): one launcher call over
+the eleven brains with `--readers 16`, 22 cells in 8,291 s (22:47 to 01:05); 18 entries extended by 40 to
+11,649 rows, the four whole-pool entries (754612 / 754613 / 789202 merge, 789202 split) confirmed with 0
+extension rows; common prefix = band everywhere, so no band chunk was re-read; 0 new image failures (the 15
+recorded level-0 failures on 802449 and 794491 split are pre-existing band rows); cache 117 GB.
+**Verified 2026-10-13** (n268): `../claude_scratch/verify_labeled_extension_20261013.py` checked every
+entry (extension == `segment_on_gt` rows minus band, sorted and unique; band order equals `select_rows`;
+manifest digests and chunk counts; every labeled row under both definitions cached; sampled band and
+extension contexts load at both tiers with the right `row_in_band`), all checks passed
+(`log/labeled_extension_verify_20261013.log`); `preflight --context-cache` passed with `extension_rows`
+per cell (`log/preflight_labeled_extension_20261013.log`); two registered descriptors of run
+`precision_20261011_235340_phg8xri5` recomputed on 802449 (merge geometry, 18 names; split level-0
+image, 7 names) are byte-identical to the band-only bank results on all 50,000 band rows and finite on
+the extension rows (`log/labeled_extension_descriptor_compare_20261013.log`; the band-only bank entries
+are backed up in `../claude_scratch/descriptor_bank_backup_20261013/`).
+
+**Measured after the build** (n268, 2026-10-13, `log/labeled_extension_verify_20261013.log`; labeled rows
+under the run definitions, `near_gt_150` for merge and `segment_on_gt` for split; every labeled row and
+every positive of every cell is now cached, so the "in cache" columns are 100% throughout and omitted):
+
+| Cell | Pool rows | Band rows | Extension rows | Labeled rows | Labeled in band | Positives in band |
+|---|---|---|---|---|---|---|
+| 794495 merge / split | 58,120 / 500,111 | 50,000 | 40 / 1,078 | 6,212 / 4,001 | 99% / 73% | 100% / 94% |
+| 802449 merge / split | 299,339 / 890,547 | 50,000 | 11,649 / 7,170 | 18,564 / 13,074 | 63% / 45% | 79% / 66% |
+| 789202 merge / split | 43,737 / 37,354 | whole pool | 0 / 0 | 3,582 / 4,162 | 100% | 100% |
+| 794493 merge / split | 74,051 / 375,611 | 50,000 | 49 / 1,620 | 2,363 / 3,596 | 98% / 55% | 100% / 75% |
+| 794491 merge / split | 203,956 / 990,296 | 50,000 | 904 / 2,587 | 3,467 / 3,650 | 74% / 29% | 76% / 42% |
+| 747807 merge / split | 378,095 / 1,915,423 | 50,000 | 1,971 / 2,644 | 1,213 / 2,800 | 36% / 6% | 56% / 8% |
+| 750318 merge / split | 103,641 / 943,342 | 50,000 | 1,656 / 1,810 | 1,439 / 2,064 | 57% / 12% | 66% / 15% |
+| 751473 merge / split | 242,152 / 1,558,747 | 50,000 | 3,078 / 8,479 | 4,715 / 9,187 | 38% / 8% | 64% / 12% |
+| 754610 merge / split | 77,150 / 303,992 | 50,000 | 182 / 2,050 | 820 / 2,813 | 78% / 27% | 100% / 38% |
+| 754612 merge / split | 36,392 / 97,577 | whole pool / 50,000 | 0 / 704 | 747 / 2,334 | 100% / 70% | 100% / 91% |
+| 754613 merge / split | 43,509 / 82,325 | whole pool / 50,000 | 0 / 462 | 449 / 1,795 | 100% / 74% | 100% / 90% |
+
+The 802449 merge extension holds 11,649 rows, not the 7,000 estimated from `near_gt_150`, because the
+extension uses `segment_on_gt` (29,200 labeled merge rows there). The older-microscope split pools
+confirm the guess above: before the extension only 6% to 27% of their labeled split rows were in the band.
 
 **Behaviour before the change.** The context cache stored only the top 50,000
 detector-ranked rows per brain and kind (`BAND_SPEC`). Rows outside the band got NaN in
@@ -173,8 +207,8 @@ make coverage likely as low as 794491.
 ## Frozen descriptor inference computes 50,000 rows per brain where the metric uses 1,000-5,000 (2026-10-12)
 
 **Current behaviour.** At submission, every referenced descriptor is computed over every
-cached row (`all_cached`: the 50,000-row band plus, once the labeled extension is built, the
-GT-labeled rows outside it, about 15% more) of each validation brain, serially over brains. For the
+cached row (`all_cached`: the 50,000-row band plus the GT-labeled rows outside it since the 2026-10-13
+extension build, 40 to 11,649 more per cell) of each validation brain, serially over brains. For the
 generation-20 image descriptor of run `precision_20261011_235340_phg8xri5` this is about 3,600
 worker-seconds per brain (53 ms per row, single-threaded sandbox), so nine brains cost about
 40 minutes on 14 workers even with the chunk-loading fix of 2026-10-12 (WORKFLOW_REVISION
