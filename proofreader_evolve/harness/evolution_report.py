@@ -168,6 +168,8 @@ def generation_status(row, event_names):
         return 'evaluation_error'
     if row.get('accepted') is True:
         return 'accepted'
+    if row.get('submission_unchanged'):
+        return 'unchanged'
     if row.get('validation') is not None and row.get('accepted') is False:
         return 'rejected'
     if 'generation_interrupted' in event_names:

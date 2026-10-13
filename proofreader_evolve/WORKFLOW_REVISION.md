@@ -33,7 +33,9 @@ flowchart TD
     P -->|All kinds paused| Q[Stop; export accepted scorer]
     D --> E[Submit an exactly measured snapshot]
     E --> F{Measured submission and required research complete?}
-    F -->|Yes| G[Evaluate every fixed development-validation brain once]
+    F -->|Yes| U{Component differs from the accepted one?}
+    U -->|Yes| G[Evaluate every fixed development-validation brain once]
+    U -->|No, unchanged| H[Retain parent]
     F -->|No| H[Retain parent]
     G --> I{Equal-weight mean Precision@K improves and the paired-bootstrap lower bound of the gain is above zero?}
     I -->|Yes| J[Promote candidate]
@@ -78,7 +80,8 @@ flowchart TD
    the final submission must exactly match a successful measurement.
 6. Once required research/follow-up work is complete, evaluate the final measured
    candidate on every selected development-validation
-   brain. Average merge/split Precision@K within each brain, then average the
+   brain; a candidate byte-identical to the accepted combined scorer skips this step
+   and the generation ends as `unchanged` (2026-10-12). Average merge/split Precision@K within each brain, then average the
    brains equally. Promote only if this mean exceeds the accepted parent's mean
    by more than `--precision-margin` and, in the default `--promotion-gate bootstrap`
    mode, the lower bound of the paired row-resampling interval of that gain is
@@ -132,6 +135,67 @@ accepted parent's full-precision measurements. TRAIN feedback's `parent_train` a
 `parent_selection` also refer to that accepted parent, while its examples,
 `ranking_delta` and `failure_cases.json` describe the exploration branch (v17);
 `search_plan.json` identifies the branch.
+
+### Unchanged submissions and descriptor chunk loading (2026-10-12)
+
+**Motivation (run `precision_20261011_235340_phg8xri5`, 20 generations, v2 objective).**
+Two generations (14 and 18) ended with the agent restoring the accepted reference and
+submitting it byte-for-byte unchanged (`candidate_restored ... no new evaluation`). The host
+still ran frozen descriptor inference and the full validation evaluation (about six minutes
+each, both already cached) and rejected them as "No sufficient mean Precision@K gain:
+0.508852 -> 0.508852", so the ledger, report and hypothesis memory recorded them like any
+other rejected candidate. Separately, every generation that submitted a new descriptor paid
+about seven minutes per validation brain of frozen inference, serially over nine brains
+(generation 16: 7982 s wall, generation 20: 5884 s). A measurement of one brain's inference
+(747807 split, the generation-20 image descriptor `838d3ccb5ff9`, 42 batches of 256 rows,
+14 sandboxed workers on n268) showed the host, not the workers, as the limit: 944.5
+worker-seconds over 114.1 s wall is 8.3 effective workers out of 14; the host thread used
+101.8 CPU-seconds, and 105 chunk loads served about 22 distinct chunks because
+`ContextEntry._chunk` had no lock (up to four threads decompressed the same 50 MB level-0
+chunk at once) and its window of eight chunks was smaller than the span of 14 in-flight
+batches. The same path serves the agent's `compute_descriptors` on TRAIN.
+
+**Changes.**
+- **Unchanged submission.** After the research check, the driver compares the submitted
+  component with the accepted component of the same kind (the other kind always comes from
+  the accepted parent). If they are byte-identical it skips descriptor inference
+  and the validation evaluation, records `submission_unchanged: true`, a `validation_gate`
+  with `skipped: "unchanged_submission"` and equal parent/candidate means, the reason
+  `VALIDATION: Unchanged submission: <experiment> is the accepted <kind> component ...`,
+  trajectory event `unchanged_submission`, decision outcome `unchanged`, report status
+  `unchanged` ("No change submitted (not evaluated)"), search-digest outcome `unchanged`
+  (`plotting/plot_search_dynamics.py`) and handoff host status `unchanged_submission`. The parent is retained; `validation` stays `null`, so record readers
+  that pair TRAIN with validation measurements skip the generation. A trained-model manifest
+  pins its artifacts by digest, so byte equality of the component is equality of the model. A
+  changed submission follows the previous path unchanged.
+- **Chunk loading.** `ContextEntry._chunk` loads under a per-entry lock with a double check, keeps
+  a window of `CHUNK_WINDOW = 12` decompressed chunks (14 workers x 256 rows span at most five
+  1024-row chunks in two groups), counts `chunk_loads`, and `release()` clears the window;
+  `DescriptorRuns.compute` releases the entry after every run and records `chunk_loads` in the
+  run manifest. Before this, each of the 18 validation cache entries kept up to nine decompressed
+  chunks (about 250 MB each for level 0) for the rest of the run.
+- **Agent guide.** `scorer_rules.md` states that an unchanged reference submission ends the
+  generation as `unchanged` with no outer evaluation.
+
+**Measured effect** (same 42-batch slice, n268, 14 workers; before: 114.1 s wall, 101.8 host
+CPU-seconds, 105 chunk loads, 8.3 effective workers; after, two repeats: 89.9 / 87.3 s wall,
+51.7 / 56.8 host CPU-seconds, 22 chunk loads, 9.3 / 8.9 effective workers; worker-seconds
+fell from 944.5 to 839.5 / 776.9 because the workers compete less for CPU). About 23 %
+less wall time per brain and half the host CPU; the window is empty after `release()`.
+The pool is still host-bound (about 9 of 14 workers in flight): the remaining host work per
+batch is serialising 256 contexts and writing their patches (about 49 MB), which holds the
+interpreter lock. Logs: `claude_scratch/ab_chunk_lock.out` (before) and `measure_locked.out`
+(after) beside the repository, not committed.
+
+**Not changed.** Brain-level parallelism of frozen inference was not added. Scaled to the
+run, the fix takes the nine-brain inference of the generation-20 descriptor from about 67 to
+about 52 minutes; running brains in separate interpreter processes (threads share the lock)
+could at best use all 14 workers, about 40 minutes, because the descriptor itself costs about
+3,600 worker-seconds per brain. That residual gain would require forking the multi-GB host
+or reloading tables in a subprocess, so it is deferred. Reducing inference to the GT-labeled
+rows that the metric uses is recorded in `TODO.md` as an open item (it changes pool-relative
+formulas and ties row selection to GT availability). The promotion gate, selection protocol,
+candidate pools and descriptor contract are unchanged.
 
 ### Per-pool Top-K from GT positives (2026-10-12, objective v3)
 
@@ -584,6 +648,8 @@ committed to a scorer.
 - **Inference on other brains.** At submission the host computes every
   referenced descriptor on the validation brains' cached contexts (cached by
   code hash) before the outer evaluation; those values never enter feedback.
+  Since 2026-10-12 the chunk window of each cache entry is loaded under a lock and
+  released after each run (see "Unchanged submissions and descriptor chunk loading").
   Accepted scorers that reference descriptors save `descriptors.json` (code and
   specs) beside `best_scorer.py`; a resumed run restores and recomputes them
   before the seed evaluation and refuses to start without `--context-cache`.
@@ -1406,6 +1472,7 @@ records the motivating run and the original proposals.
 
 | Date / version | Change and motivation | Verification / future evidence |
 |---|---|---|
+| 2026-10-12 / unchanged submissions and descriptor chunk loading | A submission whose component is byte-identical to the accepted component of its kind skips descriptor inference and the validation evaluation; the generation ends as `unchanged` (ledger `submission_unchanged`, gate `skipped`, trajectory `unchanged_submission`, report status `unchanged`, handoff host status `unchanged_submission`). `ContextEntry._chunk` loads under a per-entry lock with a 12-chunk window and `release()`; `DescriptorRuns.compute` releases the entry after each run and records `chunk_loads`. Motivation: run `precision_20261011_235340_phg8xri5` generations 14 and 18 resubmitted the reference unchanged and were still evaluated; frozen inference of a new descriptor took about seven minutes per validation brain with 8.3 of 14 workers effective and 105 chunk loads for about 22 distinct chunks. See "Unchanged submissions and descriptor chunk loading". | New `tests/test_unchanged_submission.py` (3 tests: skip and bookkeeping, changed submission still evaluated, status vocabulary); `test_research_evidence` expectation updated (two outer evaluations instead of four, since its restored-parent generations are now unchanged). Focused modules on n268: 76 tests, 1 failure (the old expectation; `log/unchanged_submission_focused_tests_rerun.log`), then 21 OK (`log/unchanged_submission_research_evidence_rerun.log`). Full suite on n268: 336 tests OK in 1254 s (`log/unchanged_submission_full_tests_20261012.log`); `test_descriptor_compute` with the added chunk-load assertions re-run afterwards, 19 OK (`log/unchanged_submission_descriptor_compute_rerun.log`). A stale-text pass afterwards found the search digest (`plot_search_dynamics._outcome_reason`) still labelling unchanged generations `rejected` and the pipeline diagram without the unchanged branch; both fixed, `test_run_records` asserts the digest outcome, 22 tests OK (`log/unchanged_submission_run_records_rerun.log`). Measured inference slice (747807 split, 42 batches, 14 workers): 114.1 s / 105 loads / 8.3 effective workers before, 89.9 and 87.3 s / 22 loads / 9.3 and 8.9 after. No evolution run yet. |
 | 2026-10-12 / per-pool Top-K from GT positives (objective v3) | `--merge-k` / `--split-k` become per-kind caps; each pool ranks `K = min(cap, ceil(--k-positive-ratio x GT positives))` (default 2.0) and pools with fewer than `--min-positives` (default 20) GT positives are reported but excluded from the promotion mean, bootstrap and kind headroom; the mean is kind-first over counted brains (equal to the former equal-brain mean when every pool counts). Motivation: in `precision_20261011_230334_62sb04xi` and `precision_20261011_234710_sssj3jpw` (identical settings, final 0.5039 / 0.5050) the nine validation merge pools at K = 300 had ceilings 0.030 to 0.293, three of them (9 to 17 positives) were already at their ceiling with one third of the merge weight, and late generations were rejected on one- or two-hit gains. See "Per-pool Top-K from GT positives". Versions `*-v3-positive-scaled-k`; v2 records stay readable, not comparable. | New `tests/test_positive_scaled_k.py`: 14 tests OK on n268 (`log/positive_scaled_k_new_tests.log`). Directly affected modules (scoring, mean, bootstrap, schedule, selection, records, report, feedback, availability, image scoring, trajectory): 117 tests OK (`log/positive_scaled_k_batch1_tests.log`). Full suite on n268: 333 tests, one error (`log/positive_scaled_k_full_tests_20261012.log`) caused by the test edit itself (the `--min-positives 0` opt-out had also been inserted into a `precompute_context_cache` CLI call in `test_descriptor_compute.py`); after reverting that one line the module passes, 19 tests OK (`log/positive_scaled_k_descriptor_compute_rerun.log`), so every suite test passes. A follow-up wording pass (agent guides, `promotion_rule` trace, `--precision-margin` help, selection-protocol scope text and version, research/ablation identities, coverage message) re-ran the 12 touched modules: 148 tests, two failures in `test_image_scoring` (`log/positive_scaled_k_batch2_tests.log`) from one leftover variable name in `plan_image_scoring` after its K variable was renamed; fixed, module re-run 15 tests OK (`log/positive_scaled_k_image_scoring_rerun.log`). A static undefined-name check over the changed modules is recorded in `log/positive_scaled_k_pyflakes.log`. Expected effect with the current tables (labels only, no run): validation merge K 58 to 176 with ceiling 0.5 on six brains, 754610 / 754612 / 754613 merge excluded, every split K 500, selection brain 802449 merge K 300. Future evidence: re-score both 2026-10-11 best scorers under v3 (`run_evolution --generations 0 --start-from <run>/best_scorer.py`) before the next trial. |
 | 2026-10-11 / run `precision_20261009_235526_ispymdwn` (first Opus 5.5 launch) | n268-class host, 9 validation brains (three current plus six older-microscope), K merge 300 / split 500, three-valued labels. Every generation failed in seconds with `API Error: 400 Claude Code 2.1.148 does not support this model; version 2.1.280 or newer is required`: `claude-agent-sdk` 0.2.85 launches its bundled CLI (2.1.148) rather than the `claude` on PATH (2.1.296). After two failures per kind the adaptive allocation paused both kinds and the run ended after 9 minutes with the seed retained (validation macro Precision@K 0.4229 = baseline). The HTML report also never built (see the next row). | Evidence: [driver log](log/precision_run_20261009_235521.log) (the run directory was removed by the user on 2026-10-11; the log mirrors its trajectory). No scorer was evaluated; the run carries no search evidence. |
 | 2026-10-11 / maintenance (SDK upgrade, SDK-path preflight, report objective) | `claude-agent-sdk` upgraded in panda from 0.2.85 to 0.2.165 (bundled CLI 2.1.294). `preflight --check-api` now sends its one-turn request through the reviser's SDK path ([preflight.py](cli/preflight.py) `api_probe`) instead of a direct Anthropic client, so a CLI/model mismatch is caught before launch. `run_records.PRECISION` is now `native-precision-at-k-v2-three-valued` with the v1 objective kept readable (`PRECISION_VERSIONS`), because the 2026-10-09 three-valued revision bumped `fixed_pool_scoring.SCORING_VERSION` without updating the record readers: `run_status.json` was written with v1 next to a v2 manifest and `evolution_report` refused the run (10 `report_warning` events). A test now pins the two constants together. Project configuration and reporting only; search and evaluation unchanged. | End-to-end: a one-turn Opus 5.5 request through the upgraded SDK returned `OK` (subtype success, $0.0036); real `preflight --brains 794495 --check-api` passed with `cli_version 2.1.294` ([log](log/sdk_upgrade_opus55_20261011_tests.log)); the failed run's report rebuilt with `build_evolution_report`. Focused tests: 37 record/report/image-scoring, 24 SDK-touching, 6 preflight passed on n268; [full suite](log/sdk_upgrade_opus55_20261011_full_tests.log): 319 tests passed in 1514 s on n268 (slower than the usual ~600 s because the node was shared). |
@@ -1515,6 +1582,11 @@ refusing a kind whose every pool is below the floor. Tiny-fixture driver tests p
 output and file-read caps in the reviser environment, the 128 KB feedback budget,
 read access to SDK-parked tool results and to the generation's own artefact
 directories (writes, symlinks, other projects and other runs denied).
+`tests/test_unchanged_submission.py` (2026-10-12) drives one generation whose agent restores the
+accepted component and checks that no outer evaluation runs and that the ledger, trajectory, report
+status and handoff record the generation as unchanged, while a changed submission is still evaluated.
+`test_descriptor_compute` additionally asserts that three racing workers load one chunk once
+(`chunk_loads`) and that the chunk window is empty after a run.
 `tests/test_descriptor_compute.py` also covers in-place band growth (`ExtendBandTests`, 2026-10-08) and the in-place level-0 extension
 (kept chunks byte-identical, partial chunk rebuilt, new chunks appended, other
 tiers untouched, tier-selective bank identities, CLI flag pass-through).

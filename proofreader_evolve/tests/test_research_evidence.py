@@ -233,7 +233,10 @@ class DriverResearchTests(unittest.TestCase):
             self.assertIsNotNone(rows[2]['train'])
             self.assertIsNone(rows[2].get('validation'))
             self.assertFalse(rows[2]['research_status']['complete'])
-            self.assertEqual(len([c for c in evaluate.call_args_list if set(c.args[1]) == {'2'}]), 4)
+            # Seed and baseline only: generations 1 and 2 resubmitted the accepted component unchanged
+            # (skipped, 2026-10-12) and generation 3 failed the research check before evaluation.
+            self.assertEqual(len([c for c in evaluate.call_args_list if set(c.args[1]) == {'2'}]), 2)
+            self.assertTrue(rows[0]['submission_unchanged'] and rows[1]['submission_unchanged'])
             self.assertEqual((path / 'best_scorer.py').read_text(), BASELINE)
             plan = (path / 'gen003/search_plan.json').read_text()
             self.assertNotIn('validation', plan.lower())

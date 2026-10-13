@@ -17,7 +17,8 @@ from proofreader_evolve.plotting.plot_run_performance import (
 
 
 def _outcome_reason(row):
-    return ("accepted" if row.get("accepted") else "rejected", records.decision_reason(row))
+    outcome = ("accepted" if row.get("accepted") else "unchanged" if row.get("submission_unchanged") else "rejected")
+    return outcome, records.decision_reason(row)
 
 
 def make_figure(rows, run_name, out_path, run_dir=None):

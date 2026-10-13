@@ -674,7 +674,11 @@ code must exactly match a successfully measured snapshot; when it does not (an
 untested last edit, or a session cut off at the turn cap), the host ignores the edit
 and submits the generation's best measured candidate, recorded as
 `submission_fallback` in the ledger (2026-10-08). Only that final candidate reaches one evaluation across the fixed
-validation brains, even if its TRAIN precision did not improve. Full-precision
+validation brains, even if its TRAIN precision did not improve. A submission that is
+byte-identical to the accepted combined scorer is not evaluated at all: the generation
+ends as `unchanged` (ledger flag `submission_unchanged`, trajectory event
+`unchanged_submission`, handoff host status `unchanged_submission`), the parent is
+retained and no descriptor inference runs (2026-10-12). Full-precision
 validation means decide promotion together with the paired-bootstrap noise bound
 (section 3.3); reports retain each brain/kind's result, any regressed cells and
 the bootstrap interval. An evaluation failure on any selected brain rejects the

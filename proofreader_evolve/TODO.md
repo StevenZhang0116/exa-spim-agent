@@ -151,6 +151,35 @@ make coverage likely as low as 794491.
 `cli/precompute_context_cache.py` (`--labeled-extension`), `harness/descriptor_runs.py`
 (`register_context_column`, `scope_rows`), descriptor bank identities, and tests.
 
+## Frozen descriptor inference computes 50,000 rows per brain where the metric uses 1,000-5,000 (2026-10-12)
+
+**Current behaviour.** At submission, every referenced descriptor is computed over the whole
+cached band (`all_cached`, 50,000 rows) of each validation brain, serially over brains. For the
+generation-20 image descriptor of run `precision_20261011_235340_phg8xri5` this is about 3,600
+worker-seconds per brain (53 ms per row, single-threaded sandbox), so nine brains cost about
+40 minutes on 14 workers even with the chunk-loading fix of 2026-10-12 (WORKFLOW_REVISION
+"Unchanged submissions and descriptor chunk loading"). Precision@K, however, ranks GT-labeled
+rows only (1,213-4,715 labeled merge rows and 1,795-9,187 labeled split rows per validation
+brain, of which a part lies inside the band).
+
+**Option.** Compute inference descriptors only on the band rows that are GT-labeled (plus the
+rows a scorer needs for pool-level statistics, if any). Expected saving: 5-20x per brain.
+
+**Why not yet.**
+- Formula scorers see the whole `features` frame and may use pool-relative quantities
+  (ranks, quantiles, means over all rows); NaN on unlabeled rows changes those values, so
+  the TRAIN measurement (full band) and the validation measurement (labeled rows) would no
+  longer run the same code on the same inputs.
+- Row selection would depend on GT availability, the same caveat as the labeled-extension
+  cache proposal above; `bank_context_available` must stay a function of detector rank only.
+- Classifier manifests reindex to their `columns` row-wise, so for frozen models the saving is
+  safe; a per-candidate-type rule would be needed.
+
+**If revisited.** Restrict `ensure_descriptors` to labeled band rows for frozen-model
+candidates only, keep the full band for formulas, record the row rule in the inference report
+and the run manifest, and add a test that labeled-row inference reproduces the full-band
+Precision@K for a classifier candidate.
+
 ## Merge labels are conservative: GT-node-count thresholds not rescaled (2026-10-07)
 
 Full write-up: `notebooks/merge_label_shadow_findings.md`.

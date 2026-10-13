@@ -175,6 +175,10 @@ class DescriptorRunTests(unittest.TestCase):
         self.assertFalse(result['cached'])
         self.assertEqual(result['batches'], 3)
         self.assertEqual(result['values'].shape, (12, 2))
+        # Three workers race for the one geometry chunk: the entry lock loads it once, and the
+        # decompressed window is released after the run (2026-10-12).
+        self.assertEqual(result['manifest']['chunk_loads'], 1)
+        self.assertEqual(self.runs.cache.entry(self.table)._chunks, {})
         np.testing.assert_array_equal(result['values'][:, 0], [3 + r % 4 for r in range(12)])
         self.runs.register(self.table, spec['columns'], result['rows'], result['values'])
         column = self.table.features['bank_agent_node_count'].to_numpy()

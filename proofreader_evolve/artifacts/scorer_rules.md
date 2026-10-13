@@ -149,7 +149,9 @@ in the current generation's `proposal.json`.
   archive. It does not count against the TRAIN pool size. A newly supplied
   reference receives the next same-kind round, with at most one retry to produce
   a fresh measurement from its workspace branch. Seeds and unchanged references
-  do not enqueue follow-ups. Otherwise, every third scheduled generation of each
+  do not enqueue follow-ups. Submitting the accepted component byte-for-byte
+  unchanged ends the generation as `unchanged`: the host records it in the ledger
+  and hypothesis memory and runs no outer evaluation, so it tests nothing. Otherwise, every third scheduled generation of each
   kind explores the reference; `search_plan.branch_role`
   identifies the assigned role. In a reference round, develop the assigned
   method using its TRAIN diagnostics; do not discard it solely because another

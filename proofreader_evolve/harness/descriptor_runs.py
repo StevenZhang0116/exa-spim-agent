@@ -152,8 +152,12 @@ class DescriptorRuns:
                     cancel.set()
                     errors.append((index, exc))
 
-        with ThreadPoolExecutor(max_workers=self.workers) as pool:
-            list(pool.map(job, range(len(batches))))
+        loads_before = entry.chunk_loads
+        try:
+            with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                list(pool.map(job, range(len(batches))))
+        finally:
+            entry.release()
         if errors:
             index, exc = sorted(errors, key=lambda item: item[0])[0]
             raise ModelExecutionError(f'Descriptor batch {index} failed: {exc}') from exc
@@ -163,6 +167,7 @@ class DescriptorRuns:
         worker_seconds = float(sum(result[1] for result in results))
         manifest = {'identity': identity, 'rows': int(len(rows)), 'batches': len(batches), 'workers': self.workers,
                     'wall_seconds': time.monotonic() - started, 'worker_seconds_total': worker_seconds,
+                    'chunk_loads': entry.chunk_loads - loads_before,
                     'created_at': datetime.now().astimezone().isoformat(timespec='seconds')}
         directory.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix='.staging_', dir=directory.parent) as staging:

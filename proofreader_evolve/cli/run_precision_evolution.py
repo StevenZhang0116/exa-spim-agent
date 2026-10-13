@@ -82,8 +82,9 @@ def _record_handoff(memory, gen_dir, target_kind, generation, record, trace):
         return None
     host = {'experiment': record.get('submitted_experiment'),
             'selection_precision': (record.get('selection') or {}).get('macro_precision'),
-            'promoted': bool(record.get('accepted')), 'status': 'submitted' if record.get('submitted_experiment')
-            else 'no_submission'}
+            'promoted': bool(record.get('accepted')),
+            'status': ('unchanged_submission' if record.get('submission_unchanged')
+                       else 'submitted' if record.get('submitted_experiment') else 'no_submission')}
     item = memory.hypotheses.record_handoff({**proposal, 'target_kind': target_kind}, generation, handoff, host)
     trace.emit('research_handoff', f"Handoff recorded: {len(handoff.get('open_questions', []))} open question(s), "
                f"{len(handoff.get('evidence', []))} evidence item(s), next experiment "
@@ -1119,73 +1120,92 @@ async def _run(args, revise_fn, run_dir, trace):
             if not research_status['complete']:
                 raise RuntimeError(research_status['requirement'] +
                     '; assigned-branch follow-up complete=' + str(research_status['followup_complete']))
-            stage = "validation_descriptors"
-            record['descriptors_referenced'] = experiments.required_descriptors(candidate_source)
-            if record['descriptors_referenced']:
-                record['descriptor_inference'] = experiments.ensure_descriptors(validation, record['descriptors_referenced'])
-                gen_trace.emit(stage, f"Computed {len(record['descriptors_referenced'])} registered descriptor columns "
-                               f"on {len(validation)} other brains for frozen inference",
-                               inference=record['descriptor_inference'])
-            stage = "validation_evaluation"
-            gen_trace.emit(stage, f"Measured submission; evaluating on all {len(validation)} validation brains "
-                           "regardless of TRAIN gain")
-            candidate_validation_state = {}
-            candidate_validation = scoring.evaluate(candidate_source, validation, budgets, args.policy_time_budget,
-                                                    state=candidate_validation_state, artifact_store=artifact_store, memory_mb=args.classifier_memory_mb)
-            record["validation"] = candidate_validation
-            log_metrics(gen_trace, "Candidate validation", candidate_validation, parent_validation)
-            point_passed, point_reason = scoring.acceptance(parent_validation, candidate_validation,
-                                                            args.precision_margin, require_no_cell_regression=False)
-            bootstrap = None
-            if args.bootstrap_draws > 0:
-                try:
-                    bootstrap = scoring.paired_bootstrap(parent_validation_state, candidate_validation_state,
-                                                         validation, budgets, draws=args.bootstrap_draws,
-                                                         seed=generation, alpha=args.bootstrap_alpha)
-                except Exception as exc:  # In bootstrap mode a failed interval rejects; it never promotes.
-                    bootstrap = {"status": "unavailable", "error": f"{type(exc).__name__}: {exc}"}
-                gen_trace.emit("promotion_uncertainty", "Paired bootstrap of the validation delta recorded "
-                               + ("(binding: the lower bound must exceed zero)" if args.promotion_gate == "bootstrap"
-                                  else "(does not affect the gate)"), paired_bootstrap=bootstrap)
-            if args.promotion_gate == "bootstrap":
-                accepted, reason = scoring.bootstrap_acceptance(parent_validation, candidate_validation, bootstrap,
-                                                                args.precision_margin, alpha=args.bootstrap_alpha)
+            stage = "unchanged_submission"
+            if submitted['component'] == parent_sources[target_kind]:
+                # The submitted component is byte-identical to the accepted one and the other kind
+                # always comes from the accepted parent (a trained-model manifest pins its artifacts
+                # by digest), so frozen inference would only repeat the parent's measurement.
+                reason = (f"Unchanged submission: {submitted['entry']['experiment']} is the accepted "
+                          f"{target_kind} component (sha256 {submitted['entry']['component_sha256'][:12]}); "
+                          "validation evaluation skipped, parent retained")
+                record["submission_unchanged"] = True
+                record["validation_gate"] = {"version": scoring.gate_version(args.promotion_gate),
+                                             "mode": args.promotion_gate, "passed": False, "reason": reason,
+                                             "skipped": "unchanged_submission",
+                                             "brains": list(args.validation_brains),
+                                             "parent_mean": parent_validation["macro_precision"],
+                                             "candidate_mean": parent_validation["macro_precision"]}
+                record.update(accepted=False, reason="VALIDATION: " + reason)
+                gen_trace.emit(stage, reason, experiment=submitted['entry']['experiment'],
+                               component_sha256=submitted['entry']['component_sha256'])
             else:
-                accepted, reason = point_passed, point_reason
-            interval = (bootstrap or {}).get("macro_delta_ci")
-            record["validation_gate"] = {"version": scoring.gate_version(args.promotion_gate),
-                                         "mode": args.promotion_gate,
-                                         "passed": accepted, "reason": reason,
-                                         "point_gate": {"passed": point_passed, "reason": point_reason,
-                                                        "margin": args.precision_margin},
-                                         "bootstrap_gate": ({"alpha": args.bootstrap_alpha,
-                                                             "lower_bound": interval[0], "upper_bound": interval[1],
-                                                             "passed": interval[0] > 0.,
-                                                             "binding": args.promotion_gate == "bootstrap"}
-                                                            if interval else None),
-                                         "aggregation": scoring.AGGREGATION,
-                                         "brains": list(args.validation_brains),
-                                         "parent_mean": parent_validation["macro_precision"],
-                                         "candidate_mean": candidate_validation["macro_precision"],
-                                         "regressed_cells": [cell for cell, before in parent_validation["cells"].items()
-                                             if candidate_validation["cells"][cell]["precision"] < before["precision"]],
-                                         "paired_bootstrap": bootstrap}
-            record.update(accepted=accepted, reason="VALIDATION: " + reason)
-            if accepted:
-                source, rules[target_kind] = candidate_source, candidate_rules
-                parent_sources[target_kind] = submitted['component']
-                parent_state = submitted['state']
-                parent_selection[target_kind] = (submitted['selection_report'], submitted['selection_state'])
-                parent_validation_state = candidate_validation_state
-                parent_train, parent_validation = candidate_train, candidate_validation
-                (run_dir / "best_scorer.py").write_text(source)
-                # A restored earlier candidate keeps its experiment id, so a handoff recorded with it
-                # in an earlier generation is updated here; this generation's own handoff is recorded below.
-                memory.hypotheses.mark_promoted(submitted['entry']['experiment'])
+                stage = "validation_descriptors"
+                record['descriptors_referenced'] = experiments.required_descriptors(candidate_source)
                 if record['descriptors_referenced']:
-                    _write(run_dir / "descriptors.json", experiments.descriptor_registry(record['descriptors_referenced']))
-                elif (run_dir / "descriptors.json").exists():
-                    (run_dir / "descriptors.json").unlink()
+                    record['descriptor_inference'] = experiments.ensure_descriptors(validation, record['descriptors_referenced'])
+                    gen_trace.emit(stage, f"Computed {len(record['descriptors_referenced'])} registered descriptor columns "
+                                   f"on {len(validation)} other brains for frozen inference",
+                                   inference=record['descriptor_inference'])
+                stage = "validation_evaluation"
+                gen_trace.emit(stage, f"Measured submission; evaluating on all {len(validation)} validation brains "
+                               "regardless of TRAIN gain")
+                candidate_validation_state = {}
+                candidate_validation = scoring.evaluate(candidate_source, validation, budgets, args.policy_time_budget,
+                                                        state=candidate_validation_state, artifact_store=artifact_store, memory_mb=args.classifier_memory_mb)
+                record["validation"] = candidate_validation
+                log_metrics(gen_trace, "Candidate validation", candidate_validation, parent_validation)
+                point_passed, point_reason = scoring.acceptance(parent_validation, candidate_validation,
+                                                                args.precision_margin, require_no_cell_regression=False)
+                bootstrap = None
+                if args.bootstrap_draws > 0:
+                    try:
+                        bootstrap = scoring.paired_bootstrap(parent_validation_state, candidate_validation_state,
+                                                             validation, budgets, draws=args.bootstrap_draws,
+                                                             seed=generation, alpha=args.bootstrap_alpha)
+                    except Exception as exc:  # In bootstrap mode a failed interval rejects; it never promotes.
+                        bootstrap = {"status": "unavailable", "error": f"{type(exc).__name__}: {exc}"}
+                    gen_trace.emit("promotion_uncertainty", "Paired bootstrap of the validation delta recorded "
+                                   + ("(binding: the lower bound must exceed zero)" if args.promotion_gate == "bootstrap"
+                                      else "(does not affect the gate)"), paired_bootstrap=bootstrap)
+                if args.promotion_gate == "bootstrap":
+                    accepted, reason = scoring.bootstrap_acceptance(parent_validation, candidate_validation, bootstrap,
+                                                                    args.precision_margin, alpha=args.bootstrap_alpha)
+                else:
+                    accepted, reason = point_passed, point_reason
+                interval = (bootstrap or {}).get("macro_delta_ci")
+                record["validation_gate"] = {"version": scoring.gate_version(args.promotion_gate),
+                                             "mode": args.promotion_gate,
+                                             "passed": accepted, "reason": reason,
+                                             "point_gate": {"passed": point_passed, "reason": point_reason,
+                                                            "margin": args.precision_margin},
+                                             "bootstrap_gate": ({"alpha": args.bootstrap_alpha,
+                                                                 "lower_bound": interval[0], "upper_bound": interval[1],
+                                                                 "passed": interval[0] > 0.,
+                                                                 "binding": args.promotion_gate == "bootstrap"}
+                                                                if interval else None),
+                                             "aggregation": scoring.AGGREGATION,
+                                             "brains": list(args.validation_brains),
+                                             "parent_mean": parent_validation["macro_precision"],
+                                             "candidate_mean": candidate_validation["macro_precision"],
+                                             "regressed_cells": [cell for cell, before in parent_validation["cells"].items()
+                                                 if candidate_validation["cells"][cell]["precision"] < before["precision"]],
+                                             "paired_bootstrap": bootstrap}
+                record.update(accepted=accepted, reason="VALIDATION: " + reason)
+                if accepted:
+                    source, rules[target_kind] = candidate_source, candidate_rules
+                    parent_sources[target_kind] = submitted['component']
+                    parent_state = submitted['state']
+                    parent_selection[target_kind] = (submitted['selection_report'], submitted['selection_state'])
+                    parent_validation_state = candidate_validation_state
+                    parent_train, parent_validation = candidate_train, candidate_validation
+                    (run_dir / "best_scorer.py").write_text(source)
+                    # A restored earlier candidate keeps its experiment id, so a handoff recorded with it
+                    # in an earlier generation is updated here; this generation's own handoff is recorded below.
+                    memory.hypotheses.mark_promoted(submitted['entry']['experiment'])
+                    if record['descriptors_referenced']:
+                        _write(run_dir / "descriptors.json", experiments.descriptor_registry(record['descriptors_referenced']))
+                    elif (run_dir / "descriptors.json").exists():
+                        (run_dir / "descriptors.json").unlink()
         except Exception as exc:
             # A failed/timeout policy is never substituted with a baseline measurement.
             record["reason"] = f"Failed: {type(exc).__name__}: {exc}"
@@ -1249,7 +1269,8 @@ async def _run(args, revise_fn, run_dir, trace):
         with (run_dir / "ledger.jsonl").open("a") as stream:
             stream.write(json.dumps(record, allow_nan=False) + "\n")
         outcome = ('incomplete' if record.get('failure_stage') == 'research_check' else
-                   'failed' if record.get('failure_stage') else 'accepted' if record['accepted'] else 'rejected')
+                   'failed' if record.get('failure_stage') else 'accepted' if record['accepted'] else
+                   'unchanged' if record.get('submission_unchanged') else 'rejected')
         decision = (f"Generation {generation}: {outcome}; "
                     f"{record['reason']}; {record['wall_seconds']:.1f}s; "
                     f"{'new parent saved' if record['accepted'] else 'parent retained'}; "

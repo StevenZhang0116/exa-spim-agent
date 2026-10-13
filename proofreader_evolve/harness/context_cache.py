@@ -14,6 +14,7 @@ import json
 from pathlib import Path
 import shutil
 import tempfile
+import threading
 import time
 
 import numpy as np
@@ -481,13 +482,25 @@ def _remove_tree(path):
     shutil.rmtree(path, ignore_errors=True)
 
 
+CHUNK_WINDOW = 12  # decompressed chunks kept per entry; see ContextEntry
+
+
 class ContextEntry:
-    """Read-only view of one brain/kind entry; chunks are loaded on demand."""
+    """Read-only view of one brain/kind entry; chunks are loaded on demand.
+
+    Concurrent batch threads share one chunk window: a load is taken under the entry
+    lock, so threads that reach the same uncached chunk wait for one decompression
+    instead of each repeating it (a 50 MB level-0 chunk costs about 1.2 s of CPU).
+    The window holds `CHUNK_WINDOW` chunks, enough for the consecutive batches of a
+    full worker pool; `release()` drops the window once a run is over.
+    """
     def __init__(self, directory, manifest):
         self.directory, self.manifest = Path(directory), manifest
         self.rows = np.load(self.directory / 'rows.npy', allow_pickle=False)
         self.position = {int(row): index for index, row in enumerate(self.rows)}
         self._chunks = {}
+        self._lock = threading.Lock()
+        self.chunk_loads = 0
 
     @property
     def kind(self):
@@ -509,13 +522,25 @@ class ContextEntry:
 
     def _chunk(self, group, index):
         key = (group, index)
-        if key not in self._chunks:
-            if len(self._chunks) > 8:
-                self._chunks.pop(next(iter(self._chunks)))
-            subdir = self.directory / ('geometry' if group == 'geometry' else f'images/{group}')
-            with np.load(subdir / f'chunk_{index:05d}.npz', allow_pickle=False) as data:
-                self._chunks[key] = {name: data[name] for name in data.files}
-        return self._chunks[key]
+        chunk = self._chunks.get(key)
+        if chunk is not None:
+            return chunk
+        with self._lock:
+            chunk = self._chunks.get(key)
+            if chunk is None:
+                while len(self._chunks) >= CHUNK_WINDOW:
+                    self._chunks.pop(next(iter(self._chunks)))
+                subdir = self.directory / ('geometry' if group == 'geometry' else f'images/{group}')
+                with np.load(subdir / f'chunk_{index:05d}.npz', allow_pickle=False) as data:
+                    chunk = {name: data[name] for name in data.files}
+                self._chunks[key] = chunk
+                self.chunk_loads += 1
+        return chunk
+
+    def release(self):
+        """Drop the decompressed chunk window (up to a few GB for level-0 image tiers)."""
+        with self._lock:
+            self._chunks.clear()
 
     def geometry(self, rows):
         chunk_rows = self.manifest['geometry'].get('chunk_rows', CHUNK_ROWS)

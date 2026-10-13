@@ -140,6 +140,9 @@ class RecordTests(unittest.TestCase):
             self.assertGreater((root / "performance.png").stat().st_size, 100)
             self.assertIn("not measured", (root / "search.md").read_text())
             self.assertEqual(search._outcome_reason(rows[-1])[1], records.decision_reason(rows[-1]))
+            unchanged = {**precision(3, False, None), "submission_unchanged": True}
+            self.assertEqual(search._outcome_reason(unchanged)[0], "unchanged")  # not "rejected" (2026-10-12)
+            self.assertEqual(search._outcome_reason(rows[-1])[0], "rejected")
 
 
 if __name__ == "__main__":

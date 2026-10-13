@@ -13,7 +13,7 @@ nav { display:flex; gap:24px; flex-wrap:wrap; margin-top:20px; } nav a { color:#
 select { font:inherit; padding:9px 12px; border:1px solid #bccdd8; border-radius:6px; background:white; color:var(--ink); }
 button { font:inherit; color:var(--blue); border:0; background:transparent; padding:0; cursor:pointer; text-align:left; } button:focus-visible,a:focus-visible,summary:focus-visible { outline:3px solid #5aaed7; outline-offset:3px; }
 .badge { display:inline-block; border-radius:5px; padding:2px 8px; font-size:12px; color:#405c70; background:#eaf0f5; margin:0 6px 2px 0; }
-.badge.accepted { color:var(--green); background:#e7f5ed; } .badge.retained { color:var(--purple); background:#f0eafb; } .badge.error { color:var(--red); background:#fcecec; } .badge.rejected { color:#8b620e; background:#fff4d9; }
+.badge.accepted { color:var(--green); background:#e7f5ed; } .badge.retained { color:var(--purple); background:#f0eafb; } .badge.error { color:var(--red); background:#fcecec; } .badge.rejected { color:#8b620e; background:#fff4d9; } .badge.unchanged { color:#5f6368; background:#eeeeee; }
 summary { cursor:pointer; font-weight:600; }
 .labelled { margin:8px 0; white-space:pre-wrap; overflow-wrap:anywhere; }
 pre { background:#102736; color:#e6f0f5; padding:15px; border-radius:6px; white-space:pre-wrap; overflow-wrap:anywhere; max-height:540px; overflow:auto; font:12px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace; }
