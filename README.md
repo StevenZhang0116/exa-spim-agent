@@ -311,8 +311,11 @@ python -u proofreader_evolve/prepare_feature_tables.py --brains 794495 789202 79
 # Once per brain: fragment neighbourhoods plus level-1 and level-0 image patches for the
 # top detector-ranked candidates of each kind (default 20,000; S3 reads; roughly 30 min per brain and kind at 20,000).
 # --band-rows 50000 grows an existing complete entry in place, reading only the new rows; older-microscope
-# brains with feature tables (747807 750318 754610 754612 754613) are cached the same way, one brain at a time.
+# brains with feature tables (747807 750318 751473 754610 754612 754613) are cached the same way, one brain at a time.
 python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802449 789202 794493 794491 --mcl 100 --readers 16 --band-rows 50000
+# --labeled-extension (2026-10-12) additionally caches the GT-labeled rows outside the band (a few thousand per cell),
+# so every row Precision@K ranks has a context; it needs the availability sidecars below and reuses complete entries.
+python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802449 789202 794493 794491 --mcl 100 --readers 16 --band-rows 50000 --labeled-extension
 # REQUIRED before evolution/preflight: label-availability sidecars (minutes per brain). Labels become
 # three-valued (1 error / 0 GT-confirmed no error / NaN not judgeable); ranking, Precision@K, bootstrap and
 # fitting use GT-labeled rows only (see WORKFLOW_REVISION "Three-valued labels throughout").
@@ -325,7 +328,7 @@ export ANTHROPIC_API_KEY=...  AWS_EC2_METADATA_DISABLED=true
 python -u -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495,802449 --selection-brains 802449 \
   --validation-brains 789202,794493,794491 \
-  --merge-k 300 --split-k 500 --generations 20 \
+  --merge-k 300 --split-k 1000 --generations 20 \
   --context-cache proofreader_evolve/context_cache --descriptor-workers auto \
   --classifier-threads 4 --classifier-time-budget 1800 --reviser-max-turns 40 \
   --skip-auxiliary-ablation
@@ -337,12 +340,12 @@ python -u -m proofreader_evolve.cli.run_evolution \
 # Historical in-sample ranking with the detector-fitted TRAIN brain alone:
 python -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495 --validation-brains auto --selection-protocol in_sample \
-  --merge-k 300 --split-k 500 --generations 1
+  --merge-k 300 --split-k 1000 --generations 1
 ```
 
 The CLI defaults are a single TRAIN brain **794495**, the `grouped_oof` selection
 protocol, the `bootstrap` promotion gate (1000 draws, alpha 0.05), `adaptive` kind
-allocation, 15 generations, and K caps of 300 (merge) / 500 (split) over GT-labeled rows (100 / 100 before 2026-10-09), with each pool's K scaled to 2 x its GT positives and pools under 20 positives excluded from the mean (2026-10-12). The bare defaults do **not** start
+allocation, 15 generations, and K caps of 300 (merge) / 1000 (split) over GT-labeled rows (300 / 500 from 2026-10-09 to 2026-10-12, 100 / 100 before), with each pool's K scaled to 2 x its GT positives and pools under 20 positives excluded from the mean (2026-10-12). The bare defaults do **not** start
 a run: `grouped_oof` ranks TRAIN branches on a brain the detectors were not fitted
 on, and 794495 is the detectors' training brain, so the driver aborts with
 "No eligible selection brain". Add a detector-naive TRAIN brain and name it as the
@@ -540,7 +543,8 @@ top detector-ranked candidates (the band: 50,000 rows since 2026-10-08, 20,000 b
 256 nodes) and image patches at level 1 (30 um radius) and level 0 (16 um radius,
 the finest resolution), both for the whole band (level 0 covered only the first
 4,000 rows before 2026-10-05; `--extend-tier level0` grows a tier of existing
-entries in place). Nothing in the cache is a feature. The agent writes
+entries in place; `--labeled-extension` appends the GT-labeled rows outside the band
+so every ranked row has a context). Nothing in the cache is a feature. The agent writes
 `descriptor.py` (`DESCRIPTOR` plus `describe(context)`) and calls
 `plan_descriptor_run` / `compute_descriptors`; the host runs the code over the
 cached rows in parallel sandboxed workers, caches results by code hash in

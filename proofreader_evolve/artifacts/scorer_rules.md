@@ -31,7 +31,7 @@ in the current generation's `proposal.json`.
   context selection. All candidates still receive scores. GT graphs are excluded.
   Validation uses the same frozen extractor outside the LLM.
 - Use direct 3D code analysis to investigate image evidence on a few candidates;
-  with a context cache attached, `compute_descriptors` over the cached band is the
+  with a context cache attached, `compute_descriptors` over the cached candidates is the
   primary path (descriptor_guide.md). Read
   volume_analysis_guide.md; edit analysis.py and analysis_request.json, then call
   run_volume_analysis({}). Your code receives actual TRAIN voxels, validity,
@@ -119,8 +119,8 @@ in the current generation's `proposal.json`.
   cost one and receive no metric. Exact code/parameter repeats are cached.
   Print diagnostics for the saved worker.log and returned output tail.
 - With a context cache attached, `descriptor.py` plus `compute_descriptors` measures
-  any label-free quantity over the cached candidate band and registers it as
-  `bank_agent_*` predictors (NaN outside the band). See descriptor_guide.md.
+  any label-free quantity over the cached candidates and registers it as
+  `bank_agent_*` predictors (NaN on rows outside the cache). See descriptor_guide.md.
 - Branches are ranked by the selection protocol named in the feedback: under
   grouped_oof, out-of-fold precision on selection brains from host-owned fold
   refits (one unit per configuration, folds included); in-sample TRAIN scores

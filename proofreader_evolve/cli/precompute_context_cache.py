@@ -10,9 +10,13 @@ complete smaller entry in place, re-reading only the new rows): geometry at 50 u
 256 nodes, images at level 1 / 30 um and level 0 / 16 um, both for the whole band
 (level 0 covered only the first 4,000 rows before 2026-10-05). Existing complete entries
 are reused. `--extend-tier level0` grows one image tier of complete entries in place,
-keeping geometry and the other tiers. `--probe N` builds a throughput sample of N rows
-into a side directory without replacing an entry.
-No labels, GT or absolute coordinates are written; no LLM is called.
+keeping geometry and the other tiers. `--labeled-extension` appends, after the band,
+the GT-labeled rows outside it (availability sidecar `segment_on_gt`, required; see
+`precompute_availability`) so every row the metric ranks has a cached context; repeat
+it after a band growth. `--probe N` builds a throughput sample of N rows into a side
+directory without replacing an entry.
+No labels, GT or absolute coordinates are written (the labeled extension records which
+rows are GT-labeled, not their labels); no LLM is called.
 """
 import argparse
 from contextlib import redirect_stderr, redirect_stdout
@@ -31,6 +35,7 @@ import traceback
 import numpy as np
 
 from . import precompute_error_scores as pc
+from ..harness import label_availability
 from ..harness.context_cache import ContextCacheBuilder, IMAGE_TIERS, BAND_SPEC, GEOMETRY_SPEC
 from ..harness.image_context import DEFAULT_ALIGNMENT, CandidateImageStore, digest_json
 from ..harness.local_context import FragmentStore, LocalContextProvider, _anchors
@@ -39,6 +44,19 @@ from ..harness.native_pool import cache_path, ensure_native_tables
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUT = PROJECT_ROOT / 'proofreader_evolve' / 'context_cache'
+# The extension covers `segment_on_gt`, the widest availability definition of both kinds (merge's
+# `near_gt_150` is a subset), so the cached rows do not depend on the definition a run selects.
+EXTENSION_DEFINITION = 'segment_on_gt'
+
+
+def labeled_rows(table, table_dir):
+    """GT-labeled rows of one table from its availability sidecar (required) and the manifest record."""
+    record = label_availability.load(table, table_dir, EXTENSION_DEFINITION)
+    if record is None:
+        raise FileNotFoundError(f'No availability sidecar beside {table_dir}; run '
+                                f'python -m proofreader_evolve.cli.precompute_availability first')
+    rows = np.flatnonzero(np.asarray(record['mask'], dtype=bool))
+    return rows, {key: record[key] for key in ('definition', 'version', 'path')}
 
 
 class _Tee:
@@ -90,6 +108,9 @@ def parse_args(argv=None):
     parser.add_argument('--probe', type=int, default=None, metavar='N',
                         help='Throughput sample of N band rows into a side directory; the entry is not replaced')
     parser.add_argument('--force', action='store_true', help='Rebuild complete entries')
+    parser.add_argument('--labeled-extension', action='store_true',
+                        help='After the band is built or reused, also cache the GT-labeled rows outside it '
+                             '(needs the availability sidecars)')
     parser.add_argument('--extend-tier', action='append', choices=sorted(IMAGE_TIERS), metavar='TIER',
                         help='Grow this image tier of existing complete entries to the configured row limit '
                              '(repeatable); geometry and other tiers are untouched')
@@ -106,6 +127,8 @@ def parse_args(argv=None):
         parser.error('band-rows, readers and probe must be positive')
     if args.extend_tier and (args.no_images or args.probe is not None or args.force):
         parser.error('--extend-tier needs images and cannot be combined with --probe or --force')
+    if args.labeled_extension and (args.probe is not None or args.extend_tier):
+        parser.error('--labeled-extension cannot be combined with --probe or --extend-tier')
     if args.threads == 'all':
         args.threads = str(available_cpu_count())
     elif not args.threads.isdigit() or int(args.threads) < 1:
@@ -155,8 +178,11 @@ def build_brain(args):
             else:
                 manifest = builder.build(table, provider, reader, band=band, geometry=GEOMETRY_SPEC, tiers=IMAGE_TIERS,
                                          probe_rows=args.probe, force=args.force)
+                if args.labeled_extension:
+                    rows, source = labeled_rows(table, bank.meta['table_paths'][kind])
+                    manifest = builder.extend_labeled(table, provider, reader, rows, source=source, tiers=IMAGE_TIERS)
             summary = {'brain': brain, 'kind': kind, 'band_rows': manifest['band_rows'],
-                       'extended': manifest.get('extended'),
+                       'extension_rows': manifest.get('extension_rows', 0), 'extended': manifest.get('extended'),
                        'geometry_seconds': manifest['geometry'].get('seconds'),
                        'image_tiers': {name: {k: tier.get(k) for k in ('rows', 'failures', 'bytes', 'seconds', 'seconds_per_read')}
                                        for name, tier in manifest['image_tiers'].items()},
@@ -184,6 +210,8 @@ def launcher(args):
             command.append('--force')
         for name in args.extend_tier or []:
             command += ['--extend-tier', name]
+        if args.labeled_extension:
+            command.append('--labeled-extension')
         commands.append(command)
     missing = [str(cache_path(b, args.mcl)) for b in args.brains if not cache_path(b, args.mcl).is_file()]
     if missing and not args.dry_run:

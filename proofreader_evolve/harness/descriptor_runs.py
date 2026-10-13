@@ -68,13 +68,14 @@ class DescriptorRuns:
     def scope_rows(self, entry, scope, k):
         if scope not in SCOPES:
             raise ValueError(f'scope must be one of {SCOPES}')
-        rows = entry.rows
+        # pilot and boundary read the detector-ranked band block; all_cached adds the labeled extension.
+        band = entry.band
         if scope == 'pilot':
-            return rows[:PILOT_ROWS]
+            return band[:PILOT_ROWS]
         if scope == 'boundary':
-            k = min(int(k), len(rows))
-            return rows[max(0, k - BOUNDARY_ROWS):k + BOUNDARY_ROWS]
-        return rows
+            k = min(int(k), len(band))
+            return band[max(0, k - BOUNDARY_ROWS):k + BOUNDARY_ROWS]
+        return entry.rows
 
     def identity(self, table, spec, scope, rows):
         return {'version': RUN_VERSION, 'descriptor_version': DESCRIPTOR_VERSION,
@@ -225,8 +226,8 @@ class DescriptorRuns:
     def register_context_column(table, entry):
         if CONTEXT_COLUMN in table.features.columns:
             return
-        available = np.zeros(len(table.features))
-        available[np.asarray(entry.rows, dtype=int)] = 1.
+        available = np.zeros(len(table.features))  # 1 inside the detector band: a function of detector rank only
+        available[np.asarray(entry.band, dtype=int)] = 1.
         table.features[CONTEXT_COLUMN] = available
 
     @staticmethod

@@ -98,8 +98,8 @@ def context_cache_readiness(banks, context_cache):
         for kind, table in (getattr(bank, "tables", None) or {}).items():
             try:
                 entry = cache.entry(table)
-                cells[kind] = {"status": "passed", "band_rows": int(len(entry.rows)),
-                               "image_tiers": entry.tiers()}
+                cells[kind] = {"status": "passed", "band_rows": entry.band_rows,
+                               "extension_rows": entry.extension_rows, "image_tiers": entry.tiers()}
             except (FileNotFoundError, ValueError) as exc:
                 cells[kind] = {"status": "blocked", "reason": str(exc)}
                 blocked = True

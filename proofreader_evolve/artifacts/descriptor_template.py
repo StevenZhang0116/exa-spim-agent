@@ -1,4 +1,4 @@
-"""Agent descriptor: one measurable quantity per cached candidate, computed over the whole band.
+"""Agent descriptor: one measurable quantity per cached candidate, computed over every cached row.
 
 Edit DESCRIPTOR and describe(context), then call plan_descriptor_run({}) and
 compute_descriptors({"scope": "pilot" | "boundary" | "all_cached"}). The host runs

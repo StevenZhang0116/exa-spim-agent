@@ -3,7 +3,7 @@
 Real sandboxed workers run the describe mode. No brain caches, cloud reads or LLM calls.
 """
 
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
 from pathlib import Path
@@ -669,3 +669,159 @@ class ExtendTierTests(unittest.TestCase):
                 import contextlib
                 with contextlib.redirect_stderr(io.StringIO()):
                     cli.parse_args(bad)
+
+
+class LabeledExtensionTests(unittest.TestCase):
+    """GT-labeled rows outside the band appended as the labeled extension (2026-10-12)."""
+    LABELED = [1, 2, 3, 5, 7, 8, 9, 11, 12, 13, 15]  # every positive (odd rows) plus three negatives
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.table = brain_table('802449').tables['merge']
+        self.chunk_patch = patch.object(cc, 'CHUNK_ROWS', 4)
+        self.chunk_patch.start()
+        self.addCleanup(self.chunk_patch.stop)
+        self.builder = cc.ContextCacheBuilder(self.root / 'cache', readers=2, log=lambda *_: None)
+        self.tiers = {'level1': cc.IMAGE_TIERS['level1'], 'level0': cc.IMAGE_TIERS['level0']}
+        self.source = {'definition': 'segment_on_gt', 'version': 'test', 'path': None}
+        self.before = self.build(6)  # band = rows 0..5 (detector_score is descending by row)
+
+    def build(self, band_rows):
+        band = {**cc.BAND_SPEC, 'max_candidates': band_rows}
+        return self.builder.build(self.table, FakeProvider(), fake_image_reader, band=band, tiers=self.tiers)
+
+    def extend(self, labeled=None):
+        return self.builder.extend_labeled(self.table, FakeProvider(), fake_image_reader,
+                                           self.LABELED if labeled is None else labeled, source=self.source,
+                                           tiers=self.tiers)
+
+    def files(self, group):
+        directory = self.root / 'cache' / cc.entry_directory('x', self.table).relative_to('x') / group
+        return {p.name: cc.file_hash(p) for p in sorted(directory.glob('*.npz'))}
+
+    def sites(self, rows):
+        entry = cc.ContextCache(self.root / 'cache').entry(self.table)
+        return [np.asarray(site['xyz_um']).tolist() for site in entry.geometry(rows)[0]]
+
+    @staticmethod
+    def fresh_site(row):
+        return np.asarray(FakeProvider().context(row)[0]['sites'][0]['xyz_um']).tolist()
+
+    def test_labeled_rows_outside_the_band_are_appended_and_band_chunks_are_kept(self):
+        groups = ('geometry', 'images/level1', 'images/level0')
+        before = {g: self.files(g) for g in groups}
+        band_sites = self.sites(list(range(6)))
+        key_before = cc.ContextCache(self.root / 'cache').identity_key(self.table)
+        after = self.extend()
+        self.assertEqual((after['band_rows'], after['extension_rows']), (6, 7))
+        self.assertEqual(after['extension']['source'], self.source)
+        self.assertEqual((after['extension']['labeled_rows'], after['extended']['common_prefix'],
+                          after['extended']['reason']), (11, 6, 'labeled'))
+        self.assertEqual([c['rows'] for c in after['geometry']['chunks']], [4, 4, 4, 1])
+        for name in ('level1', 'level0'):
+            info = after['image_tiers'][name]
+            self.assertEqual((info['rows'], info['failures'], [c['rows'] for c in info['chunks']]), (13, 1, [4, 4, 4, 1]))
+        for group in groups:
+            now = self.files(group)
+            self.assertEqual(now['chunk_00000.npz'], before[group]['chunk_00000.npz'])  # full band chunk kept
+            self.assertNotEqual(now['chunk_00001.npz'], before[group]['chunk_00001.npz'])  # partial chunk rebuilt
+            self.assertEqual(sorted(now), [f'chunk_{i:05d}.npz' for i in range(4)])
+        self.assertFalse(list((self.root / 'cache').rglob('.extend_*')))
+        self.assertFalse(list((self.root / 'cache').rglob('.*.previous')))
+        cache = cc.ContextCache(self.root / 'cache')
+        entry = cache.entry(self.table)
+        self.assertEqual(entry.rows.tolist(), [0, 1, 2, 3, 4, 5, 7, 8, 9, 11, 12, 13, 15])
+        self.assertEqual((entry.band.tolist(), entry.band_rows, entry.extension_rows), (list(range(6)), 6, 7))
+        self.assertTrue(entry.has_rows(self.LABELED).all())
+        self.assertEqual(self.sites(list(range(6))), band_sites)  # band contexts unchanged
+        self.assertEqual(self.sites([13]), [self.fresh_site(13)])
+        contexts, patches = entry.contexts(self.table, [3, 7, 9], inputs='image', tier='level0')
+        self.assertEqual([c['row_in_band'] for c in contexts], [True, False, False])
+        self.assertEqual([p is None for p in patches], [False, True, False])  # row 7: the synthetic read failure
+        self.assertNotEqual(cache.identity_key(self.table), key_before)
+        self.assertEqual((entry.summary()['extension_rows'], entry.summary()['extension_definition']), (7, 'segment_on_gt'))
+        # pilot and boundary stay inside the band, all_cached adds the extension, the context column marks the band.
+        runs = dr.DescriptorRuns(cache, self.root / 'bank', workers=2, memory_mb=1024)
+        self.assertEqual(runs.scope_rows(entry, 'pilot', 4).tolist(), list(range(6)))
+        self.assertEqual(runs.scope_rows(entry, 'boundary', 4).tolist(), list(range(6)))
+        self.assertEqual(runs.scope_rows(entry, 'all_cached', 4).tolist(), entry.rows.tolist())
+        dr.DescriptorRuns.register_context_column(self.table, entry)
+        column = self.table.features[dr.CONTEXT_COLUMN].to_numpy()
+        self.assertEqual((column[:6].tolist(), float(column[6:].sum())), ([1.] * 6, 0.))
+        # The same rows again: manifest-only no-op. Other rows: rebuilt from the band onwards.
+        with patch.object(FakeProvider, 'context', side_effect=AssertionError('must not rebuild')):
+            again = self.extend()
+        self.assertEqual((again['extension_rows'], again['extended']['to_rows']), (7, 13))
+        more = self.extend(self.LABELED + [10])
+        self.assertEqual((more['extension_rows'], more['extended']['common_prefix']), (8, 9))  # 0..5, 7, 8, 9 kept
+        self.assertEqual(cc.ContextCache(self.root / 'cache').entry(self.table).rows.tolist(),
+                         [0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 15])
+        with self.assertRaisesRegex(ValueError, 'outside the candidate pool'):
+            self.extend([3, 99])
+
+    def test_band_growth_after_the_extension_keeps_every_labeled_row_cached(self):
+        self.extend()
+        before = self.files('geometry')
+        after = self.build(12)
+        self.assertEqual((after['band_rows'], after['extension_rows'], after['extension']['rows']), (12, 3, 3))
+        self.assertEqual({k: after['extended'][k] for k in ('from_rows', 'to_rows', 'common_prefix', 'reason')},
+                         {'from_rows': 13, 'to_rows': 15, 'common_prefix': 6, 'reason': 'band'})
+        now = self.files('geometry')
+        self.assertEqual(now['chunk_00000.npz'], before['chunk_00000.npz'])
+        self.assertNotEqual(now['chunk_00001.npz'], before['chunk_00001.npz'])  # rows 7.. moved to band positions
+        self.assertEqual([c['rows'] for c in after['geometry']['chunks']], [4, 4, 4, 3])
+        entry = cc.ContextCache(self.root / 'cache').entry(self.table)
+        self.assertEqual(entry.rows.tolist(), [*range(14), 15])
+        self.assertTrue(entry.has_rows(self.LABELED).all())
+        for row in (7, 13, 15):
+            self.assertEqual(self.sites([row]), [self.fresh_site(row)])
+        for name in ('level1', 'level0'):
+            info = after['image_tiers'][name]
+            self.assertEqual((info['rows'], info['failures']), (15, 1))
+            self.assertEqual([p is None for p in entry.image([7, 13, 15], name)], [True, False, False])
+        self.assertEqual(self.build(12)['band_rows'], 12)  # same band: reused
+
+    def test_descriptor_values_cover_every_labeled_row_after_the_extension(self):
+        cache = cc.ContextCache(self.root / 'cache')
+        runs = dr.DescriptorRuns(cache, self.root / 'bank', workers=2, memory_mb=1024)
+        _, spec = descriptor_spec(GEOMETRY_DESCRIPTOR)
+        for scope in ('pilot', 'all_cached'):
+            runs.compute(self.table, GEOMETRY_DESCRIPTOR, spec, scope, k=4, wall_budget=120, log_dir=self.root / 'logs')
+            self.assertTrue(runs.cached(self.table, spec, scope, 4))
+        self.extend()
+        cache = cc.ContextCache(self.root / 'cache')
+        runs = dr.DescriptorRuns(cache, self.root / 'bank', workers=2, memory_mb=1024)
+        for scope in ('pilot', 'all_cached'):  # the cached inputs changed: bank entries are recomputed once
+            self.assertFalse(runs.cached(self.table, spec, scope, 4))
+        result = runs.compute(self.table, GEOMETRY_DESCRIPTOR, spec, 'all_cached', k=4, wall_budget=120,
+                              log_dir=self.root / 'logs')
+        self.assertEqual(result['rows'].tolist(), [0, 1, 2, 3, 4, 5, 7, 8, 9, 11, 12, 13, 15])
+        dr.DescriptorRuns.register(self.table, ['bank_agent_node_count', 'bank_agent_mean_radius'], result['rows'], result['values'])
+        values = self.table.features['bank_agent_node_count'].to_numpy(dtype=float)
+        self.assertTrue(np.isfinite(values[self.LABELED]).all())  # every ranked row has a value
+        self.assertEqual(np.flatnonzero(np.isnan(values)).tolist(), [6, 10, 14])  # unlabeled rows outside the band
+
+    def test_cli_flag_passes_through_and_reads_the_sidecar(self):
+        from proofreader_evolve.cli import precompute_context_cache as cli
+        from proofreader_evolve.harness import label_availability as la
+        with redirect_stdout(io.StringIO()) as out, patch.object(cli, 'cache_path', return_value=Path('/nonexistent')):
+            self.assertEqual(cli.main(['--brains', '1', '2', '--labeled-extension', '--dry-run']), 0)
+        self.assertEqual(out.getvalue().count('--labeled-extension'), 2)
+        for bad in (['--brains', '1', '--labeled-extension', '--probe', '3'],
+                    ['--brains', '1', '--labeled-extension', '--extend-tier', 'level0']):
+            with self.assertRaises(SystemExit), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                cli.parse_args(bad)
+        table_dir = self.root / 'tables' / 'merge_table'
+        table_dir.mkdir(parents=True)
+        with self.assertRaisesRegex(FileNotFoundError, 'availability sidecar'):
+            cli.labeled_rows(self.table, table_dir)
+        truth = np.asarray(self.table.truth)
+        mask = np.zeros(len(truth), dtype=bool)
+        mask[self.LABELED] = True
+        la.write(table_dir, 'merge', {'segment_on_gt': mask, 'near_gt_150': mask & (truth == 1)}, truth=truth,
+                 keys=self.table.keys, pool_sha256=self.table.meta['pool_sha256'], source_cache=None)
+        rows, source = cli.labeled_rows(self.table, table_dir)
+        self.assertEqual(rows.tolist(), self.LABELED)
+        self.assertEqual((source['definition'], source['version']), ('segment_on_gt', la.AVAILABILITY_VERSION))

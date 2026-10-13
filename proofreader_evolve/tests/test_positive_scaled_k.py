@@ -195,6 +195,7 @@ class DriverTests(unittest.TestCase):
         from proofreader_evolve.cli import run_precision_evolution as driver
         args = driver.parse_args([])
         self.assertEqual((args.k_positive_ratio, args.min_positives), (2.0, 20))
+        self.assertEqual((args.merge_k, args.split_k), (300, 1000))  # split cap 1000 since 2026-10-12
         with redirect_stderr(io.StringIO()):
             for bad in (["--k-positive-ratio", "-1"], ["--k-positive-ratio", "nan"], ["--min-positives", "-1"]):
                 with self.subTest(bad=bad), self.assertRaises(SystemExit):

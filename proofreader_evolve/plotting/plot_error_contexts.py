@@ -108,10 +108,11 @@ def read_segmentation(store, origin, shape):
 
 
 def labelled_band_rows(table, entry, tier):
-    """True-error rows inside the cached band that have the requested image tier,
-    in detector-rank order."""
+    """True-error rows inside the detector band that have the requested image tier,
+    in detector-rank order. Rows of the labeled extension (cached after the band since
+    2026-10-12) are skipped: their cache position is not a detector rank."""
     positives = np.flatnonzero(np.asarray(table.truth) == 1)
-    tier_rows = entry.manifest["image_tiers"].get(tier, {}).get("rows", 0)
+    tier_rows = min(entry.manifest["image_tiers"].get(tier, {}).get("rows", 0), entry.band_rows)
     chosen = sorted((entry.position[int(r)], int(r)) for r in positives
                     if entry.position.get(int(r)) is not None and entry.position[int(r)] < tier_rows)
     return [row for _, row in chosen]
@@ -300,7 +301,7 @@ def plot_kind(kind, table, entry, graphs, segmentation, brain, *, examples=3, ti
         fragment = context["fragment"]
         colours = segment_colours(fragment["segment"])
         rank = entry.position[int(row)] + 1
-        header = (f"{kind} error, row {row}, detector rank {rank}/{len(entry.rows)}, score {scores[row]:.3f}\n"
+        header = (f"{kind} error, row {row}, detector rank {rank}/{entry.band_rows}, score {scores[row]:.3f}\n"
                   f"{used_tier} patch, radius {context['image_radius_um']:.0f} um, XY max projection")
         if patch is None:
             axes[0, column].text(0.5, 0.5, "no cached image", ha="center", va="center")

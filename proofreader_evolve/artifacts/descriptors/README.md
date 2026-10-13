@@ -5,7 +5,8 @@ derived from code earlier agents wrote inside `run_volume_analysis` analyses or
 `LOCAL_CONTEXT` extractors in runs `precision_20261003_004137_sogl3h0d` and
 `precision_20261003_190054_96ng6ehh`. None of them is precomputed; copying one
 into `descriptor.py` and calling `compute_descriptors` runs it over the cached
-band, and a byte-identical copy hits the result cache.
+candidates (the detector band plus the labeled extension), and a byte-identical copy
+hits the result cache.
 
 | File | Inputs | Origin | What the earlier agent measured |
 |---|---|---|---|

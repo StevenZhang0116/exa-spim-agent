@@ -1,8 +1,8 @@
 # Direct 3D exploration
 
 When a context cache is attached (`descriptor_guide.md` is present), measure
-quantities over the whole cached band with `compute_descriptors`; use this tool to
-debug `describe` on up to 16 rows or to look at cases outside the band.
+quantities over every cached candidate with `compute_descriptors`; use this tool to
+debug `describe` on up to 16 rows or to look at cases outside the cache.
 
 Investigate image hypotheses by writing code against the real 3D volume, without
 viewing a projection or fitting a scorer first. You choose the algorithm, local

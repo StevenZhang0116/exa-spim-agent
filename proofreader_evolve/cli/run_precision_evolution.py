@@ -280,7 +280,8 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
             budget = experiments.descriptor_budget
             prompt += (
                 " POOL-SCALE DESCRIPTORS: the host has cached the raw context (fragment neighbourhood and image "
-                "patches) of the top detector-ranked band of every brain. Write descriptor.py with a literal "
+                "patches) of the top detector-ranked band of every brain and, where the cache carries the labeled "
+                "extension, of the GT-labeled rows outside it. Write descriptor.py with a literal "
                 "DESCRIPTOR dict and describe(context) that returns the quantities you want measured; read "
                 f"{policy_path.parent / 'descriptor_guide.md'} once. Call plan_descriptor_run({{}}) to time it, then "
                 'compute_descriptors({"scope": "pilot" | "boundary" | "all_cached"}) to run it over every cached row '
@@ -288,7 +289,8 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
                 f"Budget: {budget['per_call_seconds']:.0f} s per call and {budget['generation_seconds']:.0f} s per "
                 "generation of wall time, plus one evaluation unit per uncached call; cached code hashes are free. "
                 "The reply returns label-conditional TRAIN quartiles and coverage per column, and registers "
-                "bank_agent_<name> predictor columns (NaN outside the band; bank_context_available marks cached rows) "
+                "bank_agent_<name> predictor columns (NaN on rows outside the cache; bank_context_available marks "
+                "the detector band) "
                 "that scorer.py, training.py and evaluate_feature_ablation can use immediately. Prefer this over "
                 "four-site run_volume_analysis for any claim about pixels or local geometry; use run_volume_analysis "
                 "only to debug describe on a few rows. Examples of earlier descriptors are in the guide."
@@ -384,10 +386,13 @@ def parse_args(argv=None):
     p.add_argument("--mcl", type=int, default=100)
     p.add_argument("--generations", type=int, default=15)
     # Three-valued defaults (2026-10-09 K sweep, TODO.md): K must stay well below the GT-labeled rows per cell.
+    # Split cap raised to 1000 on 2026-10-12: the 500-row window saturated at the end of run phg8xri5
+    # (WORKFLOW_REVISION "Split cap raised to 1000"); every split pool has >= 1,020 GT positives.
     p.add_argument("--merge-k", type=int, default=300,
                    help="Top-K budget per merge cell over GT-labeled rows (default: 300; 100 before 2026-10-09)")
-    p.add_argument("--split-k", type=int, default=500,
-                   help="Top-K budget per split cell over GT-labeled rows (default: 500; 100 before 2026-10-09)")
+    p.add_argument("--split-k", type=int, default=1000,
+                   help="Top-K budget per split cell over GT-labeled rows (default: 1000 since 2026-10-12; "
+                        "500 from 2026-10-09, 100 before)")
     p.add_argument("--k-positive-ratio", type=float, default=2.0,
                    help="Each pool ranks K = min(kind budget, ceil(ratio x its GT positives)), so every counted "
                         "pool has the same attainable ceiling; 0 keeps the fixed kind budget (default: 2.0, 2026-10-12)")

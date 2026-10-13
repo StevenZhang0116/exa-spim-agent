@@ -1130,7 +1130,7 @@ class TrainingExperiments:
                         f"evaluation units={report['evaluations_used']}; remaining={self.remaining}", **report)
         return report
 
-    # ---- Agent descriptors over the cached band -------------------------------------------
+    # ---- Agent descriptors over the cached rows (band plus labeled extension) ----------------
     @property
     def descriptor_seconds_remaining(self):
         return max(0., self.descriptor_budget['generation_seconds'] - self.descriptor_seconds_used)
@@ -1187,7 +1187,7 @@ class TrainingExperiments:
         return response
 
     def compute_descriptors(self, scope='pilot'):
-        """Run describe over the cached band of every TRAIN brain; register the columns."""
+        """Run describe over the cached rows of every TRAIN brain; register the columns."""
         if scope not in DESCRIPTOR_SCOPES:
             raise ValueError(f'scope must be one of {DESCRIPTOR_SCOPES}')
         program, spec = self._read_descriptor()
@@ -1262,8 +1262,8 @@ class TrainingExperiments:
                         **{k: v for k, v in entry.items() if k != 'summaries'})
         public = {**entry, 'evaluations_used': self.evaluations_used, 'evaluations_remaining': self.remaining}
         if registered:
-            public['next'] = ('Use the columns in scorer.py or training.py (NaN outside the cached band; '
-                              'bank_context_available marks cached rows), or list them in research.feature_columns '
+            public['next'] = ('Use the columns in scorer.py or training.py (NaN on rows outside the cache; '
+                              'bank_context_available marks the detector band), or list them in research.feature_columns '
                               'and call evaluate_feature_ablation for the out-of-fold increment.')
         return public
 
@@ -1427,9 +1427,10 @@ class TrainingExperiments:
         async def plan_descriptor_run(arguments):
             return await invoke(self.plan_descriptor_run, arguments)
 
-        @tool('compute_descriptors', 'Run descriptor.py describe(context) over the cached candidate band of every '
+        @tool('compute_descriptors', 'Run descriptor.py describe(context) over the cached candidates of every '
               'TRAIN brain in parallel sandboxed workers and register the results as bank_agent_<name> predictor '
-              'columns. scope: pilot (512 rows), boundary (2000 rows each side of K) or all_cached (whole band). '
+              'columns. scope: pilot (512 top-ranked rows), boundary (2000 band rows each side of K) or all_cached '
+              '(every cached row: the detector band plus the labeled extension where the cache carries one). '
               'Returns label-conditional TRAIN quartiles, finite fractions and coverage. One uncached call costs '
               'one evaluation unit plus wall time; results are cached by code hash across generations and runs.',
               {'scope': str})

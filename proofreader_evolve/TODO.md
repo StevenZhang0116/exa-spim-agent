@@ -11,7 +11,8 @@ Done 2026-10-09 (WORKFLOW_REVISION "Three-valued labels throughout"): labels are
 1 / 0 / NaN everywhere; ranking, promotion, bootstrap, selection, fitting, feedback and
 guides use GT-labeled rows; optional `X_unlabeled` for `fit`. Still open:
 
-- **K for three-valued runs (defaults set 2026-10-09: merge 300, split 500).** Labeled
+- **K for three-valued runs (defaults set 2026-10-09: merge 300, split 500; split cap 1000
+  since 2026-10-12).** Labeled
   rows per cell are small (merge: 449-18,564; split: 1,795-13,074), so K = 2000 covered
   most or all labeled rows of several cells. Frozen-baseline P@K sweep over labeled rows
   (`scripts/three_valued_smoke.py`, log `notebooks/log/three_valued_k_sweep.log`):
@@ -37,6 +38,10 @@ guides use GT-labeled rows; optional `X_unlabeled` for `fit`. Still open:
   positives) are unusable for merge validation.
   Done 2026-10-12 (WORKFLOW_REVISION evidence log): `--merge-k` / `--split-k` are now caps;
   each pool ranks K = min(cap, ceil(`--k-positive-ratio` x its GT positives)), default 2.0.
+  Split cap 1000 since 2026-10-12 (WORKFLOW_REVISION "Split cap raised to 1000"): run
+  `precision_20261011_235340_phg8xri5` saturated the 500-row split window (selection
+  out-of-fold 0.978-0.980, validation 0.916-0.984), so the lower frozen-baseline P@1000 in
+  the table is taken as headroom, not noise; every split pool has >= 1,020 positives.
 - **Merge validation cells.** Labeled merge cells hold 9-825 positives; decide together
   with the merge-gate proposals (pooled validation merge cells, K scaled to positives).
   Done 2026-10-12: K scaled to positives (above) and pools with fewer than `--min-positives`
@@ -50,11 +55,24 @@ guides use GT-labeled rows; optional `X_unlabeled` for `fit`. Still open:
 
 ## Context cache misses many GT-labeled rows: NaN descriptors where the metric is measured (2026-10-11)
 
-**Current behaviour.** The context cache stores the top 50,000 detector-ranked rows per
-brain and kind (`BAND_SPEC`). Rows outside the band get NaN in every `bank_agent_*`
-descriptor column and 0 in `bank_context_available`. With three-valued labels,
-Precision@K is measured on GT-labeled rows only, and many of them lie outside the
-band.
+**Status: code done 2026-10-12** (WORKFLOW_REVISION "Labeled extension of the context cache":
+`ContextCacheBuilder._grow` / `extend_labeled`, `precompute_context_cache --labeled-extension`,
+scopes and `bank_context_available` confined to the band, `LabeledExtensionTests`). Deviations
+from the plan below: the extension is appended to the one row list instead of a separate
+block, so `extend_band` and `extend_labeled` share one in-place growth path; the identity key
+changes only for entries that carry an extension (bank results of extended entries are
+recomputed once, which the changed `all_cached` rows force anyway); the extension uses
+`segment_on_gt` for both kinds so it does not depend on the label definition a run selects.
+**Builds not yet run** (owner: user): `--labeled-extension` for all eleven brains (the five
+current ones and 747807 750318 751473 754610 754612 754613), one at a time,
+then re-measure the coverage table and the band-row byte-identity check.
+
+**Behaviour before the change.** The context cache stored only the top 50,000
+detector-ranked rows per brain and kind (`BAND_SPEC`). Rows outside the band got NaN in
+every `bank_agent_*` descriptor column and 0 in `bank_context_available`. With
+three-valued labels, Precision@K is measured on GT-labeled rows only, and many of them
+lay outside the band. After the extension build, `bank_context_available` still marks
+the band only, and NaN descriptors remain on unlabeled rows outside the band.
 
 **Measured** (n268, 2026-10-11; GT-labeled = sidecar `near_gt_150` for merge,
 `segment_on_gt` for split):
@@ -147,22 +165,24 @@ make coverage likely as low as 794491.
    changes), `descriptor_guide.md` (what `all_cached` covers), and this entry
    marked done.
 
-**Touches.** `harness/context_cache.py` (extension block, manifest, `identity_key`),
-`cli/precompute_context_cache.py` (`--labeled-extension`), `harness/descriptor_runs.py`
-(`register_context_column`, `scope_rows`), descriptor bank identities, and tests.
+**Touches (as implemented).** `harness/context_cache.py` (`_grow`, `extend_labeled`, manifest,
+`ContextEntry.band`, `identity_key`), `cli/precompute_context_cache.py` (`--labeled-extension`,
+`labeled_rows`), `harness/descriptor_runs.py` (`scope_rows`, `register_context_column`),
+`cli/preflight.py` (`extension_rows`), agent guides, and `tests/test_descriptor_compute.py`.
 
 ## Frozen descriptor inference computes 50,000 rows per brain where the metric uses 1,000-5,000 (2026-10-12)
 
-**Current behaviour.** At submission, every referenced descriptor is computed over the whole
-cached band (`all_cached`, 50,000 rows) of each validation brain, serially over brains. For the
+**Current behaviour.** At submission, every referenced descriptor is computed over every
+cached row (`all_cached`: the 50,000-row band plus, once the labeled extension is built, the
+GT-labeled rows outside it, about 15% more) of each validation brain, serially over brains. For the
 generation-20 image descriptor of run `precision_20261011_235340_phg8xri5` this is about 3,600
 worker-seconds per brain (53 ms per row, single-threaded sandbox), so nine brains cost about
 40 minutes on 14 workers even with the chunk-loading fix of 2026-10-12 (WORKFLOW_REVISION
 "Unchanged submissions and descriptor chunk loading"). Precision@K, however, ranks GT-labeled
 rows only (1,213-4,715 labeled merge rows and 1,795-9,187 labeled split rows per validation
-brain, of which a part lies inside the band).
+brain; with the labeled extension every one of them is cached).
 
-**Option.** Compute inference descriptors only on the band rows that are GT-labeled (plus the
+**Option.** Compute inference descriptors only on the cached rows that are GT-labeled (plus the
 rows a scorer needs for pool-level statistics, if any). Expected saving: 5-20x per brain.
 
 **Why not yet.**
@@ -230,14 +250,16 @@ to branch nodes, canonical dedups on its mislabeled `World` column, and fragment
 
 ## Context cache: band grown to 50,000 rows and older-microscope brains added (2026-10-08)
 
-**Status: code done 2026-10-08** (`ContextCacheBuilder.extend_band`; `precompute_context_cache
---band-rows 50000` grows entries in place; `ExtendBandTests`). **Builds not yet run** (owner: user; commands in
-README Stage 3; run the extension of the five current brains only after no evolution run is
-reading the cache; one older-microscope brain per job, 200 GB). Measured
+**Status: done** (code 2026-10-08: `ContextCacheBuilder.extend_band`; `precompute_context_cache
+--band-rows 50000` grows entries in place; `ExtendBandTests`). Builds completed 2026-10-08/09 for the
+five current brains and by 2026-10-12 for the six older-microscope brains (manifests checked
+2026-10-12): all 22 entries hold 50,000 rows or the whole pool (754612 / 754613 / 789202 merge,
+789202 split) with both image tiers complete. Measured
 before the change: the evolved scorer's Top-2000 on 802449/split drew 24 of 2,000 rows from outside
 the 20,000-row band and still missed 60% of in-band positives, so the growth is a moderate step,
 not a fix for a binding limit; 200,000 rows (about 120 GB, 30–50 min descriptor runs) was declined.
-Re-measure band coverage after a run on the 50,000-row band before growing further.
+Growing the band further is superseded by the labeled extension (item above, 2026-10-12), which
+caches every GT-labeled row whatever its detector rank.
 
 ## Context cache: extend the level-0 image tier to the whole band (2026-10-05)
 

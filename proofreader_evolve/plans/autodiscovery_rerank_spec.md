@@ -105,10 +105,12 @@ existing enumeration, label-availability and grouped-fold code (no new logic):
 
 ## Related issue (proofreader_evolve/TODO.md, 2026-10-11)
 
-The context cache holds only the top 50k detector-ranked rows per brain and kind, so
-many GT-labeled rows have NaN descriptors in evolve. A new detector from this
-pipeline scores every candidate, so its p_0 is not affected; evolve's own
-descriptors still are until the cache covers all labeled rows.
+The context cache held only the top 50k detector-ranked rows per brain and kind, so
+many GT-labeled rows had NaN descriptors in evolve. A new detector from this
+pipeline scores every candidate, so its p_0 is not affected. Since 2026-10-12
+`precompute_context_cache --labeled-extension` also caches the GT-labeled rows outside
+the band (code done; the builds are pending), which closes that gap for evolve's own
+descriptors.
 
 ## Not in scope
 

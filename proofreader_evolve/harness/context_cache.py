@@ -2,14 +2,18 @@
 
 Built once per brain and kind over a fixed detector-ranked band, so agent-written
 descriptor code can run over tens of thousands of rows inside a generation without
-loading a fragment graph or reading pixels from cloud storage. Nothing here is a
-feature: the cache stores inputs, and every quantity computed from them is defined
-by the agent at run time. Contexts carry the same whitelisted geometry fields and
-patch arrays as `analyze(context)`; labels, GT, absolute coordinates and persistent
-IDs never enter the cache.
+loading a fragment graph or reading pixels from cloud storage. An entry may also carry
+a "labeled extension" (`ContextCacheBuilder.extend_labeled`, 2026-10-12): the
+GT-labeled rows outside the band, appended after it so every row the metric ranks has
+a context. Which rows the extension holds is the only label-derived fact in an entry;
+the contexts themselves are the same label-free inputs. Nothing here is a feature:
+every quantity computed from the cache is defined by the agent at run time. Contexts
+carry the same whitelisted geometry fields and patch arrays as `analyze(context)`;
+labels, GT, absolute coordinates and persistent IDs never enter the cache.
 """
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -166,7 +170,7 @@ class ContextCacheBuilder:
             raise
 
     def _build_geometry(self, table, provider, rows, geometry, staging, manifest, *, start_row=0, kept=None):
-        """Neighbourhood geometry for the band into `staging/geometry`. With `start_row` > 0 the
+        """Neighbourhood geometry for `rows` into `staging/geometry`. With `start_row` > 0 the
         leading chunks come from `kept` (chunks, truncated) and the returned site, center and
         total lists cover the rows from `start_row` on."""
         started = time.monotonic()
@@ -200,7 +204,7 @@ class ContextCacheBuilder:
 
     def _build_tier(self, table, image_reader, rows, sites, centers, name, tier, staging, manifest, *,
                     start_row=0, kept=None):
-        """Read one image tier for the band into `staging/images/<name>`.
+        """Read one image tier for `rows` into `staging/images/<name>`.
 
         `sites[position]` and `centers[position]` are indexed by position in the
         tier's row list; `centers` may be None, in which case the reader's
@@ -293,51 +297,111 @@ class ContextCacheBuilder:
                                  'max': float(np.max(per_read)) if per_read else None},
             'readers': self.readers, 'chunk_rows': CHUNK_ROWS}
 
+    def _growable(self, table):
+        identity = table_identity(table)
+        manifest = self.existing(table)
+        if manifest is None:
+            raise ValueError(f"No complete context cache entry for {identity['brain']}/{table.kind}; build it first")
+        if manifest['geometry'].get('chunk_rows', CHUNK_ROWS) != CHUNK_ROWS:
+            raise ValueError('Chunk size changed since the entry was built; rebuild the entry with --force')
+        return manifest
+
     def extend_band(self, table, provider, image_reader, band, tiers=IMAGE_TIERS):
         """Grow a complete entry to a larger detector-ranked band in place.
 
-        The band order is a deterministic prefix order (`select_rows`), so the rows already
-        cached keep their positions: leading full chunks of the geometry and of every cached
-        image tier are kept byte-for-byte, the trailing partial chunk is rebuilt and new
-        chunks are appended, as `extend_tier` does for one tier. Only the new rows are read
-        from the fragment graph and the image source. Directories are swapped atomically,
-        then `rows.npy`, then the manifest. A reader holding the previous manifest keeps
+        The band order is a deterministic prefix order (`select_rows`), so the band rows
+        already cached keep their positions. Rows of the labeled extension (see
+        `extend_labeled`) that the larger band absorbs move to their band positions; the
+        rest stay behind the band in row order. `_grow` keeps the chunks of the unchanged
+        prefix byte-for-byte and reads only the rows after it.
+        """
+        identity = table_identity(table)
+        manifest = self._growable(table)
+        for key in ('selection_feature', 'selection_largest'):
+            if manifest['band'].get(key) != band.get(key):
+                raise ValueError(f'Band selection changed ({key}); rebuild the entry with --force')
+        entry = ContextEntry(entry_directory(self.root, table), manifest)
+        old_band, old_extension = entry.band, entry.rows[entry.band_rows:]
+        new_band = np.asarray(select_rows(table.features, band), dtype=np.int64)
+        if len(new_band) <= len(old_band):
+            self.log(f"[context-cache] {identity['brain']}/{table.kind}: band already covers {len(old_band)} rows")
+            return manifest
+        if not np.array_equal(new_band[:len(old_band)], old_band):
+            raise ValueError('Band order changed since the entry was built; rebuild the entry with --force')
+        extension = np.setdiff1d(old_extension, new_band)  # sorted and unique; absorbed rows join the band
+        updates = {'band': dict(band), 'band_rows': int(len(new_band)), 'extension_rows': int(len(extension))}
+        if manifest.get('extension') is not None:
+            updates['extension'] = {**manifest['extension'], 'rows': int(len(extension)),
+                                    'rows_sha256': _rows_digest(extension)}
+        return self._grow(table, provider, image_reader, np.concatenate([new_band, extension]), tiers,
+                          manifest=manifest, entry=entry, updates=updates, reason='band')
+
+    def extend_labeled(self, table, provider, image_reader, labeled_rows, *, source, tiers=IMAGE_TIERS):
+        """Append the GT-labeled rows outside the band as the entry's "labeled extension".
+
+        The band block stays first, in detector-rank order; the extension follows in
+        ascending row order, so the whole row list is deterministic. `source` (label
+        definition, sidecar version and path) is recorded in the manifest. Repeating the
+        call with the same rows only refreshes the manifest record; different rows rebuild
+        the extension from the band onwards, keeping the band chunks.
+        """
+        identity = table_identity(table)
+        manifest = self._growable(table)
+        entry = ContextEntry(entry_directory(self.root, table), manifest)
+        labeled = np.unique(np.asarray(labeled_rows, dtype=np.int64))
+        if len(labeled) and (labeled[0] < 0 or labeled[-1] >= int(manifest['pool_rows'])):
+            raise ValueError('Labeled rows lie outside the candidate pool')
+        extension = np.setdiff1d(labeled, entry.band)
+        record = {'source': dict(source), 'labeled_rows': int(len(labeled)), 'rows': int(len(extension)),
+                  'rows_sha256': _rows_digest(extension)}
+        updates = {'extension_rows': int(len(extension)), 'extension': record}
+        if np.array_equal(extension, entry.rows[entry.band_rows:]):
+            updated = {**manifest, **updates}
+            if updated != manifest:
+                _write_manifest(entry.directory, updated)
+            self.log(f"[context-cache] {identity['brain']}/{table.kind}: labeled extension already covers "
+                     f"{len(extension)} rows ({len(labeled)} labeled rows, {len(labeled) - len(extension)} in the band)")
+            return updated
+        return self._grow(table, provider, image_reader, np.concatenate([entry.band, extension]), tiers,
+                          manifest=manifest, entry=entry, updates=updates, reason='labeled')
+
+    def _grow(self, table, provider, image_reader, rows, tiers, *, manifest, entry, updates, reason):
+        """Replace the entry's row list by `rows` in place, reading only what changed.
+
+        Chunking is positional, so every full chunk that lies inside the common prefix of
+        the old and new row lists is kept byte-for-byte (geometry and every cached image
+        tier); the first chunk after the prefix is rebuilt and the rest appended, as
+        `extend_tier` does for one tier. Directories are swapped atomically, then
+        `rows.npy`, then the manifest. A reader holding the previous manifest keeps
         working because kept chunks are unchanged and the rebuilt chunk starts with the
         same rows at the same positions.
         """
         identity = table_identity(table)
-        final = entry_directory(self.root, table)
-        manifest = self.existing(table)
-        if manifest is None:
-            raise ValueError(f"No complete context cache entry for {identity['brain']}/{table.kind}; build it first")
-        for key in ('selection_feature', 'selection_largest'):
-            if manifest['band'].get(key) != band.get(key):
-                raise ValueError(f'Band selection changed ({key}); rebuild the entry with --force')
-        if manifest['geometry'].get('chunk_rows', CHUNK_ROWS) != CHUNK_ROWS:
-            raise ValueError('Chunk size changed since the entry was built; rebuild the entry with --force')
-        entry = ContextEntry(final, manifest)
+        final = entry.directory
+        rows = np.asarray(rows, dtype=np.int64)
         old_rows = np.asarray(entry.rows, dtype=np.int64)
-        rows = np.asarray(select_rows(table.features, band), dtype=np.int64)
-        if len(rows) <= len(old_rows):
-            self.log(f"[context-cache] {identity['brain']}/{table.kind}: band already covers {len(old_rows)} rows")
-            return manifest
-        if not np.array_equal(rows[:len(old_rows)], old_rows):
-            raise ValueError('Band order changed since the entry was built; rebuild the entry with --force')
+        if len(np.unique(rows)) != len(rows):
+            raise ValueError('Cached rows must be unique')
         if manifest.get('image_tiers') and image_reader is None:
-            raise ValueError('This entry caches image tiers; extending the band needs an image reader (drop --no-images)')
+            raise ValueError('This entry caches image tiers; extending it needs an image reader (drop --no-images)')
+        limit = min(len(old_rows), len(rows))
+        differs = np.flatnonzero(old_rows[:limit] != rows[:limit])
+        common = int(differs[0]) if len(differs) else limit
 
         def kept_prefix(chunks, directory):
-            kept = []
+            kept, covered = [], 0
             for chunk in chunks:
                 path = directory / chunk['file']
-                if chunk['rows'] != CHUNK_ROWS or not path.is_file() or path.stat().st_size != chunk['bytes']:
+                if (chunk['rows'] != CHUNK_ROWS or covered + CHUNK_ROWS > common
+                        or not path.is_file() or path.stat().st_size != chunk['bytes']):
                     break
                 kept.append(chunk)
+                covered += CHUNK_ROWS
             return kept
 
         geometry_kept = kept_prefix(manifest['geometry']['chunks'], final / 'geometry')
         geometry_start = len(geometry_kept) * CHUNK_ROWS
-        staging = Path(tempfile.mkdtemp(prefix='.extend_band_', dir=final))
+        staging = Path(tempfile.mkdtemp(prefix=f'.extend_{reason}_', dir=final))
         started = time.monotonic()
         swapped = []
         try:
@@ -351,17 +415,18 @@ class ContextCacheBuilder:
                 kept={'chunks': geometry_kept, 'truncated': manifest['geometry'].get('truncated_sites', 0)})
             swapped.append(('geometry', final / 'geometry', staging / 'geometry'))
             for name, current in manifest['image_tiers'].items():
-                limit = (tiers.get(name) or {}).get('max_rows')
-                tier = {k: current[k] for k in ('level', 'radius_um', 'channel', 'timepoint')}
-                tier['max_rows'] = limit
-                tier_rows = rows if limit is None else rows[:int(limit)]
-                if int(current['rows']) >= len(tier_rows):
-                    continue  # this tier is capped below the old band; it stays as it is
+                cap = (tiers.get(name) or {}).get('max_rows')
+                # Tiers never shrink: a tier capped below the requested rows keeps the rows it has.
+                target = len(rows) if cap is None else min(len(rows), max(int(cap), int(current['rows'])))
+                if int(current['rows']) == target and common >= target:
+                    continue  # every row of this tier lies in the unchanged prefix
                 if current.get('chunk_rows', CHUNK_ROWS) != CHUNK_ROWS:
                     raise ValueError('Chunk size changed since the entry was built; rebuild the entry with --force')
-                tier_kept = kept_prefix(current.get('chunks', []), final / 'images' / name)
+                tier = {k: current[k] for k in ('level', 'radius_um', 'channel', 'timepoint')}
+                tier['max_rows'] = None if cap is None else target
+                tier_kept = kept_prefix(current.get('chunks', []), final / 'images' / name)[:len(geometry_kept)]
                 start_row = len(tier_kept) * CHUNK_ROWS
-                kept_rows = set(int(r) for r in tier_rows[:start_row])
+                kept_rows = set(int(r) for r in rows[:start_row])
                 kept = {'chunks': tier_kept, 'bytes': sum(c['bytes'] for c in tier_kept), 'metadata': current.get('metadata'),
                         'failures': [f for f in current.get('failed_rows', []) if int(f['row']) in kept_rows]}
                 # Sites by position: rows before the new geometry come from the old entry, the rest were just built.
@@ -376,10 +441,12 @@ class ContextCacheBuilder:
                 updated['image_tiers'][name].update(
                     extended_at=datetime.now().astimezone().isoformat(timespec='seconds'),
                     extended_from_rows=int(current['rows']), extend_seconds=time.monotonic() - tier_started,
-                    max_rows=limit)
+                    max_rows=cap)
                 swapped.append((f'images/{name}', final / 'images' / name, staging / 'images' / name))
-            updated.update(band=dict(band), band_rows=int(len(rows)), implementation=implementation_hashes(),
+            updated.update(updates)
+            updated.update(implementation=implementation_hashes(),
                            extended={'from_rows': int(len(old_rows)), 'to_rows': int(len(rows)),
+                                     'common_prefix': common, 'reason': reason,
                                      'at': datetime.now().astimezone().isoformat(timespec='seconds'),
                                      'seconds': time.monotonic() - started})
             np.save(staging / 'rows.npy', rows, allow_pickle=False)
@@ -392,13 +459,13 @@ class ContextCacheBuilder:
                 source.rename(target)
                 previous_dirs.append(previous)
             (staging / 'rows.npy').replace(final / 'rows.npy')
-            (final / 'manifest.json.tmp').write_text(json.dumps(updated, indent=2, allow_nan=False))
-            (final / 'manifest.json.tmp').replace(final / 'manifest.json')
+            _write_manifest(final, updated)
             for previous in previous_dirs:
                 _remove_tree(previous)
-            self.log(f"[context-cache] {identity['brain']}/{table.kind}: band extended "
-                     f"{len(old_rows)}->{len(rows)} rows in {time.monotonic() - started:.0f}s "
-                     f"({', '.join(label for label, _, _ in swapped)} rebuilt from their partial chunks)")
+            self.log(f"[context-cache] {identity['brain']}/{table.kind}: {reason} extension {len(old_rows)}->{len(rows)} rows "
+                     f"(band {updated['band_rows']}, labeled extension {updated.get('extension_rows', 0)}) in "
+                     f"{time.monotonic() - started:.0f}s ({', '.join(label for label, _, _ in swapped)} rebuilt "
+                     f"after {common} unchanged rows)")
             return updated
         finally:
             _remove_tree(staging)
@@ -408,7 +475,8 @@ class ContextCacheBuilder:
         touching geometry or the other tiers.
 
         Leading full chunks are kept byte-for-byte (chunking is deterministic over
-        the band order); the trailing partial chunk is rebuilt and new chunks are
+        the entry's row order: the band, then any labeled extension); the trailing
+        partial chunk is rebuilt and new chunks are
         appended. Fragment node positions come from the cached neighbourhoods and
         the reader's anchor midpoint, so no fragment graph is needed here. The
         tier directory is swapped atomically and the manifest rewritten last.
@@ -482,6 +550,15 @@ def _remove_tree(path):
     shutil.rmtree(path, ignore_errors=True)
 
 
+def _rows_digest(rows):
+    return hashlib.sha256(np.asarray(rows, dtype='<i8').tobytes()).hexdigest()
+
+
+def _write_manifest(directory, manifest):
+    (directory / 'manifest.json.tmp').write_text(json.dumps(manifest, indent=2, allow_nan=False))
+    (directory / 'manifest.json.tmp').replace(directory / 'manifest.json')
+
+
 CHUNK_WINDOW = 12  # decompressed chunks kept per entry; see ContextEntry
 
 
@@ -513,6 +590,19 @@ class ContextEntry:
     @property
     def base_columns(self):
         return list(self.manifest['base_columns'])
+
+    @property
+    def band_rows(self):
+        return int(self.manifest.get('band_rows', len(self.rows)))
+
+    @property
+    def band(self):
+        """The detector-ranked band block, a prefix of `rows`; the labeled extension follows it."""
+        return self.rows[:self.band_rows]
+
+    @property
+    def extension_rows(self):
+        return int(len(self.rows) - self.band_rows)
 
     def tiers(self):
         return list(self.manifest.get('image_tiers', {}))
@@ -584,7 +674,7 @@ class ContextEntry:
         rows = [int(r) for r in rows]
         missing = [r for r in rows if r not in self.position]
         if missing:
-            raise ValueError(f'{len(missing)} requested rows are outside the cached band')
+            raise ValueError(f'{len(missing)} requested rows are outside the cached band and labeled extension')
         sites, totals = self.geometry(rows)
         images = self.image(rows, tier) if inputs in ('image', 'both') else [None] * len(rows)
         base = [c for c in self.base_columns if c in table.features.columns]
@@ -599,7 +689,7 @@ class ContextEntry:
                 fragment.update(nodes_zyx=nodes.tolist(),
                                 inside_patch=((nodes >= 0) & (nodes < patch['shape_zyx'])).all(axis=1).tolist())
             values = frame.iloc[row]
-            contexts.append({'kind': table.kind, 'row_in_band': True,
+            contexts.append({'kind': table.kind, 'row_in_band': bool(self.position[row] < self.band_rows),
                              'features': {str(k): float(v) if np.isfinite(v) else None for k, v in values.items()},
                              'fragment': fragment, 'radius_um': geometry['radius_um'],
                              'level': tier_info.get('level'), 'channel': tier_info.get('channel'),
@@ -613,7 +703,9 @@ class ContextEntry:
         tiers = {name: {k: info.get(k) for k in ('level', 'radius_um', 'rows', 'failures', 'bytes')}
                  for name, info in self.manifest.get('image_tiers', {}).items()}
         return {'version': self.manifest['version'], 'brain': self.brain, 'kind': self.kind,
-                'band_rows': int(len(self.rows)), 'pool_rows': self.manifest['pool_rows'],
+                'band_rows': self.band_rows, 'extension_rows': self.extension_rows,
+                'extension_definition': ((self.manifest.get('extension') or {}).get('source') or {}).get('definition'),
+                'pool_rows': self.manifest['pool_rows'],
                 'band': self.manifest['band'], 'geometry': {k: self.manifest['geometry'][k] for k in ('radius_um', 'max_nodes')},
                 'image_tiers': tiers, 'created_at': self.manifest.get('created_at')}
 
@@ -657,8 +749,11 @@ class ContextCache:
         entry = self.entry(table)
         available = entry.manifest.get('image_tiers', {})
         selected = available if tiers is None else {n: available[n] for n in tiers if n in available}
+        extension = int(entry.manifest.get('extension_rows', 0))
         return digest_json({'version': entry.manifest['version'], 'identity': entry.manifest['identity'],
                             'band': entry.manifest['band'], 'band_rows': entry.manifest['band_rows'],
+                            **({'extension_rows': extension,
+                                'extension_rows_sha256': entry.manifest['extension']['rows_sha256']} if extension else {}),
                             'geometry': {k: entry.manifest['geometry'][k] for k in ('radius_um', 'max_nodes')},
                             'tiers': {n: {k: t.get(k) for k in ('level', 'radius_um', 'rows')}
                                       for n, t in selected.items()},
