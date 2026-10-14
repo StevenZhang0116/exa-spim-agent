@@ -36,7 +36,7 @@ The specification names the forbidden cache fields.
 | Split, fragments | `split_detection_from_fragments.md` and `_orig` (08-07) → `_simple` (08-11, simpler computation only) → `v2` (08-24, adds open exploration) → `v3` (08-24, two candidate views) | archived |
 | Merge, image | `merge_detection_from_image.md` (08-11) → `v2` (08-20) | archived |
 | Split, image | `split_detection_from_image.md` (08-11) → `v2` (08-20, disciplined discovery) → `v3` (08-24) | archived |
-| Feature discovery for `proofreader_evolve` | combined draft (10-11, not committed) → one specification per error type (10-12) | `merge_features_for_proofreader_evolve.md`, `split_features_for_proofreader_evolve.md` |
+| Feature discovery for `proofreader_evolve` | combined draft (10-11, not committed) → one specification per error type (10-12) → both revised (10-13: substitute-data ban, measured baseline figures on the companions regenerated from the rebuilt 794495 cache, increment-over-baseline rule; the 10-12 texts are `archive/{merge,split}_features_for_proofreader_evolve_20261012.md`) | `merge_features_for_proofreader_evolve.md`, `split_features_for_proofreader_evolve.md` |
 | Cache intent | `labeled_dataset_cache_section3_discovery.md` (06-29): an alternative "§3 Intent", open discovery of what splits, merges and omits are associated with; superseded by the task specifications | — |
 
 Superseded versions are kept in `archive/` unchanged, so past AutoDiscovery runs can

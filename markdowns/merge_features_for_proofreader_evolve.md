@@ -15,6 +15,9 @@ Its URI and level geometry are in the companion `.json`.
 
 This task is about **merge errors only**. The document has three parts: §1 what the
 data is, §2 what to do with it and how it is judged, §3 the schema of each file.
+Revised 2026-10-13: substitute-data ban (Firewall), measured baseline figures with the
+increment-over-baseline rule (Evaluation), and label counts of the companion regenerated
+from the rebuilt dataset cache (22 GT neurons); the previous text is archived.
 
 ---
 
@@ -55,7 +58,7 @@ they are errors. The companion `label` column is:
 | `0` | GT can judge the candidate and it is not an error: the segment carries a GT label and the junction is within 150 um of a GT node |
 | `NaN` | GT cannot judge it: no traced neuron nearby. **Unknown, not "no error."** |
 
-For this brain: 58,120 candidates; label 1: 114; label 0: 6,098; NaN: 51,908.
+For this brain: 58,120 candidates; label 1: 128; label 0: 6,882; NaN: 51,110.
 
 Precision and AP use labeled rows only (label 1 or 0); the one check that looks at
 unlabeled rows is described under Evaluation. Never treat NaN as 0: a NaN
@@ -204,6 +207,10 @@ Open each level once and reuse the array for all candidates. A patch takes about
 may log `AuthCredentialsProvider ... Failed to open file ~/.aws/config` lines: they
 are harmless (no credential found, so it reads anonymously). Verify scale and
 translation against the zarr `multiscales` metadata (`fused.zarr/.zattrs`) once.
+Use `open_level` as written: the `kvstore` spec takes exactly `driver`, `bucket` and
+`path`, and extra members (for example `auth_provider`) make `ts.open` fail. If the
+image cannot be opened or a patch cannot be read, fix the call or stop the
+experiment; never continue with invented intensities (see Firewall).
 
 **The context dictionary:**
 
@@ -342,7 +349,7 @@ Report for each feature and for the model:
   resample labeled rows with replacement within each fold, 1,000 draws, same draws
   for both scores.
 
-**Labeled versus unlabeled rows.** Only 6,212 of 58,120 rows are labeled (10.7%),
+**Labeled versus unlabeled rows.** Only 7,010 of 58,120 rows are labeled (12.1%),
 and they are not a random sample: they lie on or near traced neurons. The ranking that is
 finally used covers all rows, and nothing above shows what a feature does to the
 unlabeled ones. For each feature, also report:
@@ -356,20 +363,43 @@ unlabeled ones. For each feature, also report:
 Flag every feature whose labeled and unlabeled distributions differ strongly; it may
 measure "how traced-neuron-like" a candidate is rather than whether it is an error.
 
-**Baselines (compute them yourself from the data):**
-- **Random ranking**: its precision equals the share of label 1 among labeled rows.
-- **Junction degree** (higher ranked first). 99.9% of candidates have degree 3, but
-  the few with degree >= 4 are enriched in merges, so degree helps at the very top
-  of the ranking.
-- **Segment cable length**: total edge length of the candidate's segment, direction
-  chosen on the fitting rows.
+**Baselines (compute them yourself from the data; the figures below are what the
+companion of 2026-10-13 gives with the scoring code above, and must be recomputed
+when the companion changes):**
+- **Random ranking**: its precision equals the share of label 1 among labeled rows,
+  0.018 here (128 of 7,010).
+- **Junction degree** (higher ranked first). 58,047 of the 58,120 candidates have
+  degree 3, 72 have degree 4 and one has degree 5; the few with degree >= 4 are
+  enriched in merges, so degree helps only at the very top: out-of-fold AP 0.044
+  (folds 0.023 / 0.068 / 0.060); precision 7/70 at 1%, 8/175 at 2.5%, 11/351 at 5%,
+  14/700 at 10%, 18/1,051 at 15%, 34/1,403 at 20%. Its top 1% of all rows holds 17%
+  labeled rows against 12% overall.
+- **Segment cable length** (total edge length of the candidate's segment, direction
+  chosen on the fitting rows) is **not** a usable baseline: AP 0.017, 0/70 at 1%,
+  13/1,403 at 20%. Labeled junctions sit on long segments (median 10,796 um against
+  730 um for all candidates), so 99% of its top 1% of all rows are labeled rows: it
+  measures how traced-neuron-like a candidate is, not whether it is a merge. Keep it
+  as the worked example of the availability proxy the Firewall excludes.
 
-Use the stronger of degree and cable length as the baseline. A feature is
-interesting if it beats that baseline out of fold with a bootstrap interval above
-zero, or adds to a model that already contains the baseline. With 114 positives,
-judge mainly by the average precision and the bootstrap interval; a higher precision
-at 1% alone (about 60 ranked rows, a few hits) is not evidence. Keep the number of
-variants small and report it.
+Use degree as the baseline.
+
+**What the weak baseline means for the search.** With degree near the random rate,
+almost any informative quantity will beat the baseline, so beating it is necessary
+but not sufficient:
+- a feature counts as found only if its out-of-fold increment over degree (alone,
+  and in the two-column model degree plus the feature) has a bootstrap interval
+  above zero, and the labeled share at the top of its full ranking stays near the
+  overall 12%: a feature whose top 1% of all rows is mostly labeled rows is doing
+  what cable length does and is a negative result;
+- with 128 positives, precision at 1% is 70 ranked rows and a few hits; judge mainly
+  by the average precision and its interval, and report per-fold values, because a
+  fold can carry a third of the positives;
+- prefer quantities that describe the junction itself and its image, or how its
+  branches relate, over quantities that describe how large or well reconstructed its
+  segment is. This names kinds of input, not features; what to measure is still
+  yours to find.
+
+Keep the number of variants small and report it.
 
 ### Firewall and validity checks
 
@@ -385,6 +415,18 @@ variants small and report it.
   a quantity cannot help and only signals leakage.
 - **Images** only from the URI in the companion manifest. Do not open any other
   image path.
+- **No substitute data.** If an input cannot be read (the pkl, the companion, the
+  image at the manifest URI), the script must raise and stop. Never fall back to
+  simulated, synthetic, placeholder or "calibrated" values, and never generate
+  values from labels or from an assumption about what merges look like: a result
+  computed on substituted data is void whatever its numbers, and is discarded.
+  Print for every input that it was read and how many rows or patches came from
+  it.
+- **Implausible results are bugs until proven otherwise.** With 128 positives
+  among 7,010 labeled rows, honest features move the average precision by
+  hundredths. An out-of-fold AP above 0.9, a bootstrap gain above 0.3 or perfect
+  precision at every fraction has so far come only from leaked or substituted
+  inputs; re-check the input path and the firewall before reporting such a number.
 - **Sanity checks to include**: label shuffling within folds (the gain should
   vanish); per-fold consistency; the fraction of labeled rows where each feature is
   NaN, and whether that differs between labels 1 and 0 (missingness can itself be
@@ -400,7 +442,12 @@ interpretation), so it can be re-run on its own. For each feature you keep:
    - the hypothesis in one or two sentences, from your Phase 1 observations;
    - out-of-fold precision at 1/2.5/5/10/15/20% with hit counts, and AP, with
      per-fold values and baselines;
-   - bootstrap interval of the difference to the strongest baseline;
+   - bootstrap interval of the difference to the strongest baseline, and the
+     increment of the two-column model (baseline plus the feature) over the
+     baseline alone with its interval, plus the Spearman correlation with the
+     baseline columns;
+   - confirmation that every input was read (rows and patches read, read
+     failures), since a run on substituted data is void;
    - NaN fraction per label;
    - labeled share in the top of the full ranking, and the labeled-versus-unlabeled
      distribution difference;

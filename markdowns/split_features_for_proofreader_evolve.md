@@ -15,6 +15,9 @@ Its URI and level geometry are in the companion `.json`.
 
 This task is about **split errors only**. The document has three parts: §1 what the
 data is, §2 what to do with it and how it is judged, §3 the schema of each file.
+Revised 2026-10-13: substitute-data ban (Firewall), measured baseline figures with the
+increment-over-gap rule (Evaluation), and label counts of the companion regenerated from
+the rebuilt dataset cache (22 GT neurons); the previous text is archived.
 
 ---
 
@@ -57,7 +60,7 @@ they are errors. The companion `label` column is:
 | `0` | GT can judge the candidate and it is not an error: both segments carry a GT label |
 | `NaN` | GT cannot judge it: no traced neuron on one of the segments. **Unknown, not "no error."** |
 
-For this brain: 500,111 candidates; label 1: 2,018; label 0: 1,983; NaN: 496,110.
+For this brain: 500,111 candidates; label 1: 2,426; label 0: 2,391; NaN: 495,294.
 
 Precision and AP use labeled rows only (label 1 or 0); the one check that looks at
 unlabeled rows is described under Evaluation. Never treat NaN as 0: a NaN
@@ -204,6 +207,10 @@ Open each level once and reuse the array for all candidates. A patch takes about
 may log `AuthCredentialsProvider ... Failed to open file ~/.aws/config` lines: they
 are harmless (no credential found, so it reads anonymously). Verify scale and
 translation against the zarr `multiscales` metadata (`fused.zarr/.zattrs`) once.
+Use `open_level` as written: the `kvstore` spec takes exactly `driver`, `bucket` and
+`path`, and extra members (for example `auth_provider`) make `ts.open` fail. If the
+image cannot be opened or a patch cannot be read, fix the call or stop the
+experiment; never continue with invented intensities (see Firewall).
 
 **The context dictionary:**
 
@@ -345,12 +352,12 @@ Report for each feature and for the model:
   resample labeled rows with replacement within each fold, 1,000 draws, same draws
   for both scores.
 
-**Labeled versus unlabeled rows.** Only 4,001 of 500,111 rows are labeled (0.8%),
+**Labeled versus unlabeled rows.** Only 4,817 of 500,111 rows are labeled (1.0%),
 and they are not a random sample: they lie on traced neurons. The ranking that is
 finally used covers all rows, and nothing above shows what a feature does to the
 unlabeled ones. For each feature, also report:
 - `labeled_share_at_fraction` at 1%, 5% and 20% of all rows, next to the overall
-  labeled share (0.8%): a feature that fills the top of the full ranking with
+  labeled share (1.0%): a feature that fills the top of the full ranking with
   unlabeled rows, or only with labeled ones, behaves differently off the traced
   neurons;
 - how its distribution differs between labeled and unlabeled rows (for example the
@@ -359,13 +366,38 @@ unlabeled ones. For each feature, also report:
 Flag every feature whose labeled and unlabeled distributions differ strongly; it may
 measure "how traced-neuron-like" a candidate is rather than whether it is an error.
 
-**Baselines (compute them yourself from the data):**
-- **Random ranking**: its precision equals the share of label 1 among labeled rows.
-- **Gap distance**: `gap_um`, smaller gap ranked first. This baseline is strong.
+**Baselines (compute them yourself from the data; the figures below are what the
+companion of 2026-10-13 gives with the scoring code above, and must be recomputed
+when the companion changes):**
+- **Random ranking**: its precision equals the share of label 1 among labeled rows,
+  0.504 here (2,426 of 4,817).
+- **Gap distance**: `gap_um`, smaller gap ranked first. It is strong: out-of-fold AP
+  0.837 (folds 0.821 / 0.826 / 0.863); precision 45/48 at 1%, 106/121 at 2.5%,
+  212/241 at 5%, 431/482 at 10%, 650/723 at 15%, 861/963 at 20%. Its top 1% of all
+  rows holds 3.4% labeled rows against 1.0% overall (median gap 10.6 um on labeled
+  rows, 24.8 um on unlabeled ones).
 
-A feature is interesting if it beats the strongest baseline out of fold with a
-bootstrap interval above zero, or adds to a model that already contains the
-baseline.
+**What the strong baseline means for the search.** Many quantities computable from
+the candidate's own geometry are monotone in, or strongly correlated with, the gap
+distance: alone they separate the labels clearly, yet add nothing once gap is in the
+model. Therefore:
+- judge every feature by its **increment over gap**, not by its own AP or by how
+  well its distributions separate: fit the two-column model (gap plus the feature)
+  out of fold and report the paired-bootstrap interval of its AP and precision
+  difference to gap alone;
+- report the feature's Spearman correlation with `gap_um` on labeled rows; above
+  0.8 in absolute value it restates gap and is not new evidence;
+- a feature counts as found only if the interval of its increment over gap lies
+  above zero; a strongly significant univariate separation with a non-positive
+  increment is a negative result and is reported as one;
+- prefer quantities that gap cannot express: measured in the image, on the
+  fragments away from the two anchors, or in how the two segments relate beyond
+  their distance. This names kinds of input, not features; what to measure is
+  still yours to find.
+
+A feature is interesting only if its increment over the gap baseline, out of fold,
+has a bootstrap interval above zero, alone or added to a model that already
+contains gap.
 
 ### Firewall and validity checks
 
@@ -381,6 +413,18 @@ baseline.
   a quantity cannot help and only signals leakage.
 - **Images** only from the URI in the companion manifest. Do not open any other
   image path.
+- **No substitute data.** If an input cannot be read (the pkl, the companion, the
+  image at the manifest URI), the script must raise and stop. Never fall back to
+  simulated, synthetic, placeholder or "calibrated" values, and never generate
+  values from labels or from an assumption about what splits look like: a result
+  computed on substituted data is void whatever its numbers, and is discarded.
+  Print for every input that it was read and how many rows or patches came from
+  it.
+- **Implausible results are bugs until proven otherwise.** On this labeled set
+  the gap baseline reaches AP 0.84 and honest additions gain a few hundredths. An
+  out-of-fold AP above 0.95, a bootstrap gain above 0.1 or perfect precision at
+  every fraction has so far come only from leaked or substituted inputs; re-check
+  the input path and the firewall before reporting such a number.
 - **Sanity checks to include**: label shuffling within folds (the gain should
   vanish); per-fold consistency; the fraction of labeled rows where each feature is
   NaN, and whether that differs between labels 1 and 0 (missingness can itself be
@@ -397,7 +441,11 @@ interpretation), so it can be re-run on its own. For each feature you keep:
    - the hypothesis in one or two sentences, from your Phase 1 observations;
    - out-of-fold precision at 1/2.5/5/10/15/20% with hit counts, and AP, with
      per-fold values and baselines;
-   - bootstrap interval of the difference to the strongest baseline;
+   - bootstrap interval of the difference to the strongest baseline, and the
+     increment of the two-column model (gap plus the feature) over gap alone with
+     its interval, plus the Spearman correlation with `gap_um`;
+   - confirmation that every input was read (rows and patches read, read
+     failures), since a run on substituted data is void;
    - NaN fraction per label;
    - labeled share in the top of the full ranking, and the labeled-versus-unlabeled
      distribution difference;

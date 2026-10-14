@@ -53,7 +53,7 @@ guides use GT-labeled rows; optional `X_unlabeled` for `fit`. Still open:
 - **Unlabeled sample size.** `UNLABELED_ROWS_PER_BRAIN` = 100,000 is a transport bound,
   not tuned.
 
-## 794495 ground truth: cached snapshot is stale; artifacts deleted, rebuild pending (2026-10-13)
+## 794495 ground truth: cached snapshot was stale; cache, tables, sidecars and companions rebuilt (2026-10-13)
 
 **Found.** The 794495 base dataset cache (GT skeletons) dated 2026-08-24 held 19 neurons; GCS
 `ground_truth_tracings/794495/voxel` was re-uploaded on 2026-09-01 with 22 neurons, and all 19
@@ -67,13 +67,29 @@ Full inventory: `cache/ground_truth_inventory_20261013.md` (not tracked).
 `feature_tables/794495` (tables and sidecars), `context_cache/794495`, `descriptor_bank/794495`.
 Kept `metrics_out/794495` (June, 19 neurons) and `markdowns/rerank_companion_794495_*` (old tables).
 
-**Open (owner: user).** Rebuild in order on a compute node: `notebooks/generate_add_caches.py
---brains 794495`, `proofreader_evolve/prepare_feature_tables.py --brains 794495 --mcl 100`,
-`cli.precompute_availability --brains 794495 --mcl 100`, `cli.precompute_context_cache --brains
-794495 --mcl 100 --readers 16 --band-rows 50000 --labeled-extension`, `cli.preflight`. The frozen
-detectors remain fitted on the August snapshot (retraining is a separate decision); 794495
-Precision@K from earlier runs is not comparable with the rebuilt tables. Consider a GCS
-`updated`-time check in `generate_add_caches.py` before reusing a base cache.
+**Rebuilt 2026-10-13.** `generate_add_caches.py` (58 min; 22 GT neurons, node by node identical to
+GCS), `prepare_feature_tables.py` (2 h 52 min; its final `preflight` reported `blocked` only because
+the sidecars did not exist yet, hence exit code 1 with complete tables), `precompute_availability`,
+`export_rerank_companion`. The pools hold the same physical candidates as before (500,111 split
+pairs in the same order; the same 58,120 merge junctions, reordered), but node ids were renumbered
+by the graph reload, so pool hashes, context-cache entries, bank results and companion row indices
+do not carry over. Labels: split 4,817 labeled (2,426 / 2,391; 985 rows changed), merge 7,010
+(128 / 6,882; 827 changed). Details: `cache/ground_truth_inventory_20261013.md` section 8.
+
+**Context cache rebuilt 2026-10-13 evening** (user, n268; `log/precompute_context_cache_20261013_211042_*.log.txt`):
+`precompute_context_cache --brains 794495 --mcl 100 --readers 16 --band-rows 50000 --labeled-extension`,
+2 h 7 min, fresh 50,000-row bands plus extensions of 52 (merge) and 1,428 (split) rows, 0 image failures.
+The image-alignment receipt had to be re-recorded first (`check_image_alignment`, then `--record-reviewed`):
+the receipt binds the dataset-cache identity, so a rebuilt cache fails `image_context.source` with
+`Image/cache identity changed since alignment review` until the review is redone. Verified the same
+evening (`log/labeled_extension_verify_794495_rebuilt_20261013.log`: all checks passed; 100% of labeled
+rows cached, 99.3% / 70.4% of them in the band before the extension) and `preflight --context-cache`
+passes for all eleven brains (`log/preflight_794495_rebuilt_20261013.log`).
+
+**Still open.** The frozen detectors remain fitted on the August snapshot (retraining is a separate
+decision); 794495 Precision@K from earlier runs is not comparable with the rebuilt tables. Consider a
+GCS `updated`-time check in `generate_add_caches.py` before reusing a base cache, and let
+`prepare_feature_tables.py` skip or soften its final preflight when sidecars are not expected yet.
 
 ## Context cache misses many GT-labeled rows: NaN descriptors where the metric is measured (2026-10-11)
 
@@ -107,7 +123,7 @@ every positive of every cell is now cached, so the "in cache" columns are 100% t
 
 | Cell | Pool rows | Band rows | Extension rows | Labeled rows | Labeled in band | Positives in band |
 |---|---|---|---|---|---|---|
-| 794495 merge / split | 58,120 / 500,111 | 50,000 | 40 / 1,078 | 6,212 / 4,001 | 99% / 73% | 100% / 94% |
+| 794495 merge / split (rebuilt 2026-10-13, new GT) | 58,120 / 500,111 | 50,000 | 52 / 1,428 | 7,010 / 4,817 | 99% / 70% | 100% / 90% |
 | 802449 merge / split | 299,339 / 890,547 | 50,000 | 11,649 / 7,170 | 18,564 / 13,074 | 63% / 45% | 79% / 66% |
 | 789202 merge / split | 43,737 / 37,354 | whole pool | 0 / 0 | 3,582 / 4,162 | 100% | 100% |
 | 794493 merge / split | 74,051 / 375,611 | 50,000 | 49 / 1,620 | 2,363 / 3,596 | 98% / 55% | 100% / 75% |
