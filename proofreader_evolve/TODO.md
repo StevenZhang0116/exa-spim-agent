@@ -272,6 +272,20 @@ candidates only, keep the full band for formulas, record the row rule in the inf
 and the run manifest, and add a test that labeled-row inference reproduces the full-band
 Precision@K for a classifier candidate.
 
+## Split labels and candidates against canonical: labels fine, flank pairs beyond r = 50 um (2026-10-14)
+
+Measured by `notebooks/split_canonical_gap.py` (write-up: `notebooks/merge_label_shadow_findings.md`
+section 7). The canonical `# Splits` exceeds the cache's by about 10% because 83% of canonical split
+pairs involve a segment below the 100 um MCL that is absent from the fragments graph and can never
+be a candidate; for the 27,949 pairs whose segments are both in the fragments graph the cache labels
+hold 97.5%, the split pool `tip_to_any_node|r=50|k=2` holds 95.0% (both 92.7%), reproducing the
+split sweep. The pool's misses are flank pairs, splits across an omitted stretch whose fragment
+ends lie farther apart than 50 um (87.9% covered against 99.4% of directly adjacent pairs; 754612
+69%, 794495 83%, 802449 84%). **Open:** size a larger pairing radius, or a tip-to-tip family for
+facing ends, on these flank pairs before changing the pool; no relabel is needed for splits.
+`verify_add_cache_metrics.py` reports canonical `SWC Run Length` in voxel units (cache / canonical
+0.67 everywhere); worth converting so the column is comparable.
+
 ## Merge labels are conservative: GT-node-count thresholds not rescaled (2026-10-07)
 
 Full write-up: `notebooks/merge_label_shadow_findings.md`.
@@ -319,6 +333,20 @@ change the merge benchmark at once. Remaining gap after rescaling (recall 0.80-0
 cache walks against the union of GT neurons rather than per neuron, canonical snaps sites
 to branch nodes, canonical dedups on its mislabeled `World` column, and fragments below the
 100 um MCL are absent.
+
+**Follow-up 2026-10-14** (`notebooks/merge_label_shadow_findings.md` section 6). Pooled over the
+eleven brains the current labels hold 67% of the canonical merge sites, 84% with length-based
+thresholds. Measured directly (`notebooks/merge_canonical_gap.py`, `notebooks/merge_canonical_gap/merge_canonical_gap.svg`), the
+junction rule `junction|nms=20|r=150` has a candidate within 20 um geodesic of 81% of the canonical sites
+(62-89% per brain; 89% within 150 um), almost the same as for the cache's own sites (84%, which
+reproduces the sweep). So the label gap and the candidate gap overlap: most merges missing from the
+labels already have a candidate and are labeled 0 or NaN; relabeling recovers most of the gap, and the
+candidate rule's own ceiling is the 11-19% bridge-type sites. About 16% of the label gap is
+label-definition difference (per-neuron walk, site snapping, MCL filter) to fix in the relabel step.
+Plan: relabel all brains (length thresholds plus the definition fixes; the 794495 canonical reference was
+rerun on 2026-10-14 from the 22-neuron GT: 198 sites, cache precision 92%), then decide on a second candidate
+family for bridge sites (tip-to-shaft partner nodes, wider radius, mid-shaft bulge scan), and rebuild
+once (the detector is refitted anyway).
 
 ## Context cache: band grown to 50,000 rows and older-microscope brains added (2026-10-08)
 

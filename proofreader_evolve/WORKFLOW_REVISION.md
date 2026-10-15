@@ -231,7 +231,7 @@ python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802
 
 Built 2026-10-13 by the user on n268 (`log/context_cache_labeled_extension_20261012.log`): 22 cells in
 8,291 s, 18 entries extended by 40 to 11,649 rows (802449 merge: 11,649, because `segment_on_gt` labels
-29,200 merge rows there), the four whole-pool entries unchanged, common prefix = band everywhere, 0 new
+29,200 merge rows there; 794495 was rebuilt from the current GT the same evening, extensions 52 merge / 1,428 split), the four whole-pool entries unchanged, common prefix = band everywhere, 0 new
 image failures, cache 117 GB. Verified the same day (see the evidence log): every GT-labeled row of every
 cell is cached, sampled contexts load at both tiers with the right `row_in_band`, preflight reports
 `extension_rows` per cell, and two registered descriptors recomputed on 802449 are byte-identical to the

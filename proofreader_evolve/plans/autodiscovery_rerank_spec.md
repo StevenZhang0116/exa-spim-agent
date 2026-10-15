@@ -96,8 +96,10 @@ existing enumeration, label-availability and grouped-fold code (no new logic):
    manifest names (`source_cache.file`), checked against `npz_sha256`, linked into
    the script cwd under every companion name the code uses, and part of the
    checkpoint key.
-4. Deferred: export the 802449 companion and confirm features on it (Stage 1
-   `--extra-pkl`), logging each confirmation (feature code hash, date).
+4. Partly done: the 802449 companions were exported on 2026-10-14
+   (`markdowns/rerank_companion_802449_{merge,split}.{npz,json}`); the confirmation run
+   itself (Stage 1 `--extra-pkl` with that companion, logging each confirmed feature's
+   code hash and date) has not been made yet.
 5. Deferred: extend the verify step to flag ids and coordinates used as feature
    values (GT access is already flagged).
 6. Deferred: a dry run with one simple recorded-style feature through Stage 1 and
@@ -109,8 +111,8 @@ The context cache held only the top 50k detector-ranked rows per brain and kind,
 many GT-labeled rows had NaN descriptors in evolve. A new detector from this
 pipeline scores every candidate, so its p_0 is not affected. Since 2026-10-12
 `precompute_context_cache --labeled-extension` also caches the GT-labeled rows outside
-the band (code done; the builds are pending), which closes that gap for evolve's own
-descriptors.
+the band (built for all eleven brains on 2026-10-12/13), which closes that gap for evolve's
+own descriptors.
 
 ## Not in scope
 

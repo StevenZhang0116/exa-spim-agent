@@ -316,6 +316,8 @@ python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802
 # --labeled-extension (2026-10-12) additionally caches the GT-labeled rows outside the band (a few thousand per cell),
 # so every row Precision@K ranks has a context; it needs the availability sidecars below and reuses complete entries.
 python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802449 789202 794493 794491 --mcl 100 --readers 16 --band-rows 50000 --labeled-extension
+# When a dataset cache (_add.pkl) is rebuilt, every artifact below descends from it; the order, the identity
+# checks and the times are in docs/dataset_artifact_dependencies.md.
 # REQUIRED before evolution/preflight: label-availability sidecars (minutes per brain). Labels become
 # three-valued (1 error / 0 GT-confirmed no error / NaN not judgeable); ranking, Precision@K, bootstrap and
 # fitting use GT-labeled rows only (see WORKFLOW_REVISION "Three-valued labels throughout").
