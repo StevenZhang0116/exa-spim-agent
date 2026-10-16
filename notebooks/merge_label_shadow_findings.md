@@ -302,7 +302,7 @@ site list carries a little error. Canonical is a definition, not absolute truth 
 precision against the cache is 0.83 to 0.96); the goal of a fix is agreement and an
 explainable bias, not matching one side exactly.
 
-### 6.4 Options for reaching the unreachable sites (to be measured before choosing)
+### 6.4 Options for reaching the unreachable sites (option 2 measured 2026-10-15, see 6.6)
 
 Step 1, diagnosis (read-only, 794495 and 802449): for each labeled-but-unreached site
 measure the geodesic distance to the nearest junction, whether another segment's tip lies
@@ -327,13 +327,17 @@ sites at 20 um and 89% at 150 um, so new candidate families compete for the rema
    is already in `notebooks/merge_candidate_pool_sweep_outputs_with_oldscope/`
    `mcl100_dcbde4ab2a6f6c44/tables/all_dataset_configurations.csv` for all 11 brains
    (denominator: the cache's own sites); for rescaled labels it is one parameter in
-   `scripts/shadow_merge_impact.py`.
+   `scripts/shadow_merge_impact.py`. Coverage side remeasured on the relabeled caches
+   2026-10-15; the label side is still unmeasured (6.6).
 2. **Tip-to-shaft candidates.** A merge usually leaves a split behind: neuron B's fragment
    ends where it was fused into A's segment, so B's tip sits on A's shaft. The split rule
    `tip_to_any_node|r=50|k=2` already enumerates these pairs; their partner nodes on the
    other segment, where the partner is not itself a tip, are natural merge-site candidates.
    Add them as a second candidate family with 20 um NMS. Reuses existing code, bounded
    count, aimed exactly at pass-through merges. Preferred option pending step 1.
+   **Measured 2026-10-15 (6.6):** pooled reach at 20 um 0.80 -> 0.86 (gap <= 10 um) / 0.88
+   (gap <= 20 um) for 2.0x / 2.8x candidates, shaft positives 7 to 19 times rarer; not adopted
+   for the current round.
 3. **Dense sampling along skeletons** every 20 um: coverage near the label ceiling, but
    hundreds of thousands of candidates per brain and a positive rate in the tenths of a
    percent that dilutes both the detector and Precision@K. Last resort, restricted to long
@@ -365,6 +369,105 @@ brain roughly double under the combined change, which also gives the merge Preci
 more statistical weight. Until then the current labels stay, uniformly across the eleven
 brains, and the merge feature specification tells AutoDiscovery that merge labels are
 conservative.
+
+### 6.6 Measurements of 2026-10-15 on the relabeled caches (length-based thresholds)
+
+All eleven caches were relabeled with the length-based thresholds on 2026-10-15
+(`python -m labeled_cache --policy length_v1`; section 5). Every number below is on those labels:
+2,134 cache sites (`gt_merge_sites`) and 2,319 canonical sites.
+
+**The current rule and how it is chosen.** The merge pool is the frozen detector's
+`junction|nms=20|r=150` (`proofreader_evolve/candidate_pools.json` keeps merge `null`):
+
+| Parameter | Value | Measured as | Role |
+|---|---|---|---|
+| Candidates | degree >= 3 nodes | | every branch point of a valid segment |
+| NMS | 20 um | Euclidean, same segment only | one branch point per 20 um of a segment, higher degree first |
+| Site snap | 50 um | Euclidean | the site is moved to the nearest node of its own segment |
+| Positive radius | 20 um | cable (geodesic) | a candidate within 20 um of a snapped site is label 1 |
+| Claim radius | 150 um | cable (geodesic) | coverage accounting only: a site counts as reached when a candidate lies within 150 um |
+| Judgeable (`near_gt_150`) | 150 um | Euclidean to a GT node | label 0 needs the segment on GT and a GT node within 150 um; otherwise NaN |
+
+The sweep (`merge_candidate_pool_sweep.py`) takes the fewest candidates subject to a worst-brain
+site recall of at least 0.80 at the claim radius; the detector build applies the same floor.
+Regenerated on the relabeled caches (`notebooks/merge_candidate_pool_sweep_outputs_with_oldscope/`),
+it selects `junction|nms=20|r=150` with status `target_unmet_best_effort`: worst brain 0.74
+(794493), pooled 0.89. Within the junction family the claim radius does not change the
+candidate count and NMS changes it by at most 16% (1.56 M at 20 um, 1.86 M at 0 um), so no
+junction configuration reaches the floor. At the positive radius the detector actually learns
+from (20 um) the pooled reach is 0.80 and the worst brain 0.58 (754610, 24 sites). Two caveats
+for a future criterion: the floor is judged at 150 um, where the positive labels use 20 um, and
+the worst brain is set by brains with 9 to 50 sites, where one site is 2 to 11 points.
+
+**Site snapping (50 um) has no effect on the cache labels.** All 2,134 cache sites snap at
+0 um: their coordinates are skeleton nodes of their own segment (the geometric walk records the
+fragment node where it re-approaches the GT; the two-GT audit records the supported junction
+node). Any snap radius gives the same labels, reach and companions. The radius only matters for
+the comparison with canonical sites (`merge_canonical_gap.py`), which come from another
+skeletonization: at 50 um, 22 of 2,319 canonical sites cannot be snapped (most likely on
+fragments below the 100 um MCL). A smaller radius would only report more canonical sites as
+unmeasurable. The canonical snap distances are not saved yet; record them in the next
+`merge_canonical_gap.py` run before deciding anything about this radius.
+
+**The positive radius (20 um) was swept only for coverage.** The claim-radius series of the
+sweep is the coverage a different positive radius would give (pooled 0.80 at 20 um, 0.835 at
+30 um, 0.854 at 50 um; worst brain 0.58 to 0.66). Its effect on labels (more positives per site,
+coarser localization of the cut, candidates 20 to 150 um from a site turning from 0 into 1) and
+on ranking was never measured (option 1 of 6.4).
+
+**Tip-to-shaft candidates (option 2 of 6.4), measured.** Script
+`notebooks/merge_shaft_candidate_reach.py`, results `notebooks/merge_shaft_reach/` (one JSON per
+brain, `summary.csv`), figures `notebooks/merge_shaft_reach/merge_shaft_capture.svg`
+(`plot_merge_shaft_capture.py`) and the schematic `notebooks/merge_candidate_families_illustration.svg`
+(`plot_merge_candidate_families.py`). Family S: in the occurrences of the declared split pool
+(`tip_to_any_node|r=80|k=2`), every partner node with role `non_tip`, i.e. a shaft node of one
+segment that a tip of another segment approaches within the gap limit; same-segment NMS 20 um
+(smallest gap first), and shaft nodes within 20 um of a kept junction dropped. The junction
+family reproduced `notebooks/merge_site_counts/mcl100_length_v1` exactly on all eleven brains
+(candidates, positives, reach at 20 um). Sites captured at 20 um:
+
+| brain | GT merge sites | junction | + tip-to-shaft gap <= 10 um | + tip-to-shaft gap <= 20 um | junction candidates | + candidates (<= 10 um) | + candidates (<= 20 um) |
+|---|---|---|---|---|---|---|---|
+| 802449 | 1,143 | 968 (85%) | +45 (89%) | +63 (90%) | 299,339 | +118,233 | +253,854 |
+| 794495 | 177 | 141 (80%) | +4 (82%) | +5 (82%) | 58,120 | +66,875 | +134,057 |
+| 750318 | 171 | 114 (67%) | +24 (81%) | +29 (84%) | 103,641 | +229,087 | +387,991 |
+| 747807 | 161 | 113 (70%) | +7 (75%) | +9 (76%) | 378,095 | +426,548 | +848,405 |
+| 751473 | 160 | 115 (72%) | +23 (86%) | +24 (87%) | 242,152 | +333,894 | +593,241 |
+| 794491 | 132 | 110 (83%) | +11 (92%) | +14 (94%) | 203,956 | +148,949 | +338,730 |
+| 789202 | 84 | 71 (85%) | +3 (88%) | +3 (88%) | 43,737 | +7,666 | +13,034 |
+| 794493 | 50 | 33 (66%) | +5 (76%) | +8 (82%) | 74,051 | +59,253 | +124,700 |
+| 754610 | 24 | 14 (58%) | +1 (62%) | +4 (75%) | 77,150 | +61,217 | +113,933 |
+| 754612 | 23 | 21 (91%) | +0 (91%) | +0 (91%) | 36,392 | +18,349 | +34,558 |
+| 754613 | 9 | 9 (100%) | +0 (100%) | +0 (100%) | 43,509 | +18,386 | +34,744 |
+| pooled | 2,134 | 1,709 (80%) | +123 (86%) | +159 (88%) | 1,560,142 | +1,488,457 | +2,877,247 |
+
+By gap limit, pooled over the eleven brains:
+
+| Pool | Candidates (x junction) | Reach at 20 um, pooled / worst | Brains below 0.80 | Canonical reach at 20 um | Positive share of judgeable rows | Candidates per newly captured site |
+|---|---|---|---|---|---|---|
+| junction | 1.56 M (1.0) | 0.801 / 0.583 | 6 | 0.810 | 3.9% | |
+| + gap <= 10 um | 3.05 M (2.0) | 0.859 / 0.625 | 3 | 0.862 | 2.7% | 12,100 |
+| + gap <= 20 um | 4.44 M (2.8) | 0.875 / 0.750 | 2 | 0.881 | 2.2% | 18,100 |
+| + gap <= 40 um | 6.76 M (4.3) | 0.887 / 0.750 | 2 | 0.894 | 1.7% | 28,300 |
+| + gap <= 80 um | 9.56 M (6.1) | 0.900 / 0.750 | 1 | 0.905 | 1.2% | 37,700 |
+
+The shaft rows alone are positive in 0.51% (gap <= 10 um) to 0.21% (gap <= 80 um) of their
+judgeable rows, against 3.9% for the junction family. Of the census bridge sites (no junction
+within 30 um), gap <= 20 um captures 62 of 131 on unbranched segments, 35 of 117 with a junction
+30 to 150 um away and 51 of 99 with no junction within 150 um; gap <= 80 um captures 78, 54 and 64.
+
+Reading: the coverage gain is real and mechanistically sound (about half of the bridge sites
+have a foreign tip next to the merged shaft), but every newly captured site costs 12,000 to
+38,000 candidates whose positives are 7 to 19 times rarer than among junctions: positives
+grow by 7 to 10% (gap <= 10 / 20 um) while candidates grow 2.0x / 2.8x and judgeable negatives
+1.6x / 2.0x. Gap <= 10 um is the efficient end (77% of the
+gain of gap <= 20 um at half its candidates). 754610 stays below 0.80 under every gap limit.
+Not adopted for the current AutoDiscovery round: the merge pool stays the junction family,
+because ranking, not coverage, limits merge identification today (merge AP barely above the
+random rate). Revisit together with the merge criterion (the floor at 20 um, a minimum site
+count per brain or pooled reach) once ranking on the junction pool improves; adopting it needs
+a merge entry in `candidate_pools.json`, a non-junction mode in the detector-build merge runtime,
+and a family column in the merge companion.
 
 ## 7. The split side (2026-10-14): no label problem, a small candidate gap at omitted stretches
 
