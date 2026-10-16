@@ -6,6 +6,12 @@ Right: tip-to-shaft family (measured in ``merge_shaft_candidate_reach.py``, not 
 shaft node nearest a foreign segment tip; a side-by-side fusion leaves no branch point, but
 the unfused rest of neuron B ends next to the merged shaft.
 
+Bottom row: the site classes of the merge topology census (``merge_topology_diagnosis.py`` and
+``merge_diagnosis_followup.py``), by the cable distance from the GT merge site to the nearest
+junction of its segment: branch (a junction within 30 um) and the three bridge subclasses
+(nearest junction 30-150 um away, beyond 150 um, or none on the segment). Distances along the
+skeleton are marked by ticks; the drawing is not to scale.
+
 GT neurons are colored bands (A, B); fragment skeletons are dark lines, one continuous line
 per segment. Colors: the first three categorical slots of the dataviz reference palette
 (validated all-pairs, light mode); candidates carry direct labels.
@@ -113,13 +119,53 @@ def shaft_panel(ax):
     frame(ax, "Tip-to-shaft: shaft node next to a foreign tip")
 
 
+SITE_X = 40.0                      # merge site of the class panels
+TICKS = {"30": 12.0, "150": 40.0}   # schematic offsets of 30 and 150 um along the skeleton
+
+
+def class_panel(ax, title, branch_at=None):
+    """One site class. Within 30 um of the site, ``branch_at`` is where B joins A (branch);
+    otherwise A runs into B through the site unbranched and ``branch_at`` is a true branch of B."""
+    if branch_at is not None and branch_at - SITE_X < TICKS["30"]:   # branch: B joins A next to the site
+        band(ax, [(-2, 0), (104, 0)], NEURON_A)
+        band(ax, [(branch_at, 0), (branch_at + 12, 24)], NEURON_B)
+        skeleton(ax, [(-2, 0), (104, 0)], tips=[(-2, 0), (104, 0)])
+        skeleton(ax, [(branch_at, 0), (branch_at + 12, 24)], tips=[(branch_at + 12, 24)])
+    else:                                                     # bridge: A continues into B, unbranched
+        band(ax, [(-2, 0), (SITE_X, 0)], NEURON_A)
+        band(ax, [(SITE_X, 0), (104, 0)], NEURON_B)
+        skeleton(ax, [(-2, 0), (104, 0)], tips=[(-2, 0), (104, 0)])
+        if branch_at is not None:
+            band(ax, [(branch_at, 0), (branch_at + 9, 22)], NEURON_B)
+            skeleton(ax, [(branch_at, 0), (branch_at + 9, 22)], tips=[(branch_at + 9, 22)])
+    if branch_at is not None:
+        ax.scatter([branch_at], [0], s=200, facecolors="none", edgecolors=CANDIDATE, linewidths=2.2, zorder=6)
+    for name, offset in TICKS.items():
+        for x in (SITE_X - offset, SITE_X + offset):
+            ax.plot([x, x], [-3.5, 3.5], color=INK_2, lw=1.1, zorder=5)
+        ax.text(SITE_X + offset, -8, f"{name} µm", fontsize=8.5, color=INK_2, ha="center", va="top", zorder=7)
+    merge_site(ax, (SITE_X, 0))
+    ax.set_xlim(-6, 106)
+    ax.set_ylim(-16, 30)
+    ax.set_aspect("equal")
+    ax.axis("off")
+    ax.set_title(title, loc="left", fontsize=11, color=INK, fontweight="semibold", pad=4)
+
+
 def main():
     plt.rcParams.update({"font.family": "DejaVu Sans", "figure.facecolor": SURFACE, "savefig.facecolor": SURFACE})
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5.6))
-    for ax in axes:
+    fig = plt.figure(figsize=(14, 8.2))
+    grid = fig.add_gridspec(2, 4, height_ratios=[1.0, 0.42], hspace=0.28, wspace=0.08)
+    top = [fig.add_subplot(grid[0, 0:2]), fig.add_subplot(grid[0, 2:4])]
+    bottom = [fig.add_subplot(grid[1, i]) for i in range(4)]
+    for ax in top + bottom:
         ax.set_facecolor(SURFACE)
-    junction_panel(axes[0])
-    shaft_panel(axes[1])
+    junction_panel(top[0])
+    shaft_panel(top[1])
+    class_panel(bottom[0], "branch: junction ≤ 30 µm", branch_at=SITE_X + 6)
+    class_panel(bottom[1], "bridge: junction 30–150 µm", branch_at=SITE_X + 26)
+    class_panel(bottom[2], "bridge: junction > 150 µm", branch_at=SITE_X + 52)
+    class_panel(bottom[3], "bridge: unbranched segment")
     handles = [
         Line2D([], [], color=NEURON_A, alpha=BAND_ALPHA, lw=10, solid_capstyle="round", label="GT neuron A"),
         Line2D([], [], color=NEURON_B, alpha=BAND_ALPHA, lw=10, solid_capstyle="round", label="GT neuron B"),
@@ -134,7 +180,10 @@ def main():
                         bbox_to_anchor=(0.5, 0.01), handlelength=2.4, columnspacing=1.8)
     for text in legend.get_texts():
         text.set_color(INK)
-    fig.subplots_adjust(left=0.02, right=0.98, top=0.92, bottom=0.1, wspace=0.06)
+    fig.subplots_adjust(left=0.02, right=0.98, top=0.95, bottom=0.08)
+    row = bottom[0].get_position()
+    fig.text(0.02, row.y1 + 0.075, "Merge site classes: cable distance from \u00d7 to the nearest junction",
+             fontsize=12.5, color=INK, fontweight="semibold", ha="left")
     fig.savefig(OUT.with_suffix(".svg"))
     print(f"wrote {OUT.with_suffix('.svg')}")
 

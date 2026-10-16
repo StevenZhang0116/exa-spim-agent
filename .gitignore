@@ -118,6 +118,8 @@ notebooks/log/
 notebooks/merge_label_shadow/
 notebooks/merge_canonical_gap/
 notebooks/merge_shaft_reach/
+notebooks/merge_blind_sites/
+notebooks/merge_site_gt_tip/
 notebooks/label_counts/
 notebooks/split_canonical_gap/
 notebooks/evaluable_precision_test/

@@ -17,8 +17,9 @@ Per brain and family, all GT-blind except the measurement:
 - candidate count;
 - reach: cache ``gt_merge_sites`` and canonical sites (``metrics_out/<brain>/*/merge_sites.csv``),
   each snapped to the nearest node of its own segment within 50 um, then the geodesic cable
-  distance to the nearest candidate; covered at 20 um (the positive-label radius) and 150 um
-  (the claim radius);
+  distance to the nearest candidate; covered at 20 um (the positive-label radius), 30 um and
+  150 um (the claim radius); every site's nearest distance per family is stored too, so other
+  radii need no rerun;
 - positives (candidates within 20 um of a snapped cache site) and GT-judgeable rows
   (``near_gt_150``: segment carries a GT node label and the candidate lies within 150 um of a
   GT node), hence the prevalence each family would bring to the benchmark;
@@ -64,6 +65,7 @@ NMS_UM = 20.0
 SNAP_MAX_UM = 50.0
 POSITIVE_UM = 20.0
 CLAIM_UM = 150.0
+REACH_RADII_UM = (POSITIVE_UM, 30.0, CLAIM_UM)
 NEAR_GT_UM = 150.0
 GAP_VARIANTS = (10.0, 20.0, 40.0, 80.0)
 OUT_DIR = PROJECT_ROOT / "notebooks" / "merge_shaft_reach"
@@ -219,7 +221,7 @@ def measure_brain(brain: str, mcl: int, out_dir: Path) -> dict:
         for kind in ("cache", "canonical"):
             d = frame.loc[frame["kind"] == kind, f"d_{name}"].to_numpy(dtype=float)
             record[f"{kind}_sites"] = int(len(d))
-            for radius in (POSITIVE_UM, CLAIM_UM):
+            for radius in REACH_RADII_UM:
                 record[f"{kind}_reach_{radius:g}"] = float(np.mean(d <= radius)) if len(d) else float("nan")
                 record[f"{kind}_covered_{radius:g}"] = int(np.sum(d <= radius))
         families[name] = record
@@ -252,8 +254,14 @@ def measure_brain(brain: str, mcl: int, out_dir: Path) -> dict:
                      "positives": [int(c["n_is_merge_site_1"]), families["J"]["positives"]],
                      "reach_20": [round(float(c["gt_site_recall_at_positive_radius"]), 4),
                                   round(families["J"]["cache_reach_20"], 4)]}
+    # nearest-candidate cable distance of every site per family (None: none within CLAIM_UM / unsnappable)
+    site_distances = {kind: {name: [None if not np.isfinite(v) else round(float(v), 3)
+                                    for v in frame.loc[frame["kind"] == kind, f"d_{name}"]]
+                             for name in masks}
+                      for kind in ("cache", "canonical")}
     result = {"brain": brain, "mcl": mcl, "cache": str(cache), "split_pool": split_pool,
               "canonical_sites_csv": canonical["path"], "families": families, "bridge": bridge,
+              "site_distances_um": site_distances,
               "validation_against_site_counts": check, "seconds": round(time.monotonic() - started, 1)}
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / f"{brain}_mcl{mcl}.json").write_text(json.dumps(result, indent=1, default=float))
@@ -283,12 +291,12 @@ def summarize(out_dir: Path, mcl: int) -> pd.DataFrame:
     for name, group in frame.groupby("family", sort=False):
         total = {"brain": "pooled", "family": name}
         for column in ("candidates", "positives", "judgeable", "positives_judgeable", "cache_sites",
-                       "canonical_sites", "cache_covered_20", "cache_covered_150",
-                       "canonical_covered_20", "canonical_covered_150"):
+                       "canonical_sites", "cache_covered_20", "cache_covered_30", "cache_covered_150",
+                       "canonical_covered_20", "canonical_covered_30", "canonical_covered_150"):
             total[column] = int(group[column].sum())
         total["prevalence"] = total["positives_judgeable"] / total["judgeable"] if total["judgeable"] else float("nan")
         for kind in ("cache", "canonical"):
-            for radius in ("20", "150"):
+            for radius in ("20", "30", "150"):
                 total[f"{kind}_reach_{radius}"] = total[f"{kind}_covered_{radius}"] / total[f"{kind}_sites"]
                 total[f"{kind}_worst_reach_{radius}"] = float(group[f"{kind}_reach_{radius}"].min())
         pooled.append(total)

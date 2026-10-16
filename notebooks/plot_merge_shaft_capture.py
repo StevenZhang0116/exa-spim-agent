@@ -5,7 +5,8 @@ Reads the per-brain results of ``merge_shaft_candidate_reach.py``
 counts as captured when a candidate lies within 20 um of cable (the positive-label radius).
 
 Left panel: share of each dataset's GT merge sites captured by the junction family, added by
-tip-to-shaft candidates with a tip gap <= 10 um, added by gaps of 10-20 um, and not captured.
+tip-to-shaft candidates with a tip gap <= 10 um, added by gaps of 10-20 um (all within 20 um),
+then the sites whose nearest of these candidates lies 20-30 um away, and not captured.
 Right panel: the candidates this costs, relative to the junction family of the same dataset
 (junction = 1, + tip-to-shaft <= 10 um, + 10-20 um), with the absolute candidate count at the
 bar end, so datasets of very different size share one scale. Two panels because sites and candidates are
@@ -35,6 +36,7 @@ NOT_CAPTURED = "#dddcd6"
 JUNCTION = "#2a78d6"       # categorical slot 1
 SHAFT_10 = "#eb6834"       # slot 2
 SHAFT_20 = "#1baf7a"       # slot 3 (below 3:1 on the surface: values are labelled at the bar ends)
+RADIUS_30 = "#eda100"      # slot 4 (below 3:1 on the surface: values are labelled at the bar ends)
 
 
 def load(results_dir: Path, mcl: int) -> list[dict]:
@@ -42,12 +44,16 @@ def load(results_dir: Path, mcl: int) -> list[dict]:
     for path in sorted(glob.glob(str(results_dir / f"*_mcl{mcl}.json"))):
         result = json.loads(Path(path).read_text())
         f = result["families"]
+        if "cache_covered_30" not in f["J+S20"]:
+            raise SystemExit(f"{path} has no 30 um coverage; rerun merge_shaft_candidate_reach.py "
+                             "(it records 20, 30 and 150 um since 2026-10-16)")
         rows.append({
             "brain": result["brain"],
             "sites": f["J"]["cache_sites"],
             "junction": f["J"]["cache_covered_20"],
             "add_10": f["J+S10"]["cache_covered_20"] - f["J"]["cache_covered_20"],
             "add_20": f["J+S20"]["cache_covered_20"] - f["J+S10"]["cache_covered_20"],
+            "add_r30": f["J+S20"]["cache_covered_30"] - f["J+S20"]["cache_covered_20"],
             "cand_junction": f["J"]["candidates"],
             "cand_10": f["J+S10"]["candidates"] - f["J"]["candidates"],
             "cand_20": f["J+S20"]["candidates"] - f["J+S10"]["candidates"],
@@ -96,16 +102,18 @@ def main(argv=None) -> int:
 
     # left: share of GT merge sites
     share = lambda key: [100.0 * r[key] / r["sites"] for r in rows]  # noqa: E731
-    missed = [100.0 * (r["sites"] - r["junction"] - r["add_10"] - r["add_20"]) / r["sites"] for r in rows]
-    stacked(left, y, [share("junction"), share("add_10"), share("add_20"), missed],
-            [JUNCTION, SHAFT_10, SHAFT_20, NOT_CAPTURED])
+    missed = [100.0 * (r["sites"] - r["junction"] - r["add_10"] - r["add_20"] - r["add_r30"]) / r["sites"]
+              for r in rows]
+    stacked(left, y, [share("junction"), share("add_10"), share("add_20"), share("add_r30"), missed],
+            [JUNCTION, SHAFT_10, SHAFT_20, RADIUS_30, NOT_CAPTURED])
     for i, r in enumerate(rows):
         captured = r["junction"] + r["add_10"] + r["add_20"]
-        left.text(101.5, i, f"{captured:,} / {r['sites']:,}", va="center", ha="left", fontsize=9, color=INK)
-    left.set_xlim(0, 118)
+        left.text(101.5, i, f"{captured:,} + {r['add_r30']} / {r['sites']:,}", va="center", ha="left",
+                  fontsize=9, color=INK)
+    left.set_xlim(0, 124)
     left.set_xticks([0, 20, 40, 60, 80, 100])
     left.set_yticks(y, labels, fontsize=10, color=INK)
-    style(left, "GT merge sites captured within 20 µm (%)")
+    style(left, "GT merge sites captured (%)")
 
     # right: candidates relative to the junction family of the same dataset
     totals = stacked(right, y, [[1.0] * len(rows), [r["cand_10"] / r["cand_junction"] for r in rows],
@@ -129,8 +137,9 @@ def main(argv=None) -> int:
     handles = [Patch(color=JUNCTION, label="junction (degree ≥ 3)"),
                Patch(color=SHAFT_10, label="+ tip-to-shaft, gap ≤ 10 µm"),
                Patch(color=SHAFT_20, label="+ tip-to-shaft, gap 10–20 µm"),
+               Patch(color=RADIUS_30, label="+ nearest candidate at 20–30 µm"),
                Patch(color=NOT_CAPTURED, label="not captured")]
-    legend = fig.legend(handles=handles, loc="lower center", ncol=4, frameon=False, fontsize=10,
+    legend = fig.legend(handles=handles, loc="lower center", ncol=5, frameon=False, fontsize=10,
                         bbox_to_anchor=(0.5, 0.0))
     for text in legend.get_texts():
         text.set_color(INK)
