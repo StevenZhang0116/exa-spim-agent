@@ -1,12 +1,17 @@
 """Plot the three-valued label distribution (1 / 0 / NaN) per brain for merge and split.
 
-Reads only the availability sidecars' ``meta.json`` written by
-``python -m proofreader_evolve.cli.precompute_availability`` (no tables, caches or
-labels are loaded), so it runs in seconds. Labels are three-valued:
+Labels are three-valued:
 
     1    error (evaluator label 1; always GT-available)
     0    GT-available, no error
     NaN  not judgeable by GT (evaluator label 0, no GT nearby)
+
+Sources (no labels or caches are loaded here, so it runs in seconds):
+- ``--source counts`` (default): ``notebooks/label_counts/<brain>_mcl<N>.json`` written by
+  ``notebooks/label_counts.py`` straight from the labeled caches and the pools declared in
+  ``proofreader_evolve/candidate_pools.json``; needs no feature tables.
+- ``--source sidecars``: the availability sidecars' ``meta.json`` beside the prepared feature
+  tables (``cli.precompute_availability``); valid only while those tables are current.
 
 Figure: one row per kind. Left: share of all candidates in each class (NaN dominates).
 Right: GT-available candidates only, 1 vs 0 counts, i.e. the rows proofreader_evolve
@@ -14,7 +19,7 @@ ranks and fits on (three-valued labels).
 
 Usage (repository root, panda env):
     python notebooks/plot_label_availability.py
-    python notebooks/plot_label_availability.py --merge-definition segment_on_gt --out figs/x.png
+    python notebooks/plot_label_availability.py --source sidecars --merge-definition segment_on_gt
 """
 import argparse
 import json
@@ -24,7 +29,8 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 TABLES_DIR = ROOT / "proofreader_evolve" / "feature_tables"
-DEFAULT_OUT = ROOT / "figs" / "label_availability_distribution.png"
+COUNTS_DIR = ROOT / "notebooks" / "label_counts"
+DEFAULT_OUT = ROOT / "notebooks" / "label_availability_distribution.svg"
 CURRENT_BRAINS = ("789202", "794491", "794493", "794495", "802449")
 
 # Reference categorical slots (dataviz palette): 1 = slot-2 orange, 0 = slot-1 blue,
@@ -34,7 +40,23 @@ LABELS = {"1": "1  error", "0": "0  GT-available, no error", "nan": "NaN  not ju
 TEXT_PRIMARY, TEXT_SECONDARY, GRID = "#0b0b0b", "#52514e", "#e4e3df"
 
 
-def load_counts(tables_dir=TABLES_DIR, merge_definition="near_gt_150", split_definition="segment_on_gt"):
+def load_counts_json(counts_dir=COUNTS_DIR, mcl=100):
+    """One row per (brain, kind) from the per-brain JSONs of ``label_counts.py``."""
+    rows = []
+    for path in sorted(Path(counts_dir).glob(f"*_mcl{mcl}.json")):
+        result = json.loads(path.read_text())
+        for kind, record in result["kinds"].items():
+            if record["1"] + record["0"] + record["nan"] != record["rows"]:
+                raise ValueError(f"{path}: {kind} counts do not add up to the row count")
+            rows.append({"brain": result["brain"], "kind": kind, "definition": record["definition"],
+                         "policy": record.get("candidate_policy"), "rows": record["rows"],
+                         "1": record["1"], "0": record["0"], "nan": record["nan"]})
+    if not rows:
+        raise FileNotFoundError(f"No label counts under {counts_dir}; run notebooks/label_counts.py")
+    return pd.DataFrame(rows)
+
+
+def load_counts_sidecars(tables_dir=TABLES_DIR, merge_definition="near_gt_150", split_definition="segment_on_gt"):
     """One row per (brain, kind): counts of 1, 0 and NaN from the sidecar metadata."""
     rows = []
     for meta_path in sorted(Path(tables_dir).glob("*/*.availability/meta.json")):
@@ -46,7 +68,8 @@ def load_counts(tables_dir=TABLES_DIR, merge_definition="near_gt_150", split_def
         if positives != meta["positives"]:
             raise ValueError(f"{meta_path}: positives outside the available set; regenerate the sidecar")
         rows.append({"brain": meta_path.parent.parent.name, "kind": kind, "definition": definition,
-                     "rows": n_rows, "1": positives, "0": available - positives, "nan": n_rows - available})
+                     "policy": None, "rows": n_rows, "1": positives, "0": available - positives,
+                     "nan": n_rows - available})
     if not rows:
         raise FileNotFoundError(f"No availability sidecars under {tables_dir}; run cli.precompute_availability")
     table = pd.DataFrame(rows)
@@ -71,6 +94,8 @@ def plot_label_availability(counts, out_path=DEFAULT_OUT):
         y = list(range(len(sub)))[::-1]
         names = [f"{b}{' *' if b not in CURRENT_BRAINS else ''}" for b in sub.index]
         definition = sub["definition"].iloc[0]
+        policies = sorted({p for p in sub["policy"] if isinstance(p, str)})
+        pool = f", {policies[0]}" if len(policies) == 1 else ""
 
         # Left: share of all candidates (stacked 100%).
         ax = axes[r][0]
@@ -87,7 +112,7 @@ def plot_label_availability(counts, out_path=DEFAULT_OUT):
         ax.set_xlim(0, 1)
         ax.set_yticks(y, names)
         ax.xaxis.set_major_formatter(matplotlib.ticker.PercentFormatter(1.0))
-        ax.set_title(f"{kind}: share of all candidates ({definition})", loc="left",
+        ax.set_title(f"{kind}: share of all candidates ({definition}{pool})", loc="left",
                      fontsize=10, color=TEXT_PRIMARY)
 
         # Right: available rows only, 1 vs 0 counts.
@@ -117,18 +142,25 @@ def plot_label_availability(counts, out_path=DEFAULT_OUT):
     fig.tight_layout(rect=(0, 0.05, 1, 0.95))
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_path, dpi=150)
+    fig.savefig(out_path)
     plt.close(fig)
     return out_path
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--source", choices=("counts", "sidecars"), default="counts")
+    parser.add_argument("--counts-dir", type=Path, default=COUNTS_DIR)
+    parser.add_argument("--mcl", type=int, default=100)
     parser.add_argument("--tables-dir", type=Path, default=TABLES_DIR)
-    parser.add_argument("--merge-definition", choices=("near_gt_150", "segment_on_gt"), default="near_gt_150")
+    parser.add_argument("--merge-definition", choices=("near_gt_150", "segment_on_gt"), default="near_gt_150",
+                        help="Sidecar source only; the counts source uses the benchmark definitions")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
-    args = parser.parse_args()
-    counts = load_counts(args.tables_dir, args.merge_definition)
+    args = parser.parse_args(argv)
+    if args.source == "counts":
+        counts = load_counts_json(args.counts_dir, args.mcl)
+    else:
+        counts = load_counts_sidecars(args.tables_dir, args.merge_definition)
     print(counts.to_string(index=False))
     print(f"Saved {plot_label_availability(counts, args.out)}")
 

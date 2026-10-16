@@ -69,7 +69,10 @@ S3 with 16 readers, one brain at a time. Allocate several days.
 - `python -u notebooks/split_canonical_gap.py --measure --brains <all>` then `--plot`: coverage of the canonical split pairs by the r=80 pool (r=50 covered 95% of the pairs whose segments both exist).
 - Merge specification (split done 2026-10-15): from the new 794495 merge companion recompute the label counts and the degree baseline (tie-aware AP) with the specification's own scoring code; archive the previous text under `markdowns/archive/` and add the lineage row in `markdowns/README.md`.
 - `python -u scripts/evaluable_precision_test.py`.
-- `python notebooks/plot_label_availability.py` (reads the new sidecars).
+- Label distribution figure: no rebuild needed. `python -u notebooks/label_counts.py` (counts straight from the
+  caches and `candidate_pools.json`, `notebooks/label_counts/`), then `python notebooks/plot_label_availability.py`
+  (writes `notebooks/label_availability_distribution.svg`). After the rebuild, `--source sidecars` cross-checks
+  the same counts from the new sidecars.
 - A dated `WORKFLOW_REVISION.md` entry with the first preflight and seed-baseline numbers on the rebuilt tables.
 
 ## 6. Until then
