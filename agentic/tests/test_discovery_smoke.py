@@ -501,6 +501,40 @@ class DiscoverySmokeTests(unittest.TestCase):
         self.assertEqual(cached_output.getvalue(), output.getvalue())
         self.assertIsNone(workflow.PREDICTIVE_MANIFEST)
 
+    def test_rerun_argv_forwards_only_the_companions_of_the_pkls_it_passes(self) -> None:
+        """The reproduce step runs the origin pkl alone, so the companion of an
+        --extra-pkl brain must not reach it: rerun_experiments.py rejects a companion
+        whose manifest names a pkl absent from the call (the 2026-10-14 abort)."""
+        saved = (workflow.COMPANIONS_BY_PKL, workflow.DIRECTION, workflow.TOP_K,
+                 workflow.PREDICTIVE_MANIFEST)
+        try:
+            workflow.COMPANIONS_BY_PKL = {
+                "cache/a.pkl": ["m/rerank_companion_111_split.npz", "m/rerank_companion_111_split.json"],
+                "cache/b.pkl": ["m/rerank_companion_222_split.npz", "m/rerank_companion_222_split.json"],
+            }
+            workflow.DIRECTION, workflow.TOP_K, workflow.PREDICTIVE_MANIFEST = "predictive", None, "sel.json"
+
+            def companions(argv: list[str]) -> list[str]:
+                return [argv[i + 1] for i, a in enumerate(argv) if a == "--companion"]
+
+            reproduce = workflow.rerun_argv("run.json", "cache/a.pkl")
+            self.assertEqual(companions(reproduce),
+                             ["m/rerank_companion_111_split.npz", "m/rerank_companion_111_split.json"])
+            self.assertNotIn("--extra-pkl", reproduce)
+            extrapolate = workflow.rerun_argv(
+                "run.json", "cache/a.pkl", extra_pkls_rel=["cache/b.pkl"],
+                origin_results_rel="origin.json", extra_only=True)
+            self.assertEqual(companions(extrapolate), [
+                "m/rerank_companion_111_split.npz", "m/rerank_companion_111_split.json",
+                "m/rerank_companion_222_split.npz", "m/rerank_companion_222_split.json"])
+            self.assertEqual(extrapolate[extrapolate.index("--extra-pkl") + 1], "cache/b.pkl")
+            # No companions at all: the flag is absent (pre-companion runs unchanged).
+            workflow.COMPANIONS_BY_PKL = {}
+            self.assertNotIn("--companion", workflow.rerun_argv("run.json", "cache/a.pkl"))
+        finally:
+            (workflow.COMPANIONS_BY_PKL, workflow.DIRECTION, workflow.TOP_K,
+             workflow.PREDICTIVE_MANIFEST) = saved
+
     def test_compute_steps_use_selective_and_extra_only_work_items(self) -> None:
         workflow.DIRECTION = "both"
         workflow.TOP_K = 2

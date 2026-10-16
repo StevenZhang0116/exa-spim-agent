@@ -274,9 +274,11 @@ RANK_BY: str = "posterior-surprise"
 TOP_K: int | None = TOP_K_MAX  # overridden at startup; see main()
 DIRECTION: str = "both"       # overridden at startup from --direction; see main()
 PREDICTIVE_MANIFEST: str | None = None
-# Companion files (--companion), passed to every rerun_experiments.py call; the
-# helper binds each to the --pkl / --extra-pkl its manifest names.
-COMPANIONS: list[str] = []
+# Companion files (--companion), keyed by the dataset pkl (relative to the project
+# root) their manifest names. ``rerun_argv`` forwards to each rerun_experiments.py
+# call only the companions of the pkls that call receives: the reproduce step runs
+# the origin pkl alone, and the helper rejects a companion of any other pkl.
+COMPANIONS_BY_PKL: dict[str, list[str]] = {}
 # Bump this whenever predictive_selection_instruction changes semantically.
 PREDICTIVE_POLICY_VERSION: str = "exclusion-only-v1"
 PREDICTIVE_MANIFEST_SUFFIX: str = ".predictive-selection.json"
@@ -454,8 +456,9 @@ def rerun_argv(
     """
     argv = ["python", "agentic/rerun_experiments.py", json_rel,
             "--pkl", pkl_rel, "--rank-by", RANK_BY, "--direction", DIRECTION]
-    for companion in COMPANIONS:
-        argv += ["--companion", companion]
+    for dataset in (pkl_rel, *(extra_pkls_rel or [])):
+        for companion in COMPANIONS_BY_PKL.get(dataset, []):
+            argv += ["--companion", companion]
     if DIRECTION == "predictive":
         if PREDICTIVE_MANIFEST is None:
             raise RuntimeError("predictive direction requires a selection manifest")
@@ -2526,8 +2529,9 @@ def main() -> int:
     global DIRECTION
     DIRECTION = args.direction or "predictive"
 
-    global COMPANIONS
+    global COMPANIONS_BY_PKL
     companion_paths = [_resolve_existing(p, "companion file") for p in args.companion]
+    COMPANIONS_BY_PKL = {}
     if companion_paths:
         if pkl_path is None:
             parser.error("--companion requires --pkl.")
@@ -2536,10 +2540,11 @@ def main() -> int:
         except ModuleNotFoundError:  # direct: python agentic/run_discovery_workflow.py
             from rerun_experiments import bind_companions  # type: ignore[no-redef]
         try:  # fail before any agent step, not inside the first compute step
-            bind_companions(companion_paths, [pkl_path, *extra_pkl_paths])
+            bound = bind_companions(companion_paths, [pkl_path, *extra_pkl_paths])
         except ValueError as exc:
             parser.error(f"--companion: {exc}")
-    COMPANIONS = [_rel_to_root(p) for p in companion_paths]
+        COMPANIONS_BY_PKL = {_rel_to_root(pkl): [_rel_to_root(f) for f in files]
+                             for pkl, files in bound.items() if files}
 
     if args.split_feature_labels_only:
         asyncio.run(run_split_feature_labeling_only(json_path))
