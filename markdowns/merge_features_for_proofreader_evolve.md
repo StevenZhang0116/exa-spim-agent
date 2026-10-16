@@ -15,9 +15,9 @@ Its URI and level geometry are in the companion `.json`.
 
 This task is about **merge errors only**. The document has three parts: §1 what the
 data is, §2 what to do with it and how it is judged, §3 the schema of each file.
-Revised 2026-10-13: substitute-data ban (Firewall), measured baseline figures with the
-increment-over-baseline rule (Evaluation), and label counts of the companion regenerated
-from the rebuilt dataset cache (22 GT neurons); the previous text is archived.
+Revised 2026-10-15: tie-aware average precision with corrected baseline figures and
+reporting rules for differences and subgroups (Evaluation), fewer constraints on what
+to explore (Goal, Evaluation, Firewall); the previous text is archived.
 
 ---
 
@@ -92,9 +92,11 @@ So a feature must be computable from data that exists for any brain (the fragmen
 reconstruction, the candidate list and the raw image), and its code must run
 unchanged on another brain's files.
 
-Discover from the data. This document deliberately contains no list of known or
-expected features. Do not import feature ideas from outside the data you were
-given, and do not try to recover any earlier detector.
+This document deliberately contains no list of known or expected features. Ideas
+may come from anywhere, the data or what you know about neurons and about imaging,
+but every feature you keep must be tied to something you observed in this data in
+Phase 1 and must be computable from the allowed inputs alone. Do not try to recover
+any earlier detector.
 
 Your features will later be confirmed on data you cannot see. A feature that only
 works on this brain's folds will not survive that confirmation.
@@ -210,7 +212,8 @@ translation against the zarr `multiscales` metadata (`fused.zarr/.zattrs`) once.
 Use `open_level` as written: the `kvstore` spec takes exactly `driver`, `bucket` and
 `path`, and extra members (for example `auth_provider`) make `ts.open` fail. If the
 image cannot be opened or a patch cannot be read, fix the call or stop the
-experiment; never continue with invented intensities (see Firewall).
+experiment; never continue with invented intensities (see Firewall). The
+`INPUTS READ` line (Code layout) reports how many patches were read.
 
 **The context dictionary:**
 
@@ -280,7 +283,11 @@ three files by their names here (`dataset_cache_794495_mcl100_add.pkl`,
 `rerank_companion_794495_merge.npz` and `rerank_companion_794495_merge.json`) from
 the working directory, computes the feature for all rows, evaluates it and prints
 the results. It will be re-run with another brain's files substituted under the
-same names, so do not hard-code row counts, ids or brain-specific constants.
+same names, so do not hard-code row counts, ids or brain-specific constants. Print
+one line of the form
+`INPUTS READ fragment_nodes=<n> companion_rows=<n> image_patches=<read>/<requested>`
+(`image_patches=0/0` when the feature uses no image), so the record itself shows
+what its numbers were computed from.
 
 ### Evaluation
 
@@ -322,11 +329,17 @@ def precision_at_fraction(comp, scores, fraction, keys=None, counts=False):
     return (tp, k_total) if counts else tp / k_total
 
 def average_precision(comp, scores):
+    """Average precision over labeled rows. Tied scores form one threshold (as in
+    sklearn.metrics.average_precision_score), so a score that ties many rows is not
+    credited for the row order inside its ties."""
     label = comp["label"]
     rows = np.flatnonzero(~np.isnan(label))
-    order = rows[np.argsort(-np.asarray(scores, dtype=float)[rows], kind="stable")]
-    hits = label[order] == 1
-    return float(np.sum(np.cumsum(hits)[hits] / (np.flatnonzero(hits) + 1)) / max(hits.sum(), 1))
+    s = -np.asarray(scores, dtype=float)[rows]
+    order = np.argsort(s, kind="stable")
+    s, hits = s[order], label[rows][order] == 1
+    last = np.flatnonzero(np.r_[s[1:] != s[:-1], True])   # last row of every tie group
+    tp = np.cumsum(hits)[last]
+    return float(np.sum(tp / (last + 1) * np.diff(np.r_[0, tp])) / max(hits.sum(), 1))
 
 def labeled_share_at_fraction(comp, scores, fraction):
     """Share of GT-labeled rows among the top `fraction` of ALL rows (labeled or not)."""
@@ -345,16 +358,23 @@ Report for each feature and for the model:
 - the average precision of the out-of-fold scores (all folds pooled);
 - per-fold values;
 - the same numbers for the baselines below;
-- a paired bootstrap 95% interval of the difference to the strongest baseline:
+- a paired bootstrap 95% interval of the **difference in average precision to the
+  degree baseline** (not to the random rate, and not a difference in ROC-AUC):
   resample labeled rows with replacement within each fold, 1,000 draws, same draws
   for both scores.
+
+All of these are computed on the whole labeled set. A number computed on a subset
+of rows (one fold, one degree value, one region) must carry the subset's row and
+positive counts next to it and is not evidence on its own: a stratum of 20 rows
+with 5 positives gives even a random score an AP far above the 0.027 of the whole
+set.
 
 **Labeled versus unlabeled rows.** Only 7,010 of 58,120 rows are labeled (12.1%),
 and they are not a random sample: they lie on or near traced neurons. The ranking that is
 finally used covers all rows, and nothing above shows what a feature does to the
 unlabeled ones. For each feature, also report:
 - `labeled_share_at_fraction` at 1%, 5% and 20% of all rows, next to the overall
-  labeled share (10.7%): a feature that fills the top of the full ranking with
+  labeled share (12.1%): a feature that fills the top of the full ranking with
   unlabeled rows, or only with labeled ones, behaves differently off the traced
   neurons;
 - how its distribution differs between labeled and unlabeled rows (for example the
@@ -370,10 +390,13 @@ when the companion changes):**
   0.018 here (128 of 7,010).
 - **Junction degree** (higher ranked first). 58,047 of the 58,120 candidates have
   degree 3, 72 have degree 4 and one has degree 5; the few with degree >= 4 are
-  enriched in merges, so degree helps only at the very top: out-of-fold AP 0.044
-  (folds 0.023 / 0.068 / 0.060); precision 7/70 at 1%, 8/175 at 2.5%, 11/351 at 5%,
+  enriched in merges, so degree helps only at the very top: out-of-fold AP 0.027
+  (folds 0.020 / 0.035 / 0.038); precision 7/70 at 1%, 8/175 at 2.5%, 11/351 at 5%,
   14/700 at 10%, 18/1,051 at 15%, 34/1,403 at 20%. Its top 1% of all rows holds 17%
-  labeled rows against 12% overall.
+  labeled rows against 12% overall. Degree ties 6,990 of the 7,010 labeled rows; an
+  AP that credits the row order inside those ties (a plain stable sort) comes out
+  at 0.044, the tie-aware `average_precision` above gives 0.027, and 0.027 is the
+  figure to beat.
 - **Segment cable length** (total edge length of the candidate's segment, direction
   chosen on the fitting rows) is **not** a usable baseline: AP 0.017, 0/70 at 1%,
   13/1,403 at 20%. Labeled junctions sit on long segments (median 10,796 um against
@@ -381,25 +404,16 @@ when the companion changes):**
   measures how traced-neuron-like a candidate is, not whether it is a merge. Keep it
   as the worked example of the availability proxy the Firewall excludes.
 
-Use degree as the baseline.
-
-**What the weak baseline means for the search.** With degree near the random rate,
-almost any informative quantity will beat the baseline, so beating it is necessary
-but not sufficient:
-- a feature counts as found only if its out-of-fold increment over degree (alone,
-  and in the two-column model degree plus the feature) has a bootstrap interval
-  above zero, and the labeled share at the top of its full ranking stays near the
-  overall 12%: a feature whose top 1% of all rows is mostly labeled rows is doing
-  what cable length does and is a negative result;
-- with 128 positives, precision at 1% is 70 ranked rows and a few hits; judge mainly
-  by the average precision and its interval, and report per-fold values, because a
-  fold can carry a third of the positives;
-- prefer quantities that describe the junction itself and its image, or how its
-  branches relate, over quantities that describe how large or well reconstructed its
-  segment is. This names kinds of input, not features; what to measure is still
-  yours to find.
-
-Keep the number of variants small and report it.
+Use degree as the baseline. With degree near the random rate, almost any
+informative quantity will beat it, so beating it is necessary but not sufficient.
+A feature counts as found when the paired-bootstrap interval of its out-of-fold
+increment in AP over degree lies above zero, alone or in the two-column model
+(degree plus the feature), and the labeled share at the top of its full ranking
+stays near the overall 12%: a feature whose top 1% of all rows is mostly labeled
+rows is doing what cable length does and is a negative result. With 128 positives,
+precision at 1% is 70 ranked rows and a few hits, and one fold can carry a third of
+the positives: judge mainly by the AP and its interval, and report per-fold values.
+What to measure is yours to find; report how many variants you compared.
 
 ### Firewall and validity checks
 
@@ -421,16 +435,20 @@ Keep the number of variants small and report it.
   values from labels or from an assumption about what merges look like: a result
   computed on substituted data is void whatever its numbers, and is discarded.
   Print for every input that it was read and how many rows or patches came from
-  it.
+  it (the `INPUTS READ` line).
+- **Names must match inputs.** A feature's name and description must say what its
+  code reads: a quantity computed from graph geometry is not an image feature, and
+  a "contrast" or "intensity" whose code never touched the image is substituted
+  data.
 - **Implausible results are bugs until proven otherwise.** With 128 positives
   among 7,010 labeled rows, honest features move the average precision by
-  hundredths. An out-of-fold AP above 0.9, a bootstrap gain above 0.3 or perfect
-  precision at every fraction has so far come only from leaked or substituted
-  inputs; re-check the input path and the firewall before reporting such a number.
-- **Sanity checks to include**: label shuffling within folds (the gain should
-  vanish); per-fold consistency; the fraction of labeled rows where each feature is
-  NaN, and whether that differs between labels 1 and 0 (missingness can itself be
-  a leak).
+  hundredths. An out-of-fold AP above 0.9, a gain above 0.3 or perfect precision
+  at every fraction has so far come only from leaked or substituted inputs;
+  re-check the input path and the firewall before reporting such a number.
+- **Sanity checks.** When you fit a model, shuffle the labels within folds and show
+  that its gain vanishes. Also worth reporting: per-fold consistency, and the
+  fraction of labeled rows where the feature is NaN by label (missingness can
+  itself be a leak).
 
 ### Deliverable
 
@@ -442,12 +460,11 @@ interpretation), so it can be re-run on its own. For each feature you keep:
    - the hypothesis in one or two sentences, from your Phase 1 observations;
    - out-of-fold precision at 1/2.5/5/10/15/20% with hit counts, and AP, with
      per-fold values and baselines;
-   - bootstrap interval of the difference to the strongest baseline, and the
-     increment of the two-column model (baseline plus the feature) over the
-     baseline alone with its interval, plus the Spearman correlation with the
-     baseline columns;
-   - confirmation that every input was read (rows and patches read, read
-     failures), since a run on substituted data is void;
+   - bootstrap interval of the AP difference to degree, and the increment of the
+     two-column model (degree plus the feature) over degree alone with its
+     interval;
+   - the `INPUTS READ` line (fragment nodes, companion rows, image patches read
+     and requested), since a run on substituted data is void;
    - NaN fraction per label;
    - labeled share in the top of the full ranking, and the labeled-versus-unlabeled
      distribution difference;
