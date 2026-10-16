@@ -177,6 +177,14 @@ Interpretation:
 - **If the fix is adopted later:** make the thresholds length-based in `canonical_labeling`
   (keeping the old behaviour behind a flag), relabel all brains together, and add a dated
   entry to `proofreader_evolve/WORKFLOW_REVISION.md`.
+- **Adopted 2026-10-15 (code only).** `canonical_labeling.MergeThresholds` carries the
+  thresholds (`nodes` = the old constants, `from_length` = one cable length in the graph's
+  node spacing), and `python -m labeled_cache --policy length_v1` relabels an `_add.pkl`
+  in place (the `scaled` variant of section 3, now written to the cache with a
+  `gt_label_policy` record). The caches themselves are relabeled in a separate step; see
+  `proofreader_evolve/TODO.md` and `docs/dataset_artifact_dependencies.md` for the order.
+  This script (`shadow_merge_relabel.py`) now passes the thresholds explicitly instead of
+  overriding module globals; its outputs are unchanged.
 
 ## Reproduction
 

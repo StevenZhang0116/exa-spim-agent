@@ -15,9 +15,11 @@ Its URI and level geometry are in the companion `.json`.
 
 This task is about **split errors only**. The document has three parts: §1 what the
 data is, §2 what to do with it and how it is judged, §3 the schema of each file.
-Revised 2026-10-15: tie-aware average precision with corrected baseline figures and
-reporting rules for differences and subgroups (Evaluation), fewer constraints on what
-to explore (Goal, Evaluation, Firewall); the previous text is archived.
+Revised 2026-10-15, twice: tie-aware average precision with corrected baseline
+figures and reporting rules for differences and subgroups (Evaluation), fewer
+constraints on what to explore (Goal, Evaluation, Firewall); then the candidate pool
+widened from 50 to 80 um (§1), with counts and baselines from the regenerated
+companion. Earlier texts are archived.
 
 ---
 
@@ -41,7 +43,7 @@ from `fragments_graph` alone (no GT, no trained model). The rule text is in the
 companion `.json` (`candidate_rule`).
 
 A candidate is a *segment pair*. From every fragment tip (degree-1 node), the
-nearest node of each other segment within 50 um is found, and the 2 nearest partner
+nearest node of each other segment within 80 um is found, and the 2 nearest partner
 segments are kept. There is one row per unordered pair. A pair can be found several
 times (from either side, or from different tips); each finding is an
 *occurrence*, and the shortest-gap occurrence is the pair's representative.
@@ -60,12 +62,12 @@ they are errors. The companion `label` column is:
 | `0` | GT can judge the candidate and it is not an error: both segments carry a GT label |
 | `NaN` | GT cannot judge it: no traced neuron on one of the segments. **Unknown, not "no error."** |
 
-For this brain: 500,111 candidates; label 1: 2,426; label 0: 2,391; NaN: 495,294.
+For this brain: 689,677 candidates; label 1: 2,497; label 0: 3,579; NaN: 683,601.
 
 Precision and AP use labeled rows only (label 1 or 0); the one check that looks at
 unlabeled rows is described under Evaluation. Never treat NaN as 0: a NaN
-row away from traced neurons says nothing about errors. Labeled rows are about half
-positive, so the bar is how cleanly the top of the ranking separates true splits.
+row away from traced neurons says nothing about errors. About 41% of the labeled rows
+are positive, so the bar is how cleanly the top of the ranking separates true splits.
 
 ### Raw image
 
@@ -276,7 +278,7 @@ detector from your code and your description:
 - **the formula** with its constants (radii, thresholds, image level and patch
   size).
 
-**Cost.** It must be computable for every row of a brain (500,111 rows here) within
+**Cost.** It must be computable for every row of a brain (689,677 rows here) within
 hours: share preprocessing across rows (one pass over segments, a KD-tree built
 once, one image read per candidate) and never scan the whole graph per row. Report
 the wall time.
@@ -370,12 +372,12 @@ All of these are computed on the whole labeled set. A number computed on a subse
 of rows (one fold, one anchor side, one gap range) must carry the subset's row and
 positive counts next to it and is not evidence on its own.
 
-**Labeled versus unlabeled rows.** Only 4,817 of 500,111 rows are labeled (1.0%),
+**Labeled versus unlabeled rows.** Only 6,076 of 689,677 rows are labeled (0.9%),
 and they are not a random sample: they lie on traced neurons. The ranking that is
 finally used covers all rows, and nothing above shows what a feature does to the
 unlabeled ones. For each feature, also report:
 - `labeled_share_at_fraction` at 1%, 5% and 20% of all rows, next to the overall
-  labeled share (1.0%): a feature that fills the top of the full ranking with
+  labeled share (0.9%): a feature that fills the top of the full ranking with
   unlabeled rows, or only with labeled ones, behaves differently off the traced
   neurons;
 - how its distribution differs between labeled and unlabeled rows (for example the
@@ -385,15 +387,15 @@ Flag every feature whose labeled and unlabeled distributions differ strongly; it
 measure "how traced-neuron-like" a candidate is rather than whether it is an error.
 
 **Baselines (compute them yourself from the data; the figures below are what the
-companion of 2026-10-13 gives with the scoring code above, and must be recomputed
+companion of 2026-10-15 gives with the scoring code above, and must be recomputed
 when the companion changes):**
 - **Random ranking**: its precision equals the share of label 1 among labeled rows,
-  0.504 here (2,426 of 4,817).
+  0.411 here (2,497 of 6,076).
 - **Gap distance**: the ranking by `gap_um` itself, smaller gap first. It is strong:
-  out-of-fold AP 0.836 (folds 0.819 / 0.826 / 0.862); precision 45/48 at 1%,
-  106/121 at 2.5%, 212/241 at 5%, 431/482 at 10%, 650/723 at 15%, 861/963 at 20%.
-  Its top 1% of all rows holds 3.4% labeled rows against 1.0% overall (median gap
-  10.6 um on labeled rows, 24.8 um on unlabeled ones). The baseline is this ranking;
+  out-of-fold AP 0.826 (folds 0.827 / 0.844 / 0.808); precision 56/61 at 1%,
+  131/152 at 2.5%, 272/304 at 5%, 543/607 at 10%, 817/912 at 15%, 1,079/1,216 at
+  20%. Its top 1% of all rows holds 3.1% labeled rows against 0.9% overall (median
+  gap 19.0 um on labeled rows, 33.7 um on unlabeled ones). The baseline is this ranking;
   a model fitted to gap alone (a logistic fit, a binned or tree model) can score
   lower out of fold, and an increment measured against such a model is not an
   increment over gap.
@@ -437,7 +439,7 @@ measure is yours to find; report how many variants you compared.
   a "contrast" or "intensity" whose code never touched the image is substituted
   data.
 - **Implausible results are bugs until proven otherwise.** On this labeled set
-  the gap baseline reaches AP 0.84 and honest additions gain a few hundredths. An
+  the gap baseline reaches AP 0.83 and honest additions gain a few hundredths. An
   out-of-fold AP above 0.95, a bootstrap gain above 0.1 or perfect precision at
   every fraction has so far come only from leaked or substituted inputs; re-check
   the input path and the firewall before reporting such a number.
@@ -532,7 +534,7 @@ Node ids are contiguous integers `0..N-1`, the same ids as in the companion.
 
 ### 3.2 `rerank_companion_794495_split.npz`
 
-500,111 rows, one per unordered segment pair. Load with
+689,677 rows, one per unordered segment pair. Load with
 `comp = dict(np.load(path, allow_pickle=False))`. The `dict(...)` matters: indexing
 an open `np.load` file decompresses the whole column on every access, so row-by-row
 reads become extremely slow. Row `i` of every candidate column describes
@@ -553,7 +555,7 @@ candidate `i`.
 | `occ_row` | int64 | for every occurrence: the candidate row it belongs to |
 | `occ_node_id_a`, `occ_node_id_b`, `occ_gap_um`, `occ_anchor_side`, `occ_partner_rank`, `occ_node_role_a`, `occ_node_role_b` | as above | the same fields for every occurrence |
 
-The occurrence arrays are longer than the candidate arrays (765,286 entries): one
+The occurrence arrays are longer than the candidate arrays (1,099,059 entries): one
 per anchor/partner realisation, sorted by `occ_row`, the first per pair being the
 representative one.
 
@@ -568,7 +570,8 @@ The manifest of §3.2:
 |---|---|
 | `version`, `created`, `brain`, `kind`, `mcl` | identity of the export |
 | `rows`, `label_counts`, `labeled_rows` | row count and counts of 1 / 0 / NaN |
-| `candidate_rule`, `candidate_policy` | the candidate and label rules as text, and their short code |
+| `candidate_rule`, `candidate_policy` | the candidate and label rules as text, and their short code (`tip_to_any_node|r=80|k=2`) |
+| `candidate_policy_source`, `detector_candidate_policy`, `export_mode` | provenance of the rule and of the file; not needed for the task |
 | `label_availability` | which rows GT can judge (`definition`: `segment_on_gt`) |
 | `folds` | number of folds, grouping (`spatial_blocks_with_fragment_purge`, `spatial_block_um` 500), fit-mask meaning, partition digest |
 | `source_cache` | file name and byte size of the pkl these rows come from |

@@ -829,7 +829,7 @@ results:
 ```text
 same source brain + segmentation
         |
-        +--> load_skeletons.py --> base .pkl --> relabel_cache.py --> _add.pkl -----+
+        +--> python -m labeled_cache: base .pkl --> labels --> policy --> _add.pkl -+
         |                                                                         |
         +--> evaluate_skeleton_metrics.py ----> official results.csv ------------+
                                                                                   |
@@ -880,23 +880,21 @@ to validate the labeled cache later.
 
 ### A3. Generate the labeled `_add.pkl`
 
-Run from the repository root:
+Run from the repository root (panda, compute node):
 
 ```bash
-python scripts/relabel_cache.py \
-  --cache-dir cache \
-  --brain 794495 \
-  --mcl 100
+python -m labeled_cache --brains 794495 --mcl 100 --policy length_v1
 ```
 
-To label every matching base cache, omit `--brain` and `--mcl`:
+One command covers every state: no cache yet (skeletons from GCS, then labels), a
+base cache without labels (labels only), or a labeled cache whose merge-threshold
+policy differs from the request (relabeled in place from its stored GT node labels).
+A reused cache has its GT compared with the current GCS tracings first. Several
+brains can be listed; they are processed one after the other. `--dry-run` prints
+the stages, `--help` the options.
 
-```bash
-python scripts/relabel_cache.py --cache-dir cache
-```
-
-The script reads the dense segmentation, labels GT nodes and edges, identifies
-merge labels and sites, and writes a new file without modifying the base cache:
+The builder reads the dense segmentation, labels GT nodes and edges, identifies
+merge labels and sites, and writes the labeled file next to the base cache:
 
 ```text
 cache/dataset_cache_<brain>_mcl<N>_add.pkl
@@ -908,6 +906,7 @@ The added fields are:
 - `gt_edge_error`
 - `gt_merge_labels`
 - `gt_merge_sites`
+- `gt_label_policy` (the merge-threshold policy the labels were computed with)
 
 See [`markdowns/labeled_dataset_cache.md`](markdowns/labeled_dataset_cache.md)
 for the complete schema.
@@ -1134,7 +1133,8 @@ exa-spim-agent/
 ├── markdowns/                  # task specifications and the cache schema for agents
 ├── cache/                      # dataset_cache_<brain>_mcl<N>[_add].pkl (gitignored, large)
 ├── notebooks/                  # cache building, verification, candidate-pool sweeps
-├── scripts/                    # relabel_cache.py and other one-off tools
+├── labeled_cache/              # python -m labeled_cache: build and relabel the _add.pkl caches
+├── scripts/                    # one-off tools (cache building lives in labeled_cache/)
 ├── docs/                       # feature-scope contracts, cost checks, literature notes
 ├── metrics_out/                # official reference metrics per brain
 ├── figs/                       # generated figures

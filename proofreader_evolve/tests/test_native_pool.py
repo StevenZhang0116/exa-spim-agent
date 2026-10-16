@@ -74,6 +74,97 @@ class NativePoolTests(unittest.TestCase):
                 else:
                     self.assertEqual([r["node_id"] for r in safe], [2, 8])
 
+    def test_pool_policy_override_reaches_the_runtime_and_is_recorded(self):
+        from proofreader_evolve.harness import candidate_pools as cp
+        module = self.modules["split"]
+        wide = {"config_id": "tip_to_any_node|r=200|k=4", "mode": "tip_to_any_node", "radius_um": 200.0,
+                "per_anchor_k": 4, "global_cap": None}
+        original = (module.CANDIDATE_MAX_DISTANCE_UM, module.CANDIDATE_PER_ANCHOR_K, module.CANDIDATE_POLICY_CONFIG_ID)
+        group = module.ANALYSIS_TIMING_GROUPS[0]
+        feature = group["feature_names"][0]
+        seen = []
+        universe = module.build_sample_universe
+
+        def recording_universe(data):
+            # The rule the runtime enumerates with at call time (the tiny graph has two
+            # segments, so row counts cannot tell the policies apart).
+            seen.append((module.CANDIDATE_MAX_DISTANCE_UM, module.CANDIDATE_PER_ANCHOR_K, module.CANDIDATE_POLICY_CONFIG_ID))
+            return universe(data)
+
+        def extract(working, verbose=True, enabled_analysis_keys=None):
+            rows, synthetic_labels = working["__detector_sample_universe_cache__"]
+            frame = pd.DataFrame({feature: [1.0] * len(rows)})
+            return rows, synthetic_labels, SimpleNamespace(to_frame=lambda: frame)
+
+        model = SimpleNamespace(predict_proba=lambda x: np.tile([.2, .8], (len(x), 1)))
+        bundle = {"pipeline": model, "feature_order": [feature]}
+        tables = {}
+        with patch.object(module, "_extract_features_runtime", side_effect=extract), \
+                patch.object(module, "build_sample_universe", side_effect=recording_universe), redirect_stdout(io.StringIO()):
+            tables["detector"] = native.build_native_table(payload(), "split", module, bundle)
+            tables["wide"] = native.build_native_table(payload(), "split", module, bundle, pool_policy=wide)
+        self.assertEqual(seen, [original, (200.0, 4, "tip_to_any_node|r=200|k=4")])
+        self.assertEqual((module.CANDIDATE_MAX_DISTANCE_UM, module.CANDIDATE_PER_ANCHOR_K, module.CANDIDATE_POLICY_CONFIG_ID), original)
+        self.assertEqual(tables["detector"].meta["candidate_policy"], module.CANDIDATE_POLICY_CONFIG_ID)
+        self.assertEqual(tables["detector"].meta["candidate_policy_source"], "detector")
+        self.assertEqual(tables["detector"].meta["candidate_policy_sha256"], module.CANDIDATE_POLICY_SHA256)
+        self.assertEqual(tables["wide"].meta["candidate_policy"], "tip_to_any_node|r=200|k=4")
+        self.assertEqual(tables["wide"].meta["candidate_policy_source"], "candidate_pools.json")
+        self.assertEqual(tables["wide"].meta["candidate_policy_sha256"], cp.policy_digest(wide))
+        self.assertEqual(tables["wide"].meta["detector_candidate_policy"], module.CANDIDATE_POLICY_CONFIG_ID)
+        self.assertEqual(tables["wide"].meta["detector_candidate_policy_sha256"], module.CANDIDATE_POLICY_SHA256)
+        self.assertGreater(tables["wide"].meta["rows"], 0)
+
+    def test_table_provenance_carries_the_declared_pool_policy(self):
+        from proofreader_evolve.harness import candidate_pools as cp
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "dataset_cache_1_mcl100_add.pkl"
+            source.write_bytes(b"synthetic labeled cache placeholder")
+            seen = {}
+
+            def build(data, kind, module, bundle, pool_policy=None):
+                seen[kind] = pool_policy
+                rows = [{"segment_id": 1, "node_id": 0}] if kind == "merge" else [{"segment_id_a": 1, "segment_id_b": 2}]
+                return native.NativeTable(kind, pd.DataFrame({"detector_score": [.5]}), rows, np.array([1]),
+                                          {"pool_sha256": native.pool_digest(kind, rows), "rows": 1})
+            with patch.object(pc.ds, "load_cached_graphs", return_value=(None, None, payload())), \
+                    patch.object(native, "build_native_table", side_effect=build), redirect_stdout(io.StringIO()):
+                tables = native.ensure_native_tables("1", source, self.selected, root / "tables", True, 100)
+            declared = cp.load_pool_policies()
+            self.assertEqual(seen, declared)
+            for kind in ("merge", "split"):
+                self.assertEqual(tables.tables[kind].meta["provenance"]["pool_policy"], declared[kind])
+                self.assertEqual(tables.tables[kind].meta["provenance"]["version"], "detector-native-v2")
+
+    def test_universe_and_table_share_one_enumeration(self):
+        from proofreader_evolve.harness import candidate_pools as cp
+        policy = cp.load_pool_policies()["split"]
+        for kind, pool_policy in (("merge", None), ("split", policy)):
+            with self.subTest(kind=kind):
+                module = self.modules[kind]
+                rows, truth, meta = native.build_native_universe(payload(), kind, module, pool_policy)
+                group = module.ANALYSIS_TIMING_GROUPS[0]
+                feature = group["feature_names"][0]
+
+                def extract(working, verbose=True, enabled_analysis_keys=None):
+                    found, synthetic_labels = working["__detector_sample_universe_cache__"]
+                    frame = pd.DataFrame({feature: [1.0] * len(found)})
+                    return found, synthetic_labels, SimpleNamespace(to_frame=lambda: frame)
+
+                model = SimpleNamespace(predict_proba=lambda x: np.tile([.2, .8], (len(x), 1)))
+                with patch.object(module, "_extract_features_runtime", side_effect=extract), redirect_stdout(io.StringIO()):
+                    table = native.build_native_table(payload(), kind, module,
+                                                      {"pipeline": model, "feature_order": [feature]},
+                                                      pool_policy=pool_policy)
+                self.assertEqual(rows, table.candidates)
+                np.testing.assert_array_equal(truth, table.truth)
+                self.assertEqual(truth.dtype, np.int8)
+                for key, value in meta.items():
+                    self.assertEqual(table.meta[key], value)
+                expected = "candidate_pools.json" if pool_policy else "detector"
+                self.assertEqual(meta["candidate_policy_source"], expected)
+
     def test_gt_changes_labels_not_pool_identity(self):
         for kind, module in self.modules.items():
             with self.subTest(kind=kind):
@@ -130,7 +221,7 @@ class NativePoolTests(unittest.TestCase):
             source = root / "dataset_cache_1_mcl100_add.pkl"
             source.write_bytes(b"synthetic labeled cache placeholder")
             built = []
-            def build(data, kind, module, bundle):
+            def build(data, kind, module, bundle, pool_policy=None):
                 rows = [{"segment_id": 1, "node_id": 0}] if kind == "merge" else [{"segment_id_a": 1, "segment_id_b": 2}]
                 built.append(kind)
                 return native.NativeTable(kind, pd.DataFrame({"detector_score": [.5]}), rows, np.array([1]),

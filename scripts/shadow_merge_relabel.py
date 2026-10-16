@@ -28,7 +28,6 @@ import argparse
 import ast
 from collections import Counter, defaultdict
 from datetime import datetime
-import functools
 import gc
 import glob
 import json
@@ -53,44 +52,19 @@ CANONICAL_THRESHOLD_UM = 50.0  # 50 nodes at the canonical ~1 um GT node spacing
 ORIGINAL_NODES = 50
 
 
-# --- threshold override --------------------------------------------------------------
-class Thresholds:
-    """Temporarily set every GT-node-count merge threshold in canonical_labeling.
-
-    The module reads MERGE_MIN_NODES / MERGE_PASSTHRU_MIN_CC as globals at call time,
-    but ``merge_labels`` and ``audit_junction_gt_connections`` bind MERGE_MIN_NODES as
-    a default argument at import, so those two are wrapped as well.
-    """
-
-    def __init__(self, nodes):
-        self.nodes = int(nodes)
-
-    def __enter__(self):
-        self.saved = {name: getattr(cl, name) for name in
-                      ("MERGE_MIN_NODES", "MERGE_PASSTHRU_MIN_CC", "merge_labels",
-                       "audit_junction_gt_connections")}
-        cl.MERGE_MIN_NODES = self.nodes
-        cl.MERGE_PASSTHRU_MIN_CC = self.nodes
-        cl.merge_labels = functools.partial(self.saved["merge_labels"], min_nodes=self.nodes)
-        cl.audit_junction_gt_connections = functools.partial(
-            self.saved["audit_junction_gt_connections"], min_gt_nodes=self.nodes)
-        return self
-
-    def __exit__(self, *exc):
-        for name, value in self.saved.items():
-            setattr(cl, name, value)
-        return False
-
-
+# --- relabel with explicit thresholds -------------------------------------------------
 def relabel(fragments, gt, node_label, nodes):
-    """Merge labels + combined sites with every node-count threshold set to ``nodes``."""
-    with Thresholds(nodes):
-        merge_set = set(cl.merge_labels(gt, node_label))
-        walk_labels, walk_sites = cl.geometric_merge_sites(fragments, gt, node_label, verbose=False)
-        merge_set |= set(walk_labels)
-        sites, metadata = cl.combined_merge_sites(fragments, gt, node_label, walk_sites, verbose=False)
-        merge_set |= {int(s["segment_id"]) for s in sites}
-        summary = cl.summarize(gt, node_label, merge_label_set=merge_set)
+    """Merge labels + combined sites with every node-count threshold set to ``nodes``
+    (``canonical_labeling.MergeThresholds``, passed to each rule)."""
+    thresholds = cl.MergeThresholds.nodes(nodes)
+    merge_set = set(cl.merge_labels(gt, node_label, thresholds=thresholds))
+    walk_labels, walk_sites = cl.geometric_merge_sites(fragments, gt, node_label, verbose=False,
+                                                       thresholds=thresholds)
+    merge_set |= set(walk_labels)
+    sites, metadata = cl.combined_merge_sites(fragments, gt, node_label, walk_sites, verbose=False,
+                                              thresholds=thresholds)
+    merge_set |= {int(s["segment_id"]) for s in sites}
+    summary = cl.summarize(gt, node_label, merge_label_set=merge_set, thresholds=thresholds)
     return {"merge_labels": sorted(int(x) for x in merge_set), "sites": sites,
             "metadata": metadata, "summary": summary}
 

@@ -357,17 +357,23 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Applications live one subfolder per originating run.
 APPLICATION_DIR_REL = "autodiscovery-application"
+# The eleven-brain sweep (2026-10-06); at the 0.90 worst-brain floor it selects
+# tip_to_any_node|r=80|k=2, the benchmark pool declared in
+# proofreader_evolve/candidate_pools.json. It replaced the five-brain sweep of
+# 2026-08-24 (r=50|k=2, the rule embedded in the current frozen split detectors).
 DEFAULT_SPLIT_CANDIDATE_REVIEW_REL = (
-    "notebooks/split_candidate_pool_sweep_outputs/"
+    "notebooks/split_candidate_pool_sweep_outputs_with_oldscope/"
     "mcl100_5f92a29e40d94a90/AI_REVIEW.md"
 )
 DEFAULT_SPLIT_MIN_WORST_BRAIN_RECALL = 0.90
 # Merge-site builds consume the merge candidate-pool sweep's deterministic
 # recommended_policy.json (no agent advice stage). The claim radius bakes
 # coverage accounting; the driver-owned positive-label radius keeps training
-# positives tightly localized (see compile_merge_candidate_policy).
+# positives tightly localized (see compile_merge_candidate_policy). The
+# eleven-brain sweep (regenerated 2026-10-15 on the relabeled caches) replaced
+# the five-brain one; both select junction|nms=20|r=150.
 DEFAULT_MERGE_CANDIDATE_POLICY_REL = (
-    "notebooks/merge_candidate_pool_sweep_outputs/"
+    "notebooks/merge_candidate_pool_sweep_outputs_with_oldscope/"
     "mcl100_dcbde4ab2a6f6c44/recommended_policy.json"
 )
 DEFAULT_MERGE_SITE_MIN_WORST_BRAIN_SITE_RECALL = 0.80

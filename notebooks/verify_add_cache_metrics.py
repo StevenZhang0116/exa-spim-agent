@@ -76,7 +76,7 @@ def summarize_payload(payload):
     labels = stored_value(payload, "gt_node_canonical_label", "node_label")
     errors = stored_value(payload, "gt_edge_error", "edge_error")
     if labels is None or errors is None:
-        raise ValueError("Cache lacks canonical node or edge labels; run relabel_cache.py first")
+        raise ValueError("Cache lacks canonical node or edge labels; run python -m labeled_cache first")
     node_label, edge_error = np.asarray(labels), np.asarray(errors)
     if node_label.shape != (len(graph.node_xyz),):
         raise ValueError("Canonical node labels do not align with gt_graph.node_xyz")

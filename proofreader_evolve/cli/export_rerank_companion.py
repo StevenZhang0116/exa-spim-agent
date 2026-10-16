@@ -14,8 +14,14 @@ proofreader_evolve:
 Nothing produced by a detector or an earlier run is written: no detector score, no
 frozen features, no model output, no evolve K.
 
+The pool of each kind is the one declared in `proofreader_evolve/candidate_pools.json`
+(split `tip_to_any_node|r=80|k=2` since 2026-10-15), so the companion and the
+proofreader_evolve tables share one `pool_sha256`.
+
 Run with panda on a compute node (the split folds load the fragment graph):
-    python -u -m proofreader_evolve.cli.export_rerank_companion --brain 794495
+    python -u -m proofreader_evolve.cli.export_rerank_companion --brain 794495 --pool-only
+`--pool-only` builds rows and labels directly from the cache (minutes). Without it the
+export loads the prepared native tables and availability sidecars, which must exist.
 """
 import argparse
 from datetime import datetime
@@ -25,11 +31,16 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pandas as pd
 
 from . import precompute_error_scores as pc
 from ..harness import label_availability as la
 from ..harness.internal_validation import FOLDS, fold_assignments, grouped_folds
-from ..harness.native_pool import cache_path, ensure_native_tables
+from ..harness import candidate_pools
+from ..harness.candidate_pools import describe_split_rule
+from ..harness.detector_metadata import inference_metadata
+from ..harness.native_pool import (POOL_VERSION, NativeTable, NativeTables, build_native_universe, cache_path,
+                                   candidate_keys, ensure_native_tables)
 
 REPO = Path(__file__).resolve().parents[2]
 # Next to the specification, so the files handed to AutoDiscovery sit together (gitignored).
@@ -47,13 +58,15 @@ RULES = {
               "after snapping the site to the nearest node of its own segment within 50 um. Label 0 only "
               "where GT can judge: the segment carries a GT node label and the junction lies within "
               "150 um of a GT node; otherwise NaN."),
-    "split": ("Candidates: from every degree-1 fragment tip, the nearest node of each other segment within "
-              "50 um; the 2 nearest partner segments are kept (tip_to_any_node, r=50, k=2). One row per "
-              "unordered segment pair; occurrences list every anchor/partner realisation, the first being "
-              "the shortest gap. Positive: the pair is a GT split key (distinct non-zero labels across a GT "
-              "split edge, or the two flanks of a zero-label GT stretch on one neuron). Label 0 only where "
-              "GT can judge: both segments carry a GT node label; otherwise NaN."),
 }
+
+
+def candidate_rule(kind, table):
+    """The rule text of a table: merge is the detector's junction rule, split follows the
+    applied pool policy recorded in the table meta (``candidate_policy``)."""
+    if kind == "merge":
+        return RULES["merge"]
+    return describe_split_rule(table.meta["candidate_policy"])
 
 
 def _graph_provider(brain, mcl):
@@ -102,10 +115,65 @@ def _columns(kind, table):
     return columns
 
 
-def export(brain, mcl, out_dir, kinds):
+def pool_only_bank(brain, mcl, kinds):
+    """Candidate rows and three-valued labels without native tables (no feature extraction).
+
+    A companion holds candidate rows, labels and folds, nothing a detector computes, so
+    it does not need the tables (whose preparation is dominated by the frozen detectors'
+    feature extraction). The rows come from the same enumeration as table preparation
+    (``native_pool.build_native_universe`` with the declared pool policy), and availability
+    from the same ``label_availability.compute`` / ``three_valued`` as the sidecars, so the
+    pool hash and labels equal those of the tables built later from the same cache.
+    Returns ``(bank, graph)``; ``graph`` is the fragment graph for the split folds.
+    """
     selected = pc.resolve_detector_runs(None, None)
-    bank = ensure_native_tables(brain, cache_path(brain, mcl), selected, pc.DEFAULT_OUT, prepare=False, mcl=mcl)
-    summary = la.apply({brain: bank})
+    source = cache_path(brain, mcl)
+    identity = pc._cache_identity(source)
+    graph, _, payload = pc.ds.load_cached_graphs(str(source), expect_brain=brain, expect_mcl=mcl)
+    payload = {**payload, **inference_metadata(payload, mcl)}
+    required = {"gt_graph", "gt_node_canonical_label", "gt_edge_error", "gt_merge_sites"}
+    if not required.issubset(payload):
+        raise ValueError(f"{source} is not a labeled _add.pkl cache")
+    policies = candidate_pools.load_pool_policies()
+    tables = {}
+    for kind in kinds:
+        record = selected[kind][0]
+        pc._assert_detector_unchanged(record)
+        module = pc._import_module(Path(record["dir"]) / record["script"],
+                                   f"pool_only_{kind}_{record['script_sha256']}")
+        rows, truth, meta = build_native_universe(payload, kind, module, policies[kind])
+        gt_xyz = getattr(payload["gt_graph"], "node_xyz", None) if kind == "merge" else None
+        arrays = la.compute(kind, rows, payload["gt_node_canonical_label"], gt_xyz)
+        la.check(arrays, kind, truth, candidate_keys(kind, rows))
+        definition = la.DEFAULT_DEFINITION[kind]
+        labels = la.three_valued(truth, arrays[definition])
+        counts = la.label_counts(labels)
+        if not counts["1"] or not counts["0"]:
+            raise la.AvailabilityMismatch(f"{brain}/{kind}: GT-labeled rows lack one of the classes")
+        provenance = {"version": POOL_VERSION, "brain": brain, "mcl": mcl, "kind": kind,
+                      "source_cache": identity, "pool_policy": policies[kind], "detector": record}
+        table = NativeTable(kind, pd.DataFrame(index=pd.RangeIndex(len(rows))), rows, labels,
+                            {**meta, "provenance": provenance})
+        table.availability = {"definition": definition, "version": la.AVAILABILITY_VERSION,
+                              "counts": counts, "computed": "in process (pool-only export)"}
+        tables[kind] = table
+        print(f"{brain}/{kind}: {meta['rows']} rows ({meta['candidate_policy']}, "
+              f"from {meta['candidate_policy_source']}), labels {counts}", flush=True)
+    if pc._cache_identity(source) != identity:
+        raise RuntimeError(f"{source} changed while the companion pools were built")
+    return NativeTables(brain, tables, {"table_paths": {}, "version": POOL_VERSION, "pool_only": True}), graph
+
+
+def export(brain, mcl, out_dir, kinds, pool_only=False):
+    if pool_only:
+        bank, graph = pool_only_bank(brain, mcl, kinds)
+        summary = {f"{brain}/{kind}": dict(bank.tables[kind].availability) for kind in kinds}
+        provider = SimpleNamespace(store=SimpleNamespace(graph=lambda provenance: (graph, None)))
+    else:
+        selected = pc.resolve_detector_runs(None, None)
+        bank = ensure_native_tables(brain, cache_path(brain, mcl), selected, pc.DEFAULT_OUT, prepare=False, mcl=mcl)
+        summary = la.apply({brain: bank})
+        provider = None
     review = json.loads(ALIGNMENT.read_text())
     review = review.get("brains", review)[brain]
     if review.get("status") != "reviewed":
@@ -116,7 +184,7 @@ def export(brain, mcl, out_dir, kinds):
     for kind in kinds:
         table = bank.tables[kind]
         if kind == "split":
-            table.local_context = _graph_provider(brain, mcl)
+            table.local_context = provider or _graph_provider(brain, mcl)
         partitions, description = grouped_folds({brain: bank}, kind, selection_brains=[brain])
         folds = fold_assignments(partitions, brain, len(table.truth))
         if (folds < 0).any():
@@ -136,7 +204,10 @@ def export(brain, mcl, out_dir, kinds):
             "version": COMPANION_VERSION, "created": datetime.now().astimezone().isoformat(timespec="seconds"),
             "brain": brain, "kind": kind, "mcl": mcl, "rows": int(len(table.truth)),
             "label_counts": counts, "labeled_rows": counts["1"] + counts["0"],
-            "candidate_rule": RULES[kind], "candidate_policy": table.meta.get("candidate_policy"),
+            "candidate_rule": candidate_rule(kind, table), "candidate_policy": table.meta.get("candidate_policy"),
+            "candidate_policy_source": table.meta.get("candidate_policy_source"),
+            "export_mode": "pool_only" if pool_only else "native_tables",
+            "detector_candidate_policy": table.meta.get("detector_candidate_policy"),
             "pool_sha256": table.meta["pool_sha256"], "labels_sha256": la.labels_digest(table.truth),
             "label_availability": {k: v for k, v in summary[f"{brain}/{kind}"].items() if k != "path"},
             "folds": {"n_folds": FOLDS, "version": description["version"], "grouping": description["grouping"],
@@ -167,8 +238,11 @@ def main(argv=None):
     p.add_argument("--mcl", type=int, default=100)
     p.add_argument("--kinds", nargs="+", default=["merge", "split"], choices=["merge", "split"])
     p.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
+    p.add_argument("--pool-only", action="store_true",
+                   help="Build rows and labels from the cache with the declared pool policy instead of "
+                        "loading prepared native tables and sidecars (minutes instead of hours; same pool hash)")
     a = p.parse_args(argv)
-    export(a.brain, a.mcl, a.out_dir, a.kinds)
+    export(a.brain, a.mcl, a.out_dir, a.kinds, pool_only=a.pool_only)
 
 
 if __name__ == "__main__":

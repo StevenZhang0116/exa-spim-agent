@@ -18,23 +18,26 @@ train/evaluate again; old CSVs and models still reflect the old site set.
 
 ## Generate Or Refresh The Cache
 
-The generator is `scripts/relabel_cache.py`, calling
-`BrainDataset.label_gt_from_segmentation()`. Full generation labels GT nodes
-from the segmentation and invokes `refresh_merge_labels()` to combine both
-site sources. For existing `_add.pkl` files, use the cloud-free refresh:
+The generator is `python -m labeled_cache` (2026-10-15; previously
+`scripts/relabel_cache.py`), calling `BrainDataset.label_gt_from_segmentation()`.
+Full generation labels GT nodes from the segmentation and invokes
+`refresh_merge_labels()` to combine both site sources. For an existing `_add.pkl`
+the builder's `policy` stage recomputes all site sources from the stored GT node
+labels without cloud reads (apart from the GT check against GCS):
 
 ```bash
 srun --partition=aibs_debug --constraint=cpu --nodes=1 --ntasks=1 \
-  --cpus-per-task=2 --mem=100G --time=00:25:00 \
-  "$HOME/.conda/envs/panda/bin/python" scripts/relabel_cache.py \
-  --cache-dir cache --brain 794495 --mcl 100 --refresh-merge-sites
+  --cpus-per-task=4 --mem=100G --time=01:00:00 \
+  "$HOME/.conda/envs/panda/bin/python" -m labeled_cache \
+  --brains 794495 --mcl 100 --policy length_v1 --check-reproduce
 ```
 
-This atomically replaces the selected `_add.pkl`, reusing existing GT node
-labels and preserving old geometric positives, image paths and extra payload
-fields. `--dry-run` shows exactly which files would be replaced. The ordinary
-command without `--refresh-merge-sites` still reads raw `.pkl` caches and
-writes `_add.pkl`, including both site sources automatically.
+This atomically replaces the selected `_add.pkl`, reusing the stored GT node
+labels and preserving image paths and other payload fields (derived detector
+caches embedded in the payload are dropped). `--force-relabel` reruns the stage
+under a policy the cache already records; `--dry-run` shows the stages without
+loading anything. A brain without caches goes through the `base` and `label`
+stages of the same command, so both site sources are always generated together.
 
 `junction_merge_sites()` examines every raw degree>=3 junction on segments
 meeting the original two-GT node-count criterion, before candidate NMS and
@@ -78,7 +81,7 @@ python agentic/run_detector_build_workflow.py \
   autodiscovery/merge-error-794495-mcl100_2026-08-04.json \
   --out-dir autodiscovery-application/merge-error-794495-mcl100_2026-08-04-refreshed \
   --merge-row-unit site \
-  --merge-candidate-policy notebooks/merge_candidate_pool_sweep_outputs/mcl100_dcbde4ab2a6f6c44/recommended_policy.json \
+  --merge-candidate-policy notebooks/merge_candidate_pool_sweep_outputs_with_oldscope/mcl100_dcbde4ab2a6f6c44/recommended_policy.json \
   --merge-min-worst-brain-site-recall 0.80 \
   --merge-positive-label-radius-um 20
 ```

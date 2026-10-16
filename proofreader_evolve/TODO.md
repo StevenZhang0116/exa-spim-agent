@@ -274,6 +274,21 @@ Precision@K for a classifier candidate.
 
 ## Split labels and candidates against canonical: labels fine, flank pairs beyond r = 50 um (2026-10-14)
 
+**Status 2026-10-15: pool rule changed to `tip_to_any_node|r=80|k=2`** (declared in
+`proofreader_evolve/candidate_pools.json`, applied at table preparation; detector-build default
+review moved to the eleven-brain sweep). Chosen as the fewest-candidate rule with worst-brain
+candidate recall >= 0.90 on all eleven brains (r=50 left 754612 at 0.866). The rebuild of
+tables, sidecars, companions, receipts, context caches and the specifications is deferred until
+the new frozen detectors exist (AutoDiscovery rerun on the revised specifications); the full
+order, commands and one-time follow-ups are in `plans/rebuild_after_relabel_and_split_pool.md`.
+Done 2026-10-15 for the AutoDiscovery rerun: split companions of 794495 and 802449 regenerated
+with `export_rerank_companion --kinds split --pool-only` (794495: 689,677 rows, labels
+2,497 / 3,579 / 683,601; the r=80 pool contains every r=50 pair with unchanged labels and gaps;
+log `proofreader_evolve/log/export_companion_split_r80_20261015.log`), r=50 companions archived
+in `markdowns/archive/companions_20261014/`, split specification rewritten (gap baseline AP
+0.826, folds 0.827 / 0.844 / 0.808). Merge companions and the merge specification follow once
+the merge pool is settled.
+
 Measured by `notebooks/split_canonical_gap.py` (write-up: `notebooks/merge_label_shadow_findings.md`
 section 7). The canonical `# Splits` exceeds the cache's by about 10% because 83% of canonical split
 pairs involve a segment below the 100 um MCL that is absent from the fragments graph and can never
@@ -289,6 +304,19 @@ facing ends, on these flank pairs before changing the pool; no relabel is needed
 ## Merge labels are conservative: GT-node-count thresholds not rescaled (2026-10-07)
 
 Full write-up: `notebooks/merge_label_shadow_findings.md`.
+
+**Status 2026-10-15: fix implemented, caches not yet relabeled.** Thresholds are a parameter
+(`canonical_labeling.MergeThresholds`, package branch `feat/length-based-merge-thresholds`)
+and the caches are built and relabeled by one command, `python -m labeled_cache` (stages
+base / label / policy, GT checked against GCS before a cache is reused; see
+`markdowns/labeled_dataset_cache.md`). To apply, per brain on a compute node (`srun -n1`):
+`python -m labeled_cache --brains <b> --mcl 100 --policy length_v1 --check-reproduce`, then the
+label-only chain of `docs/dataset_artifact_dependencies.md` section 3 (tables, sidecars,
+companions, alignment receipt, context-cache identity check), `merge_canonical_gap.py
+--measure`, and the specifications' label counts. Decide separately whether to refit the
+frozen merge detector. `notebooks/generate_add_caches.py` and `scripts/relabel_cache.py` were
+deleted on 2026-10-15 after the builder's first compute-node run (794495: reproduction of the
+stored labels exact; merge labels 106 -> 140, sites 156 -> 177, as the shadow relabel predicted).
 
 **Current behaviour.** `canonical_labeling` (agentic-neuron-proofreader) ports three merge
 thresholds from `segmentation_skeleton_metrics` as GT NODE COUNTS of 50:
@@ -324,7 +352,7 @@ merge pipeline), separately from the label-0 "no GT here" problem handled by the
 availability sidecars.
 
 **If revisited.** Make the thresholds length-based in `canonical_labeling` (old behaviour
-behind a flag), relabel every brain together (`scripts/relabel_cache.py`), then rebuild
+behind a flag), relabel every brain together (now `python -m labeled_cache`), then rebuild
 tables, sidecars and context caches, re-record alignment receipts, decide whether to refit
 the merge detector, and add a dated `WORKFLOW_REVISION.md` entry. Worth doing together with
 any redesign of merge candidate generation (a non-junction candidate family) or the merge

@@ -36,6 +36,7 @@ proofreader_evolve/log/*.log.txt
 # Credentials and tokens
 *.json
 !agentic/detector_model_policy.json
+!proofreader_evolve/candidate_pools.json
 zihan_gcs_token.json
 *.pem
 *.key

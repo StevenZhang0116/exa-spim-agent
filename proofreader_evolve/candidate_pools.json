@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "revised": "2026-10-15",
+  "note": "Benchmark candidate pools per kind. null keeps the frozen detector's embedded rule; an explicit entry is applied to the detector runtime before its universe builder runs and enters the table provenance (new pool hash). Changing an entry invalidates feature tables, availability sidecars, companions and context caches of that kind for every brain.",
+  "pools": {
+    "merge": null,
+    "split": {
+      "config_id": "tip_to_any_node|r=80|k=2",
+      "mode": "tip_to_any_node",
+      "radius_um": 80.0,
+      "per_anchor_k": 2,
+      "global_cap": null,
+      "evidence": {
+        "sweep": "notebooks/split_candidate_pool_sweep_outputs_with_oldscope/mcl100_5f92a29e40d94a90",
+        "objective": "fewest candidates with worst-brain candidate recall >= 0.90 over the 11 mcl100 brains",
+        "min_recall": 0.9002,
+        "mean_recall": 0.965,
+        "total_candidates": 9968823,
+        "datasets": 11,
+        "replaces": "tip_to_any_node|r=50|k=2 (5-brain sweep of 2026-08-24; worst brain 754612 at 0.866 on 11 brains)"
+      }
+    }
+  }
+}

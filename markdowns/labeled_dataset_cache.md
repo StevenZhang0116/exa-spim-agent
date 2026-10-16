@@ -210,8 +210,8 @@ systematic *topological* errors, both already identified in the `_add` cache:
 Every `_add.pkl` is a single dict. It is a **superset** of the plain cache: all
 the original keys, plus the label keys written by the labeling step
 (`gt_node_canonical_label`, `gt_edge_error`, `gt_merge_labels`, `gt_merge_sites`,
-`gt_merge_site_metadata`, `gt_junction_audit`). The four bold label keys plus the
-two graphs are the ones you will actually use.
+`gt_merge_site_metadata`, `gt_junction_audit`, `gt_label_policy`). The four bold label
+keys plus the two graphs are the ones you will actually use.
 
 | Key | Type | Meaning |
 |---|---|---|
@@ -227,23 +227,39 @@ two graphs are the ones you will actually use.
 | **`gt_edge_error`** | `np.ndarray (E_gt,) uint8` | Per-GT-edge class, parallel to `list(gt_graph.edges)`: `0=correct, 1=split, 2=omit, 3=merged`. |
 | **`gt_merge_labels`** | `np.ndarray (M,) int64` | Predicted segment ids flagged as merges — node-count rule ∪ geometric walk, pooled over **all** GT neurons into one global set (canonical keeps one set *per neuron* — see the note below). **Not all of them fuse ≥2 GT neurons**: only the node-count branch requires that. The walk branch also flags a segment fused to *untraced* material, using a single traced neuron — see the provenance note below. |
 | **`gt_merge_sites`** | `list[dict]` | One active list of geometric-walk and two-GT junction sites: `{"segment_id": int, "gt_neuron": str, "xyz": (x,y,z) µm}` plus source/evidence fields on refreshed caches. Older caches contain only geometric sites. |
-| `gt_merge_site_metadata` | `dict` or `None` | Combined-site generation parameters and counts, also on `gt_graph.merge_site_metadata`. No parallel label sets. |
+| `gt_merge_site_metadata` | `dict` or `None` | Combined-site generation parameters and counts (including the merge `thresholds` used), also on `gt_graph.merge_site_metadata`. No parallel label sets. |
+| `gt_label_policy` | `dict` or `None` | The merge-threshold policy the labels were computed with (`MergeThresholds` record: `policy` `nodes` or `length`, `min_nodes`, `passthru_min_cc`, `length_um`, `gt_median_edge_um`, plus `reused_geometric_sites` and `written`). Absent or `None` on caches written before 2026-10-15: those used the 50-node constants (`original`). Also on `gt_graph.label_policy`. |
 
 The label arrays are also attached to `gt_graph` as
 `gt_graph.node_label`, `gt_graph.edge_error`, `gt_graph.merge_labels`,
-`gt_graph.merge_sites`, `gt_graph.merge_site_metadata` and
-`gt_graph.junction_gt_audit`, so you can read them off either the payload dict or
+`gt_graph.merge_sites`, `gt_graph.merge_site_metadata`, `gt_graph.junction_gt_audit`
+and `gt_graph.label_policy`, so you can read them off either the payload dict or
 the graph. Their combined size is tiny (~tens of MB) next to the multi-GB graphs.
 
-**Combined-site refresh:** `scripts/relabel_cache.py --refresh-merge-sites`
-updates an existing `_add.pkl` in place without rereading segmentation or
-rebuilding graphs. The two original segment-merge criteria are preserved;
-two-GT junction localization adds site coordinates to the same `gt_merge_sites`.
-`# Merges` is therefore counted on the geometric-walk sites only (see the
-table in §1); `len(gt_merge_sites)` equals it only on geometric-only caches. Combined site counts need not match
-the original canonical merge-event count and may include two localizations of
-one biological event. Recompute sweep evidence and detector results after a
-refresh; old scored CSVs still carry old labels.
+**Building and relabeling (one entry point, 2026-10-15):** `python -m labeled_cache
+--brains <brain> --mcl 100 --policy length_v1` runs, per brain, the stages its files
+still need: `base` (skeletons from GCS into `dataset_cache_<brain>_mcl<N>.pkl`),
+`label` (GT labels from the dense segmentation into `_add.pkl`) and `policy` (an
+existing `_add.pkl` whose `gt_label_policy` differs from the request is relabeled in
+place from its stored GT node labels, no cloud reads; graphs and node ids are
+untouched). A reused cache has its GT compared with the current GCS tracings first
+and is refused when stale (`--rebuild-base` rebuilds it, `--no-verify-gt` skips the
+check). `--check-reproduce` recomputes with the original thresholds before relabeling
+and requires the stored labels back. `--dry-run` prints the stages. Policies:
+`original` (50 GT nodes for every merge threshold, which is about 200 um in a cache
+resampled at 4 um) and `length_v1` (50 um of GT cable in each cache's own node
+spacing, 11 to 13 nodes; see `notebooks/merge_label_shadow_findings.md`). Console
+output goes to `notebooks/log/labeled_cache_*.log`. The builder replaced
+`notebooks/generate_add_caches.py` and `scripts/relabel_cache.py` on 2026-10-15 (both
+removed after the first compute-node run reproduced the stored 794495 labels exactly).
+
+Two-GT junction localization adds site coordinates to the same `gt_merge_sites`
+as the geometric walk. `# Merges` is therefore counted on the geometric-walk sites
+only (see the table in §1); `len(gt_merge_sites)` equals it only on geometric-only
+caches. Combined site counts need not match the original canonical merge-event count
+and may include two localizations of one biological event. Recompute sweep evidence,
+feature tables, sidecars, companions and detector results after a relabel; old scored
+CSVs still carry old labels (`docs/dataset_artifact_dependencies.md`).
 
 Optional `gt_junction_audit` stores versioned local GT branch evidence, also on
 `gt_graph.junction_gt_audit`. It is review-only and does not replace the four

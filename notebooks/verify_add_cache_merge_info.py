@@ -139,7 +139,7 @@ def load_cache_merges(add_path):
         node_label = getattr(gt, "node_label", None)
     assert node_label is not None and np.asarray(node_label).size, (
         f"{add_path} has no gt_node_canonical_label -- this is a plain cache, "
-        "not an _add cache (run scripts/relabel_cache.py)."
+        "not an _add cache (run python -m labeled_cache)."
     )
     node_label = np.asarray(node_label)
 
@@ -147,7 +147,7 @@ def load_cache_merges(add_path):
     if merge_labels_arr is None:
         merge_labels_arr = getattr(gt, "merge_labels", None)
     assert merge_labels_arr is not None, (
-        f"{add_path} has no gt_merge_labels -- rerun relabel_cache.py so merge "
+        f"{add_path} has no gt_merge_labels -- rerun python -m labeled_cache so merge "
         "information is baked in."
     )
     merge_labels = set(int(x) for x in np.asarray(merge_labels_arr))

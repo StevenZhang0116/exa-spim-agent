@@ -10,26 +10,29 @@ being comparable. Times are what the 794495 rebuild of 2026-10-13 took on n268 (
 
 | Input | Where it is defined | Used by |
 |---|---|---|
-| GT tracings (one SWC per neuron, `voxel/` copy) | `gs://allen-nd-goog/ground_truth_tracings/<brain>/voxel`, hard-coded in `notebooks/generate_add_caches.py` | `gt_graph` and every GT-derived label in the cache |
+| GT tracings (one SWC per neuron, `voxel/` copy) | `gs://allen-nd-goog/ground_truth_tracings/<brain>/voxel` (`labeled_cache/io.py`, `GT_PATH_TEMPLATE`) | `gt_graph` and every GT-derived label in the cache |
 | Predicted segmentation (`label_mask`) and fragment SWCs | `configs/segmentation_paths.json` (new layout, takes precedence) or `configs/segmentation_datasets.rtf` + legacy template, resolved by `scripts/dataset_config.py` | `fragments_graph`; `label_gt_from_segmentation` |
 | Fused image prefix | `configs/exaspim_image_prefixes.json` | `img_path` in the cache; image reads of the context cache |
+| Benchmark candidate pools | `proofreader_evolve/candidate_pools.json` (split `tip_to_any_node|r=80|k=2` since 2026-10-15; merge `null` = the frozen detector's junction rule) | the candidate rows of every native table of that kind: editing an entry is a new pool hash, so items 2, 3, 4, 6 and 7 below must be redone for that kind on every brain (the cache itself is untouched) |
 
-`generate_add_caches.py` builds `dataset_cache_<brain>_mcl<N>.pkl` (graphs loaded) and then
-`_add.pkl` (labels baked in). **It reuses an existing base cache without checking GCS**, so
-GT updates are picked up only if both pkl files are deleted first. Check
-`gs://.../voxel` object `updated` times against the base-cache mtime before trusting a cache
-(`../claude_scratch/gt_gcs_inventory_20261013.json` holds the 2026-10-13 snapshot;
-`cache/ground_truth_inventory_20261013.md` has the full account).
+`python -m labeled_cache` (2026-10-15; before it, `notebooks/generate_add_caches.py` and
+`scripts/relabel_cache.py`) builds `dataset_cache_<brain>_mcl<N>.pkl` (graphs loaded), then
+`_add.pkl` (labels baked in), and applies the merge-threshold policy to an existing `_add.pkl`
+in place. Before reusing either pkl it compares the cached GT neurons with the current GCS
+tracings (node counts and coordinates after the same resampling) and refuses a stale cache
+unless `--rebuild-base` is given. The old generator reused a base cache without that check,
+which is how the stale 794495 cache of 2026-09-23 came about
+(`cache/ground_truth_inventory_20261013.md` has the full account).
 
 Two kinds of change have different blast radii:
 
 - **Graph reload** (new or revised GT, new segmentation, rebuilt base cache): node ids are
   renumbered because `SkeletonGraph.load` assigns component ids in load order, even when the
   fragments are unchanged. Everything keyed by node ids or by the pool hash changes.
-- **Label-only refresh** (`scripts/relabel_cache.py --refresh-merge-sites`, or a future
-  length-based merge threshold): graphs and node ids stay, only `gt_*` label arrays and
-  `gt_merge_sites` change. Candidate pools and folds stay identical; labels, sidecars,
-  companions and anything carrying labels must still be redone.
+- **Label-only refresh** (the `policy` stage of `python -m labeled_cache`, for example
+  `--policy length_v1`): graphs and node ids stay, only `gt_*` label arrays,
+  `gt_merge_sites` and `gt_label_policy` change. Candidate pools and folds stay identical;
+  labels, sidecars, companions and anything carrying labels must still be redone.
 
 ## 2. Derived artifacts
 
@@ -38,7 +41,7 @@ Two kinds of change have different blast radii:
 | 1 | Image-alignment receipt | `configs/image_alignment.json` (`brains.<brain>`) | cache identity (path, size, mtime, inode) and image identity; `image_context.source` raises `Image/cache identity changed since alignment review` | yes | yes (the pkl file changes) | `python -m proofreader_evolve.cli.check_image_alignment --brains <b> --mcl <N> --out figs/candidate_image_alignment_<date>`, inspect the six overlays, then the same command with `--record-reviewed --review-note "..."` | minutes plus the visual review |
 | 2 | Native feature tables | `proofreader_evolve/feature_tables/<brain>/<pool_sha256>/` (`candidates.pkl`, `features.pkl`, `evaluator_labels.npy`, `meta.json`) | `meta.provenance.source_cache` (cache identity), `pool_sha256` (candidate identities), detector run ids | yes (new pool hash) | yes (labels inside) | `python -u proofreader_evolve/prepare_feature_tables.py --brains <b> --mcl <N> --threads all` | 2 h 52 min for 794495; the script's final preflight reports `blocked` and exit code 1 until step 3 exists, with complete tables |
 | 3 | GT-availability sidecars | `feature_tables/<brain>/<pool_sha256>.availability/` | table rows, `pool_sha256`, candidate-key digest, labels digest, `source_cache` (`AvailabilityMismatch`) | yes | yes | `python -u -m proofreader_evolve.cli.precompute_availability --brains <b> --mcl <N>` | about 1.5 min |
-| 4 | AutoDiscovery companions | `markdowns/rerank_companion_<brain>_{merge,split}.{npz,json}` (gitignored) | `pool_sha256`, `labels_sha256`, `npz_sha256`, `source_cache.file` + size; `agentic/rerun_experiments.bind_companions` refuses a mismatch | yes | yes | `python -u -m proofreader_evolve.cli.export_rerank_companion --brain <b> --mcl <N>` (needs 2 and 3; loads the graph for split folds) | about 1 min |
+| 4 | AutoDiscovery companions | `markdowns/rerank_companion_<brain>_{merge,split}.{npz,json}` (gitignored); files a past AutoDiscovery run was given are kept under `markdowns/archive/companions_<date>/` with their names | manifest `pool_sha256`, `labels_sha256`, `npz_sha256`, `source_cache` (file, size); `agentic/rerun_experiments.bind_companions` refuses a companion whose `source_cache.file` is not one of the run's pkls or whose npz differs from its digest | yes | yes | `python -u -m proofreader_evolve.cli.export_rerank_companion --brain <b> --mcl <N> --kinds <kind> --pool-only` (cache only; same rows, labels and `pool_sha256` as the tables built later), or without `--pool-only` from prepared tables and sidecars (needs 2 and 3) | a few minutes (cache load) |
 | 5 | Feature specifications | `markdowns/{merge,split}_features_for_proofreader_evolve.md` | label counts and baseline figures quoted from the 794495 companion | yes (figures) | yes (figures) | recompute with the specification's own scoring code (`../claude_scratch/merge_baselines_20261013.py` for merge) and edit the Baselines sections; archive the previous text under `markdowns/archive/` | minutes |
 | 6 | Context cache | `proofreader_evolve/context_cache/<brain>/<kind>/<pool_sha256>/` | `table_identity`: brain, kind, `pool_sha256`, `features_sha256`, `source_cache`; `ContextCache.entry` raises on mismatch; a changed pool hash is simply a new directory | yes | probably: `features.pkl` is rewritten by step 2, check whether `features_sha256` changed | `python -u -m proofreader_evolve.cli.precompute_context_cache --brains <b> --mcl <N> --readers 16 --band-rows 50000 --labeled-extension` (needs 1 and 3) | 2 h 7 min for 794495 (fresh 50,000-row band per kind plus the labeled extension) |
 | 7 | Descriptor bank | `proofreader_evolve/descriptor_bank/<brain>/<kind>/<pool_sha256>/<code_sha256>/<scope>/` | directory keyed by pool hash; manifest identity includes `ContextCache.identity_key` | orphaned; delete | recomputed on first use if the context-cache identity changed | nothing to run; the next evolution run recomputes what it needs (about 5 to 10 min per descriptor and brain) | lazy |
@@ -52,9 +55,8 @@ AutoDiscovery audit (`bind_companions`); items 1 and 8 are the ones that surpris
 
 ```bash
 conda activate panda            # compute node; one brain at a time; with srun always add -n1
-rm cache/dataset_cache_<b>_mcl100.pkl cache/dataset_cache_<b>_mcl100_add.pkl          # force a fresh GT load
 rm -rf proofreader_evolve/feature_tables/<b> proofreader_evolve/context_cache/<b> proofreader_evolve/descriptor_bank/<b>
-python -u notebooks/generate_add_caches.py --brains <b>                                 # 58 min (794495)
+python -u -m labeled_cache --brains <b> --mcl 100 --rebuild-base                      # deletes both pkl files, GCS load; 58 min (794495)
 python -u proofreader_evolve/prepare_feature_tables.py --brains <b> --mcl 100 --threads all   # 2 h 52 min
 python -u -m proofreader_evolve.cli.precompute_availability --brains <b> --mcl 100     # 1.5 min
 python -u -m proofreader_evolve.cli.export_rerank_companion --brain <b> --mcl 100     # 1 min
@@ -66,9 +68,10 @@ python -m proofreader_evolve.cli.preflight --brains <all brains> --train-brains 
 mv metrics_out/<b> metrics_out/archive/<b>_<olddate>; python -u notebooks/evaluate_skeleton_metrics.py --brains <b>   # only if GT changed
 ```
 
-After a label-only refresh skip the first two lines and `generate_add_caches.py`; run
-`relabel_cache.py` instead, then steps 2 to 4, then re-record the receipt, then check the
-context-cache identity before rebuilding it.
+After a label-only refresh keep the pkl files and the directories: run
+`python -m labeled_cache --brains <b> --mcl 100 --policy length_v1 --check-reproduce` instead (the `policy` stage, no
+cloud reads apart from the GT check), then steps 2 to 4, then re-record the receipt, then
+check the context-cache identity before rebuilding it.
 
 ## 4. Not invalidated automatically, but no longer comparable
 
