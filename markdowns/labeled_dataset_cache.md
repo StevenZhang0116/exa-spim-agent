@@ -216,7 +216,7 @@ keys plus the two graphs are the ones you will actually use.
 | Key | Type | Meaning |
 |---|---|---|
 | `fragments_path`, `gt_path` | `str` | Provenance only — source GCS paths of the SWCs. Not read to use the cache. |
-| `img_path` | `str` | **Public S3** path of the raw fused ExaSPIM image. Not needed for error recovery, but lets you fetch raw-image patches on demand with no credentials — see *Optionally reading the raw image*. |
+| `img_path` | `str` | **Public S3** path of the raw fused ExaSPIM image. Not needed for error recovery, but lets you fetch raw-image patches on demand with no credentials — see *Optionally reading the raw image*. A volume can be reprocessed and deleted; opening a deleted one fails with `NOT_FOUND ... .zarray`, and the cache builder rewrites the path (`python -m labeled_cache --brains <b> --refresh-image-path`). |
 | `segmentation_path` | `str` | Provenance only — **private GCS** path of the dense segmentation the labels were read from. Not read at load time and not needed (its information is already in the stored labels). |
 | `anisotropy` | `tuple` | µm/voxel in (x, y, z) — `(0.748, 0.748, 1.0)` for this batch of caches. **Not a fixed constant:** it is stored per dataset as-passed at build time, so always read it from the payload (`payload["anisotropy"]`) rather than hard-coding this value. |
 | `min_cable_length` | `int` | µm threshold shorter fragments were dropped at — the `<N>` from the `mcl<N>` filename (`100` for most caches; `mcl10` caches exist for some brains). |

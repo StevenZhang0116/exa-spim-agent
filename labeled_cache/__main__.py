@@ -3,6 +3,7 @@
     python -m labeled_cache --brains 794495 --mcl 100 --policy length_v1 --check-reproduce
     python -m labeled_cache --brains 718162 794492                 # new brains: base + labels
     python -m labeled_cache --brains 794495 --dry-run              # show the stages, load nothing
+    python -m labeled_cache --brains 794491 --refresh-image-path   # only replace a stale img_path
 
 Run in the panda environment on a compute node, one process per brain (each brain
 needs more than 20 GB). Console output is also appended to
@@ -69,6 +70,9 @@ def parse_args(argv=None):
                         help="Apply the policy even when the cache already records it.")
     parser.add_argument("--check-reproduce", action="store_true",
                         help="Before relabeling, recompute with the original thresholds and require the stored labels back.")
+    parser.add_argument("--refresh-image-path", action="store_true",
+                        help="Only give the existing pkl files the img_path of configs/exaspim_image_prefixes.json "
+                             "(after an S3 volume moved); no GT check, no other stage.")
     parser.add_argument("--dry-run", action="store_true", help="Print the stages per brain and exit.")
     parser.add_argument("--quiet", action="store_true", help="No per-step progress bars.")
     parser.add_argument("--log-txt", type=Path, help="Append console output to this file.")
@@ -77,6 +81,8 @@ def parse_args(argv=None):
         parser.error("--mcl must be nonnegative; --threshold-um, --node-spacing and --anisotropy must be positive")
     if args.gt_workers < 1:
         parser.error("--gt-workers must be at least 1")
+    if args.refresh_image_path and (args.rebuild_base or args.force_relabel or args.check_reproduce):
+        parser.error("--refresh-image-path runs alone; drop --rebuild-base, --force-relabel and --check-reproduce")
     return args
 
 
@@ -87,7 +93,7 @@ def requests_from(args):
                            anisotropy=tuple(args.anisotropy), verify_gt=not args.no_verify_gt,
                            gt_workers=args.gt_workers, rebuild_base=args.rebuild_base,
                            force_relabel=args.force_relabel, check_reproduce=args.check_reproduce,
-                           verbose=not args.quiet)
+                           refresh_image_path=args.refresh_image_path, verbose=not args.quiet)
 
 
 def main(argv=None) -> int:
@@ -96,7 +102,7 @@ def main(argv=None) -> int:
         print(f"policy {describe(args.policy, args.threshold_um)}; cache dir {args.cache_dir}")
         for request in requests_from(args):
             print(f"  {request.brain} mcl{request.mcl}: {' -> '.join(plan(request))}"
-                  + ("" if request.verify_gt else " (GT check off)"))
+                  + ("" if request.verify_gt or request.refresh_image_path else " (GT check off)"))
         return 0
     log_path = args.log_txt or io.DEFAULT_LOG_DIR / f"labeled_cache_{datetime.now():%Y%m%d_%H%M%S}_{os.getpid()}.log"
     log_path = log_path.expanduser().resolve()

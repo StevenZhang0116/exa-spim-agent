@@ -1,5 +1,6 @@
-"""Tests of the labeled-cache builder (``labeled_cache``): policies, stage planning and the
-in-place policy stage on a synthetic cache. No brain is loaded and nothing is read from GCS."""
+"""Tests of the labeled-cache builder (``labeled_cache``): policies, stage planning, the
+in-place policy stage and the image-path refresh on synthetic caches. No brain is loaded and
+nothing is read from GCS or S3."""
 
 from __future__ import annotations
 
@@ -10,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import networkx as nx
 import numpy as np
@@ -189,6 +191,66 @@ class PolicyStageTests(unittest.TestCase):
             self.assertEqual(summary["results"]["policy"]["action"], "relabeled")
 
 
+class ImagePathStageTests(unittest.TestCase):
+    NEW = "s3://y/img/0"
+
+    def caches(self, directory):
+        labeled = write_payload(directory, synthetic_payload(extra=False))
+        base = io.base_cache_path(directory, "111", 100)
+        with open(base, "wb") as handle:
+            pickle.dump({"img_path": "s3://x/img", "fragments_path": "gs://x/fragments"}, handle)
+        return base, labeled
+
+    def test_refresh_replaces_only_a_stale_img_path(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(io, "image_path", return_value=self.NEW):
+            base, labeled = self.caches(directory)
+            opened = []
+            refresh = lambda: build.refresh_image_path(  # noqa: E731
+                request(directory, refresh_image_path=True), log=lambda *_: None, open_image=opened.append)
+            result = refresh()
+            self.assertEqual({r["action"] for r in result.values()}, {"replaced"})
+            self.assertEqual(result[labeled.name]["previous"], "s3://x/img")
+            self.assertEqual(opened, [self.NEW])                  # opened once, before the first write
+            expected = synthetic_payload(extra=False)
+            with open(labeled, "rb") as handle:
+                payload = pickle.load(handle)
+            self.assertEqual(payload["img_path"], self.NEW)
+            self.assertEqual(set(payload), set(expected))         # no other key added or dropped
+            np.testing.assert_array_equal(payload["gt_node_canonical_label"], expected["gt_node_canonical_label"])
+            self.assertEqual(payload["fragments_path"], expected["fragments_path"])
+            with open(base, "rb") as handle:
+                self.assertEqual(pickle.load(handle), {"img_path": self.NEW, "fragments_path": "gs://x/fragments"})
+            # already current: nothing opened, nothing rewritten
+            signatures = [io.cache_signature(p) for p in (base, labeled)]
+            self.assertEqual({r["action"] for r in refresh().values()}, {"unchanged"})
+            self.assertEqual(opened, [self.NEW])
+            self.assertEqual([io.cache_signature(p) for p in (base, labeled)], signatures)
+
+    def test_an_image_that_does_not_open_is_never_written(self):
+        def missing(path):
+            raise ValueError(f"NOT_FOUND: {path}")
+
+        with tempfile.TemporaryDirectory() as directory, patch.object(io, "image_path", return_value=self.NEW):
+            base, labeled = self.caches(directory)
+            signatures = [io.cache_signature(p) for p in (base, labeled)]
+            with self.assertRaises(ValueError):
+                build.refresh_image_path(request(directory, refresh_image_path=True), log=lambda *_: None,
+                                         open_image=missing)
+            self.assertEqual([io.cache_signature(p) for p in (base, labeled)], signatures)
+            with self.assertRaises(FileNotFoundError):
+                build.refresh_image_path(request(directory, brain="222", refresh_image_path=True),
+                                         log=lambda *_: None, open_image=missing)
+
+    def test_plan_and_run_report_only_the_image_path_stage(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(io, "image_path", return_value=self.NEW), \
+                patch.object(build, "_open_image"):
+            self.caches(directory)
+            self.assertEqual(plan(request(directory, refresh_image_path=True)), ["image_path"])
+            summary = build.run(request(directory, refresh_image_path=True), log=lambda *_: None)
+            self.assertEqual(summary["stages"], ["image_path"])
+            self.assertEqual(len(summary["results"]["image_path"]), 2)
+
+
 class CliTests(unittest.TestCase):
     def test_dry_run_prints_the_plan_without_loading(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -203,8 +265,10 @@ class CliTests(unittest.TestCase):
     def test_argument_validation(self):
         args = cli.parse_args(["--brains", "1", "--policy", "original", "--threshold-um", "40"])
         self.assertEqual((args.policy, args.threshold_um, args.mcl), ("original", 40.0, 100))
+        self.assertTrue(cli.parse_args(["--brains", "1", "--refresh-image-path"]).refresh_image_path)
         for bad in (["--brains", "1", "--threshold-um", "0"], ["--brains", "1", "--gt-workers", "0"],
-                    ["--brains", "1", "--policy", "bogus"]):
+                    ["--brains", "1", "--policy", "bogus"],
+                    ["--brains", "1", "--refresh-image-path", "--force-relabel"]):
             with self.assertRaises(SystemExit), contextlib.redirect_stderr(stringio.StringIO()):
                 cli.parse_args(bad)
 

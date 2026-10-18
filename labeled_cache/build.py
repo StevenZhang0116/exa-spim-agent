@@ -10,6 +10,9 @@ Stages (each skipped when its result exists):
              GT node labels (no cloud reads) and replace the file atomically. Graphs
              and node ids are untouched, so candidate pools keep their hashes.
 
+On request only (``refresh_image_path``), the ``image_path`` stage replaces a stale
+``img_path`` in the existing pkl files with the configured one and does nothing else.
+
 A reused cache has its GT compared with the current GCS tracings first
 (``verify_gt``); a stale cache is refused unless ``rebuild_base`` is set, which
 deletes both pkl files and rebuilds from GCS.
@@ -32,7 +35,7 @@ from agentic_neuron_proofreader.data_modules.canonical_labeling import MergeThre
 from labeled_cache import io
 from labeled_cache.policy import DEFAULT_LENGTH_UM, POLICY_LENGTH_V1, describe, policy_matches, thresholds_for
 
-STAGE_BASE, STAGE_LABEL, STAGE_POLICY = "base", "label", "policy"
+STAGE_BASE, STAGE_LABEL, STAGE_POLICY, STAGE_IMAGE_PATH = "base", "label", "policy", "image_path"
 # Caches of derived detector universes stored by older tooling in the payload; they
 # embed labels and must not survive a relabel.
 DERIVED_PAYLOAD_KEYS = ("__detector_sample_universe_cache__", "__detector_universe_site_audit__")
@@ -62,6 +65,7 @@ class BuildRequest:
     rebuild_base: bool = False
     force_relabel: bool = False
     check_reproduce: bool = False
+    refresh_image_path: bool = False
     verbose: bool = True
 
     @property
@@ -75,6 +79,8 @@ class BuildRequest:
 
 def plan(request: BuildRequest) -> list[str]:
     """Stages the brain's files call for, before anything is loaded."""
+    if request.refresh_image_path:
+        return [STAGE_IMAGE_PATH]
     if request.rebuild_base:
         return [STAGE_BASE, STAGE_LABEL]
     if request.labeled_path.exists():
@@ -91,6 +97,10 @@ def run(request: BuildRequest, log=print) -> dict:
     log(f"\n=== brain {request.brain} mcl{request.mcl}: stages {stages}; policy {describe(request.policy, request.length_um)}")
     summary = {"brain": request.brain, "mcl": request.mcl, "policy": request.policy,
                "length_um": request.length_um, "stages": stages, "results": {}}
+    if stages == [STAGE_IMAGE_PATH]:
+        summary["results"][STAGE_IMAGE_PATH] = refresh_image_path(request, log)
+        summary["elapsed_seconds"] = round(time.monotonic() - started, 1)
+        return summary
     if stages == [STAGE_POLICY]:
         result = apply_policy(request, log)
         summary["results"][STAGE_POLICY] = result
@@ -231,6 +241,53 @@ def apply_policy(request, log=print) -> dict:
     log(f"replaced {path}: merge labels {result['previous']['merge_labels']} -> {result['current']['merge_labels']}, "
         f"sites {result['previous']['merge_sites']} -> {result['current']['merge_sites']}")
     return result
+
+
+def refresh_image_path(request, log=print, open_image=None) -> dict:
+    """Image-path stage: give the brain's existing pkl files (base and labeled) the ``img_path``
+    that ``configs/exaspim_image_prefixes.json`` holds now. Nothing else in a payload changes;
+    a file is rewritten (atomically) only when its path differs, and the new image must open
+    before anything is written. ``BrainDataset.load_from_cache`` opens ``img_path`` eagerly, so
+    a cache whose volume was deleted from S3 cannot be reused until this has run."""
+    current = io.image_path(request.brain)
+    paths = [p for p in (request.base_path, request.labeled_path) if p.exists()]
+    if not paths:
+        raise FileNotFoundError(f"no cache file of brain {request.brain} mcl{request.mcl} in {request.cache_dir}")
+    checked = False
+    results = {}
+    for path in paths:
+        log(f"loading {path}")
+        signature = io.cache_signature(path)
+        with open(path, "rb") as handle:
+            payload = pickle.load(handle)
+        previous = payload.get("img_path")
+        if previous == current:
+            log(f"{path.name}: img_path already {current}")
+            results[path.name] = {"action": "unchanged", "img_path": current}
+        else:
+            if not checked:
+                log(f"opening {current}")
+                (open_image or _open_image)(current)
+                checked = True
+
+            def write(destination, payload=payload):
+                with open(destination, "wb") as handle:
+                    pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+            payload["img_path"] = current
+            io.atomic_cache_write(path, write, expected_signature=signature)
+            log(f"{path.name}: img_path {previous} -> {current}")
+            results[path.name] = {"action": "replaced", "previous": previous, "img_path": current}
+        del payload
+        gc.collect()
+    return results
+
+
+def _open_image(path):
+    from agentic_neuron_proofreader.utils.img_util import TensorStoreImage
+
+    io.set_cloud_environment()
+    TensorStoreImage(path)
 
 
 # --- helpers ------------------------------------------------------------------------------

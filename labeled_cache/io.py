@@ -74,6 +74,16 @@ def set_cloud_environment():
     os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
 
 
+def image_path(brain):
+    """Level-0 fused image of one brain, from ``configs/exaspim_image_prefixes.json``."""
+    scripts = str(PROJECT_ROOT / "scripts")
+    if scripts not in sys.path:
+        sys.path.insert(0, scripts)
+    from dataset_config import get_img_path  # noqa: E402
+
+    return get_img_path(brain, prefixes_path=str(IMAGE_PREFIXES))
+
+
 def dataset_sources(brain):
     """Source paths of one brain: fragment SWCs, GT SWCs, fused image, dense segmentation.
 
@@ -83,11 +93,11 @@ def dataset_sources(brain):
     scripts = str(PROJECT_ROOT / "scripts")
     if scripts not in sys.path:
         sys.path.insert(0, scripts)
-    from dataset_config import get_fragments_path, get_img_path, get_segmentation_path  # noqa: E402
+    from dataset_config import get_fragments_path, get_segmentation_path  # noqa: E402
 
     return {
         "fragments_path": get_fragments_path(brain, rtf_path=str(CONFIG_RTF)),
         "gt_path": GT_PATH_TEMPLATE.format(brain=brain),
-        "img_path": get_img_path(brain, prefixes_path=str(IMAGE_PREFIXES)),
+        "img_path": image_path(brain),
         "segmentation_path": get_segmentation_path(brain, rtf_path=str(CONFIG_RTF)),
     }

@@ -7,7 +7,9 @@ rows, so it needs prepared feature tables. Newly added brains only have a
 directly from that cache instead, then reuses the same trusted image reader,
 overlay renderer and diagnostic statistics, and writes receipts in the same
 format to ``configs/image_alignment.json``. It never reads GT labels, trains or
-evaluates anything.
+evaluates anything. The image is the URI already reviewed for the brain, if any
+(``dataset_config.get_cache_img_path``; re-recording after a cache rewrite), else the
+cache's ``img_path`` (a new brain).
 
 Two steps, like the CLI it mirrors:
 
@@ -44,13 +46,14 @@ os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
 from proofreader_evolve.harness.image_context import DEFAULT_ALIGNMENT, ImageSource  # noqa: E402
 from proofreader_evolve.harness.image_preview import alignment_statistics, render_preview  # noqa: E402
 from proofreader_evolve.harness.local_context import cache_identity  # noqa: E402
+from scripts.dataset_config import get_cache_img_path  # noqa: E402
 
 
 def load_fragments(path):
     """Fragment graph and image metadata only; GT fields are dropped unread."""
     with open(path, "rb") as f:
         payload = pickle.load(f)
-    return payload["fragments_graph"], payload["img_path"], tuple(payload["anisotropy"])
+    return payload["fragments_graph"], get_cache_img_path(path, payload), tuple(payload["anisotropy"])
 
 
 def representative_nodes(graph, geometry, count, min_component_nodes, radius_um, seed):

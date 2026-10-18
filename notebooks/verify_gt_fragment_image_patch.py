@@ -51,6 +51,9 @@ except ModuleNotFoundError:
 
 from agentic_neuron_proofreader.utils import img_util
 
+sys.path.insert(0, str(PROJECT_ROOT))
+from scripts.dataset_config import get_cache_img_path  # noqa: E402
+
 
 EDGE_SPLIT = 1
 
@@ -311,7 +314,7 @@ def main() -> int:
         f"xyz={tuple(frag_xyz)}"
     )
 
-    image_path = str(payload["img_path"])
+    image_path = str(get_cache_img_path(args.pkl, payload))
     print(f"Opening real image: {image_path}", flush=True)
     configure_image_access(image_path, args.gcp_credentials)
     try:

@@ -6,6 +6,9 @@ Resolves per-brain paths from the files in ``configs/``:
 - ``exaspim_image_prefixes.json`` -> brain_id -> image prefix
 - ``segmentation_paths.json`` -> brain_id -> explicit segmentation/fragment
   URIs for datasets outside the legacy GCS layout (takes precedence over the RTF)
+- ``image_alignment.json`` -> brain_id -> the image URI reviewed for alignment; image
+  reads go through ``get_reviewed_img_path`` / ``get_cache_img_path``, not a cache's
+  stored ``img_path``, which goes stale when S3 volumes are deleted
 
 These were originally inlined in ``load_skeletons.py``; they live here so
 other notebooks can reuse them via::
@@ -32,6 +35,11 @@ DEFAULT_IMAGE_PREFIXES_PATH = "../configs/exaspim_image_prefixes.json"
 DEFAULT_SEGMENTATION_PATHS = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "..", "configs", "segmentation_paths.json"
 )
+_CONFIG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "configs")
+DEFAULT_IMAGE_ALIGNMENT_PATH = os.path.join(_CONFIG_DIR, "image_alignment.json")
+_IMAGE_PREFIXES_ABSOLUTE = os.path.join(_CONFIG_DIR, "exaspim_image_prefixes.json")
+_IDENTITY_4X4 = [[1.0 if i == j else 0.0 for j in range(4)] for i in range(4)]
+_CACHE_BRAIN = re.compile(r"dataset_cache_(\d+)_mcl")
 LEGACY_SEGMENTATION_TEMPLATE = (
     "gs://allen-nd-goog/from_google/{brain_id}/whole_brain/{segmentation_id}/"
 )
@@ -112,3 +120,37 @@ def get_img_path(brain_id, prefixes_path: str = DEFAULT_IMAGE_PREFIXES_PATH) -> 
     if img_prefix is None:
         img_prefix = prefixes[int(brain_id)]  # raises KeyError if truly absent
     return os.path.join(img_prefix, "0")
+
+
+def get_reviewed_img_path(brain_id, fallback: str | None = None,
+                          alignment_path: str = DEFAULT_IMAGE_ALIGNMENT_PATH) -> str:
+    """Image path (resolution level 0) to read patches from for a brain.
+
+    The URI reviewed in ``configs/image_alignment.json`` comes first: it is what the
+    context cache and the companions read, and it stays valid when a cache's stored
+    ``img_path`` points at a deleted S3 volume (794491's 2025-10-26 volume). Without a
+    reviewed entry, ``fallback`` (typically the cache's ``img_path``) is returned, else
+    the ``exaspim_image_prefixes.json`` entry. A review that needs a non-identity
+    ``graph_to_world_um`` raises: an untransformed patch read would be misplaced.
+    """
+    review = {}
+    if os.path.exists(alignment_path):
+        with open(alignment_path) as f:
+            review = json.load(f).get("brains", {}).get(str(brain_id), {})
+    uri = review.get("image_uri") if review.get("status") == "reviewed" else None
+    if uri is None:
+        return fallback if fallback is not None else get_img_path(brain_id, _IMAGE_PREFIXES_ABSOLUTE)
+    transform = review.get("graph_to_world_um")
+    if transform is not None and [[float(v) for v in row] for row in transform] != _IDENTITY_4X4:
+        raise ValueError(f"Brain {brain_id}: the reviewed image needs a graph_to_world_um registration; "
+                         "read it through proofreader_evolve.harness.image_context instead")
+    return uri.rstrip("/") + "/0"
+
+
+def get_cache_img_path(cache_path, payload: dict, alignment_path: str = DEFAULT_IMAGE_ALIGNMENT_PATH) -> str:
+    """``get_reviewed_img_path`` for a ``dataset_cache_<brain>_mcl<N>*.pkl`` file, falling
+    back to the payload's ``img_path``; the brain id comes from the file name."""
+    match = _CACHE_BRAIN.search(os.path.basename(str(cache_path)))
+    if match is None:
+        return payload["img_path"]
+    return get_reviewed_img_path(match.group(1), fallback=payload.get("img_path"), alignment_path=alignment_path)
