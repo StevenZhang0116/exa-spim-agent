@@ -285,8 +285,8 @@ Done 2026-10-15 for the AutoDiscovery rerun: split companions of 794495 and 8024
 with `export_rerank_companion --kinds split --pool-only` (794495: 689,677 rows, labels
 2,497 / 3,579 / 683,601; the r=80 pool contains every r=50 pair with unchanged labels and gaps;
 log `proofreader_evolve/log/export_companion_split_r80_20261015.log`), r=50 companions archived
-in `markdowns/archive/companions_20261014/`, split specification rewritten (gap baseline AP
-0.826, folds 0.827 / 0.844 / 0.808). Merge companions and the merge specification follow once
+in `markdowns/archive/companions_20261014/` (deleted 2026-10-17), split specification rewritten (gap baseline AP
+0.825, folds 0.827 / 0.844 / 0.808). Merge companions and the merge specification follow once
 the merge pool is settled.
 
 Measured by `notebooks/split_canonical_gap.py` (write-up: `notebooks/merge_label_shadow_findings.md`
@@ -337,7 +337,7 @@ thresholds set to the same cable length (50 um = 11-13 cache nodes;
 11 brains) raises site recall to 0.80-0.94 at precision 0.83-0.96; the older-microscope
 brains gain most (754610 0.46 -> 0.81, 750318 0.59 -> 0.90).
 
-**Downstream impact (5 current brains, `scripts/shadow_merge_impact.py`).** Positives in
+**Downstream impact (5 current brains, `scripts/shadow_merge_impact.py`, deleted 2026-10-17).** Positives in
 the frozen merge detector's pool grow 8-24% (802449: 825 -> 973), but the new positives rank
 at median 5,900-75,000 and only 14 enter any Top-2000; P@500 / P@2000 change by <= 0.005
 and the per-brain ordering is unchanged. The recovered merges are mostly short and away
@@ -375,6 +375,22 @@ Plan: relabel all brains (length thresholds plus the definition fixes; the 79449
 rerun on 2026-10-14 from the 22-neuron GT: 198 sites, cache precision 92%), then decide on a second candidate
 family for bridge sites (tip-to-shaft partner nodes, wider radius, mid-shaft bulge scan), and rebuild
 once (the detector is refitted anyway).
+
+**Status 2026-10-16: second family decided.** All caches relabeled 2026-10-15. Merge pool
+`junction+tip_to_shaft|nms=20|gap=20|k=2|r=150` declared in `candidate_pools.json` and
+enumerated by `candidate_rules.py` (also the split rule; detectors copy the module). Over the
+eleven brains it lifts cache-site reach at 20 um from 0.801 to 0.875 and the worst brain at
+150 um from 0.74 to 0.90, at 2.8 times the candidates; wider gaps were rejected (the 20 to 40 and
+40 to 80 um steps add GT-judgeable rows at 0.12% and 0.08% positives, against 0.24% for 10 to
+20 um). Still unreached: 199 blind bridge sites (half at a GT tip, where the fragment runs on
+past the end of the tracing; the rest mid-shaft, mostly 747807 and 750318) and 67 sites whose
+junction lies 20 to 30 um away. **Open:** a path change-point family (direction, radius or
+edge-length jumps on unbranched paths) for the blind sites, measured against the same marginal
+rate before adoption. Real-data checks passed 2026-10-17: split rows unchanged (pool-only companions keep
+their `pool_sha256`) and the merge sweep through the module reproduces the reach counts;
+against the 2,319 canonical sites the rule reaches 88.1% within 20 um and 95.1% within 150 um
+(`notebooks/merge_canonical_gap/`, rerun 2026-10-17). Write-up: findings sections 6.6 and 6.7; rebuild order in
+`plans/rebuild_after_relabel_and_split_pool.md`.
 
 ## Context cache: band grown to 50,000 rows and older-microscope brains added (2026-10-08)
 

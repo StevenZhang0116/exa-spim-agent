@@ -14,9 +14,10 @@ proofreader_evolve:
 Nothing produced by a detector or an earlier run is written: no detector score, no
 frozen features, no model output, no evolve K.
 
-The pool of each kind is the one declared in `proofreader_evolve/candidate_pools.json`
-(split `tip_to_any_node|r=80|k=2` since 2026-10-15), so the companion and the
-proofreader_evolve tables share one `pool_sha256`.
+The pool of each kind is the one declared in `proofreader_evolve/candidate_pools.json` and
+enumerated by `candidate_rules.py` (split `tip_to_any_node|r=80|k=2` since 2026-10-15; merge
+junctions plus tip-to-shaft candidates within 20 um since 2026-10-16), so the companion and
+the proofreader_evolve tables share one `pool_sha256`.
 
 Run with panda on a compute node (the split folds load the fragment graph):
     python -u -m proofreader_evolve.cli.export_rerank_companion --brain 794495 --pool-only
@@ -37,7 +38,6 @@ from . import precompute_error_scores as pc
 from ..harness import label_availability as la
 from ..harness.internal_validation import FOLDS, fold_assignments, grouped_folds
 from ..harness import candidate_pools
-from ..harness.candidate_pools import describe_split_rule
 from ..harness.detector_metadata import inference_metadata
 from ..harness.native_pool import (POOL_VERSION, NativeTable, NativeTables, build_native_universe, cache_path,
                                    candidate_keys, ensure_native_tables)
@@ -51,22 +51,11 @@ COMPANION_VERSION = "rerank-companion-v1"
 # from the OME-Zarr multiscales metadata): world = voxel * scale + translation.
 IMAGE_LEVELS = {"0": {"dataset": "0", "scale_xyz_um": [0.748, 0.748, 1.0], "translation_xyz_um": [0.0, 0.0, 0.0]},
                 "1": {"dataset": "1", "scale_xyz_um": [1.496, 1.496, 2.0], "translation_xyz_um": [0.374, 0.374, 0.5]}}
-RULES = {
-    "merge": ("Candidates: every fragment node of degree >= 3 on a valid segment; greedy non-maximum "
-              "suppression in order (-degree, node id) removes same-segment junctions within 20 um "
-              "(Euclidean). Positive: geodesic distance (fragment cable) <= 20 um to a GT merge site, "
-              "after snapping the site to the nearest node of its own segment within 50 um. Label 0 only "
-              "where GT can judge: the segment carries a GT node label and the junction lies within "
-              "150 um of a GT node; otherwise NaN."),
-}
 
 
 def candidate_rule(kind, table):
-    """The rule text of a table: merge is the detector's junction rule, split follows the
-    applied pool policy recorded in the table meta (``candidate_policy``)."""
-    if kind == "merge":
-        return RULES["merge"]
-    return describe_split_rule(table.meta["candidate_policy"])
+    """The rule text of a table, from the rule recorded in its provenance."""
+    return candidate_pools.describe(kind, table.meta["provenance"]["pool_policy"])
 
 
 def _graph_provider(brain, mcl):
@@ -89,6 +78,9 @@ def _columns(kind, table):
         return {"segment_id": np.array([int(r["segment_id"]) for r in rows], dtype=np.int64),
                 "node_id": np.array([int(r["node_id"]) for r in rows], dtype=np.int64),
                 "degree": np.array([int(r["degree"]) for r in rows], dtype=np.int16),
+                "candidate_family": np.array([r["candidate_family"] for r in rows], dtype="U12"),
+                "tip_gap_um": np.array([np.nan if r["tip_gap_um"] is None else float(r["tip_gap_um"])
+                                        for r in rows]),
                 "x_um": np.array([float(r["x_um"]) for r in rows]),
                 "y_um": np.array([float(r["y_um"]) for r in rows]),
                 "z_um": np.array([float(r["z_um"]) for r in rows])}
@@ -116,17 +108,17 @@ def _columns(kind, table):
 
 
 def pool_only_bank(brain, mcl, kinds):
-    """Candidate rows and three-valued labels without native tables (no feature extraction).
+    """Candidate rows and three-valued labels without native tables or detectors.
 
     A companion holds candidate rows, labels and folds, nothing a detector computes, so
-    it does not need the tables (whose preparation is dominated by the frozen detectors'
-    feature extraction). The rows come from the same enumeration as table preparation
-    (``native_pool.build_native_universe`` with the declared pool policy), and availability
+    it needs neither the tables (whose preparation is dominated by the frozen detectors'
+    feature extraction) nor a detector at all (2026-10-17). The rows come from the same
+    enumeration as table preparation (``native_pool.build_native_universe`` with the declared
+    pool policy and no detector module), and availability
     from the same ``label_availability.compute`` / ``three_valued`` as the sidecars, so the
     pool hash and labels equal those of the tables built later from the same cache.
     Returns ``(bank, graph)``; ``graph`` is the fragment graph for the split folds.
     """
-    selected = pc.resolve_detector_runs(None, None)
     source = cache_path(brain, mcl)
     identity = pc._cache_identity(source)
     graph, _, payload = pc.ds.load_cached_graphs(str(source), expect_brain=brain, expect_mcl=mcl)
@@ -137,11 +129,7 @@ def pool_only_bank(brain, mcl, kinds):
     policies = candidate_pools.load_pool_policies()
     tables = {}
     for kind in kinds:
-        record = selected[kind][0]
-        pc._assert_detector_unchanged(record)
-        module = pc._import_module(Path(record["dir"]) / record["script"],
-                                   f"pool_only_{kind}_{record['script_sha256']}")
-        rows, truth, meta = build_native_universe(payload, kind, module, policies[kind])
+        rows, truth, meta = build_native_universe(payload, kind, None, policies[kind])
         gt_xyz = getattr(payload["gt_graph"], "node_xyz", None) if kind == "merge" else None
         arrays = la.compute(kind, rows, payload["gt_node_canonical_label"], gt_xyz)
         la.check(arrays, kind, truth, candidate_keys(kind, rows))
@@ -151,7 +139,7 @@ def pool_only_bank(brain, mcl, kinds):
         if not counts["1"] or not counts["0"]:
             raise la.AvailabilityMismatch(f"{brain}/{kind}: GT-labeled rows lack one of the classes")
         provenance = {"version": POOL_VERSION, "brain": brain, "mcl": mcl, "kind": kind,
-                      "source_cache": identity, "pool_policy": policies[kind], "detector": record}
+                      "source_cache": identity, "pool_policy": policies[kind], "detector": None}
         table = NativeTable(kind, pd.DataFrame(index=pd.RangeIndex(len(rows))), rows, labels,
                             {**meta, "provenance": provenance})
         table.availability = {"definition": definition, "version": la.AVAILABILITY_VERSION,

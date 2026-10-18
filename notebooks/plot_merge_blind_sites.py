@@ -13,7 +13,9 @@ Image MIP / GT / Fragments rows and XY / XZ / YZ columns
 (``scripts/plot_top_merge_predictions.render_context``; the site's segment is cyan). The
 fragments row also marks the two candidate sources: junctions (degree >= 3) of the site's own
 segment and tips of other segments in the field of view, plus a 20 um circle around the site.
-Fragments shorter than the cache's MCL are not in the graph and cannot be shown.
+Fragments shorter than the cache's MCL are not in the graph and cannot be shown. The image is
+read through ``scripts/dataset_config.get_reviewed_img_path`` (the URI reviewed in
+``configs/image_alignment.json``, else the cache's ``img_path``).
 
 Default brains: the six older-microscope brains added 2026-10-06 (754613 has no bridge site).
 Run with panda on a compute node; caches are loaded one at a time (> 20 GB each):
@@ -44,6 +46,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "notebooks"))
 
 from plot_gt_merge_sites import open_image  # noqa: E402
+from scripts.dataset_config import get_reviewed_img_path  # noqa: E402
 from scripts.plot_top_merge_predictions import JUNCTION_COLOR, VIEWS, render_context  # noqa: E402
 
 NEW_BRAINS = ["747807", "750318", "751473", "754610", "754612", "754613"]
@@ -196,7 +199,7 @@ def main(argv=None) -> int:
         selected, available = select_positions(blind[brain], list(payload["gt_merge_sites"]), args.k, args.seed)
         if len(selected) < args.k:
             print(f"[{brain}] only {available} blind positions; plotting all", flush=True)
-        image = open_image(payload["img_path"])
+        image = open_image(get_reviewed_img_path(brain, fallback=payload["img_path"]))
         records = []
         for site in selected:
             figure, n_junctions, n_tips = render_blind_site(payload, image, brain, site, args.patch_um)

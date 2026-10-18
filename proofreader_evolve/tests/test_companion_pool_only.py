@@ -52,13 +52,14 @@ class PoolOnlyCompanionTests(unittest.TestCase):
                 bank, graph = ex.pool_only_bank("1", 100, ["split"])
         table = bank.tables["split"]
         policy = cp.load_pool_policies()["split"]
-        module = pc._import_module(Path(pc.resolve_detector_runs()["split"][0]["dir"]) /
-                                   pc.resolve_detector_runs()["split"][0]["script"], "test_pool_only_split")
-        rows, truth, meta = native.build_native_universe(split_payload_with_negatives(), "split", module, policy)
+        rows, truth, meta = native.build_native_universe(split_payload_with_negatives(), "split", None, policy)
         self.assertEqual(table.candidates, rows)
         self.assertEqual(table.meta["pool_sha256"], meta["pool_sha256"])
         self.assertEqual(table.meta["candidate_policy"], "tip_to_any_node|r=80|k=2")
         self.assertEqual(table.meta["provenance"]["pool_policy"], policy)
+        # no detector is loaded or recorded (2026-10-17)
+        self.assertIsNone(table.meta["provenance"]["detector"])
+        self.assertIsNone(table.meta["detector_rule_matches"])
         available = la.compute("split", rows, data["gt_node_canonical_label"])["segment_on_gt"]
         np.testing.assert_array_equal(table.truth, la.three_valued(truth, available))
         self.assertEqual(len(table.features), len(rows))
@@ -79,10 +80,14 @@ class PoolOnlyCompanionTests(unittest.TestCase):
                     redirect_stdout(io.StringIO()), self.assertRaisesRegex(la.AvailabilityMismatch, "lack one"):
                 ex.pool_only_bank("1", 100, ["split"])
 
-    def test_split_rule_text_in_the_manifest_follows_the_table(self):
-        table = native.NativeTable("split", None, [], np.array([]), {"candidate_policy": "tip_to_any_node|r=80|k=2"})
-        self.assertIn("within 80 um; the 2 nearest partner segments are kept", ex.candidate_rule("split", table))
-        self.assertEqual(ex.candidate_rule("merge", table), ex.RULES["merge"])
+    def test_rule_text_in_the_manifest_follows_the_table_provenance(self):
+        policies = cp.load_pool_policies()
+        for kind, phrase in (("split", "within 80 um; the 2 nearest partner segments are kept"),
+                             ("merge", "Plus tip-to-shaft candidates")):
+            table = native.NativeTable(kind, None, [], np.array([]),
+                                       {"provenance": {"pool_policy": policies[kind]}})
+            self.assertIn(phrase, ex.candidate_rule(kind, table))
+            self.assertEqual(ex.candidate_rule(kind, table), cp.describe(kind, policies[kind]))
 
 
 if __name__ == "__main__":

@@ -8,8 +8,8 @@ description: >-
   feature implementation per id, and lifts each eligible computation,
   consolidates them into ONE script with shared skeleton traversal passes, creates
   a constrained model configuration, compares its allowlisted families under nested validation,
-  and produces one output row per target row (segment for merge runs; candidate
-  segment pair for split runs). Use when asked to build or apply a detector
+  and produces one output row per target row (candidate merge site for merge runs,
+  segment for legacy segment-level merge runs; candidate segment pair for split runs). Use when asked to build or apply a detector
   / classifier / ensemble from exa-spim AutoDiscovery findings.
 tools: Bash, Read, Write, Edit, Glob
 # Lifting feature code out of many independent scripts without changing its
@@ -146,8 +146,8 @@ them; only the policy-derived keys in the current prompt are permitted.
 
 Write only the hidden feature fragment named by the stage prompt. The
 orchestrator owns a reviewed, versioned runtime template and deterministically
-assembles the public target-specific `merge_site_detector.py` or
-`split_site_detector.py`.
+assembles the public target-specific `merge_junction_detector.py` (merge sites),
+`merge_site_detector.py` (legacy segment-level merge) or `split_site_detector.py`.
 
 The fragment owns feature semantics: geometry/data helpers, `FEATURE_REGISTRY`
 in inventory order, a literal `ANALYSIS_TIMING_GROUPS`, the accumulator class
@@ -156,8 +156,13 @@ required by the stage prompt, and
 enabled_analysis_keys=None, profile_segment_limit=None)`. Preserve the row universe, constants,
 aggregation, explicit measured membership and shared traversal rules below:
 
-- for merge runs, non-zero canonical labels are the adjudicable segment universe,
-  `gt_merge_labels` supplies labels, and segments without components keep rows;
+- for merge-site runs (the default), call the runtime-owned
+  `build_sample_universe(payload)` and use its candidate rows (`candidate_family`
+  `junction`, or `tip_to_shaft` for degree-2 shaft nodes) and `is_merge_site` labels;
+  never enumerate candidates or re-run NMS in feature code;
+- for legacy segment-level merge runs, non-zero canonical labels are the
+  adjudicable segment universe, `gt_merge_labels` supplies labels, and segments
+  without components keep rows;
 - for split runs, call the runtime-owned `build_sample_universe(payload)` and
   use its canonical unordered candidate segment-pair rows and `is_split` labels;
   never construct a competing candidate pool or split key in feature code;

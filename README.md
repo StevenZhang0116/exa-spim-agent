@@ -23,7 +23,7 @@ drivers: [`agentic/discovery_workflow_diagram.svg`](agentic/discovery_workflow_d
 | Stage | Driver | Consumes | Produces |
 |---|---|---|---|
 | 1. Discover | `agentic/run_discovery_workflow.py`, `agentic/run_consolidation_workflow.py` | one AutoDiscovery run export `autodiscovery/<RUN>.json` plus the origin `_add.pkl` cache | `autodiscovery/<RUN>.summary.md` with per-hypothesis verdicts, re-runnable hypothesis scripts, a split feature-applicability manifest |
-| 2. Build | `agentic/run_detector_build_workflow.py`, `agentic/detector_build/` | the finished report and its scripts, candidate-pool sweep evidence | `autodiscovery-application/<RUN>/`: frozen candidate policy, feature inventory, model configuration and detector script; after a compute-node run, out-of-fold scores, a fitted model and its provenance |
+| 2. Build | `agentic/run_detector_build_workflow.py`, `agentic/detector_build/` | the finished report and its scripts, the declared candidate rule (`proofreader_evolve/candidate_pools.json`, `candidate_rules.py`) | `autodiscovery-application/<RUN>/`: frozen candidate policy, feature inventory, model configuration and detector script; after a compute-node run, out-of-fold scores, a fitted model and its provenance |
 | 3. Evolve | `proofreader_evolve/` | one frozen merge-junction detector, one frozen split-site detector, labeled caches for every brain | `proofreader_evolve/runs/precision_*/best_scorer.py` with ledger, traces and `report.html` |
 
 Three rules hold in every stage:
@@ -193,10 +193,17 @@ nested cross-validation and scores every candidate. The build workflow writes
 that script from a finished report; it never loads a dataset. Fitting happens
 afterwards on a compute node.
 
-### 2.1 Candidate-pool sweeps and the frozen candidate policy
+### 2.1 Candidate rules, sweeps and the frozen candidate policy
 
 Before any feature is scored, a cheap enumeration rule fixes which candidates
-exist at all. Two sweeps measure that ceiling across all labeled brains:
+exist at all. The rule of each kind is declared once in
+[`proofreader_evolve/candidate_pools.json`](proofreader_evolve/candidate_pools.json)
+and applied by [`candidate_rules.py`](candidate_rules.py), the only implementation
+(2026-10-16): split `tip_to_any_node|r=80|k=2`; merge junctions (degree >= 3
+fragment nodes, segment-scoped non-maximum suppression within 20 um) plus
+tip-to-shaft candidates (shaft nodes within 20 um of a tip of one of the two
+nearest other segments). Two sweeps measure the enumeration ceiling across all
+labeled brains and serve as evidence for the declaration:
 
 - [`notebooks/split_candidate_pool_sweep.py`](notebooks/split_candidate_pool_sweep.py)
   enumerates segment pairs by pairing mode, maximum gap and per-anchor partner
@@ -204,16 +211,16 @@ exist at all. Two sweeps measure that ceiling across all labeled brains:
   reachable in the pool. `agentic/run_split_candidate_result_analysis.py` turns a
   finished bundle into a grounded `AI_REVIEW.md`.
 - [`notebooks/merge_candidate_pool_sweep.py`](notebooks/merge_candidate_pool_sweep.py)
-  anchors candidates at degree >= 3 fragment nodes with segment-scoped
-  non-maximum suppression and a geodesic claim radius, and writes a deterministic
-  `recommended_policy.json`.
+  enumerates junction rules and, with `--tip-gaps`, tip-to-shaft additions through
+  `candidate_rules.py`, reports site recall at each geodesic claim radius, and lists
+  the declared rule per brain in `RESULTS.md`.
 
-The build driver re-derives the minimum-candidate-count policy that keeps
-worst-brain recall above a floor (0.90 pair recall for split, 0.80 site recall
-for merge by default), freezes it as `split_candidate_policy.json` or
-`merge_candidate_policy.json`, and embeds the exact policy and its hash in the
-detector. Candidate enumeration is therefore fixed before training and cannot be
-tuned against labels later.
+The build driver freezes the declared rule as `split_candidate_policy.json` or
+`merge_candidate_policy.json` (with the SHA-256 of the declaration and of
+`candidate_rules.py`), copies `candidate_rules.py` beside the detector and embeds
+the rule and both hashes. The benchmark tables enumerate with the same module, so
+the detector and the benchmark share one definition. Candidate enumeration is
+therefore fixed before training and cannot be tuned against labels later.
 
 ### 2.2 Build the detector
 
@@ -227,7 +234,7 @@ earlier context; the driver validates every artifact between steps:
 
 | Step | Agent proposes | Driver validates and writes |
 |---|---|---|
-| 0. candidate policy | split: interprets the sweep's AI review; merge: no agent turn | re-derives the argmin from sweep evidence; freezes `*_candidate_policy.json` |
+| 0. candidate rule | no agent turn | freezes the rule declared in `candidate_pools.json` as `*_candidate_policy.json` with the declaration and module hashes; step 3 copies `candidate_rules.py` beside the detector |
 | 1. feature inventory | source choice, feature math, aggregation and defined-condition per hypothesis | joins IDs, evidence, paths and hashes; rejects GT-referencing rows; writes `feature_inventory.json` |
 | 2. model setup | optional model families with a feature-based rationale | enforces `agentic/detector_model_policy.json` (L2 logistic, histogram gradient boosting and XGBoost always included, at most two extensions, bounded grids); writes `model_candidates.json` |
 | 3. detector assembly | the task-specific feature implementation only | AST-validates it, injects it into the reviewed runtime template, runs no-data smoke tests; writes `merge_junction_detector.py` or `split_site_detector.py` |
@@ -269,13 +276,13 @@ positives with the cached GT sites.
 
 ### 2.4 Detectors currently in use
 
-| Kind | Deliverable | Candidate policy | Fitted on |
-|---|---|---|---|
-| merge junction sites | `autodiscovery-application/merge-error-794495-mcl100_2026-08-04/` | `junction\|nms=20\|r=150`; worst-brain site recall 0.85 | 794495 |
-| split segment pairs | `autodiscovery-application/split-error-794495-mcl100-run-3_2026-08-24/` | `tip_to_any_node\|r=50\|k=2`; worst-brain pair recall 0.91 | 794495 |
-
-These two are the default inputs of Stage 3. Because both were fitted on
-794495, that brain can never serve as a validation brain there.
+None at the moment. The 2026-08 detectors (merge `junction|nms=20|r=150`, split
+`tip_to_any_node|r=50|k=2`, both fitted on 794495) and all AutoDiscovery results were
+deleted on 2026-10-17: they were trained on the labels before the 2026-10-15 relabel and
+on the old candidate pools. New detectors are built from new AutoDiscovery runs on the
+revised specifications (`proofreader_evolve/plans/rebuild_after_relabel_and_split_pool.md`);
+until then Stage 3 has no default detectors. A detector's fitting brain can never serve as a
+validation brain in Stage 3.
 
 ## Stage 3. Evolve: re-rank the frozen candidate pools
 
@@ -298,8 +305,9 @@ maintained design record is
 
 `proofreader_evolve` improves **Precision@K over GT-labeled rows on the
 same candidate pool** as the selected `merge_junction_detector.py` and
-`split_site_detector.py`. The frozen scripts define candidate enumeration,
-including split occurrences and junction NMS; evolution cannot change the pool.
+`split_site_detector.py`. The pool is the rule declared in `candidate_pools.json`,
+enumerated by `candidate_rules.py` (split occurrences, junction NMS, tip-to-shaft
+candidates); the detectors only score its rows and evolution cannot change it.
 Exactly one detector per kind is required.
 
 ### 3.2 Prepare tables and launch a run
@@ -421,12 +429,9 @@ process creation are denied before candidate code executes. Linux with
 `libseccomp.so.2` is required; unavailable isolation fails the evaluation.
 See [workflow revision](proofreader_evolve/WORKFLOW_REVISION.md).
 
-The default frozen detectors were fitted on 794495:
-
-- Merge: `merge-error-794495-mcl100_2026-08-04`
-- Split: `split-error-794495-mcl100-run-3_2026-08-24`
-
-Pass one `--merge-dir` and one `--split-dir` to select other frozen deliverables.
+There are no default frozen detectors since 2026-10-17 (section 2.4): pass one
+`--merge-dir` and one `--split-dir`, or set `DEFAULT_MERGE_DIR` / `DEFAULT_SPLIT_DIR` in
+`proofreader_evolve/cli/precompute_error_scores.py` once the new detectors exist.
 Detector-fitted brains cannot be validation brains. The reviser requires
 `ANTHROPIC_API_KEY`; preparation and baseline-only evaluation do not call an LLM.
 
@@ -1001,7 +1006,8 @@ srun --partition=aibs_debug --constraint=cpu \
   notebooks/plot_gt_merge_sites.py --brain-id 794495 --k 10 --mcl 100
 ```
 
-The image reader uses the cache's `img_path`; cloud access is needed for image
+The image reader uses the URI reviewed in `configs/image_alignment.json`, else the cache's
+`img_path` (`scripts/dataset_config.get_reviewed_img_path`); cloud access is needed for image
 patches. No dense segmentation mask is read: the third row is the fragment
 skeleton, with the site's segment highlighted in cyan. The yellow `+` marks
 the exact stored site coordinate, not a snapped candidate. Both geometric and
@@ -1044,7 +1050,7 @@ GT site; overlapping markers do not imply one-to-one matching or independent eve
 From the repository root, on a compute node in panda:
 
 ```bash
-APP=autodiscovery-application/merge-error-794495-mcl100_2026-08-04-rebuild-20260923-160112
+APP=autodiscovery-application/<RUN>   # a merge-site detector result directory
 srun --partition=aibs_debug --constraint=cpu \
   --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=100G --time=00:15:00 \
   --chdir="$PWD" "$HOME/.conda/envs/panda/bin/python" -u \
@@ -1087,10 +1093,12 @@ srun --partition=aibs_debug --constraint=cpu \
 ```
 
 Change `--mcl` for another level, or add `--brains 794495 794493` to select datasets.
-Defaults are `--nms-um 20 --positive-radius-um 20 --claim-radius-um 150`, with
-50 um snapping to each GT site's own segment. These explicit analysis settings
-match the current junction policy; they do not select a new policy or guarantee
-matching results from a detector built with different settings. Distances after
+Defaults are `--nms-um 20 --tip-gap-um 20 --tip-partner-k 2 --positive-radius-um 20
+--claim-radius-um 150`, with 50 um snapping to each GT site's own segment: the merge
+rule declared in `proofreader_evolve/candidate_pools.json`, enumerated by
+`candidate_rules.py`. `--tip-gap-um 0` gives the junction-only rule used until
+2026-10-16. These explicit analysis settings do not select a new policy or
+guarantee matching results from a detector built with different settings. Distances after
 snapping are cable distances; NMS uses segment-scoped Euclidean distance.
 
 Each run writes a fresh `notebooks/merge_site_counts/mcl<N>_<suffix>/` directory:
@@ -1107,6 +1115,7 @@ Key summary columns use distinct counting units:
 | --- | --- |
 | `n_gt_merge_sites` | All stored GT site records, without deduplication |
 | `n_is_merge_site_1` | Kept candidates within the positive radius of any GT site |
+| `n_tip_to_shaft_candidates` | Kept candidates of the tip-to-shaft family (0 under the junction-only rule) |
 | `n_in_ambiguous_ring_1` | Candidates outside the positive radius but within the claim radius |
 | `n_gt_sites_covered_at_positive_radius` | GT records with at least one candidate within the positive radius |
 | `n_gt_sites_only_within_claim_radius` | GT records whose nearest candidate is outside the positive radius but within the claim radius |

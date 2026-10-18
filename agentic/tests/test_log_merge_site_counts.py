@@ -10,6 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import numpy as np
+
 from agentic.tests.test_merge_site_target import _merge_site_payload
 from notebooks import log_merge_site_counts as logger
 
@@ -92,9 +94,29 @@ class MergeSiteCountsTests(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(RuntimeError, "changed"):
                 logger.inspect_cache(path, 100, runtime)
 
+    def test_defaults_are_the_declared_rule_and_gap_zero_is_junction_only(self):
+        from proofreader_evolve.harness import candidate_pools
+
+        _, provenance = logger.make_runtime()
+        self.assertEqual(provenance["settings"], candidate_pools.load_pool_policies()["merge"])
+        _, provenance = logger.make_runtime(tip_gap_um=0.)
+        self.assertEqual(provenance["settings"]["config_id"], "junction|nms=20|r=150")
+        payload = _merge_site_payload()
+        graph = payload["fragments_graph"]
+        # segment 555's tip 14 lies 6 um from node 12, the middle of segment 444's shaft
+        graph.add_edges_from([(11, 12), (12, 13), (14, 15)])
+        graph.node_xyz = np.vstack([graph.node_xyz, [
+            [200., 0., 0.], [205., 0., 0.], [210., 0., 0.], [205., 6., 0.], [205., 40., 0.]]])
+        graph.node_component_id = np.concatenate([graph.node_component_id, [40, 40, 40, 50, 50]])
+        graph.component_id_to_swc_id = {**graph.component_id_to_swc_id, 40: "444.0.swc", 50: "555.0.swc"}
+        for gap, expected in ((10., (3, 1)), (0., (2, 0))):
+            runtime, _ = logger.make_runtime(10., 4., 15., gap)
+            summary, _ = logger.summarize_payload(payload, 100, runtime)
+            self.assertEqual((summary["n_candidates"], summary["n_tip_to_shaft_candidates"]), expected)
+
     def test_invalid_policy(self):
         for settings in ((-1., 20., 150.), (0., 0., 150.), (20., 160., 150.),
-                         (float("nan"), 20., 150.), (20., 20., float("inf"))):
+                         (float("nan"), 20., 150.), (20., 20., float("inf")), (20., 20., 150., -1.)):
             with self.subTest(settings=settings), self.assertRaises(ValueError):
                 logger.make_runtime(*settings)
 

@@ -9,8 +9,10 @@ import warnings
 from pathlib import Path
 
 from .candidate_policy import (
-    load_runtime_candidate_policy,
-    load_runtime_merge_candidate_policy,
+    DEFAULT_RULES_PATH,
+    kind_of_target,
+    load_runtime_policy,
+    vendor_candidate_rules,
 )
 from .contracts import DetectorTarget
 from .cost_validation import analyze_row_cost
@@ -50,6 +52,9 @@ RUNTIME_OWNED_SYMBOLS = frozenset({
     "CANDIDATE_GLOBAL_CAP", "CANDIDATE_POLICY_SHA256",
     "CANDIDATE_MODE", "CANDIDATE_NMS_UM", "CANDIDATE_CLAIM_RADIUS_UM",
     "CANDIDATE_POSITIVE_LABEL_RADIUS_UM", "CANDIDATE_SITE_SNAP_MAX_UM",
+    "CANDIDATE_TIP_GAP_UM", "CANDIDATE_TIP_PARTNER_K", "CANDIDATE_RULE",
+    "CANDIDATE_RULE_KIND", "CANDIDATE_RULES_SHA256", "CANDIDATE_RULES_FILENAME",
+    "_CANDIDATE_RULES_MODULE", "_candidate_rules",
     "build_sample_universe",
     "compatible_occurrences",
     "sample_output_frame", "sample_display", "sample_universe_audit",
@@ -83,6 +88,8 @@ MERGE_SITE_FEATURE_FORBIDDEN_SAMPLE_KEYS = frozenset({
 FEATURE_FORBIDDEN_RUNTIME_NAMES = frozenset({
     "_derive_split_truth", "_gt_neuron_membership", "ascertainment_covariates",
     "_site_distances_to_kept", "_merge_site_provenance",
+    # the shared rule module also derives labels; feature code never touches it
+    "_candidate_rules", "_CANDIDATE_RULES_MODULE",
 })
 
 
@@ -1337,8 +1344,13 @@ def assemble_detector(
     target: DetectorTarget = DetectorTarget.MERGE,
     candidate_policy_path: Path | None = None,
     inventory_path: Path | None = None,
+    candidate_rules_path: Path = DEFAULT_RULES_PATH,
 ) -> None:
-    """Inject one validated feature fragment into the reviewed runtime template."""
+    """Inject one validated feature fragment into the reviewed runtime template.
+
+    Split and merge-site detectors also get ``candidate_rules.py`` copied unchanged
+    beside them (checked against the SHA-256 the frozen candidate policy records).
+    """
     try:
         template = template_path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -1389,22 +1401,14 @@ def assemble_detector(
             _validate_split_feature_writes(feature_tree, feature_scopes)
     candidate_policy = None
     candidate_policy_sha256 = None
-    if target is DetectorTarget.SPLIT:
+    candidate_rules_sha256 = None
+    if target in policy_targets:
+        name = ("split_candidate_policy.json" if target is DetectorTarget.SPLIT
+                else "merge_candidate_policy.json")
         if candidate_policy_path is None:
-            raise SystemExit(
-                "Split detector assembly requires split_candidate_policy.json."
-            )
-        candidate_policy, candidate_policy_sha256 = load_runtime_candidate_policy(
-            candidate_policy_path
-        )
-    elif target is DetectorTarget.MERGE_SITE:
-        if candidate_policy_path is None:
-            raise SystemExit(
-                "Merge-site detector assembly requires merge_candidate_policy.json."
-            )
-        candidate_policy, candidate_policy_sha256 = (
-            load_runtime_merge_candidate_policy(candidate_policy_path)
-        )
+            raise SystemExit(f"{target.value} detector assembly requires {name}.")
+        candidate_policy, candidate_policy_sha256, candidate_rules_sha256 = load_runtime_policy(
+            candidate_policy_path, kind_of_target(target))
     elif candidate_policy_path is not None:
         raise SystemExit("Merge detector assembly does not accept a candidate policy.")
     if adapter_markers:
@@ -1414,6 +1418,7 @@ def assemble_detector(
                 target,
                 candidate_policy=candidate_policy,
                 candidate_policy_sha256=candidate_policy_sha256,
+                candidate_rules_sha256=candidate_rules_sha256,
             ).rstrip() + "\n" + scope_source,
         )
     assembled = template.replace(FEATURE_MARKER, feature_source)
@@ -1422,6 +1427,9 @@ def assemble_detector(
     except SyntaxError as exc:
         raise SystemExit(f"Assembled detector does not parse: {exc}") from exc
     _validate_assembled_name_resolution(assembled, output_path)
+    if candidate_rules_sha256 is not None:
+        vendor_candidate_rules(candidate_policy_path, output_path.parent,
+                               rules_path=candidate_rules_path)
     temporary = output_path.with_name(f".{output_path.name}.assemble.tmp")
     temporary.write_text(assembled, encoding="utf-8")
     temporary.replace(output_path)

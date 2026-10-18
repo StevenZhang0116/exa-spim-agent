@@ -47,13 +47,23 @@ class PositiveMergeSitesTests(unittest.TestCase):
             path = Path(directory) / "predictions.csv"
             for rows in ([prediction(), prediction()], [prediction(is_merge_site=2)],
                          [prediction(is_merge_site=1, x_um=float("nan"))],
-                         [prediction(is_merge_site=1, degree=2)]):
+                         [prediction(is_merge_site=1, degree=2)],
+                         [prediction(is_merge_site=1, degree=1, candidate_family="tip_to_shaft")],
+                         [prediction(is_merge_site=1, candidate_family="path")]):
                 with self.subTest(rows=rows), self.assertRaises(ValueError):
                     write_csv(path, rows)
                     plotter.load_positive_candidates(path)
             path.write_text("segment_id,is_merge\n111,1\n")
-            with self.assertRaisesRegex(ValueError, "Junction CSV"):
+            with self.assertRaisesRegex(ValueError, "Merge-site CSV"):
                 plotter.load_positive_candidates(path)
+
+    def test_tip_to_shaft_rows_have_degree_two(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "predictions.csv"
+            write_csv(path, [prediction(candidate_id=1, is_merge_site=1, candidate_family="junction"),
+                             prediction(candidate_id=2, is_merge_site=1, degree=2,
+                                        candidate_family="tip_to_shaft")])
+            self.assertEqual([row["candidate_id"] for row in plotter.load_positive_candidates(path)], [1, 2])
 
     def test_one_figure_all_positive_points_and_world_coordinate_projections(self):
         rows = [prediction(candidate_id=1, is_merge_site=1, x_um=1000., y_um=2000., z_um=3000., score=""),

@@ -192,6 +192,18 @@ class PlotTopMergePredictionsTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "legacy segment-level"):
                 plotter.rank_predictions(path, 2, "score")
 
+    def test_tip_to_shaft_rows_have_degree_two(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "scores.csv"
+            write_csv(path, [prediction(candidate_family="tip_to_shaft", degree=2)])
+            self.assertEqual(plotter.rank_predictions(path, 1, "score")[0]["candidate_family"], "tip_to_shaft")
+            for changes in ({"candidate_family": "junction", "degree": 2},
+                            {"candidate_family": "tip_to_shaft", "degree": 1},
+                            {"candidate_family": "path", "degree": 3}):
+                write_csv(path, [prediction(**changes)])
+                with self.subTest(changes=changes), self.assertRaises(ValueError):
+                    plotter.rank_predictions(path, 1, "score")
+
     def test_missing_audit_columns_are_unknown_not_negative(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "scores.csv"
@@ -286,7 +298,7 @@ class PlotTopMergePredictionsTests(unittest.TestCase):
                 figure, record = plotter.render_prediction(
                     payload, ArrayImage(), candidate, 1, [12., 18., 6.], plotter.DEFAULT_SCORE)
                 self.assertIn(f"Segment GT: {expected} |", figure._suptitle.get_text())
-                self.assertIn("Junction GT: NOT SITE-LABELLED", figure._suptitle.get_text())
+                self.assertIn("Site GT: NOT SITE-LABELLED", figure._suptitle.get_text())
                 self.assertEqual(record["gt_segment_is_merge"], value)
                 self.assertEqual(record["junction_gt_status"], "NOT SITE-LABELLED")
                 self.assertEqual(record["is_merge_site"], 0)

@@ -1,10 +1,11 @@
 """Schematic of the two merge candidate families (illustration, not data).
 
-Left: junction family (current merge pool): every degree >= 3 fragment node; neurites that
-cross or touch leave a branch point in the merged skeleton.
-Right: tip-to-shaft family (measured in ``merge_shaft_candidate_reach.py``, not adopted): the
-shaft node nearest a foreign segment tip; a side-by-side fusion leaves no branch point, but
-the unfused rest of neuron B ends next to the merged shaft.
+Left: junction family (the whole merge pool until 2026-10-16): every degree >= 3 fragment
+node; neurites that cross or touch leave a branch point in the merged skeleton.
+Right: tip-to-shaft family (measured in ``merge_shaft_candidate_reach.py``, added to the pool
+on 2026-10-16 with a 20 um gap, ``candidate_rules.py``): the shaft node nearest a foreign
+segment tip; a side-by-side fusion leaves no branch point, but the unfused rest of neuron B
+ends next to the merged shaft.
 
 Bottom row: the site classes of the merge topology census (``merge_topology_diagnosis.py`` and
 ``merge_diagnosis_followup.py``), by the cable distance from the GT merge site to the nearest

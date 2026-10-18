@@ -8,20 +8,23 @@ For every canonical merge site (``metrics_out/<brain>/*/merge_sites.csv``, refer
    dataset cache (``payload["gt_merge_sites"]``); the share within 50 um is the site recall
    of ``notebooks/merge_label_shadow_findings.md`` section 1;
 2. the **candidate gap**: the geodesic cable distance, along the fragment skeleton, to the
-   nearest merge candidate of the frozen junction rule (``junction|nms=20|r=150``), using the
-   candidates of the proofreader_evolve merge table and the detector's own site rule (snap the
-   site to the nearest node of its own segment within 50 um, bounded Dijkstra to 150 um).
-   The share within 20 um is the fraction of canonical merges the current pool labels
-   positive; within 150 um, the fraction it can claim at all.
+   nearest merge candidate of the rule declared in ``proofreader_evolve/candidate_pools.json``
+   (``junction+tip_to_shaft|nms=20|gap=20|k=2|r=150`` since 2026-10-16), enumerated from the
+   cache by ``candidate_rules.py`` (since 2026-10-17; before, read from the proofreader_evolve
+   merge table), with the same site rule (snap the site to the nearest node of its own segment
+   within 50 um, bounded Dijkstra to 150 um). The share within 20 um is the fraction of
+   canonical merges the pool labels positive; within 150 um, the fraction it can claim at all.
 
 As a cross-check the candidate distances are also measured from the cache's own sites, which
 is what ``notebooks/merge_candidate_pool_sweep_outputs_with_oldscope`` reports (denominator:
-cache sites); at r = 20 um it must reproduce that sweep's ``site_recall``.
+cache sites); at r = 20 um it must reproduce that sweep's ``site_recall`` of the declared rule,
+and the canonical shares must equal the J+S20 ``canonical_reach_*`` of
+``notebooks/merge_shaft_reach/<brain>_mcl<N>.json``.
 
 Read-only: no cache, table or label is modified. Run in panda on a compute node (one cache at
 a time, > 20 GB RAM):
 
-    python -u notebooks/merge_canonical_gap.py --measure                  # all brains with tables
+    python -u notebooks/merge_canonical_gap.py --measure                  # all brains
     python -u notebooks/merge_canonical_gap.py --measure --brains 794495
     python -u notebooks/merge_canonical_gap.py --plot                     # figure + summary.csv
 
@@ -47,6 +50,8 @@ from scipy.spatial import cKDTree
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 import agentic_neuron_proofreader  # noqa: E402,F401  (registers SkeletonGraph for pickle)
+import candidate_rules as cr  # noqa: E402
+from proofreader_evolve.harness import candidate_pools  # noqa: E402
 
 DEFAULT_BRAINS = ["794495", "802449", "789202", "794493", "794491",
                   "747807", "750318", "751473", "754610", "754612", "754613"]
@@ -68,26 +73,13 @@ def load_canonical(metrics_dir: Path, brain: str, anisotropy) -> dict:
     return {"xyz": xyz, "segment": raw["Segment_ID"].astype(np.int64).to_numpy(), "path": sites_csv[0]}
 
 
-def load_merge_candidates(tables_dir: Path, brain: str) -> tuple[np.ndarray, np.ndarray, str]:
-    """Node ids and segment ids of the frozen merge pool (the proofreader_evolve merge table)."""
-    for directory in sorted(tables_dir.glob(f"{brain}/*")):
-        if directory.suffix == ".availability" or not (directory / "candidates.pkl").is_file():
-            continue
-        candidates = pickle.load(open(directory / "candidates.pkl", "rb"))
-        if candidates and "node_id" in candidates[0] and "degree" in candidates[0]:
-            nodes = np.fromiter((int(c["node_id"]) for c in candidates), dtype=np.int64, count=len(candidates))
-            segments = np.fromiter((int(c["segment_id"]) for c in candidates), dtype=np.int64, count=len(candidates))
-            return nodes, segments, str(directory)
-    raise FileNotFoundError(f"no merge table with candidates.pkl under {tables_dir / brain}")
-
-
-def node_arrays(frag):
-    xyz = np.asarray(frag.node_xyz, dtype=float)
-    components = np.asarray(frag.node_component_id, dtype=np.int64)
-    # swc ids are stored as strings such as '10870650356.0'
-    comp_to_seg = {int(c): int(float(str(s))) for c, s in frag.component_id_to_swc_id.items()}
-    segments = np.fromiter((comp_to_seg.get(int(c), -1) for c in components), dtype=np.int64, count=len(components))
-    return xyz, segments
+def merge_candidates(frag) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict, dict]:
+    """``(xyz, node_segments, kept, rule, counts)``: the declared merge rule's candidate nodes,
+    enumerated from the fragment graph by candidate_rules.py (no table or detector needed)."""
+    rule = candidate_pools.load_pool_policies()["merge"]
+    xyz, node_segments, degrees = cr.node_arrays(frag)
+    kept, _, counts = cr.merge_candidate_nodes(xyz, node_segments, degrees, rule)
+    return xyz, node_segments, kept, rule, counts
 
 
 # ----------------------------------------------------------------------------- distances
@@ -142,16 +134,8 @@ def measure_brain(brain: str, args) -> dict:
     cache_xyz = np.array([s["xyz"] for s in cache_sites], float).reshape(-1, 3)
     cache_segment = np.array([int(s["segment_id"]) for s in cache_sites], dtype=np.int64)
     canonical = load_canonical(args.metrics_dir, brain, anisotropy)
-    xyz, node_segments = node_arrays(frag)
-    cand_nodes, cand_segments, table_dir = load_merge_candidates(args.tables_dir, brain)
-    # The table must belong to this cache: candidate node ids must be junctions of the named segments.
-    degrees = np.fromiter((frag.degree(int(n)) for n in cand_nodes), dtype=np.int64, count=len(cand_nodes))
-    mismatch = int(np.sum((node_segments[cand_nodes] != cand_segments) | (degrees < 3)))
-    if mismatch:
-        raise ValueError(f"{brain}: {mismatch} merge candidates do not match the cache graph "
-                         f"(table {table_dir}); rebuild the table from this cache first")
-    kept = np.zeros(len(xyz), dtype=bool)
-    kept[cand_nodes] = True
+    xyz, node_segments, kept, rule, counts = merge_candidates(frag)
+    cand_nodes = np.flatnonzero(kept)
     tree = frag.kdtree if getattr(frag, "kdtree", None) is not None else cKDTree(xyz)
     print(f"[{brain}] loaded in {time.monotonic() - started:.0f}s: {len(xyz)} nodes, {len(cand_nodes)} merge "
           f"candidates, {len(cache_xyz)} cache sites, {len(canonical['xyz'])} canonical sites", flush=True)
@@ -169,10 +153,12 @@ def measure_brain(brain: str, args) -> dict:
         return float(np.mean(np.asarray(values) <= r)) if len(values) else float("nan")
 
     result = {
-        "brain": brain, "mcl": args.mcl, "cache": str(cache_path), "merge_table": table_dir,
+        "brain": brain, "mcl": args.mcl, "cache": str(cache_path),
+        "candidate_rule": rule["config_id"], "candidate_rules_sha256": candidate_pools.rules_sha256(),
         "canonical_sites_csv": canonical["path"], "radii_um": RADII_UM,
         "n_canonical": int(len(canonical["xyz"])), "n_cache_sites": int(len(cache_xyz)),
-        "n_candidates": int(len(cand_nodes)),
+        "n_candidates": int(len(cand_nodes)), "n_junction_candidates": counts["n_junction_candidates"],
+        "n_tip_to_shaft_candidates": counts["n_tip_to_shaft_candidates"],
         "canonical_unsnappable": int((~canon_snapped).sum()), "cache_unsnappable": int((~cache_snapped).sum()),
         "canonical_to_cache_site_um": [float(v) for v in canon_to_cache],
         "cache_site_to_canonical_um": [float(v) for v in cache_to_canon],
@@ -203,8 +189,8 @@ def measure_brain(brain: str, args) -> dict:
 # ----------------------------------------------------------------------------- figure
 SERIES = [  # fixed categorical order (validated reference palette, light surface)
     ("cache", "Cache merge site within d of the canonical site (Euclidean)", "#2a78d6"),
-    ("candidate", "Junction candidate within r of the canonical site (geodesic)", "#eb6834"),
-    ("reach", "Junction candidate within r of a cache site (sweep measure)", "#1baf7a"),
+    ("candidate", "Merge candidate within r of the canonical site (geodesic)", "#eb6834"),
+    ("reach", "Merge candidate within r of a cache site (sweep measure)", "#1baf7a"),
 ]
 INK, INK2, GRID, SURFACE = "#0b0b0b", "#52514e", "#e8e7e3", "#fcfcfb"
 
@@ -298,7 +284,8 @@ def plot(results, fig_path: Path):
     handles = [plt.Line2D([], [], color=c, linewidth=2, linestyle="--" if k == "reach" else "-") for k, _, c in SERIES]
     fig.legend(handles, [s[1] for s in SERIES], loc="upper center", ncol=3, frameon=False, fontsize=8.5,
                labelcolor=INK, bbox_to_anchor=(0.5, 0.995))
-    fig.suptitle("Canonical merge sites: how many the cache labels hold, how many the junction candidate rule reaches",
+    rule = next(iter(results.values())).get("candidate_rule", "junction|nms=20|r=150")
+    fig.suptitle(f"Canonical merge sites: how many the cache labels hold, how many the candidate rule {rule} reaches",
                  fontsize=11, color=INK, y=1.03)
     fig.tight_layout(rect=(0, 0.02, 1, 0.97))
     fig.savefig(fig_path, bbox_inches="tight", facecolor=SURFACE)
@@ -310,11 +297,14 @@ def write_summary(results, out_dir: Path):
     for brain, r in sorted(results.items()):
         s = r["summary"]
         rows.append({"brain": brain, "canonical_sites": r["n_canonical"], "cache_sites": r["n_cache_sites"],
-                     "merge_candidates": r["n_candidates"], "canonical_unsnappable": r["canonical_unsnappable"],
+                     "merge_candidates": r["n_candidates"],
+                     "tip_to_shaft_candidates": r.get("n_tip_to_shaft_candidates", 0),
+                     "canonical_unsnappable": r["canonical_unsnappable"],
                      **{k: round(v, 4) for k, v in s.items()}})
     frame = pd.DataFrame(rows)
     pooled = {"brain": "pooled", "canonical_sites": int(frame["canonical_sites"].sum()),
               "cache_sites": int(frame["cache_sites"].sum()), "merge_candidates": int(frame["merge_candidates"].sum()),
+              "tip_to_shaft_candidates": int(frame["tip_to_shaft_candidates"].sum()),
               "canonical_unsnappable": int(frame["canonical_unsnappable"].sum())}
     allc = sum((r["canonical_to_cache_site_um"] for r in results.values()), [])
     allg = [np.inf if v is None else v for r in results.values() for v in r["canonical_to_candidate_geodesic_um"]]
@@ -337,7 +327,6 @@ def main(argv=None):
     p.add_argument("--brains", nargs="+", default=DEFAULT_BRAINS)
     p.add_argument("--mcl", type=int, default=100)
     p.add_argument("--metrics-dir", type=Path, default=PROJECT_ROOT / "metrics_out")
-    p.add_argument("--tables-dir", type=Path, default=PROJECT_ROOT / "proofreader_evolve" / "feature_tables")
     p.add_argument("--out-dir", type=Path, default=OUT_DIR)
     args = p.parse_args(argv)
     if not (args.measure or args.plot):

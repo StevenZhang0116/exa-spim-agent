@@ -18,26 +18,18 @@ from agentic.detector_build.assembly import (
     assemble_detector,
     validate_feature_implementation,
 )
-from agentic.detector_build.candidate_policy import APPLICATION_STATUS
 from agentic.detector_build.contracts import DetectorTarget
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# Published deliverables come and go by design; tests bound to one skip when
-# it is absent. The legacy segment-level merge instance is exercised by two
-# instance-bound tests below; the template-semantics tests accept any
-# published assembled detector.
-_LEGACY_SEGMENT_DETECTOR_PATH = (
-    PROJECT_ROOT / "autodiscovery-application" /
-    "merge-error-794495-mcl100_2026-08-04" / "merge_site_detector.py"
-)
+# Published deliverables come and go by design; the template-semantics tests
+# accept any published assembled detector and skip when none is on disk (the
+# 2026-08 deliverables and their two instance-bound tests were deleted 2026-10-17).
 
 
 def _published_detector_path() -> Path | None:
     """First published assembled detector on disk (template-semantics tests)."""
-    if _LEGACY_SEGMENT_DETECTOR_PATH.is_file():
-        return _LEGACY_SEGMENT_DETECTOR_PATH
     for pattern in ("*/merge_junction_detector.py", "*/merge_site_detector.py",
                     "*/split_site_detector.py"):
         for candidate in sorted(
@@ -83,20 +75,9 @@ def _write_split_inventory(root: Path) -> Path:
 
 
 def _write_split_candidate_policy(root: Path) -> Path:
-    path = root / "split_candidate_policy.json"
-    path.write_text(json.dumps({
-        "schema_version": 1,
-        "artifact_type": "split_candidate_policy_selection",
-        "application_status": APPLICATION_STATUS,
-        "selected_policy": {
-            "config_id": "tip_to_any_node|r=50|k=2",
-            "mode": "tip_to_any_node",
-            "radius_um": 50,
-            "per_anchor_k": 2,
-            "global_cap": None,
-        },
-    }))
-    return path
+    from agentic.tests.candidate_rule_fixtures import split_rule, write_policy
+    return write_policy(root / "split_candidate_policy.json", "split",
+                        split_rule("tip_to_any_node", 50.0, 2))
 
 
 class DetectorBuildWorkflowTests(unittest.TestCase):
@@ -1224,83 +1205,6 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "source timing SHA-256"):
                 module.load_hypothesis_selection(str(selection), groups)
 
-    def test_current_detector_selection_skips_unselected_computation(self) -> None:
-        import networkx as nx
-        import numpy as np
-
-        # Bound to the published SEGMENT-LEVEL instance (its exact feature and
-        # helper names); skip when that deliverable is not on disk.
-        detector_path = _LEGACY_SEGMENT_DETECTOR_PATH
-        if not detector_path.is_file():
-            self.skipTest(
-                "published segment-level merge deliverable removed; rebuild "
-                "with --merge-row-unit segment to restore this instance test")
-        spec = importlib.util.spec_from_file_location(
-            "current_selection_detector", detector_path)
-        module = importlib.util.module_from_spec(spec)
-        assert spec.loader is not None
-        spec.loader.exec_module(module)
-
-        parsed = module.build_arg_parser().parse_args(
-            ["dataset.pkl", "--exclude-hypotheses", "39", "6"])
-        self.assertEqual(parsed.exclude_hypotheses, [39, 6])
-        direct = module.load_hypothesis_selection(
-            None, module.ANALYSIS_TIMING_GROUPS,
-            excluded_hypothesis_ids=[39, 6])
-        self.assertEqual(direct["selection_source"], "manual_cli")
-        self.assertNotIn("hypo_39", direct["enabled_analysis_keys"])
-        self.assertNotIn("hypo_6", direct["enabled_analysis_keys"])
-        self.assertIn("max_bridge_radius_variance_ratio",
-                      direct["excluded_feature_names"])
-        self.assertIn("max_normalized_edge_betweenness_bridge",
-                      direct["excluded_feature_names"])
-
-        graph = nx.Graph()
-        graph.add_edges_from([(0, 1), (1, 2), (3, 4)])
-        graph.node_xyz = np.array([
-            [0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [5.0, 0.0, 0.0],
-            [0.0, 10.0, 0.0], [1.0, 10.0, 0.0],
-        ])
-        graph.node_radius = np.array([1.0, 1.0, 1.0, 1.0, 1.0])
-        graph.node_component_id = np.array([1, 1, 1, 2, 2])
-        graph.component_id_to_swc_id = {1: "1.0", 2: "2.0"}
-        payload = {
-            "fragments_graph": graph,
-            "gt_node_canonical_label": np.array([1, 1, 1, 2, 2]),
-            "gt_merge_labels": [],
-            "min_cable_length": 100,
-        }
-
-        _, _, default_acc = module.extract_features(payload, verbose=False)
-        all_keys = {group["key"] for group in module.ANALYSIS_TIMING_GROUPS}
-        _, _, explicit_all_acc = module.extract_features(
-            payload, verbose=False, enabled_analysis_keys=all_keys
-        )
-        self.assertTrue(default_acc.to_frame().equals(
-            explicit_all_acc.to_frame()
-        ))
-        sampled_ids, _, sampled_acc = module.extract_features(
-            payload, verbose=False, profile_segment_limit=1
-        )
-        self.assertEqual(sampled_ids, [1])
-        self.assertEqual(len(sampled_acc.to_frame()), 1)
-
-        original = module._get_max_ebc_contracted
-        module._get_max_ebc_contracted = lambda *_args: (_ for _ in ()).throw(
-            AssertionError("excluded component hypothesis executed")
-        )
-        try:
-            _, _, acc = module.extract_features(
-                payload, verbose=False, enabled_analysis_keys={"hypo_8"}
-            )
-        finally:
-            module._get_max_ebc_contracted = original
-        frame = acc.to_frame()
-        self.assertTrue(frame["max_euclidean_edge_jump_is_defined"].all())
-        for name in module.FEATURE_NAMES:
-            if name != "max_euclidean_edge_jump":
-                self.assertFalse(frame[name + "_is_defined"].any(), name)
-
     def test_reviewed_runtime_template_owns_model_and_cli_contracts(self) -> None:
         template = workflow.RUNTIME_TEMPLATE_PATH.read_text()
         self.assertEqual(template.count("# __DETECTOR_FEATURE_IMPLEMENTATION__"), 1)
@@ -1458,64 +1362,6 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             )
 
             workflow.validate_detector_executable(detector, model_config)
-
-    def test_current_detector_generates_ebm_winner_explanation(self) -> None:
-        try:
-            import interpret  # noqa: F401
-        except ImportError:
-            self.skipTest("optional interpret package is unavailable")
-        import numpy as np
-        import pandas as pd
-
-        detector_path = _LEGACY_SEGMENT_DETECTOR_PATH
-        if not detector_path.is_file():
-            self.skipTest(
-                "published segment-level merge deliverable removed; rebuild "
-                "with --merge-row-unit segment to restore this instance test")
-        spec = importlib.util.spec_from_file_location(
-            "ebm_figure_detector", detector_path)
-        module = importlib.util.module_from_spec(spec)
-        assert spec.loader is not None
-        spec.loader.exec_module(module)
-
-        rng = np.random.default_rng(42)
-        feature_order = ["feature_a", "feature_b", "feature_c"]
-        values = rng.normal(size=(120, len(feature_order)))
-        y = ((values[:, 0] + values[:, 1] ** 2) > 0.8).astype(int)
-        frame = pd.DataFrame(values, columns=feature_order)
-        for name in feature_order:
-            frame[name + "_is_defined"] = True
-        params = {
-            "max_bins": 16,
-            "interactions": 1,
-            "learning_rate": 0.05,
-            "max_rounds": 20,
-            "min_samples_leaf": 2,
-        }
-        estimator = module.build_estimator("explainable_boosting", params)
-        estimator.fit(values, y)
-        scores = module._score_matrix(estimator, values)
-        nested = {
-            "oof": {"explainable_boosting": scores},
-            "per_fold": [{
-                "family_choice": {
-                    "explainable_boosting": {"params": params}
-                }
-            }],
-        }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            paths = module.make_figures(
-                tmpdir, "synthetic_full", frame, y, nested, scores, scores,
-                "explainable_boosting", estimator, feature_order,
-                winner_params=params,
-            )
-            names = {Path(path).name for path in paths}
-            self.assertIn(
-                "synthetic_full_06_winner_model_explanation.png", names
-            )
-            self.assertIn(
-                "synthetic_full_07_permutation_importance.png", names
-            )
 
     def test_public_build_artifact_names_remain_compatible(self) -> None:
         self.assertEqual(workflow.BUILD_ARTIFACT_NAMES, (
@@ -2133,35 +1979,25 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             selected_ids=[6, 39],
             out_dir_rel="autodiscovery-application/split-error-run",
             target=DetectorTarget.SPLIT,
-            candidate_review_rel=(
-                "notebooks/split_candidate_pool_sweep_outputs/fixture/AI_REVIEW.md"
-            ),
             split_applicability_rel=(
                 "autodiscovery/split-error-run.split-feature-applicability.json"
             ),
         )
         by_name = {step["name"]: step for step in steps}
-        policy = by_name["select-candidate-policy"]["instruction"]
         inventory = by_name["inventory-features"]["instruction"]
         generate = by_name["generate-detector"]["instruction"]
         verify = by_name["verify-and-document"]["instruction"]
 
+        # the split rule is declared (candidate_pools.json), so no agent selects it
         self.assertEqual(
             [step["name"] for step in steps],
             [
-                "select-candidate-policy", "inventory-features",
+                "inventory-features",
                 "configure-models", "generate-detector", "verify-and-document",
             ],
         )
-        self.assertIn(
-            "minimum_candidate_count_subject_to_worst_brain_recall", policy
-        )
-        self.assertIn("minimum worst-brain candidate recall: 0.9", policy)
-        self.assertIn("cross_dataset_aggregate.csv", policy)
-        self.assertIn("independently hash-check", policy)
-        self.assertIn("requires this exact", policy)
-        self.assertIn("embeds its SHA-256", policy)
-        self.assertIn("draft_validation candidate-policy", policy)
+        self.assertIn("proofreader_evolve/candidate_pools.json", inventory)
+        self.assertIn("autodiscovery-application/split-error-run/candidate_rules.py", inventory)
         self.assertIn("requires_both_tips", inventory)
         self.assertIn("compatible_occurrences", generate)
         self.assertIn("Never filter the candidate universe", generate)
@@ -2183,6 +2019,7 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("density-stratified", generate)
         self.assertIn("makes the ranked cost report untrustworthy", generate)
         self.assertIn("candidate-pair-level", verify)
+        self.assertIn("CANDIDATE_RULES_SHA256", verify)
         self.assertIn("remain explicitly unscored (NaN)", verify)
         self.assertIn("conditional on\nthe OOF-scored subset", verify)
         self.assertIn("split_site_detector.py", verify)

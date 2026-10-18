@@ -40,6 +40,8 @@ def main():
     parser.add_argument('--alignment', type=Path, default=DEFAULT_ALIGNMENT)
     parser.add_argument('--record-reviewed', action='store_true', help='Record a completed visual review, without reading images')
     parser.add_argument('--review-note', default='')
+    parser.add_argument('--merge-dir', action='append', help='One merge-junction detector directory (default: DEFAULT_MERGE_DIR)')
+    parser.add_argument('--split-dir', action='append', help='One split-site detector directory (default: DEFAULT_SPLIT_DIR)')
     args = parser.parse_args()
     if args.image_uri and len(args.brains) != 1:
         parser.error('--image-uri requires exactly one brain')
@@ -65,7 +67,7 @@ def main():
         return
     trace = Trajectory(args.out)
     trace.emit('alignment_audit_start', f'Host={socket.gethostname()}; no fitting, evolution, or GT-based selection')
-    selected = pc.resolve_detector_runs()
+    selected = pc.resolve_detector_runs(args.merge_dir, args.split_dir)
     spec = {'radius_um': args.radius_um, 'level': args.level, 'channel': 0, 'timepoint': 0}
     for brain in args.brains:
         directory = args.out / brain

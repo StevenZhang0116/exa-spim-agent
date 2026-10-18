@@ -21,8 +21,11 @@ FEATURE_SEMANTICS_DRAFT_NAME = ".feature_semantics.json"
 MODEL_ADVICE_DRAFT_NAME = ".model_advice.json"
 FEATURE_IMPLEMENTATION_DRAFT_NAME = ".feature_implementation.py"
 CANDIDATE_POLICY_NAME = "split_candidate_policy.json"
+# written by builds before 2026-10-16 (split advice stage); kept so a rebuild clears it
 CANDIDATE_POLICY_ADVICE_DRAFT_NAME = ".candidate_policy_advice.json"
 MERGE_CANDIDATE_POLICY_NAME = "merge_candidate_policy.json"
+# candidate_rules.py copied unchanged beside split and merge-site detectors (2026-10-16)
+CANDIDATE_RULES_NAME = "candidate_rules.py"
 
 class DetectorTarget(str, Enum):
     """The scientific label contract implemented by the generated runtime."""
@@ -76,21 +79,22 @@ _TARGET_SPECS = {
         score_prefix="merge_probability",
         accumulator_name="SegmentAccumulator",
     ),
-    # Junction-site merge detection: one row per NMS-surviving degree>=3
-    # fragment node, enumerated by the frozen merge candidate policy. The
+    # Merge-site detection: one row per candidate fragment node of the frozen
+    # merge candidate rule (NMS-surviving junctions and, since 2026-10-16,
+    # tip-to-shaft nodes; enumerated by candidate_rules.py). The
     # established segment-level target above stays available (the proofreader
     # scoring stack still consumes segment-level merge_site_detector.py).
     DetectorTarget.MERGE_SITE: TargetSpec(
         target=DetectorTarget.MERGE_SITE,
         detector_name="merge_junction_detector.py",
         output_prefix="merge_junction_detector",
-        row_unit="candidate junction site",
-        row_unit_plural="candidate junction sites",
+        row_unit="candidate merge site",
+        row_unit_plural="candidate merge sites",
         label_name="is_merge_site",
         positive_name="merge site",
-        negative_name="clean junction",
+        negative_name="clean candidate",
         positive_plural="merge sites",
-        negative_plural="clean junctions",
+        negative_plural="clean candidates",
         identity_columns=("candidate_id", "node_id", "segment_id"),
         score_prefix="merge_site_probability",
         accumulator_name="FeatureAccumulator",
@@ -149,9 +153,9 @@ def build_artifact_names(target: DetectorTarget) -> tuple[str, ...]:
         DRIVER_LOG_NAME,
     )
     if spec.target is DetectorTarget.SPLIT:
-        return (CANDIDATE_POLICY_NAME, *common)
+        return (CANDIDATE_POLICY_NAME, CANDIDATE_RULES_NAME, *common)
     if spec.target is DetectorTarget.MERGE_SITE:
-        return (MERGE_CANDIDATE_POLICY_NAME, *common)
+        return (MERGE_CANDIDATE_POLICY_NAME, CANDIDATE_RULES_NAME, *common)
     return common
 
 

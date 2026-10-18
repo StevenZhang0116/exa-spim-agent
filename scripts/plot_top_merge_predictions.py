@@ -1,4 +1,4 @@
-"""Render ranked merge-junction predictions as image/GT/fragments by XY/XZ/YZ.
+"""Render ranked merge-site predictions as image/GT/fragments by XY/XZ/YZ.
 
 Run on a compute node in the panda environment with a matching trusted _add.pkl.
 Reads existing CSV scores, not joblib; no training or feature extraction is run.
@@ -9,18 +9,21 @@ Scan that ranking until top-k candidates with at least one GT skeleton node in
 the plotted volume are found. This GT-visible subset is for visual inspection,
 not unbiased performance evaluation. Scores are not calibrated probabilities.
 In-sample scores are for browsing only.
-Segment GT merge labels and junction GT site labels are displayed separately;
+Segment GT merge labels and candidate GT site labels are displayed separately;
 a missing site label is not a confirmed non-merge.
-Each view is centered on the candidate junction, not a GT site or a proposed cut.
-This script supports merge_junction_detector CSVs, not legacy segment-level CSVs.
+Each view is centered on the candidate node, not a GT site or a proposed cut.
+This script supports merge_junction_detector CSVs, not legacy segment-level CSVs. Their
+candidates are junctions (degree >= 3) and, since 2026-10-16, tip-to-shaft nodes
+(degree >= 2, `candidate_family` column); a CSV without that column holds junctions only.
 Skeleton edges crossing the displayed volume are clipped to its boundary.
 
-From the exa-spim-agent root (default merge run):
-    python scripts/plot_top_merge_predictions.py --top-k 10 \
+From the exa-spim-agent root (pass the merge detector's result directory):
+    python scripts/plot_top_merge_predictions.py autodiscovery-application/<RUN> --top-k 10 \
         --pkl cache/dataset_cache_794495_mcl100_add.pkl
 
 Outputs: <result_dir>/top_merge_predictions/rank_*.png and top_predictions.csv.
-Images come from the matching cache's img_path; cloud access must be available.
+Images come from the URI reviewed in configs/image_alignment.json for the cache's brain, else
+the cache's img_path (dataset_config.get_cache_img_path); cloud access must be available.
 """
 
 import argparse
@@ -38,17 +41,22 @@ from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 
 try:
+    from scripts.dataset_config import get_cache_img_path
     from scripts.skeleton_plot_util import clipped_edges_in_patch
 except ModuleNotFoundError:
+    from dataset_config import get_cache_img_path
     from skeleton_plot_util import clipped_edges_in_patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RESULT = ROOT / "autodiscovery-application/merge-error-794495-mcl100_2026-08-04"
+# no default result directory since the 2026-08 detectors were deleted (2026-10-17)
+DEFAULT_RESULT = None
 DEFAULT_SCORE = "merge_site_probability_oof"
 VIEWS = (("XY", 0, (0, 1)), ("XZ", 1, (0, 2)), ("YZ", 2, (1, 2)))
 SEGMENT_COLOR = "#00e5ff"
 JUNCTION_COLOR = "#ffca28"
+# smallest node degree per merge candidate family (candidate_rules.py)
+MIN_DEGREE = {"junction": 3, "tip_to_shaft": 2}
 
 
 def rank_predictions(csv_path, top_k, score_column=DEFAULT_SCORE, min_score=None):
@@ -78,8 +86,12 @@ def rank_predictions(csv_path, top_k, score_column=DEFAULT_SCORE, min_score=None
             prediction.update({key: float(row[key]) for key in ("x_um", "y_um", "z_um")})
             if not all(math.isfinite(prediction[key]) for key in ("x_um", "y_um", "z_um")):
                 raise ValueError(f"Candidate {candidate_id}: invalid coordinates")
-            if prediction["node_id"] < 0 or prediction["degree"] < 3:
-                raise ValueError(f"Candidate {candidate_id}: invalid junction node or degree")
+            family = (row.get("candidate_family") or "junction").strip()
+            if family not in MIN_DEGREE:
+                raise ValueError(f"Candidate {candidate_id}: unknown candidate_family {family!r}")
+            prediction["candidate_family"] = family
+            if prediction["node_id"] < 0 or prediction["degree"] < MIN_DEGREE[family]:
+                raise ValueError(f"Candidate {candidate_id}: invalid {family} node or degree")
             if prediction["is_merge_site"] not in (0, 1):
                 raise ValueError(f"Candidate {candidate_id}: invalid is_merge_site")
             raw_distance = row.get("distance_to_nearest_gt_site_um", "").strip()
@@ -269,14 +281,14 @@ def render_prediction(payload, image, prediction, rank, patch_um, score_column,
     else:
         junction_status = "NOT SITE-LABELLED"
         status_color = "#92400e"
-        caveat = "Sparse GT: no positive label does not prove this junction is free of a merge."
+        caveat = "Sparse GT: no positive label does not prove this candidate is free of a merge."
     merge_labels = payload.get("gt_merge_labels")
     segment_merge = (None if merge_labels is None else
                      bool(np.any(np.asarray(merge_labels) == prediction["segment_id"])))
     segment_status = ("UNKNOWN" if segment_merge is None else
                       "MERGE" if segment_merge else "NOT MERGE-LABELLED")
     if segment_merge and not prediction["is_merge_site"]:
-        caveat += "\nKnown merge segment; this junction has no positive site label."
+        caveat += "\nKnown merge segment; this candidate has no positive site label."
     if covered is False:
         caveat += " Segment has no canonical GT coverage."
     distance = prediction.get("distance_to_nearest_gt_site_um", float("nan"))
@@ -289,8 +301,9 @@ def render_prediction(payload, image, prediction, rank, patch_um, score_column,
             f"{prediction['gt_components_in_patch']} GT components in view; visual inspection only."
         )
     z_start, z_stop = origin[0] * anisotropy[2], (origin[0] + patch_shape[0]) * anisotropy[2]
-    figure.suptitle(f"Segment GT: {segment_status} | Junction GT: {junction_status}\n"
-                   f"{coverage_label} | Center: candidate junction node",
+    family = prediction.get("candidate_family", "junction").replace("_", "-")
+    figure.suptitle(f"Segment GT: {segment_status} | Site GT: {junction_status}\n"
+                   f"{coverage_label} | Center: candidate {family} node",
                    fontsize=16, fontweight="bold", color=status_color,
                    bbox={"facecolor": "#f8fafc", "edgecolor": status_color, "pad": 8})
     figure.supxlabel(
@@ -301,7 +314,7 @@ def render_prediction(payload, image, prediction, rank, patch_um, score_column,
         f"{score_column} ({score_note})\n"
         f"Center XYZ (um): {center_xyz[0]:.2f}, {center_xyz[1]:.2f}, {center_xyz[2]:.2f}"
         f" | Z slab: [{z_start:.2f}, {z_stop:.2f}) um | GT site distance (audit): {distance_text}\n"
-        "+ marks the candidate junction, not a GT site. Cyan highlights its segment in the fragments row.\n"
+        "+ marks the candidate node, not a GT site. Cyan highlights its segment in the fragments row.\n"
         f"{caveat}{selection_note}", fontsize=10,
     )
     return figure, {
@@ -330,6 +343,10 @@ def main(argv=None):
     parser.add_argument("--output-dir", type=Path, help="Default: <result_dir>/top_merge_predictions")
     parser.add_argument("--dpi", type=int, default=160)
     args = parser.parse_args(argv)
+    if args.result_dir is None:
+        if args.csv is None:
+            parser.error("Specify the detector result directory (or --csv and --pkl)")
+        args.result_dir = args.csv.parent
     if args.top_k < 1 or args.dpi < 1 or not all(math.isfinite(size) and size > 0 for size in args.patch_um):
         parser.error("top-k, dpi and patch dimensions must be positive")
     if args.csv is not None and args.pkl is None:
@@ -363,8 +380,9 @@ def main(argv=None):
     from agentic_neuron_proofreader.utils.img_util import TensorStoreImage
 
     os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
-    image = TensorStoreImage(payload["img_path"])
-    print(f"Image source: {payload['img_path']}", flush=True)
+    image_path = get_cache_img_path(pkl_path, payload)
+    image = TensorStoreImage(image_path)
+    print(f"Image source: {image_path}", flush=True)
     print(f"Scanning {len(ranked)} ranked candidates for local GT coverage ...", flush=True)
     predictions = select_gt_visible_predictions(payload, image, ranked, args.top_k, args.patch_um)
     if not predictions:

@@ -1,11 +1,14 @@
-"""Log GT merge-site and positive junction counts for every dataset at one MCL.
+"""Log GT merge-site and positive candidate counts for every dataset at one MCL.
 
 Run in panda on a compute node; only load trusted _add.pkl caches. Reuses the
-reviewed detector target adapter to enumerate candidates and attach labels.
-No detector CSV, trained model, image reader or label-cache rewrite is needed.
-Defaults match the current junction policy: segment-scoped Euclidean NMS 20 um,
-positive cable distance <=20 um, claim distance <=150 um, site snap <=50 um.
-These are explicit analysis settings, not a newly selected/validated policy.
+reviewed detector target adapter, and through it candidate_rules.py, to enumerate
+candidates and attach labels. No detector CSV, trained model, image reader or
+label-cache rewrite is needed. Defaults match the merge rule declared in
+proofreader_evolve/candidate_pools.json (2026-10-16): junctions with segment-scoped
+Euclidean NMS 20 um plus tip-to-shaft candidates within a 20 um tip gap (2 partner
+segments per tip), positive cable distance <=20 um, claim distance <=150 um, site
+snap <=50 um. ``--tip-gap-um 0`` gives the junction-only rule used until 2026-10-16.
+These are explicit analysis settings, not a newly selected policy.
 
 GT records, positive candidates and GT sites covered within the positive radius
 are different counting units. Coincident GT records are retained. Ring candidates
@@ -39,6 +42,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+import candidate_rules as cr
 from agentic.detector_build.contracts import DetectorTarget
 from agentic.detector_build.target_runtime import target_adapter_source
 from notebooks.merge_topology_diagnosis import brain_id_from_cache, discover_add_caches, load_payload
@@ -47,37 +51,49 @@ from notebooks.merge_topology_diagnosis import brain_id_from_cache, discover_add
 SUMMARY_COLUMNS = (
     "brain_id", "mcl", "status", "n_gt_merge_sites", "n_is_merge_site_1",
     "n_candidates", "n_in_ambiguous_ring_1", "n_negative", "n_junctions_raw",
+    "n_tip_to_shaft_candidates",
     "n_gt_sites_covered_at_positive_radius", "gt_site_recall_at_positive_radius",
     "n_gt_sites_only_within_claim_radius", "n_gt_sites_not_covered_at_claim_radius",
-    "n_gt_sites_unsnappable", "nms_um", "positive_radius_um", "claim_radius_um",
-    "cache", "error",
+    "n_gt_sites_unsnappable", "nms_um", "tip_gap_um", "tip_partner_k", "positive_radius_um",
+    "claim_radius_um", "cache", "error",
 )
 
 
-def make_runtime(nms_um=20., positive_radius_um=20., claim_radius_um=150.):
-    values = (nms_um, positive_radius_um, claim_radius_um)
+def make_runtime(nms_um=20., positive_radius_um=20., claim_radius_um=150., tip_gap_um=20., tip_partner_k=2):
+    """Executed merge-site adapter for one rule; ``tip_gap_um`` None or 0 is the junction-only rule."""
+    values = (nms_um, positive_radius_um, claim_radius_um, tip_gap_um or 0.)
     if not all(math.isfinite(value) for value in values):
         raise ValueError("Policy distances must be finite")
-    if nms_um < 0 or not 0 < positive_radius_um <= claim_radius_um:
-        raise ValueError("Require nms >= 0 and 0 < positive radius <= claim radius")
-    policy = {
-        "config_id": f"junction|nms={nms_um:g}|r={claim_radius_um:g}", "mode": "junction",
-        "nms_um": nms_um, "positive_label_radius_um": positive_radius_um,
-        "claim_radius_um": claim_radius_um,
-    }
+    if nms_um < 0 or not 0 < positive_radius_um <= claim_radius_um or (tip_gap_um or 0.) < 0:
+        raise ValueError("Require nms >= 0, tip gap >= 0 and 0 < positive radius <= claim radius")
+    if tip_gap_um:
+        mode, tip_gap_um, tip_partner_k = "junction+tip_to_shaft", float(tip_gap_um), int(tip_partner_k)
+    else:
+        mode, tip_gap_um, tip_partner_k = "junction", None, None
+    policy = cr.validate_rule("merge", {
+        "config_id": cr.merge_config_id(mode, nms_um, claim_radius_um, tip_gap_um, tip_partner_k),
+        "mode": mode, "nms_um": float(nms_um), "tip_gap_um": tip_gap_um, "tip_partner_k": tip_partner_k,
+        "claim_radius_um": float(claim_radius_um), "positive_label_radius_um": float(positive_radius_um),
+    })
     policy_sha256 = hashlib.sha256(json.dumps(policy, sort_keys=True).encode()).hexdigest()
+    rules_path = ROOT / "candidate_rules.py"
+    rules_sha256 = hashlib.sha256(rules_path.read_bytes()).hexdigest()
     source = target_adapter_source(DetectorTarget.MERGE_SITE, candidate_policy=policy,
-                                   candidate_policy_sha256=policy_sha256)
+                                   candidate_policy_sha256=policy_sha256,
+                                   candidate_rules_sha256=rules_sha256)
 
     def build_comp_to_seg(graph):
         return {int(component): int(str(swc).split(".")[0])
                 for component, swc in graph.component_id_to_swc_id.items()}
 
-    runtime = {"np": np, "build_comp_to_seg": build_comp_to_seg}
+    # __file__ beside candidate_rules.py: the adapter loads the repository's rule module
+    runtime = {"np": np, "sys": sys, "build_comp_to_seg": build_comp_to_seg,
+               "__file__": str(ROOT / "log_merge_site_counts_runtime.py")}
     exec(compile(source, "<reviewed merge-site target adapter>", "exec"), runtime)
     provenance = {
         "settings": policy, "settings_sha256": policy_sha256,
         "adapter_source_sha256": hashlib.sha256(source.encode()).hexdigest(),
+        "candidate_rules_sha256": rules_sha256,
         "site_snap_max_um": runtime["CANDIDATE_SITE_SNAP_MAX_UM"],
     }
     return runtime, provenance
@@ -104,6 +120,7 @@ def summarize_payload(payload, mcl, runtime):
         "n_gt_merge_sites": n_sites, "n_is_merge_site_1": audit["n_positive"],
         "n_candidates": audit["n_rows"], "n_in_ambiguous_ring_1": audit["n_ambiguous_ring"],
         "n_negative": audit["n_negative"], "n_junctions_raw": audit["n_junctions_raw"],
+        "n_tip_to_shaft_candidates": audit["n_tip_to_shaft_candidates"],
         "n_gt_sites_covered_at_positive_radius": n_covered,
         "gt_site_recall_at_positive_radius": n_covered / n_sites if n_sites else None,
         "n_gt_sites_only_within_claim_radius": audit["n_sites_covered_at_claim_radius"] - n_covered,
@@ -148,6 +165,9 @@ def main(argv=None):
     parser.add_argument("--nms-um", type=float, default=20.)
     parser.add_argument("--positive-radius-um", type=float, default=20.)
     parser.add_argument("--claim-radius-um", type=float, default=150.)
+    parser.add_argument("--tip-gap-um", type=float, default=20.,
+                        help="Tip-to-shaft gap; 0 gives the junction-only rule (before 2026-10-16)")
+    parser.add_argument("--tip-partner-k", type=int, default=2)
     parser.add_argument("--output-dir", type=Path, help="New or empty output directory")
     args = parser.parse_args(argv)
     if args.mcl < 0:
@@ -155,7 +175,8 @@ def main(argv=None):
     if args.brains and any(not brain.isascii() or not brain.isdigit() for brain in args.brains):
         parser.error("Brain IDs must be numeric")
     try:
-        runtime, policy = make_runtime(args.nms_um, args.positive_radius_um, args.claim_radius_um)
+        runtime, policy = make_runtime(args.nms_um, args.positive_radius_um, args.claim_radius_um,
+                                       args.tip_gap_um, args.tip_partner_k)
         caches = discover_add_caches(args.cache_dir, args.mcl, args.brains)
     except (ValueError, FileNotFoundError) as error:
         parser.error(str(error))
@@ -175,7 +196,7 @@ def main(argv=None):
     with (output / "run.json").open("x") as handle:
         json.dump(run, handle, indent=2, allow_nan=False)
     print(f"Output directory: {output}", flush=True)
-    print(f"Policy: NMS={args.nms_um:g}, positive={args.positive_radius_um:g}, "
+    print(f"Policy: {policy['settings']['config_id']}; NMS={args.nms_um:g}, positive={args.positive_radius_um:g}, "
           f"claim={args.claim_radius_um:g}, snap={policy['site_snap_max_um']:g} um", flush=True)
     failures = 0
     with (output / "summary.csv").open("x", newline="") as handle:
@@ -185,7 +206,9 @@ def main(argv=None):
         for path in caches:
             brain = brain_id_from_cache(path)
             row = {"brain_id": brain, "mcl": args.mcl, "cache": str(path.resolve()),
-                   "nms_um": args.nms_um, "positive_radius_um": args.positive_radius_um,
+                   "nms_um": args.nms_um, "tip_gap_um": policy["settings"]["tip_gap_um"],
+                   "tip_partner_k": policy["settings"]["tip_partner_k"],
+                   "positive_radius_um": args.positive_radius_um,
                    "claim_radius_um": args.claim_radius_um, "status": "ok", "error": ""}
             try:
                 summary, detail = inspect_cache(path, args.mcl, runtime)

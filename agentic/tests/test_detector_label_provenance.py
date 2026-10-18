@@ -20,7 +20,10 @@ TEMPLATE = Path(__file__).resolve().parents[1] / "detector_build/templates/detec
 
 def runtime():
     namespace = _runtime_namespace()
-    namespace.update(os=os, json=json, hashlib=hashlib, __file__=str(TEMPLATE))
+    # __file__ must be an existing file beside candidate_rules.py, which the adapter loads
+    # from the detector's directory; the module itself serves as that file here.
+    from agentic.tests.candidate_rule_fixtures import RULES_PATH
+    namespace.update(os=os, json=json, hashlib=hashlib, __file__=str(RULES_PATH))
     names = {"_cache_file_identity", "_input_provenance", "run_detector", "_run_heldout",
              "_apply_scope", "_drop_all_undefined", "_json_default"}
     tree = ast.parse(TEMPLATE.read_text())

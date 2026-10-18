@@ -9,7 +9,7 @@ test-fixer scripts under the matching ``.fixed/`` directory, and WRITES A DETECT
 script that computes every eligible selected hypothesis's features in shared passes over
 the skeleton graph, evaluates several appropriately regularized tabular models
 under nested cross-validation, and fits the selected strategy to score one
-candidate junction site for merge runs (the default; --merge-row-unit segment
+candidate merge site (junction or tip-to-shaft node) for merge runs (the default; --merge-row-unit segment
 restores the established segment-level detector) or one candidate segment pair
 for split runs.
 
@@ -23,10 +23,10 @@ THIS WORKFLOW IS CODE GENERATION ONLY; it does not load dataset contents. Its in
 the run export, the report beside it, the predictive-selection manifest when
 applicable, the ``.rerun/`` scripts, and optional ``.fixed/`` scripts. Split
 builds additionally require the source-bound
-``<RUN>.split-feature-applicability.json`` written by discovery and a completed
-candidate-pool AI review bundle. Merge-site builds require the sweep's
-recommended policy and evidence bundle; preflight also checks live cache file
-identities without deserializing them. The driver cross-checks selection, rerun
+``<RUN>.split-feature-applicability.json`` written by discovery. Split and
+merge-site builds take their candidate rule from
+``proofreader_evolve/candidate_pools.json``, applied by ``candidate_rules.py`` at the
+repository root (2026-10-16); the rule is never selected here. The driver cross-checks selection, rerun
 MANIFEST and source hashes before generation, then validates inventory paths
 and hashes when compiling or reusing that artifact. Executable checks use
 ``--help``, synthetic model smoke tests and invalid-config/no-output checks;
@@ -44,12 +44,13 @@ context. Subagents live in ``.claude/agents/`` and are auto-discovered via
 ``autodiscovery-application/<RUN>/`` (one subfolder per originating run):
 
     merge_junction_detector.py,       target-specific model comparison + detector
-    merge_site_detector.py or         (junction-site merge / segment-level merge /
+    merge_site_detector.py or         (merge-site / segment-level merge /
     split_site_detector.py             split)
-    split_candidate_policy.json       split-only, evidence-validated policy choice
-    merge_candidate_policy.json       merge-site-only, frozen from the merge
-                                      candidate-pool sweep's deterministic
-                                      recommended_policy.json (no agent turn)
+    split_candidate_policy.json       split-only, the declared split rule frozen with
+                                      the hashes of the declaration and candidate_rules.py
+    merge_candidate_policy.json       merge-site-only, the declared merge rule, likewise
+    candidate_rules.py                split/merge-site only, copied unchanged from the
+                                      repository root; the detector enumerates with it
     feature_inventory.json            feature definition + defined condition
     model_candidates.json             validated model families + small grids
     README.md                         provenance, how to run, how to read it
@@ -81,22 +82,14 @@ reuses completed artifacts only after validation against current inputs and
 contracts, and offers retained drafts to their stage for repair. Detector run
 outputs are preserved and may be stale after a rebuild.
 
-The steps (split builds first run the additional candidate-policy
-step described below; merge builds retain the established four-step sequence,
-with merge-site builds freezing their policy driver-side before step 1):
-  0. select-candidate-policy — for split builds only, an agent interprets a
-                           completed candidate-pool AI review. The driver checks
-                           hashes and structured evidence, independently minimizes
-                           candidate count subject to worst-brain recall >= 0.90,
-                           and freezes split_candidate_policy.json. Assembly then
-                           embeds that exact policy in the detector runtime.
-                           Merge-site builds need no agent turn here: the merge
-                           candidate-pool sweep's recommended_policy.json is
-                           already deterministic, so the driver validates its
-                           bundle hashes, re-derives the argmin selection from
-                           the aggregate table (worst-brain SITE recall >= 0.80
-                           by default), and freezes merge_candidate_policy.json
-                           up front.
+The steps (split and merge-site builds first freeze the candidate rule driver-side,
+with no agent turn):
+  0. freeze the declared rule — the driver copies the split or merge rule declared in
+                           proofreader_evolve/candidate_pools.json into
+                           split_candidate_policy.json / merge_candidate_policy.json
+                           with the SHA-256 of the declaration and of
+                           candidate_rules.py. Assembly embeds that exact rule and
+                           copies candidate_rules.py beside the detector.
   1. inventory-features  — the agent reads <RUN>.summary.md, each selected
                            .rerun/hypo_<id>.py and matching .fixed/hypo_<id>.py;
                            it records only semantic judgments (source choice,
@@ -189,22 +182,17 @@ try:  # package import (tests and ``python -m agentic...``)
     )
     from agentic.detector_build.assembly import assemble_detector
     from agentic.detector_build.candidate_policy import (
-        OBJECTIVE_NAME as CANDIDATE_POLICY_OBJECTIVE_NAME,
-        MERGE_SITE_OBJECTIVE_NAME as MERGE_CANDIDATE_POLICY_OBJECTIVE_NAME,
-        candidate_policy_source_paths,
-        compile_candidate_policy,
-        compile_merge_candidate_policy,
-        expected_mcl_from_run_path,
-        merge_candidate_policy_source_paths,
-        validate_candidate_policy_sources,
-        validate_frozen_candidate_policy,
-        validate_frozen_merge_candidate_policy,
-        validate_merge_candidate_policy_sources,
+        DEFAULT_RULES_PATH,
+        compile_declared_candidate_policy,
+        declared_rule,
+        kind_of_target,
+        validate_frozen_declared_candidate_policy,
     )
     from agentic.detector_build.contracts import (
         BUILD_ARTIFACT_NAMES,
         CANDIDATE_POLICY_ADVICE_DRAFT_NAME,
         CANDIDATE_POLICY_NAME,
+        CANDIDATE_RULES_NAME,
         MERGE_CANDIDATE_POLICY_NAME,
         DetectorTarget,
         DRIVER_LOG_NAME,
@@ -274,22 +262,17 @@ except ModuleNotFoundError as exc:  # direct ``python agentic/run_....py``
     )
     from detector_build.assembly import assemble_detector  # type: ignore[no-redef]
     from detector_build.candidate_policy import (  # type: ignore[no-redef]
-        OBJECTIVE_NAME as CANDIDATE_POLICY_OBJECTIVE_NAME,
-        MERGE_SITE_OBJECTIVE_NAME as MERGE_CANDIDATE_POLICY_OBJECTIVE_NAME,
-        candidate_policy_source_paths,
-        compile_candidate_policy,
-        compile_merge_candidate_policy,
-        expected_mcl_from_run_path,
-        merge_candidate_policy_source_paths,
-        validate_candidate_policy_sources,
-        validate_frozen_candidate_policy,
-        validate_frozen_merge_candidate_policy,
-        validate_merge_candidate_policy_sources,
+        DEFAULT_RULES_PATH,
+        compile_declared_candidate_policy,
+        declared_rule,
+        kind_of_target,
+        validate_frozen_declared_candidate_policy,
     )
     from detector_build.contracts import (  # type: ignore[no-redef]
         BUILD_ARTIFACT_NAMES,
         CANDIDATE_POLICY_ADVICE_DRAFT_NAME,
         CANDIDATE_POLICY_NAME,
+        CANDIDATE_RULES_NAME,
         MERGE_CANDIDATE_POLICY_NAME,
         DetectorTarget,
         DRIVER_LOG_NAME,
@@ -357,27 +340,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Applications live one subfolder per originating run.
 APPLICATION_DIR_REL = "autodiscovery-application"
-# The eleven-brain sweep (2026-10-06); at the 0.90 worst-brain floor it selects
-# tip_to_any_node|r=80|k=2, the benchmark pool declared in
-# proofreader_evolve/candidate_pools.json. It replaced the five-brain sweep of
-# 2026-08-24 (r=50|k=2, the rule embedded in the current frozen split detectors).
-DEFAULT_SPLIT_CANDIDATE_REVIEW_REL = (
-    "notebooks/split_candidate_pool_sweep_outputs_with_oldscope/"
-    "mcl100_5f92a29e40d94a90/AI_REVIEW.md"
-)
-DEFAULT_SPLIT_MIN_WORST_BRAIN_RECALL = 0.90
-# Merge-site builds consume the merge candidate-pool sweep's deterministic
-# recommended_policy.json (no agent advice stage). The claim radius bakes
-# coverage accounting; the driver-owned positive-label radius keeps training
-# positives tightly localized (see compile_merge_candidate_policy). The
-# eleven-brain sweep (regenerated 2026-10-15 on the relabeled caches) replaced
-# the five-brain one; both select junction|nms=20|r=150.
-DEFAULT_MERGE_CANDIDATE_POLICY_REL = (
-    "notebooks/merge_candidate_pool_sweep_outputs_with_oldscope/"
-    "mcl100_dcbde4ab2a6f6c44/recommended_policy.json"
-)
-DEFAULT_MERGE_SITE_MIN_WORST_BRAIN_SITE_RECALL = 0.80
-DEFAULT_MERGE_SITE_POSITIVE_LABEL_RADIUS_UM = 20.0
+# Candidate rules (2026-10-16): split and merge-site builds take the rule declared in
+# proofreader_evolve/candidate_pools.json (split tip_to_any_node|r=80|k=2; merge
+# junctions plus tip-to-shaft candidates within 20 um), applied by candidate_rules.py,
+# which assembly copies beside the detector. The candidate-pool sweeps are evidence for
+# that declaration, not build inputs; positive-label and claim radii are part of the rule.
+DEFAULT_CANDIDATE_POOLS_REL = "proofreader_evolve/candidate_pools.json"
 
 MODEL_CONFIG_SCHEMA_VERSION = 2
 MODEL_POLICY_PATH = Path(__file__).resolve().with_name("detector_model_policy.json")
@@ -597,14 +565,7 @@ def build_steps(
     out_dir_rel: str,
     corrected_results_rel: str | None = None,
     target: DetectorTarget = DetectorTarget.MERGE,
-    candidate_review_rel: str | None = None,
-    candidate_policy_minimum_recall: float = (
-        DEFAULT_SPLIT_MIN_WORST_BRAIN_RECALL
-    ),
     split_applicability_rel: str | None = None,
-    merge_positive_label_radius_um: float = (
-        DEFAULT_MERGE_SITE_POSITIVE_LABEL_RADIUS_UM
-    ),
 ) -> list[dict]:
     """Build the model-selection detector workflow instructions."""
     spec = target_spec(target)
@@ -621,9 +582,7 @@ def build_steps(
         if spec.target is DetectorTarget.MERGE_SITE
         else f"{out_dir_rel}/{CANDIDATE_POLICY_NAME}"
     )
-    candidate_advice_rel = (
-        f"{out_dir_rel}/{CANDIDATE_POLICY_ADVICE_DRAFT_NAME}"
-    )
+    candidate_rules_rel = f"{out_dir_rel}/{CANDIDATE_RULES_NAME}"
     feature_policy_validation_arg = (
         f" --candidate-policy {candidate_policy_rel}"
         if spec.target in (DetectorTarget.SPLIT, DetectorTarget.MERGE_SITE)
@@ -673,10 +632,12 @@ def build_steps(
             raise ValueError("Split build steps require feature applicability metadata.")
         target_inventory_note = f"""
 This is a split-detection run. The detector row unit is one canonical unordered
-candidate segment pair, not one segment and not one GT edge. Read the frozen,
-driver-validated candidate policy at {candidate_policy_rel}; its pairing rule,
-radius, per-anchor distinct-partner-segment quota, and null global cap define the
-exact runtime sample universe. Inventory node, node-pair, component-pair, and
+candidate segment pair, not one segment and not one GT edge. Read the frozen
+candidate policy at {candidate_policy_rel}: the split rule declared in
+proofreader_evolve/candidate_pools.json. Its pairing rule, radius,
+per-anchor distinct-partner-segment quota, and null global cap define the exact
+runtime sample universe, which the runtime enumerates with {candidate_rules_rel}
+(a copy of candidate_rules.py). Inventory node, node-pair, component-pair, and
 segment-pair quantities with their exact reduction to that row unit. Direct
 gt_edge_error==1 pairs and gap pairs flanking connected zero-label GT regions
 supply is_split only after candidate construction; labels and GT-only split
@@ -763,12 +724,13 @@ Construct the accumulator only after selecting the profiling subset.
         candidate_policy_generation_note = (
             f"Read {candidate_policy_rel} as the immutable definition of the "
             "runtime candidate universe. Do not copy or redefine its generator "
-            "logic in feature code."
+            "logic in feature code, and never call the runtime's _candidate_rules()."
         )
         candidate_policy_verification = f"""
 Confirm that the assembled detector embeds the exact config_id, pairing rule,
-radius, per-anchor k, null global cap, and SHA-256 from {candidate_policy_rel}.
-Confirm sample_universe_audit reports those same values. Treat the policy as
+radius, per-anchor k, null global cap, and SHA-256 from {candidate_policy_rel},
+and that {candidate_rules_rel} matches the candidate_rules SHA-256 recorded there
+(CANDIDATE_RULES_SHA256). Confirm sample_universe_audit reports those same values. Treat the policy as
 immutable and report any mismatch rather than editing either artifact.
 Also verify every inventory `node_role_requirement` matches the exact selected
 source annotation in {split_applicability_rel}. Restrictive features must call
@@ -817,16 +779,23 @@ makes the ranked cost report untrustworthy.
 """.strip()
     elif spec.target is DetectorTarget.MERGE_SITE:
         target_inventory_note = f"""
-This is a merge JUNCTION-SITE detection run. The detector row unit is one
-NMS-surviving degree>=3 fragment node (a candidate junction site), not one
-segment and not one GT merge site. Read the frozen, driver-validated candidate
-policy at {candidate_policy_rel}; its enumeration mode, segment-scoped NMS
-radius, claim radius, and positive-label radius define the exact runtime sample
-universe and labels — treat every one of those values as immutable. The
-RUNTIME's build_sample_universe enumerates candidates GT-blind and consults
-gt_merge_sites only afterwards to attach is_merge_site (geodesic distance <=
-the positive-label radius); candidates between the positive-label and claim
-radii are labeled negative and flagged in_ambiguous_ring for audit only.
+This is a merge-SITE detection run. The detector row unit is one candidate
+fragment node, not one segment and not one GT merge site. Read the frozen
+candidate policy at {candidate_policy_rel}: the merge rule declared in
+proofreader_evolve/candidate_pools.json. Candidates are NMS-surviving degree>=3
+nodes (candidate_family "junction") and, under the junction+tip_to_shaft mode,
+degree-2 shaft nodes that a tip of another segment reaches within the tip gap
+(candidate_family "tip_to_shaft", gap in tip_gap_um). Its enumeration mode,
+segment-scoped NMS radius, tip gap, partner count, claim radius, and
+positive-label radius define the exact runtime sample universe and labels —
+treat every one of those values as immutable. The RUNTIME's
+build_sample_universe enumerates candidates GT-blind with {candidate_rules_rel}
+(a copy of candidate_rules.py) and consults gt_merge_sites only afterwards to
+attach is_merge_site (geodesic distance <= the positive-label radius);
+candidates between the positive-label and claim radii are labeled negative and
+flagged in_ambiguous_ring for audit only. A local feature that needs three
+branches is undefined at a degree-2 tip-to-shaft candidate: leave it unwritten
+(NaN) there rather than inventing a value.
 
 The single gt_merge_sites list may contain geometric_walk sites (including
 merges with one traced partner) and two_gt_junction sites (local connections
@@ -843,7 +812,7 @@ evidence, not fresh measurements under the updated site labels.
 
 Anchor every inventoried feature honestly using the structured scope fields
 specified below, and record candidate applicability in measurable_condition:
-- JUNCTION-LOCAL: the source math is defined on a bounded local neighborhood
+- CANDIDATE-LOCAL: the source math is defined on a bounded local neighborhood
   (radius statistics near a point, local branch geometry, local density) —
   evaluate the local statistic at the candidate node with the source's own
   parameters. If the source reduces over all junctions, removing that reduction
@@ -852,7 +821,7 @@ specified below, and record candidate applicability in measurable_condition:
 - SEGMENT-CONTEXT: the source math is a whole-segment aggregate — keep the
   exact source semantics, compute it once per segment, and broadcast it to that
   segment's candidates (constant within a segment; localization must come from
-  junction-local features; the driver rejects all-context inventories);
+  candidate-local features; the driver rejects all-context inventories);
 - a hypothesis whose distinctive quantity is measured against GT tracings
   (distance to the GT graph, GT-node density, deviation from a GT path,
   anything derived from gt_merge_sites) is NOT blind-computable — exclude it
@@ -862,14 +831,16 @@ specified below, and record candidate applicability in measurable_condition:
 - Use the runtime-owned FeatureAccumulator(samples); do NOT define an accumulator;
 - extract_features(payload, verbose=True, timing=None,
   enabled_analysis_keys=None, profile_segment_limit=None, image_workers=1),
-  returning canonical candidate junction records, is_merge_site labels, and the
+  returning canonical candidate records, is_merge_site labels, and the
   accumulator;
 - node-neighborhood/segment geometry helpers needed by those definitions.
 
 Use the runtime-provided build_sample_universe(payload) as the sole authority
-for candidate identity and labels. Do not enumerate junctions, re-run NMS, or
-derive a competing candidate set in the feature fragment. Each sample is a dict
-with candidate_id, node_id, segment_id, degree, x_um, y_um, z_um. Runtime-only
+for candidate identity and labels. Do not enumerate junctions or tip-to-shaft
+nodes, re-run NMS, or derive a competing candidate set in the feature fragment.
+Each sample is a dict with candidate_id, node_id, segment_id, degree, x_um, y_um,
+z_um, candidate_family ("junction" or "tip_to_shaft") and tip_gap_um (the tip's gap for
+tip-to-shaft rows, None for junction rows); these are GT-blind. Runtime-only
 distance_to_nearest_gt_site_um and in_ambiguous_ring fields are present
 strictly for output audit and must be ignored by feature extraction.
 Construct FeatureAccumulator(samples) AFTER selecting any profiling subset.
@@ -899,19 +870,22 @@ statically if any GT key literal appears in it. Features must be computable
 from the fragments graph and image state alone.
 """.strip()
         verification_scope = (
-            "junction-site-level localization within the claim radius rather "
+            "candidate-site-level localization within the claim radius rather "
             "than exact merged-voxel identification"
         )
         candidate_policy_generation_note = (
             f"Read {candidate_policy_rel} as the immutable definition of the "
             "runtime candidate universe and labels. Do not copy or redefine its "
-            "enumeration, NMS, or labeling logic in feature code."
+            "enumeration, NMS, or labeling logic in feature code, and never call "
+            "the runtime's _candidate_rules()."
         )
         candidate_policy_verification = f"""
 Confirm that the assembled detector embeds the exact config_id, enumeration
-mode, NMS radius, claim radius, positive-label radius, and SHA-256 from
-{candidate_policy_rel}. Confirm sample_universe_audit reports those same
-values plus the site-side coverage counts. Treat the policy as immutable and
+mode, NMS radius, tip gap, partner count, claim radius, positive-label radius,
+and SHA-256 from {candidate_policy_rel}, and that {candidate_rules_rel} matches
+the candidate_rules SHA-256 recorded there (CANDIDATE_RULES_SHA256). Confirm
+sample_universe_audit reports those same values plus the site-side coverage
+counts. Treat the policy as immutable and
 report any mismatch rather than editing either artifact. Also verify each
 inventory feature's structured scope and adaptation: candidate features must
 evaluate the local formula at the candidate node; removing a segment reduction
@@ -920,8 +894,8 @@ SEGMENT-CONTEXT features must be computed once per segment and broadcast —
 the driver rejects inventories whose included features are all segment-context.
 Trace each candidate feature back to its source formula and constants. Check a
 synthetic segment containing two junctions with deliberately different local
-geometry against independently computed expected local values, not against
-the old segment aggregate. Check context equality, undefined local values,
+geometry, plus a degree-2 tip-to-shaft candidate, against independently
+computed expected local values, not against the old segment aggregate. Check context equality, undefined local values,
 row permutation and label blindness. Equal local values on arbitrary real
 data are valid and must not trigger a heuristic rejection. The storage contract
 does not prove the generated mathematical formula is correct; disclose which
@@ -1607,67 +1581,6 @@ This turn is ONLY the verify-and-document stage. Treat {inventory_rel},
 """.strip(),
         },
     ]
-    if spec.target is DetectorTarget.SPLIT:
-        if candidate_review_rel is None:
-            raise ValueError(
-                "Split detector builds require candidate_review_rel for the "
-                "candidate-policy advice stage."
-            )
-        policy_step = {
-            "name": "select-candidate-policy",
-            "expects_file": candidate_advice_rel,
-            "instruction": f"""
-Use the discovery-detector-builder subagent to read the completed split
-candidate-pool review {candidate_review_rel}. Also read its sibling
-ai_review_evidence.json and tables/cross_dataset_aggregate.csv so your
-explanation is tied to the structured sweep evidence.
-
-The driver-owned objective is fixed and must not be changed:
-- objective: {CANDIDATE_POLICY_OBJECTIVE_NAME}
-- minimum worst-brain candidate recall: {candidate_policy_minimum_recall:.12g}
-- tie-breaker: first total_candidates ascending, then config_id ascending
-
-Identify the configuration that satisfies the recall constraint with the fewest
-total candidates across the evaluated datasets. Explain the selected operating
-point, its recall/workload trade-off, the evidence scope, and the fact that
-candidate recall is a pre-scoring ceiling. Do not infer a different objective,
-average across away the worst brain, or treat candidate prevalence as classifier
-precision.
-
-Write ONLY the internal advice draft {candidate_advice_rel} with exactly this
-JSON shape:
-{{
-  "schema_version": 1,
-  "objective": {{
-    "name": "{CANDIDATE_POLICY_OBJECTIVE_NAME}",
-    "minimum_worst_brain_recall": {candidate_policy_minimum_recall:.12g},
-    "tie_breaker": ["total_candidates", "config_id"]
-  }},
-  "selected_config_id": "<mode|r=...|k=...>",
-  "explanation": "<non-empty evidence-grounded explanation>"
-}}
-
-The driver, not the agent, is authoritative: it will independently hash-check
-the review bundle, scan every row of cross_dataset_aggregate.csv, recompute the
-minimum-candidate eligible configuration, reject disagreement, and write the
-public {candidate_policy_rel}. Split detector assembly requires this exact
-artifact, embeds its SHA-256 and generator fields in the runtime, and refuses to
-fall back to a default candidate policy.
-
-Before returning, run this narrow read-only self-check from the project root:
-python -m agentic.detector_build.draft_validation candidate-policy --draft \
-  {candidate_advice_rel} --review {candidate_review_rel} --run-json {run_rel} \
-  --minimum-recall {candidate_policy_minimum_recall:.12g}
-It must print DRAFT_VALIDATION_OK. Repair the draft if needed.
-
-This turn is ONLY the select-candidate-policy advice stage. Treat the review,
-evidence, aggregate table, manifest, AutoDiscovery inputs, policies, templates,
-and existing outputs as read-only. Write only {candidate_advice_rel}; do not
-write {candidate_policy_rel}, feature inventory, model configuration, detector,
-README, or helper files. Do not load a pkl or run feature scoring.
-""".strip(),
-        }
-        steps.insert(0, policy_step)
     return steps
 
 
@@ -1812,7 +1725,8 @@ not load a pkl or invent results.
 
 
 # Files this workflow writes itself. Deleting one of these costs nothing, because
-# the run about to start puts it back.
+# the run about to start puts it back (the advice draft is only a leftover of
+# builds before 2026-10-16).
 _REGENERATED = frozenset((
     *BUILD_ARTIFACT_NAMES,
     *build_artifact_names(DetectorTarget.SPLIT),
@@ -2542,23 +2456,13 @@ async def run_workflow(
     verbose: bool,
     costs: WorkflowCostSummary,
     reconcile_unbacked_verdicts: bool = False,
-    candidate_review_path: Path | None = None,
-    candidate_policy_minimum_recall: float = (
-        DEFAULT_SPLIT_MIN_WORST_BRAIN_RECALL
-    ),
     merge_row_unit: str = "site",
-    merge_candidate_policy_source: Path | None = None,
-    merge_site_minimum_recall: float = (
-        DEFAULT_MERGE_SITE_MIN_WORST_BRAIN_SITE_RECALL
-    ),
-    merge_positive_label_radius_um: float = (
-        DEFAULT_MERGE_SITE_POSITIVE_LABEL_RADIUS_UM
-    ),
+    candidate_pools_path: Path | None = None,
 ) -> None:
     context = resolve_run_context(
         run_json, reconcile_unbacked_verdicts=reconcile_unbacked_verdicts
     )
-    # Merge-error runs build the junction-site detector by default; the
+    # Merge-error runs build the merge-site detector by default; the
     # established segment-level target remains an explicit legacy option via
     # --merge-row-unit segment.
     if context.target is DetectorTarget.MERGE and merge_row_unit == "site":
@@ -2571,35 +2475,17 @@ async def run_workflow(
             "pre-correction evidence."
         )
     spec = target_spec(context.target)
-    expected_candidate_mcl = expected_mcl_from_run_path(run_json)
     policy_artifact_name = (
         MERGE_CANDIDATE_POLICY_NAME
         if spec.target is DetectorTarget.MERGE_SITE
         else CANDIDATE_POLICY_NAME
     )
-    if spec.target is DetectorTarget.SPLIT:
-        if candidate_review_path is None:
-            raise SystemExit(
-                "Split detector builds require a candidate-pool AI_REVIEW.md."
-            )
-        validate_candidate_policy_sources(
-            candidate_review_path,
-            minimum_recall=candidate_policy_minimum_recall,
-            expected_mcl=expected_candidate_mcl,
-            project_root=PROJECT_ROOT,
-        )
-    elif spec.target is DetectorTarget.MERGE_SITE:
-        if merge_candidate_policy_source is None:
-            raise SystemExit(
-                "Merge-site detector builds require the merge candidate "
-                "sweep's recommended_policy.json."
-            )
-        validate_merge_candidate_policy_sources(
-            merge_candidate_policy_source,
-            minimum_site_recall=merge_site_minimum_recall,
-            expected_mcl=expected_candidate_mcl,
-            project_root=PROJECT_ROOT,
-        )
+    policy_target = spec.target in (DetectorTarget.SPLIT, DetectorTarget.MERGE_SITE)
+    candidate_kind = kind_of_target(spec.target) if policy_target else None
+    candidate_pools_path = Path(
+        candidate_pools_path or PROJECT_ROOT / DEFAULT_CANDIDATE_POOLS_REL).resolve()
+    if policy_target:
+        declared = declared_rule(candidate_kind, candidate_pools_path, DEFAULT_RULES_PATH)
     summary_path = context.summary_path
     rerun_dir = context.rerun_dir
     fixed_dir = context.fixed_dir
@@ -2623,16 +2509,10 @@ async def run_workflow(
             if corrected_results_path is not None else None
         ),
         target=context.target,
-        candidate_review_rel=(
-            _rel_to_root(candidate_review_path)
-            if candidate_review_path is not None else None
-        ),
-        candidate_policy_minimum_recall=candidate_policy_minimum_recall,
         split_applicability_rel=(
             _rel_to_root(split_applicability_path)
             if split_applicability_path is not None else None
         ),
-        merge_positive_label_radius_um=merge_positive_label_radius_um,
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -2654,22 +2534,12 @@ async def run_workflow(
         f"step timeout={AGENT_STEP_TIMEOUT_S}s, "
         f"detector check timeout={DETECTOR_CHECK_TIMEOUT_S}s."
     )
-    if spec.target is DetectorTarget.SPLIT:
+    if policy_target:
         log(
-            "Split candidate-policy selection: source="
-            f"{_rel_to_root(candidate_review_path)}, objective="
-            f"{CANDIDATE_POLICY_OBJECTIVE_NAME}, minimum worst-brain recall="
-            f"{candidate_policy_minimum_recall:.12g}; the frozen selection is "
-            "required by split detector assembly."
-        )
-    elif spec.target is DetectorTarget.MERGE_SITE:
-        log(
-            "Merge-site candidate-policy selection: source="
-            f"{_rel_to_root(merge_candidate_policy_source)}, objective="
-            f"{MERGE_CANDIDATE_POLICY_OBJECTIVE_NAME}, minimum worst-brain "
-            f"site recall={merge_site_minimum_recall:.12g}, positive-label "
-            f"radius={merge_positive_label_radius_um:.12g} um; the frozen "
-            "selection is required by merge-site detector assembly."
+            f"Candidate rule ({candidate_kind}): {declared['rule']['config_id']} declared in "
+            f"{_rel_to_root(candidate_pools_path)}; candidate_rules.py SHA-256 "
+            f"{declared['rules_sha256']}. Assembly embeds the rule and copies the module "
+            "beside the detector."
         )
     wf_start = time.monotonic()
     policy_sha256 = _sha256(MODEL_POLICY_PATH)
@@ -2678,12 +2548,8 @@ async def run_workflow(
     protected_hashes = {
         path: _sha256(path) for path in protected_source_paths(context)
     }
-    if spec.target is DetectorTarget.SPLIT:
-        for path in candidate_policy_source_paths(candidate_review_path):
-            protected_hashes[path] = _sha256(path)
-    elif spec.target is DetectorTarget.MERGE_SITE:
-        for path in merge_candidate_policy_source_paths(
-                merge_candidate_policy_source):
+    if policy_target:
+        for path in (candidate_pools_path, DEFAULT_RULES_PATH):
             protected_hashes[path] = _sha256(path)
     candidate_policy_sha256: str | None = None
     inventory_sha256: str | None = None
@@ -2693,32 +2559,22 @@ async def run_workflow(
     readme_driver_block: str | None = None
     readme_skeleton_sha256: str | None = None
 
-    if spec.target is DetectorTarget.MERGE_SITE:
-        # The merge sweep's selection is already deterministic, so there is no
-        # agent advice stage: the driver freezes the public policy up front and
+    candidate_rules_sha256: str | None = None
+    if policy_target:
+        # The rule is declared, not selected: the driver freezes it up front and
         # assembly requires this exact artifact.
-        merge_policy_path = out_dir / MERGE_CANDIDATE_POLICY_NAME
-        compile_merge_candidate_policy(
-            merge_policy_path,
-            merge_candidate_policy_source,
-            minimum_site_recall=merge_site_minimum_recall,
-            positive_label_radius_um=merge_positive_label_radius_um,
-            expected_mcl=expected_candidate_mcl,
-            project_root=PROJECT_ROOT,
-        )
-        validate_frozen_merge_candidate_policy(
-            merge_policy_path,
-            merge_candidate_policy_source,
-            minimum_site_recall=merge_site_minimum_recall,
-            positive_label_radius_um=merge_positive_label_radius_um,
-            expected_mcl=expected_candidate_mcl,
-            project_root=PROJECT_ROOT,
-        )
-        candidate_policy_sha256 = _sha256(merge_policy_path)
+        frozen_policy_path = out_dir / policy_artifact_name
+        compile_declared_candidate_policy(
+            candidate_kind, frozen_policy_path, project_root=PROJECT_ROOT,
+            declaration_path=candidate_pools_path, rules_path=DEFAULT_RULES_PATH)
+        frozen = validate_frozen_declared_candidate_policy(
+            frozen_policy_path, candidate_kind, project_root=PROJECT_ROOT,
+            declaration_path=candidate_pools_path, rules_path=DEFAULT_RULES_PATH)
+        candidate_policy_sha256 = _sha256(frozen_policy_path)
+        candidate_rules_sha256 = frozen["candidate_rules"]["sha256"]
         log(
-            "Driver validated the merge candidate sweep and froze "
-            f"{_rel_to_root(merge_policy_path)}; merge-site assembly will "
-            "require and embed this exact policy."
+            f"Driver froze the declared {candidate_kind} rule at "
+            f"{_rel_to_root(frozen_policy_path)}; assembly will require and embed it."
         )
 
     def guard_immutable_artifacts() -> None:
@@ -2741,7 +2597,13 @@ async def run_workflow(
             require_unchanged(
                 out_dir / policy_artifact_name,
                 candidate_policy_sha256,
-                "select-candidate-policy",
+                "declared candidate rule",
+            )
+        if candidate_rules_sha256 is not None and detector_sha256 is not None:
+            require_unchanged(
+                out_dir / CANDIDATE_RULES_NAME,
+                candidate_rules_sha256,
+                "driver assembly",
             )
         if inventory_sha256 is not None:
             require_unchanged(
@@ -2838,70 +2700,7 @@ async def run_workflow(
         readme_driver_block = read_driver_generated_block(readme_path)
         readme_skeleton_sha256 = _sha256(readme_path)
 
-    # Candidate-policy advice follows the same transactional pattern as feature
-    # and model drafts; the resulting public artifact is mandatory assembly input.
-    candidate_advice_path = out_dir / CANDIDATE_POLICY_ADVICE_DRAFT_NAME
     candidate_policy_path = out_dir / policy_artifact_name
-    if spec.target is DetectorTarget.SPLIT:
-        if candidate_policy_path.is_file():
-            try:
-                validate_frozen_candidate_policy(
-                    candidate_policy_path,
-                    candidate_review_path,
-                    minimum_recall=candidate_policy_minimum_recall,
-                    expected_mcl=expected_candidate_mcl,
-                    project_root=PROJECT_ROOT,
-                )
-            except SystemExit as exc:
-                log(f"Existing split candidate policy is stale; rebuilding it: {exc}")
-            else:
-                candidate_policy_sha256 = _sha256(candidate_policy_path)
-                if candidate_advice_path.is_file():
-                    candidate_advice_path.unlink()
-                steps = [
-                    step for step in steps
-                    if step["name"] != "select-candidate-policy"
-                ]
-                log(
-                    "Recovered validated split_candidate_policy.json; "
-                    "skipping candidate-policy agent turn."
-                )
-        if (
-            candidate_policy_sha256 is None
-            and candidate_advice_path.is_file()
-        ):
-            try:
-                compile_candidate_policy(
-                    candidate_advice_path,
-                    candidate_policy_path,
-                    candidate_review_path,
-                    minimum_recall=candidate_policy_minimum_recall,
-                    expected_mcl=expected_candidate_mcl,
-                    project_root=PROJECT_ROOT,
-                )
-                validate_frozen_candidate_policy(
-                    candidate_policy_path,
-                    candidate_review_path,
-                    minimum_recall=candidate_policy_minimum_recall,
-                    expected_mcl=expected_candidate_mcl,
-                    project_root=PROJECT_ROOT,
-                )
-            except SystemExit as exc:
-                log(
-                    "Existing candidate-policy advice is not recoverable "
-                    f"deterministically; retaining it for agent repair: {exc}"
-                )
-            else:
-                candidate_policy_sha256 = _sha256(candidate_policy_path)
-                candidate_advice_path.unlink()
-                steps = [
-                    step for step in steps
-                    if step["name"] != "select-candidate-policy"
-                ]
-                log(
-                    "Recovered validated candidate-policy advice and froze "
-                    "split_candidate_policy.json; skipping repeated agent turn."
-                )
 
     # Drafts are transactional: a failed compile/check leaves the stage-owned
     # hidden draft in place, while successful stages remove it. Revalidate a
@@ -3079,46 +2878,7 @@ async def run_workflow(
                 f"Step {i}/{len(steps)} '{step['name']}' done in "
                 f"{time.monotonic() - step_start:.0f}s."
             )
-            if step["name"] == "select-candidate-policy":
-                candidate_advice_path = (
-                    out_dir / CANDIDATE_POLICY_ADVICE_DRAFT_NAME
-                )
-                candidate_policy_path = out_dir / CANDIDATE_POLICY_NAME
-
-                def finalize_candidate_policy() -> None:
-                    compile_candidate_policy(
-                        candidate_advice_path,
-                        candidate_policy_path,
-                        candidate_review_path,
-                        minimum_recall=candidate_policy_minimum_recall,
-                        expected_mcl=expected_candidate_mcl,
-                        project_root=PROJECT_ROOT,
-                    )
-                    validate_frozen_candidate_policy(
-                        candidate_policy_path,
-                        candidate_review_path,
-                        minimum_recall=candidate_policy_minimum_recall,
-                        expected_mcl=expected_candidate_mcl,
-                        project_root=PROJECT_ROOT,
-                    )
-
-                await finalize_step_with_repairs(
-                    client,
-                    step,
-                    finalize_candidate_policy,
-                    guard_immutable_artifacts,
-                    verbose,
-                    costs,
-                )
-                candidate_policy_sha256 = _sha256(candidate_policy_path)
-                candidate_advice_path.unlink()
-                log(
-                    "  Driver independently validated the candidate sweep and "
-                    f"froze {_rel_to_root(candidate_policy_path)}; removed "
-                    "transient agent advice. Split assembly will require and "
-                    "embed this exact policy."
-                )
-            elif step["name"] == "inventory-features":
+            if step["name"] == "inventory-features":
                 semantics_path = out_dir / FEATURE_SEMANTICS_DRAFT_NAME
                 inventory_path = out_dir / FEATURE_INVENTORY_NAME
 
@@ -3320,26 +3080,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
-        "--split-candidate-review",
+        "--candidate-pools",
         type=Path,
-        default=Path(DEFAULT_SPLIT_CANDIDATE_REVIEW_REL),
-        metavar="AI_REVIEW.md",
+        default=Path(DEFAULT_CANDIDATE_POOLS_REL),
+        metavar="candidate_pools.json",
         help=(
-            "Completed candidate-pool AI review used only for split builds. "
-            "Its sibling evidence, manifest, and aggregate table are verified "
-            "before output cleanup. Default: "
-            f"{DEFAULT_SPLIT_CANDIDATE_REVIEW_REL}."
-        ),
-    )
-    parser.add_argument(
-        "--split-min-worst-brain-recall",
-        type=float,
-        default=DEFAULT_SPLIT_MIN_WORST_BRAIN_RECALL,
-        metavar="RECALL",
-        help=(
-            "Driver-owned split candidate-policy constraint in (0, 1]. The "
-            "selected policy minimizes total candidate count subject to every "
-            "evaluated brain meeting this recall. Default: 0.90."
+            "Declaration of the split and merge candidate rules (schema version 2). "
+            "Split and merge-site builds freeze the declared rule of their kind and "
+            "copy candidate_rules.py beside the detector; it is checked before output "
+            f"cleanup. Default: {DEFAULT_CANDIDATE_POOLS_REL}."
         ),
     )
     parser.add_argument(
@@ -3348,44 +3097,9 @@ def main() -> int:
         default="site",
         help=(
             "Row unit for merge-error runs. 'site' (default) builds the "
-            "junction-site detector (merge_junction_detector.py) from the "
-            "frozen merge candidate policy; 'segment' builds the legacy "
+            "site detector (merge_junction_detector.py) from the declared "
+            "merge candidate rule; 'segment' builds the legacy "
             "segment-level detector (merge_site_detector.py)."
-        ),
-    )
-    parser.add_argument(
-        "--merge-candidate-policy",
-        type=Path,
-        default=Path(DEFAULT_MERGE_CANDIDATE_POLICY_REL),
-        metavar="recommended_policy.json",
-        help=(
-            "Merge candidate-pool sweep policy used only for merge-site "
-            "builds. Its sibling manifest and aggregate table are verified "
-            "before output cleanup. Default: "
-            f"{DEFAULT_MERGE_CANDIDATE_POLICY_REL}."
-        ),
-    )
-    parser.add_argument(
-        "--merge-min-worst-brain-site-recall",
-        type=float,
-        default=DEFAULT_MERGE_SITE_MIN_WORST_BRAIN_SITE_RECALL,
-        metavar="RECALL",
-        help=(
-            "Driver-owned merge-site candidate-policy constraint in (0, 1]. "
-            "The selected policy minimizes total candidate count subject to "
-            "every evaluated brain meeting this SITE recall. Default: 0.80."
-        ),
-    )
-    parser.add_argument(
-        "--merge-positive-label-radius-um",
-        type=float,
-        default=DEFAULT_MERGE_SITE_POSITIVE_LABEL_RADIUS_UM,
-        metavar="UM",
-        help=(
-            "Geodesic tolerance defining a POSITIVE merge-site training label "
-            "(candidate within this cable distance of a GT merge site). Must "
-            "not exceed the policy's claim radius; candidates between the two "
-            "are labeled negative and flagged in_ambiguous_ring. Default: 20."
         ),
     )
     parser.add_argument(
@@ -3451,23 +3165,6 @@ def main() -> int:
     if args.yes and args.keep_existing:
         parser.error("--yes and --keep-existing contradict each other: one deletes "
                      "the existing folder, the other keeps it.")
-    if (
-        not math.isfinite(args.split_min_worst_brain_recall)
-        or not 0 < args.split_min_worst_brain_recall <= 1
-    ):
-        parser.error("--split-min-worst-brain-recall must be finite and in (0, 1].")
-    if (
-        not math.isfinite(args.merge_min_worst_brain_site_recall)
-        or not 0 < args.merge_min_worst_brain_site_recall <= 1
-    ):
-        parser.error(
-            "--merge-min-worst-brain-site-recall must be finite and in (0, 1].")
-    if (
-        not math.isfinite(args.merge_positive_label_radius_um)
-        or args.merge_positive_label_radius_um <= 0
-    ):
-        parser.error("--merge-positive-label-radius-um must be positive.")
-
     def _resolve_existing(p: Path, what: str) -> Path:
         rp = p if p.is_absolute() else (PROJECT_ROOT / p).resolve()
         if not rp.exists():
@@ -3492,29 +3189,14 @@ def main() -> int:
     if (context.target is DetectorTarget.MERGE
             and args.merge_row_unit == "site"):
         effective_target = DetectorTarget.MERGE_SITE
-    candidate_review_path: Path | None = None
-    merge_candidate_policy_source: Path | None = None
-    if effective_target is DetectorTarget.SPLIT:
-        candidate_review_path = _resolve_existing(
-            args.split_candidate_review, "split candidate-pool AI_REVIEW.md"
-        )
-        validate_candidate_policy_sources(
-            candidate_review_path,
-            minimum_recall=args.split_min_worst_brain_recall,
-            expected_mcl=expected_mcl_from_run_path(run_json),
-            project_root=PROJECT_ROOT,
-        )
-    elif effective_target is DetectorTarget.MERGE_SITE:
-        merge_candidate_policy_source = _resolve_existing(
-            args.merge_candidate_policy,
-            "merge candidate-pool recommended_policy.json",
-        )
-        validate_merge_candidate_policy_sources(
-            merge_candidate_policy_source,
-            minimum_site_recall=args.merge_min_worst_brain_site_recall,
-            expected_mcl=expected_mcl_from_run_path(run_json),
-            project_root=PROJECT_ROOT,
-        )
+    candidate_pools_path: Path | None = None
+    if effective_target in (DetectorTarget.SPLIT, DetectorTarget.MERGE_SITE):
+        candidate_pools_path = _resolve_existing(
+            args.candidate_pools, "candidate-pool declaration")
+        # Fails here, before any output is deleted, if the declaration or the
+        # rule module cannot give a valid rule of this kind.
+        declared_rule(kind_of_target(effective_target), candidate_pools_path,
+                      DEFAULT_RULES_PATH)
 
     # Then the deletion, and note it runs before the tee is installed on purpose —
     # the driver log lives inside the folder being removed, so capturing this into
@@ -3551,18 +3233,8 @@ def main() -> int:
             asyncio.run(run_workflow(
                 run_json, out_dir, args.verbose, costs,
                 reconcile_unbacked_verdicts=args.reconcile_unbacked_verdicts,
-                candidate_review_path=candidate_review_path,
-                candidate_policy_minimum_recall=(
-                    args.split_min_worst_brain_recall
-                ),
                 merge_row_unit=args.merge_row_unit,
-                merge_candidate_policy_source=merge_candidate_policy_source,
-                merge_site_minimum_recall=(
-                    args.merge_min_worst_brain_site_recall
-                ),
-                merge_positive_label_radius_um=(
-                    args.merge_positive_label_radius_um
-                ),
+                candidate_pools_path=candidate_pools_path,
             ))
             outcome = "OK"
         except SystemExit as exc:

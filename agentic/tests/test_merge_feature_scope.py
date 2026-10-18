@@ -90,12 +90,8 @@ class MergeFeatureScopeTests(unittest.TestCase):
         self.data = {'schema_version': 4, 'hypotheses': [
             {'included': True, 'features': definitions()}]}
         self.inventory.write_text(json.dumps(self.data))
-        self.policy = self.root / 'merge_candidate_policy.json'
-        self.policy.write_text(json.dumps({
-            'schema_version': 1, 'artifact_type': 'merge_site_candidate_policy_selection',
-            'application_status': 'selected_for_detector_runtime',
-            'selected_policy': MERGE_SITE_POLICY,
-        }))
+        from agentic.tests.candidate_rule_fixtures import write_policy
+        self.policy = write_policy(self.root / 'merge_candidate_policy.json', 'merge', MERGE_SITE_POLICY)
         self.feature = self.root / 'features.py'
         self.feature.write_text(FRAGMENT)
         self.output = self.root / 'detector.py'

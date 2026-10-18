@@ -392,7 +392,7 @@ when the companion changes):**
 - **Random ranking**: its precision equals the share of label 1 among labeled rows,
   0.411 here (2,497 of 6,076).
 - **Gap distance**: the ranking by `gap_um` itself, smaller gap first. It is strong:
-  out-of-fold AP 0.826 (folds 0.827 / 0.844 / 0.808); precision 56/61 at 1%,
+  out-of-fold AP 0.825 (folds 0.827 / 0.844 / 0.808); precision 56/61 at 1%,
   131/152 at 2.5%, 272/304 at 5%, 543/607 at 10%, 817/912 at 15%, 1,079/1,216 at
   20%. Its top 1% of all rows holds 3.1% labeled rows against 0.9% overall (median
   gap 19.0 um on labeled rows, 33.7 um on unlabeled ones). The baseline is this ranking;
@@ -577,4 +577,5 @@ The manifest of §3.2:
 | `source_cache` | file name and byte size of the pkl these rows come from |
 | `image` | `uri` of the fused OME-Zarr, access notes, `graph_to_world` (identity), and `levels`: per zarr level, `scale_xyz_um` and `translation_xyz_um` |
 | `columns` | column names and dtypes of the `.npz` |
+| `identity_columns_note` | reminder that ids and coordinates locate candidates only and are never feature inputs |
 | `pool_sha256`, `labels_sha256`, `npz_sha256` | digests of the candidate pool, the labels and the `.npz` file |

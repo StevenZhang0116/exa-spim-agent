@@ -8,8 +8,10 @@ import shlex
 from pathlib import Path
 
 from .candidate_policy import (
+    CANDIDATE_RULES_NAME,
     load_runtime_candidate_policy,
     load_runtime_merge_candidate_policy,
+    load_runtime_policy,
 )
 from .contracts import DetectorTarget, target_spec
 from .inputs import sha256
@@ -54,9 +56,12 @@ def write_readme_skeleton(
         selected_policy, candidate_policy_sha = load_runtime_candidate_policy(
             candidate_policy_path
         )
+        _, _, rules_sha = load_runtime_policy(candidate_policy_path, "split")
         candidate_provenance = (
             f"- Split candidate policy: `{candidate_policy_rel}` "
             f"(SHA-256 `{candidate_policy_sha}`)\n"
+            f"- Candidate rule module: `{CANDIDATE_RULES_NAME}` beside the detector "
+            f"(SHA-256 `{rules_sha}`)\n"
             f"- Split feature applicability: "
             f"`{inventory.get('split_feature_applicability')}` "
             f"(SHA-256 "
@@ -66,12 +71,14 @@ def write_readme_skeleton(
 ## Split candidate universe
 
 - Pairing rule: `{selected_policy['mode']}`
-- Maximum radius: `{selected_policy['radius_um']}` µm
+- Maximum radius: `{selected_policy['radius_um']:g}` µm
 - Distinct partner segments retained per anchor: `{selected_policy['per_anchor_k']}`
 - Global cap: `{selected_policy['global_cap']}`
 - Configuration: `{selected_policy['config_id']}`
 
-The assembler embedded this exact policy and its artifact SHA-256 in the detector.
+This is the split rule declared in `proofreader_evolve/candidate_pools.json`. The
+assembler embedded it with its artifact SHA-256, and the detector enumerates with the
+copy of `{CANDIDATE_RULES_NAME}` beside it, the module the benchmark tables use.
 Candidate generation is completed before GT-derived split labels are attached.
 """.strip()
     elif spec.target is DetectorTarget.MERGE_SITE:
@@ -81,21 +88,34 @@ Candidate generation is completed before GT-derived split labels are attached.
         selected_policy, candidate_policy_sha = (
             load_runtime_merge_candidate_policy(candidate_policy_path)
         )
+        _, _, rules_sha = load_runtime_policy(candidate_policy_path, "merge")
         candidate_provenance = (
             f"- Merge candidate policy: `{candidate_policy_rel}` "
-            f"(SHA-256 `{candidate_policy_sha}`)"
+            f"(SHA-256 `{candidate_policy_sha}`)\n"
+            f"- Candidate rule module: `{CANDIDATE_RULES_NAME}` beside the detector "
+            f"(SHA-256 `{rules_sha}`)"
+        )
+        shaft_lines = (
+            ""
+            if selected_policy["tip_gap_um"] is None else
+            f"- Tip-to-shaft candidates: shaft nodes within `{selected_policy['tip_gap_um']:g}` µm "
+            f"of a tip of one of the `{selected_policy['tip_partner_k']}` nearest other segments "
+            "(degree 2; `candidate_family` = `tip_to_shaft`, gap in `tip_gap_um`)\n"
         )
         candidate_section = f"""
-## Merge junction-site candidate universe
+## Merge-site candidate universe
 
-- Enumeration mode: `{selected_policy['mode']}` (degree>=3 fragment nodes)
-- Segment-scoped NMS radius: `{selected_policy['nms_um']}` µm
-- Claim radius (coverage accounting): `{selected_policy['claim_radius_um']}` µm geodesic
-- Positive-label radius (training tolerance): `{selected_policy['positive_label_radius_um']}` µm geodesic
+- Enumeration mode: `{selected_policy['mode']}`
+- Junction candidates: degree>=3 fragment nodes (`candidate_family` = `junction`)
+{shaft_lines}- Segment-scoped NMS radius: `{selected_policy['nms_um']:g}` µm
+- Claim radius (coverage accounting): `{selected_policy['claim_radius_um']:g}` µm geodesic
+- Positive-label radius (training tolerance): `{selected_policy['positive_label_radius_um']:g}` µm geodesic
 - Configuration: `{selected_policy['config_id']}`
 
-The assembler embedded this exact policy and its artifact SHA-256 in the
-detector. Candidate generation is GT-blind and completed before GT merge sites
+This is the merge rule declared in `proofreader_evolve/candidate_pools.json`. The
+assembler embedded it with its artifact SHA-256, and the detector enumerates with the
+copy of `{CANDIDATE_RULES_NAME}` beside it, the module the benchmark tables use.
+Candidate generation is GT-blind and completed before GT merge sites
 are consulted to attach is_merge_site labels; candidates whose nearest site
 falls between the positive-label and claim radii are labeled negative and
 flagged `in_ambiguous_ring` for audit.
@@ -110,9 +130,7 @@ favor junction-geometry features by construction.
 
 `sample_universe_audit.site_provenance` records source counts, a digest of the
 actual site records, and generation parameters. Neither `gt_junction_audit`
-nor `gt_merge_site_metadata` is accessible to feature extraction. The build
-checks manifest-bound per-brain cache identities against the sweep; refreshes
-after that sweep require new evidence before building.
+nor `gt_merge_site_metadata` is accessible to feature extraction.
 """.strip()
     elif candidate_policy_path is not None or candidate_policy_rel is not None:
         raise SystemExit("Merge README generation does not accept a candidate policy.")
@@ -155,7 +173,7 @@ after that sweep require new evidence before building.
     cache = cache_hint or "cache/dataset_cache_<brain>_mcl<N>_add.pkl"
     title = {
         DetectorTarget.MERGE: "Merge detector",
-        DetectorTarget.MERGE_SITE: "Merge junction-site detector",
+        DetectorTarget.MERGE_SITE: "Merge-site detector",
         DetectorTarget.SPLIT: "Split detector",
     }.get(spec.target, "Detector")
     content = f"""# {title} — `{Path(run_rel).stem}`
@@ -368,6 +386,18 @@ def write_run_commands(
     elif candidate_policy_path is not None or candidate_policy_rel is not None:
         raise SystemExit(
             "Merge run-command generation does not accept a candidate policy."
+        )
+    if candidate_policy_row:
+        kind = "split" if spec.target is DetectorTarget.SPLIT else "merge"
+        _, _, rules_sha = load_runtime_policy(candidate_policy_path, kind)
+        candidate_policy_row += (
+            f"\n| Candidate rule module (copied from `{CANDIDATE_RULES_NAME}`) | "
+            f"`{app_dir}/{CANDIDATE_RULES_NAME}` | `{rules_sha}` |"
+        )
+        candidate_policy_variable += f'\nCANDIDATE_RULES="$APP_DIR/{CANDIDATE_RULES_NAME}"'
+        candidate_policy_check += (
+            f"\nprintf '%s  %s\\n' '{rules_sha}' "
+            '"$CANDIDATE_RULES" | sha256sum --check'
         )
 
     q_root = shlex.quote(project_root.as_posix())

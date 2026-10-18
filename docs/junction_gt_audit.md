@@ -64,26 +64,21 @@ and present its scores as results of the updated training procedure.
 
 ## Build And Retrain With Current Labels
 
-The detector-build workflow validates the sweep policy and aggregate hashes,
-plus every scope brain's manifest-bound `per_brain/<brain>_meta.json`. The
-recorded cache path, size, nanosecond mtime and inode must match the current
-cache. Missing legacy identity records, changed caches, and scope mismatches
-abort before output cleanup. Rerun the sweep when this gate rejects stale
-evidence; do not edit hashes to bypass it. Moving only the bundle is supported
-because metadata files are resolved relative to the policy file. The recorded
-cache itself must still be available at the recorded path.
+Since 2026-10-16 the detector-build workflow takes the merge candidate rule from
+`proofreader_evolve/candidate_pools.json` (junctions plus tip-to-shaft candidates within
+20 um) and copies `candidate_rules.py` beside the detector; it no longer reads a sweep
+bundle or checks sweep cache identities. The candidate-pool sweep is evidence for the
+declared rule. Labels still come from the cache's `gt_merge_sites`, so a refreshed cache
+needs a new build and new training, not a new rule.
 
 Fresh-build into a new directory to preserve older detector outputs. For example,
 on a compute node in panda, from the repository root:
 
 ```bash
 python agentic/run_detector_build_workflow.py \
-  autodiscovery/merge-error-794495-mcl100_2026-08-04.json \
-  --out-dir autodiscovery-application/merge-error-794495-mcl100_2026-08-04-refreshed \
-  --merge-row-unit site \
-  --merge-candidate-policy notebooks/merge_candidate_pool_sweep_outputs_with_oldscope/mcl100_dcbde4ab2a6f6c44/recommended_policy.json \
-  --merge-min-worst-brain-site-recall 0.80 \
-  --merge-positive-label-radius-um 20
+  autodiscovery/<RUN>.json \
+  --out-dir autodiscovery-application/<RUN>-refreshed \
+  --merge-row-unit site
 ```
 
 Choose a directory that does not already exist. Do not pass `--yes` to an old
@@ -128,8 +123,9 @@ Old timing-bound selections must be regenerated for a changed detector; using
 all features does not require a timing run. Winner OOF remains the primary
 review score, while selector OOF evaluates the model-selection procedure.
 
-Candidate-policy selection used all brains listed in its evidence scope. A
-training-excluded brain in that scope is not an untouched end-to-end test set.
+The declared candidate rule was chosen from evidence over all eleven labeled
+brains, so a training-excluded brain is not an untouched end-to-end test set for
+the rule.
 Junction-derived labels can favor junction-geometry features by construction;
 report that limitation and validate localization with independent review.
 
@@ -189,7 +185,7 @@ srun --partition=aibs_debug --constraint=cpu --nodes=1 --ntasks=1 \
   --cpus-per-task=2 --mem=80G --time=00:10:00 \
   "$HOME/.conda/envs/panda/bin/python" scripts/audit_merge_junction_gt.py \
   --pkl cache/dataset_cache_794495_mcl100_add.pkl \
-  --csv autodiscovery-application/merge-error-794495-mcl100_2026-08-04/merge_junction_detector_794495.csv \
+  --csv autodiscovery-application/<RUN>/merge_junction_detector_794495.csv \
   --candidate-id 42020 \
   --output figs/junction_audit_42020.json
 ```

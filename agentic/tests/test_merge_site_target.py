@@ -7,7 +7,6 @@ import json
 import sys
 import tempfile
 import unittest
-from collections import defaultdict
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -16,10 +15,9 @@ import networkx as nx
 import numpy as np
 
 from agentic.detector_build.candidate_policy import (
-    compile_merge_candidate_policy,
+    compile_declared_candidate_policy,
     load_runtime_merge_candidate_policy,
-    validate_frozen_merge_candidate_policy,
-    validate_merge_candidate_policy_sources,
+    validate_frozen_declared_candidate_policy,
 )
 from agentic.detector_build.contracts import (
     MERGE_CANDIDATE_POLICY_NAME,
@@ -29,83 +27,19 @@ from agentic.detector_build.contracts import (
 )
 from agentic.detector_build.target_runtime import target_adapter_source
 from agentic import run_detector_build_workflow as workflow
-
-
-MERGE_SITE_POLICY = {
-    "config_id": "junction|nms=10|r=15",
-    "mode": "junction",
-    "nms_um": 10,
-    "claim_radius_um": 15,
-    "positive_label_radius_um": 4,
-}
-MERGE_SITE_POLICY_SHA256 = "b" * 64
-
-AGGREGATE_HEADER = (
-    "config_id,mode,nms_um,claim_radius_um,total_candidates,"
-    "min_site_recall,mean_site_recall,min_label_recall,mean_label_recall,"
-    "n_brains,micro_site_recall\n"
-)
-AGGREGATE_ROWS = (
-    "junction|nms=0|r=15,junction,0.0,15.0,100,0.85,0.9,0.8,0.85,2,0.9\n"
-    "junction|nms=20|r=15,junction,20.0,15.0,60,0.80,0.86,0.75,0.8,2,0.86\n"
-    "junction|nms=20|r=10,junction,20.0,10.0,60,0.70,0.78,0.7,0.75,2,0.79\n"
+from agentic.tests.candidate_rule_fixtures import (
+    POLICY_SHA256,
+    RULES_PATH,
+    adapter_namespace,
+    merge_rule,
+    rules_sha256,
+    write_declaration,
+    write_policy,
 )
 
 
-def _sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def _write_sweep_bundle(root: Path) -> Path:
-    tables = root / "tables"
-    tables.mkdir(parents=True)
-    aggregate = tables / "cross_dataset_aggregate.csv"
-    aggregate.write_text(AGGREGATE_HEADER + AGGREGATE_ROWS, encoding="utf-8")
-    source_policy = root / "recommended_policy.json"
-    source_policy.write_text(json.dumps({
-        "artifact_type": "merge_candidate_policy_selection",
-        "evidence_scope": {
-            "mcl": 100,
-            "config_signature": "deadbeefdeadbeef",
-            "brains": ["794495", "794493"],
-            "segment_detector_gating_evaluated": False,
-            "bridge_candidate_family_evaluated": False,
-        },
-        "structural_ceilings": {"note": "test", "per_brain": []},
-        "provenance": {
-            "aggregate_sha256": _sha256_bytes(aggregate.read_bytes()),
-        },
-    }, indent=2) + "\n", encoding="utf-8")
-    manifest = root / "artifact_manifest.json"
-    manifest.write_text(json.dumps({"artifacts": [
-        {
-            "path": "recommended_policy.json",
-            "sha256": _sha256_bytes(source_policy.read_bytes()),
-            "bytes": source_policy.stat().st_size,
-        },
-        {
-            "path": "tables/cross_dataset_aggregate.csv",
-            "sha256": _sha256_bytes(aggregate.read_bytes()),
-            "bytes": aggregate.stat().st_size,
-        },
-    ]}, indent=2) + "\n", encoding="utf-8")
-    entries = json.loads(manifest.read_text())["artifacts"]
-    (root / "per_brain").mkdir()
-    (root / "cache").mkdir()
-    for brain in ("794495", "794493"):
-        cache = root / "cache" / f"dataset_cache_{brain}_mcl100_add.pkl"
-        cache.write_bytes(b"synthetic cache identity")
-        stat = cache.stat()
-        metadata = root / "per_brain" / f"{brain}_meta.json"
-        metadata.write_text(json.dumps({
-            "brain": brain, "config_signature": "deadbeefdeadbeef", "cache": str(cache.resolve()),
-            "cache_identity": {"path": str(cache.resolve()), "size": stat.st_size,
-                               "mtime_ns": stat.st_mtime_ns, "inode": stat.st_ino},
-        }))
-        entries.append({"path": f"per_brain/{brain}_meta.json", "sha256": _sha256_bytes(metadata.read_bytes()),
-                        "bytes": metadata.stat().st_size})
-    manifest.write_text(json.dumps({"artifacts": entries}))
-    return source_policy
+MERGE_SITE_POLICY = merge_rule(nms_um=10.0, claim_radius_um=15.0, positive_label_radius_um=4.0)
+MERGE_SITE_POLICY_SHA256 = POLICY_SHA256
 
 
 class _Graph(nx.Graph):
@@ -140,22 +74,8 @@ def _merge_site_payload() -> dict:
     }
 
 
-def _adapter_namespace() -> dict:
-    namespace = {"np": np, "defaultdict": defaultdict}
-
-    def build_comp_to_seg(graph):
-        return {
-            int(component): int(str(swc).split(".")[0])
-            for component, swc in graph.component_id_to_swc_id.items()
-        }
-
-    namespace["build_comp_to_seg"] = build_comp_to_seg
-    exec(target_adapter_source(
-        DetectorTarget.MERGE_SITE,
-        candidate_policy=MERGE_SITE_POLICY,
-        candidate_policy_sha256=MERGE_SITE_POLICY_SHA256,
-    ), namespace)
-    return namespace
+def _adapter_namespace(policy: dict | None = None) -> dict:
+    return adapter_namespace(DetectorTarget.MERGE_SITE, policy or MERGE_SITE_POLICY)
 
 
 def _runtime_namespace() -> dict:
@@ -228,12 +148,59 @@ class MergeSiteContractTests(unittest.TestCase):
             )
 
 
-class MergeCandidatePolicyTests(unittest.TestCase):
-    def test_stale_cache_aborts_workflow_before_output_cleanup(self):
+class DeclaredMergeRuleTests(unittest.TestCase):
+    """The build freezes the merge rule declared in candidate_pools.json (2026-10-16)."""
+
+    def test_compile_validate_and_tamper_detection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = _write_sweep_bundle(root / "bundle")
-            (source.parent / "cache/dataset_cache_794495_mcl100_add.pkl").write_bytes(b"refreshed")
+            shaft = merge_rule(tip_gap_um=20.0, tip_partner_k=2)
+            declaration = write_declaration(root / "candidate_pools.json", merge=shaft)
+            output = root / "out" / MERGE_CANDIDATE_POLICY_NAME
+            policy = compile_declared_candidate_policy(
+                "merge", output, project_root=root, declaration_path=declaration, rules_path=RULES_PATH)
+            self.assertEqual(policy["selected_policy"], shaft)
+            self.assertEqual(policy["kind"], "merge")
+            self.assertEqual(policy["candidate_rules"]["sha256"], rules_sha256())
+            self.assertEqual(policy["declaration"]["path"], "candidate_pools.json")
+            self.assertIn("tip-to-shaft", policy["rule_text"])
+            validate_frozen_declared_candidate_policy(
+                output, "merge", project_root=root, declaration_path=declaration, rules_path=RULES_PATH)
+            runtime, sha = load_runtime_merge_candidate_policy(output)
+            self.assertEqual(runtime, shaft)
+            self.assertEqual(sha, hashlib.sha256(output.read_bytes()).hexdigest())
+
+            # a changed declaration or rule module makes the frozen copy stale
+            write_declaration(declaration, merge=merge_rule(tip_gap_um=10.0, tip_partner_k=2))
+            with self.assertRaisesRegex(SystemExit, "stale"):
+                validate_frozen_declared_candidate_policy(
+                    output, "merge", project_root=root, declaration_path=declaration, rules_path=RULES_PATH)
+            write_declaration(declaration, merge=shaft)
+            edited = root / "candidate_rules.py"
+            edited.write_text(RULES_PATH.read_text() + "\n# edited\n")
+            with self.assertRaisesRegex(SystemExit, "stale"):
+                validate_frozen_declared_candidate_policy(
+                    output, "merge", project_root=root, declaration_path=declaration, rules_path=edited)
+
+            # the runtime loader accepts only declared-rule artifacts of its kind
+            with self.assertRaisesRegex(SystemExit, "not 'split'|'merge' rule, not 'split'"):
+                from agentic.detector_build.candidate_policy import load_runtime_candidate_policy
+                load_runtime_candidate_policy(output)
+            legacy = root / "legacy.json"
+            legacy.write_text(json.dumps({
+                "schema_version": 1, "artifact_type": "merge_site_candidate_policy_selection",
+                "application_status": "selected_for_detector_runtime",
+                "selected_policy": {"config_id": "junction|nms=20|r=150"}}))
+            with self.assertRaisesRegex(SystemExit, "declared-rule artifact"):
+                load_runtime_merge_candidate_policy(legacy)
+
+    def test_invalid_declaration_aborts_workflow_before_output_cleanup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            declaration = write_declaration(root / "candidate_pools.json")
+            data = json.loads(declaration.read_text())
+            data["pools"]["merge"]["tip_gap_um"] = None  # inconsistent with its mode and config_id
+            declaration.write_text(json.dumps(data))
             run = root / "merge-error-794495-mcl100_2026-08-04.json"
             run.write_text("{}")
             output = root / "existing-experiment"
@@ -241,117 +208,14 @@ class MergeCandidatePolicyTests(unittest.TestCase):
             baseline = output / "baseline.txt"
             baseline.write_text("preserve")
             argv = ["run_detector_build_workflow.py", str(run), "--out-dir", str(output),
-                    "--merge-candidate-policy", str(source), "--yes"]
+                    "--candidate-pools", str(declaration), "--yes"]
             with patch.object(workflow, "PROJECT_ROOT", root), patch.object(sys, "argv", argv), \
                     patch.object(workflow, "resolve_run_context", return_value=SimpleNamespace(target=DetectorTarget.MERGE)), \
                     patch.object(workflow, "confirm_and_clean") as cleanup, \
-                    self.assertRaisesRegex(SystemExit, "cache identity is stale"):
+                    self.assertRaisesRegex(SystemExit, "invalid"):
                 workflow.main()
             cleanup.assert_not_called()
             self.assertEqual(baseline.read_text(), "preserve")
-
-    def test_cache_freshness_and_metadata_are_validated(self):
-        for change in ("replaced_cache", "missing_cache", "missing_meta", "tampered_meta", "legacy_meta"):
-            with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                source = _write_sweep_bundle(root / "bundle")
-                cache = source.parent / "cache" / "dataset_cache_794495_mcl100_add.pkl"
-                meta = source.parent / "per_brain" / "794495_meta.json"
-                if change == "replaced_cache":
-                    replacement = cache.with_suffix(".tmp")
-                    replacement.write_bytes(cache.read_bytes())
-                    replacement.replace(cache)
-                elif change == "missing_cache":
-                    cache.unlink()
-                elif change == "missing_meta":
-                    meta.unlink()
-                else:
-                    data = json.loads(meta.read_text())
-                    data.pop("cache_identity")
-                    meta.write_text(json.dumps(data))
-                    if change == "legacy_meta":
-                        manifest = source.parent / "artifact_manifest.json"
-                        data = json.loads(manifest.read_text())
-                        for entry in data["artifacts"]:
-                            if entry["path"] == "per_brain/794495_meta.json":
-                                entry["sha256"] = _sha256_bytes(meta.read_bytes())
-                        manifest.write_text(json.dumps(data))
-                with self.assertRaises(SystemExit):
-                    validate_merge_candidate_policy_sources(source, minimum_site_recall=.8,
-                                                            expected_mcl=100, project_root=root)
-
-    def test_compile_validate_and_tamper_detection(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            source_policy = _write_sweep_bundle(root / "bundle")
-            output = root / "out" / MERGE_CANDIDATE_POLICY_NAME
-
-            report = validate_merge_candidate_policy_sources(
-                source_policy, minimum_site_recall=0.80,
-                expected_mcl=100, project_root=root,
-            )
-            self.assertEqual(
-                report["selected"]["config_id"], "junction|nms=20|r=15")
-
-            policy = compile_merge_candidate_policy(
-                output, source_policy,
-                minimum_site_recall=0.80, positive_label_radius_um=10.0,
-                expected_mcl=100, project_root=root,
-            )
-            self.assertEqual(
-                policy["selected_policy"]["config_id"], "junction|nms=20|r=15")
-            self.assertEqual(
-                policy["selected_policy"]["positive_label_radius_um"], 10.0)
-            self.assertEqual(policy["evidence_metrics"]["total_candidates"], 60)
-            self.assertEqual(policy["evidence_scope"]["mcl"], 100)
-            self.assertEqual(len(policy["provenance"]["cache_evidence"]), 2)
-            self.assertFalse(
-                policy["evidence_scope"]["bridge_candidate_family_evaluated"])
-
-            validate_frozen_merge_candidate_policy(
-                output, source_policy,
-                minimum_site_recall=0.80, positive_label_radius_um=10.0,
-                expected_mcl=100, project_root=root,
-            )
-            runtime, sha = load_runtime_merge_candidate_policy(output)
-            self.assertEqual(runtime["nms_um"], 20)
-            self.assertEqual(runtime["claim_radius_um"], 15)
-            self.assertEqual(len(sha), 64)
-
-            with self.assertRaises(SystemExit):
-                validate_frozen_merge_candidate_policy(
-                    output, source_policy,
-                    minimum_site_recall=0.80, positive_label_radius_um=12.0,
-                    expected_mcl=100, project_root=root,
-                )
-            with self.assertRaises(SystemExit):
-                compile_merge_candidate_policy(
-                    output, source_policy,
-                    minimum_site_recall=0.80, positive_label_radius_um=20.0,
-                    expected_mcl=100, project_root=root,
-                )
-            with self.assertRaises(SystemExit):
-                compile_merge_candidate_policy(
-                    output, source_policy,
-                    minimum_site_recall=0.80, positive_label_radius_um=10.0,
-                    expected_mcl=10, project_root=root,
-                )
-            with self.assertRaises(SystemExit):
-                compile_merge_candidate_policy(
-                    output, source_policy,
-                    minimum_site_recall=0.99, positive_label_radius_um=10.0,
-                    expected_mcl=100, project_root=root,
-                )
-            aggregate = source_policy.parent / "tables" / "cross_dataset_aggregate.csv"
-            aggregate.write_text(
-                AGGREGATE_HEADER + AGGREGATE_ROWS.replace("60", "10"),
-                encoding="utf-8")
-            with self.assertRaises(SystemExit):
-                compile_merge_candidate_policy(
-                    output, source_policy,
-                    minimum_site_recall=0.80, positive_label_radius_um=10.0,
-                    expected_mcl=100, project_root=root,
-                )
 
 
 class MergeSiteAdapterTests(unittest.TestCase):
@@ -490,13 +354,20 @@ class MergeSiteAdapterTests(unittest.TestCase):
         self.assertEqual(audit["n_sites_covered_at_claim_radius"], 3)
         self.assertAlmostEqual(audit["site_recall_at_claim_radius"], 0.75)
 
+        self.assertEqual(audit["candidate_rules_sha256"], rules_sha256())
+        self.assertEqual(audit["candidate_mode"], "junction")
+        self.assertIsNone(audit["candidate_tip_gap_um"])
+        self.assertEqual(audit["n_tip_to_shaft_candidates"], 0)
+        self.assertEqual([s["candidate_family"] for s in samples], ["junction", "junction"])
+
         frame = namespace["sample_output_frame"](samples, labels)
         self.assertEqual(list(frame.columns), [
             "candidate_id", "node_id", "segment_id", "degree",
-            "x_um", "y_um", "z_um",
+            "x_um", "y_um", "z_um", "candidate_family", "tip_gap_um",
             "distance_to_nearest_gt_site_um", "in_ambiguous_ring",
             "is_merge_site",
         ])
+        self.assertTrue(frame["tip_gap_um"].isna().all())
         self.assertEqual(frame["is_merge_site"].tolist(), [1, 0])
 
         display = namespace["sample_display"](samples[0])
@@ -506,6 +377,35 @@ class MergeSiteAdapterTests(unittest.TestCase):
         covariates = namespace["ascertainment_covariates"](payload, samples)
         self.assertEqual(covariates["segment_fragment_node_count"].tolist(),
                          [7.0, 4.0])
+
+    def test_tip_to_shaft_candidate_from_a_nearby_tip(self) -> None:
+        payload = _merge_site_payload()
+        graph = payload["fragments_graph"]
+        # segment 444: path 11-12-13; segment 555: path 14-15 whose tip 14 lies 6 um
+        # from node 12, the middle of 444's shaft
+        graph.add_edges_from([(11, 12), (12, 13), (14, 15)])
+        graph.node_xyz = np.vstack([graph.node_xyz, [
+            [200.0, 0.0, 0.0], [205.0, 0.0, 0.0], [210.0, 0.0, 0.0],
+            [205.0, 6.0, 0.0], [205.0, 40.0, 0.0]]])
+        graph.node_component_id = np.concatenate([graph.node_component_id, [40, 40, 40, 50, 50]])
+        graph.component_id_to_swc_id = {**graph.component_id_to_swc_id, 40: "444.0.swc", 50: "555.0.swc"}
+        policy = merge_rule(nms_um=10.0, claim_radius_um=15.0, positive_label_radius_um=4.0,
+                            tip_gap_um=10.0, tip_partner_k=2)
+        namespace = _adapter_namespace(policy)
+        samples, labels = namespace["build_sample_universe"](payload)
+        self.assertEqual([s["node_id"] for s in samples], [2, 8, 12])
+        shaft = samples[2]
+        self.assertEqual((shaft["candidate_family"], shaft["segment_id"], shaft["degree"]),
+                         ("tip_to_shaft", 444, 2))
+        self.assertAlmostEqual(shaft["tip_gap_um"], 6.0)
+        self.assertEqual(labels.tolist(), [1, 0, 0])
+        audit = namespace["sample_universe_audit"](payload, samples, labels)
+        self.assertEqual(audit["candidate_tip_gap_um"], 10.0)
+        self.assertEqual(audit["candidate_tip_partner_k"], 2)
+        self.assertEqual((audit["n_junction_candidates"], audit["n_tip_to_shaft_candidates"]), (2, 1))
+        # the same graph under the junction-only rule keeps only the junctions
+        junction_only, _ = _adapter_namespace()["build_sample_universe"](_merge_site_payload())
+        self.assertEqual([s["node_id"] for s in junction_only], [2, 8])
 
     def test_enumeration_matches_sweep_implementation(self) -> None:
         """Parity: the runtime adapter and the candidate-pool sweep must keep
@@ -555,13 +455,9 @@ class MergeSiteAdapterTests(unittest.TestCase):
                     "adaptation": "identity",
                 }]}],
             }))
-            policy_path.write_text(json.dumps({
-                "schema_version": 1,
-                "artifact_type": "merge_site_candidate_policy_selection",
-                "application_status": "selected_for_detector_runtime",
-                "selected_policy": dict(MERGE_SITE_POLICY),
-            }) + "\n", encoding="utf-8")
+            write_policy(policy_path, "merge", MERGE_SITE_POLICY)
             template.write_text(
+                "import sys\n"
                 "import numpy as np\n"
                 "from collections import defaultdict\n"
                 "def build_comp_to_seg(graph):\n    return {}\n"
@@ -606,6 +502,9 @@ class MergeSiteAdapterTests(unittest.TestCase):
                 hashlib.sha256(policy_path.read_bytes()).hexdigest(), text)
             self.assertIn("def _nms_kept_junctions", text)
             self.assertIn("class FeatureAccumulator", text)
+            self.assertIn(f"CANDIDATE_RULES_SHA256 = {rules_sha256()!r}", text)
+            vendored = output.with_name("candidate_rules.py")
+            self.assertEqual(vendored.read_bytes(), RULES_PATH.read_bytes())
 
             with self.assertRaisesRegex(
                     SystemExit, "requires merge_candidate_policy"):
@@ -690,7 +589,7 @@ class MergeSiteAdapterTests(unittest.TestCase):
         ])
         inventory = steps[0]["instruction"]
         self.assertIn(MERGE_CANDIDATE_POLICY_NAME, inventory)
-        self.assertIn("JUNCTION-LOCAL", inventory)
+        self.assertIn("CANDIDATE-LOCAL", inventory)
         self.assertIn("SEGMENT-CONTEXT", inventory)
         self.assertIn("two_gt_junction", inventory)
         self.assertIn("not a verified non-merge", inventory)

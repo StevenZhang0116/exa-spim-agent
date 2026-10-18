@@ -1,48 +1,28 @@
 from __future__ import annotations
 
-from collections import defaultdict
 import unittest
 
 import networkx as nx
 import numpy as np
 
 from agentic.detector_build.contracts import DetectorTarget, target_spec
-from agentic.detector_build.target_runtime import target_adapter_source
+from agentic.tests.candidate_rule_fixtures import (
+    POLICY_SHA256 as SPLIT_POLICY_SHA256,
+    adapter_namespace,
+    rules_sha256,
+    split_rule,
+)
 
 
 class _Graph(nx.Graph):
     pass
 
 
-SPLIT_POLICY = {
-    "config_id": "tip_to_any_node|r=50|k=2",
-    "mode": "tip_to_any_node",
-    "radius_um": 50,
-    "per_anchor_k": 2,
-    "global_cap": None,
-}
-SPLIT_POLICY_SHA256 = "a" * 64
+SPLIT_POLICY = split_rule("tip_to_any_node", 50.0, 2)
 
 
 def _adapter_namespace(target: DetectorTarget) -> dict:
-    namespace = {"np": np, "defaultdict": defaultdict}
-
-    def build_comp_to_seg(graph):
-        return {
-            int(component): int(str(swc).split(".")[0])
-            for component, swc in graph.component_id_to_swc_id.items()
-        }
-
-    namespace["build_comp_to_seg"] = build_comp_to_seg
-    kwargs = (
-        {
-            "candidate_policy": SPLIT_POLICY,
-            "candidate_policy_sha256": SPLIT_POLICY_SHA256,
-        }
-        if target is DetectorTarget.SPLIT else {}
-    )
-    exec(target_adapter_source(target, **kwargs), namespace)
-    return namespace
+    return adapter_namespace(target, SPLIT_POLICY if target is DetectorTarget.SPLIT else None)
 
 
 def _fragment_graph(second_segment: int = 2) -> _Graph:
@@ -121,6 +101,7 @@ class DetectorTargetRuntimeTests(unittest.TestCase):
         self.assertEqual(audit["candidate_pairing_rule"], "tip_to_any_node")
         self.assertEqual(audit["candidate_max_distance_um"], 50.0)
         self.assertEqual(audit["candidate_per_anchor_k"], 2)
+        self.assertEqual(audit["candidate_rules_sha256"], rules_sha256())
 
     def test_split_adapter_labels_gap_split(self) -> None:
         gt = _Graph()

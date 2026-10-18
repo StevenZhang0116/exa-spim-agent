@@ -11,7 +11,6 @@ import tempfile
 from pathlib import Path
 
 from .assembly import assemble_detector
-from .candidate_policy import compile_candidate_policy, expected_mcl_from_run_path
 from .contracts import DetectorTarget
 from .inputs import resolve_run_context
 from .inventory import validate_semantic_draft
@@ -41,12 +40,6 @@ def main() -> int:
     semantic.add_argument("--run-json", required=True)
     semantic.add_argument("--target", choices=[t.value for t in DetectorTarget],
                           default=DetectorTarget.MERGE.value)
-
-    candidate_policy = subparsers.add_parser("candidate-policy")
-    candidate_policy.add_argument("--draft", required=True)
-    candidate_policy.add_argument("--review", required=True)
-    candidate_policy.add_argument("--run-json", required=True)
-    candidate_policy.add_argument("--minimum-recall", required=True, type=float)
 
     advice = subparsers.add_parser("model-advice")
     advice.add_argument("--draft", required=True)
@@ -83,17 +76,6 @@ def main() -> int:
             merge_site=args.target == DetectorTarget.MERGE_SITE.value,
             split=args.target == DetectorTarget.SPLIT.value,
         )
-    elif args.kind == "candidate-policy":
-        run_json = _path(args.run_json)
-        with tempfile.TemporaryDirectory(prefix="candidate-policy-validation-") as tmpdir:
-            compile_candidate_policy(
-                _path(args.draft),
-                Path(tmpdir) / "split_candidate_policy.json",
-                _path(args.review),
-                minimum_recall=args.minimum_recall,
-                expected_mcl=expected_mcl_from_run_path(run_json),
-                project_root=PROJECT_ROOT,
-            )
     elif args.kind == "model-advice":
         policy_path = _path(args.policy)
         contract = ModelPolicyContract.from_path(policy_path)

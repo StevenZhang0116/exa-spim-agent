@@ -23,7 +23,7 @@ found five gaps relative to proofreader_evolve:
 
 | Gap | August specs | proofreader_evolve |
 |---|---|---|
-| Candidate set | Free choice: random controls; `tip_to_tip` plus `tip_to_any_node` with free r/k | Fixed pools: merge `junction\|nms=20\|r=150`, split `tip_to_any_node\|r=50\|k=2` |
+| Candidate set | Free choice: random controls; `tip_to_tip` plus `tip_to_any_node` with free r/k | Fixed pools declared in `proofreader_evolve/candidate_pools.json` (2026-10-11: merge `junction\|nms=20\|r=150`, split `tip_to_any_node\|r=50\|k=2`; since 2026-10-16: merge `junction+tip_to_shaft\|nms=20\|gap=20\|k=2\|r=150`, split `tip_to_any_node\|r=80\|k=2`) |
 | Negatives | Every non-positive control counts as 0 (merge specs) | 1 / 0 / NaN; only GT-judgeable rows are 0 |
 | Metric | Set recall/precision, AUC, AP | Precision@K over GT-labeled rows |
 | Firewall | Absolute coordinates allowed as inputs (image specs, split endpoint xyz) | No coordinates or IDs as feature values |
@@ -96,8 +96,9 @@ existing enumeration, label-availability and grouped-fold code (no new logic):
    manifest names (`source_cache.file`), checked against `npz_sha256`, linked into
    the script cwd under every companion name the code uses, and part of the
    checkpoint key.
-4. Partly done: the 802449 companions were exported on 2026-10-14
-   (`markdowns/rerank_companion_802449_{merge,split}.{npz,json}`); the confirmation run
+4. Partly done: the 802449 companions were exported on 2026-10-14 and regenerated for the
+   current pools (split 2026-10-15, merge 2026-10-17;
+   `markdowns/rerank_companion_802449_{merge,split}.{npz,json}`); the confirmation run
    itself (Stage 1 `--extra-pkl` with that companion, logging each confirmed feature's
    code hash and date) has not been made yet.
 5. Deferred: extend the verify step to flag ids and coordinates used as feature

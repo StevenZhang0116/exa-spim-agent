@@ -5,10 +5,10 @@ Run with panda on an allocated compute node (e.g. n257):
 
 Without --brains, the preparation default is 789202 and 794491; include 794495
 explicitly to prepare the current default evolution TRAIN brain. MCL defaults
-to 100, with labeled _add caches and the exact native candidate pools of the
-current default frozen models. The shared merge
-default is autodiscovery-application/merge-error-794495-mcl100_2026-08-04;
-precompute, preflight and evolution all resolve it through precompute_error_scores.
+to 100, with labeled _add caches, the candidate pools declared in candidate_pools.json and
+the default frozen detectors. Precompute, preflight and evolution all resolve the detectors
+through precompute_error_scores (DEFAULT_MERGE_DIR / DEFAULT_SPLIT_DIR, unset since the
+2026-08 detectors were deleted on 2026-10-17 until the new builds exist).
 Each brain runs in a fresh subprocess to release memory before the next.
 Existing matching tables are reused. The first failure stops the script with a
 nonzero exit code. No LLM calls or evolution.

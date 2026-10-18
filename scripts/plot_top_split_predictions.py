@@ -28,13 +28,16 @@ from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 
 try:
+    from scripts.dataset_config import get_cache_img_path
     from scripts.skeleton_plot_util import clipped_edges_in_patch
 except ModuleNotFoundError:
+    from dataset_config import get_cache_img_path
     from skeleton_plot_util import clipped_edges_in_patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_RESULT = ROOT / "autodiscovery-application/split-error-794495-mcl100-run-3_2026-08-24"
+# no default result directory since the 2026-08 detectors were deleted (2026-10-17)
+DEFAULT_RESULT = None
 DEFAULT_SCORE = "split_probability_oof"
 VIEWS = (("XY", 0, (0, 1)), ("XZ", 1, (0, 2)), ("YZ", 2, (1, 2)))
 SIDE_A_COLOR = "#00e5ff"
@@ -294,6 +297,10 @@ def main(argv=None):
                         help="Default: <result_dir>/top_split_predictions")
     parser.add_argument("--dpi", type=int, default=160)
     args = parser.parse_args(argv)
+    if args.result_dir is None:
+        if args.csv is None:
+            parser.error("Specify the detector result directory (or --csv and --pkl)")
+        args.result_dir = args.csv.parent
     if args.dpi < 1 or not all(math.isfinite(size) and size > 0 for size in args.patch_um):
         parser.error("dpi and patch dimensions must be positive")
     csv_path = args.csv
@@ -328,7 +335,7 @@ def main(argv=None):
     from agentic_neuron_proofreader.utils.img_util import TensorStoreImage
 
     os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
-    image = TensorStoreImage(payload["img_path"])
+    image = TensorStoreImage(get_cache_img_path(pkl_path, payload))
     manifest = []
     for rank, prediction in enumerate(predictions, 1):
         figure, record = render_prediction(

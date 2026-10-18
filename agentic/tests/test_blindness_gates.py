@@ -19,7 +19,6 @@ from __future__ import annotations
 import ast
 import tempfile
 import unittest
-from collections import defaultdict
 from pathlib import Path
 
 import networkx as nx
@@ -28,7 +27,6 @@ import numpy as np
 from agentic.detector_build.assembly import _validate_feature_no_gt_access
 from agentic.detector_build.contracts import DetectorTarget
 from agentic.detector_build.inputs import report_evidence_by_id
-from agentic.detector_build.target_runtime import target_adapter_source
 
 REPO = Path(__file__).resolve().parent.parent.parent
 TEMPLATE = (REPO / "agentic" / "detector_build" / "templates"
@@ -191,20 +189,9 @@ class _Graph(nx.Graph):
 
 
 def _adapter_namespace(target: DetectorTarget) -> dict:
-    namespace = {"np": np, "defaultdict": defaultdict}
-
-    def build_comp_to_seg(graph):
-        return {
-            int(component): int(str(swc).split(".")[0])
-            for component, swc in graph.component_id_to_swc_id.items()
-        }
-
-    namespace["build_comp_to_seg"] = build_comp_to_seg
-    kwargs = ({"candidate_policy": SPLIT_POLICY,
-               "candidate_policy_sha256": "a" * 64}
-              if target is DetectorTarget.SPLIT else {})
-    exec(target_adapter_source(target, **kwargs), namespace)  # noqa: S102
-    return namespace
+    from agentic.tests.candidate_rule_fixtures import adapter_namespace, split_rule
+    return adapter_namespace(target, split_rule("tip_to_any_node", 50.0, 2)
+                             if target is DetectorTarget.SPLIT else None)
 
 
 def _payload() -> dict:

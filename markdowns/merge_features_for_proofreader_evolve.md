@@ -15,9 +15,10 @@ Its URI and level geometry are in the companion `.json`.
 
 This task is about **merge errors only**. The document has three parts: §1 what the
 data is, §2 what to do with it and how it is judged, §3 the schema of each file.
-Revised 2026-10-15: tie-aware average precision with corrected baseline figures and
-reporting rules for differences and subgroups (Evaluation), fewer constraints on what
-to explore (Goal, Evaluation, Firewall); the previous text is archived.
+Revised 2026-10-17: the candidate pool adds a second family, tip-to-shaft candidates
+(§1), and the labels follow a corrected labeling of the cache; every count and
+baseline figure is recomputed from the new companion, results are also reported per
+family, and the labeled-share check compares with the degree baseline (Evaluation).
 
 ---
 
@@ -36,13 +37,35 @@ with other material. The fix is to cut the segment at the merge site.
 
 ### Candidates are fixed
 
-The companion lists every merge candidate, enumerated by a fixed geometric rule
+The companion lists every merge candidate, enumerated by fixed geometric rules
 from `fragments_graph` alone (no GT, no trained model). The rule text is in the
-companion `.json` (`candidate_rule`).
+companion `.json` (`candidate_rule`). Each candidate is one fragment node; the column
+`candidate_family` names the rule that produced it:
 
-A candidate is a *junction*: a fragment node of degree >= 3 on a valid segment.
-Greedy non-maximum suppression, in order (-degree, node id), removes same-segment
-junctions within 20 um (Euclidean).
+- `junction`: a node of degree >= 3 on a valid segment. Greedy non-maximum
+  suppression, in order (-degree, node id), removes same-segment junctions within
+  20 um (Euclidean).
+- `tip_to_shaft`: a node of degree 2 (a point on an unbranched stretch, a "shaft")
+  that a free end of another segment approaches. Every degree-1 node (a tip) is
+  paired with the nearest node of each of its two nearest other segments; a paired
+  node that is not itself a tip and lies within 20 um of the tip becomes a
+  candidate, and the smallest such distance is its `tip_gap_um`. Shaft candidates
+  within 20 um of a kept junction of the same segment are dropped; the rest are
+  suppressed within 20 um of each other on the same segment, in order (gap, node id).
+
+The second rule exists because a merge does not always leave a branch point: two
+neurites fused side by side form an unbranched shaft.
+
+| Family | Rows | Label 1 | Label 0 | NaN |
+|---|---|---|---|---|
+| `junction` | 58,120 | 141 | 6,869 | 51,110 |
+| `tip_to_shaft` | 134,057 | 5 | 2,730 | 131,322 |
+| all | 192,177 | 146 | 9,599 | 182,432 |
+
+Tip-to-shaft rows are 70% of all rows but 28% of the labeled rows, and hold 5 of the
+146 positives in this brain. Every feature still needs a value for them, or NaN where
+it is undefined (for example a quantity that needs three branches). A feature that
+only tells the two families apart repeats the degree baseline (Evaluation).
 
 Use exactly these candidates, in companion row order. Do not add, drop or re-enumerate
 candidates; features that only exist on a different candidate set cannot be used.
@@ -55,15 +78,17 @@ they are errors. The companion `label` column is:
 | Value | Meaning |
 |---|---|
 | `1` | error: within 20 um of fragment cable (geodesic) from a GT merge site, after snapping the site to the nearest node of its own segment within 50 um |
-| `0` | GT can judge the candidate and it is not an error: the segment carries a GT label and the junction is within 150 um of a GT node |
+| `0` | GT can judge the candidate and it is not an error: the segment carries a GT label and the candidate is within 150 um of a GT node |
 | `NaN` | GT cannot judge it: no traced neuron nearby. **Unknown, not "no error."** |
 
-For this brain: 58,120 candidates; label 1: 128; label 0: 6,882; NaN: 51,110.
+For this brain: 192,177 candidates; label 1: 146; label 0: 9,599; NaN: 182,432
+(per family above).
 
 Precision and AP use labeled rows only (label 1 or 0); the one check that looks at
 unlabeled rows is described under Evaluation. Never treat NaN as 0: a NaN
-row next to no traced neuron says nothing about errors. Positives are rare (about
-1.8% of labeled rows), so the top of the ranking matters most.
+row next to no traced neuron says nothing about errors. Positives are rare (1.5% of
+labeled rows: 2.0% of the labeled junctions, 0.18% of the labeled tip-to-shaft rows),
+so the top of the ranking matters most.
 
 Merge labels are conservative: some real merges are not flagged. A labeled-0
 candidate is GT-judgeable but may occasionally be a missed merge.
@@ -81,7 +106,7 @@ segmentation is not available and is not needed.
 
 ### Goal
 
-Discover measurable, GT-blind properties of a junction that put true merges ahead
+Discover measurable, GT-blind properties of a candidate that put true merges ahead
 of non-merges, among the candidates whose label GT can decide. Each property is a
 **feature**: one deterministic value for every companion row.
 
@@ -116,7 +141,7 @@ Two tested pieces for local features: a fragment neighbourhood and a raw-image
 patch around a candidate, combined into a `context` dictionary. They are optional:
 a feature may use any allowed input (see Feature definition).
 
-**Anchor.** `[node_id]` of the junction.
+**Anchor.** `[node_id]` of the candidate (the junction or the shaft node).
 
 **Fragment neighbourhood** (radius 50 um, at most 256 nodes):
 
@@ -143,8 +168,8 @@ def neighbourhood(frag, anchors, radius_um=50.0, max_nodes=256):
             "truncated": any(n not in remap for _, n in near)}, center
 ```
 
-- Coordinates are relative to the junction.
-- Segment ids are local (0, 1, ...): the junction's segment is 0.
+- Coordinates are relative to the candidate.
+- Segment ids are local (0, 1, ...): the candidate's segment is 0.
 - Edges are the induced subgraph, so a truncated neighbourhood can cut branches.
 
 **Image patches.** Two tiers from the fused volume in the manifest (`image.uri`,
@@ -159,7 +184,7 @@ Graph coordinates are world microns, and `voxel = (world - translation) / scale`
 x, y, z order, reversed to z, y, x for array indexing.
 
 The patch:
-- is centred on the junction;
+- is centred on the candidate;
 - has an extent per axis of `max(2 * half_width / scale, ptp(anchor voxels) + 16 um / scale)`
   voxels, rounded up and at least 3 (with one anchor, `ptp` is 0, so this is
   `2 * half_width / scale`);
@@ -225,7 +250,7 @@ context = {
     "image_available": bool,                 # False if the read failed or the patch is empty
     "image_zyx": np.ndarray,                 # raw fluorescence, original values (no normalization)
     "valid_zyx": np.ndarray(bool),           # True where the voxel is inside the volume
-    "anchors_zyx": np.ndarray (2, 3),        # row 0: junction voxel centre in patch coordinates; row 1: NaN
+    "anchors_zyx": np.ndarray (2, 3),        # row 0: candidate voxel centre in patch coordinates; row 1: NaN
     "spacing_zyx_um": np.ndarray (3,),       # voxel size, z, y, x
     "level": 0 or 1,
     "image_radius_um": 16.0 or 30.0,
@@ -255,8 +280,9 @@ def make_context(frag, comp, i, array=None, manifest=None, level=0):
 - the whole `fragments_graph`: any node, edge, segment or graph-level structure
   (lengths, branching, orientation, radii, neighbouring segments), at any distance
   from the candidate;
-- the candidate columns of the companion that are not labels: `degree`. Node and
-  segment ids may be used to *look up* graph elements;
+- the candidate columns of the companion that are not labels: `degree`,
+  `candidate_family` and `tip_gap_um`. Node and segment ids may be used to *look up*
+  graph elements;
 - the raw image from the manifest URI, at any level and location.
 
 Everything else is excluded (see Firewall and validity checks).
@@ -267,13 +293,13 @@ never drop or reorder rows. The same inputs must give identical values.
 
 **State the definition precisely**, because the feature will be re-implemented in a
 detector from your code and your description:
-- **its scope**: a property of the junction itself (candidate scope), or of its
-  whole segment (segment scope: the same value for every junction of that
+- **its scope**: a property of the candidate itself (candidate scope), or of its
+  whole segment (segment scope: the same value for every candidate of that
   segment);
 - **the formula** with its constants (radii, thresholds, image level and patch
   size).
 
-**Cost.** It must be computable for every row of a brain (58,120 rows here) within
+**Cost.** It must be computable for every row of a brain (192,177 rows here) within
 hours: share preprocessing across rows (one pass over segments, a KD-tree built
 once, one image read per candidate) and never scan the whole graph per row. Report
 the wall time.
@@ -296,7 +322,7 @@ what its numbers were computed from.
 labeled candidates, what fraction are merges? NaN rows never enter a ranking.
 
 Compute this **out of fold** with the companion folds. They are label-free groups by
-segment, so junctions of one segment never straddle training and evaluation:
+segment, so candidates of one segment never straddle training and evaluation:
 - **One feature alone**: choose its direction (higher or lower = more merge-like)
   on the fitting rows of each fold, then rank the held-out fold's labeled rows by it.
 - **A model of several features**: for fold `f`, fit on rows with
@@ -357,6 +383,8 @@ Report for each feature and for the model:
   a handful of hits;
 - the average precision of the out-of-fold scores (all folds pooled);
 - per-fold values;
+- AP and precision within each family, with its labeled-row and positive counts
+  (subgroup figures, see below);
 - the same numbers for the baselines below;
 - a paired bootstrap 95% interval of the **difference in average precision to the
   degree baseline** (not to the random rate, and not a difference in ROC-AUC):
@@ -364,19 +392,23 @@ Report for each feature and for the model:
   for both scores.
 
 All of these are computed on the whole labeled set. A number computed on a subset
-of rows (one fold, one degree value, one region) must carry the subset's row and
-positive counts next to it and is not evidence on its own: a stratum of 20 rows
-with 5 positives gives even a random score an AP far above the 0.027 of the whole
-set.
+of rows (one fold, one family, one degree value, one region) must carry the subset's
+row and positive counts next to it and is not evidence on its own: the 20 labeled
+degree-4 rows hold 5 positives, so any score gives them an AP far above the 0.015
+random rate of the whole set, and the tip-to-shaft family has 5 positives among
+2,735 labeled rows, too few to judge a feature on that family alone in this brain.
 
-**Labeled versus unlabeled rows.** Only 7,010 of 58,120 rows are labeled (12.1%),
-and they are not a random sample: they lie on or near traced neurons. The ranking that is
-finally used covers all rows, and nothing above shows what a feature does to the
-unlabeled ones. For each feature, also report:
-- `labeled_share_at_fraction` at 1%, 5% and 20% of all rows, next to the overall
-  labeled share (12.1%): a feature that fills the top of the full ranking with
-  unlabeled rows, or only with labeled ones, behaves differently off the traced
-  neurons;
+**Labeled versus unlabeled rows.** Only 9,745 of 192,177 rows are labeled (5.1%):
+12.1% of the junction rows and 2.0% of the tip-to-shaft rows. They are not a random
+sample: they lie on or near traced neurons. The ranking that is finally used covers
+all rows, and nothing above shows what a feature does to the unlabeled ones. For each
+feature, also report:
+- `labeled_share_at_fraction` at 1%, 5% and 20% of all rows, next to the degree
+  baseline's at the same fractions (below), and within each family next to that
+  family's overall share. Junctions are labeled six times as often as tip-to-shaft
+  rows, so any score that ranks junctions first already fills its top with about 12%
+  labeled rows; a feature that fills the top of the full ranking with unlabeled rows,
+  or only with labeled ones, behaves differently off the traced neurons;
 - how its distribution differs between labeled and unlabeled rows (for example the
   two-sample Kolmogorov-Smirnov statistic and the medians).
 
@@ -384,35 +416,37 @@ Flag every feature whose labeled and unlabeled distributions differ strongly; it
 measure "how traced-neuron-like" a candidate is rather than whether it is an error.
 
 **Baselines (compute them yourself from the data; the figures below are what the
-companion of 2026-10-13 gives with the scoring code above, and must be recomputed
+companion of 2026-10-17 gives with the scoring code above, and must be recomputed
 when the companion changes):**
 - **Random ranking**: its precision equals the share of label 1 among labeled rows,
-  0.018 here (128 of 7,010).
-- **Junction degree** (higher ranked first). 58,047 of the 58,120 candidates have
-  degree 3, 72 have degree 4 and one has degree 5; the few with degree >= 4 are
-  enriched in merges, so degree helps only at the very top: out-of-fold AP 0.027
-  (folds 0.020 / 0.035 / 0.038); precision 7/70 at 1%, 8/175 at 2.5%, 11/351 at 5%,
-  14/700 at 10%, 18/1,051 at 15%, 34/1,403 at 20%. Its top 1% of all rows holds 17%
-  labeled rows against 12% overall. Degree ties 6,990 of the 7,010 labeled rows; an
-  AP that credits the row order inside those ties (a plain stable sort) comes out
-  at 0.044, the tie-aware `average_precision` above gives 0.027, and 0.027 is the
-  figure to beat.
+  0.015 here (146 of 9,745).
+- **Degree** (higher ranked first). Every tip-to-shaft row has degree 2 and every
+  junction degree >= 3 (58,047 of degree 3, 72 of degree 4, one of degree 5), so
+  degree ranks all junctions before all tip-to-shaft rows and the few junctions of
+  degree >= 4 first; both orders are enriched in merges. Out-of-fold AP 0.028 (folds
+  0.020 / 0.024 / 0.052); precision 7/97 at 1%, 11/244 at 2.5%, 13/487 at 5%, 19/974
+  at 10%, 39/1,461 at 15%, 49/1,950 at 20%. Its top 1%, 5% and 20% of all rows hold
+  18.1%, 12.3% and 10.2% labeled rows against 5.1% overall. Degree takes only three
+  values among the labeled rows (2, 3, 4), so every labeled row is tied; the
+  tie-aware `average_precision` above gives 0.028, and 0.028 is the figure to beat.
 - **Segment cable length** (total edge length of the candidate's segment, direction
-  chosen on the fitting rows) is **not** a usable baseline: AP 0.017, 0/70 at 1%,
-  13/1,403 at 20%. Labeled junctions sit on long segments (median 10,796 um against
-  730 um for all candidates), so 99% of its top 1% of all rows are labeled rows: it
-  measures how traced-neuron-like a candidate is, not whether it is a merge. Keep it
-  as the worked example of the availability proxy the Firewall excludes.
+  chosen on the fitting rows) is **not** a usable baseline: AP 0.017, 4/97 at 1%,
+  30/1,950 at 20%. Labeled candidates sit on long segments (median 6,973 um against
+  346 um for all candidates), so 54% of its top 1% of all rows are labeled rows, against
+  18% for degree and 5.1% overall: it measures how traced-neuron-like a candidate is,
+  not whether it is a merge. Keep it as the worked example of the availability proxy
+  the Firewall excludes.
 
 Use degree as the baseline. With degree near the random rate, almost any
 informative quantity will beat it, so beating it is necessary but not sufficient.
 A feature counts as found when the paired-bootstrap interval of its out-of-fold
 increment in AP over degree lies above zero, alone or in the two-column model
 (degree plus the feature), and the labeled share at the top of its full ranking
-stays near the overall 12%: a feature whose top 1% of all rows is mostly labeled
-rows is doing what cable length does and is a negative result. With 128 positives,
-precision at 1% is 70 ranked rows and a few hits, and one fold can carry a third of
-the positives: judge mainly by the AP and its interval, and report per-fold values.
+stays near the degree baseline's (and, within each family, near that family's
+share): a feature whose top 1% of all rows is mostly labeled rows is doing what cable
+length does and is a negative result. With 146 positives, precision at 1% is 97
+ranked rows and a few hits, and one fold can carry 40% of the positives: judge mainly
+by the AP and its interval, and report per-fold values.
 What to measure is yours to find; report how many variants you compared.
 
 ### Firewall and validity checks
@@ -440,8 +474,8 @@ What to measure is yours to find; report how many variants you compared.
   code reads: a quantity computed from graph geometry is not an image feature, and
   a "contrast" or "intensity" whose code never touched the image is substituted
   data.
-- **Implausible results are bugs until proven otherwise.** With 128 positives
-  among 7,010 labeled rows, honest features move the average precision by
+- **Implausible results are bugs until proven otherwise.** With 146 positives
+  among 9,745 labeled rows, honest features move the average precision by
   hundredths. An out-of-fold AP above 0.9, a gain above 0.3 or perfect precision
   at every fraction has so far come only from leaked or substituted inputs;
   re-check the input path and the firewall before reporting such a number.
@@ -459,7 +493,7 @@ interpretation), so it can be re-run on its own. For each feature you keep:
 3. an evidence record:
    - the hypothesis in one or two sentences, from your Phase 1 observations;
    - out-of-fold precision at 1/2.5/5/10/15/20% with hit counts, and AP, with
-     per-fold values and baselines;
+     per-fold values, per-family values (with counts) and baselines;
    - bootstrap interval of the AP difference to degree, and the increment of the
      two-column model (degree plus the feature) over degree alone with its
      interval;
@@ -537,7 +571,7 @@ Node ids are contiguous integers `0..N-1`, the same ids as in the companion.
 
 ### 3.2 `rerank_companion_794495_merge.npz`
 
-58,120 rows, one per junction. Load with
+192,177 rows, one per candidate. Load with
 `comp = dict(np.load(path, allow_pickle=False))`. The `dict(...)` matters: indexing
 an open `np.load` file decompresses the whole column on every access, so row-by-row
 reads become extremely slow. Row `i` of every column describes candidate `i`.
@@ -548,9 +582,11 @@ reads become extremely slow. Row `i` of every column describes candidate `i`.
 | `label` | float64 | 1 / 0 / NaN (§1) |
 | `fold` | int8 | out-of-fold group 0, 1 or 2; label-free, grouped by segment |
 | `fit_mask_fold0..2` | bool | rows usable for fitting when that fold is held out |
-| `segment_id`, `node_id` | int64 | the junction node and its segment |
-| `degree` | int16 | junction degree |
-| `x_um`, `y_um`, `z_um` | float64 | junction position, world microns |
+| `segment_id`, `node_id` | int64 | the candidate node and its segment |
+| `degree` | int16 | node degree in `fragments_graph`: 2 for every tip-to-shaft row, >= 3 for junctions |
+| `candidate_family` | `<U12` | `junction` or `tip_to_shaft` (§1) |
+| `tip_gap_um` | float64 | tip-to-shaft rows: distance in um from the shaft node to the nearest tip that made it a candidate (at most 20); NaN for junctions |
+| `x_um`, `y_um`, `z_um` | float64 | candidate position, world microns |
 
 IDs and coordinates are for **locating** a candidate in `fragments_graph` and in
 the image only.
@@ -563,10 +599,12 @@ The manifest of §3.2:
 |---|---|
 | `version`, `created`, `brain`, `kind`, `mcl` | identity of the export |
 | `rows`, `label_counts`, `labeled_rows` | row count and counts of 1 / 0 / NaN |
-| `candidate_rule`, `candidate_policy` | the candidate and label rules as text, and their short code |
+| `candidate_rule`, `candidate_policy` | the candidate and label rules as text, and their short code (`junction+tip_to_shaft|nms=20|gap=20|k=2|r=150`) |
+| `candidate_policy_source`, `detector_candidate_policy`, `export_mode` | provenance of the rule and of the file; not needed for the task |
 | `label_availability` | which rows GT can judge (`definition`: `near_gt_150`) |
 | `folds` | number of folds, grouping (`fragment`), fit-mask meaning, partition digest |
 | `source_cache` | file name and byte size of the pkl these rows come from |
 | `image` | `uri` of the fused OME-Zarr, access notes, `graph_to_world` (identity), and `levels`: per zarr level, `scale_xyz_um` and `translation_xyz_um` |
 | `columns` | column names and dtypes of the `.npz` |
+| `identity_columns_note` | reminder that ids and coordinates locate candidates only and are never feature inputs |
 | `pool_sha256`, `labels_sha256`, `npz_sha256` | digests of the candidate pool, the labels and the `.npz` file |

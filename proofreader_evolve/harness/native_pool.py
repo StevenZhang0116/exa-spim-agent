@@ -1,13 +1,14 @@
-"""Immutable detector-native candidate pools for scorer evolution.
+"""Immutable candidate pools for scorer evolution, scored by the frozen detectors.
 
-The frozen detector's universe builder is the single source of candidate enumeration
-AND evaluator labels; it runs only in the trusted preparation process. The rule it
-enumerates with is the benchmark's declaration in ``candidate_pools.json`` (applied to
-the runtime through ``candidate_pools.apply_pool_policy``) or, for a null entry, the
-rule embedded in the detector. The applied rule is part of the table provenance.
-Only whitelisted geometric rows enter extraction; GT labels/audit fields are
-stored separately and never passed to a scorer. No repair-site conversion,
-occurrence truncation, geometry cap, post-edit enumeration, or fitting occurs.
+Candidate rows and evaluator labels come from ``candidate_rules.py`` under the rule declared
+in ``candidate_pools.json`` (since 2026-10-16; before, the detector's own universe builder
+enumerated them). Enumeration runs only in the trusted preparation process. A frozen
+detector then computes its features and score for exactly these rows; whether its own
+embedded rule matches the declaration is recorded (``detector_rule_matches``), not required.
+The applied rule and the module's SHA-256 are part of the table provenance. Only whitelisted
+geometric rows enter extraction; GT labels/audit fields are stored separately and never
+passed to a scorer. No repair-site conversion, occurrence truncation, geometry cap,
+post-edit enumeration, or fitting occurs.
 """
 
 from dataclasses import dataclass
@@ -25,14 +26,11 @@ from . import candidate_pools
 from .detector_metadata import inference_metadata
 
 
-POOL_VERSION = "detector-native-v2"  # v2 (2026-10-15): the applied pool policy is part of the provenance
-SAFE_KEYS = {
-    "merge": ("candidate_id", "node_id", "segment_id", "degree", "x_um", "y_um", "z_um"),
-    "split": ("candidate_id", "segment_id_a", "segment_id_b", "node_id_a", "node_id_b",
-              "gap_um", "anchor_side", "partner_rank", "node_role_a", "node_role_b"),
-}
-OCCURRENCE_KEYS = ("node_id_a", "node_id_b", "gap_um", "anchor_side", "partner_rank",
-                   "node_role_a", "node_role_b")
+# v2 (2026-10-15): the applied pool policy is part of the provenance.
+# v3 (2026-10-16): rows from candidate_rules.py; merge rows carry candidate_family and tip_gap_um.
+POOL_VERSION = "detector-native-v3"
+SAFE_KEYS = dict(candidate_pools.rules().GEOMETRY_FIELDS)
+OCCURRENCE_KEYS = tuple(candidate_pools.rules().OCCURRENCE_FIELDS)
 
 
 def cache_path(brain, mcl=100):
@@ -88,45 +86,53 @@ def build_native_universe(payload, kind, module, pool_policy=None):
 
     The single enumeration path shared by ``build_native_table`` and the pool-only
     companion export (``cli.export_rerank_companion --pool-only``), so both produce the
-    same rows and therefore the same ``pool_sha256``. ``pool_policy`` (a
-    ``candidate_pools`` entry) replaces the detector's embedded candidate rule while the
-    universe is built; None keeps the detector's rule. Returns ``(rows, truth, meta)``.
+    same rows and therefore the same ``pool_sha256``. Rows come from ``candidate_rules``
+    under ``pool_policy`` (a ``candidate_pools`` entry; None means the declared one).
+    ``module`` is the detector that will score the rows: its target must match ``kind`` and
+    its own embedded rule is recorded next to the applied one. ``module=None`` (the companion
+    export, which needs no detector) records no detector rule. Returns ``(rows, truth, meta)``.
     """
     target = "merge_site_detection" if kind == "merge" else "split_detection"
-    if module.DETECTOR_TARGET != target:
+    if module is not None and module.DETECTOR_TARGET != target:
         raise ValueError(f"Fixed-pool {kind} requires {target}, got {module.DETECTOR_TARGET}")
-    # Do not reuse sample caches supplied by other detectors or earlier policies.
+    rule = candidate_pools.validate_policy(
+        kind, candidate_pools.load_pool_policies()[kind] if pool_policy is None else pool_policy)
+    # Never reuse sample caches supplied by a detector or an earlier rule.
     source = {k: v for k, v in payload.items() if not k.startswith("__detector_")}
+    rows, truth = candidate_pools.rules().build_universe(kind, source, rule)
+    rules_sha256 = candidate_pools.rules_sha256()
     detector_policy = {"candidate_policy": getattr(module, "CANDIDATE_POLICY_CONFIG_ID", None),
-                       "candidate_policy_sha256": getattr(module, "CANDIDATE_POLICY_SHA256", None)}
-    if pool_policy is None:
-        rows, truth = module.build_sample_universe(source)
-        applied = {**detector_policy, "candidate_policy_source": "detector"}
-    else:
-        with candidate_pools.apply_pool_policy(module, pool_policy):
-            rows, truth = module.build_sample_universe(source)
-        applied = {"candidate_policy": pool_policy["config_id"],
-                   "candidate_policy_sha256": candidate_pools.policy_digest(pool_policy),
-                   "candidate_policy_source": "candidate_pools.json"}
+                       "candidate_policy_sha256": getattr(module, "CANDIDATE_POLICY_SHA256", None),
+                       "candidate_rules_sha256": getattr(module, "CANDIDATE_RULES_SHA256", None)}
     safe = blind_rows(kind, rows)
     keys = candidate_keys(kind, safe)
     truth = np.asarray(truth)
     if truth.shape != (len(safe),) or not np.isin(truth, [0, 1]).all():
         raise ValueError("Native evaluator labels must be aligned binary labels")
-    meta = {"pool_sha256": pool_digest(kind, safe), "rows": len(keys), **applied,
+    meta = {"pool_sha256": pool_digest(kind, safe), "rows": len(keys),
+            "candidate_policy": rule["config_id"], "candidate_rule": rule,
+            "candidate_policy_sha256": candidate_pools.policy_digest(kind, rule),
+            "candidate_policy_source": "candidate_pools.json", "candidate_rules_sha256": rules_sha256,
             "detector_candidate_policy": detector_policy["candidate_policy"],
-            "detector_candidate_policy_sha256": detector_policy["candidate_policy_sha256"]}
+            "detector_candidate_policy_sha256": detector_policy["candidate_policy_sha256"],
+            "detector_candidate_rules_sha256": detector_policy["candidate_rules_sha256"],
+            "detector_rule_matches": (None if module is None else
+                                      bool(detector_policy["candidate_policy"] == rule["config_id"]
+                                           and detector_policy["candidate_rules_sha256"] == rules_sha256))}
     return safe, truth.astype(np.int8), meta
 
 
 def build_native_table(payload, kind, module, bundle, pool_policy=None):
     """Native universe and native feature aggregation, not evolution approximations.
 
-    ``pool_policy`` (``candidate_pools`` entry) replaces the detector's embedded
-    candidate rule while the universe is built; None keeps the detector's rule.
+    Rows come from ``candidate_rules`` under ``pool_policy`` (None means the declared rule);
+    the detector computes features and its score for exactly these rows.
     """
     from proofreader_evolve.cli import precompute_error_scores as pc
     safe, truth, universe_meta = build_native_universe(payload, kind, module, pool_policy)
+    if not universe_meta["detector_rule_matches"]:
+        pc.log(f"[{kind}] note: the detector was built with {universe_meta['detector_candidate_policy']}; "
+               f"it scores rows of the declared rule {universe_meta['candidate_policy']}")
     # Keep feature input separate even though the trusted universe builder above
     # used annotations to attach evaluator-only labels after geometric selection.
     working = {"fragments_graph": payload["fragments_graph"], **inference_metadata(payload)}
@@ -190,7 +196,8 @@ def ensure_native_tables(brain, source_path, selected, tables_dir, prepare=False
                       "training": training, "pool_policy": pool_policies[kind],
                       "source_cache": identity, "detector": record, "kind": kind,
                       "implementation": {str(path.name): pc._sha256(path) for path in
-                          (Path(__file__), Path(pc.__file__), Path(__file__).with_name("detector_metadata.py"))}}
+                          (Path(__file__), Path(pc.__file__), Path(__file__).with_name("detector_metadata.py"),
+                           candidate_pools.RULES_PATH)}}
         digest = hashlib.sha256(json.dumps(provenance, sort_keys=True).encode()).hexdigest()
         directory = Path(tables_dir) / brain / digest
         plans.append((kind, record, provenance, directory))

@@ -82,7 +82,7 @@ class PlotGtMergeSitesTests(unittest.TestCase):
     def test_cli_saves_k_distinct_figures_without_changing_cache(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            cache = root / "dataset_cache_794495_mcl100_add.pkl"
+            cache = root / "dataset_cache_111111_mcl100_add.pkl"   # no alignment review: cache img_path
             graph = FakeGraph()
             data = {"fragments_graph": graph, "gt_graph": graph, "anisotropy": [2., 3., 1.],
                     "gt_merge_sites": [site(), site(), site((12., 12., 4.), segment_id=222)],
@@ -90,7 +90,7 @@ class PlotGtMergeSitesTests(unittest.TestCase):
             cache.write_bytes(pickle.dumps(data))
             before = hashlib.sha256(cache.read_bytes()).digest()
             output = root / "plots"
-            argv = ["--brain-id", "794495", "--k", "5", "--cache-dir", str(root),
+            argv = ["--brain-id", "111111", "--k", "5", "--cache-dir", str(root),
                     "--output-dir", str(output), "--dpi", "50", "--patch-um", "12", "18", "6"]
             log = io.StringIO()
             with patch.object(plotter, "open_image", return_value=ArrayImage()) as image, \

@@ -1,7 +1,8 @@
 """Prepare immutable detector-native tables from trusted labeled _add.pkl caches.
 
 Exactly one frozen merge-junction detector and one split-site detector are used.
-Their own universe and feature code define the pool; no fitting or graph edits.
+The pool is the rule declared in candidate_pools.json, enumerated by candidate_rules.py;
+the detectors compute features and scores for its rows; no fitting or graph edits.
 Run in panda on a compute node. Tables bind source/model/code provenance and
 separate predictor features from evaluator labels. Existing matching tables are
 reused; corrupt or mismatched tables are never silently replaced.
@@ -26,8 +27,10 @@ from proofreader_evolve.harness import dataset as ds
 HERE = Path(__file__).resolve().parents[1]
 DEFAULT_OUT = HERE / "feature_tables"
 APP_DIR = PROJECT_ROOT / "autodiscovery-application"
-DEFAULT_MERGE_DIR = APP_DIR / "merge-error-794495-mcl100_2026-08-04"
-DEFAULT_SPLIT_DIR = APP_DIR / "split-error-794495-mcl100-run-3_2026-08-24"
+# Default frozen detectors (a directory under APP_DIR). None since 2026-10-17: the 2026-08
+# detectors were deleted; set these to the new builds (rebuild plan, section 3 step 4).
+DEFAULT_MERGE_DIR = None
+DEFAULT_SPLIT_DIR = None
 
 
 def log(msg: str) -> None:
@@ -166,6 +169,10 @@ def resolve_detector_runs(merge_dirs=None, split_dirs=None):
     selected = {}
     for kind, directories, default in (("merge", merge_dirs, DEFAULT_MERGE_DIR),
                                        ("split", split_dirs, DEFAULT_SPLIT_DIR)):
+        if directories is None and default is None:
+            raise SystemExit(f"No default frozen {kind} detector: pass --{kind}-dir, or set "
+                             f"DEFAULT_{kind.upper()}_DIR in proofreader_evolve/cli/precompute_error_scores.py "
+                             "once the new detectors are built")
         directories = [default] if directories is None else list(directories)
         if len(directories) != 1:
             raise ValueError(f"Exactly one {kind} detector run is required")

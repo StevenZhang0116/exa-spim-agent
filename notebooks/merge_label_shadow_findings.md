@@ -131,7 +131,8 @@ section 2.
 
 ## 4. Downstream impact (stage 3)
 
-`scripts/shadow_merge_impact.py` rebuilds the frozen merge detector's candidate universe
+`scripts/shadow_merge_impact.py` (deleted 2026-10-17 with the 2026-08 detector it needed;
+the numbers below stay as recorded) rebuilt the frozen merge detector's candidate universe
 and labels with the detector's own `build_sample_universe`. The detector is
 `merge-error-794495-mcl100_2026-08-04` with policy `junction|nms=20|r=150` (positive =
 geodesic ≤ 20 µm). It runs once with stored sites and once with scaled sites, and scores
@@ -192,7 +193,7 @@ Interpretation:
 conda activate panda   # compute node, from exa-spim-agent/
 python -u notebooks/verify_add_cache_merge_info.py --all --mcl 100
 python -u scripts/shadow_merge_relabel.py --all --check-reproduce
-python -u scripts/shadow_merge_impact.py --brains 789202 794491 794493 794495 802449
+python -u scripts/shadow_merge_impact.py --brains 789202 794491 794493 794495 802449   # deleted 2026-10-17
 ```
 
 Outputs (gitignored):
@@ -240,7 +241,9 @@ they are not. `notebooks/merge_canonical_gap.py` measures both gaps against the 
 sites themselves (cache gap: Euclidean distance to the nearest cache site; candidate gap:
 the detector's own rule, snap the site to its segment within 50 um, geodesic cable distance
 to the nearest junction candidate of the proofreader_evolve merge table). Results in
-`notebooks/merge_canonical_gap/summary.csv` and `notebooks/merge_canonical_gap/merge_canonical_gap.svg`:
+`notebooks/merge_canonical_gap/summary.csv` and `notebooks/merge_canonical_gap/merge_canonical_gap.svg`
+(those files now hold later reruns: the relabeled caches on 2026-10-15 and the declared
+`junction+tip_to_shaft` pool on 2026-10-17; the table below is the 2026-10-14 measurement):
 
 | Brain | Canonical sites | Cache site within 50 um | Candidate within 20 um | Candidate within 150 um | Candidate within 20 um of a cache site (sweep measure) |
 |---|---|---|---|---|---|
@@ -324,10 +327,12 @@ sites at 20 um and 89% at 150 um, so new candidate families compete for the rema
    against 82 to 87% positive (<= 20 um). Raising the positive radius to 40 or 50 um may
    lift coverage into the high eighties at the cost of coarser localization and noisier
    labels. For the stored labels the whole radius series (5 to 150 um, nms 0 / 10 / 20)
-   is already in `notebooks/merge_candidate_pool_sweep_outputs_with_oldscope/`
+   was in `notebooks/merge_candidate_pool_sweep_outputs_with_oldscope/`
    `mcl100_dcbde4ab2a6f6c44/tables/all_dataset_configurations.csv` for all 11 brains
-   (denominator: the cache's own sites); for rescaled labels it is one parameter in
-   `scripts/shadow_merge_impact.py`. Coverage side remeasured on the relabeled caches
+   (denominator: the cache's own sites; bundle deleted 2026-10-17, regenerate with
+   `python -u notebooks/merge_candidate_pool_sweep.py --mcl 100`, about 20 min); for rescaled
+   labels it was one parameter in `scripts/shadow_merge_impact.py` (deleted 2026-10-17).
+   Coverage side remeasured on the relabeled caches
    2026-10-15; the label side is still unmeasured (6.6).
 2. **Tip-to-shaft candidates.** A merge usually leaves a split behind: neuron B's fragment
    ends where it was fused into A's segment, so B's tip sits on A's shaft. The split rule
@@ -390,8 +395,9 @@ All eleven caches were relabeled with the length-based thresholds on 2026-10-15
 
 The sweep (`merge_candidate_pool_sweep.py`) takes the fewest candidates subject to a worst-brain
 site recall of at least 0.80 at the claim radius; the detector build applies the same floor.
-Regenerated on the relabeled caches (`notebooks/merge_candidate_pool_sweep_outputs_with_oldscope/`),
-it selects `junction|nms=20|r=150` with status `target_unmet_best_effort`: worst brain 0.74
+Regenerated on the relabeled caches (`notebooks/merge_candidate_pool_sweep_outputs_with_oldscope/`
+`mcl100_dcbde4ab2a6f6c44`, junction rules only; deleted 2026-10-17 after the `--tip-gaps` rerun
+`mcl100_96e1b6bbfbf36f5c` reproduced its nms=20 rows), it selects `junction|nms=20|r=150` with status `target_unmet_best_effort`: worst brain 0.74
 (794493), pooled 0.89. Within the junction family the claim radius does not change the
 candidate count and NMS changes it by at most 16% (1.56 M at 20 um, 1.86 M at 0 um), so no
 junction configuration reaches the floor. At the positive radius the detector actually learns
@@ -462,12 +468,90 @@ have a foreign tip next to the merged shaft), but every newly captured site cost
 grow by 7 to 10% (gap <= 10 / 20 um) while candidates grow 2.0x / 2.8x and judgeable negatives
 1.6x / 2.0x. Gap <= 10 um is the efficient end (77% of the
 gain of gap <= 20 um at half its candidates). 754610 stays below 0.80 under every gap limit.
-Not adopted for the current AutoDiscovery round: the merge pool stays the junction family,
+(Superseded on 2026-10-16: gap <= 20 um adopted, section 6.7.) Not adopted for the current AutoDiscovery round: the merge pool stays the junction family,
 because ranking, not coverage, limits merge identification today (merge AP barely above the
 random rate). Revisit together with the merge criterion (the floor at 20 um, a minimum site
 count per brain or pooled reach) once ranking on the junction pool improves; adopting it needs
 a merge entry in `candidate_pools.json`, a non-junction mode in the detector-build merge runtime,
 and a family column in the merge companion.
+
+### 6.7 Blind sites, GT tips and the adopted merge rule (2026-10-16)
+
+**Blind sites.** 199 census bridge sites have neither a junction nor a tip-to-shaft
+(gap <= 20 um) candidate within 20 um of cable. Local views of every one of them are in
+`notebooks/merge_blind_sites/` (`plot_merge_blind_sites.py --k 1000`: one SVG per site and
+`<brain>_sites.csv`).
+
+**Half of them sit at the end of a GT tracing.** `notebooks/merge_site_gt_tip.py` (results in
+`notebooks/merge_site_gt_tip/`, `summary.csv`) measures for every cache site the cable distance
+along the GT from its nearest GT node to the nearest GT tip (degree 1). For sites within 20 um of
+a tip it also measures the angle between the GT's direction into the tip and the fragment's
+direction away from the GT (20 um of cable each). Pooled over the eleven brains:
+
+| Group | Sites | Within 20 um of a GT tip | Share |
+|---|---|---|---|
+| reached by a junction candidate | 1,709 | 79 | 4.6% |
+| reached only by a tip-to-shaft candidate | 159 | 20 | 12.6% |
+| other unreached (junction 20 to 30 um away) | 67 | 9 | 13.4% |
+| blind bridge sites | 199 | 99 | 49.7% |
+| all | 2,134 | 207 | 9.7% |
+
+Base rate: 3.7% of GT nodes lie within 20 um of cable of a GT tip. Per brain:
+
+| Brain | Blind sites | Within 20 um of a GT tip | 20 to 150 um | No tip within 150 um |
+|---|---|---|---|---|
+| 802449 | 81 | 49 | 13 | 19 |
+| 747807 | 29 | 3 | 2 | 24 |
+| 794495 | 24 | 19 | 1 | 4 |
+| 751473 | 19 | 11 | 6 | 2 |
+| 750318 | 16 | 3 | 1 | 12 |
+| 789202 | 9 | 6 | 1 | 2 |
+| 794493 | 9 | 4 | 3 | 2 |
+| 794491 | 6 | 1 | 3 | 2 |
+| 754610 | 4 | 2 | 1 | 1 |
+| 754612 | 2 | 1 | 0 | 1 |
+| 754613 | 0 | 0 | 0 | 0 |
+| all | 199 | 99 | 31 | 69 |
+
+Turn angles of the 99 tip sites: 34 within 30 degrees, 39 from 30 to 60, 19 from 60 to 90,
+7 above 90.
+
+Reading. The geometric walk (`canonical_labeling.geometric_merge_sites`) starts at a fragment
+leaf more than 50 um from every GT node and records the first fragment node within 6 um of a GT
+node; it never asks whether that GT node is a tip. Taking the GT as complete and correct, a site
+at a GT tip is a fragment that runs past the true end of a traced neuron onto a part more than
+50 um from every traced neuron, i.e. an untraced neurite: a real end-to-end merge with no
+junction and usually no foreign tip nearby. The 34 straight ones are not marked by a kink
+either. The other half lies mid-shaft on a traced neurite (69 sites more than 150 um of cable
+from any GT tip, 36 of them in 747807 and 750318); their mechanism is not established.
+
+**Wider tip gaps are not the remedy.** Positive share of the GT-judgeable rows added by each gap
+step, pooled: 0 to 10 um 0.51%, 10 to 20 um 0.24%, 20 to 40 um 0.12%, 40 to 80 um 0.08%.
+Gap <= 80 um reaches only 48 of the 199 blind sites; 32 have no candidate of any family within
+150 um.
+
+**Adopted rule.** Merge pool `junction+tip_to_shaft|nms=20|gap=20|k=2|r=150`: junctions as
+before plus shaft nodes within 20 um of a tip of one of the two nearest other segments. Reported,
+not gated: cache-site reach at 20 um 0.875 pooled, worst brain 0.75 (754610); at the 150 um claim
+radius 0.959 pooled, worst brain 0.90 (794493, 45 of 50 sites; 794493, 754610 and 754613 have no
+margin above 0.90); canonical sites at 150 um, worst brain 0.882 (794493). The rule is declared in
+`proofreader_evolve/candidate_pools.json` and implemented once in `candidate_rules.py`, which the
+tables, companions, sweeps and detectors share (`WORKFLOW_REVISION.md`, 2026-10-16).
+
+Checked 2026-10-17. The merge sweep through the module
+(`notebooks/merge_candidate_pool_sweep_outputs_with_oldscope/mcl100_96e1b6bbfbf36f5c`) reproduces
+the candidate count of every family on all eleven brains, and its own floor selection at a
+worst-brain target of 0.90 picks the same rule. Against the canonical sites
+(`notebooks/merge_canonical_gap.py`, which now enumerates the declared rule itself), 88.1% of
+the 2,319 sites have a candidate within 20 um of cable (81.0% under the junction rule) and 95.1%
+within 150 um (88.7%); per brain at 20 um from 73% (754610, 26 sites) to 91% (754612, 794491,
+802449). The merge companions of 794495 and 802449 and the merge specification were
+regenerated the same day; discovery and detector fitting stay on 794495.
+
+**Open.** A path change-point family for the blind sites: positions on unbranched paths where
+direction, node radius or edge length jumps (cache-only, GT-blind), adopted only if the rows it
+adds are positive at least as often as those of the 10 to 20 um gap step (0.24%). Inspect the
+mid-shaft sites of 747807 and 750318 first.
 
 ## 7. The split side (2026-10-14): no label problem, a small candidate gap at omitted stretches
 

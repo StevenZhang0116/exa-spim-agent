@@ -21,6 +21,7 @@ SLICE_DEFINITIONS = {
     'gap_gt_25um': 'Split representative gap > 25 microns',
     'degree_3': 'Merge candidate node degree = 3',
     'degree_ge_4': 'Merge candidate node degree >= 4',
+    'tip_to_shaft': 'Merge tip-to-shaft candidate (a shaft node reached by another segment tip)',
 }
 
 
@@ -40,6 +41,9 @@ class TrainingCoverage:
                 groups = {}
                 field = 'gap_um' if kind == 'split' else 'degree'
                 for index in positives:
+                    if kind == 'merge' and table.candidates[index].get('candidate_family') == 'tip_to_shaft':
+                        groups.setdefault('tip_to_shaft', set()).add(index)
+                        continue
                     try:
                         value = float(table.candidates[index].get(field))
                     except (ValueError, TypeError):

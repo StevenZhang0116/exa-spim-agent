@@ -1,8 +1,8 @@
 """Read-only: what a tip-to-shaft merge candidate family adds to the junction rule's reach.
 
-Family J (the current merge pool): degree>=3 fragment nodes on a valid segment, same-segment
-greedy NMS within 20 um Euclidean in order (-degree, node id), i.e. the frozen merge
-detector's ``junction|nms=20`` enumeration (``merge_candidate_pool_sweep``).
+Family J (the merge pool until 2026-10-16, J+S20 since): degree>=3 fragment nodes on a valid
+segment, same-segment greedy NMS within 20 um Euclidean in order (-degree, node id), i.e. the
+frozen merge detector's ``junction|nms=20`` enumeration (``merge_candidate_pool_sweep``).
 
 Family S (tip-to-shaft): in the occurrences of the declared split pool
 (``proofreader_evolve/candidate_pools.json``, ``tip_to_any_node|r=80|k=2``), every partner node
@@ -76,15 +76,12 @@ BRIDGE_SITES = PROJECT_ROOT / "notebooks" / "merge_diagnosis" / "mcl100" / "foll
 # ----------------------------------------------------------------------------- families
 def split_shaft_nodes(payload: dict, mcl: int) -> tuple[np.ndarray, np.ndarray, str]:
     """Non-tip partner nodes of the declared split pool's occurrences, with their smallest gap."""
-    from proofreader_evolve.cli import precompute_error_scores as pc
     from proofreader_evolve.harness import candidate_pools, native_pool
     from proofreader_evolve.harness.detector_metadata import inference_metadata
 
-    record = pc.resolve_detector_runs(None, None)["split"][0]
-    module = pc._import_module(Path(record["dir"]) / record["script"], f"shaft_reach_split_{record['script_sha256']}")
     policy = candidate_pools.load_pool_policies()["split"]
     rows, _, meta = native_pool.build_native_universe({**payload, **inference_metadata(payload, mcl)},
-                                                      "split", module, policy)
+                                                      "split", None, policy)
     best: dict[int, float] = {}
     for row in rows:
         for occ in row["occurrences"]:

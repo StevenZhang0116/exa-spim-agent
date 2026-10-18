@@ -1,7 +1,9 @@
 """Save up to K local image/GT/fragment figures at cached GT merge sites.
 
 Run in panda on a compute node. Only load trusted pickle caches. The cache
-provides gt_merge_sites and img_path; no prediction CSV or model is needed.
+provides gt_merge_sites (and img_path as the image fallback); no prediction CSV or model is needed.
+The image is read from the URI reviewed in configs/image_alignment.json when the brain has one
+(scripts/dataset_config.get_reviewed_img_path), else from the cache's img_path.
 This is a local-site inspector, not the global GT/candidate comparison in
 plot_positive_merge_sites.py. It does not generate candidate junctions, recompute
 labels, or select by is_merge_site / in_ambiguous_ring.
@@ -18,7 +20,7 @@ Example from the repository root:
 Each figure has Image MIP / GT / Fragments rows and XY / XZ / YZ columns.
 The yellow + marks the stored GT site, not a detector candidate; the fragment
 skeleton is not a dense segmentation mask. Unlike the global comparison, this
-script reads image patches from the cache's img_path.
+script reads image patches itself (reviewed URI, else the cache's img_path).
 
 Defaults to a new run directory under figs/gt_merge_sites/<brain>_mcl<N>/;
 an explicit --output-dir must be empty. selection.json records the sampled
@@ -45,6 +47,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scripts.dataset_config import get_reviewed_img_path
 from scripts.plot_top_merge_predictions import render_context
 
 
@@ -196,11 +199,12 @@ def main(argv=None):
     else:
         output_dir = args.output_dir
         output_dir.mkdir(parents=True, exist_ok=True)
-    image = open_image(payload["img_path"])
-    print(f"Output directory: {output_dir}\nImage source: {payload['img_path']}", flush=True)
+    image_path = get_reviewed_img_path(args.brain, fallback=payload["img_path"])
+    image = open_image(image_path)
+    print(f"Output directory: {output_dir}\nImage source: {image_path}", flush=True)
     run = {
         "brain_id": args.brain, "mcl": args.mcl, "cache": str(cache_path.resolve()),
-        "img_path": str(payload["img_path"]), "requested_k": args.k,
+        "img_path": str(image_path), "requested_k": args.k,
         "available_positions": available, "seed": args.seed, "source_filter": args.source,
         "patch_um_xyz": list(args.patch_um), "selected_positions": selected,
         "cache_size_bytes": cache_path.stat().st_size, "cache_mtime_ns": cache_path.stat().st_mtime_ns,

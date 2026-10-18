@@ -1,9 +1,32 @@
 {
-  "schema_version": 1,
-  "revised": "2026-10-15",
-  "note": "Benchmark candidate pools per kind. null keeps the frozen detector's embedded rule; an explicit entry is applied to the detector runtime before its universe builder runs and enters the table provenance (new pool hash). Changing an entry invalidates feature tables, availability sidecars, companions and context caches of that kind for every brain.",
+  "schema_version": 2,
+  "revised": "2026-10-16",
+  "note": "Benchmark candidate pools per kind, enumerated by candidate_rules.py at the repository root (the only implementation; detector builds copy it unchanged). Both kinds are declared explicitly; a detector no longer supplies the rule. The rule fields and the module's SHA-256 enter the table provenance (new table directories). Changing an entry changes the rows and invalidates feature tables, availability sidecars, companions and context caches of that kind for every brain; pool_sha256 hashes the rows only, so a module edit that keeps them leaves companions and context caches valid. Evidence numbers are reported, not gates.",
   "pools": {
-    "merge": null,
+    "merge": {
+      "config_id": "junction+tip_to_shaft|nms=20|gap=20|k=2|r=150",
+      "mode": "junction+tip_to_shaft",
+      "nms_um": 20.0,
+      "tip_gap_um": 20.0,
+      "tip_partner_k": 2,
+      "claim_radius_um": 150.0,
+      "positive_label_radius_um": 20.0,
+      "evidence": {
+        "decided": "2026-10-16, by the user, after the tip-to-shaft reach measurement (not selected by a recall floor)",
+        "measurement": "notebooks/merge_shaft_reach/<brain>_mcl100.json (notebooks/merge_shaft_candidate_reach.py, family J+S20)",
+        "findings": "notebooks/merge_label_shadow_findings.md sections 6.6 and 6.7",
+        "replaces": "junction|nms=20|r=150 (the frozen merge detector's embedded rule; worst brain 794493 at 0.74 site recall at 150 um)",
+        "datasets": 11,
+        "total_candidates": 4437389,
+        "gt_judgeable_rows": 86399,
+        "positive_rows": 1883,
+        "site_recall_at_20um": {"pooled": 0.875, "worst_brain": "754610", "worst": 0.75},
+        "canonical_sites": "2026-10-17, notebooks/merge_canonical_gap (2,319 canonical sites, 11 brains): 0.881 within 20 um (junction rule 0.810), 0.951 within 150 um (0.887); per brain at 20 um 0.731 (754610) to 0.913 (754612)",
+        "site_recall_at_150um": {"pooled": 0.959, "worst_brain": "794493", "worst": 0.9,
+                                  "note": "794493 covers 45 of 50 sites; 794493, 754610 and 754613 have no margin above 0.90"},
+        "sweep": "2026-10-17: notebooks/merge_candidate_pool_sweep_outputs_with_oldscope/mcl100_96e1b6bbfbf36f5c (merge_candidate_pool_sweep.py through candidate_rules.py, --tip-gaps 10 20 40 80): on all 11 brains the J and J+S10/20/40/80 candidate counts equal the measurement above, J+S20 pooled 4,437,389; worst brain 0.90 at 150 um, pooled 0.875 at 20 um; its floor selection at a worst-brain target of 0.90 picks the same rule (notebooks/log/merge_sweep_tip_gaps_20261016.log)"
+      }
+    },
     "split": {
       "config_id": "tip_to_any_node|r=80|k=2",
       "mode": "tip_to_any_node",
@@ -17,7 +40,8 @@
         "mean_recall": 0.965,
         "total_candidates": 9968823,
         "datasets": 11,
-        "replaces": "tip_to_any_node|r=50|k=2 (5-brain sweep of 2026-08-24; worst brain 754612 at 0.866 on 11 brains)"
+        "replaces": "tip_to_any_node|r=50|k=2 (5-brain sweep of 2026-08-24; worst brain 754612 at 0.866 on 11 brains)",
+        "rows_unchanged": "2026-10-17: pool-only companions of 794495 and 802449 rebuilt with candidate_rules.py keep pool_sha256 32c4d86b... (689,677 rows) and 7efd1e40... (1,286,517 rows), identical to the 2026-10-15 exports (notebooks/log/split_pool_parity_20261016.log)"
       }
     }
   }

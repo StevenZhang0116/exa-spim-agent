@@ -1,6 +1,12 @@
+"""The build freezes the declared candidate rule (candidate_pools.json + candidate_rules.py).
+
+Since 2026-10-16 a detector build no longer selects its candidate rule (the split
+advice stage and the merge sweep floor are gone); these tests cover freezing,
+staleness, the runtime loader and copying candidate_rules.py beside a detector.
+Merge-specific cases live in test_merge_site_target.py.
+"""
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
 import tempfile
@@ -8,184 +14,119 @@ import unittest
 from pathlib import Path
 
 from agentic.detector_build.candidate_policy import (
-    APPLICATION_STATUS,
-    OBJECTIVE_NAME,
-    compile_candidate_policy,
-    validate_candidate_policy_sources,
-    validate_frozen_candidate_policy,
+    ARTIFACT_TYPE,
+    DEFAULT_DECLARATION_PATH,
+    compile_declared_candidate_policy,
+    declared_rule,
+    kind_of_target,
+    load_runtime_candidate_policy,
+    load_runtime_policy,
+    validate_frozen_declared_candidate_policy,
+    vendor_candidate_rules,
+)
+from agentic.detector_build.contracts import CANDIDATE_POLICY_NAME, DetectorTarget
+from agentic.tests.candidate_rule_fixtures import (
+    RULES_PATH,
+    rules_sha256,
+    split_rule,
+    write_declaration,
 )
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+class DeclaredCandidatePolicyTests(unittest.TestCase):
+    def test_repository_declaration_gives_both_rules(self) -> None:
+        split = declared_rule("split", DEFAULT_DECLARATION_PATH, RULES_PATH)["rule"]
+        merge = declared_rule("merge", DEFAULT_DECLARATION_PATH, RULES_PATH)["rule"]
+        self.assertEqual(split["config_id"], "tip_to_any_node|r=80|k=2")
+        self.assertEqual(merge["config_id"], "junction+tip_to_shaft|nms=20|gap=20|k=2|r=150")
+        self.assertEqual(kind_of_target(DetectorTarget.SPLIT), "split")
+        self.assertEqual(kind_of_target(DetectorTarget.MERGE_SITE), "merge")
+        with self.assertRaises(SystemExit):
+            kind_of_target(DetectorTarget.MERGE)
 
+    def test_split_rule_is_frozen_validated_and_loaded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            rule = split_rule("tip_to_any_node", 80.0, 2)
+            declaration = write_declaration(root / "candidate_pools.json", split=rule)
+            output = root / "app" / CANDIDATE_POLICY_NAME
+            artifact = compile_declared_candidate_policy(
+                "split", output, project_root=root, declaration_path=declaration, rules_path=RULES_PATH)
+            self.assertEqual(artifact["artifact_type"], ARTIFACT_TYPE)
+            self.assertEqual(artifact["selected_policy"], rule)
+            self.assertEqual(artifact["declaration"]["sha256"],
+                             hashlib.sha256(declaration.read_bytes()).hexdigest())
+            self.assertEqual(json.loads(output.read_text()), artifact)
+            self.assertEqual(validate_frozen_declared_candidate_policy(
+                output, "split", project_root=root, declaration_path=declaration, rules_path=RULES_PATH),
+                artifact)
+            loaded, sha = load_runtime_candidate_policy(output)
+            self.assertEqual(loaded, rule)
+            self.assertEqual(sha, hashlib.sha256(output.read_bytes()).hexdigest())
+            self.assertEqual(load_runtime_policy(output, "split")[2], rules_sha256())
 
-class CandidatePolicyTest(unittest.TestCase):
-    def _write_bundle(self, root: Path) -> Path:
-        tables = root / "tables"
-        tables.mkdir(parents=True)
-        aggregate = tables / "cross_dataset_aggregate.csv"
-        fieldnames = [
-            "config_id", "mode", "radius_um", "per_anchor_k", "global_cap",
-            "datasets", "total_candidates", "min_recall", "mean_recall",
-            "micro_recall", "min_direct_recall", "min_gap_recall",
-            "mean_prevalence",
-        ]
-        rows = [
-            {
-                "config_id": "tip_to_any_node|r=45|k=2",
-                "mode": "tip_to_any_node", "radius_um": "45",
-                "per_anchor_k": "2", "global_cap": "none", "datasets": "2",
-                "total_candidates": "200", "min_recall": "0.89",
-                "mean_recall": "0.94", "micro_recall": "0.93",
-                "min_direct_recall": "0.98", "min_gap_recall": "0.80",
-                "mean_prevalence": "0.02",
-            },
-            {
-                "config_id": "tip_to_any_node|r=50|k=2",
-                "mode": "tip_to_any_node", "radius_um": "50",
-                "per_anchor_k": "2", "global_cap": "none", "datasets": "2",
-                "total_candidates": "300", "min_recall": "0.91",
-                "mean_recall": "0.95", "micro_recall": "0.94",
-                "min_direct_recall": "0.99", "min_gap_recall": "0.84",
-                "mean_prevalence": "0.018",
-            },
-            {
-                "config_id": "tip_to_any_node|r=55|k=2",
-                "mode": "tip_to_any_node", "radius_um": "55",
-                "per_anchor_k": "2", "global_cap": "none", "datasets": "2",
-                "total_candidates": "400", "min_recall": "0.93",
-                "mean_recall": "0.96", "micro_recall": "0.95",
-                "min_direct_recall": "0.995", "min_gap_recall": "0.86",
-                "mean_prevalence": "0.016",
-            },
-        ]
-        with aggregate.open("w", encoding="utf-8", newline="") as handle:
-            writer = csv.DictWriter(handle, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(rows)
+            # a later edit of the declaration makes the frozen copy stale
+            write_declaration(declaration, split=split_rule("tip_to_any_node", 50.0, 2))
+            with self.assertRaisesRegex(SystemExit, "stale"):
+                validate_frozen_declared_candidate_policy(
+                    output, "split", project_root=root, declaration_path=declaration, rules_path=RULES_PATH)
 
-        evidence = root / "ai_review_evidence.json"
-        evidence.write_text(json.dumps({
-            "evidence_schema": 1,
-            "run": {
-                "result_status": "complete",
-                "mcl": 100,
-                "config_signature": "fixture",
-                "brains": ["brain-a", "brain-b"],
-                "evaluated_pairing_rules": ["tip_to_any_node", "tip_to_tip"],
-                "any_node_to_any_node_evaluated": False,
-                "global_cap_swept": False,
-                "pre_review_manifest_integrity": {"status": "pass"},
-            },
-            "source_files": {
-                "aggregate": {
-                    "path": "tables/cross_dataset_aggregate.csv",
-                    "sha256": _sha256(aggregate),
-                }
-            },
-        }, indent=2) + "\n", encoding="utf-8")
+    def test_invalid_declarations_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            declaration = write_declaration(root / "candidate_pools.json")
+            for change in ("schema", "missing", "inconsistent", "null"):
+                data = json.loads(declaration.read_text())
+                if change == "schema":
+                    data["schema_version"] = 1
+                elif change == "missing":
+                    del data["pools"]["split"]["per_anchor_k"]
+                elif change == "inconsistent":
+                    data["pools"]["split"]["radius_um"] = 50.0
+                else:
+                    data["pools"]["split"] = None
+                broken = root / f"{change}.json"
+                broken.write_text(json.dumps(data))
+                with self.subTest(change=change), self.assertRaises(SystemExit):
+                    declared_rule("split", broken, RULES_PATH)
 
-        review = root / "AI_REVIEW.md"
-        review.write_text(
-            "# AI Review\n\n"
-            "Evidence file: `ai_review_evidence.json` "
-            f"(`sha256={_sha256(evidence)}`)\n",
-            encoding="utf-8",
-        )
-        manifest = root / "artifact_manifest.json"
-        manifest.write_text(json.dumps({
-            "artifacts": [
-                {"path": "AI_REVIEW.md", "sha256": _sha256(review)},
-                {"path": "ai_review_evidence.json", "sha256": _sha256(evidence)},
-                {
-                    "path": "tables/cross_dataset_aggregate.csv",
-                    "sha256": _sha256(aggregate),
-                },
-            ]
-        }, indent=2) + "\n", encoding="utf-8")
-        return review
+    def test_tampered_artifact_is_rejected_by_the_runtime_loader(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            declaration = write_declaration(root / "candidate_pools.json")
+            output = root / CANDIDATE_POLICY_NAME
+            compile_declared_candidate_policy(
+                "split", output, project_root=root, declaration_path=declaration, rules_path=RULES_PATH)
+            artifact = json.loads(output.read_text())
+            artifact["selected_policy"]["radius_um"] = 20.0
+            output.write_text(json.dumps(artifact))
+            with self.assertRaisesRegex(SystemExit, "invalid rule"):
+                load_runtime_candidate_policy(output)
+            artifact["selected_policy"]["radius_um"] = 80.0
+            artifact["kind"] = "merge"
+            output.write_text(json.dumps(artifact))
+            with self.assertRaisesRegex(SystemExit, "'merge' rule, not 'split'"):
+                load_runtime_candidate_policy(output)
+            artifact["kind"] = "split"
+            artifact["candidate_rules"]["sha256"] = "not-a-hash"
+            output.write_text(json.dumps(artifact))
+            with self.assertRaisesRegex(SystemExit, "lacks the SHA-256"):
+                load_runtime_candidate_policy(output)
 
-    @staticmethod
-    def _write_advice(path: Path, selected_config_id: str) -> None:
-        path.write_text(json.dumps({
-            "schema_version": 1,
-            "objective": {
-                "name": OBJECTIVE_NAME,
-                "minimum_worst_brain_recall": 0.90,
-                "tie_breaker": ["total_candidates", "config_id"],
-            },
-            "selected_config_id": selected_config_id,
-            "explanation": "This is the smallest eligible candidate pool.",
-        }), encoding="utf-8")
-
-    def test_driver_selects_and_freezes_minimum_eligible_policy(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            review = self._write_bundle(root)
-            advice = root / ".candidate_policy_advice.json"
-            output = root / "split_candidate_policy.json"
-            self._write_advice(advice, "tip_to_any_node|r=50|k=2")
-
-            sources = validate_candidate_policy_sources(
-                review, minimum_recall=0.90, expected_mcl=100,
-                project_root=root,
-            )
-            self.assertEqual(
-                sources["selected"]["config_id"],
-                "tip_to_any_node|r=50|k=2",
-            )
-            policy = compile_candidate_policy(
-                advice, output, review, minimum_recall=0.90,
-                expected_mcl=100, project_root=root,
-            )
-            self.assertEqual(policy["application_status"], APPLICATION_STATUS)
-            self.assertEqual(policy["selected_policy"], {
-                "config_id": "tip_to_any_node|r=50|k=2",
-                "mode": "tip_to_any_node",
-                "radius_um": 50,
-                "per_anchor_k": 2,
-                "global_cap": None,
-            })
-            self.assertEqual(policy["evidence_metrics"]["total_candidates"], 300)
-            validate_frozen_candidate_policy(
-                output, review, minimum_recall=0.90, expected_mcl=100,
-                project_root=root,
-            )
-
-    def test_driver_rejects_agent_disagreement(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            review = self._write_bundle(root)
-            advice = root / ".candidate_policy_advice.json"
-            self._write_advice(advice, "tip_to_any_node|r=55|k=2")
-
-            with self.assertRaisesRegex(SystemExit, "disagrees"):
-                compile_candidate_policy(
-                    advice, root / "policy.json", review, minimum_recall=0.90,
-                    expected_mcl=100, project_root=root,
-                )
-
-    def test_driver_rejects_mcl_mismatch_and_tampered_aggregate(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root = Path(tmpdir)
-            review = self._write_bundle(root)
-            with self.assertRaisesRegex(SystemExit, "mcl100.*mcl10"):
-                validate_candidate_policy_sources(
-                    review, minimum_recall=0.90, expected_mcl=10,
-                    project_root=root,
-                )
-
-            aggregate = root / "tables" / "cross_dataset_aggregate.csv"
-            aggregate.write_text(
-                aggregate.read_text(encoding="utf-8") + "\n",
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(SystemExit, "hash mismatch"):
-                validate_candidate_policy_sources(
-                    review, minimum_recall=0.90, expected_mcl=100,
-                    project_root=root,
-                )
+    def test_vendored_module_is_byte_identical_and_checked(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            declaration = write_declaration(root / "candidate_pools.json")
+            output = root / "app" / CANDIDATE_POLICY_NAME
+            compile_declared_candidate_policy(
+                "split", output, project_root=root, declaration_path=declaration, rules_path=RULES_PATH)
+            copy = vendor_candidate_rules(output, output.parent, rules_path=RULES_PATH)
+            self.assertEqual(copy.read_bytes(), RULES_PATH.read_bytes())
+            self.assertEqual(vendor_candidate_rules(output, output.parent, rules_path=RULES_PATH), copy)
+            edited = root / "candidate_rules.py"
+            edited.write_text(RULES_PATH.read_text() + "\n# edited\n")
+            with self.assertRaisesRegex(SystemExit, "changed since"):
+                vendor_candidate_rules(output, root / "other", rules_path=edited)
 
 
 if __name__ == "__main__":

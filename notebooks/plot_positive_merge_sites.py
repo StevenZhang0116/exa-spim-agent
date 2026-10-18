@@ -1,7 +1,7 @@
 """Compare all GT merge sites and positive candidates in ONE XY/XZ figure.
 
 Run in panda on a compute node. Only load trusted pickle caches. Reads
-gt_merge_sites from the selected _add.pkl and is_merge_site=1 junctions from
+gt_merge_sites from the selected _add.pkl and is_merge_site=1 candidates from
 the supplied CSV, without recalculating labels or reading images/model scores.
 Blue open circles mark GT sites and red dots mark positive candidates over
 all candidate positions in gray, using world coordinates in mm.
@@ -49,7 +49,7 @@ def load_candidates(path):
     with Path(path).open(newline="") as handle:
         reader = csv.DictReader(handle)
         if not required.issubset(reader.fieldnames or []):
-            raise ValueError(f"Junction CSV must contain {sorted(required)}")
+            raise ValueError(f"Merge-site CSV must contain {sorted(required)}")
         for row in reader:
             candidate_id = int(row["candidate_id"])
             if candidate_id in seen:
@@ -61,10 +61,14 @@ def load_candidates(path):
             candidate = {key: int(row[key]) for key in
                          ("candidate_id", "node_id", "segment_id", "degree", "is_merge_site")}
             candidate.update({key: float(row[key]) for key in ("x_um", "y_um", "z_um")})
+            # junctions have degree >= 3; tip-to-shaft nodes (since 2026-10-16) degree >= 2
+            family = (row.get("candidate_family") or "junction").strip()
+            if family not in ("junction", "tip_to_shaft"):
+                raise ValueError(f"Candidate {candidate_id}: unknown candidate_family {family!r}")
             if (candidate_id < 0 or candidate["node_id"] < 0 or candidate["segment_id"] <= 0
-                    or candidate["degree"] < 3
+                    or candidate["degree"] < (3 if family == "junction" else 2)
                     or not all(math.isfinite(candidate[key]) for key in ("x_um", "y_um", "z_um"))):
-                raise ValueError(f"Candidate {candidate_id}: invalid junction identity or coordinates")
+                raise ValueError(f"Candidate {candidate_id}: invalid candidate identity or coordinates")
             selected.append(candidate)
     return sorted(selected, key=lambda row: row["candidate_id"])
 
