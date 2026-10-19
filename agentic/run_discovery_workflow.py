@@ -34,11 +34,12 @@ The PHASES, in order:
                    DOES-NOT-GENERALIZE/INCONCLUSIVE verdicts.
   4. verify      — [agent] audit statistics/logic from recorded + reproduced
                    results; assign SOUND/WEAK/MINOR/MAJOR/CRITICAL verdicts.
-  5. fix-tests   — [agent] author corrected scripts for flagged tests →
+  5. fix-tests   — [driver] select the flagged entries from the verdicts →
+                   [agent] author corrected scripts, one turn per batch of ids →
                    [compute] re-measure them (+extras) → [agent] fold
                    UPHELD/WEAKENED/OVERTURNED. (Compute+fold skipped if nothing
                    was flagged.)
-  6. feature-applicability — for split-error runs only, [agent] classifies the
+  6. feature-applicability — for split runs only, [agent] classifies the
                    minimum node-role requirement of each exact rerun/fixed
                    source → [driver] binds those judgments to source hashes.
 
@@ -48,7 +49,9 @@ Generalization → Statistical Verification → Statistical Test Corrections →
 Excluded). ``## Excluded`` is the trailing appendix, so each step inserts before
 it. ``_scale_timeouts`` sizes agent turns from the hypothesis count, because
 predictive mode removed the top-K that the old flat budget assumed. Compute
-steps have a fixed 24-hour budget for large experiment reruns.
+steps have a fixed 24-hour budget for large experiment reruns. A script that dies
+on a missing package from the runner's allowlist gets the package installed and is
+run again (``--install-missing``; ``--no-install-missing`` turns it off).
 
 A full (non-smoke) run also tees its entire console output to
 ``<RUN>.json[.predictive].workflow.log.txt`` beside the export (override with
@@ -86,6 +89,10 @@ Usage (from the ``exa-spim-agent/`` project root):
     # companion of each pkl (bound by its manifest; the .json half is found too):
     python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl ORIGIN.pkl \
         --companion markdowns/rerank_companion_794495_split.npz --direction predictive
+    # Continue a run that stopped (same arguments; steps before the named one are
+    # skipped once the report shows they finished; the log is appended to):
+    python agentic/run_discovery_workflow.py autodiscovery/RUN.json --pkl ORIGIN.pkl \
+        --direction predictive --resume-from fix-tests-author --yes-stale
 """
 
 from __future__ import annotations
@@ -177,7 +184,7 @@ class _Tee:
 
 
 @contextlib.contextmanager
-def driver_log(log_txt: Path):
+def driver_log(log_txt: Path, append: bool = False):
     """Capture this driver's whole console output to ``log_txt`` for the block.
 
     Mirrors ``run_detector_build_workflow.py``: the workflow runs for hours over
@@ -189,12 +196,15 @@ def driver_log(log_txt: Path):
 
     The header ties the log back to its invocation; the footer is written last on
     purpose, so a log with no footer means the process was KILLED (an OOM, a
-    Slurm timeout) rather than having finished.
+    Slurm timeout) rather than having finished. ``append`` (a ``--resume-from``
+    run) adds this invocation after the interrupted one instead of replacing it.
     """
     log_txt.parent.mkdir(parents=True, exist_ok=True)
     orig_out, orig_err = sys.stdout, sys.stderr
     started = time.monotonic()
-    with log_txt.open("w", encoding="utf-8") as log_fh:
+    with log_txt.open("a" if append else "w", encoding="utf-8") as log_fh:
+        if append:
+            log_fh.write("\n")
         log_fh.write(f"# {' '.join(sys.argv)}\n")
         log_fh.write(f"# started {datetime.now():%Y-%m-%d %H:%M:%S}\n")
         log_fh.write(f"# host {platform.node()}  python {platform.python_version()}\n\n")
@@ -279,6 +289,9 @@ PREDICTIVE_MANIFEST: str | None = None
 # call only the companions of the pkls that call receives: the reproduce step runs
 # the origin pkl alone, and the helper rejects a companion of any other pkl.
 COMPANIONS_BY_PKL: dict[str, list[str]] = {}
+# Whether rerun_experiments.py may pip-install a missing allowlisted package
+# (INSTALLABLE_MODULES there) and rerun the script; --no-install-missing turns it off.
+INSTALL_MISSING: bool = True
 # Bump this whenever predictive_selection_instruction changes semantically.
 PREDICTIVE_POLICY_VERSION: str = "exclusion-only-v1"
 PREDICTIVE_MANIFEST_SUFFIX: str = ".predictive-selection.json"
@@ -287,10 +300,13 @@ DRIVER_LOG_SUFFIX: str = ".workflow.log.txt"
 
 
 def _is_split_run(path: Path | str) -> bool:
-    stem = Path(path).name.lower()
-    return stem == "split-error.json" or stem.startswith(
-        ("split-error-", "split-error_")
-    )
+    """Whether "split", and not "merge", is a token of the run name.
+
+    Same rule as the detector build's ``run_kind``: ``split-error-<x>.json`` and
+    ``new-split-1_<date>.json`` are split runs.
+    """
+    name = Path(path).name.lower().removesuffix(".json")
+    return set(re.split(r"[-_.]", name)) & {"split", "merge"} == {"split"}
 
 # --- Timeout budgets ---------------------------------------------------------
 # Agent budgets scale with how many hypotheses the report carries, because the
@@ -313,6 +329,28 @@ COMPUTE_TIMEOUT_S: int = 86400      # 24 h per compute step
 # moment a fix round changes no script (code-hash comparison, no dataset load),
 # so a converged or stalled loop costs no extra compute or agent turns.
 MAX_FIX_LOADING_ROUNDS: int = 3
+# Loading-repair agents must leave a missing package to the runner. On
+# 2026-10-19 one vendored lightgbm into cache/pyvendor and patched sys.path.
+MISSING_PACKAGE_RULE: str = (
+    "A missing package (`No module named ...` for a package this environment "
+    "lacks) is NOT a loading fault: the runner installs the packages on its "
+    "allowlist and reruns those scripts itself. Leave such scripts unchanged — "
+    "never install or vendor a package or add a directory to `sys.path` — and "
+    "name the module in your report."
+)
+
+# The fix-tests author runs one agent turn per batch of selected ids, each with
+# its own budget (AGENT_STEP_BASE_S + FIX_TESTS_PER_ID_S per id, capped at the
+# ceiling). A single turn for every flagged entry hit the 1 h ceiling with 48
+# ids (new-merge-1, 2026-10-19). Each finished batch is recorded in
+# FIX_TESTS_LEDGER inside the fixed dir, so a rerun after an interruption only
+# authors the ids that are still open.
+FIX_TESTS_BATCH_SIZE: int = 8
+FIX_TESTS_PER_ID_S: int = 300
+FIX_TESTS_LEDGER: str = "AUTHORED.json"
+# A MINOR entry joins the corrective set when its "Statistical issues" bullet
+# starts with this phrase (the verifier's marker for a test-level fault).
+TEST_FAULT_PREFIX: str = "Concrete test fault"
 
 
 def _scale_timeouts(n_records: int) -> tuple[int, int]:
@@ -446,13 +484,17 @@ def rerun_argv(
     - ``extra_pkls_rel``  : also run each executed record on these OTHER datasets (the
       ``extrapolations`` list), to judge generalization.
     - ``base_results_rel`` / ``only_changed``: merge unchanged first-pass
-      results and execute only scripts whose resolved code hash changed.
+      results and execute only scripts whose resolved code hash changed (plus
+      environment failures, which are always retried).
     - ``origin_results_rel`` / ``extra_only``: reuse origin measurements and
       execute only code×extra-dataset work items.
     - ``only_corrected``  : restrict execution to scripts present in the
       corrected directory.
     - ``checkpoint_rel``  : atomically persist and resume fingerprint-matching
       work items.
+
+    Every run (not the export) gets ``--install-missing`` unless INSTALL_MISSING
+    is off.
     """
     argv = ["python", "agentic/rerun_experiments.py", json_rel,
             "--pkl", pkl_rel, "--rank-by", RANK_BY, "--direction", DIRECTION]
@@ -470,6 +512,8 @@ def rerun_argv(
     # Export mode is mutually exclusive with running (the helper enforces this).
     if export_dir_rel is not None:
         return argv + ["--export-dir", export_dir_rel]
+    if INSTALL_MISSING:
+        argv.append("--install-missing")
     if code_dir_rel is not None:
         argv += ["--code-dir", code_dir_rel]
     if corrected_dir_rel is not None:
@@ -846,8 +890,9 @@ def build_steps(
                 "(a NumPy-2-written pkl the host can't unpickle, a 'dataset not "
                 "found' gate, a pip-install retry loop), revise ONLY the "
                 f"loading/bootstrap of the failing {rerun_dir_rel}/hypo_<id>.py "
-                "(load the pkl directly from $RERUN_PKL, fix the NumPy version, drop "
+                "(load the pkl directly from $RERUN_PKL, drop NumPy version swaps and "
                 "pip-retry loops) while keeping the ANALYSIS byte-for-byte identical. "
+                f"{MISSING_PACKAGE_RULE} "
                 "Do NOT touch scripts whose result is USABLE. No marker file is "
                 "needed: the driver compares code hashes and selectively reruns only "
                 "the scripts whose contents actually changed. Report which ids you "
@@ -900,7 +945,8 @@ def build_steps(
                     "ENVIRONMENT reason — even when the script exited 0 — "
                     "revise ONLY the loading/bootstrap of the failing "
                     f"{rerun_dir_rel}/hypo_<id>.py (load the pkl directly from "
-                    "$RERUN_PKL, fix the NumPy version, drop pip-retry loops). "
+                    "$RERUN_PKL, drop NumPy version swaps and pip-retry loops). "
+                    f"{MISSING_PACKAGE_RULE} "
                     "A failing `code_source: revised` result means the PREVIOUS "
                     "revision is itself suspect — re-read that script first "
                     "instead of assuming the recorded code is at fault. Keep "
@@ -1011,8 +1057,11 @@ def build_steps(
                     f"{extrap_rel}. Each result has the origin fields PLUS an "
                     "`extrapolations` list — one entry per extra pkl with `pkl`, "
                     "`pkl_name`, `exitcode`, `timed_out`, `runtime_ms`, "
-                    "`result_status`, `result_failure_reason`, `stdout`, `stderr`. "
-                    "Do NOT re-run anything. For each hypothesis compare "
+                    "`result_status`, `result_failure_reason`, `stdout`, `stderr`; "
+                    "`image_retargeted` means the runner pointed a hardcoded origin "
+                    "image folder at the extra brain's image, and reason "
+                    "`origin-image-path` means the script was not run there because "
+                    "it could not be. Do NOT re-run anything. For each hypothesis compare "
                     "the origin numbers to each extra dataset's numbers (direction, "
                     "significance, effect size) and assign GENERALIZES / PARTIAL / "
                     "DOES-NOT-GENERALIZE / INCONCLUSIVE (INCONCLUSIVE when a script "
@@ -1054,9 +1103,11 @@ def build_steps(
                 "Statistical issues / Logic issues / Deployability / Verdict "
                 "rationale bullets in place, keeping the summary, reproduction "
                 "and generalization bullets). Use the 5-level verdict scheme "
-                "SOUND | WEAK | MINOR | MAJOR | CRITICAL (the downstream "
-                "fix-tests step keys off MAJOR/CRITICAL and concrete test-fault "
-                "bullets), and classify each entry's Deployability as "
+                "SOUND | WEAK | MINOR | MAJOR | CRITICAL (the driver selects the "
+                "fix-tests set from MAJOR/CRITICAL entries plus MINOR entries whose "
+                f"'Statistical issues' bullet starts with '{TEST_FAULT_PREFIX}:' — "
+                "start it that way only when the test itself is faulty), and "
+                "classify each entry's Deployability as "
                 "BLIND-COMPUTABLE | GT-REFERENCING per the subagent spec — the "
                 "detector-build workflow mechanically excludes GT-REFERENCING "
                 "features, so judge the FEATURE's inputs (not its labels). Add one "
@@ -1071,7 +1122,8 @@ def build_steps(
     # Corrective phase: re-test the hypotheses the verifier flagged with a WRONG
     # statistical test. Split into author (agent writes corrected scripts) →
     # measure (DRIVER runs them) → fold (agent reads the JSON and judges), so the
-    # re-measurement never runs inside an agent turn.
+    # re-measurement never runs inside an agent turn. The driver selects the ids
+    # and gives the author one batch per turn (run_fix_tests_author).
     corrected_note = (
         " (each `code_source: corrected` result also carries an `extrapolations` "
         "list — the SAME corrected test run on each extra dataset)."
@@ -1083,28 +1135,11 @@ def build_steps(
             "name": "fix-tests-author",
             "phase": "fix-tests",
             "kind": "agent",
-            "instruction": (
-                "Use the discovery-test-fixer subagent to AUTHOR corrected scripts "
-                "for the hypotheses whose statistical TEST the verifier flagged as "
-                "wrong/unsound — do NOT re-measure or fold verdicts yet (the driver "
-                f"re-measures, then a later step folds). Read {summary_rel} and "
-                "select entries with a MAJOR/CRITICAL verdict or a 'Statistical "
-                "issues' bullet naming a concrete test fault (wrong test for the "
-                "data, violated independence/normality assumptions, huge-n "
-                "significance of a trivial effect, p-value misuse, double-counting). "
-                "Do NOT touch entries judged SOUND, or whose only problem is "
-                "generalization. For each selected id, start from the loading-fixed "
-                f"(or recorded) script {rerun_dir_rel}/hypo_<id>.py — the driver "
-                "pre-exports every reported script there during the reproduce phase so "
-                "they are always available — and write a corrected hypo_<id>.py into "
-                f"{fixed_dir_rel} that changes ONLY the statistical test (print an "
-                "effect size with a CI, and a cluster/permutation p-value where "
-                "independence is violated), keeping the same data and quantities. "
-                "Echo the original recorded numbers in a comment. If NO entry needs "
-                f"a test fix, leave {fixed_dir_rel} empty and say so — the driver "
-                "will skip the re-measurement. Report which ids you wrote corrected "
-                "scripts for and the right test for each."
-            ),
+            "fix_tests_batches": {
+                "summary": summary_rel,
+                "rerun_dir": rerun_dir_rel,
+                "fixed_dir": fixed_dir_rel,
+            },
         }
     )
     steps.append(
@@ -1391,10 +1426,10 @@ async def run_step(client: ClaudeSDKClient, step: dict[str, object]) -> str:
     The client transport is shared, but every call receives a fresh logical
     session id, so a later stage cannot inherit an earlier stage's conversation.
     Files remain the sole cross-stage state. Wraps ``_run_step_inner`` in the
-    ``AGENT_STEP_TIMEOUT_S`` guard so a hung session aborts the run instead of
-    stalling it forever.
+    ``AGENT_STEP_TIMEOUT_S`` guard (or the step's own ``timeout_s``) so a hung
+    session aborts the run instead of stalling it forever.
     """
-    timeout_s = AGENT_STEP_TIMEOUT_S
+    timeout_s = int(step.get("timeout_s") or AGENT_STEP_TIMEOUT_S)
     session_id = _new_step_session_id(str(step["name"]))
     try:
         return await asyncio.wait_for(
@@ -1402,10 +1437,11 @@ async def run_step(client: ClaudeSDKClient, step: dict[str, object]) -> str:
             timeout=timeout_s,
         )
     except asyncio.TimeoutError:
+        resume = step.get("resume_from") or step["name"]
         raise SystemExit(
             f"Agent step '{step['name']}' timed out after {timeout_s}s. "
-            "Aborting — increase AGENT_STEP_TIMEOUT_S if it legitimately "
-            "needs more time."
+            f"Aborting — rerun with --resume-from {resume} to continue from "
+            "this step, or raise the budget if it legitimately needs more time."
         )
 
 
@@ -1694,6 +1730,258 @@ def _syntax_repair_instruction(problems: list[str], code_dir_rel: str) -> str:
         "statistical analysis unchanged and do not touch any other script. "
         "Report which files you repaired."
     )
+
+
+_ENTRY_ID_RE = re.compile(r"\*\*ID:\*\*\s*([0-9A-Za-z_.-]+)")
+_VERDICT_RE = re.compile(
+    r"^- \*\*Verdict:\*\*\s*(SOUND|WEAK|MINOR|MAJOR|CRITICAL)\b", re.MULTILINE
+)
+_STAT_ISSUES_RE = re.compile(r"^- \*\*Statistical issues:\*\*\s*(.*)$", re.MULTILINE)
+
+
+def fix_tests_selection(summary_path: Path) -> tuple[list[tuple[str, str]], list[str]]:
+    """The ranked entries the test fixer must correct, and the entries without a verdict.
+
+    Returns ``([(id, verdict), ...] in rank order, [ids lacking a Verdict])``. An
+    entry is selected when its verdict is MAJOR/CRITICAL, or MINOR with a
+    ``Statistical issues`` bullet that starts with ``TEST_FAULT_PREFIX``.
+    """
+    text = summary_path.read_text(encoding="utf-8", errors="replace")
+    start = text.find(RANKED_SECTION)
+    if start < 0:
+        raise SystemExit(f"{summary_path.name} has no '{RANKED_SECTION}' section.")
+    body = text[start + len(RANKED_SECTION):]
+    next_section = re.search(r"^## ", body, re.MULTILINE)
+    if next_section:
+        body = body[:next_section.start()]
+    selected: list[tuple[str, str]] = []
+    unjudged: list[str] = []
+    for entry in re.split(r"^### ", body, flags=re.MULTILINE)[1:]:
+        id_match = _ENTRY_ID_RE.search(entry)
+        if id_match is None:
+            continue
+        verdict = _VERDICT_RE.search(entry)
+        if verdict is None:
+            unjudged.append(id_match.group(1))
+            continue
+        issues = _STAT_ISSUES_RE.search(entry)
+        test_fault = issues is not None and issues.group(1).lower().startswith(
+            TEST_FAULT_PREFIX.lower()
+        )
+        token = verdict.group(1)
+        if token in ("MAJOR", "CRITICAL") or (token == "MINOR" and test_fault):
+            selected.append((id_match.group(1), token))
+    return selected, unjudged
+
+
+def fix_tests_author_instruction(
+    summary_rel: str,
+    rerun_dir_rel: str,
+    fixed_dir_rel: str,
+    ids: list[str],
+    drafts: list[str],
+) -> str:
+    """One fix-tests author turn: correct the tests of exactly ``ids``."""
+    draft_note = (
+        f" A draft from an interrupted earlier turn already exists in {fixed_dir_rel} "
+        f"for id(s) {', '.join(drafts)}: read it, check it against these rules, and "
+        "finish or rewrite it."
+        if drafts
+        else ""
+    )
+    return (
+        "Use the discovery-test-fixer subagent to AUTHOR corrected scripts for "
+        f"exactly these hypothesis ids: {', '.join(ids)}. The driver selected them "
+        f"from {summary_rel} (MAJOR/CRITICAL verdicts, plus MINOR entries whose "
+        f"'Statistical issues' bullet starts with '{TEST_FAULT_PREFIX}') and gives "
+        "the rest of the selection to other turns, so do not write or edit a script "
+        "for any other id. Do NOT re-measure or fold verdicts (the driver "
+        "re-measures, then a later step folds). For each id, read its entry in "
+        f"{summary_rel}, start from the loading-fixed (or recorded) script "
+        f"{rerun_dir_rel}/hypo_<id>.py — the driver pre-exports every reported "
+        "script there during the reproduce phase — and write a corrected "
+        f"hypo_<id>.py into {fixed_dir_rel} that changes ONLY the statistical test "
+        "(print an effect size with a CI, and a cluster/permutation p-value where "
+        "independence is violated), keeping the same data and quantities. Echo the "
+        "original recorded numbers in a comment. If an entry turns out to need no "
+        "test change, write no script for it and say why."
+        + draft_note
+        + " Check each script cheaply (compile it, or run its statistics on a small "
+        "synthetic input); never load a dataset pkl. Report which ids you wrote "
+        "corrected scripts for, the right test for each, and any id left without "
+        "a script."
+    )
+
+
+def _load_fix_ledger(fixed_dir: Path) -> dict[str, dict]:
+    """``{id: {"status": "written", "sha256": ...} | {"status": "no-fix"}}``."""
+    try:
+        payload = json.loads((fixed_dir / FIX_TESTS_LEDGER).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    ids = payload.get("ids") if isinstance(payload, dict) else None
+    return ids if isinstance(ids, dict) else {}
+
+
+def _save_fix_ledger(fixed_dir: Path, ledger: dict[str, dict]) -> None:
+    path = fixed_dir / FIX_TESTS_LEDGER
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps({"ids": ledger}, indent=2, sort_keys=True) + "\n",
+                   encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _script_text(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def _fix_authored(entry: dict, script: Path) -> bool:
+    """Whether a ledger entry still describes the script on disk."""
+    text = _script_text(script)
+    if entry.get("status") == "no-fix":
+        return not text.strip()
+    if entry.get("status") == "written" and text.strip():
+        return hashlib.sha256(text.encode("utf-8")).hexdigest() == entry.get("sha256")
+    return False
+
+
+async def run_fix_tests_author(client: ClaudeSDKClient, spec: dict[str, str]) -> None:
+    """Author corrected scripts for the driver-selected ids, one agent turn per batch.
+
+    Ids recorded in the ledger whose script is unchanged are skipped, so after an
+    interruption only the open ids are authored again. Scripts for ids outside
+    the selection are removed: the measure step runs every script in the fixed
+    dir, and the fold step would report corrections nobody asked for.
+    """
+    summary_path = PROJECT_ROOT / spec["summary"]
+    fixed_rel = spec["fixed_dir"]
+    fixed_dir = PROJECT_ROOT / fixed_rel
+    selected, unjudged = fix_tests_selection(summary_path)
+    if unjudged:
+        log(f"  [fix-tests] WARNING: {len(unjudged)} entr(ies) carry no Verdict and "
+            f"cannot be selected: ids {', '.join(unjudged)}.")
+    n_severe = sum(1 for _, verdict in selected if verdict in ("MAJOR", "CRITICAL"))
+    ids = [rid for rid, _ in selected]
+    log(f"  [fix-tests] {len(ids)} entr(ies) selected: {n_severe} MAJOR/CRITICAL, "
+        f"{len(ids) - n_severe} MINOR with a concrete test fault"
+        + (f" — ids {', '.join(ids)}." if ids else "."))
+
+    def script_of(rid: str) -> Path:
+        return fixed_dir / f"hypo_{re.sub(r'[^0-9A-Za-z_.-]', '_', rid)}.py"
+
+    fixed_dir.mkdir(parents=True, exist_ok=True)
+    ledger = _load_fix_ledger(fixed_dir)
+    wanted = {script_of(rid).name for rid in ids}
+    for script in sorted(fixed_dir.glob("hypo_*.py")):
+        if script.name not in wanted:
+            script.unlink()
+            ledger.pop(script.stem[len("hypo_"):], None)
+            log(f"  [fix-tests] removed {fixed_rel}/{script.name}: its id is not in "
+                "the selection.")
+    pending = [rid for rid in ids if not _fix_authored(ledger.get(rid, {}), script_of(rid))]
+    if len(pending) < len(ids):
+        log(f"  [fix-tests] {len(ids) - len(pending)} id(s) already authored by an "
+            f"earlier turn ({fixed_rel}/{FIX_TESTS_LEDGER}); {len(pending)} open.")
+    _save_fix_ledger(fixed_dir, ledger)
+    batches = [pending[i:i + FIX_TESTS_BATCH_SIZE]
+               for i in range(0, len(pending), FIX_TESTS_BATCH_SIZE)]
+    for k, batch in enumerate(batches, start=1):
+        drafts = [rid for rid in batch if _script_text(script_of(rid)).strip()]
+        timeout_s = min(AGENT_STEP_CEILING_S,
+                        AGENT_STEP_BASE_S + FIX_TESTS_PER_ID_S * len(batch))
+        log(f"  [fix-tests] batch {k}/{len(batches)}: ids {', '.join(batch)} "
+            f"(budget {timeout_s}s).")
+        turn = {
+            "name": f"fix-tests-author-{k}",
+            "resume_from": "fix-tests-author",
+            "timeout_s": timeout_s,
+            "instruction": fix_tests_author_instruction(
+                spec["summary"], spec["rerun_dir"], fixed_rel, batch, drafts
+            ),
+        }
+        print((await run_step(client, turn)).strip())
+
+        def broken() -> list[str]:
+            problems = []
+            for rid in batch:
+                script = script_of(rid)
+                text = _script_text(script)
+                if not text.strip():
+                    continue
+                try:
+                    compile(text, str(script), "exec")
+                except SyntaxError as exc:
+                    problems.append(f"{script.name} line {exc.lineno}: {exc.msg}")
+            return problems
+
+        problems = broken()
+        if problems:
+            log(f"  [syntax-gate] {len(problems)} corrected script(s) do not "
+                "compile; requesting an immediate fix.")
+            repair = {
+                "name": f"fix-tests-author-{k}-syntax-repair",
+                "resume_from": "fix-tests-author",
+                "instruction": _syntax_repair_instruction(problems, fixed_rel),
+            }
+            print((await run_step(client, repair)).strip())
+            problems = broken()
+            if problems:
+                raise SystemExit(
+                    "fix-tests-author left syntactically broken scripts after a "
+                    "repair turn: " + "; ".join(problems)
+                )
+        for rid in batch:
+            text = _script_text(script_of(rid))
+            if text.strip():
+                ledger[rid] = {
+                    "status": "written",
+                    "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                }
+            else:
+                ledger[rid] = {"status": "no-fix"}
+                log(f"  [fix-tests] id {rid}: no corrected script (the fixer found "
+                    "no test change to make).")
+        _save_fix_ledger(fixed_dir, ledger)
+
+
+def resume_index(
+    steps: list[dict[str, object]], name: str, summary_path: Path
+) -> int:
+    """Index of step ``name``, after checking that every earlier step finished.
+
+    The report must carry every section an earlier fold step adds, and every
+    file an earlier step writes must exist; otherwise skipping those steps would
+    leave the report without their verdicts.
+    """
+    names = [str(step["name"]) for step in steps]
+    if name not in names:
+        raise SystemExit(
+            f"--resume-from {name!r} is not a step of this workflow. Steps: "
+            + ", ".join(names)
+        )
+    index = names.index(name)
+    text = (
+        summary_path.read_text(encoding="utf-8", errors="replace")
+        if summary_path.is_file()
+        else ""
+    )
+    missing = []
+    for step in steps[:index]:
+        for marker in step.get("expects", []) or []:
+            if marker not in text:
+                missing.append(f"{step['name']}: '{marker}' in {summary_path.name}")
+        expects_file = step.get("expects_file")
+        if expects_file and not (PROJECT_ROOT / str(expects_file)).is_file():
+            missing.append(f"{step['name']}: {expects_file}")
+    if missing:
+        raise SystemExit(
+            f"Cannot resume from {name!r}: earlier steps did not finish — "
+            + "; ".join(missing)
+        )
+    return index
 
 
 def _failure_brief(results_rel: str, code_dir_rel: str, limit: int = 20) -> str:
@@ -2122,7 +2410,9 @@ async def run_split_feature_labeling_only(json_path: Path) -> None:
     """Backfill/refresh applicability metadata without rerunning discovery."""
     WORKFLOW_COSTS.reset()
     if not _is_split_run(json_path):
-        raise SystemExit("--split-feature-labels-only requires a split-error run.")
+        raise SystemExit(
+            "--split-feature-labels-only requires a split run (\"split\" in the run name)."
+        )
     selected_ids, rerun_dir, fixed_dir = _resolve_split_label_inputs(json_path)
     global PREDICTIVE_MANIFEST
     PREDICTIVE_MANIFEST = (
@@ -2172,6 +2462,7 @@ async def run_workflow(
     json_path: Path,
     pkl_path: Path,
     extra_pkl_paths: list[Path],
+    resume_from: str | None = None,
 ) -> None:
     WORKFLOW_COSTS.reset()
     global PREDICTIVE_MANIFEST
@@ -2186,6 +2477,11 @@ async def run_workflow(
     extra_pkls_rel = [_rel_to_root(p) for p in extra_pkl_paths]
     summary_rel = _rel_to_root(json_path.with_suffix(".summary.md"))
     steps = build_steps(json_rel, pkl_rel, summary_rel, extra_pkls_rel)
+    summary_path = PROJECT_ROOT / summary_rel
+    # Checked before the SDK transport opens, so a bad resume costs nothing.
+    start_index = (
+        resume_index(steps, resume_from, summary_path) if resume_from else 0
+    )
 
     extra_note = f", extrapolate onto {len(extra_pkls_rel)} dataset(s)" if extra_pkls_rel else ""
     n_compute = sum(1 for s in steps if s["kind"] == "compute")
@@ -2199,8 +2495,6 @@ async def run_workflow(
     # logical SDK session so only filesystem artifacts carry state across stages.
     client_cm = ClaudeSDKClient(options=options)
 
-    summary_path = PROJECT_ROOT / summary_rel
-
     async def _drive(client) -> None:
         log("SDK transport opened; agent turns use isolated sessions.")
         # Set when a repair-round remeasure finds its fix round changed no
@@ -2210,6 +2504,10 @@ async def run_workflow(
         for i, step in enumerate(steps, start=1):
             name, kind = str(step["name"]), str(step["kind"])
             print(f"\n=== Step {i}/{len(steps)}: {name} [{kind}] ===")
+            if i <= start_index:
+                log(f"Step {i}/{len(steps)} '{name}' skipped (--resume-from "
+                    f"{resume_from}).")
+                continue
             log(f"Step {i}/{len(steps)} '{name}' ({kind}) started.")
             step_start = time.monotonic()
             if repair_stalled and step.get("skip_if_stalled"):
@@ -2222,6 +2520,8 @@ async def run_workflow(
                     repair_stalled = True
                 elif status == "ran" and step.get("failure_summary"):
                     _log_failure_summary(str(step["out"]), name)
+            elif step.get("fix_tests_batches"):
+                await run_fix_tests_author(client, dict(step["fix_tests_batches"]))
             else:
                 # A repair fix round with nothing left to repair has no work.
                 no_unusable = step.get("skip_if_no_unusable_in")
@@ -2453,7 +2753,7 @@ def main() -> int:
         "--split-feature-labels-only",
         action="store_true",
         help=(
-            "For a completed split-error run, read existing selection/rerun/fixed "
+            "For a completed split run, read existing selection/rerun/fixed "
             "artifacts and generate the source-bound split feature applicability "
             "JSON only. Does not require --pkl or rerun experiments."
         ),
@@ -2466,6 +2766,16 @@ def main() -> int:
             "using the current direction and top-K policy, then stop. Does not "
             "require --pkl or run later workflow phases. Predictive smoke creates "
             "or reuses <RUN>.predictive-selection.json beside the run export."
+        ),
+    )
+    parser.add_argument(
+        "--no-install-missing",
+        action="store_true",
+        help=(
+            "Do not let the compute steps pip-install a missing package from the "
+            "allowlist (INSTALLABLE_MODULES in agentic/rerun_experiments.py). By "
+            "default such a package is installed into this environment, with every "
+            "installed distribution pinned, and the failed script is run again."
         ),
     )
     parser.add_argument(
@@ -2483,6 +2793,19 @@ def main() -> int:
             "it goes, so a workflow that dies mid-step still leaves a record. "
             "Pass /dev/null to skip. Ignored with --smoke, whose output is "
             "already persisted in the predictive-selection manifest."
+        ),
+    )
+    parser.add_argument(
+        "--resume-from",
+        default=None,
+        metavar="STEP",
+        help=(
+            "Continue a run that stopped: skip every step before STEP (a step "
+            "name as printed in the log, e.g. fix-tests-author) after checking "
+            "that the report carries the sections those steps add. Pass the same "
+            "arguments as the interrupted run; the log is appended to. "
+            "fix-tests-author also keeps the corrected scripts its finished "
+            f"batches recorded in {FIX_TESTS_LEDGER}."
         ),
     )
     parser.add_argument(
@@ -2513,6 +2836,11 @@ def main() -> int:
         )
     if args.smoke and args.extra_pkl:
         parser.error("--smoke cannot be combined with --extra-pkl.")
+    if args.resume_from and (args.smoke or args.split_feature_labels_only):
+        parser.error(
+            "--resume-from cannot be combined with --smoke or "
+            "--split-feature-labels-only."
+        )
     if not args.smoke and not args.split_feature_labels_only and args.pkl is None:
         parser.error("--pkl is required unless --smoke is used.")
     pkl_path = (
@@ -2528,6 +2856,9 @@ def main() -> int:
 
     global DIRECTION
     DIRECTION = args.direction or "predictive"
+
+    global INSTALL_MISSING
+    INSTALL_MISSING = not args.no_install_missing
 
     global COMPANIONS_BY_PKL
     companion_paths = [_resolve_existing(p, "companion file") for p in args.companion]
@@ -2628,7 +2959,7 @@ def main() -> int:
     log_txt = args.log_txt or driver_log_path(json_path)
     log_txt = log_txt if log_txt.is_absolute() else (PROJECT_ROOT / log_txt).resolve()
 
-    with driver_log(log_txt):
+    with driver_log(log_txt, append=args.resume_from is not None):
         _records = _announce_selection()
 
         # GUARD 1: --pkl full stem must match the dominant dataset_cache_<stem>.pkl
@@ -2696,6 +3027,7 @@ def main() -> int:
                 json_path,
                 pkl_path,
                 extra_pkl_paths,
+                resume_from=args.resume_from,
             )
         )
 

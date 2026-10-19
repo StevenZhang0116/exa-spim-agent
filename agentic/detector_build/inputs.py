@@ -235,12 +235,23 @@ def unbacked_correction_verdicts(
     return offenders
 
 
+def run_kind(run_json: Path) -> str | None:
+    """``"split"`` or ``"merge"`` when exactly one of them is a token of the run name.
+
+    Tokens are separated by ``-``, ``_`` and ``.``, so ``split-error-<x>`` and
+    ``new-split-1_<date>`` both name a split run; a name with both words or
+    neither names no kind.
+    """
+    kinds = set(re.split(r"[-_.]", run_stem(run_json).lower())) & {"split", "merge"}
+    return kinds.pop() if len(kinds) == 1 else None
+
+
 def infer_target(run_json: Path) -> DetectorTarget:
-    """Infer the legacy task type without changing the input artifact format."""
-    stem = run_stem(run_json).lower()
-    if stem == "split-error" or stem.startswith(("split-error-", "split-error_")):
+    """Infer the task type from the run name without changing the input artifact format."""
+    kind = run_kind(run_json)
+    if kind == "split":
         return DetectorTarget.SPLIT
-    if stem == "merge-error" or stem.startswith(("merge-error-", "merge-error_")):
+    if kind == "merge":
         return DetectorTarget.MERGE
     return DetectorTarget.LEGACY_UNSPECIFIED
 

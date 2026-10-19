@@ -116,10 +116,14 @@ this **5-level** ladder:
 - **CRITICAL** — the result is an artifact of how it was measured; the finding
   does not stand at all.
 
-Use these exact tokens. The downstream `discovery-test-fixer` step keys off
-**MAJOR/CRITICAL** (plus any MINOR whose `Statistical issues` bullet names a
-concrete test fault), so a verdict outside this ladder silently removes a
-hypothesis from the corrective phase.
+Use these exact tokens. The driver selects the downstream `discovery-test-fixer`
+set mechanically: every **MAJOR/CRITICAL** entry, plus every MINOR entry whose
+`Statistical issues` bullet starts with the words `Concrete test fault`
+(e.g. `Concrete test fault: no paired bootstrap of the AP increment …`). Start
+that bullet with this phrase when, and only when, the statistical test itself is
+faulty, and never use it on other bullets or verdicts. A verdict outside this
+ladder, or a MINOR test fault without the phrase, silently removes a hypothesis
+from the corrective phase.
 
 ## Output
 
@@ -139,7 +143,7 @@ For each `### N.` entry, append these bullets after the existing
 ```markdown
 - **Verdict:** SOUND | WEAK | MINOR | MAJOR | CRITICAL
 - **Test:** <named test, statistic, p-value, n — grounded in the record>
-- **Statistical issues:** <test choice / assumptions / power / effect size, or "none">
+- **Statistical issues:** <test choice / assumptions / power / effect size, or "none"; for a MINOR test fault, start with "Concrete test fault:">
 - **Logic issues:** <induction/deduction errors, or "none">
 - **Deployability:** BLIND-COMPUTABLE | GT-REFERENCING — <one clause naming the inputs>
 - **Verdict rationale:** <why this verdict, grounded in the record>

@@ -3062,7 +3062,8 @@ def main() -> int:
         type=Path,
         help=(
             "The AutoDiscovery run export whose findings to build on, e.g. "
-            "autodiscovery/merge-error-...json or split-error-...json. Its "
+            "autodiscovery/merge-error-...json or new-split-1_...json (the kind "
+            "is the word merge or split in the name). Its "
             "<RUN>.summary.md report, predictive-selection manifest, and matching "
             "predictive rerun scripts must already exist and agree; a matching "
             "fixed directory is consumed when present (run "

@@ -29,9 +29,11 @@ paper proposal.
 
 ## Which hypotheses to fix
 
-Read the report and select entries where the verifier identified a TEST-level
-problem — typically the MAJOR/CRITICAL ones, and any MINOR whose `Statistical
-issues` bullet names a concrete test fault, e.g.:
+The driver selects them from the report: every MAJOR/CRITICAL entry, plus every
+MINOR entry whose `Statistical issues` bullet starts with `Concrete test fault`.
+It splits the selection into batches and names the ids of one batch in each
+author instruction, so author exactly those ids and no others. Typical
+test-level problems are:
 
 - **Wrong test for the data** — t-test on counts/proportions (should be
   chi-square / Fisher / proportion test); parametric test on skewed or
@@ -48,7 +50,9 @@ issues` bullet names a concrete test fault, e.g.:
 
 Do NOT "fix" entries the verifier judged SOUND, and do NOT touch a finding
 whose only problem is generalization or a code bug already corrected elsewhere —
-unless that bug is the statistical fault itself.
+unless that bug is the statistical fault itself. If a named entry turns out to
+need no test change, write no script for it and say why in your reply; the
+driver records it as needing no correction.
 
 ## Procedure
 
@@ -62,7 +66,9 @@ unless that bug is the statistical fault itself.
    the driver owns the environment: the runner neutralizes every
    `pip`/`apt`/`conda install`, and the host env already provides numpy, pandas,
    scipy, statsmodels, sklearn, networkx, matplotlib, tensorstore and the
-   proofreader package. NEVER add a package install, NEVER `pip install numpy`,
+   proofreader package; the runner itself installs a missing package from its
+   allowlist (`INSTALLABLE_MODULES` in `agentic/rerun_experiments.py`).
+   NEVER add a package install, NEVER `pip install numpy`,
    NEVER `del sys.modules['numpy']` to reload it, and **NEVER put a numpy /
    site-packages / source-tree path on `sys.path`** (e.g.
    `sys.path.insert(0, "/tmp/np2")`). That last pattern raises "you should not

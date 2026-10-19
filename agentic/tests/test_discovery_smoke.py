@@ -6,6 +6,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import re
 import sys
 import tempfile
 import types
@@ -169,7 +170,13 @@ class DiscoverySmokeTests(unittest.TestCase):
         )
         self.assertIn(
             "discovery-test-fixer",
-            steps["fix-tests-author"]["instruction"],
+            workflow.fix_tests_author_instruction(
+                **{
+                    "summary_rel": steps["fix-tests-author"]["fix_tests_batches"]["summary"],
+                    "rerun_dir_rel": "r", "fixed_dir_rel": "f",
+                    "ids": ["1"], "drafts": [],
+                }
+            ),
         )
         self.assertIn(
             "discovery-test-result-folder",
@@ -535,6 +542,20 @@ class DiscoverySmokeTests(unittest.TestCase):
             (workflow.COMPANIONS_BY_PKL, workflow.DIRECTION, workflow.TOP_K,
              workflow.PREDICTIVE_MANIFEST) = saved
 
+    def test_rerun_argv_lets_runs_install_missing_packages_unless_disabled(self) -> None:
+        saved = (workflow.INSTALL_MISSING, workflow.DIRECTION, workflow.TOP_K,
+                 workflow.PREDICTIVE_MANIFEST)
+        try:
+            workflow.DIRECTION, workflow.TOP_K, workflow.PREDICTIVE_MANIFEST = "predictive", None, "sel.json"
+            self.assertIn("--install-missing", workflow.rerun_argv("run.json", "cache/a.pkl"))
+            self.assertNotIn("--install-missing", workflow.rerun_argv(
+                "run.json", "cache/a.pkl", export_dir_rel="run.rerun"))
+            workflow.INSTALL_MISSING = False
+            self.assertNotIn("--install-missing", workflow.rerun_argv("run.json", "cache/a.pkl"))
+        finally:
+            (workflow.INSTALL_MISSING, workflow.DIRECTION, workflow.TOP_K,
+             workflow.PREDICTIVE_MANIFEST) = saved
+
     def test_compute_steps_use_selective_and_extra_only_work_items(self) -> None:
         workflow.DIRECTION = "both"
         workflow.TOP_K = 2
@@ -764,6 +785,156 @@ class DiscoverySmokeTests(unittest.TestCase):
                 self.assertIn("KeyError: 'gt_graph'", text)
         finally:
             workflow.PROJECT_ROOT = old_root
+
+
+_FIX_REPORT = """# Run
+
+## Header
+
+## Ranked Conclusions (highest priority first)
+
+### 1. (Priority 0.5 · Surprise 0.7) Severe
+- **Run:** r · **ID:** 10 · **Belief:** x
+- **Verdict:** MAJOR
+- **Statistical issues:** Row-level bootstrap.
+
+### 2. (Priority 0.4 · Surprise 0.6) Minor with a test fault
+- **Run:** r · **ID:** 11 · **Belief:** x
+- **Verdict:** MINOR
+- **Statistical issues:** Concrete test fault: no paired bootstrap.
+
+### 3. (Priority 0.3 · Surprise 0.5) Minor without one
+- **Run:** r · **ID:** 12 · **Belief:** x
+- **Verdict:** MINOR
+- **Statistical issues:** Run-wide caveats only; no concrete test fault.
+
+### 4. (Priority 0.2 · Surprise 0.4) Sound
+- **Run:** r · **ID:** 13 · **Belief:** x
+- **Verdict:** SOUND
+- **Statistical issues:** Concrete test fault: none that matters.
+
+### 5. (Priority 0.1 · Surprise 0.3) Critical
+- **Run:** r · **ID:** 14 · **Belief:** x
+- **Verdict:** CRITICAL
+
+### 6. (Priority 0.0 · Surprise 0.2) Not audited
+- **Run:** r · **ID:** 15 · **Belief:** x
+
+## Statistical Verification — Summary
+
+### Not an entry
+- **ID:** 99
+- **Verdict:** MAJOR
+"""
+
+
+class _AuthorClient:
+    """Writes a corrected script for every id an author turn names, except ``skip``."""
+
+    def __init__(self, fixed_dir: Path, skip=()) -> None:
+        self.fixed_dir, self.skip, self.prompts = fixed_dir, set(skip), []
+
+    async def query(self, prompt, session_id="default"):
+        self.prompts.append(prompt)
+        named = re.search(r"exactly these hypothesis ids: ([^.]+)\.", prompt).group(1)
+        for rid in named.split(", "):
+            if rid not in self.skip:
+                (self.fixed_dir / f"hypo_{rid}.py").write_text(f"print('fixed {rid}')\n")
+
+    async def receive_response(self):
+        if False:
+            yield None
+
+
+class FixTestsBatchTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._old_root = workflow.PROJECT_ROOT
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        workflow.PROJECT_ROOT = self.root
+        (self.root / "run.summary.md").write_text(_FIX_REPORT)
+        self.fixed = self.root / "run.json.fixed"
+        self.spec = {"summary": "run.summary.md", "rerun_dir": "run.json.rerun",
+                     "fixed_dir": "run.json.fixed"}
+
+    def tearDown(self) -> None:
+        workflow.PROJECT_ROOT = self._old_root
+        self._tmp.cleanup()
+
+    def _author(self, client) -> None:
+        with mock.patch.object(workflow, "FIX_TESTS_BATCH_SIZE", 2), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            asyncio.run(workflow.run_fix_tests_author(client, self.spec))
+
+    def test_split_runs_are_named_by_the_word_split(self) -> None:
+        for name in ("split-error.json", "split-error-x.json",
+                     "autodiscovery/new-split-1_2026-10-19.json"):
+            self.assertTrue(workflow._is_split_run(name), name)
+        for name in ("new-merge-1_2026-10-19.json", "splitting.json",
+                     "split-vs-merge.json"):
+            self.assertFalse(workflow._is_split_run(name), name)
+
+    def test_selection_reads_verdicts_and_the_test_fault_marker(self) -> None:
+        selected, unjudged = workflow.fix_tests_selection(self.root / "run.summary.md")
+        self.assertEqual(selected, [("10", "MAJOR"), ("11", "MINOR"), ("14", "CRITICAL")])
+        self.assertEqual(unjudged, ["15"])
+
+    def test_author_runs_batches_records_them_and_resumes_open_ids_only(self) -> None:
+        self.fixed.mkdir()
+        (self.fixed / "hypo_12.py").write_text("print('not selected')\n")
+        (self.fixed / "hypo_14.py").write_text("print('interrupted draft')\n")
+        client = _AuthorClient(self.fixed, skip={"11"})
+        self._author(client)
+
+        self.assertEqual(len(client.prompts), 2)  # [10, 11] then [14]
+        self.assertIn("ids: 10, 11.", client.prompts[0])
+        self.assertIn("ids: 14.", client.prompts[1])
+        self.assertIn("draft from an interrupted earlier turn", client.prompts[1])
+        self.assertFalse((self.fixed / "hypo_12.py").exists())
+        ledger = json.loads((self.fixed / workflow.FIX_TESTS_LEDGER).read_text())["ids"]
+        self.assertEqual(ledger["11"], {"status": "no-fix"})
+        self.assertEqual(sorted(ledger), ["10", "11", "14"])
+        self.assertEqual(ledger["10"]["status"], "written")
+
+        rerun_client = _AuthorClient(self.fixed)
+        self._author(rerun_client)
+        self.assertEqual(rerun_client.prompts, [])
+
+        (self.fixed / "hypo_10.py").write_text("print('edited')\n")
+        edited_client = _AuthorClient(self.fixed)
+        self._author(edited_client)
+        self.assertEqual(len(edited_client.prompts), 1)
+        self.assertIn("ids: 10.", edited_client.prompts[0])
+
+    def test_resume_index_requires_the_earlier_steps_to_have_finished(self) -> None:
+        steps = [
+            {"name": "summarize", "kind": "agent", "expects": ["## Ranked"]},
+            {"name": "measure", "kind": "compute"},
+            {"name": "fold", "kind": "agent", "expects": ["## Never written"]},
+            {"name": "author", "kind": "agent"},
+        ]
+        summary = self.root / "run.summary.md"
+        self.assertEqual(workflow.resume_index(steps, "measure", summary), 1)
+        with self.assertRaisesRegex(SystemExit, "not a step"):
+            workflow.resume_index(steps, "nope", summary)
+        with self.assertRaisesRegex(SystemExit, "fold: '## Never written'"):
+            workflow.resume_index(steps, "author", summary)
+
+    def test_timed_out_turn_names_the_step_to_resume_from(self) -> None:
+        class SlowClient:
+            async def query(self, prompt, session_id="default"):
+                pass
+
+            async def receive_response(self):
+                await asyncio.sleep(30)
+                yield None
+
+        with self.assertRaisesRegex(SystemExit, "--resume-from fix-tests-author"):
+            asyncio.run(workflow.run_step(SlowClient(), {
+                "name": "fix-tests-author-3", "resume_from": "fix-tests-author",
+                "timeout_s": 1, "instruction": "x",
+            }))
 
 
 if __name__ == "__main__":

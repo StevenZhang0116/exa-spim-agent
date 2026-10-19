@@ -40,7 +40,11 @@ runner neutralizes any ``pip``/``apt``/``conda`` install the recorded code
 attempts (they become logged no-ops) so a script can neither swap the NumPy
 version mid-run nor hang in an install retry loop. Before running anything, a
 one-time preflight imports numpy/pandas/scipy/statsmodels and aborts loudly
-(exit 3) if the env itself is broken; if every script fails with an
+(exit 3) if the env itself is broken. With ``--install-missing`` a script that
+dies on an absent module from ``INSTALLABLE_MODULES`` gets that package
+pip-installed (every installed distribution pinned, so nothing already there
+changes version) and is run again, and a checkpointed environment failure is
+never reused. If every script fails with an
 import/native-load error and none succeed, the run is flagged
 ``environment_failure`` and also exits 3 — so a broken env can never be folded
 as a batch of "could not run" statistical verdicts.
@@ -93,19 +97,28 @@ result then carries an ``extrapolations`` list — one entry per extra pkl with
 its own fresh output — so the agent can compare datasets without recomputing the
 origin.
 
+A script that hardcodes the origin brain's S3 image folder instead of reading
+the companion manifest would read the origin image at the extra brain's
+coordinates. When both pkls have a companion, the runner replaces that folder
+with the extra brain's (the extrapolation then carries ``image_retargeted``) if
+both images share bucket and level geometry, and otherwise does not run the
+script there (UNUSABLE, reason ``origin-image-path``).
+
 Every code×dataset execution can be persisted with ``--checkpoint``. Its key
 includes the source-run hash, record id, exact code hash, dataset identity,
 timeout, runner version, Python, and scientific-package versions. A changed
 input invalidates only the affected work item; completed matching items resume
-without execution.
+without execution, except an environment failure, which is always run again.
 """
 
 from __future__ import annotations
 
 import argparse
+import fcntl
 import functools
 import hashlib
 import importlib.metadata
+import importlib.util
 import json
 import os
 import pickle
@@ -194,6 +207,46 @@ def bind_companions(paths, pkls) -> dict:
             raise ValueError(f"Two {kind} companions for {source}")
         target += [npz, manifest_path]
     return bound
+
+
+def companion_image(companions) -> tuple[str, str, dict] | None:
+    """(bucket, dataset folder, level geometry) of the image a companion manifest names."""
+    for path in companions:
+        if Path(path).suffix != ".json":
+            continue
+        image = json.loads(Path(path).read_text(encoding="utf-8")).get("image") or {}
+        uri = str(image.get("uri") or "")
+        if not uri.startswith("s3://"):
+            continue
+        bucket, _, key = uri[len("s3://"):].partition("/")
+        folder = key.split("/", 1)[0]
+        if bucket and folder:
+            return bucket, folder, image.get("levels") or {}
+    return None
+
+
+def retarget_image(code: str, origin_companions, extra_companions):
+    """Code to run on an extra dataset, the folder rewrite made, and a refusal reason.
+
+    Returns ``(code, None, None)`` when ``code`` does not name the origin image
+    folder, ``(rewritten, "<origin> -> <extra>", None)`` when the extra image can
+    stand in (same bucket and level geometry), else ``(code, None, reason)``.
+    """
+    origin = companion_image(origin_companions)
+    if origin is None or origin[1] not in (code or ""):
+        return code, None, None
+    extra = companion_image(extra_companions)
+    if extra is None:
+        return code, None, (
+            f"the script hardcodes the origin image folder {origin[1]} and no "
+            "companion names the extra dataset's image"
+        )
+    if (extra[0], extra[2]) != (origin[0], origin[2]):
+        return code, None, (
+            f"the script hardcodes the origin image folder {origin[1]}, and the "
+            f"extra image {extra[1]} differs in bucket or level geometry"
+        )
+    return code.replace(origin[1], extra[1]), f"{origin[1]} -> {extra[1]}", None
 
 
 def companion_links(code: str, companions) -> dict:
@@ -371,7 +424,12 @@ def _run_work_item(
     checkpoint_path: Path | None,
     companions=(),
 ) -> tuple[dict, bool]:
-    """Run or reuse one code×dataset work item; persist immediately on success."""
+    """Run or reuse one code×dataset work item and persist it immediately.
+
+    A cached environment failure (missing package, broken native import) is run
+    again rather than reused: the work key does not cover every package a script
+    may import, so a package installed since then would otherwise never be seen.
+    """
     key = _work_key(
         run_sha256=run_sha256,
         record_id=record_id,
@@ -381,9 +439,11 @@ def _run_work_item(
         companions=companions,
     )
     cached = checkpoint["work_items"].get(key)
-    if isinstance(cached, dict) and isinstance(cached.get("run"), dict):
+    if isinstance(cached, dict) and isinstance(cached.get("run"), dict) and not (
+        _is_environment_failure(cached["run"])
+    ):
         return cached["run"], True
-    run = rerun_one(code, dataset, timeout, companions)
+    run = _run_installing_missing(code, dataset, timeout, companions)
     checkpoint["work_items"][key] = {
         "record_id": record_id,
         "code_sha256": code_sha256(code),
@@ -456,7 +516,10 @@ packages or interpreters from inside the script:
   directory" and breaks the whole script. Just `import numpy as np`.
 - If an import genuinely fails, that is an ENVIRONMENT problem for the driver to
   fix (provision the package once, globally) — not something to patch per
-  script. Leave it; the driver reports it as an environment failure.
+  script. Leave it: the runner installs a missing package that is on its
+  allowlist and runs the script again, and reports anything else as an
+  environment failure. Never vendor a package into a directory of your own or
+  add one to `sys.path`.
 
 You MUST NOT change:
 - The statistical test, its parameters, the sampling/grouping logic, the effect
@@ -583,8 +646,9 @@ def _companion(x):
 # script (or an agent) to get the bootstrap right: pip / apt / conda install
 # commands become logged no-ops, and the script runs against the one known-good
 # env. A package that is genuinely missing then surfaces as a loud import error
-# (which the driver classifies as an environment failure), not as a silent
-# version swap or a half-hour hang.
+# (which the driver classifies as an environment failure, and which the runner
+# itself repairs with --install-missing when the package is allowlisted), not as
+# a silent version swap or a half-hour hang.
 def _is_install_cmd(a):
     if isinstance(a, str):
         s = a.split()
@@ -1051,6 +1115,14 @@ _ENV_FAILURE_RE = re.compile(
 )
 
 
+def _is_environment_failure(run: dict) -> bool:
+    return (
+        not run.get("timed_out")
+        and run.get("exitcode") not in (0, None)
+        and classify_failure(run.get("stderr")) == "environment"
+    )
+
+
 def classify_failure(stderr: str | None) -> str | None:
     """Tag a non-zero run as ``"environment"`` vs ``"analysis"`` (None if clean).
 
@@ -1061,6 +1133,147 @@ def classify_failure(stderr: str | None) -> str | None:
     if not stderr:
         return "analysis"
     return "environment" if _ENV_FAILURE_RE.search(stderr) else "analysis"
+
+
+# --- Missing packages ---------------------------------------------------------
+# Recorded scripts import whatever the AutoDiscovery sandbox had installed. With
+# --install-missing, a run that fails because a top-level module listed here is
+# absent gets its package installed into this interpreter's environment (once per
+# invocation) and is run again. Every installed distribution is passed to pip as a
+# constraint, so an install may add packages but never change one: numpy, scipy
+# and the rest of the checkpoint fingerprint stay as they are, and an install that
+# would need a different version fails, leaving the environment failure in place.
+# Only names in this table are fetched, so a module name invented by recorded code
+# never reaches PyPI. To allow another package, add its import name -> pip name.
+INSTALLABLE_MODULES: dict[str, str] = {
+    "catboost": "catboost",
+    "community": "python-louvain",
+    "cv2": "opencv-python-headless",
+    "h5py": "h5py",
+    "hdbscan": "hdbscan",
+    "hmmlearn": "hmmlearn",
+    "igraph": "igraph",
+    "imblearn": "imbalanced-learn",
+    "joblib": "joblib",
+    "kneed": "kneed",
+    "leidenalg": "leidenalg",
+    "lifelines": "lifelines",
+    "lightgbm": "lightgbm",
+    "numba": "numba",
+    "optuna": "optuna",
+    "pingouin": "pingouin",
+    "plotly": "plotly",
+    "polars": "polars",
+    "psutil": "psutil",
+    "pyarrow": "pyarrow",
+    "pygam": "pygam",
+    "pynndescent": "pynndescent",
+    "pywt": "PyWavelets",
+    "ripser": "ripser",
+    "seaborn": "seaborn",
+    "shap": "shap",
+    "skimage": "scikit-image",
+    "tifffile": "tifffile",
+    "tqdm": "tqdm",
+    "umap": "umap-learn",
+    "xgboost": "xgboost",
+    "zarr": "zarr",
+}
+PIP_TIMEOUT_S: int = 900
+_MISSING_MODULE_RE = re.compile(r"No module named '([A-Za-z_][\w.]*)'")
+_INSTALL_MISSING = False          # set from --install-missing in main()
+_INSTALLED: dict[str, dict] = {}  # module -> install record, this invocation
+
+
+def missing_module(stderr: str | None) -> str | None:
+    """The absent top-level module a run died on, or None.
+
+    The last ``No module named`` wins (earlier ones may be caught fallbacks). A
+    missing submodule of an installed package (``numpy._core``) is a version or
+    ABI problem, not an absent package, so it gives None.
+    """
+    for name in reversed(_MISSING_MODULE_RE.findall(stderr or "")):
+        top = name.split(".")[0]
+        try:
+            if importlib.util.find_spec(top) is None:
+                return top
+        except (ImportError, ValueError):
+            return top
+    return None
+
+
+def _installed_pins() -> list[str]:
+    """``name==version`` for every distribution visible to this interpreter."""
+    try:
+        from packaging.version import InvalidVersion, Version
+    except ImportError:  # pragma: no cover - pip environments ship packaging
+        Version = None
+    pins = {}
+    for dist in importlib.metadata.distributions():
+        name = (dist.metadata["Name"] or "").strip()
+        key = re.sub(r"[-_.]+", "-", name).lower()
+        if not name or key in pins:  # the first on sys.path is the one imported
+            continue
+        if Version is not None:
+            try:
+                Version(dist.version)
+            except InvalidVersion:
+                continue
+        pins[key] = f"{name}=={dist.version}"
+    return sorted(pins.values())
+
+
+def _pip_install(package: str) -> dict:
+    with tempfile.TemporaryDirectory() as tmp:
+        constraints = Path(tmp) / "constraints.txt"
+        constraints.write_text("\n".join(_installed_pins()) + "\n", encoding="utf-8")
+        cmd = [sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
+               "--no-input", "--prefer-binary", "-c", str(constraints), package]
+        try:
+            # Two workflows sharing one environment must not run pip at once.
+            with open(Path(sys.prefix) / ".rerun-install.lock", "a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                proc = subprocess.run(cmd, capture_output=True, text=True,
+                                      timeout=PIP_TIMEOUT_S)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"error": f"{type(exc).__name__}: {exc}"}
+    importlib.invalidate_caches()
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
+        return {"error": f"pip exit {proc.returncode}: " + " | ".join(tail)}
+    try:
+        return {"version": importlib.metadata.version(package)}
+    except importlib.metadata.PackageNotFoundError:
+        return {"version": None}
+
+
+def install_missing(module: str) -> dict:
+    """Install the package providing ``module`` once per invocation; return the record."""
+    if module not in _INSTALLED:
+        package = INSTALLABLE_MODULES.get(module)
+        record = {"module": module, "package": package}
+        record.update(
+            _pip_install(package) if package else
+            {"error": "not in INSTALLABLE_MODULES (agentic/rerun_experiments.py)"}
+        )
+        _INSTALLED[module] = record
+        outcome = (f"installed {package}=={record.get('version')}"
+                   if "error" not in record else f"not installed: {record['error']}")
+        print(f"[runner] missing module {module!r}: {outcome}", file=sys.stderr, flush=True)
+    return _INSTALLED[module]
+
+
+def _run_installing_missing(code: str, dataset: Path, timeout: int, companions=()) -> dict:
+    """Run once; while it dies on an installable absent module, install it and rerun."""
+    run = rerun_one(code, dataset, timeout, companions)
+    tried = set()
+    while _INSTALL_MISSING and _is_environment_failure(run):
+        module = missing_module(run.get("stderr"))
+        if module is None or module in tried or "error" in install_missing(module):
+            break
+        tried.add(module)
+        run = rerun_one(code, dataset, timeout, companions)
+    return run
 
 
 def preflight_env(python: str, *, timeout: int = 60) -> tuple[bool, str]:
@@ -1211,7 +1424,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help=(
             "Execute only records whose resolved --code-dir code differs from "
-            "the recorded code, then merge them into --base-results."
+            "the recorded code, or whose --base-results entry is an environment "
+            "failure, then merge them into --base-results."
         ),
     )
     parser.add_argument(
@@ -1238,6 +1452,15 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=None,
         help="Final origin result JSON required by --extra-only.",
+    )
+    parser.add_argument(
+        "--install-missing",
+        action="store_true",
+        help=(
+            "When a script fails on an absent module listed in INSTALLABLE_MODULES, "
+            "pip-install its package into this environment (every installed "
+            "distribution pinned as a constraint) and run the script again."
+        ),
     )
     parser.add_argument(
         "--checkpoint",
@@ -1269,6 +1492,8 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
+    global _INSTALL_MISSING
+    _INSTALL_MISSING = args.install_missing
 
     global _PRELOAD_ENABLED
     if args.no_preload or not hasattr(os, "fork"):
@@ -1430,7 +1655,10 @@ def main(argv: list[str] | None = None) -> int:
 
         should_execute = True
         if args.only_changed:
-            should_execute = changed
+            # An environment failure is retried with unchanged code, so a
+            # package installed after the first pass is picked up.
+            base = base_by_id.get(rid_key) or {}
+            should_execute = changed or base.get("rerun_failure_kind") == "environment"
         elif args.only_corrected:
             corrected = args.corrected_dir / hypo_filename(rid)
             should_execute = corrected.is_file() and bool(
@@ -1536,8 +1764,41 @@ def main(argv: list[str] | None = None) -> int:
         extrapolations = []
         if extra_pkls and code.strip() and usability == "USABLE":
             for ei, ep in enumerate(extra_pkls, start=1):
+                xcode, retargeted, refusal = retarget_image(
+                    code, companions[pkl], companions[ep]
+                )
+                if refusal:
+                    print(
+                        f"[rerun {rank}/{len(ranked)}] id={rid} extrapolate "
+                        f"{ei}/{len(extra_pkls)} {ep.name} "
+                        "UNUSABLE(origin-image-path), not run",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    extrapolations.append(
+                        {
+                            "pkl": str(ep),
+                            "pkl_name": ep.name,
+                            "exitcode": None,
+                            "timed_out": False,
+                            "runtime_ms": 0,
+                            "result_status": "UNUSABLE",
+                            "result_failure_reason": "origin-image-path",
+                            "stdout": "",
+                            "stderr": refusal,
+                        }
+                    )
+                    continue
+                if retargeted:
+                    print(
+                        f"[rerun {rank}/{len(ranked)}] id={rid} extrapolate "
+                        f"{ei}/{len(extra_pkls)} {ep.name}: image folder "
+                        f"{retargeted}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
                 xrun, reused = _run_work_item(
-                    code,
+                    xcode,
                     ep,
                     args.timeout,
                     run_sha256=run_sha256,
@@ -1580,6 +1841,7 @@ def main(argv: list[str] | None = None) -> int:
                         "result_failure_reason": xreason,
                         "stdout": truncate(xrun["stdout"], args.max_output_chars),
                         "stderr": truncate(xrun["stderr"], args.max_output_chars),
+                        **({"image_retargeted": retargeted} if retargeted else {}),
                     }
                 )
 
@@ -1652,6 +1914,7 @@ def main(argv: list[str] | None = None) -> int:
         "n_failed": n_failed,
         "n_env_failed": n_env_failed,
         "n_timeout": n_timeout,
+        "installed_packages": list(_INSTALLED.values()),
         "preflight_ok": True,
         # A systematic environment failure: nothing ran AND every failure is an
         # import/native-load error. This is the signature of a broken env (the

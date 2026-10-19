@@ -59,7 +59,10 @@ result JSON, exported scripts, and exact paths needed for the current step.
 
    Keep downstream names, keys, analysis, and printed results unchanged. Remove
    package-install retry loops. Do not manage NumPy or packages, modify
-   `sys.path`, or patch `rerun_failure_kind == "environment"` errors. Do not
+   `sys.path`, or patch `rerun_failure_kind == "environment"` errors. A missing
+   package is the runner's to install (allowlist `INSTALLABLE_MODULES` in
+   `agentic/rerun_experiments.py`): never vendor one into a directory of your
+   own; leave the script unchanged and name the module in your report. Do not
    create a marker file: the driver compares the exported script against the
    recorded code by hash, selectively re-measures only code that actually
    changed, and merges those results with the usable first-pass results.

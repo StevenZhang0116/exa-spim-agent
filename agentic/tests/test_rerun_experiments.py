@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -311,6 +312,116 @@ class RerunWorkItemTests(unittest.TestCase):
             saved = json.loads(checkpoint_path.read_text())
             self.assertEqual(len(saved["work_items"]), 3)
 
+    def test_checkpointed_environment_failure_is_run_again(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            dataset = root / "data.pkl"
+            dataset.write_bytes(b"one")
+            checkpoint_path = root / "checkpoint.json"
+            checkpoint = rerun._load_checkpoint(checkpoint_path)
+            runs = [
+                {"timed_out": False, "exitcode": 1, "stdout": "", "runtime_ms": 1,
+                 "stderr": "ModuleNotFoundError: No module named 'lightgbm'"},
+                {"timed_out": False, "exitcode": 0, "stdout": "metric=1\n",
+                 "stderr": "", "runtime_ms": 1},
+            ]
+            item = dict(run_sha256="run", record_id=1, checkpoint=checkpoint,
+                        checkpoint_path=checkpoint_path)
+            with mock.patch.object(rerun, "rerun_one", side_effect=runs) as run_one:
+                first, reused_first = rerun._run_work_item("code", dataset, 10, **item)
+                second, reused_second = rerun._run_work_item("code", dataset, 10, **item)
+                third, reused_third = rerun._run_work_item("code", dataset, 10, **item)
+
+            self.assertEqual(run_one.call_count, 2)
+            self.assertEqual((first["exitcode"], reused_first), (1, False))
+            self.assertEqual((second["exitcode"], reused_second), (0, False))
+            self.assertEqual((third["exitcode"], reused_third), (0, True))
+
+    def test_missing_module_names_only_absent_top_level_packages(self) -> None:
+        absent = "No module named 'surely_absent_pkg_xyz'"
+        self.assertEqual(rerun.missing_module(absent), "surely_absent_pkg_xyz")
+        self.assertEqual(
+            rerun.missing_module("No module named 'surely_absent_pkg_xyz.sub'"),
+            "surely_absent_pkg_xyz",
+        )
+        self.assertIsNone(rerun.missing_module("No module named 'numpy._core'"))
+        self.assertIsNone(rerun.missing_module("ValueError: bad shape"))
+        self.assertEqual(
+            rerun.missing_module(f"{absent}\nduring handling\nNo module named 'json.x'"),
+            "surely_absent_pkg_xyz",
+        )
+
+    def test_install_missing_installs_allowlisted_package_once_and_reruns(self) -> None:
+        fail = {"timed_out": False, "exitcode": 1, "stdout": "", "runtime_ms": 1,
+                "stderr": "ModuleNotFoundError: No module named 'surely_absent_pkg_xyz'"}
+        ok = {"timed_out": False, "exitcode": 0, "stdout": "metric=1\n",
+              "stderr": "", "runtime_ms": 1}
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataset = Path(tmpdir) / "data.pkl"
+            dataset.write_bytes(b"one")
+            with (
+                mock.patch.object(rerun, "_INSTALL_MISSING", True),
+                mock.patch.dict(rerun._INSTALLED, clear=True),
+                mock.patch.dict(rerun.INSTALLABLE_MODULES,
+                                {"surely_absent_pkg_xyz": "absent-pkg"}),
+                mock.patch.object(rerun, "_pip_install",
+                                  return_value={"version": "1.0"}) as pip,
+                mock.patch.object(rerun, "rerun_one",
+                                  side_effect=[fail, ok, ok]) as run_one,
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                first = rerun._run_installing_missing("code-a", dataset, 10)
+                second = rerun._run_installing_missing("code-b", dataset, 10)
+                installed = dict(rerun._INSTALLED)
+
+        self.assertEqual((first["exitcode"], second["exitcode"]), (0, 0))
+        self.assertEqual(run_one.call_count, 3)
+        pip.assert_called_once_with("absent-pkg")
+        self.assertEqual(installed["surely_absent_pkg_xyz"]["version"], "1.0")
+
+    def test_install_missing_never_fetches_unlisted_modules_or_runs_when_off(self) -> None:
+        fail = {"timed_out": False, "exitcode": 1, "stdout": "", "runtime_ms": 1,
+                "stderr": "ModuleNotFoundError: No module named 'surely_absent_pkg_xyz'"}
+        dataset = Path("unused.pkl")
+        for enabled in (True, False):
+            with (
+                mock.patch.object(rerun, "_INSTALL_MISSING", enabled),
+                mock.patch.dict(rerun._INSTALLED, clear=True),
+                mock.patch.object(rerun, "_pip_install") as pip,
+                mock.patch.object(rerun, "rerun_one", return_value=fail) as run_one,
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                run = rerun._run_installing_missing("code", dataset, 10)
+                installed = dict(rerun._INSTALLED)
+            self.assertEqual(run["exitcode"], 1)
+            self.assertEqual(run_one.call_count, 1)
+            pip.assert_not_called()
+            if enabled:
+                self.assertIn("not in INSTALLABLE_MODULES",
+                              installed["surely_absent_pkg_xyz"]["error"])
+            else:
+                self.assertEqual(installed, {})
+
+    def test_pip_install_pins_every_installed_distribution(self) -> None:
+        seen = {}
+
+        def fake_pip(cmd, **kwargs):
+            seen["cmd"] = cmd
+            seen["constraints"] = Path(cmd[cmd.index("-c") + 1]).read_text()
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with (
+            tempfile.TemporaryDirectory() as prefix,
+            mock.patch.object(rerun.subprocess, "run", side_effect=fake_pip),
+            mock.patch.object(rerun.sys, "prefix", prefix),
+        ):
+            record = rerun._pip_install("numpy")
+
+        import numpy
+        self.assertEqual(seen["cmd"][-1], "numpy")
+        self.assertIn(f"numpy=={numpy.__version__}", seen["constraints"].splitlines())
+        self.assertEqual(record, {"version": numpy.__version__})
+
     def test_only_changed_reruns_subset_and_merges_base_results(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
@@ -373,6 +484,59 @@ class RerunWorkItemTests(unittest.TestCase):
             self.assertEqual([item["id"] for item in payload["results"]], [1, 2])
             self.assertEqual(payload["results"][0]["sentinel"], "base-1")
             self.assertTrue(payload["results"][1]["code_changed"])
+
+    def test_only_changed_retries_environment_failures_with_unchanged_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            run_json = root / "run.json"
+            run_json.write_text("[]")
+            dataset = root / "data.pkl"
+            dataset.write_bytes(b"data")
+            code_dir = root / "code"
+            code_dir.mkdir()
+            records = [_record(1, "import lightgbm"), _record(2, "print('two')")]
+            (code_dir / "hypo_1.py").write_text("import lightgbm")
+            (code_dir / "hypo_2.py").write_text("print('two')")
+            env_failed = _prior_result(1, "import lightgbm", usable=False)
+            env_failed.update(
+                rerun_timed_out=False, rerun_exitcode=1, rerun_failure_kind="environment",
+                result_failure_reason="nonzero-exit",
+                rerun_stderr="ModuleNotFoundError: No module named 'lightgbm'",
+            )
+            base = root / "base.json"
+            base.write_text(json.dumps(_prior_payload(
+                run_json, dataset, [env_failed, _prior_result(2, "print('two')")]
+            )))
+
+            def fake_run(code, path, timeout, companions=()):
+                return {"timed_out": False, "exitcode": 0, "stdout": "metric=2\n",
+                        "stderr": "", "runtime_ms": 2}
+
+            output = io.StringIO()
+            with (
+                mock.patch.object(rerun, "load_records", return_value=records),
+                mock.patch.object(
+                    rerun, "rank_records", return_value=(records, None, [])
+                ),
+                mock.patch.object(rerun, "preflight_env", return_value=(True, "2")),
+                mock.patch.object(rerun, "rerun_one", side_effect=fake_run) as run_one,
+                contextlib.redirect_stdout(output),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                rc = rerun.main(
+                    [
+                        str(run_json), "--pkl", str(dataset),
+                        "--code-dir", str(code_dir), "--only-changed",
+                        "--base-results", str(base),
+                    ]
+                )
+
+            payload = json.loads(output.getvalue())
+            self.assertEqual(rc, 0)
+            self.assertEqual(run_one.call_count, 1)
+            self.assertEqual(payload["results"][0]["result_status"], "USABLE")
+            self.assertFalse(payload["results"][0]["code_changed"])
+            self.assertEqual(payload["results"][1]["sentinel"], "base-2")
 
     def test_extra_only_never_executes_origin_and_skips_unusable_origin(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -563,6 +727,101 @@ class CompanionTests(unittest.TestCase):
             plain = rerun._work_key(**base)
             self.assertEqual(plain, rerun._work_key(**base, companions=()))
             self.assertNotEqual(plain, rerun._work_key(**base, companions=[c]))
+
+    @staticmethod
+    def _set_image(companion: Path, folder: str, scale: list[float]) -> None:
+        manifest = companion.with_suffix(".json")
+        payload = json.loads(manifest.read_text())
+        payload["image"] = {
+            "uri": f"s3://open-bucket/{folder}/fusion/fused.zarr/",
+            "levels": {"0": {"scale_xyz_um": scale, "translation_xyz_um": [0, 0, 0]}},
+        }
+        manifest.write_text(json.dumps(payload))
+
+    def test_retarget_image_rewrites_same_geometry_and_refuses_otherwise(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            a, b = self._datasets(root)
+            ca = self._companion(root, "111", "merge", a.name, 1)
+            cb = self._companion(root, "222", "merge", b.name, 2)
+            self._set_image(ca, "exaSPIM_111_x", [0.748, 0.748, 1.0])
+            self._set_image(cb, "exaSPIM_222_y", [0.748, 0.748, 1.0])
+            bound = rerun.bind_companions([ca, cb], [a, b])
+            code = "path = 'exaSPIM_111_x/fusion/fused.zarr/0'"
+
+            self.assertEqual(
+                rerun.retarget_image(code, bound[a], bound[b]),
+                ("path = 'exaSPIM_222_y/fusion/fused.zarr/0'",
+                 "exaSPIM_111_x -> exaSPIM_222_y", None),
+            )
+            self.assertEqual(
+                rerun.retarget_image("np.load('x.npz')", bound[a], bound[b]),
+                ("np.load('x.npz')", None, None),
+            )
+            self.assertIn("no companion", rerun.retarget_image(code, bound[a], [])[2])
+            self._set_image(cb, "exaSPIM_222_y", [1.0, 1.0, 1.0])
+            unchanged, note, refusal = rerun.retarget_image(code, bound[a], bound[b])
+            self.assertEqual((unchanged, note), (code, None))
+            self.assertIn("level geometry", refusal)
+
+    def test_extrapolation_runs_retargeted_code_and_skips_refused_scripts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            a, b = self._datasets(root)
+            ca = self._companion(root, "111", "merge", a.name, 1)
+            cb = self._companion(root, "222", "merge", b.name, 2)
+            self._set_image(ca, "exaSPIM_111_x", [0.748, 0.748, 1.0])
+            self._set_image(cb, "exaSPIM_222_y", [0.748, 0.748, 1.0])
+            run_json = root / "run.json"
+            run_json.write_text("[]")
+            hardcoded = "print('exaSPIM_111_x/fusion/fused.zarr/0')"
+            records = [_record(1, hardcoded), _record(2, "print('manifest')")]
+            origin_results = root / "origin.json"
+            origin_results.write_text(json.dumps(_prior_payload(
+                run_json, a, [_prior_result(1, hardcoded), _prior_result(2, "print('manifest')")],
+            )))
+            executed = []
+
+            def fake_run(code, path, timeout, companions=()):
+                executed.append(code)
+                return {"timed_out": False, "exitcode": 0, "stdout": "metric=3\n",
+                        "stderr": "", "runtime_ms": 3}
+
+            def run_main() -> dict:
+                output = io.StringIO()
+                with (
+                    mock.patch.object(rerun, "load_records", return_value=records),
+                    mock.patch.object(rerun, "rank_records", return_value=(records, None, [])),
+                    mock.patch.object(rerun, "preflight_env", return_value=(True, "2")),
+                    mock.patch.object(rerun, "rerun_one", side_effect=fake_run),
+                    contextlib.redirect_stdout(output),
+                    contextlib.redirect_stderr(io.StringIO()),
+                ):
+                    rc = rerun.main([
+                        str(run_json), "--pkl", str(a), "--extra-pkl", str(b),
+                        "--extra-only", "--origin-results", str(origin_results),
+                        "--companion", str(ca), str(cb),
+                    ])
+                self.assertEqual(rc, 0)
+                return json.loads(output.getvalue())
+
+            payload = run_main()
+            self.assertEqual(executed, [
+                "print('exaSPIM_222_y/fusion/fused.zarr/0')", "print('manifest')",
+            ])
+            first = payload["results"][0]["extrapolations"][0]
+            self.assertEqual(first["image_retargeted"], "exaSPIM_111_x -> exaSPIM_222_y")
+            self.assertNotIn("image_retargeted", payload["results"][1]["extrapolations"][0])
+
+            executed.clear()
+            self._set_image(cb, "exaSPIM_222_y", [1.0, 1.0, 1.0])
+            payload = run_main()
+            self.assertEqual(executed, ["print('manifest')"])
+            refused = payload["results"][0]["extrapolations"][0]
+            self.assertEqual(
+                (refused["result_status"], refused["result_failure_reason"]),
+                ("UNUSABLE", "origin-image-path"),
+            )
 
 
 if __name__ == "__main__":

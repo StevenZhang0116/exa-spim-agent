@@ -87,6 +87,21 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
     def tearDown(self) -> None:
         workflow.PROJECT_ROOT = self.old_root
 
+    def test_run_name_names_the_detector_target(self) -> None:
+        from agentic.detector_build.inputs import infer_target
+
+        cases = {
+            "autodiscovery/split-error-run1.json": DetectorTarget.SPLIT,
+            "autodiscovery/new-split-1_2026-10-19.json": DetectorTarget.SPLIT,
+            "autodiscovery/merge-error_x.json": DetectorTarget.MERGE,
+            "autodiscovery/new-merge-1_2026-10-19.json": DetectorTarget.MERGE,
+            "autodiscovery/splitting-merges.json": DetectorTarget.LEGACY_UNSPECIFIED,
+            "autodiscovery/split-vs-merge.json": DetectorTarget.LEGACY_UNSPECIFIED,
+            "autodiscovery/run1.json": DetectorTarget.LEGACY_UNSPECIFIED,
+        }
+        for name, target in cases.items():
+            self.assertIs(infer_target(Path(name)), target, name)
+
     def test_detector_check_timeout_has_long_default(self) -> None:
         self.assertEqual(workflow.DEFAULT_DETECTOR_CHECK_TIMEOUT_S, 30_000)
 
