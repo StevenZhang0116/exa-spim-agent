@@ -23,7 +23,7 @@ Evidence: `notebooks/merge_label_shadow_findings.md` (merge, section 6.6 for the
 | `proofreader_evolve/feature_tables/<b>/<digest>/` (merge and split) | all eleven | merge: labels inside; split: pool rows; both: `source_cache` identity and the v2 provenance digest |
 | `feature_tables/<b>/<digest>.availability/` sidecars | all eleven | bound to the tables |
 | `markdowns/rerank_companion_{794495,802449}_merge.{npz,json}` | 794495, 802449 | labels, `source_cache.size` and, since 2026-10-16, the pool itself (tip-to-shaft rows, two new columns). The split companions were regenerated on 2026-10-15 with `--pool-only` for r=80 (section 3); the r=50 ones were deleted on 2026-10-17 |
-| `configs/image_alignment.json` receipts | all eleven | bound to the cache file identity |
+| `configs/image_alignment.json` receipts | all eleven | done 2026-10-18: re-recorded from the current caches (end of section 3; evidence `figs/candidate_image_alignment_20261018/`). Stale again only if a pkl is rewritten |
 | `proofreader_evolve/context_cache/<b>/split/` | all eleven | new pool hash, new band rows |
 | `proofreader_evolve/context_cache/<b>/merge/` | all eleven | new merge pool (2026-10-16): full rebuild |
 | `proofreader_evolve/descriptor_bank/<b>/` | all eleven | keyed by pool hash; orphaned, delete |
@@ -47,6 +47,32 @@ Already regenerated on 2026-10-15 (merge-label dependent notebook outputs): `mer
 3. Build the detectors with `agentic/run_detector_build_workflow.py`. Both kinds freeze the rule declared in `proofreader_evolve/candidate_pools.json` (`--candidate-pools` to point elsewhere) and copy `candidate_rules.py` beside the detector; there is no recall floor to pass. The merge rule includes degree-2 tip-to-shaft candidates, so junction-local features must be defined or left NaN there (the build prompts say so).
 4. Point `proofreader_evolve/cli/precompute_error_scores.py` (`DEFAULT_MERGE_DIR`, `DEFAULT_SPLIT_DIR`) at the new application directories. Tables record `detector_rule_matches`; it should be true for both new detectors.
 
+Independent of steps 1 to 4 (cache only, no tables, no detector): re-record the image-alignment
+receipts of all eleven brains from the current caches. The AutoDiscovery runs do not read the
+receipts (they open the image named in the companion manifest), but every image read of
+`proofreader_evolve` checks them. The native `check_image_alignment` CLI samples table rows and
+needs detectors, so use the cache-based script (about 1 min per brain, serial):
+
+```bash
+python -u scripts/check_image_alignment_from_cache.py --mcl 100 --out figs/candidate_image_alignment_<date> \
+    --brains 747807 750318 751473 754610 754612 754613 789202 794491 794493 794495 802449
+# inspect the 66 overlays; write {brain: note} to figs/candidate_image_alignment_<date>/review_notes.json
+python -u scripts/check_image_alignment_from_cache.py --mcl 100 --out figs/candidate_image_alignment_<date> \
+    --brains 747807 750318 751473 754610 754612 754613 789202 794491 794493 794495 802449 \
+    --record-reviewed --review-notes figs/candidate_image_alignment_<date>/review_notes.json
+```
+
+A later rewrite of a pkl (`labeled_cache` relabel, rebuild or `--refresh-image-path`) makes its
+receipt stale again.
+
+Done 2026-10-18 (`notebooks/log/image_alignment_20261018.log`): all 66 patches read, image URIs
+and image identities unchanged. For the six older-microscope brains the same seed drew the same
+nodes, and statistics and overlays were byte-identical to the 2026-10-06 review, which carries
+over. The 30 overlays of 789202, 794491, 794493, 794495 and 802449 were inspected: no axis
+swap, reflection or global offset; the skeleton signal exceeded every 12 um shifted control in
+29 of 30 patches (794491 node 12298945, a bright featureless region, is the exception). The
+notes are in `figs/candidate_image_alignment_20261018/review_notes.json`.
+
 ## 4. Rebuild order (per brain, one brain per process, `srun -n1` on a compute node)
 
 ```bash
@@ -61,8 +87,7 @@ for kind in ("merge", "split"):
     tables = [json.load(open(p))["pool_sha256"] for p in pathlib.Path("proofreader_evolve/feature_tables/<b>").glob("*/meta.json")]
     print(kind, "companion pool matches a table:", comp in tables)
 PY
-python -m proofreader_evolve.cli.check_image_alignment --brains <b> --mcl 100 --out figs/candidate_image_alignment_<date>
-python -m proofreader_evolve.cli.check_image_alignment --brains <b> --mcl 100 --out figs/candidate_image_alignment_<date> --record-reviewed --review-note "<what the six overlays showed>"
+# image-alignment receipt: re-recorded from the cache at the end of section 3; redo it only if the pkl changed since
 python -u -m proofreader_evolve.cli.precompute_context_cache --brains <b> --mcl 100 --readers 16 --band-rows 50000 --labeled-extension   # both kinds rebuilt (new pools); split about 2 h
 python -m proofreader_evolve.cli.preflight --brains <all eleven> --train-brains 794495 802449 --mcl 100 --context-cache proofreader_evolve/context_cache
 ```

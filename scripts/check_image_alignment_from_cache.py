@@ -15,10 +15,10 @@ Two steps, like the CLI it mirrors:
 
     # 1. read patches, save overlays + measurements (status needs_visual_review)
     python -u scripts/check_image_alignment_from_cache.py --brains 751473 \
-        --out docs/image_alignment_review_20261006
+        --out figs/candidate_image_alignment_<date>
     # 2. after visually inspecting every saved PNG, record the review
     python -u scripts/check_image_alignment_from_cache.py --brains 751473 \
-        --out docs/image_alignment_review_20261006 --record-reviewed \
+        --out figs/candidate_image_alignment_<date> --record-reviewed \
         --review-note "..."
 
 Sampling is label-blind: seeded random fragment nodes on components with at

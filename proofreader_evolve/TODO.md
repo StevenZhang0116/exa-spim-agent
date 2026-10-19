@@ -287,7 +287,10 @@ with `export_rerank_companion --kinds split --pool-only` (794495: 689,677 rows, 
 log `proofreader_evolve/log/export_companion_split_r80_20261015.log`), r=50 companions archived
 in `markdowns/archive/companions_20261014/` (deleted 2026-10-17), split specification rewritten (gap baseline AP
 0.825, folds 0.827 / 0.844 / 0.808). Merge companions and the merge specification follow once
-the merge pool is settled.
+the merge pool is settled. Done 2026-10-17: merge companions regenerated for
+`junction+tip_to_shaft|nms=20|gap=20|k=2|r=150` and the merge specification rewritten. Done
+2026-10-18: image-alignment receipts of all eleven brains re-recorded from the current caches
+(`scripts/check_image_alignment_from_cache.py`; plan section 3).
 
 Measured by `notebooks/split_canonical_gap.py` (write-up: `notebooks/merge_label_shadow_findings.md`
 section 7). The canonical `# Splits` exceeds the cache's by about 10% because 83% of canonical split
