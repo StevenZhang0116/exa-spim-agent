@@ -17,6 +17,7 @@ detector feature math.
 from __future__ import annotations
 
 import ast
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -176,6 +177,38 @@ class DeployabilityTokenTests(unittest.TestCase):
         self.assertIsNone(evidence[9]["deployability"])
         # the hyphen-widened regex must not distort the old verdict fields
         self.assertEqual(evidence[55]["statistical_verdict"], "SOUND")
+
+    def test_report_evidence_prefers_the_merged_verdicts_json(self) -> None:
+        report = "\n".join([
+            "## Ranked Conclusions (highest priority first)",
+            "### 1. (Priority 0.3 · Surprise 0.2) x",
+            "- **Run:** r · **ID:** 55 · x",
+            "- **Verdict:** SOUND",
+            "- **Deployability:** BLIND-COMPUTABLE — graph",
+            "",
+        ])
+        verdicts = {"schema_version": 1, "run": "r.json", "entries": {
+            "55": {"reproduce": {"verdict": "REPRODUCED"},
+                   "verify": {"verdict": "MAJOR", "test_fault": True,
+                              "deployability": "GT-REFERENCING"},
+                   "fix_tests": {"verdict": "OVERTURNED"}},
+            "7": {"reproduce": {"verdict": "FAILED"}},
+        }}
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "r.summary.md"
+            path.write_text(report, encoding="utf-8")
+            json_path = Path(td) / "r.json.predictive.verdicts.json"
+            json_path.write_text(json.dumps(verdicts), encoding="utf-8")
+            evidence = report_evidence_by_id(path, Path(td))
+            json_path.write_text("{bad", encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                report_evidence_by_id(path, Path(td))
+        self.assertEqual(evidence[55], {
+            "reproduction_status": "REPRODUCED", "statistical_verdict": "MAJOR",
+            "post_correction_verdict": "OVERTURNED", "deployability": "GT-REFERENCING",
+        })
+        self.assertEqual(evidence[7]["reproduction_status"], "FAILED")
+        self.assertIsNone(evidence[7]["statistical_verdict"])
 
     def test_heatmap_scores_deployability(self) -> None:
         from agentic.summary_heatmap import DEPLOYABILITY, ROWS

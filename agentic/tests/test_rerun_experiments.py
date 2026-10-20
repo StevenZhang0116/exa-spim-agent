@@ -1342,5 +1342,79 @@ class ParallelPoolTests(unittest.TestCase):
                     str(rerun.os.environ.get("OMP_NUM_THREADS"))))
 
 
+
+class SupportModuleAndOutputsTests(unittest.TestCase):
+    CODE = (
+        "import numpy as np, canonical_stats\n"
+        "print('ap', canonical_stats._ap(np.array([True, False]), np.array([2.0, 1.0])))\n"
+    )
+
+    def test_canonical_stats_is_linked_into_the_sandbox_on_both_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pkl = Path(tmpdir) / "dataset_cache_support_add.pkl"
+            pkl.write_bytes(rerun.pickle.dumps({}))
+            paths = (False, True) if hasattr(rerun.os, "fork") else (False,)
+            for preload in paths:
+                with self.subTest(preload=preload), \
+                        mock.patch.object(rerun, "_PRELOAD_ENABLED", preload), \
+                        mock.patch.dict(rerun._PAYLOAD_CACHE, {}, clear=True), \
+                        mock.patch.dict(rerun.sys.modules), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    rerun.sys.modules.pop("canonical_stats", None)
+                    run = rerun.rerun_one(self.CODE, pkl, 120)
+                self.assertEqual(run["exitcode"], 0, run["stderr"])
+                self.assertIn("ap 1.0", run["stdout"])
+
+    def test_support_module_digest_enters_the_work_key_only_when_used(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataset = Path(tmpdir) / "data.pkl"
+            dataset.write_bytes(b"x")
+            plain = dict(run_sha256="run", record_id=1, dataset=dataset, timeout=10,
+                         code_hash=rerun.code_sha256("print(1)"))
+            self.assertEqual(rerun._work_key(**plain), rerun._work_key(**plain, support=()))
+            fingerprints = rerun.support_fingerprints(self.CODE)
+            self.assertEqual([f["name"] for f in fingerprints], ["canonical_stats"])
+            keyed = rerun._work_key(**plain, support=fingerprints)
+            self.assertNotEqual(keyed, rerun._work_key(**plain))
+            other = [dict(fingerprints[0], sha256="0" * 64)]
+            self.assertNotEqual(keyed, rerun._work_key(**plain, support=other))
+            self.assertEqual(rerun.support_fingerprints("print('canonical_statistics')"), [])
+
+    def test_outputs_dir_holds_full_outputs_and_results_point_to_them(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            run_json = root / "run.json"
+            run_json.write_text("[]")
+            origin = root / "dataset_cache_origin_add.pkl"
+            extra = root / "dataset_cache_extra_add.pkl"
+            for path in (origin, extra):
+                path.write_bytes(rerun.pickle.dumps({}))
+            long_line = "x" * 20000
+            records = [_record(7, f"print('metric=1')\nprint('{long_line}')\n")]
+            outputs = root / "res.outputs"
+            output = io.StringIO()
+            with (
+                mock.patch.object(rerun, "load_records", return_value=records),
+                mock.patch.object(rerun, "rank_records", return_value=(records, None, [])),
+                mock.patch.object(rerun, "preflight_env", return_value=(True, "2")),
+                mock.patch.object(rerun, "_PRELOAD_ENABLED", False),
+                contextlib.redirect_stdout(output),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                rc = rerun.main([str(run_json), "--pkl", str(origin), "--extra-pkl", str(extra),
+                                 "--outputs-dir", str(outputs), "--max-output-chars", "500"])
+            self.assertEqual(rc, 0)
+            (result,) = json.loads(output.getvalue())["results"]
+            self.assertIn("chars omitted", result["rerun_stdout"])
+            full = Path(result["rerun_stdout_path"]).read_text()
+            self.assertEqual(full.count("x"), 20000)
+            self.assertEqual(Path(result["rerun_stdout_path"]).name, "hypo_7.stdout.txt")
+            self.assertTrue((outputs / "hypo_7.stderr.txt").is_file())
+            (extrapolation,) = result["extrapolations"]
+            self.assertEqual(Path(extrapolation["stdout_path"]).name,
+                             "hypo_7.dataset_cache_extra_add.stdout.txt")
+            self.assertEqual(Path(extrapolation["stdout_path"]).read_text().count("x"), 20000)
+
+
 if __name__ == "__main__":
     unittest.main()

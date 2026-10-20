@@ -101,6 +101,17 @@ It must contain:
   across datasets, and how strong the evidence is given the number of extra
   datasets tested.
 
+Judge each brain against its own baseline: the driver's instruction carries a
+BASELINE CARD per companion (the raw ranking's tie-aware AP, per fold, and its
+precision), and an increment measured against a weaker fitted baseline is not
+an increment over it. The full outputs are in `<results>.outputs/` when the
+JSON truncates them.
+
+When the driver's instruction names a verdicts JSON file, also write it with
+exactly the schema the instruction gives (one entry per result, the same
+tokens as the bullets). The driver checks it against the report and merges it
+into the run's verdicts file.
+
 After updating the file, reply with the report path and a 3–5 bullet executive
 summary of what generalized and what did not. Your final message is the
 deliverable.

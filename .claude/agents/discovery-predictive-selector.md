@@ -22,6 +22,14 @@ constant or unavailable, invalidly computed, approximately random without
 useful subgroup enrichment, wholly explained by a known confounder, or
 statistically significant but explicitly non-discriminative.
 
+The orchestrator's instruction may carry a RECORDED-DATA AUDIT: the driver's
+scan of every record for substituted data (proxy, fallback, mock or simulated
+values; an image hypothesis without an image reader or read evidence), with the
+flagged ids. A flag is evidence, not a verdict: read the flagged record's output
+and code, and exclude it as invalidly computed only when the measured quantity
+is a stand-in for the hypothesized one (intensity set from the gap, coordinate
+scatter named a Hessian); a flagged record that read its data stays.
+
 Write exactly the requested manifest. Preserve original hypothesis IDs and put
 every ID in exactly one of `selected_ids` or `excluded`. Do not inspect other
 runs, execute experiments, edit scripts, or add thresholds not present in the

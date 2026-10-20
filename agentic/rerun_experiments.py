@@ -120,6 +120,15 @@ the job's cgroup can hold it, gets cpus // N BLAS/OpenMP threads, and is run aga
 alone if the kernel kills it. Results, checkpoint keys and the results JSON order
 do not depend on N; only ``runtime_ms`` and the log order do.
 
+Support modules and full outputs
+--------------------------------
+A script that names ``canonical_stats`` (the corrected tests' shared scoring,
+``agentic/canonical_stats.py``) gets the module linked beside ``experiment.py``,
+and the module's digest enters the work key. ``--outputs-dir`` writes each
+executed record's full stdout and stderr (``hypo_<id>[.<pkl stem>].stdout.txt``)
+and records the stdout path in the result, since the payload truncates outputs
+to ``--max-output-chars``; ``agentic/output_diff.py`` reads them.
+
 Swallowed input failures and version skew
 -----------------------------------------
 A script that catches a failed data read and carries on with no data exits 0.
@@ -284,6 +293,27 @@ def companion_links(code: str, companions) -> dict:
             links[match.group(0)] = target
     return links
 
+# Support modules a script may import from its sandbox. The test-fixer's
+# corrected scripts import ``canonical_stats`` (one tie-aware AP, raw baseline
+# and paired bootstrap for every corrected increment); the runner links the
+# module beside ``experiment.py`` when the code names it and folds its digest
+# into the work key, so an edit to the module re-measures the scripts using it.
+SUPPORT_MODULES: dict[str, Path] = {
+    "canonical_stats": Path(__file__).resolve().parent / "canonical_stats.py",
+}
+
+
+def support_modules(code: str) -> dict[str, Path]:
+    """Name -> file of every support module ``code`` mentions."""
+    return {name: path for name, path in SUPPORT_MODULES.items()
+            if re.search(rf"\b{name}\b", code or "")}
+
+
+def support_fingerprints(code: str) -> list[dict]:
+    return [{"name": name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            for name, path in sorted(support_modules(code).items())]
+
+
 # Resident-payload execution. Historically every script ran in a fresh
 # subprocess that re-deserialized the multi-GB dataset itself (~minutes per
 # script; 42 scripts ≈ hours of pure pickle.load). The driver now loads each
@@ -442,7 +472,7 @@ def _environment_fingerprint() -> dict:
 
 def _work_key(
     *, run_sha256: str, record_id, code_hash: str, dataset: Path, timeout: int,
-    companions=(),
+    companions=(), support=(),
 ) -> str:
     identity = {
         "runner_version": _RUNNER_VERSION,
@@ -455,6 +485,8 @@ def _work_key(
     }
     if companions:  # absent key keeps checkpoints written without companions valid
         identity["companions"] = [file_fingerprint(Path(c)) for c in companions]
+    if support:  # likewise for scripts that import no support module
+        identity["support"] = list(support)
     return _sha256_text(json.dumps(identity, sort_keys=True, separators=(",", ":")))
 
 
@@ -473,6 +505,7 @@ def _work_item(
         dataset=dataset,
         timeout=timeout,
         companions=companions,
+        support=support_fingerprints(code),
     )
     return code, rewrites, key
 
@@ -1169,6 +1202,7 @@ def _fork_child(run_dir: Path, env: dict, payload, threads: int | None) -> int:
             sys.stdout = open(1, "w", closefd=False)
             sys.stderr = open(2, "w", errors="backslashreplace", closefd=False)
             os.chdir(str(run_dir))
+            sys.path.insert(0, str(run_dir))  # support modules linked beside the script
             os.environ.clear()
             os.environ.update(env)
             sys.argv = ["experiment.py"]
@@ -1350,6 +1384,8 @@ def start_run(
             env["RERUN_COMPANIONS"] = json.dumps(links)
             for name, target in links.items():
                 (run / name).symlink_to(target)
+        for name, module in support_modules(code).items():
+            (run / f"{name}.py").symlink_to(module)
         if GCS_TOKEN_PATH.is_file():
             env.setdefault("GOOGLE_APPLICATION_CREDENTIALS", str(GCS_TOKEN_PATH))
             env["RERUN_GCS_TOKEN"] = str(GCS_TOKEN_PATH)
@@ -1396,6 +1432,17 @@ def _with_input_audit(run: dict, audit_path: Path) -> dict:
                 + f"\n[runner] swallowed input error: {source}: {error}"
             )
     return run
+
+
+def _write_output(outputs_dir: Path | None, stem: str, run: dict) -> str | None:
+    """Write a run's full stdout and stderr under ``outputs_dir``; the stdout path."""
+    if outputs_dir is None:
+        return None
+    safe = re.sub(r"[^0-9A-Za-z_.-]", "_", stem)
+    stdout_path = outputs_dir / f"{safe}.stdout.txt"
+    stdout_path.write_text(run.get("stdout") or "", encoding="utf-8")
+    (outputs_dir / f"{safe}.stderr.txt").write_text(run.get("stderr") or "", encoding="utf-8")
+    return str(stdout_path)
 
 
 def truncate(text: str | None, limit: int) -> str:
@@ -2096,6 +2143,16 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--outputs-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Also write each executed record's full stdout and stderr here as "
+            "hypo_<id>[.<pkl stem>].{stdout,stderr}.txt (the payload truncates "
+            "them to --max-output-chars) and record the stdout path in the result."
+        ),
+    )
+    parser.add_argument(
         "--max-output-chars",
         type=int,
         default=6000,
@@ -2112,6 +2169,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     global _INSTALL_MISSING
     _INSTALL_MISSING = args.install_missing
+    if args.outputs_dir is not None:
+        args.outputs_dir.mkdir(parents=True, exist_ok=True)
 
     global _PRELOAD_ENABLED
     if args.no_preload or not hasattr(os, "fork"):
@@ -2427,6 +2486,9 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "pkl": str(item["dataset"]),
                     "pkl_name": item["dataset"].name,
+                    "stdout_path": _write_output(
+                        args.outputs_dir, f"hypo_{plan['rid']}.{item['dataset'].stem}", xrun
+                    ),
                     "exitcode": xrun["exitcode"],
                     "timed_out": xrun["timed_out"],
                     "runtime_ms": xrun["runtime_ms"],
@@ -2465,6 +2527,9 @@ def main(argv: list[str] | None = None) -> int:
                 "rerun_runtime_ms": run["runtime_ms"],
                 "rerun_stdout": truncate(run["stdout"], args.max_output_chars),
                 "rerun_stderr": truncate(run["stderr"], args.max_output_chars),
+                "rerun_stdout_path": _write_output(
+                    args.outputs_dir, f"hypo_{plan['rid']}", run
+                ),
                 "input_audit": run.get("input_audit") or {},
                 "compat_rewrites": run.get("compat_rewrites") or [],
                 "extrapolations": extrapolations,

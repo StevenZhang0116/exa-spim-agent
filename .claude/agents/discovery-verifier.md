@@ -37,16 +37,23 @@ its statistic, p-value, sample sizes), `review` (the loop's own audit), `code`
 
 ## Inputs you are given
 
-Prefer the ranking helper's SLICE over the raw export. When the orchestrator
-gives you a `rank_by_surprise.py … --include-code` command, run it and read its
-stdout JSON: it already contains ONLY the records selected for the report, each with the
-recorded `code`, `codeOutput`, `analysis` and `review` (code/codeOutput
-middle-truncated to keep the payload small). Audit from that — do NOT load the
-full multi-MB `autodiscovery/<RUN>.json`. An export holds every hypothesis the
-discovery loop ever tested (50–150 per run to date) while the report keeps only
-the selected subset, so reading the raw file spends your context on records you
-will never audit. Only fall back to the raw export if a specific record's
-truncated `code` cut off the exact line you need to judge the test.
+The driver writes the ranking helper's SLICE of the export once
+(`<RUN>.json[.predictive].verify-slice.json`, from `rank_by_surprise.py
+--include-code`): JSON with `records`, ONLY the records selected for the report,
+each with the recorded `code`, `codeOutput`, `analysis`, `review`
+(code/codeOutput middle-truncated) and a `recorded_audit` (the driver's scan of
+the full record for substituted data: proxy/fallback/mock/simulated markers in
+the output or code, and whether an image hypothesis shows an image reader and
+read evidence). Audit from that slice — do NOT load the full multi-MB
+`autodiscovery/<RUN>.json`. When the truncated `code` cuts the line you need,
+read the full exported script in `<RUN>.json[.predictive].rerun/hypo_<id>.py`.
+
+The audit runs in **batches**: each instruction names the ids of one batch, and
+you audit exactly those, append their bullets, and add or replace their entries
+in the verdicts JSON while keeping the entries other turns wrote. A final
+**synthesis** instruction gives you the driver's verdict counts and its
+Benjamini–Hochberg analysis of the structured headline p-values and asks for
+the run-wide section only.
 
 You judge **only from what each record already contains** — the recorded
 `code`, its `codeOutput`, the `analysis`, and the `review`. **Do not re-run any
@@ -89,14 +96,17 @@ conclusion.
    - **Belief update consistency.** Does the `prior`→`posterior` shift and the
      `surprisal` sign match what the evidence actually supports?
 
-3. **Multiple comparisons (run-wide, do once).** Every hypothesis in the export
-   was tested at α≈0.05, so with N tested (`n_total` in the helper's output)
-   roughly 0.05·N "significant" results are expected by chance alone — state the
-   number for THIS run rather than a remembered one.
-   Assess whether any family-wise / FDR correction was applied, and flag
-   borderline-significant findings (e.g. 0.001 < p < 0.05) that may not survive
-   correction. Compute how many findings would remain after a
-   Benjamini–Hochberg FDR control across all reported p-values.
+3. **Multiple comparisons (run-wide, in the synthesis turn).** Every hypothesis
+   in the export was tested at α≈0.05, so roughly 0.05·N "significant" results
+   are expected by chance alone. The driver computes the Benjamini–Hochberg
+   control from the two-sided headline p-values you put in the verdicts JSON
+   (`headline.p` per entry; use a reported two-sided p, convert a one-sided p
+   or P(gain > 0) with 2·min(p, 1−p), approximate from a percentile interval
+   when only that is given, and put the 1,000-draw floor at 0.002 for a
+   bootstrap p of 0), so fill that field carefully in every batch. The
+   synthesis instruction carries the driver's figures: state them, do not
+   recompute them, and add which survivors are compromised (a test fault, a
+   reversal on another brain, a handicapped baseline).
 
 ## Be faithful, not credulous
 
@@ -121,9 +131,10 @@ set mechanically: every **MAJOR/CRITICAL** entry, plus every MINOR entry whose
 `Statistical issues` bullet starts with the words `Concrete test fault`
 (e.g. `Concrete test fault: no paired bootstrap of the AP increment …`). Start
 that bullet with this phrase when, and only when, the statistical test itself is
-faulty, and never use it on other bullets or verdicts. A verdict outside this
-ladder, or a MINOR test fault without the phrase, silently removes a hypothesis
-from the corrective phase.
+faulty, and never use it on other bullets or verdicts. The driver selects from
+the verdicts JSON you also write (below): a verdict outside this ladder fails
+its check, and a MINOR entry enters the corrective phase only when that JSON
+says `test_fault: true`, which must match the phrase in the bullet.
 
 ## Output
 
@@ -173,10 +184,11 @@ code and classify the FEATURE's inputs:
 Judge by the feature's inputs alone — never by whether the result was
 significant, reproduced, or generalized.
 
-Then add **one** new run-wide section (the only audit content that is genuinely
-cross-hypothesis). Your instruction carries a `PLACEMENT:` rule with the report's
-canonical top-level order — follow it rather than any position remembered from a
-previous report, and never reorder sections already in the file:
+In the synthesis turn (and only then) add **one** new run-wide section, the
+only audit content that is genuinely cross-hypothesis. Your instruction carries
+a `PLACEMENT:` rule with the report's canonical top-level order — follow it
+rather than any position remembered from a previous report, and never reorder
+sections already in the file:
 
 ```markdown
 ## Statistical Verification — Summary
@@ -193,6 +205,29 @@ It must contain:
   borderline (0.001 < p < 0.05) headline findings would not.
 - A one-paragraph synthesis of the most serious problems (the discoveries a
   scientist should *not* trust), cross-referenced to entry number / surprise.
+
+The driver's instruction carries a BASELINE CARD per companion: the raw
+baseline ranking's tie-aware AP (overall and per fold), precision and labeled
+shares, computed by `agentic/canonical_stats.py`, which also holds the
+reference definitions of the tie-aware AP, the raw baseline and the paired
+bootstrap. Judge every record's increment against that card: an increment
+over a fitted or non-tie-aware "baseline", unpurged folds, or a missing paired
+interval is a concrete test fault, and the record's own baseline figure is
+not evidence.
+
+In a batch turn, append the per-entry bullets for the batch's ids only and
+write no run-wide section; in the synthesis turn, write the run-wide section
+only (you may revise an entry's verdict for a cross-entry reason, changing both
+its bullet and its JSON entry).
+
+When the driver's instruction names a verdicts JSON file, also write it with
+exactly the schema the instruction gives: one entry per ranked id with the
+`verdict`, `test_fault` (true only when the Statistical issues bullet starts
+with `Concrete test fault`), `deployability`, and a `headline` object (the
+two-sided p of the headline test, the headline AP increment, its 95% interval,
+and what it was measured against; null where the record reports none). The
+driver checks it against the report, merges it into the run's verdicts file,
+selects the fix-tests set from it, and the detector build reads it.
 
 After updating the report, reply with the path you wrote and a 3–5 bullet
 executive summary of the most serious problems found. Your final message is the

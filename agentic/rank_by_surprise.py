@@ -278,6 +278,14 @@ def load_predictive_reasons(path: Path) -> dict[str, str]:
     return reasons
 
 
+def _recorded_audit(record: dict) -> dict:
+    try:
+        from agentic.recorded_audit import audit_record
+    except ModuleNotFoundError:  # direct: python agentic/rank_by_surprise.py
+        from recorded_audit import audit_record  # type: ignore[no-redef]
+    return audit_record(record)
+
+
 def to_records(
     ranked: list[dict],
     *,
@@ -325,6 +333,9 @@ def to_records(
             rec["codeOutput"] = truncate(
                 str(r.get("codeOutput") or "").strip(), max_code_chars
             )
+            # Substituted-data marks of the full (untruncated) record, so the
+            # audit agent sees them even where the slice cut the line.
+            rec["recorded_audit"] = _recorded_audit(r)
         out.append(rec)
     return out
 

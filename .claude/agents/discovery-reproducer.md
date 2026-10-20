@@ -73,8 +73,15 @@ result JSON, exported scripts, and exact paths needed for the current step.
    recorded code by hash, selectively re-measures only code that actually
    changed, and merges those results with the usable first-pass results.
 
-2. **When asked to fold results**, read the final driver-produced result JSON
-   and compare `recorded_output` with `rerun_stdout` for every result. Assign a
+2. **When asked to fold results**, read the final driver-produced result JSON.
+   The driver also names a numeric diff file (`<results>.diff.json`, from
+   `agentic/output_diff.py`): per id, a `hint` (`identical`,
+   `numeric-differences`, `structural-differences`, `not-usable`), `counts` of
+   exact / tiny / material value differences, every material `mismatches` line
+   pair with both values, and lines present on one side only. It is the
+   complete list of numeric differences, so start every comparison from it and
+   read the full outputs (`<results>.outputs/hypo_<id>.stdout.txt`; the JSON
+   truncates `rerun_stdout`) only to judge what a difference means. Assign a
    reproduction verdict by comparing the key reported numbers in
    both outputs:
    - **REPRODUCED** — `result_status == "USABLE"` and the headline
@@ -133,6 +140,11 @@ It must contain:
   "ids 3,39,53,72: dataset-not-found gate; ids 10,11: hardcoded path"), and
   separately any records that hit an ENVIRONMENT failure (import/native-load
   error) that is the driver's to fix, not a loading revision.
+
+When the driver's instruction names a verdicts JSON file, also write it with
+exactly the schema the instruction gives (one entry per result, the same
+tokens as the bullets). The driver checks it against the report and merges it
+into the run's verdicts file, which the detector build reads.
 
 After updating the file, reply with the report path and a 3–5 bullet executive
 summary of what reproduced and what did not. Your final message is the

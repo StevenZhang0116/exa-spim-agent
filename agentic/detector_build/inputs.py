@@ -106,10 +106,76 @@ def manifest_ids(manifest_path: Path, project_root: Path) -> list[int]:
     return validated_ids
 
 
+def verdicts_evidence_by_id(
+    verdicts_path: Path,
+    project_root: Path,
+) -> dict[int, dict[str, str | None]] | None:
+    """Evidence from the discovery driver's merged verdicts JSON, or None without one.
+
+    The driver writes ``<RUN>.json[.predictive].verdicts.json`` from each fold
+    step's structured verdicts after checking them against the report, so this
+    is read before the report's bullets are parsed.
+    """
+    if not verdicts_path.is_file():
+        return None
+    try:
+        payload = json.loads(verdicts_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise SystemExit(
+            f"Cannot read verdicts {rel_to_root(verdicts_path, project_root)}: {exc}"
+        ) from exc
+    entries = payload.get("entries") if isinstance(payload, dict) else None
+    if payload.get("schema_version") != 1 or not isinstance(entries, dict):
+        raise SystemExit(
+            f"Verdicts {rel_to_root(verdicts_path, project_root)} must carry "
+            "schema_version 1 and an entries object."
+        )
+    evidence: dict[int, dict[str, str | None]] = {}
+    for key, phases in entries.items():
+        try:
+            hypothesis_id = int(key)
+        except (TypeError, ValueError):
+            raise SystemExit(
+                f"Verdicts {rel_to_root(verdicts_path, project_root)} has a "
+                f"non-integer id {key!r}."
+            ) from None
+        if not isinstance(phases, dict):
+            continue
+        verify = phases.get("verify") or {}
+        evidence[hypothesis_id] = {
+            "reproduction_status": (phases.get("reproduce") or {}).get("verdict"),
+            "statistical_verdict": verify.get("verdict"),
+            "post_correction_verdict": (phases.get("fix_tests") or {}).get("verdict"),
+            "deployability": verify.get("deployability"),
+        }
+    return evidence
+
+
+def _verdicts_paths_for(summary_path: Path) -> list[Path]:
+    """Candidate verdicts files beside ``<stem>.summary.md`` (predictive first)."""
+    name = summary_path.name
+    if not name.endswith(".summary.md"):
+        return []
+    stem = name[: -len(".summary.md")]
+    return [
+        summary_path.with_name(f"{stem}.json.predictive.verdicts.json"),
+        summary_path.with_name(f"{stem}.json.verdicts.json"),
+    ]
+
+
 def report_evidence_by_id(
     summary_path: Path,
     project_root: Path,
 ) -> dict[int, dict[str, str | None]]:
+    """Per hypothesis id, the report's verdict tokens.
+
+    The merged verdicts JSON beside the report is preferred when present (the
+    driver checked it against the report); otherwise the bullets are parsed.
+    """
+    for verdicts_path in _verdicts_paths_for(summary_path):
+        evidence = verdicts_evidence_by_id(verdicts_path, project_root)
+        if evidence is not None:
+            return evidence
     try:
         text = summary_path.read_text(encoding="utf-8")
     except OSError as exc:

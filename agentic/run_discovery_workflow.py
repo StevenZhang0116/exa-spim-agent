@@ -28,13 +28,18 @@ The PHASES, in order:
   2. reproduce   — [compute] run recorded code on ``--pkl`` → [compute] export
                    editable scripts → [agent] fix data-loading failures →
                    [compute] hash-detect and re-measure only changed scripts,
-                   merging them with the first pass → [agent] fold verdicts.
+                   merging them with the first pass → [compute] numeric diff of
+                   every recorded output against its rerun → [agent] fold verdicts.
   3. extrapolate — (only with ``--extra-pkl``) [compute] run the reproduced code
                    on each OTHER dataset → [agent] fold GENERALIZES/PARTIAL/
                    DOES-NOT-GENERALIZE/INCONCLUSIVE verdicts.
-  4. verify      — [agent] audit statistics/logic from recorded + reproduced
-                   results; assign SOUND/WEAK/MINOR/MAJOR/CRITICAL verdicts.
-  5. fix-tests   — [driver] select the flagged entries from the verdicts →
+  4. verify      — [compute] write the verifier's slice of the export →
+                   [agent] audit statistics/logic in batches of ids, assigning
+                   SOUND/WEAK/MINOR/MAJOR/CRITICAL verdicts → [driver] check
+                   the verdicts JSON and run Benjamini-Hochberg over its
+                   headline p-values → [agent] one synthesis turn for the
+                   run-wide section.
+  5. fix-tests   — [driver] select the flagged entries from the verdicts JSON →
                    [agent] author corrected scripts, one turn per batch of ids →
                    [compute] re-measure them (+extras) → [agent] fold
                    UPHELD/WEAKENED/OVERTURNED. (Compute+fold skipped if nothing
@@ -42,6 +47,12 @@ The PHASES, in order:
   6. feature-applicability — for split runs only, [agent] classifies the
                    minimum node-role requirement of each exact rerun/fixed
                    source → [driver] binds those judgments to source hashes.
+
+Every fold step writes its verdicts into the report AND into a per-phase
+verdicts JSON that the driver checks against the report and merges into
+``<RUN>[.predictive].verdicts.json``, which selection and the detector build
+read. The companions' baseline cards (``agentic/canonical_stats.py``) go into
+the verify and fix-tests instructions as the figure an increment must beat.
 
 Every step folds into ONE report whose top-level layout is fixed by
 ``REPORT_SECTION_ORDER`` (Header → Ranked Conclusions → Reproduction →
@@ -371,6 +382,44 @@ FIX_TESTS_LEDGER: str = "AUTHORED.json"
 # starts with this phrase (the verifier's marker for a test-level fault).
 TEST_FAULT_PREFIX: str = "Concrete test fault"
 
+# Every fold step also writes its verdicts as JSON (one file per phase, merged by
+# the driver into <RUN>[.predictive].verdicts.json after a check against the
+# report), so fix-tests selection and the detector build read tokens from a
+# schema instead of regexes over prose. The vocabulary is the report's.
+VERDICTS_SCHEMA_VERSION: int = 1
+VERDICT_VOCAB: dict[str, frozenset[str]] = {
+    "reproduce": frozenset({"REPRODUCED", "DIVERGED", "FAILED"}),
+    "generalize": frozenset({"GENERALIZES", "PARTIAL", "DOES-NOT-GENERALIZE", "INCONCLUSIVE"}),
+    "verify": frozenset({"SOUND", "WEAK", "MINOR", "MAJOR", "CRITICAL"}),
+    "deployability": frozenset({"BLIND-COMPUTABLE", "GT-REFERENCING"}),
+    "fix_tests": frozenset({"UPHELD", "WEAKENED", "OVERTURNED"}),
+}
+# The report bullet each phase's token also appears in (the cross-check).
+VERDICT_BULLETS: dict[str, str] = {
+    "reproduce": "Reproduction",
+    "generalize": "Generalization",
+    "verify": "Verdict",
+    "deployability": "Deployability",
+    "fix_tests": "Post-correction verdict",
+}
+# Baseline cards of the companions (pkl rel -> canonical_stats.baseline_card),
+# computed once at startup and printed into the verify / fix-tests
+# instructions so every agent cites the same figure to beat.
+BASELINE_CARDS: dict[str, dict] = {}
+CANONICAL_STATS_REL: str = "agentic/canonical_stats.py"
+# The verifier audits VERIFY_BATCH_SIZE entries per turn (one 91-entry turn took
+# 2790 s from a middle-truncated slice on 2026-10-19), then one synthesis turn
+# writes the run-wide section from the driver's verdict counts and its
+# Benjamini-Hochberg analysis of the structured headline p-values (BH_Q).
+VERIFY_BATCH_SIZE: int = 12
+BH_Q: float = 0.05
+VERIFY_LEDGER_SUFFIX: str = ".verify-ledger.json"
+# The recorded-data audit (agentic/recorded_audit.py) of the run export: ids
+# whose recorded output or code shows substituted data, for the predictive
+# selector and the verifier. Set per run by compute_recorded_audit.
+RECORDED_AUDIT: dict = {}
+RECORDED_AUDIT_REL: str | None = None
+
 
 def _scale_timeouts(n_records: int) -> tuple[int, int]:
     """Size the agent budget from the hypothesis count and report both budgets.
@@ -421,6 +470,81 @@ def predictive_manifest_path(json_path: Path) -> Path:
     return json_path.with_name(f"{json_path.stem}{PREDICTIVE_MANIFEST_SUFFIX}")
 
 
+def verdicts_path(json_rel: str) -> str:
+    """The run's merged verdicts JSON (project-relative), beside the export."""
+    scope = ".predictive" if DIRECTION == "predictive" else ""
+    return f"{json_rel}{scope}.verdicts.json"
+
+
+def recorded_audit_path(json_rel: str) -> str:
+    scope = ".predictive" if DIRECTION == "predictive" else ""
+    return f"{json_rel}{scope}.recorded-audit.json"
+
+
+def compute_recorded_audit(json_rel: str) -> dict:
+    """Run ``recorded_audit.py`` on the export; set the globals; return the audit."""
+    global RECORDED_AUDIT, RECORDED_AUDIT_REL
+    proc = subprocess.run(
+        [sys.executable, "agentic/recorded_audit.py", json_rel],
+        cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=600,
+    )
+    if proc.returncode != 0:
+        raise SystemExit(f"recorded audit of {json_rel} failed (exit {proc.returncode}): "
+                         + (proc.stderr or "").strip()[-800:])
+    RECORDED_AUDIT = json.loads(proc.stdout)
+    RECORDED_AUDIT_REL = recorded_audit_path(json_rel)
+    (PROJECT_ROOT / RECORDED_AUDIT_REL).write_text(proc.stdout, encoding="utf-8")
+    log(f"  [recorded-audit] {RECORDED_AUDIT['n_suspected']} of {RECORDED_AUDIT['n']} "
+        f"record(s) show substituted data: ids "
+        f"{', '.join(RECORDED_AUDIT['suspected_ids']) or 'none'} → {RECORDED_AUDIT_REL}")
+    return RECORDED_AUDIT
+
+
+def recorded_audit_rule() -> str:
+    """The recorded-data audit as instruction text ("" before it is computed)."""
+    if not RECORDED_AUDIT:
+        return ""
+    try:
+        from agentic.recorded_audit import audit_text
+    except ModuleNotFoundError:  # direct: python agentic/run_discovery_workflow.py
+        from recorded_audit import audit_text  # type: ignore[no-redef]
+    return audit_text(RECORDED_AUDIT, RECORDED_AUDIT_REL)
+
+
+def baseline_cards_path(json_rel: str) -> str:
+    scope = ".predictive" if DIRECTION == "predictive" else ""
+    return f"{json_rel}{scope}.baseline.json"
+
+
+def compute_baseline_cards(json_rel: str) -> dict[str, dict]:
+    """``canonical_stats.baseline_card`` of every companion npz, keyed by pkl rel.
+
+    Runs the module as a subprocess (the companion load and the baseline AP take
+    seconds) and writes the cards beside the export for the agents to read.
+    """
+    cards: dict[str, dict] = {}
+    for pkl_rel, files in sorted(COMPANIONS_BY_PKL.items()):
+        npz = next((f for f in files if f.endswith(".npz")), None)
+        if npz is None:
+            continue
+        proc = subprocess.run(
+            [sys.executable, CANONICAL_STATS_REL, "card", npz],
+            cwd=str(PROJECT_ROOT), capture_output=True, text=True, timeout=600,
+        )
+        if proc.returncode != 0:
+            raise SystemExit(
+                f"baseline card of {npz} failed (exit {proc.returncode}): "
+                + (proc.stderr or "").strip()[-800:]
+            )
+        cards[pkl_rel] = json.loads(proc.stdout)
+        log(f"  [baseline] {npz}: {cards[pkl_rel]['baseline']} AP "
+            f"{cards[pkl_rel]['baseline_ap']:.4f} on {cards[pkl_rel]['n_labeled']:,} "
+            f"labeled rows ({cards[pkl_rel]['n_pos']:,} positives).")
+    out = PROJECT_ROOT / baseline_cards_path(json_rel)
+    out.write_text(json.dumps(cards, indent=2), encoding="utf-8")
+    return cards
+
+
 def driver_log_path(json_path: Path) -> Path:
     """Default console-log path beside the run export.
 
@@ -456,7 +580,7 @@ def predictive_selection_instruction(json_rel: str, manifest_rel: str) -> str:
         "selected_ids or excluded. Preserve each ID's original JSON type, make "
         "selected_ids unique, and write valid JSON only. The driver will add "
         "source-hash and policy-version cache metadata after validation. Report "
-        "the selected IDs and output path."
+        "the selected IDs and output path. " + recorded_audit_rule()
     )
 
 
@@ -467,8 +591,9 @@ def rank_cmd(json_rel: str, *, include_code: bool = False) -> str:
     verifier stay in sync. ``json_rel`` is the run file path relative to the
     project root, so the helper ranks only that single file. With
     ``include_code`` the helper also emits each returned record's truncated
-    ``code`` / ``codeOutput`` so the verifier can audit only the selected report
-    set instead of loading the full multi-MB export.
+    ``code`` / ``codeOutput`` and its ``recorded_audit``; the ``verify-slice``
+    compute step writes that to a file so the verifier audits only the selected
+    report set instead of loading the full multi-MB export.
     """
     cmd = f"python agentic/rank_by_surprise.py {json_rel} {_top_flags()}"
     return cmd + " --include-code" if include_code else cmd
@@ -488,6 +613,7 @@ def rerun_argv(
     only_corrected: bool = False,
     extra_only: bool = False,
     checkpoint_rel: str | None = None,
+    outputs_dir_rel: str | None = None,
 ) -> list[str]:
     """Build the ``rerun_experiments.py`` argv for ONE run export + dataset pkl.
 
@@ -511,6 +637,8 @@ def rerun_argv(
       corrected directory.
     - ``checkpoint_rel``  : atomically persist and resume fingerprint-matching
       work items.
+    - ``outputs_dir_rel`` : also write each record's full stdout/stderr there
+      (the payload truncates them), for the output diff and the fold agents.
 
     Every run (not the export) gets ``--jobs JOBS``, and ``--install-missing``
     unless INSTALL_MISSING is off.
@@ -550,9 +678,17 @@ def rerun_argv(
         argv.append("--extra-only")
     if checkpoint_rel is not None:
         argv += ["--checkpoint", checkpoint_rel]
+    if outputs_dir_rel is not None:
+        argv += ["--outputs-dir", outputs_dir_rel]
     for p in extra_pkls_rel or []:
         argv += ["--extra-pkl", p]
     return argv
+
+
+def diff_argv(json_rel: str, results_rel: str, outputs_dir_rel: str) -> list[str]:
+    """``output_diff.py`` argv: numeric diff of recorded vs rerun outputs."""
+    return ["python", "agentic/output_diff.py", json_rel, results_rel,
+            "--outputs-dir", outputs_dir_rel]
 
 
 def run_compute(argv: list[str], out_rel: str | None) -> None:
@@ -691,6 +827,49 @@ def layout_rule(section: str) -> str:
     )
 
 
+def baseline_rule() -> str:
+    """The baseline cards as instruction text ("" without companions)."""
+    if not BASELINE_CARDS:
+        return ""
+    try:
+        from agentic.canonical_stats import card_text
+    except ModuleNotFoundError:  # direct: python agentic/run_discovery_workflow.py
+        from canonical_stats import card_text  # type: ignore[no-redef]
+    cards = " ".join(card_text(card) for _, card in sorted(BASELINE_CARDS.items()))
+    return (
+        f"{cards} Judge every increment against the card of the brain it was "
+        "measured on; an increment over a weaker fitted baseline, or a non-tie-aware "
+        "AP, is not an increment over the baseline. "
+    )
+
+
+def verdicts_rule(phase: str, phase_file_rel: str, ids_note: str) -> str:
+    """How a fold step writes its verdicts JSON (the driver merges and checks it)."""
+    fields = {
+        "reproduce": '{"verdict": "REPRODUCED|DIVERGED|FAILED", '
+                     '"code_source": "recorded|revised"}',
+        "generalize": '{"verdict": "GENERALIZES|PARTIAL|DOES-NOT-GENERALIZE|INCONCLUSIVE"}',
+        "verify": '{"verdict": "SOUND|WEAK|MINOR|MAJOR|CRITICAL", "test_fault": true|false '
+                  '(true only when the Statistical issues bullet starts with '
+                  f"'{TEST_FAULT_PREFIX}'), "
+                  '"deployability": "BLIND-COMPUTABLE|GT-REFERENCING", '
+                  '"headline": {"p": <two-sided p of the headline test or null>, '
+                  '"delta_ap": <headline AP increment or null>, '
+                  '"ci95": [<lo>, <hi>] or null, '
+                  '"baseline": "<what the increment was measured against>" or null}}',
+        "fix_tests": '{"verdict": "UPHELD|WEAKENED|OVERTURNED" or null when the corrected '
+                     'result is not USABLE, "generalization": '
+                     '"GENERALIZES|PARTIAL|DOES-NOT-GENERALIZE|INCONCLUSIVE" or null}',
+    }[phase]
+    return (
+        f"ALSO write {phase_file_rel}: valid JSON "
+        f'{{"phase": "{phase}", "entries": {{"<id>": {fields}, ...}}}} with one entry '
+        f"for {ids_note}, ids as strings, tokens exactly as in the report's bullets. "
+        "The driver checks it against the report and merges it into the run's "
+        "verdicts file; a token that disagrees with the report fails the step. "
+    )
+
+
 def excluded_rule() -> str:
     """What the summarize step must put in the trailing Excluded appendix.
 
@@ -815,6 +994,13 @@ def build_steps(
     repro_checkpoint_rel = f"{repro_rel}.checkpoint.json"
     extrap_checkpoint_rel = f"{extrap_rel}.checkpoint.json"
     corrected_checkpoint_rel = f"{corrected_rel}.checkpoint.json"
+    # Full per-record outputs (the JSONs truncate them); one dir per phase, so
+    # the remeasure rounds overwrite only the ids they ran.
+    repro_outputs_rel = f"{repro_rel}.outputs"
+    extrap_outputs_rel = f"{extrap_rel}.outputs"
+    corrected_outputs_rel = f"{corrected_rel}.outputs"
+    repro_diff_rel = f"{repro_rel}.diff.json"       # numeric diff recorded vs rerun
+    verdict_file = lambda phase: f"{json_rel}{scope_suffix}.{phase}-verdicts.json"  # noqa: E731
 
     steps: list[dict[str, object]] = []
     if DIRECTION == "predictive":
@@ -871,7 +1057,8 @@ def build_steps(
             "phase": "reproduce",
             "kind": "compute",
             "argv": rerun_argv(
-                json_rel, pkl_rel, checkpoint_rel=repro_raw_checkpoint_rel
+                json_rel, pkl_rel, checkpoint_rel=repro_raw_checkpoint_rel,
+                outputs_dir_rel=repro_outputs_rel,
             ),
             "out": repro_raw_rel,
             "failure_summary": True,
@@ -934,6 +1121,7 @@ def build_steps(
                 base_results_rel=repro_raw_rel,
                 only_changed=True,
                 checkpoint_rel=repro_checkpoint_rel,
+                outputs_dir_rel=repro_outputs_rel,
             ),
             "out": repro_rel,
             "failure_summary": True,
@@ -1002,32 +1190,57 @@ def build_steps(
                     base_results_rel=repro_rel,
                     only_changed=True,
                     checkpoint_rel=repro_checkpoint_rel,
+                    outputs_dir_rel=repro_outputs_rel,
                 ),
                 "out": repro_rel,
             }
         )
 
+    # The numeric diff of every recorded output against its rerun output, so the
+    # fold judges from a complete list of differences instead of reading 91
+    # pairs of outputs by eye (and the full outputs, which the JSON truncates).
+    steps.append(
+        {
+            "name": "reproduce-diff",
+            "phase": "reproduce",
+            "kind": "compute",
+            "argv": diff_argv(json_rel, repro_rel, repro_outputs_rel),
+            "out": repro_diff_rel,
+            "expects_file": repro_diff_rel,  # a resume past this step needs the diff
+        }
+    )
     steps.append(
         {
             "name": "reproduce-fold",
             "phase": "reproduce",
             "kind": "agent",
             "expects": ["Reproduction — Summary"],
+            "verdicts": {"phase": "reproduce", "file": verdict_file("reproduce"),
+                         "ids_from": repro_rel},
             "instruction": (
                 "Use the discovery-reproducer subagent to fold the reproduction "
                 "verdicts into the report. The driver has produced the final "
                 f"reproduction results JSON at {repro_rel} (each result marks its "
                 "`code_source` as recorded|revised, carries `result_status` / "
                 "`result_failure_reason`, and has `rerun_stdout` plus the recorded "
-                "`recorded_output`). Do NOT re-run anything. For each "
-                "record compare the fresh key numbers (test statistic, p-value, "
-                "effect size, n) to the recorded ones and assign a REPRODUCED / "
-                f"DIVERGED / FAILED verdict. Read {summary_rel} and fold the result "
+                f"`recorded_output`; the FULL outputs are in {repro_outputs_rel}/"
+                "hypo_<id>.stdout.txt) and the numeric diff of each recorded output "
+                f"against its rerun at {repro_diff_rel} (per id: `hint`, the "
+                "`counts` of exact/tiny/material value differences, every material "
+                "`mismatches` line pair, and lines present on one side only). Start "
+                "from that diff — it is the complete list of numeric differences — "
+                "and decide which differences are material: a headline statistic, "
+                "p-value, effect size or n that changes is DIVERGED; fit noise, "
+                "rounding, tie-order top-k counts or timings are not. Do NOT re-run "
+                "anything. Assign a REPRODUCED / DIVERGED / FAILED verdict per "
+                f"record. Read {summary_rel} and fold the result "
                 "INTO each hypothesis's existing ranked entry (append Reproduction / "
                 "Rerun result bullets in place, keeping prior bullets; note whether "
                 "the code was recorded or revised-loading), plus one "
                 "'## Reproduction — Summary' section. "
                 + layout_rule("## Reproduction — Summary")
+                + verdicts_rule("reproduce", verdict_file("reproduce"),
+                                "every result in the results JSON")
                 + "Report the path and which findings did NOT reproduce."
             ),
         }
@@ -1049,6 +1262,7 @@ def build_steps(
                     origin_results_rel=repro_rel,
                     extra_only=True,
                     checkpoint_rel=extrap_checkpoint_rel,
+                    outputs_dir_rel=extrap_outputs_rel,
                 ),
                 "out": extrap_rel,
                 # reproduce-export always runs before this step, so rerun_dir_rel
@@ -1064,6 +1278,7 @@ def build_steps(
                     origin_results_rel=repro_rel,
                     extra_only=True,
                     checkpoint_rel=extrap_checkpoint_rel,
+                    outputs_dir_rel=extrap_outputs_rel,
                 ),
             }
         )
@@ -1073,6 +1288,8 @@ def build_steps(
                 "phase": "extrapolate",
                 "kind": "agent",
                 "expects": ["Generalization — Summary"],
+                "verdicts": {"phase": "generalize", "file": verdict_file("generalize"),
+                             "ids_from": extrap_rel},
                 "instruction": (
                     "Use the discovery-extrapolator subagent to fold GENERALIZATION "
                     "verdicts into the report. The driver has already re-run each "
@@ -1087,7 +1304,10 @@ def build_steps(
                     "`origin-image-path` means the script was not run there because "
                     "it could not be, and `swallowed-input-error` / `zero-inputs` "
                     "mean it ran but read no data (its numbers are not a result). "
-                    "Do NOT re-run anything. For each hypothesis compare "
+                    f"The FULL outputs are in {extrap_outputs_rel}/hypo_<id>.<pkl stem>"
+                    ".stdout.txt (the JSON truncates them). "
+                    + baseline_rule()
+                    + "Do NOT re-run anything. For each hypothesis compare "
                     "the origin numbers to each extra dataset's numbers (direction, "
                     "significance, effect size) and assign GENERALIZES / PARTIAL / "
                     "DOES-NOT-GENERALIZE / INCONCLUSIVE (INCONCLUSIVE when a script "
@@ -1096,52 +1316,46 @@ def build_steps(
                     "Generalization / Across datasets bullets in place, keeping prior "
                     "bullets), plus one '## Generalization — Summary' section. "
                     + layout_rule("## Generalization — Summary")
+                    + verdicts_rule("generalize", verdict_file("generalize"),
+                                    "every result in the results JSON")
                     + "Report the path and which findings do NOT generalize."
                 ),
             }
         )
 
+    # Verify: the driver writes the verifier's slice of the export once, the
+    # verifier audits it in batches (run_verify_batches), the driver computes the
+    # verdict counts and the Benjamini-Hochberg analysis from the structured
+    # verdicts, and one synthesis turn writes the run-wide section.
+    slice_rel = f"{json_rel}{scope_suffix}.verify-slice.json"
+    steps.append(
+        {
+            "name": "verify-slice",
+            "phase": "verify",
+            "kind": "compute",
+            "argv": shlex.split(rank_cmd(json_rel, include_code=True))
+            + ["--max-code-chars", "20000"],
+            "out": slice_rel,
+            "expects_file": slice_rel,  # the batch turns read it after a resume
+        }
+    )
     steps.append(
         {
             "name": "verify-statistics-and-logic",
             "phase": "verify",
             "kind": "agent",
             "expects": ["Statistical Verification — Summary"],
-            "instruction": (
-                "Use the discovery-verifier subagent to audit whether each "
-                "hypothesis's statistical test and its inductive/deductive "
-                "reasoning are correct. For the recorded code, codeOutput and "
-                f"analysis, run `{rank_cmd(json_rel, include_code=True)}` and read "
-                "its stdout JSON — that already contains ONLY the reported "
-                "records selected for this report, each with the "
-                "recorded `code`, `codeOutput`, `analysis` and `review` "
-                "(code/codeOutput middle-truncated); audit from that SLICE, do "
-                f"NOT read the full multi-MB export {json_rel}. Also use the "
-                "freshly reproduced results the previous rerun step folded into "
-                f"{summary_rel} (do NOT re-run experiments yourself; use the "
-                "rerun output already in the report). Check test choice, "
-                "assumptions, power, effect size, p-value interpretation, the "
-                "'failed-to-reject != null-is-true' fallacy, conclusion "
-                "overreach, whether a finding that FAILED or DIVERGED on rerun "
-                "should be downgraded, and a file-wide multiple-comparisons (FDR) "
-                f"analysis. Read {summary_rel} and fold the audit INTO each "
-                "hypothesis's existing ranked entry (append Verdict / Test / "
-                "Statistical issues / Logic issues / Deployability / Verdict "
-                "rationale bullets in place, keeping the summary, reproduction "
-                "and generalization bullets). Use the 5-level verdict scheme "
-                "SOUND | WEAK | MINOR | MAJOR | CRITICAL (the driver selects the "
-                "fix-tests set from MAJOR/CRITICAL entries plus MINOR entries whose "
-                f"'Statistical issues' bullet starts with '{TEST_FAULT_PREFIX}:' — "
-                "start it that way only when the test itself is faulty), and "
-                "classify each entry's Deployability as "
-                "BLIND-COMPUTABLE | GT-REFERENCING per the subagent spec — the "
-                "detector-build workflow mechanically excludes GT-REFERENCING "
-                "features, so judge the FEATURE's inputs (not its labels). Add one "
-                "file-wide '## Statistical Verification — Summary' section with the "
-                "verdict breakdown and a Benjamini–Hochberg FDR subsection. "
-                + layout_rule("## Statistical Verification — Summary")
-                + "Report the path and the most serious problems found."
-            ),
+            "verdicts": {"phase": "verify", "file": verdict_file("verify"),
+                         "ids_from": repro_rel},
+            "verify_batches": {
+                "summary": summary_rel,
+                "slice": slice_rel,
+                "rerun_dir": rerun_dir_rel,
+                "verdicts_file": verdict_file("verify"),
+                "ids_from": repro_rel,
+                "ledger": f"{json_rel}{scope_suffix}{VERIFY_LEDGER_SUFFIX}",
+                "mc": f"{json_rel}{scope_suffix}.multiple-comparisons.json",
+            },
         }
     )
 
@@ -1165,6 +1379,7 @@ def build_steps(
                 "summary": summary_rel,
                 "rerun_dir": rerun_dir_rel,
                 "fixed_dir": fixed_dir_rel,
+                "verdicts": verdicts_path(json_rel),
             },
         }
     )
@@ -1179,6 +1394,7 @@ def build_steps(
                 extra_pkls_rel=extra_pkls_rel,
                 only_corrected=True,
                 checkpoint_rel=corrected_checkpoint_rel,
+                outputs_dir_rel=corrected_outputs_rel,
             ),
             "out": corrected_rel,
             # No corrected scripts → nothing to re-measure; skip the run entirely.
@@ -1192,6 +1408,7 @@ def build_steps(
                 corrected_dir_rel=fixed_dir_rel, extra_pkls_rel=extra_pkls_rel,
                 only_corrected=True,
                 checkpoint_rel=corrected_checkpoint_rel,
+                outputs_dir_rel=corrected_outputs_rel,
             ),
         }
     )
@@ -1208,12 +1425,19 @@ def build_steps(
             "skip_if_no_scripts_in": fixed_dir_rel,
             "skip_if_missing": corrected_rel,
             "expects": ["Statistical Test Corrections — Summary"],
+            "verdicts": {"phase": "fix_tests", "file": verdict_file("fix_tests"),
+                         "ids_from": corrected_rel, "corrected_only": True},
             "instruction": (
                 "Use the discovery-test-result-folder subagent to fold CORRECTED-test "
                 "verdicts into the report. The driver has re-measured the corrected "
                 f"scripts; read the results JSON at {corrected_rel} and use the "
                 f"`code_source: corrected` results and their `result_status` / "
-                f"`result_failure_reason` fields{corrected_note} Do NOT re-run "
+                f"`result_failure_reason` fields{corrected_note} The FULL outputs "
+                f"are in {corrected_outputs_rel}/ (hypo_<id>.stdout.txt, and "
+                "hypo_<id>.<pkl stem>.stdout.txt per extra dataset); corrected "
+                "scripts print a CANONICAL block (ap, delta, bootstrap ci95, "
+                "p_one_sided) measured by agentic/canonical_stats.py against the raw "
+                "baseline — judge from it. Do NOT re-run "
                 "anything. For each corrected hypothesis assign UPHELD / WEAKENED / "
                 "OVERTURNED by comparing the corrected numbers (statistic, p, effect "
                 "size + CI) to the original"
@@ -1237,6 +1461,8 @@ def build_steps(
                 "the verdict bullet only where allowed above), "
                 "plus one '## Statistical Test Corrections — Summary' section. "
                 + layout_rule("## Statistical Test Corrections — Summary")
+                + verdicts_rule("fix_tests", verdict_file("fix_tests"),
+                                "every `code_source: corrected` result")
                 + "Report the path and which findings changed under the "
                 "correct test."
             ),
@@ -1765,14 +1991,34 @@ _VERDICT_RE = re.compile(
 _STAT_ISSUES_RE = re.compile(r"^- \*\*Statistical issues:\*\*\s*(.*)$", re.MULTILINE)
 
 
-def fix_tests_selection(summary_path: Path) -> tuple[list[tuple[str, str]], list[str]]:
+def fix_tests_selection(
+    summary_path: Path, verdicts_file: Path | None = None,
+) -> tuple[list[tuple[str, str]], list[str]]:
     """The ranked entries the test fixer must correct, and the entries without a verdict.
 
     Returns ``([(id, verdict), ...] in rank order, [ids lacking a Verdict])``. An
     entry is selected when its verdict is MAJOR/CRITICAL, or MINOR with a
-    ``Statistical issues`` bullet that starts with ``TEST_FAULT_PREFIX``.
+    concrete test fault. The merged verdicts JSON decides when it carries the
+    verify phase (the driver checked it against the report); otherwise the
+    report's ``Verdict`` bullet and a ``Statistical issues`` bullet starting with
+    ``TEST_FAULT_PREFIX`` are parsed.
     """
     text = summary_path.read_text(encoding="utf-8", errors="replace")
+    if verdicts_file is not None and verdicts_file.is_file():
+        entries = _load_verdicts(verdicts_file).get("entries") or {}
+        if any("verify" in entry for entry in entries.values()):
+            # Report order; an id the report no longer carries is never selected.
+            order = _report_entry_ids(text)
+            selected = [
+                (rid, entries[rid]["verify"]["verdict"]) for rid in order
+                if rid in entries and "verify" in entries[rid] and (
+                    entries[rid]["verify"]["verdict"] in ("MAJOR", "CRITICAL")
+                    or (entries[rid]["verify"]["verdict"] == "MINOR"
+                        and entries[rid]["verify"].get("test_fault"))
+                )
+            ]
+            unjudged = [rid for rid in order if "verify" not in (entries.get(rid) or {})]
+            return selected, unjudged
     start = text.find(RANKED_SECTION)
     if start < 0:
         raise SystemExit(f"{summary_path.name} has no '{RANKED_SECTION}' section.")
@@ -1830,7 +2076,17 @@ def fix_tests_author_instruction(
         "(print an effect size with a CI, and a cluster/permutation p-value where "
         "independence is violated), keeping the same data and quantities. Echo the "
         "original recorded numbers in a comment. If an entry turns out to need no "
-        "test change, write no script for it and say why."
+        "test change, write no script for it and say why. "
+        f"Every corrected ranking test MUST measure with `import canonical_stats` "
+        f"({CANONICAL_STATS_REL}; the runner links it beside the script, so import "
+        "it by that bare name and never copy or edit it): load the companion with "
+        "`canonical_stats.load_companion`, fit on `canonical_stats.fit_rows(comp, f)` "
+        "and score `canonical_stats.held_rows(comp, f)` per fold, make scores finite "
+        "with `canonical_stats.finite`, and print `canonical_stats.report(comp, "
+        "scores, name=...)` for the corrected model (and for each variant you keep): "
+        "its CANONICAL block carries the tie-aware AP, the raw baseline, the paired "
+        "bootstrap interval of the increment and the labeled shares. "
+        + baseline_rule()
         + draft_note
         + " Check each script cheaply (compile it, or run its statistics on a small "
         "synthetic input); never load a dataset pkl. Report which ids you wrote "
@@ -1885,7 +2141,8 @@ async def run_fix_tests_author(client: ClaudeSDKClient, spec: dict[str, str]) ->
     summary_path = PROJECT_ROOT / spec["summary"]
     fixed_rel = spec["fixed_dir"]
     fixed_dir = PROJECT_ROOT / fixed_rel
-    selected, unjudged = fix_tests_selection(summary_path)
+    verdicts_file = PROJECT_ROOT / spec["verdicts"] if spec.get("verdicts") else None
+    selected, unjudged = fix_tests_selection(summary_path, verdicts_file)
     if unjudged:
         log(f"  [fix-tests] WARNING: {len(unjudged)} entr(ies) carry no Verdict and "
             f"cannot be selected: ids {', '.join(unjudged)}.")
@@ -2007,6 +2264,437 @@ def resume_index(
             + "; ".join(missing)
         )
     return index
+
+
+# --- Structured verdicts ------------------------------------------------------
+# Each fold step writes <RUN>.<phase>-verdicts.json; the driver checks it
+# (schema, vocabulary, the ids the phase measured, agreement with the report's
+# bullets), asks for one reconciliation turn on a problem, and merges it into
+# <RUN>.verdicts.json: {"schema_version", "run", "entries": {id: {phase: {...}}}}.
+_BULLET_TOKEN_RE = {
+    label: re.compile(rf"^-\s+\*\*{re.escape(label)}:\*\*\s*([A-Z][A-Z-]*)", re.MULTILINE)
+    for label in VERDICT_BULLETS.values()
+}
+
+
+def _load_verdicts(path: Path) -> dict:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _ranked_entries(text: str) -> list[str]:
+    """The ``### N.`` entry texts of the Ranked Conclusions section, in order."""
+    start = text.find(RANKED_SECTION)
+    body = text[start + len(RANKED_SECTION):] if start >= 0 else text
+    nxt = re.search(r"^## ", body, re.MULTILINE)
+    if nxt:
+        body = body[:nxt.start()]
+    return re.split(r"^### ", body, flags=re.MULTILINE)[1:]
+
+
+def _report_entry_ids(text: str) -> list[str]:
+    """Ids of the ranked entries, in report order."""
+    ids = []
+    for entry in _ranked_entries(text):
+        match = _ENTRY_ID_RE.search(entry)
+        if match:
+            ids.append(match.group(1))
+    return ids
+
+
+def _report_tokens(text: str) -> dict[str, dict[str, str]]:
+    """Per entry id, the token of each verdict bullet the report carries."""
+    tokens: dict[str, dict[str, str]] = {}
+    for entry in _ranked_entries(text):
+        match = _ENTRY_ID_RE.search(entry)
+        if match is None:
+            continue
+        found = {}
+        for label, pattern in _BULLET_TOKEN_RE.items():
+            hit = pattern.search(entry)
+            if hit:
+                found[label] = hit.group(1)
+        tokens[match.group(1)] = found
+    return tokens
+
+
+def _phase_required_ids(spec: dict) -> list[str]:
+    """The ids a phase's verdicts file must cover: what its results JSON measured."""
+    results = _load_results(str(spec["ids_from"]))
+    if spec.get("corrected_only"):
+        results = [r for r in results if r.get("code_source") == "corrected"]
+    return [str(r.get("id")) for r in results]
+
+
+def _check_phase_verdicts(spec: dict, summary_path: Path) -> list[str]:
+    """Problems with a phase's verdicts file, or [] when it is good."""
+    phase, file_rel = str(spec["phase"]), str(spec["file"])
+    path = PROJECT_ROOT / file_rel
+    if not path.is_file():
+        return [f"{file_rel} was not written"]
+    payload = _load_verdicts(path)
+    entries = payload.get("entries")
+    if payload.get("phase") != phase or not isinstance(entries, dict):
+        return [f'{file_rel} must be {{"phase": "{phase}", "entries": {{...}}}}']
+    problems = []
+    required = _phase_required_ids(spec)
+    missing = [rid for rid in required if rid not in entries]
+    if missing:
+        problems.append(f"missing entries for ids {', '.join(missing[:20])}")
+    extra = [rid for rid in entries if rid not in set(required)]
+    if extra:
+        problems.append(f"entries for ids the phase did not measure: {', '.join(extra[:20])}")
+    text = summary_path.read_text(encoding="utf-8", errors="replace") if summary_path.is_file() else ""
+    report = _report_tokens(text)
+    for rid in required:
+        entry = entries.get(rid)
+        if entry is None:
+            continue
+        if not isinstance(entry, dict):
+            problems.append(f"id {rid}: entry is not an object")
+            continue
+        token = entry.get("verdict")
+        valid = token in VERDICT_VOCAB[phase]
+        if phase == "fix_tests" and token is None:
+            pass  # no verdict for a corrected result that was not USABLE
+        elif not valid:
+            problems.append(f"id {rid}: verdict {token!r} is not one of "
+                            f"{sorted(VERDICT_VOCAB[phase])}")
+        bullet = report.get(rid, {}).get(VERDICT_BULLETS[phase])
+        if valid and bullet is not None and bullet != token:
+            problems.append(f"id {rid}: JSON says {token} but the report's "
+                            f"{VERDICT_BULLETS[phase]} bullet says {bullet}")
+        if valid and bullet is None:
+            problems.append(f"id {rid}: the report has no {VERDICT_BULLETS[phase]} bullet")
+        if phase == "verify":
+            if not isinstance(entry.get("test_fault"), bool):
+                problems.append(f"id {rid}: test_fault must be true or false")
+            dep = entry.get("deployability")
+            if dep not in VERDICT_VOCAB["deployability"]:
+                problems.append(f"id {rid}: deployability {dep!r} is not one of "
+                                f"{sorted(VERDICT_VOCAB['deployability'])}")
+            dep_bullet = report.get(rid, {}).get("Deployability")
+            if dep_bullet is not None and dep in VERDICT_VOCAB["deployability"] and dep_bullet != dep:
+                problems.append(f"id {rid}: JSON deployability {dep} but the report says {dep_bullet}")
+        if phase == "fix_tests":
+            gen = entry.get("generalization")
+            if gen is not None and gen not in VERDICT_VOCAB["generalize"]:
+                problems.append(f"id {rid}: generalization {gen!r} is not one of "
+                                f"{sorted(VERDICT_VOCAB['generalize'])}")
+    return problems
+
+
+def _verdicts_repair_instruction(spec: dict, problems: list[str], summary_rel: str) -> str:
+    listed = "\n".join(f"- {p}" for p in problems[:40])
+    return (
+        f"The verdicts JSON {spec['file']} you wrote for the {spec['phase']} phase "
+        f"does not pass the driver's check against {summary_rel}:\n{listed}\n"
+        "Reconcile them: the report's bullets are authoritative for a token they "
+        "carry, and the JSON must hold exactly one entry per id the phase measured, "
+        "with tokens from the vocabulary. Where the report lacks the bullet, add it "
+        "to that entry. Change nothing else in the report. Report what you fixed."
+    )
+
+
+def _reset_verdicts(json_rel: str) -> None:
+    """Remove a previous run's verdict files so a fresh run never inherits entries.
+
+    A phase file is rewritten by its fold step, but the merged file keeps every
+    id it ever saw; an id the new selection dropped would otherwise linger.
+    """
+    scope = ".predictive" if DIRECTION == "predictive" else ""
+    paths = [PROJECT_ROOT / verdicts_path(json_rel),
+             PROJECT_ROOT / f"{json_rel}{scope}{VERIFY_LEDGER_SUFFIX}"] + [
+        PROJECT_ROOT / f"{json_rel}{scope}.{phase}-verdicts.json"
+        for phase in VERDICT_VOCAB if phase != "deployability"
+    ]
+    removed = []
+    for path in paths:
+        if path.is_file():
+            path.unlink()
+            removed.append(path.name)
+    if removed:
+        log(f"  [verdicts] removed previous verdict file(s): {', '.join(removed)}.")
+
+
+def _merge_phase_verdicts(spec: dict, json_rel: str) -> None:
+    """Fold a checked phase file into the run's merged verdicts JSON."""
+    phase = str(spec["phase"])
+    payload = _load_verdicts(PROJECT_ROOT / str(spec["file"]))
+    merged_path = PROJECT_ROOT / verdicts_path(json_rel)
+    merged = _load_verdicts(merged_path) if merged_path.is_file() else {}
+    if merged.get("schema_version") != VERDICTS_SCHEMA_VERSION:
+        merged = {"schema_version": VERDICTS_SCHEMA_VERSION, "run": json_rel,
+                  "entries": {}}
+    entries = merged.setdefault("entries", {})
+    for rid, entry in (payload.get("entries") or {}).items():
+        entries.setdefault(str(rid), {})[phase] = entry
+    merged.setdefault("phases", {})[phase] = {
+        "file": str(spec["file"]),
+        "updated": datetime.now().isoformat(timespec="seconds"),
+        "n": len(payload.get("entries") or {}),
+    }
+    tmp = merged_path.with_name(f".{merged_path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(merged, indent=2, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, merged_path)
+    log(f"  [verdicts] merged {len(payload.get('entries') or {})} {phase} entr(ies) "
+        f"into {verdicts_path(json_rel)}.")
+
+
+async def _settle_verdicts(client, step: dict, summary_path: Path, summary_rel: str,
+                           json_rel: str) -> None:
+    """Check a fold step's verdicts file, reconcile once if needed, then merge it."""
+    verdict_spec = step.get("verdicts")
+    if not verdict_spec:
+        return
+    name = str(step["name"])
+    problems = _check_phase_verdicts(dict(verdict_spec), summary_path)
+    if problems:
+        log(f"  [verdicts] {len(problems)} problem(s) in {verdict_spec['file']}; "
+            "requesting a reconciliation turn.")
+        final_text = await run_step(client, {
+            "name": f"{name}-verdicts-repair",
+            "resume_from": name,
+            "instruction": _verdicts_repair_instruction(dict(verdict_spec), problems,
+                                                        summary_rel),
+        })
+        print(final_text.strip())
+        problems = _check_phase_verdicts(dict(verdict_spec), summary_path)
+        if problems:
+            raise SystemExit(
+                f"{verdict_spec['file']} still disagrees with {summary_rel} after a "
+                "reconciliation turn: " + "; ".join(problems[:10])
+                + f". Rerun with --resume-from {name}."
+            )
+    _merge_phase_verdicts(dict(verdict_spec), json_rel)
+
+
+# --- Verify in batches -----------------------------------------------------------
+
+def verify_batch_instruction(spec: dict, ids: list[str], k: int, n: int) -> str:
+    """One verifier turn: audit exactly ``ids`` and write their verdicts."""
+    return (
+        "Use the discovery-verifier subagent to audit exactly these hypothesis ids: "
+        f"{', '.join(ids)} (batch {k} of {n}; the driver gives the other ids to other "
+        "turns, so touch no other entry and do NOT write the run-wide summary section, "
+        f"which a later turn writes). Read each id's record from the slice at "
+        f"{spec['slice']} (JSON with `records`: the recorded `code`, `codeOutput`, "
+        "`analysis`, `review` and a `recorded_audit` per record; the full exported "
+        f"script is {spec['rerun_dir']}/hypo_<id>.py when the truncated code cuts a line "
+        f"you need) and use the reproduction and generalization bullets already in "
+        f"{spec['summary']}. Do NOT re-run experiments. Check test choice, assumptions, "
+        "power, effect size, p-value interpretation, the 'failed-to-reject != null-is-"
+        "true' fallacy, conclusion overreach, and whether a finding that FAILED, "
+        "DIVERGED or did not generalize should be downgraded. "
+        + baseline_rule()
+        + f"The reference definitions of the tie-aware AP, the raw baseline and the "
+        f"paired bootstrap are in {CANONICAL_STATS_REL}; a record whose test departs "
+        "from them (a fitted or non-tie-aware baseline, unpurged folds, no paired "
+        "interval) has a concrete test fault. "
+        + recorded_audit_rule()
+        + f"Fold the audit INTO each of these ids' existing ranked entries in "
+        f"{spec['summary']} (append Verdict / Test / Statistical issues / Logic issues / "
+        "Deployability / Verdict rationale bullets in place, keeping the prior bullets) "
+        "with the 5-level verdict scheme SOUND | WEAK | MINOR | MAJOR | CRITICAL (a MINOR "
+        f"whose test itself is faulty starts its 'Statistical issues' bullet with "
+        f"'{TEST_FAULT_PREFIX}:') and Deployability BLIND-COMPUTABLE | GT-REFERENCING per "
+        "the subagent spec, judged from the FEATURE's inputs. "
+        + verdicts_rule("verify", str(spec["verdicts_file"]),
+                        "each of these ids (add or replace their entries in the file "
+                        "and keep the entries other turns wrote)")
+        + "Report the ids audited and their verdicts."
+    )
+
+
+def verify_synthesis_instruction(spec: dict, mc_text: str, counts: dict[str, int]) -> str:
+    """The last verifier turn: the run-wide section from the driver's figures."""
+    breakdown = ", ".join(f"{token} {counts.get(token, 0)}"
+                          for token in ("SOUND", "WEAK", "MINOR", "MAJOR", "CRITICAL"))
+    return (
+        "Use the discovery-verifier subagent for the run-wide synthesis of the audit. "
+        f"Every ranked entry in {spec['summary']} now carries Verdict / Test / Statistical "
+        "issues / Logic issues / Deployability bullets written by the batch turns, and "
+        f"{spec['verdicts_file']} holds their structured verdicts. From that file the "
+        f"driver counted the verdicts ({sum(counts.values())} audited: {breakdown}) and "
+        f"ran the Benjamini-Hochberg analysis, written to {spec['mc']}: {mc_text} "
+        "Read the entries (not the raw export) and add one '## Statistical Verification "
+        "— Summary' section containing: the audited count and verdict breakdown (the "
+        "driver's counts); a 'Multiple comparisons' subsection that states the driver's "
+        "figures (do not recompute them) and names which survivors are compromised by a "
+        "test fault, a reversal on another brain or a handicapped baseline; and a "
+        "one-paragraph synthesis of the most serious problems, cross-referenced to entry "
+        "number and id, including cross-entry issues (one bug shared by several records, "
+        "sign conventions in conflict, features whose names misstate their inputs). You "
+        "MAY revise an entry's verdict for a cross-entry reason: then change both its "
+        f"bullet and its entry in {spec['verdicts_file']}. "
+        + layout_rule("## Statistical Verification — Summary")
+        + "Report the path and the most serious problems found."
+    )
+
+
+def multiple_comparisons(entries: dict, *, q: float = BH_Q, m_total: int | None = None) -> dict:
+    """Benjamini-Hochberg over the verify entries' headline two-sided p-values.
+
+    ``m`` is the number of entries with a usable p; ``m_total`` (every hypothesis
+    of the export, untested and excluded ones counted as nulls) gives a second,
+    stricter survivor count. A p at or below the 1,000-draw floor is counted.
+    """
+    p_by_id = {}
+    missing = []
+    for rid, phases in entries.items():
+        head = ((phases.get("verify") or {}).get("headline") or {})
+        p = head.get("p") if isinstance(head, dict) else None
+        if isinstance(p, (int, float)) and not isinstance(p, bool) and 0 <= p <= 1:
+            p_by_id[rid] = float(p)
+        else:
+            missing.append(rid)
+    ordered = sorted(p_by_id.items(), key=lambda kv: (kv[1], str(kv[0])))
+    m = len(ordered)
+
+    def survivors(m_eff: int) -> list[str]:
+        if not m_eff:
+            return []
+        passing = [i for i, (_, p) in enumerate(ordered, start=1) if p <= i * q / m_eff]
+        return [rid for rid, _ in ordered[:passing[-1]]] if passing else []
+
+    kept = survivors(m)
+    return {
+        "q": q,
+        "m": m,
+        "m_total": m_total if m_total and m_total > m else m,
+        "n_missing": len(missing),
+        "missing_ids": missing,
+        "n_nominal": sum(1 for _, p in ordered if p < 0.05),
+        "expected_false_positives": round(0.05 * m, 2),
+        "n_at_floor": sum(1 for _, p in ordered if p <= 0.002),
+        "survivors": kept,
+        "largest_passing_p": max((p_by_id[r] for r in kept), default=None),
+        "threshold": len(kept) * q / m if m else None,
+        "survivors_m_total": survivors(m_total) if m_total and m_total > m else kept,
+        "borderline": [rid for rid, p in ordered if 0.001 < p < 0.05 and rid not in set(kept)],
+        "p_by_id": dict(ordered),
+    }
+
+
+def multiple_comparisons_text(mc: dict) -> str:
+    def ids(xs) -> str:
+        return ", ".join(str(x) for x in xs) or "none"
+
+    largest = (f"{mc['largest_passing_p']:.4g}" if mc["largest_passing_p"] is not None
+               else "n/a")
+    return (
+        f"BH at q = {mc['q']} over m = {mc['m']} extractable two-sided headline p-values "
+        f"({mc['n_missing']} entr(ies) without one: {ids(mc['missing_ids'])}): "
+        f"{mc['n_nominal']} have p < 0.05 against about {mc['expected_false_positives']} "
+        f"expected by chance; {len(mc['survivors'])} survive (largest passing p "
+        f"{largest}): {ids(mc['survivors'])}. With m = {mc['m_total']} (every hypothesis "
+        f"of the export, untested and excluded ones as nulls) {len(mc['survivors_m_total'])} "
+        f"survive: {ids(mc['survivors_m_total'])}. Borderline 0.001 < p < 0.05 that do not "
+        f"survive: {ids(mc['borderline'])}. {mc['n_at_floor']} p-value(s) sit at or below "
+        "the 1,000-draw floor (0.002)."
+    )
+
+
+def _verify_ledger(path: Path) -> dict[str, dict]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    ids = payload.get("ids") if isinstance(payload, dict) else None
+    return ids if isinstance(ids, dict) else {}
+
+
+def _save_verify_ledger(path: Path, ledger: dict[str, dict]) -> None:
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps({"ids": ledger}, indent=2, sort_keys=True) + "\n",
+                   encoding="utf-8")
+    os.replace(tmp, path)
+
+
+async def run_verify_batches(client: ClaudeSDKClient, spec: dict[str, str]) -> None:
+    """Audit the ranked entries in batches, then one synthesis turn.
+
+    Ids the ledger records as audited whose entry still carries a Verdict bullet
+    are skipped, so a resumed run audits only the open ids. After the batches
+    the driver checks the verdicts file (one reconciliation turn on a problem),
+    computes the Benjamini-Hochberg analysis from its headline p-values, and
+    hands both to the synthesis turn that writes the run-wide section.
+    """
+    summary_path = PROJECT_ROOT / spec["summary"]
+    text = summary_path.read_text(encoding="utf-8", errors="replace")
+    ids = _report_entry_ids(text)
+    if not ids:
+        raise SystemExit(f"{spec['summary']} has no ranked entries to audit.")
+    ledger_path = PROJECT_ROOT / spec["ledger"]
+    ledger = _verify_ledger(ledger_path)
+    judged = _report_tokens(text)
+    pending = [rid for rid in ids
+               if not (ledger.get(rid, {}).get("status") == "audited"
+                       and "Verdict" in judged.get(rid, {}))]
+    log(f"  [verify] {len(ids)} ranked entr(ies); {len(ids) - len(pending)} already "
+        f"audited, {len(pending)} open.")
+    batches = [pending[i:i + VERIFY_BATCH_SIZE]
+               for i in range(0, len(pending), VERIFY_BATCH_SIZE)]
+    for k, batch in enumerate(batches, start=1):
+        log(f"  [verify] batch {k}/{len(batches)}: ids {', '.join(batch)} "
+            f"(budget {AGENT_STEP_CEILING_S}s).")
+        turn = {
+            "name": f"verify-batch-{k}",
+            "resume_from": "verify-statistics-and-logic",
+            "timeout_s": AGENT_STEP_CEILING_S,
+            "instruction": verify_batch_instruction(spec, batch, k, len(batches)),
+        }
+        print((await run_step(client, turn)).strip())
+        judged = _report_tokens(summary_path.read_text(encoding="utf-8", errors="replace"))
+        for rid in batch:
+            if "Verdict" in judged.get(rid, {}):
+                ledger[rid] = {"status": "audited"}
+            else:
+                log(f"  [verify] WARNING: id {rid} has no Verdict bullet after batch {k}.")
+        _save_verify_ledger(ledger_path, ledger)
+
+    verdict_spec = {"phase": "verify", "file": spec["verdicts_file"],
+                    "ids_from": spec["ids_from"]}
+    problems = _check_phase_verdicts(verdict_spec, summary_path)
+    if problems:
+        log(f"  [verdicts] {len(problems)} problem(s) in {spec['verdicts_file']} after the "
+            "batches; requesting a reconciliation turn.")
+        repair = {
+            "name": "verify-batches-verdicts-repair",
+            "resume_from": "verify-statistics-and-logic",
+            "instruction": _verdicts_repair_instruction(verdict_spec, problems,
+                                                        str(spec["summary"])),
+        }
+        print((await run_step(client, repair)).strip())
+        problems = _check_phase_verdicts(verdict_spec, summary_path)
+        if problems:
+            raise SystemExit(
+                f"{spec['verdicts_file']} still disagrees with {spec['summary']} after "
+                "a reconciliation turn: " + "; ".join(problems[:10])
+                + ". Rerun with --resume-from verify-statistics-and-logic."
+            )
+    entries = _load_verdicts(PROJECT_ROOT / spec["verdicts_file"]).get("entries") or {}
+    try:
+        m_total = int(json.loads((PROJECT_ROOT / spec["slice"]).read_text(
+            encoding="utf-8")).get("n_total") or 0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        m_total = 0
+    mc = multiple_comparisons({rid: {"verify": entry} for rid, entry in entries.items()},
+                              m_total=m_total)
+    (PROJECT_ROOT / spec["mc"]).write_text(json.dumps(mc, indent=2), encoding="utf-8")
+    counts = Counter(str(entry.get("verdict")) for entry in entries.values())
+    log(f"  [verify] {multiple_comparisons_text(mc)}")
+    synthesis = {
+        "name": "verify-synthesis",
+        "resume_from": "verify-statistics-and-logic",
+        "timeout_s": AGENT_STEP_CEILING_S,
+        "instruction": verify_synthesis_instruction(spec, multiple_comparisons_text(mc),
+                                                    dict(counts)),
+    }
+    print((await run_step(client, synthesis)).strip())
 
 
 def _failure_brief(results_rel: str, code_dir_rel: str, limit: int = 20) -> str:
@@ -2204,6 +2892,26 @@ def survey_prior_artifacts(json_path: Path, direction: str) -> list[tuple[Path, 
             result_path.with_name(f"{result_path.name}.checkpoint.json"),
             "prior compute checkpoint; fingerprint-validated before reuse",
         )
+        add(result_path.with_name(f"{result_path.name}.outputs"),
+            "full per-record outputs of a previous run")
+        add(result_path.with_name(f"{result_path.name}.diff.json"),
+            "previous recorded-vs-rerun output diff")
+    for phase in VERDICT_VOCAB:
+        if phase != "deployability":
+            add(json_path.with_name(f"{json_path.name}{scope}.{phase}-verdicts.json"),
+                "a fold step's verdicts JSON from a previous run")
+    add(json_path.with_name(f"{json_path.name}{scope}.verdicts.json"),
+        "merged verdicts of a previous run; a fresh run starts it over")
+    add(json_path.with_name(f"{json_path.name}{scope}.baseline.json"),
+        "baseline cards of a previous run; recomputed at startup")
+    add(json_path.with_name(f"{json_path.name}{scope}{VERIFY_LEDGER_SUFFIX}"),
+        "verify batch ledger of a previous run; a fresh run starts it over")
+    add(json_path.with_name(f"{json_path.name}{scope}.multiple-comparisons.json"),
+        "previous Benjamini-Hochberg analysis")
+    add(json_path.with_name(f"{json_path.name}{scope}.verify-slice.json"),
+        "previous verifier slice of the export")
+    add(json_path.with_name(f"{json_path.name}{scope}.recorded-audit.json"),
+        "previous recorded-data audit; recomputed at startup")
 
     rerun_dir = json_path.with_name(f"{json_path.name}{scope}.rerun")
     fixed_dir = json_path.with_name(f"{json_path.name}{scope}.fixed")
@@ -2415,6 +3123,7 @@ async def run_smoke(json_path: Path) -> None:
     PREDICTIVE_MANIFEST = _rel_to_root(manifest_path)
     try:
         if not _predictive_manifest_is_current(PREDICTIVE_MANIFEST, json_rel):
+            compute_recorded_audit(json_rel)
             step = {
                 "name": "smoke-select-predictive-hypotheses",
                 "instruction": predictive_selection_instruction(
@@ -2490,10 +3199,14 @@ async def run_workflow(
     resume_from: str | None = None,
 ) -> None:
     WORKFLOW_COSTS.reset()
-    global PREDICTIVE_MANIFEST
+    global PREDICTIVE_MANIFEST, BASELINE_CARDS
     options = build_options()
     # Paths handed to the agent are relative to PROJECT_ROOT (the session cwd).
     json_rel = _rel_to_root(json_path)
+    # The companions' baseline cards go into the verify / fix-tests instructions;
+    # the recorded-data audit into the selection and verify instructions.
+    BASELINE_CARDS = compute_baseline_cards(json_rel) if COMPANIONS_BY_PKL else {}
+    compute_recorded_audit(json_rel)
     if DIRECTION == "predictive":
         PREDICTIVE_MANIFEST = _rel_to_root(predictive_manifest_path(json_path))
     else:
@@ -2507,6 +3220,8 @@ async def run_workflow(
     start_index = (
         resume_index(steps, resume_from, summary_path) if resume_from else 0
     )
+    if start_index == 0:
+        _reset_verdicts(json_rel)
 
     extra_note = f", extrapolate onto {len(extra_pkls_rel)} dataset(s)" if extra_pkls_rel else ""
     n_compute = sum(1 for s in steps if s["kind"] == "compute")
@@ -2547,6 +3262,10 @@ async def run_workflow(
                     _log_failure_summary(str(step["out"]), name)
             elif step.get("fix_tests_batches"):
                 await run_fix_tests_author(client, dict(step["fix_tests_batches"]))
+            elif step.get("verify_batches"):
+                await run_verify_batches(client, dict(step["verify_batches"]))
+                _validate_step_output(step, summary_path)
+                await _settle_verdicts(client, step, summary_path, summary_rel, json_rel)
             else:
                 # A repair fix round with nothing left to repair has no work.
                 no_unusable = step.get("skip_if_no_unusable_in")
@@ -2621,6 +3340,7 @@ async def run_workflow(
                 final_text = await run_step(client, step)
                 print(final_text.strip())
                 _validate_step_output(step, summary_path)
+                await _settle_verdicts(client, step, summary_path, summary_rel, json_rel)
                 # Syntax gate: a broken loading fix must not cost a full
                 # re-measurement run (dataset load included) to be discovered.
                 syntax_spec = step.get("syntax_check")
@@ -2921,6 +3641,7 @@ def main() -> int:
     if args.split_feature_labels_only:
         asyncio.run(run_split_feature_labeling_only(json_path))
         return 0
+
 
     def _announce_selection() -> list:
         """Print the direction, resolve TOP_K, and return the parsed records.

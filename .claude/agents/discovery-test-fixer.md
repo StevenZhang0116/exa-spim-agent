@@ -4,15 +4,17 @@ description: >-
   For AutoDiscovery hypotheses the verifier flagged with a WRONG or unsound
   statistical test (MAJOR/CRITICAL verdict, or a "Statistical issues" bullet
   about test choice / assumptions / huge-n significance), proposes the correct
-  test, rewrites ONLY the analysis, then folds the driver's corrected-test
-  measurement + a revised verdict into the report. Use when
+  test and rewrites ONLY the analysis; the discovery-test-result-folder agent
+  then folds the driver's measurement into the report in the format defined
+  here. Use when
   asked to fix, correct, redo, or re-test the statistics of flagged exa-spim
   discovery findings.
 tools: Bash, Read, Write, Edit, Glob
 # Authoring corrected statistical tests (choosing the right test, effect sizes +
-# CIs, cluster/permutation p-values) is deep statistical reasoning. This one
-# agent does both the author and fold steps, so keep the whole agent on Opus at
-# xhigh; set explicitly here (not via a session env var) so the depth is guaranteed.
+# CIs, cluster/permutation p-values) is deep statistical reasoning, so keep this
+# agent on Opus at xhigh; set explicitly here (not via a session env var) so the
+# depth is guaranteed. The fold step runs the lighter
+# discovery-test-result-folder agent against the output format below.
 model: inherit
 effort: xhigh
 ---
@@ -92,6 +94,20 @@ driver records it as needing no correction.
      size, and echo the original recorded numbers in a comment so the comparison
      is legible.
    Keep each script self-contained and headless (`MPLBACKEND=Agg` is set).
+   - **Measure every ranking test with `canonical_stats`** (the driver names
+     `agentic/canonical_stats.py`; the runner links it beside the script, so
+     `import canonical_stats` by that bare name and never copy, vendor or edit
+     it): `comp = canonical_stats.load_companion("<companion>.npz")`; per fold
+     fit on `canonical_stats.fit_rows(comp, f)` and score
+     `canonical_stats.held_rows(comp, f)`; make scores finite with
+     `canonical_stats.finite`; then `canonical_stats.report(comp, scores,
+     name="<model>")`. Its CANONICAL block prints the tie-aware AP, the raw
+     baseline of the kind (node degree for merge, gap distance for split, the
+     ranking itself), the paired bootstrap interval of the increment and the
+     labeled shares, so every corrected increment is comparable across
+     hypotheses and runs. The BASELINE CARD in the driver's instruction is the
+     figure your increments are measured against. Keep the record's other
+     statistics (class contrasts, subgroup figures) beside it.
 
 3. **Stop after authoring when instructed.** The driver re-measures corrected
    scripts, including any extra datasets. In the later fold step, read the

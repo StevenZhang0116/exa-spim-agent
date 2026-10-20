@@ -661,6 +661,47 @@ class DiscoverySmokeTests(unittest.TestCase):
             self.assertTrue(
                 str(fix["failure_brief"]["results"]).endswith(".reproduce.json")
             )
+        # The numeric diff runs right before the fold, which starts from it, and
+        # every compute step writes its full outputs beside its JSON.
+        names = [str(s["name"]) for s in steps]
+        self.assertEqual(names.index("reproduce-diff") + 1, names.index("reproduce-fold"))
+        diff = by_name["reproduce-diff"]
+        self.assertEqual(diff["argv"][:2], ["python", "agentic/output_diff.py"])
+        self.assertTrue(str(diff["out"]).endswith(".reproduce.json.diff.json"))
+        self.assertEqual(diff["expects_file"], diff["out"])
+        self.assertEqual(by_name["verify-slice"]["expects_file"], by_name["verify-slice"]["out"])
+        self.assertIn(diff["argv"][diff["argv"].index("--outputs-dir") + 1],
+                      by_name["reproduce-run"]["argv"])
+        for step_name in ("reproduce-run", "reproduce-remeasure", "reproduce-remeasure-2",
+                          "extrapolate-run", "fix-tests-measure"):
+            argv = by_name[step_name]["argv"]
+            self.assertIn("--outputs-dir", argv, step_name)
+        self.assertNotIn("--outputs-dir", export["argv"])
+        fold = by_name["reproduce-fold"]
+        self.assertIn(str(diff["out"]), fold["instruction"])
+        # Every fold step declares its verdicts file and asks the agent for it.
+        for step_name, phase in (("reproduce-fold", "reproduce"),
+                                 ("extrapolate-fold", "generalize"),
+                                 ("verify-statistics-and-logic", "verify"),
+                                 ("fix-tests-fold", "fix_tests")):
+            spec = by_name[step_name]["verdicts"]
+            self.assertEqual(spec["phase"], phase)
+            self.assertTrue(str(spec["file"]).endswith(f".{phase}-verdicts.json"))
+            if "instruction" in by_name[step_name]:
+                self.assertIn(str(spec["file"]), by_name[step_name]["instruction"])
+        self.assertTrue(by_name["fix-tests-fold"]["verdicts"]["corrected_only"])
+        self.assertEqual(by_name["fix-tests-author"]["fix_tests_batches"]["verdicts"],
+                         workflow.verdicts_path("autodiscovery/run.json"))
+        verify = by_name["verify-statistics-and-logic"]
+        self.assertEqual(names.index("verify-slice") + 1, names.index("verify-statistics-and-logic"))
+        self.assertEqual(by_name["verify-slice"]["argv"][:2], ["python", "agentic/rank_by_surprise.py"])
+        self.assertIn("--include-code", by_name["verify-slice"]["argv"])
+        self.assertEqual(verify["verify_batches"]["slice"], by_name["verify-slice"]["out"])
+        self.assertEqual(verify["verify_batches"]["verdicts_file"], verify["verdicts"]["file"])
+        self.assertNotIn("instruction", verify)
+        batch = workflow.verify_batch_instruction(verify["verify_batches"], ["3", "4"], 1, 2)
+        self.assertIn(workflow.CANONICAL_STATS_REL, batch)
+        self.assertIn(str(verify["verdicts"]["file"]), batch)
         # Every fix round tells the agent to repair a swallowed read and a
         # library form this environment rejects.
         for name in ["reproduce-fix-loading"] + [
@@ -669,6 +710,53 @@ class DiscoverySmokeTests(unittest.TestCase):
         ]:
             self.assertIn(workflow.VERSION_SKEW_RULE, by_name[name]["instruction"])
             self.assertIn(workflow.MISSING_PACKAGE_RULE, by_name[name]["instruction"])
+
+    def test_baseline_cards_reach_the_verify_and_author_instructions(self) -> None:
+        saved = (workflow.BASELINE_CARDS, workflow.DIRECTION, workflow.TOP_K,
+                 workflow.PREDICTIVE_MANIFEST)
+        card = {"companion": "rerank_companion_x_merge.npz", "brain": "x", "kind": "merge",
+                "baseline": "degree", "n_rows": 100, "n_labeled": 40, "n_pos": 4,
+                "random_rate": 0.1, "baseline_ap": 0.0278,
+                "folds": {"0": {"ap": 0.02, "n_labeled": 20, "n_pos": 2}},
+                "precision": {"0.01": [1, 2]}, "labeled_share": {"0.01": 0.2},
+                "labeled_share_overall": 0.1}
+        try:
+            workflow.DIRECTION, workflow.TOP_K, workflow.PREDICTIVE_MANIFEST = "predictive", None, "sel.json"
+            workflow.BASELINE_CARDS = {}
+            self.assertEqual(workflow.baseline_rule(), "")
+            workflow.BASELINE_CARDS = {"cache/x.pkl": card}
+            rule = workflow.baseline_rule()
+            self.assertIn("BASELINE CARD (rerank_companion_x_merge.npz, brain x, merge)", rule)
+            self.assertIn("0.0278", rule)
+            steps = workflow.build_steps("run.json", "cache/x.pkl", "run.summary.md", [])
+            by_name = {step["name"]: step for step in steps}
+            self.assertIn("BASELINE CARD", workflow.verify_batch_instruction(
+                by_name["verify-statistics-and-logic"]["verify_batches"], ["3"], 1, 1))
+            author = workflow.fix_tests_author_instruction(
+                "run.summary.md", "run.json.rerun", "run.json.fixed", ["3"], [])
+            self.assertIn("BASELINE CARD", author)
+            self.assertIn("import canonical_stats", author)
+            self.assertIn("canonical_stats.report(", author)
+        finally:
+            (workflow.BASELINE_CARDS, workflow.DIRECTION, workflow.TOP_K,
+             workflow.PREDICTIVE_MANIFEST) = saved
+
+    def test_recorded_audit_reaches_selection_and_verify_instructions(self) -> None:
+        saved = workflow.RECORDED_AUDIT, workflow.RECORDED_AUDIT_REL
+        try:
+            workflow.RECORDED_AUDIT, workflow.RECORDED_AUDIT_REL = {}, None
+            self.assertEqual(workflow.recorded_audit_rule(), "")
+            workflow.RECORDED_AUDIT = {"n": 3, "n_suspected": 1, "suspected_ids": ["46"],
+                                       "entries": {}}
+            workflow.RECORDED_AUDIT_REL = "run.json.predictive.recorded-audit.json"
+            selection = workflow.predictive_selection_instruction("run.json", "sel.json")
+            self.assertIn("RECORDED-DATA AUDIT", selection)
+            self.assertIn("Flagged ids: 46 (1 of 3)", selection)
+            spec = {"summary": "s.md", "slice": "slice.json", "rerun_dir": "d",
+                    "verdicts_file": "v.json"}
+            self.assertIn("Flagged ids: 46", workflow.verify_batch_instruction(spec, ["46"], 1, 1))
+        finally:
+            workflow.RECORDED_AUDIT, workflow.RECORDED_AUDIT_REL = saved
 
     def test_failure_brief_names_a_swallowed_read(self) -> None:
         old_root = workflow.PROJECT_ROOT
@@ -877,6 +965,301 @@ _FIX_REPORT = """# Run
 - **ID:** 99
 - **Verdict:** MAJOR
 """
+
+
+class StructuredVerdictTests(unittest.TestCase):
+    """The fold steps' verdicts JSON: schema, vocabulary, ids, report agreement."""
+
+    REPORT = """# Run
+
+## Header
+
+## Ranked Conclusions (highest priority first)
+
+### 1. (Priority 0.5 · Surprise 0.7) one
+- **Run:** r · **ID:** 10 · **Belief:** x
+- **Reproduction:** REPRODUCED (code: recorded)
+- **Verdict:** MAJOR
+- **Deployability:** BLIND-COMPUTABLE — graph only
+
+### 2. (Priority 0.4 · Surprise 0.6) two
+- **Run:** r · **ID:** 11 · **Belief:** x
+- **Reproduction:** FAILED (code: revised-loading)
+- **Verdict:** MINOR
+- **Statistical issues:** Concrete test fault: no paired bootstrap.
+- **Deployability:** GT-REFERENCING — distance to gt_graph
+
+## Reproduction — Summary
+"""
+
+    def setUp(self) -> None:
+        self._old = (workflow.PROJECT_ROOT, workflow.DIRECTION)
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        workflow.PROJECT_ROOT = self.root
+        workflow.DIRECTION = "predictive"
+        (self.root / "run.summary.md").write_text(self.REPORT)
+        (self.root / "run.json.predictive.reproduce.json").write_text(json.dumps(
+            {"results": [{"id": 10, "result_status": "USABLE"},
+                         {"id": 11, "result_status": "UNUSABLE"}]}))
+        self.spec = {"phase": "reproduce", "file": "run.json.predictive.reproduce-verdicts.json",
+                     "ids_from": "run.json.predictive.reproduce.json"}
+
+    def tearDown(self) -> None:
+        workflow.PROJECT_ROOT, workflow.DIRECTION = self._old
+        self._tmp.cleanup()
+
+    def _write(self, payload: dict, name: str | None = None) -> None:
+        (self.root / (name or self.spec["file"])).write_text(json.dumps(payload))
+
+    def test_good_file_passes_and_merges(self) -> None:
+        self._write({"phase": "reproduce", "entries": {
+            "10": {"verdict": "REPRODUCED", "code_source": "recorded"},
+            "11": {"verdict": "FAILED", "code_source": "revised"}}})
+        self.assertEqual(workflow._check_phase_verdicts(self.spec, self.root / "run.summary.md"), [])
+        with contextlib.redirect_stdout(io.StringIO()):
+            workflow._merge_phase_verdicts(self.spec, "run.json")
+        merged = json.loads((self.root / "run.json.predictive.verdicts.json").read_text())
+        self.assertEqual(merged["schema_version"], workflow.VERDICTS_SCHEMA_VERSION)
+        self.assertEqual(merged["entries"]["11"]["reproduce"]["verdict"], "FAILED")
+        self.assertEqual(merged["phases"]["reproduce"]["n"], 2)
+        # a second phase merges beside the first
+        verify_spec = {"phase": "verify", "file": "run.json.predictive.verify-verdicts.json",
+                       "ids_from": "run.json.predictive.reproduce.json"}
+        self._write({"phase": "verify", "entries": {
+            "10": {"verdict": "MAJOR", "test_fault": False, "deployability": "BLIND-COMPUTABLE",
+                   "headline": {"p": 0.002, "delta_ap": 0.024, "ci95": [0.01, 0.04],
+                                "baseline": "raw degree"}},
+            "11": {"verdict": "MINOR", "test_fault": True, "deployability": "GT-REFERENCING",
+                   "headline": None}}}, verify_spec["file"])
+        self.assertEqual(workflow._check_phase_verdicts(verify_spec, self.root / "run.summary.md"), [])
+        with contextlib.redirect_stdout(io.StringIO()):
+            workflow._merge_phase_verdicts(verify_spec, "run.json")
+        merged = json.loads((self.root / "run.json.predictive.verdicts.json").read_text())
+        self.assertEqual(merged["entries"]["10"]["reproduce"]["verdict"], "REPRODUCED")
+        self.assertEqual(merged["entries"]["10"]["verify"]["verdict"], "MAJOR")
+        # fix-tests selection now comes from the merged file
+        selected, unjudged = workflow.fix_tests_selection(
+            self.root / "run.summary.md", self.root / "run.json.predictive.verdicts.json")
+        self.assertEqual(selected, [("10", "MAJOR"), ("11", "MINOR")])
+        self.assertEqual(unjudged, [])
+
+    def test_fresh_run_resets_previous_verdict_files_and_survey_lists_them(self) -> None:
+        merged = self.root / "run.json.predictive.verdicts.json"
+        merged.write_text(json.dumps({"schema_version": 1, "run": "run.json",
+                                      "entries": {"99": {"verify": {"verdict": "MAJOR"}}}}))
+        phase = self.root / "run.json.predictive.verify-verdicts.json"
+        phase.write_text("{}")
+        (self.root / "run.json.predictive.reproduce.json.outputs").mkdir()
+        (self.root / "run.json.predictive.reproduce.json.diff.json").write_text("{}")
+        (self.root / "run.json").write_text("[]")
+        reasons = {path.name: reason for path, reason in
+                   workflow.survey_prior_artifacts(self.root / "run.json", "predictive")}
+        self.assertIn("run.json.predictive.verdicts.json", reasons)
+        self.assertIn("run.json.predictive.verify-verdicts.json", reasons)
+        self.assertIn("run.json.predictive.reproduce.json.outputs", reasons)
+        self.assertIn("run.json.predictive.reproduce.json.diff.json", reasons)
+        with contextlib.redirect_stdout(io.StringIO()):
+            workflow._reset_verdicts("run.json")
+        self.assertFalse(merged.exists())
+        self.assertFalse(phase.exists())
+        # selection never picks an id the report no longer carries
+        merged.write_text(json.dumps({"schema_version": 1, "run": "run.json", "entries": {
+            "10": {"verify": {"verdict": "MAJOR", "test_fault": False}},
+            "99": {"verify": {"verdict": "CRITICAL", "test_fault": False}}}}))
+        selected, _ = workflow.fix_tests_selection(self.root / "run.summary.md", merged)
+        self.assertEqual(selected, [("10", "MAJOR")])
+
+    def test_problems_are_named(self) -> None:
+        self.assertEqual(workflow._check_phase_verdicts(self.spec, self.root / "run.summary.md"),
+                         [f"{self.spec['file']} was not written"])
+        self._write({"phase": "reproduce", "entries": {
+            "10": {"verdict": "DIVERGED"},            # report says REPRODUCED
+            "12": {"verdict": "REPRODUCED"}}})        # not measured; 11 missing
+        problems = workflow._check_phase_verdicts(self.spec, self.root / "run.summary.md")
+        self.assertTrue(any("missing entries for ids 11" in p for p in problems))
+        self.assertTrue(any("did not measure: 12" in p for p in problems))
+        self.assertTrue(any("JSON says DIVERGED but the report's Reproduction bullet says "
+                            "REPRODUCED" in p for p in problems))
+        self._write({"phase": "reproduce", "entries": {
+            "10": {"verdict": "REPRODUCED"}, "11": {"verdict": "MAYBE"}}})
+        problems = workflow._check_phase_verdicts(self.spec, self.root / "run.summary.md")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("'MAYBE' is not one of", problems[0])
+        repair = workflow._verdicts_repair_instruction(self.spec, problems, "run.summary.md")
+        self.assertIn("'MAYBE' is not one of", repair)
+        self.assertIn("report's bullets are authoritative", repair)
+
+    def test_verify_phase_checks_test_fault_and_deployability(self) -> None:
+        spec = {"phase": "verify", "file": "run.json.predictive.verify-verdicts.json",
+                "ids_from": "run.json.predictive.reproduce.json"}
+        self._write({"phase": "verify", "entries": {
+            "10": {"verdict": "MAJOR", "test_fault": "no", "deployability": "GT-REFERENCING"},
+            "11": {"verdict": "MINOR", "test_fault": True, "deployability": "BLIND"}}},
+            spec["file"])
+        problems = workflow._check_phase_verdicts(spec, self.root / "run.summary.md")
+        self.assertTrue(any("test_fault must be true or false" in p for p in problems))
+        self.assertTrue(any("JSON deployability GT-REFERENCING but the report says "
+                            "BLIND-COMPUTABLE" in p for p in problems))
+        self.assertTrue(any("deployability 'BLIND' is not one of" in p for p in problems))
+
+    def test_fix_tests_phase_covers_corrected_results_only_and_allows_null(self) -> None:
+        (self.root / "run.json.predictive.corrected.json").write_text(json.dumps(
+            {"results": [{"id": 10, "code_source": "corrected", "result_status": "UNUSABLE"},
+                         {"id": 11, "code_source": "recorded", "result_status": "USABLE"}]}))
+        spec = {"phase": "fix_tests", "file": "run.json.predictive.fix_tests-verdicts.json",
+                "ids_from": "run.json.predictive.corrected.json", "corrected_only": True}
+        self._write({"phase": "fix_tests", "entries": {
+            "10": {"verdict": None, "generalization": None}}}, spec["file"])
+        self.assertEqual(workflow._check_phase_verdicts(spec, self.root / "run.summary.md"), [])
+        self._write({"phase": "fix_tests", "entries": {
+            "10": {"verdict": "UPHELD", "generalization": "SOMETIMES"},
+            "11": {"verdict": "UPHELD"}}}, spec["file"])
+        problems = workflow._check_phase_verdicts(spec, self.root / "run.summary.md")
+        self.assertTrue(any("did not measure: 11" in p for p in problems))
+        self.assertTrue(any("generalization 'SOMETIMES' is not one of" in p for p in problems))
+        self.assertTrue(any("the report has no Post-correction verdict bullet" in p
+                            for p in problems))
+
+
+class _VerifyClient:
+    """Audits every id a batch turn names; the synthesis turn writes the section."""
+
+    def __init__(self, root: Path, verdict: str = "WEAK", p: float = 0.2) -> None:
+        self.root, self.verdict, self.p, self.prompts = root, verdict, p, []
+
+    async def query(self, prompt, session_id="default"):
+        self.prompts.append(prompt)
+        summary = self.root / "run.summary.md"
+        text = summary.read_text()
+        match = re.search(r"exactly these hypothesis ids: ([^(]+) \(batch", prompt)
+        if match:
+            ids = match.group(1).strip().split(", ")
+            verdicts_path = self.root / "run.json.predictive.verify-verdicts.json"
+            payload = (json.loads(verdicts_path.read_text()) if verdicts_path.is_file()
+                       else {"phase": "verify", "entries": {}})
+            for rid in ids:
+                text = text.replace(
+                    f"- **Run:** r · **ID:** {rid} · x\n",
+                    f"- **Run:** r · **ID:** {rid} · x\n- **Verdict:** {self.verdict}\n"
+                    "- **Deployability:** BLIND-COMPUTABLE — graph\n",
+                )
+                payload["entries"][rid] = {
+                    "verdict": self.verdict, "test_fault": False,
+                    "deployability": "BLIND-COMPUTABLE",
+                    "headline": {"p": self.p, "delta_ap": 0.01, "ci95": [0.0, 0.02],
+                                 "baseline": "raw degree"},
+                }
+            verdicts_path.write_text(json.dumps(payload))
+            summary.write_text(text)
+        elif "run-wide synthesis" in prompt:
+            summary.write_text(text + "\n## Statistical Verification — Summary\n\nfigures\n")
+
+    async def receive_response(self):
+        if False:
+            yield None
+
+
+class VerifyBatchTests(unittest.TestCase):
+    REPORT = "# Run\n\n## Header\n\n## Ranked Conclusions (highest priority first)\n\n" + "".join(
+        f"### {k}. (Priority 0.{9 - k} · Surprise 0.5) hypothesis {rid}\n"
+        f"- **Run:** r · **ID:** {rid} · x\n\n"
+        for k, rid in enumerate(("10", "11", "12", "13", "14"), start=1)
+    ) + "## Reproduction — Summary\n"
+
+    def setUp(self) -> None:
+        self._old = (workflow.PROJECT_ROOT, workflow.DIRECTION, workflow.VERIFY_BATCH_SIZE)
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        workflow.PROJECT_ROOT = self.root
+        workflow.DIRECTION = "predictive"
+        workflow.VERIFY_BATCH_SIZE = 2
+        (self.root / "run.summary.md").write_text(self.REPORT)
+        (self.root / "run.json.predictive.reproduce.json").write_text(json.dumps(
+            {"results": [{"id": int(rid), "result_status": "USABLE"}
+                         for rid in ("10", "11", "12", "13", "14")]}))
+        (self.root / "run.json.predictive.verify-slice.json").write_text(json.dumps(
+            {"n_total": 8, "records": []}))
+        self.spec = {
+            "summary": "run.summary.md", "slice": "run.json.predictive.verify-slice.json",
+            "rerun_dir": "run.json.predictive.rerun",
+            "verdicts_file": "run.json.predictive.verify-verdicts.json",
+            "ids_from": "run.json.predictive.reproduce.json",
+            "ledger": "run.json.predictive.verify-ledger.json",
+            "mc": "run.json.predictive.multiple-comparisons.json",
+        }
+
+    def tearDown(self) -> None:
+        workflow.PROJECT_ROOT, workflow.DIRECTION, workflow.VERIFY_BATCH_SIZE = self._old
+        self._tmp.cleanup()
+
+    def _run(self, client) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            asyncio.run(workflow.run_verify_batches(client, self.spec))
+
+    def test_batches_then_synthesis_with_the_drivers_bh_figures(self) -> None:
+        client = _VerifyClient(self.root, p=0.004)
+        self._run(client)
+        batch_prompts = [p for p in client.prompts if "(batch " in p]
+        self.assertEqual(len(batch_prompts), 3)  # 2 + 2 + 1
+        self.assertIn("exactly these hypothesis ids: 10, 11 (batch 1 of 3", batch_prompts[0])
+        self.assertIn("exactly these hypothesis ids: 14 (batch 3 of 3", batch_prompts[2])
+        self.assertIn("do NOT write the run-wide summary section", batch_prompts[0])
+        self.assertIn("run.json.predictive.verify-slice.json", batch_prompts[0])
+        synthesis = client.prompts[-1]
+        self.assertIn("run-wide synthesis", synthesis)
+        self.assertIn("5 audited: SOUND 0, WEAK 5, MINOR 0, MAJOR 0, CRITICAL 0", synthesis)
+        self.assertIn("BH at q = 0.05 over m = 5", synthesis)
+        self.assertIn("5 survive", synthesis)
+        self.assertIn("With m = 8", synthesis)
+        mc = json.loads((self.root / self.spec["mc"]).read_text())
+        self.assertEqual(sorted(mc["survivors"]), ["10", "11", "12", "13", "14"])
+        self.assertEqual(mc["m_total"], 8)
+        ledger = json.loads((self.root / self.spec["ledger"]).read_text())["ids"]
+        self.assertEqual(sorted(ledger), ["10", "11", "12", "13", "14"])
+        self.assertIn("## Statistical Verification — Summary",
+                      (self.root / "run.summary.md").read_text())
+
+    def test_resume_audits_only_the_open_ids(self) -> None:
+        first = _VerifyClient(self.root)
+        self._run(first)
+        # drop one entry's bullets and ledger line: only that id is audited again
+        summary = self.root / "run.summary.md"
+        text = summary.read_text().replace(
+            "- **Run:** r · **ID:** 12 · x\n- **Verdict:** WEAK\n"
+            "- **Deployability:** BLIND-COMPUTABLE — graph\n",
+            "- **Run:** r · **ID:** 12 · x\n")
+        summary.write_text(text.split("## Statistical Verification — Summary")[0])
+        ledger_path = self.root / self.spec["ledger"]
+        ledger = json.loads(ledger_path.read_text())
+        ledger["ids"].pop("12")
+        ledger_path.write_text(json.dumps(ledger))
+        second = _VerifyClient(self.root)
+        self._run(second)
+        batch_prompts = [p for p in second.prompts if "(batch " in p]
+        self.assertEqual(len(batch_prompts), 1)
+        self.assertIn("exactly these hypothesis ids: 12 (batch 1 of 1", batch_prompts[0])
+
+    def test_multiple_comparisons_is_benjamini_hochberg(self) -> None:
+        entries = {rid: {"verify": {"headline": {"p": p}}} for rid, p in
+                   (("a", 0.001), ("b", 0.012), ("c", 0.03), ("d", 0.2), ("e", 0.6))}
+        entries["f"] = {"verify": {"headline": None}}
+        mc = workflow.multiple_comparisons(entries, q=0.05, m_total=10)
+        # thresholds k*q/m: 0.01, 0.02, 0.03, 0.04, 0.05 → c passes at k=3
+        self.assertEqual(mc["survivors"], ["a", "b", "c"])
+        self.assertEqual(mc["m"], 5)
+        self.assertEqual(mc["missing_ids"], ["f"])
+        self.assertEqual(mc["n_nominal"], 3)
+        self.assertEqual(mc["borderline"], [])
+        # with m = 10 the thresholds halve: 0.005, 0.01, 0.015 → only a
+        self.assertEqual(mc["survivors_m_total"], ["a"])
+        self.assertEqual(mc["n_at_floor"], 1)
+        text = workflow.multiple_comparisons_text(mc)
+        self.assertIn("3 survive (largest passing p 0.03): a, b, c", text)
+        self.assertIn("With m = 10", text)
+        none = workflow.multiple_comparisons({"x": {"verify": {"headline": {"p": 0.5}}}})
+        self.assertEqual(none["survivors"], [])
+        self.assertEqual(none["borderline"], [])
 
 
 class _AuthorClient:
