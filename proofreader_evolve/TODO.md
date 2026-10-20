@@ -534,7 +534,7 @@ Two generations were lost to end-of-session checks and the search stayed in tuni
   floor-scheduling merge until a junction-local image information source exists for it
   (raise `--kind-floor-every` from 4 to 8 or more, or require a new
   `research.information_source`). Not started; touches `fixed_pool_scoring` aggregation,
-  the gate record, `kind_schedule`, README Stage 3 and the agent rules.
+  the gate record, `kind_schedule`, `docs/stage3_evolution.md` and the agent rules.
 
 ## Observed in run `precision_20261005_114814_zxsbw5pj` (2026-10-05; two of three resolved)
 

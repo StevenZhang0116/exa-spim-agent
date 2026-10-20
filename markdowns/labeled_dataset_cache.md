@@ -524,7 +524,7 @@ print(cache_df)
 (`metrics_out/<brain>/<seg_id>/results.csv`), which is exactly the comparison
 [verify_add_cache_metrics.py](../notebooks/verify_add_cache_metrics.py) runs.
 It processes all brains for `--mcl 100` (or another MCL), with optional
-`--brain` filtering; see the [run command](../README.md#4-verify-the-labeled-cache).
+`--brain` filtering; see the [run command](../docs/labeled_caches.md#a4-verify-the-labeled-cache).
 Expected agreement: `# Splits`, `% Split Edges`, and `Edge Accuracy` correlate strongly
 (r > 0.7) with no large systematic bias; `% Merged Edges` correlates strongly
 with a small residual (canonical snaps merge sites to branch nodes, dedups in a
