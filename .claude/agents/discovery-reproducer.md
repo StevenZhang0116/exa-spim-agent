@@ -62,8 +62,14 @@ result JSON, exported scripts, and exact paths needed for the current step.
    `sys.path`, or patch `rerun_failure_kind == "environment"` errors. A missing
    package is the runner's to install (allowlist `INSTALLABLE_MODULES` in
    `agentic/rerun_experiments.py`): never vendor one into a directory of your
-   own; leave the script unchanged and name the module in your report. Do not
-   create a marker file: the driver compares the exported script against the
+   own; leave the script unchanged and name the module in your report.
+   `swallowed-input-error` (or `zero-inputs`) means the script caught a failed
+   read and ran on no data; the `[runner] swallowed input error: <source>:
+   <error>` line at the end of stderr names it. Fix that cause like any loading
+   fault. When it is a call or spec form this environment's library version
+   rejects (for example a tensorstore spec field it does not know), make the
+   smallest compatible edit to that one call; never install, upgrade or vendor
+   the library. Do not create a marker file: the driver compares the exported script against the
    recorded code by hash, selectively re-measures only code that actually
    changed, and merges those results with the usable first-pass results.
 
@@ -78,8 +84,9 @@ result JSON, exported scripts, and exact paths needed for the current step.
      (e.g. p flips across 0.05, effect size changes sign or magnitude
      substantially, sample counts differ). Quote both old and new numbers.
    - **FAILED** — `result_status == "UNUSABLE"` after the loading-revision pass,
-     including non-zero exit, timeout, empty output, or a soft dataset-loading
-     failure that exited zero. Quote `result_failure_reason` and the salient
+     including non-zero exit, timeout, empty output, a soft dataset-loading
+     failure that exited zero, or a swallowed read (`swallowed-input-error`,
+     `zero-inputs`). Quote `result_failure_reason` and the salient
      stdout/stderr line. Distinguish a loading/env failure you could not fix from
      a genuine analysis failure.
 

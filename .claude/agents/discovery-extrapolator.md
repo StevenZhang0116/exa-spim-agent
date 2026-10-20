@@ -59,7 +59,8 @@ hypothesis with the reproduction result folded in.
      significance on the extra dataset(s). Quote origin vs extra numbers.
    - **INCONCLUSIVE** — the origin or extra result has
      `result_status == "UNUSABLE"` (including non-zero exit, timeout, empty
-     output, or a soft dataset-loading failure that exited zero), so
+     output, a soft dataset-loading failure that exited zero, or a swallowed
+     read: `swallowed-input-error`, `zero-inputs`), so
      generalization can't be assessed. Quote `result_failure_reason` and the
      salient stdout/stderr line.
 

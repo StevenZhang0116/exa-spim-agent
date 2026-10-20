@@ -51,7 +51,8 @@ it. ``_scale_timeouts`` sizes agent turns from the hypothesis count, because
 predictive mode removed the top-K that the old flat budget assumed. Compute
 steps have a fixed 24-hour budget for large experiment reruns. A script that dies
 on a missing package from the runner's allowlist gets the package installed and is
-run again (``--install-missing``; ``--no-install-missing`` turns it off).
+run again (``--install-missing``; ``--no-install-missing`` turns it off). Compute
+steps run up to ``--jobs`` scripts at once (default 6; ``--jobs 1`` is serial).
 
 A full (non-smoke) run also tees its entire console output to
 ``<RUN>.json[.predictive].workflow.log.txt`` beside the export (override with
@@ -292,6 +293,10 @@ COMPANIONS_BY_PKL: dict[str, list[str]] = {}
 # Whether rerun_experiments.py may pip-install a missing allowlisted package
 # (INSTALLABLE_MODULES there) and rerun the script; --no-install-missing turns it off.
 INSTALL_MISSING: bool = True
+# How many scripts each compute step runs at once (rerun_experiments.py --jobs:
+# memory-gated, thread-capped, a killed script rerun alone); --jobs on the CLI.
+DEFAULT_JOBS: int = 6
+JOBS: int = DEFAULT_JOBS
 # Bump this whenever predictive_selection_instruction changes semantically.
 PREDICTIVE_POLICY_VERSION: str = "exclusion-only-v1"
 PREDICTIVE_MANIFEST_SUFFIX: str = ".predictive-selection.json"
@@ -313,10 +318,13 @@ def _is_split_run(path: Path | str) -> bool:
 # summarize step authors one full entry per record in a single turn. Compute
 # steps use a fixed 24-hour budget: rerun_experiments.py executes one script per
 # record (each with its own 3600-second cap), and large predictive runs can take
-# substantially longer than the old record-count estimate allowed.
+# substantially longer than the old record-count estimate allowed. The budgets
+# only exist to abort a hung session; a timed-out turn costs more than waiting,
+# so they sit well above observed times (new-merge-1, 2026-10-19: verify took
+# 2790 s for 91 records, an 8-id fix-tests batch up to 1805 s).
 AGENT_STEP_BASE_S: int = 600        # 10 min of fixed overhead per agent turn
-AGENT_STEP_PER_RECORD_S: int = 30   # + writing/folding one entry
-AGENT_STEP_CEILING_S: int = 3600    # 1 h — a hung session must still abort
+AGENT_STEP_PER_RECORD_S: int = 60   # + writing/folding one entry
+AGENT_STEP_CEILING_S: int = 7200    # 2 h — a hung session must still abort
 
 AGENT_STEP_TIMEOUT_S: int = 900     # overridden at startup; see _scale_timeouts()
 COMPUTE_TIMEOUT_S: int = 86400      # 24 h per compute step
@@ -338,15 +346,26 @@ MISSING_PACKAGE_RULE: str = (
     "never install or vendor a package or add a directory to `sys.path` — and "
     "name the module in your report."
 )
+# Since 2026-10-20 the runner audits each script's data reads, so a read the
+# script caught and survived is UNUSABLE too (new-merge-1 id 33 read no image:
+# this environment's tensorstore rejected its S3 credential spec).
+VERSION_SKEW_RULE: str = (
+    "A result UNUSABLE as `swallowed-input-error` or `zero-inputs` read no data: "
+    "the script caught a failed read and carried on, and the `[runner] swallowed "
+    "input error` line at the end of its stderr names the source and the error. "
+    "That is a loading fault: fix its cause. When the cause is a call or spec form "
+    "this environment's library version rejects (for example a tensorstore spec "
+    "field it does not know), make the smallest compatible edit to that one call; "
+    "never install, upgrade or vendor the library."
+)
 
 # The fix-tests author runs one agent turn per batch of selected ids, each with
-# its own budget (AGENT_STEP_BASE_S + FIX_TESTS_PER_ID_S per id, capped at the
-# ceiling). A single turn for every flagged entry hit the 1 h ceiling with 48
-# ids (new-merge-1, 2026-10-19). Each finished batch is recorded in
+# the full AGENT_STEP_CEILING_S budget: a turn's fixed reading and checking
+# dominates, so a 3-id batch still took about 1500 s and timed out under a
+# per-id budget (new-merge-1, 2026-10-19). Each finished batch is recorded in
 # FIX_TESTS_LEDGER inside the fixed dir, so a rerun after an interruption only
 # authors the ids that are still open.
 FIX_TESTS_BATCH_SIZE: int = 8
-FIX_TESTS_PER_ID_S: int = 300
 FIX_TESTS_LEDGER: str = "AUTHORED.json"
 # A MINOR entry joins the corrective set when its "Statistical issues" bullet
 # starts with this phrase (the verifier's marker for a test-level fault).
@@ -493,8 +512,8 @@ def rerun_argv(
     - ``checkpoint_rel``  : atomically persist and resume fingerprint-matching
       work items.
 
-    Every run (not the export) gets ``--install-missing`` unless INSTALL_MISSING
-    is off.
+    Every run (not the export) gets ``--jobs JOBS``, and ``--install-missing``
+    unless INSTALL_MISSING is off.
     """
     argv = ["python", "agentic/rerun_experiments.py", json_rel,
             "--pkl", pkl_rel, "--rank-by", RANK_BY, "--direction", DIRECTION]
@@ -512,6 +531,7 @@ def rerun_argv(
     # Export mode is mutually exclusive with running (the helper enforces this).
     if export_dir_rel is not None:
         return argv + ["--export-dir", export_dir_rel]
+    argv += ["--jobs", str(JOBS)]
     if INSTALL_MISSING:
         argv.append("--install-missing")
     if code_dir_rel is not None:
@@ -873,6 +893,9 @@ def build_steps(
             "name": "reproduce-fix-loading",
             "phase": "reproduce",
             "kind": "agent",
+            # It may touch only scripts whose result is UNUSABLE, so with none
+            # there is nothing it could change (2026-10-19: 334 s, $0.85 for nothing).
+            "skip_if_no_unusable_in": repro_raw_rel,
             "failure_brief": {"results": repro_raw_rel, "code_dir": rerun_dir_rel},
             "syntax_check": {"code_dir": rerun_dir_rel, "results": repro_raw_rel},
             "instruction": (
@@ -888,11 +911,12 @@ def build_steps(
                 "result is UNUSABLE for a DATA-LOADING / ENVIRONMENT reason — even "
                 "when the script incorrectly exited 0 — "
                 "(a NumPy-2-written pkl the host can't unpickle, a 'dataset not "
-                "found' gate, a pip-install retry loop), revise ONLY the "
+                "found' gate, a pip-install retry loop, a swallowed read error), "
+                "revise ONLY the "
                 f"loading/bootstrap of the failing {rerun_dir_rel}/hypo_<id>.py "
                 "(load the pkl directly from $RERUN_PKL, drop NumPy version swaps and "
                 "pip-retry loops) while keeping the ANALYSIS byte-for-byte identical. "
-                f"{MISSING_PACKAGE_RULE} "
+                f"{MISSING_PACKAGE_RULE} {VERSION_SKEW_RULE} "
                 "Do NOT touch scripts whose result is USABLE. No marker file is "
                 "needed: the driver compares code hashes and selectively reruns only "
                 "the scripts whose contents actually changed. Report which ids you "
@@ -946,7 +970,7 @@ def build_steps(
                     "revise ONLY the loading/bootstrap of the failing "
                     f"{rerun_dir_rel}/hypo_<id>.py (load the pkl directly from "
                     "$RERUN_PKL, drop NumPy version swaps and pip-retry loops). "
-                    f"{MISSING_PACKAGE_RULE} "
+                    f"{MISSING_PACKAGE_RULE} {VERSION_SKEW_RULE} "
                     "A failing `code_source: revised` result means the PREVIOUS "
                     "revision is itself suspect — re-read that script first "
                     "instead of assuming the recorded code is at fault. Keep "
@@ -1059,9 +1083,11 @@ def build_steps(
                     "`pkl_name`, `exitcode`, `timed_out`, `runtime_ms`, "
                     "`result_status`, `result_failure_reason`, `stdout`, `stderr`; "
                     "`image_retargeted` means the runner pointed a hardcoded origin "
-                    "image folder at the extra brain's image, and reason "
+                    "image folder at the extra brain's image, reason "
                     "`origin-image-path` means the script was not run there because "
-                    "it could not be. Do NOT re-run anything. For each hypothesis compare "
+                    "it could not be, and `swallowed-input-error` / `zero-inputs` "
+                    "mean it ran but read no data (its numbers are not a result). "
+                    "Do NOT re-run anything. For each hypothesis compare "
                     "the origin numbers to each extra dataset's numbers (direction, "
                     "significance, effect size) and assign GENERALIZES / PARTIAL / "
                     "DOES-NOT-GENERALIZE / INCONCLUSIVE (INCONCLUSIVE when a script "
@@ -1890,8 +1916,7 @@ async def run_fix_tests_author(client: ClaudeSDKClient, spec: dict[str, str]) ->
                for i in range(0, len(pending), FIX_TESTS_BATCH_SIZE)]
     for k, batch in enumerate(batches, start=1):
         drafts = [rid for rid in batch if _script_text(script_of(rid)).strip()]
-        timeout_s = min(AGENT_STEP_CEILING_S,
-                        AGENT_STEP_BASE_S + FIX_TESTS_PER_ID_S * len(batch))
+        timeout_s = AGENT_STEP_CEILING_S
         log(f"  [fix-tests] batch {k}/{len(batches)}: ids {', '.join(batch)} "
             f"(budget {timeout_s}s).")
         turn = {
@@ -2769,6 +2794,17 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--jobs",
+        type=int,
+        default=DEFAULT_JOBS,
+        help=(
+            f"Scripts each compute step runs at once (default {DEFAULT_JOBS}). A script "
+            "starts only when the job's memory can hold it, gets cpus // jobs "
+            "BLAS/OpenMP threads, and is run again alone if the kernel kills it. "
+            "--jobs 1 runs them one at a time."
+        ),
+    )
+    parser.add_argument(
         "--no-install-missing",
         action="store_true",
         help=(
@@ -2859,6 +2895,11 @@ def main() -> int:
 
     global INSTALL_MISSING
     INSTALL_MISSING = not args.no_install_missing
+
+    global JOBS
+    if args.jobs < 1:
+        parser.error("--jobs must be at least 1.")
+    JOBS = args.jobs
 
     global COMPANIONS_BY_PKL
     companion_paths = [_resolve_existing(p, "companion file") for p in args.companion]

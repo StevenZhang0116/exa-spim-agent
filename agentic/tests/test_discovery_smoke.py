@@ -556,6 +556,23 @@ class DiscoverySmokeTests(unittest.TestCase):
             (workflow.INSTALL_MISSING, workflow.DIRECTION, workflow.TOP_K,
              workflow.PREDICTIVE_MANIFEST) = saved
 
+    def test_rerun_argv_passes_jobs_to_every_run_but_not_the_export(self) -> None:
+        saved = (workflow.JOBS, workflow.DIRECTION, workflow.TOP_K,
+                 workflow.PREDICTIVE_MANIFEST)
+        try:
+            workflow.DIRECTION, workflow.TOP_K, workflow.PREDICTIVE_MANIFEST = "predictive", None, "sel.json"
+            self.assertEqual(workflow.JOBS, workflow.DEFAULT_JOBS)
+            argv = workflow.rerun_argv("run.json", "cache/a.pkl")
+            self.assertEqual(argv[argv.index("--jobs") + 1], str(workflow.DEFAULT_JOBS))
+            self.assertNotIn("--jobs", workflow.rerun_argv(
+                "run.json", "cache/a.pkl", export_dir_rel="run.rerun"))
+            workflow.JOBS = 1
+            argv = workflow.rerun_argv("run.json", "cache/a.pkl", extra_only=True)
+            self.assertEqual(argv[argv.index("--jobs") + 1], "1")
+        finally:
+            (workflow.JOBS, workflow.DIRECTION, workflow.TOP_K,
+             workflow.PREDICTIVE_MANIFEST) = saved
+
     def test_compute_steps_use_selective_and_extra_only_work_items(self) -> None:
         workflow.DIRECTION = "both"
         workflow.TOP_K = 2
@@ -629,6 +646,10 @@ class DiscoverySmokeTests(unittest.TestCase):
         self.assertTrue(
             str(first_fix["syntax_check"]["results"]).endswith(".reproduce-raw.json")
         )
+        # Round 1 may touch only UNUSABLE scripts, so it skips itself without any.
+        self.assertTrue(
+            str(first_fix["skip_if_no_unusable_in"]).endswith(".reproduce-raw.json")
+        )
         self.assertTrue(
             str(first_fix["failure_brief"]["results"]).endswith(".reproduce-raw.json")
         )
@@ -640,6 +661,36 @@ class DiscoverySmokeTests(unittest.TestCase):
             self.assertTrue(
                 str(fix["failure_brief"]["results"]).endswith(".reproduce.json")
             )
+        # Every fix round tells the agent to repair a swallowed read and a
+        # library form this environment rejects.
+        for name in ["reproduce-fix-loading"] + [
+            f"reproduce-fix-loading-{n}"
+            for n in range(2, workflow.MAX_FIX_LOADING_ROUNDS + 1)
+        ]:
+            self.assertIn(workflow.VERSION_SKEW_RULE, by_name[name]["instruction"])
+            self.assertIn(workflow.MISSING_PACKAGE_RULE, by_name[name]["instruction"])
+
+    def test_failure_brief_names_a_swallowed_read(self) -> None:
+        old_root = workflow.PROJECT_ROOT
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                workflow.PROJECT_ROOT = Path(tmpdir)
+                (Path(tmpdir) / "r.json").write_text(json.dumps({"results": [{
+                    "id": 33,
+                    "result_status": "UNUSABLE",
+                    "result_failure_reason": "swallowed-input-error",
+                    "code_source": "recorded",
+                    "rerun_stderr": "warning\n[runner] swallowed input error: "
+                                    "tensorstore: ValueError: extra members\n",
+                }]}))
+                brief = workflow._failure_brief("r.json", "run.json.rerun")
+        finally:
+            workflow.PROJECT_ROOT = old_root
+        self.assertIn(
+            "id 33: swallowed-input-error (recorded) — [runner] swallowed input "
+            "error: tensorstore: ValueError: extra members",
+            brief,
+        )
 
     def test_syntax_gate_and_failure_brief_helpers(self) -> None:
         old_root = workflow.PROJECT_ROOT

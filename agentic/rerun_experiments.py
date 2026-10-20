@@ -105,10 +105,32 @@ both images share bucket and level geometry, and otherwise does not run the
 script there (UNUSABLE, reason ``origin-image-path``).
 
 Every code×dataset execution can be persisted with ``--checkpoint``. Its key
-includes the source-run hash, record id, exact code hash, dataset identity,
-timeout, runner version, Python, and scientific-package versions. A changed
-input invalidates only the affected work item; completed matching items resume
-without execution, except an environment failure, which is always run again.
+includes the source-run hash, record id, exact code hash (after compat
+rewrites), dataset identity, timeout, runner version, Python, and
+scientific-package versions. A changed input invalidates only the affected work
+item; completed matching items resume without execution, except an environment
+failure, which is always run again.
+
+Parallel execution
+------------------
+All origin work runs first, then the extrapolation work of records whose origin
+result is USABLE. ``--jobs 1`` runs each phase one script at a time. ``--jobs N``
+runs up to N at once, longest predicted runtime first. A script starts only when
+the job's cgroup can hold it, gets cpus // N BLAS/OpenMP threads, and is run again
+alone if the kernel kills it. Results, checkpoint keys and the results JSON order
+do not depend on N; only ``runtime_ms`` and the log order do.
+
+Swallowed input failures and version skew
+-----------------------------------------
+A script that catches a failed data read and carries on with no data exits 0.
+The runner counts, inside the script's process, every tensorstore open and read,
+``np.load`` and npz array read, and ``pickle.load`` (``input_audit`` per
+source). When every access to one source failed, the result is UNUSABLE
+(``swallowed-input-error``) and a ``[runner] swallowed input error`` line closes
+its stderr; an ``INPUTS READ`` line reporting zero image patches gives
+``zero-inputs``. Both go to the loading-repair agents. A library form this
+environment rejects that recurs across scripts gets a probed source rewrite in
+``COMPAT_REWRITES`` instead (``compat_rewrites`` in the result).
 """
 
 from __future__ import annotations
@@ -124,12 +146,14 @@ import os
 import pickle
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import time
 import traceback
 from pathlib import Path
+from typing import NamedTuple
 
 # Reuse the exact ranking the summarizer uses so the rerun set matches the
 # report set. rank_by_surprise.py lives next to this file.
@@ -148,7 +172,7 @@ _PKL_LITERAL = re.compile(r"""["']([^"']*?\.pkl)["']""")
 # the dataset pkl / in their cwd (or its parent) and export
 # GOOGLE_APPLICATION_CREDENTIALS themselves; tensorstore then opens that path
 # at the C++ level, bypassing the runner's Python ``open`` monkeypatch — so the
-# file must genuinely exist wherever a script computes it. ``rerun_one``
+# file must genuinely exist wherever a script computes it. ``start_run``
 # therefore links this token into each candidate location and presets the
 # standard env vars as a default for scripts that don't set them.
 GCS_TOKEN_PATH = (
@@ -162,7 +186,7 @@ LEGACY_GCS_TOKEN_NAMES = ("zihan_gcs_token.json",)
 # Companion files of the proofreader_evolve feature specifications
 # (markdowns/{merge,split}_features_for_proofreader_evolve.md):
 # ``rerank_companion_<brain>_<kind>.{npz,json}``. Recorded scripts open them by
-# name. ``rerun_one`` links the companion bound to the pkl being run under every
+# name. ``start_run`` links the companion bound to the pkl being run under every
 # companion name the code mentions, so a script written for one brain reads the
 # other brain's candidates when it is re-run there (``--companion``).
 _COMPANION_NAME = re.compile(r"rerank_companion_[A-Za-z0-9-]+_(merge|split)\.(npz|json)")
@@ -307,8 +331,17 @@ _UNUSABLE_OUTPUT_RE = re.compile(
     r"[.!]?\s*(?:\n|$)",
     re.IGNORECASE,
 )
+# The specs ask for ``INPUTS READ ... image_patches=<read>/<requested>``; recorded
+# scripts also write it free-form ("0 image patches read").
+_ZERO_IMAGE_INPUTS_RE = re.compile(
+    r"INPUTS READ\b[^\n]*?(?:image_patches\s*=\s*0\s*/\s*0*[1-9]|\b0 image patches read)",
+    re.IGNORECASE,
+)
+# Exit-0 UNUSABLE reasons that a loading repair can fix.
+_DATA_LOADING_REASONS = frozenset({"dataset-loading", "swallowed-input-error", "zero-inputs"})
 _CHECKPOINT_SCHEMA_VERSION = 1
-_RUNNER_VERSION = "work-items-v1"
+# v2 (2026-10-20): runs carry ``input_audit``, which v1 work items lack.
+_RUNNER_VERSION = "work-items-v2"
 
 
 def _sha256_text(text: str) -> str:
@@ -336,17 +369,29 @@ def file_fingerprint(path: Path) -> dict:
     }
 
 
+def swallowed_inputs(audit) -> list[str]:
+    """Audited input sources whose every access failed (absent files and keys aside)."""
+    return sorted(
+        source for source, counts in (audit or {}).items()
+        if isinstance(counts, dict) and counts.get("failed") and not counts.get("ok")
+    )
+
+
 def result_usability(run: dict) -> tuple[str, str | None]:
     """Separate process success from whether an experiment produced a result."""
     if run.get("timed_out"):
         return "UNUSABLE", "timeout"
     if run.get("exitcode") != 0:
         return "UNUSABLE", "nonzero-exit"
+    if swallowed_inputs(run.get("input_audit")):
+        return "UNUSABLE", "swallowed-input-error"
     stdout = str(run.get("stdout") or "")
     if not stdout.strip():
         return "UNUSABLE", "empty-output"
     if _UNUSABLE_OUTPUT_RE.search(stdout):
         return "UNUSABLE", "dataset-loading"
+    if _ZERO_IMAGE_INPUTS_RE.search(stdout):
+        return "UNUSABLE", "zero-inputs"
     return "USABLE", None
 
 
@@ -413,6 +458,54 @@ def _work_key(
     return _sha256_text(json.dumps(identity, sort_keys=True, separators=(",", ":")))
 
 
+def _work_item(
+    code: str, dataset: Path, timeout: int, *, run_sha256: str, record_id, companions=(),
+) -> tuple[str, list[str], str]:
+    """The code to execute (``COMPAT_REWRITES`` applied), its rewrites, and its key."""
+    code, rewrites = apply_compat_rewrites(code)
+    if rewrites:
+        print(f"[runner] compat rewrite {', '.join(rewrites)} (id {record_id})",
+              file=sys.stderr, flush=True)
+    key = _work_key(
+        run_sha256=run_sha256,
+        record_id=record_id,
+        code_hash=code_sha256(code),
+        dataset=dataset,
+        timeout=timeout,
+        companions=companions,
+    )
+    return code, rewrites, key
+
+
+def _checkpointed_run(checkpoint: dict, key: str) -> dict | None:
+    """The stored run for ``key``, unless absent or an environment failure.
+
+    A cached environment failure (missing package, broken native import) is run
+    again rather than reused: the work key does not cover every package a script
+    may import, so a package installed since then would otherwise never be seen.
+    """
+    cached = checkpoint["work_items"].get(key)
+    if isinstance(cached, dict) and isinstance(cached.get("run"), dict) and not (
+        _is_environment_failure(cached["run"])
+    ):
+        return cached["run"]
+    return None
+
+
+def _store_run(
+    checkpoint: dict, checkpoint_path: Path | None, key: str, *, record_id, code: str,
+    dataset: Path, run: dict,
+) -> None:
+    checkpoint["work_items"][key] = {
+        "record_id": record_id,
+        "code_sha256": code_sha256(code),
+        "dataset": file_fingerprint(dataset),
+        "run": run,
+    }
+    if checkpoint_path is not None:
+        _atomic_write_json(checkpoint_path, checkpoint)
+
+
 def _run_work_item(
     code: str,
     dataset: Path,
@@ -426,32 +519,19 @@ def _run_work_item(
 ) -> tuple[dict, bool]:
     """Run or reuse one code×dataset work item and persist it immediately.
 
-    A cached environment failure (missing package, broken native import) is run
-    again rather than reused: the work key does not cover every package a script
-    may import, so a package installed since then would otherwise never be seen.
+    The code runs, and is keyed, with its ``COMPAT_REWRITES`` applied.
     """
-    key = _work_key(
-        run_sha256=run_sha256,
-        record_id=record_id,
-        code_hash=code_sha256(code),
-        dataset=dataset,
-        timeout=timeout,
+    code, rewrites, key = _work_item(
+        code, dataset, timeout, run_sha256=run_sha256, record_id=record_id,
         companions=companions,
     )
-    cached = checkpoint["work_items"].get(key)
-    if isinstance(cached, dict) and isinstance(cached.get("run"), dict) and not (
-        _is_environment_failure(cached["run"])
-    ):
-        return cached["run"], True
+    cached = _checkpointed_run(checkpoint, key)
+    if cached is not None:
+        return cached, True
     run = _run_installing_missing(code, dataset, timeout, companions)
-    checkpoint["work_items"][key] = {
-        "record_id": record_id,
-        "code_sha256": code_sha256(code),
-        "dataset": file_fingerprint(dataset),
-        "run": run,
-    }
-    if checkpoint_path is not None:
-        _atomic_write_json(checkpoint_path, checkpoint)
+    run["compat_rewrites"] = rewrites
+    _store_run(checkpoint, checkpoint_path, key, record_id=record_id, code=code,
+               dataset=dataset, run=run)
     return run, False
 
 
@@ -501,6 +581,12 @@ You MAY change, near the top of each script:
 
   Do NOT hardcode any other credential path and do NOT weaken the analysis to
   avoid image access.
+- A call or spec form that this environment's library version rejects (for
+  example a tensorstore spec field it does not know) is a loading fault too:
+  make the smallest compatible edit to that one call. The runner reports a read
+  the script caught and survived as `swallowed-input-error` (or `zero-inputs`),
+  with a `[runner] swallowed input error: <source>: <error>` line at the end of
+  stderr; fix that cause. Never install, upgrade or vendor the library.
 
 The ENVIRONMENT is owned by the driver, NOT by your script. Do NOT manage
 packages or interpreters from inside the script:
@@ -604,6 +690,138 @@ def resolve_code(
                 if text.strip():
                     return text, src
     return r.get("code") or "", "recorded"
+
+
+# Input audit, run in the script's process by both execution paths. A recorded
+# script that catches a failed data read and carries on with no data exits 0 and
+# looks usable (2026-10-19: new-merge-1 id 33 read 0 image patches because this
+# environment's tensorstore rejected its S3 spec, and printed delta AP +0.00000).
+# The audit counts every tensorstore open and read, np.load, npz array read and
+# pickle.load per source, keeps absent files and keys apart (probing for them is
+# normal), and writes the counts to $RERUN_INPUT_AUDIT at exit. numpy and
+# tensorstore are hooked when the script imports them, so the parent, which
+# forks every script, never imports tensorstore itself.
+_INPUT_AUDIT = r'''
+import atexit as _audit_atexit
+import importlib.machinery as _audit_machinery
+import io as _audit_io
+import json as _audit_json
+import os as _audit_os
+import pickle as _audit_pickle
+import sys as _audit_sys
+
+_AUDIT = {}
+_AUDIT_PATH = _audit_os.environ.get("RERUN_INPUT_AUDIT")
+_AUDIT_PID = _audit_os.getpid()
+_AUDIT_ABSENT = (FileNotFoundError, KeyError)
+
+
+def _audit_note(source, exc=None):
+    entry = _AUDIT.setdefault(source, {"ok": 0, "failed": 0, "absent": 0, "errors": []})
+    if exc is None:
+        entry["ok"] += 1
+    elif isinstance(exc, _AUDIT_ABSENT):
+        entry["absent"] += 1
+    else:
+        entry["failed"] += 1
+        if len(entry["errors"]) < 3:
+            first_line = (str(exc).splitlines() or [""])[0]
+            entry["errors"].append("%s: %s" % (type(exc).__name__, first_line[:300]))
+
+
+def _audit_basename(obj):
+    obj = getattr(obj, "name", obj)
+    try:
+        return _audit_os.path.basename(_audit_os.fsdecode(obj))
+    except TypeError:
+        return type(obj).__name__
+
+
+def _audited(fn, source):
+    """``fn`` counting each call under ``source`` (a name, or a function of the call)."""
+    def wrapper(*args, **kwargs):
+        try:
+            name = source(*args, **kwargs) if callable(source) else source
+        except Exception:
+            name = "?"
+        try:
+            out = fn(*args, **kwargs)
+        except Exception as exc:
+            _audit_note(name, exc)
+            raise
+        _audit_note(name)
+        return out
+    wrapper.__wrapped__ = fn
+    wrapper.__doc__ = getattr(fn, "__doc__", None)
+    return wrapper
+
+
+def _audit_numpy(np):
+    np.load = _audited(np.load, lambda file, *a, **k: "np.load:" + _audit_basename(file))
+    npz = getattr(getattr(np.lib, "npyio", None), "NpzFile", None)
+    if npz is not None:
+        npz.__getitem__ = _audited(
+            npz.__getitem__,
+            lambda self, key: "npz:%s[%s]" % (_audit_basename(getattr(self, "fid", None)), key),
+        )
+
+
+def _audit_tensorstore(ts):
+    ts.open = _audited(ts.open, "tensorstore")
+    ts.Future.result = _audited(ts.Future.result, "tensorstore")
+    ts.TensorStore.__array__ = _audited(ts.TensorStore.__array__, "tensorstore")
+
+
+_AUDIT_HOOKS = {"numpy": _audit_numpy, "tensorstore": _audit_tensorstore}
+
+
+def _audit_hook(name, module):
+    try:
+        _AUDIT_HOOKS.pop(name)(module)
+    except Exception as exc:  # the audit must never break the script
+        print("[runner] input audit could not hook %s: %s" % (name, exc),
+              file=_audit_sys.stderr, flush=True)
+
+
+class _AuditFinder:
+    """Hook a module of ``_AUDIT_HOOKS`` right after the script first imports it."""
+
+    @staticmethod
+    def find_spec(name, path=None, target=None):
+        if name not in _AUDIT_HOOKS:
+            return None
+        spec = _audit_machinery.PathFinder.find_spec(name, path)
+        loader = getattr(spec, "loader", None)
+        if loader is None or not hasattr(loader, "exec_module"):
+            return spec
+        exec_module = loader.exec_module
+
+        def _exec_module(module):
+            exec_module(module)
+            _audit_hook(name, module)
+
+        loader.exec_module = _exec_module
+        return spec
+
+
+def _audit_flush():
+    if not _AUDIT_PATH or _audit_os.getpid() != _AUDIT_PID:
+        return
+    try:
+        with _audit_io.open(_AUDIT_PATH, "w", encoding="utf-8") as handle:
+            _audit_json.dump(_AUDIT, handle)
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+_audit_pickle.load = _audited(_audit_pickle.load, "pickle.load")
+for _audit_name in list(_AUDIT_HOOKS):
+    if _audit_name in _audit_sys.modules:
+        _audit_hook(_audit_name, _audit_sys.modules[_audit_name])
+if _AUDIT_HOOKS:
+    _audit_sys.meta_path.insert(0, _AuditFinder)
+_audit_atexit.register(_audit_flush)
+'''
 
 
 # The recorded scripts locate the dataset through a wide variety of hardcoded
@@ -736,7 +954,7 @@ from pathlib import Path as _Path
 _orig_p_exists, _orig_p_isfile = _Path.exists, _Path.is_file
 _Path.exists = lambda self: True if str(self).endswith(".pkl") or _companion(self) else _orig_p_exists(self)
 _Path.is_file = lambda self: True if str(self).endswith(".pkl") or _companion(self) else _orig_p_isfile(self)
-
+''' + _INPUT_AUDIT + '''
 runpy.run_path("experiment.py", run_name="__main__")
 '''
 
@@ -767,13 +985,15 @@ def _link_gcs_token(dest_dir: Path, announce: bool = False) -> None:
             print(f"[rerun] exposed GCS token at {dest}", file=sys.stderr, flush=True)
 
 
-def _apply_inprocess_patches(payload) -> None:
+def _apply_inprocess_patches(payload):
     """Child-side twin of ``_RUNNER`` for the forked execution path.
 
     Applies the same neutralizations and ``*.pkl`` redirections as the
     subprocess runner (keep the two in sync), plus one preload shortcut:
     ``pickle.load`` on any ``*.pkl``-named file returns the parent's resident
-    payload instead of deserializing the multi-GB cache again.
+    payload instead of deserializing the multi-GB cache again. Returns the
+    input audit's flush, which the child must call itself because it leaves
+    through ``os._exit`` and so never runs atexit handlers.
     """
     import builtins
     import glob as glob_module
@@ -895,26 +1115,47 @@ def _apply_inprocess_patches(payload) -> None:
 
     pickle.load = _pickle_load
 
+    audit = {"__name__": "_rerun_input_audit"}
+    exec(_INPUT_AUDIT, audit)
+    return audit["_audit_flush"]
 
-def _run_forked(run_dir: Path, env: dict, timeout: int, payload) -> dict:
-    """Execute ``experiment.py`` in a forked child sharing the resident payload.
+
+_THREAD_ENV = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+               "NUMEXPR_NUM_THREADS")
+_MEMORY_SAMPLE_S = 2.0  # how often a running child's private memory is read
+
+
+def _limit_threads(threads: int) -> None:
+    """Cap the native thread pools already loaded in this process.
+
+    A forked child inherits libraries the parent loaded, which read their
+    thread-count env vars at load time, so only threadpoolctl reaches them. The
+    limits hold until restored explicitly, which this process never does.
+    """
+    try:
+        from threadpoolctl import threadpool_limits
+    except ImportError:
+        return
+    threadpool_limits(limits=threads)
+
+
+def _fork_child(run_dir: Path, env: dict, payload, threads: int | None) -> int:
+    """Fork a child that runs ``experiment.py`` against the resident payload.
 
     fork gives the child a copy-on-write view of the parent's memory: the
     multi-GB payload is shared for reads and any in-place mutation stays
     private to that child — the same isolation the per-script subprocess gave,
     without a fresh deserialization per script. The child leads its own
-    session so a timeout kills its whole process group.
+    session so a timeout kills its whole process group. Returns the child pid.
     """
-    import signal
-
     stdout_path = run_dir.parent / "stdout.txt"
     stderr_path = run_dir.parent / "stderr.txt"
-    start = time.monotonic()
     sys.stdout.flush()
     sys.stderr.flush()
     pid = os.fork()
     if pid == 0:  # child — must never return into the parent's control flow
         exit_code = 1
+        flush_audit = None
         try:
             os.setsid()
             out_fd = os.open(str(stdout_path),
@@ -923,11 +1164,17 @@ def _run_forked(run_dir: Path, env: dict, timeout: int, payload) -> dict:
                              os.O_WRONLY | os.O_CREAT | os.O_TRUNC)
             os.dup2(out_fd, 1)
             os.dup2(err_fd, 2)
+            # Fresh streams on fds 1 and 2, in case the parent's sys.stdout or
+            # sys.stderr is not a file on them (redirected, as in tests).
+            sys.stdout = open(1, "w", closefd=False)
+            sys.stderr = open(2, "w", errors="backslashreplace", closefd=False)
             os.chdir(str(run_dir))
             os.environ.clear()
             os.environ.update(env)
             sys.argv = ["experiment.py"]
-            _apply_inprocess_patches(payload)
+            flush_audit = _apply_inprocess_patches(payload)
+            if threads:
+                _limit_threads(threads)
             import runpy
             runpy.run_path("experiment.py", run_name="__main__")
             exit_code = 0
@@ -942,59 +1189,117 @@ def _run_forked(run_dir: Path, env: dict, timeout: int, payload) -> dict:
             exit_code = 1
         finally:
             try:
+                if flush_audit is not None:
+                    flush_audit()
                 sys.stdout.flush()
                 sys.stderr.flush()
             except Exception:
                 pass
             os._exit(exit_code)
+    return pid
 
-    timed_out = False
-    exitcode = None
-    deadline = start + timeout
-    while True:
-        done_pid, status = os.waitpid(pid, os.WNOHANG)
-        if done_pid == pid:
-            if os.WIFEXITED(status):
-                exitcode = os.WEXITSTATUS(status)
-            elif os.WIFSIGNALED(status):
-                exitcode = -os.WTERMSIG(status)
-            break
-        if time.monotonic() >= deadline:
-            timed_out = True
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            try:
-                os.waitpid(pid, 0)
-            except ChildProcessError:
-                pass
-            break
-        time.sleep(0.05)
 
-    def _read(path: Path) -> str:
+def _private_bytes(pid: int) -> int | None:
+    """Unshared resident memory of ``pid`` (copy-on-write copies included)."""
+    try:
+        text = Path(f"/proc/{pid}/smaps_rollup").read_text()
+    except OSError:
+        return None
+    return sum(
+        int(line.split()[1]) * 1024
+        for line in text.splitlines()
+        if line.startswith(("Private_Clean:", "Private_Dirty:"))
+    )
+
+
+class RunHandle:
+    """One started script; ``poll()`` returns its run dict once it has ended.
+
+    The sandbox lives until then. A child past its deadline is killed with its
+    whole process group. While it runs, its private memory is sampled every
+    ``_MEMORY_SAMPLE_S`` seconds into ``peak_private_bytes``.
+    """
+
+    def __init__(self, sandbox, pid: int, proc, timeout: int, start: float) -> None:
+        self._sandbox = sandbox
+        self._root = Path(sandbox.name)
+        self._pid = pid
+        self._proc = proc  # the Popen on the subprocess path, else None (forked)
+        self._timeout = timeout
+        self._start = start
+        self._next_sample = start
+        self.peak_private_bytes = 0
+
+    def _reap(self) -> int | None:
+        """The exit code (negative signal number) once the child has ended."""
+        if self._proc is not None:
+            return self._proc.poll()
+        done_pid, status = os.waitpid(self._pid, os.WNOHANG)
+        if done_pid != self._pid:
+            return None
+        if os.WIFSIGNALED(status):
+            return -os.WTERMSIG(status)
+        return os.WEXITSTATUS(status)
+
+    def _kill(self) -> None:
         try:
-            return path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return ""
+            os.killpg(self._pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            try:
+                os.kill(self._pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if self._proc is not None:
+            self._proc.wait()
+            return
+        try:
+            os.waitpid(self._pid, 0)
+        except ChildProcessError:
+            pass
 
-    stderr_text = _read(stderr_path)
-    if timed_out:
-        stderr_text += f"\n[rerun] timed out after {timeout}s"
-    return {
-        "timed_out": timed_out,
-        "exitcode": None if timed_out else exitcode,
-        "stdout": _read(stdout_path),
-        "stderr": stderr_text,
-        "runtime_ms": round((time.monotonic() - start) * 1000),
-    }
+    def poll(self) -> dict | None:
+        exitcode = self._reap()
+        now = time.monotonic()
+        if exitcode is None:
+            if now < self._start + self._timeout:
+                if now >= self._next_sample:
+                    sample = _private_bytes(self._pid) or 0
+                    self.peak_private_bytes = max(self.peak_private_bytes, sample)
+                    self._next_sample = now + _MEMORY_SAMPLE_S
+                return None
+            self._kill()
+        return self._finish(timed_out=exitcode is None, exitcode=exitcode)
+
+    def wait(self) -> dict:
+        while (run := self.poll()) is None:
+            time.sleep(0.05)
+        return run
+
+    def _finish(self, *, timed_out: bool, exitcode: int | None) -> dict:
+        def _read(name: str) -> str:
+            try:
+                return (self._root / name).read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return ""
+
+        stderr_text = _read("stderr.txt")
+        if timed_out:
+            stderr_text += f"\n[rerun] timed out after {self._timeout}s"
+        run = _with_input_audit({
+            "timed_out": timed_out,
+            "exitcode": None if timed_out else exitcode,
+            "stdout": _read("stdout.txt"),
+            "stderr": stderr_text,
+            "runtime_ms": round((time.monotonic() - self._start) * 1000),
+        }, self._root / "input_audit.json")
+        self._sandbox.cleanup()
+        return run
 
 
-def rerun_one(code: str, pkl: Path, timeout: int, companions=()) -> dict:
-    """Execute one record's recorded ``code``, forcing every pkl load to ``pkl``.
+def start_run(
+    code: str, pkl: Path, timeout: int, companions=(), *, threads: int | None = None,
+) -> RunHandle:
+    """Start one record's ``code`` with every pkl load forced to ``pkl``.
 
     The recorded script is written verbatim to ``experiment.py`` and launched
     through ``_runner.py``, which monkeypatches ``open`` / ``os.path.exists`` /
@@ -1017,22 +1322,29 @@ def rerun_one(code: str, pkl: Path, timeout: int, companions=()) -> dict:
     given), the script runs in a forked child sharing the resident payload via
     copy-on-write and ``pickle.load`` short-circuits to it — one dataset
     deserialization per invocation instead of one per script. Otherwise it
-    falls back to the original fresh-subprocess-per-script path.
+    falls back to the original fresh-subprocess-per-script path. Either way the
+    run carries the script's ``input_audit``. ``threads`` caps the script's
+    BLAS/OpenMP thread pools (``--jobs`` above 1).
     """
     payload = _preload_payload(pkl) if _PRELOAD_ENABLED else None
-    with tempfile.TemporaryDirectory(prefix="rerun_") as tmp:
+    sandbox = tempfile.TemporaryDirectory(prefix="rerun_")
+    try:
+        tmp = Path(sandbox.name)
         # The cwd is nested one level so scripts probing ``Path.cwd().parent``
         # still land inside the disposable sandbox (where a token link can
         # live) instead of the shared $TMPDIR.
-        run = Path(tmp) / "run"
+        run = tmp / "run"
         run.mkdir()
         (run / "experiment.py").write_text(code, encoding="utf-8")
         env = {
             **os.environ,
             "MPLBACKEND": "Agg",  # headless plotting
             "RERUN_PKL": str(pkl),
+            "RERUN_INPUT_AUDIT": str(tmp / "input_audit.json"),
         }
         env.setdefault("AWS_EC2_METADATA_DISABLED", "true")
+        if threads:
+            env.update({name: str(threads) for name in _THREAD_ENV})
         links = companion_links(code, companions)
         if links:
             env["RERUN_COMPANIONS"] = json.dumps(links)
@@ -1042,43 +1354,48 @@ def rerun_one(code: str, pkl: Path, timeout: int, companions=()) -> dict:
             env.setdefault("GOOGLE_APPLICATION_CREDENTIALS", str(GCS_TOKEN_PATH))
             env["RERUN_GCS_TOKEN"] = str(GCS_TOKEN_PATH)
             _link_gcs_token(run)
-            _link_gcs_token(Path(tmp))
+            _link_gcs_token(tmp)
             _link_gcs_token(pkl.parent, announce=True)
-        if payload is not None:
-            return _run_forked(run, env, timeout, payload)
-        (run / "_runner.py").write_text(_RUNNER, encoding="utf-8")
         start = time.monotonic()
-        try:
-            proc = subprocess.run(
+        if payload is not None:
+            pid = _fork_child(run, env, payload, threads)
+            return RunHandle(sandbox, pid, None, timeout, start)
+        (run / "_runner.py").write_text(_RUNNER, encoding="utf-8")
+        with open(tmp / "stdout.txt", "wb") as out, open(tmp / "stderr.txt", "wb") as err:
+            proc = subprocess.Popen(
                 [sys.executable, "_runner.py"],
                 cwd=str(run),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
+                stdout=out,
+                stderr=err,
                 env=env,
+                start_new_session=True,
             )
-            return {
-                "timed_out": False,
-                "exitcode": proc.returncode,
-                "stdout": proc.stdout,
-                "stderr": proc.stderr,
-                "runtime_ms": round((time.monotonic() - start) * 1000),
-            }
-        except subprocess.TimeoutExpired as e:
-            # On timeout the partial stdout/stderr may come back as bytes even
-            # with text=True; decode defensively before concatenating.
-            def _txt(x):
-                if isinstance(x, bytes):
-                    return x.decode("utf-8", "replace")
-                return x or ""
+        return RunHandle(sandbox, proc.pid, proc, timeout, start)
+    except BaseException:
+        sandbox.cleanup()
+        raise
 
-            return {
-                "timed_out": True,
-                "exitcode": None,
-                "stdout": _txt(e.stdout),
-                "stderr": _txt(e.stderr) + f"\n[rerun] timed out after {timeout}s",
-                "runtime_ms": round((time.monotonic() - start) * 1000),
-            }
+
+def rerun_one(code: str, pkl: Path, timeout: int, companions=()) -> dict:
+    """Run one record's ``code`` against ``pkl`` to completion (see ``start_run``)."""
+    return start_run(code, pkl, timeout, companions).wait()
+
+
+def _with_input_audit(run: dict, audit_path: Path) -> dict:
+    """Attach the script's input audit; name each swallowed input failure in stderr."""
+    try:
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        audit = {}
+    run["input_audit"] = audit if isinstance(audit, dict) else {}
+    if run.get("exitcode") == 0:
+        for source in swallowed_inputs(run["input_audit"]):
+            error = (run["input_audit"][source].get("errors") or ["unknown error"])[0]
+            run["stderr"] = (
+                (run.get("stderr") or "").rstrip("\n")
+                + f"\n[runner] swallowed input error: {source}: {error}"
+            )
+    return run
 
 
 def truncate(text: str | None, limit: int) -> str:
@@ -1133,6 +1450,21 @@ def classify_failure(stderr: str | None) -> str | None:
     if not stderr:
         return "analysis"
     return "environment" if _ENV_FAILURE_RE.search(stderr) else "analysis"
+
+
+def run_outcome(run: dict) -> tuple[str, str | None, str, str | None]:
+    """(log outcome, failure kind, ``result_status``, ``result_failure_reason``) of a run."""
+    usability, reason = result_usability(run)
+    if run.get("timed_out"):
+        return "TIMEOUT", None, usability, reason
+    if run.get("exitcode") == 0:
+        if usability == "USABLE":
+            return "OK", None, usability, reason
+        kind = "data-loading" if reason in _DATA_LOADING_REASONS else "analysis"
+        return f"UNUSABLE({reason})", kind, usability, reason
+    kind = classify_failure(run.get("stderr"))
+    label = "ENV-FAILED" if kind == "environment" else "FAILED"
+    return f"{label}(exit={run.get('exitcode')})", kind, usability, reason
 
 
 # --- Missing packages ---------------------------------------------------------
@@ -1274,6 +1606,281 @@ def _run_installing_missing(code: str, dataset: Path, timeout: int, companions=(
         tried.add(module)
         run = rerun_one(code, dataset, timeout, companions)
     return run
+
+
+# --- Library version skew -----------------------------------------------------
+# Recorded scripts were written against the AutoDiscovery sandbox's library
+# versions. A form this environment rejects is repaired script by script by the
+# loading-repair agents; one that recurs gets a deterministic source rewrite here.
+# Each entry's probe is Python source, run once per invocation in a fresh
+# interpreter (this process forks every script, so it never imports the
+# library), that exits 0 only when the installed version rejects the original
+# form and accepts the replacement; upgrading the library turns the rewrite off
+# by itself. The work key
+# hashes the rewritten code, while ``executed_code_sha256`` stays on the script.
+class CompatRewrite(NamedTuple):
+    name: str
+    pattern: re.Pattern
+    replacement: str
+    probe: str
+
+
+COMPAT_REWRITES: tuple[CompatRewrite, ...] = (
+    # Newer tensorstore names the S3 credential source with "type"; panda's
+    # 0.1.71 accepts only {"anonymous": true} (new-merge-1 id 33, 2026-10-19).
+    CompatRewrite(
+        name="tensorstore-anonymous-credentials",
+        pattern=re.compile(
+            r"""(aws_credentials['"]?\s*[:=]\s*)\{\s*(['"])type\2\s*:\s*(['"])anonymous\3\s*,?\s*\}"""
+        ),
+        replacement=r"\1{\2anonymous\2: True}",
+        probe=(
+            "import sys\n"
+            "import tensorstore as ts\n"
+            "def spec(credentials):\n"
+            "    return {'driver': 'zarr', 'kvstore': {'driver': 's3',\n"
+            "            'bucket': 'aind-open-data', 'path': 'p/',\n"
+            "            'aws_credentials': credentials}}\n"
+            "ts.Spec(spec({'anonymous': True}))\n"
+            "try:\n"
+            "    ts.Spec(spec({'type': 'anonymous'}))\n"
+            "except ValueError:\n"
+            "    sys.exit(0)\n"
+            "sys.exit(1)\n"
+        ),
+    ),
+)
+COMPAT_PROBE_TIMEOUT_S: int = 120
+
+
+@functools.lru_cache(maxsize=None)
+def _compat_needed(rule: CompatRewrite) -> bool:
+    """Whether this interpreter rejects the form ``rule`` rewrites (and takes its replacement)."""
+    try:
+        proc = subprocess.run([sys.executable, "-c", rule.probe], capture_output=True,
+                              timeout=COMPAT_PROBE_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0
+
+
+def apply_compat_rewrites(code: str) -> tuple[str, list[str]]:
+    """``code`` with every needed ``COMPAT_REWRITES`` entry applied, and their names."""
+    applied = []
+    for rule in COMPAT_REWRITES:
+        if rule.pattern.search(code or "") and _compat_needed(rule):
+            code = rule.pattern.sub(rule.replacement, code)
+            applied.append(rule.name)
+    return code, applied
+
+
+# --- Parallel execution (--jobs) ----------------------------------------------
+# Scripts are independent: each runs in its own sandbox against a copy-on-write
+# view of the payload, and only this process writes the checkpoint. With --jobs N
+# above 1, up to N run at once, longest predicted runtime first. A new script
+# starts only when the job's cgroup can still hold it: the reserve is 1.25 x the
+# largest private memory a finished script used (this process's RSS before any
+# has finished, the worst case of a script copying the whole payload). A script
+# the kernel killed (SIGKILL the runner did not send, e.g. the OOM killer) is
+# discarded and run again alone once the others have finished, so a crowded
+# node never turns into a recorded failure. Each script gets cpus // N BLAS and
+# OpenMP threads. --jobs 1 runs the items one at a time, as before.
+_GiB = 1 << 30
+_MIN_RESERVE_BYTES = 2 * _GiB
+
+
+def _memory_headroom(
+    cgroup_file: str = "/proc/self/cgroup",
+    cgroup_root: str = "/sys/fs/cgroup",
+    meminfo: str = "/proc/meminfo",
+) -> int | None:
+    """Bytes this process may still allocate, or None when unknown.
+
+    The tightest cgroup v2 ancestor with a finite ``memory.max`` decides (a Slurm
+    job sets its limit on the job cgroup, above the step and task ones); its
+    inactive file cache counts as free. Without one, ``MemAvailable``.
+    """
+    room = None
+    try:
+        rel = next(line.split("::", 1)[1].strip()
+                   for line in Path(cgroup_file).read_text().splitlines()
+                   if line.startswith("0::"))
+    except (OSError, StopIteration):
+        rel = None
+    if rel is not None:
+        root = Path(cgroup_root)
+        node = root / rel.lstrip("/")
+        while True:
+            try:
+                limit = (node / "memory.max").read_text().strip()
+                if limit != "max":
+                    used = int((node / "memory.current").read_text())
+                    stat = dict(line.split()[:2] for line in
+                                (node / "memory.stat").read_text().splitlines())
+                    free = int(limit) - used + int(stat.get("inactive_file", 0))
+                    room = free if room is None else min(room, free)
+            except (OSError, ValueError):
+                pass
+            if node == root or node == node.parent:
+                break
+            node = node.parent
+    if room is not None:
+        return room
+    try:
+        for line in Path(meminfo).read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _rss_bytes() -> int:
+    """This process's resident memory."""
+    try:
+        for line in Path("/proc/self/status").read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1]) * 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return 0
+
+
+def _cpu_count() -> int:
+    try:
+        return len(os.sched_getaffinity(0))
+    except AttributeError:  # pragma: no cover - non-Linux
+        return os.cpu_count() or 1
+
+
+def _log_done(entry: dict) -> None:
+    run = entry["run"]
+    print(f"{entry['label']} {run_outcome(run)[0]} in {run['runtime_ms'] / 1000:.0f}s",
+          file=sys.stderr, flush=True)
+
+
+def execute_work_items(
+    work: list[dict], *, jobs: int, timeout: int, run_sha256: str, checkpoint: dict,
+    checkpoint_path: Path | None,
+) -> None:
+    """Fill each work entry's ``run`` and ``reused``.
+
+    An entry holds ``code``, ``dataset``, ``companions``, ``record_id``, a log
+    ``label`` and an optional ``predicted_s``. One job runs the entries one at a
+    time in order, as before; more go through ``_run_pool``.
+    """
+    if jobs > 1:
+        _run_pool(work, jobs=jobs, timeout=timeout, run_sha256=run_sha256,
+                  checkpoint=checkpoint, checkpoint_path=checkpoint_path)
+        return
+    for entry in work:
+        print(f"{entry['label']} …", file=sys.stderr, flush=True)
+        entry["run"], entry["reused"] = _run_work_item(
+            entry["code"], entry["dataset"], timeout, run_sha256=run_sha256,
+            record_id=entry["record_id"], checkpoint=checkpoint,
+            checkpoint_path=checkpoint_path, companions=entry["companions"],
+        )
+        _log_done(entry)
+
+
+def _run_pool(
+    work: list[dict], *, jobs: int, timeout: int, run_sha256: str, checkpoint: dict,
+    checkpoint_path: Path | None,
+) -> None:
+    """Run the entries up to ``jobs`` at a time (see the section comment)."""
+    pending = []
+    for entry in work:
+        code, rewrites, key = _work_item(
+            entry["code"], entry["dataset"], timeout, run_sha256=run_sha256,
+            record_id=entry["record_id"], companions=entry["companions"],
+        )
+        cached = _checkpointed_run(checkpoint, key)
+        if cached is not None:
+            entry["run"], entry["reused"] = cached, True
+            _log_done(entry)
+            continue
+        pending.append({"entry": entry, "code": code, "rewrites": rewrites, "key": key,
+                        "tried": set(), "alone": False})
+    if not pending:
+        return
+    # Longest predicted runtime first; entries without a prediction keep their order.
+    queue = sorted(pending, key=lambda item: (item["entry"].get("predicted_s") is None,
+                                              -(item["entry"].get("predicted_s") or 0)))
+    threads = max(1, _cpu_count() // jobs)
+    first_reserve = max(_rss_bytes(), _MIN_RESERVE_BYTES)
+    headroom = _memory_headroom()
+    print(
+        f"[rerun] jobs {jobs} ({threads} thread(s) per script) for {len(queue)} "
+        f"script(s); memory headroom "
+        f"{'unknown' if headroom is None else f'{headroom / _GiB:.1f} GB'}, "
+        f"first reserve {first_reserve / _GiB:.1f} GB",
+        file=sys.stderr, flush=True,
+    )
+    largest = 0  # largest private memory of a finished script
+    running: list[tuple[dict, RunHandle]] = []
+    alone: list[dict] = []
+    exclusive = False
+
+    def admit() -> bool:
+        if not running:
+            return True
+        room = _memory_headroom()
+        reserve = max(int(1.25 * largest), _MIN_RESERVE_BYTES) if largest else first_reserve
+        return room is None or room >= reserve
+
+    def start(item: dict, cap: int | None, note: str = "") -> None:
+        entry = item["entry"]
+        print(f"{entry['label']} …{note}", file=sys.stderr, flush=True)
+        handle = start_run(item["code"], entry["dataset"], timeout, entry["companions"],
+                           threads=cap)
+        running.append((item, handle))
+
+    while queue or running or alone:
+        while queue and not exclusive and len(running) < jobs and admit():
+            start(queue.pop(0), threads)
+        if not running and alone:
+            exclusive = True
+            start(alone.pop(0), None, " (alone)")
+        finished = False
+        for pair in list(running):
+            item, handle = pair
+            run = handle.poll()
+            if run is None:
+                continue
+            finished = True
+            running.remove(pair)
+            exclusive = False
+            largest = max(largest, handle.peak_private_bytes)
+            entry = item["entry"]
+            if _INSTALL_MISSING and _is_environment_failure(run):
+                module = missing_module(run.get("stderr"))
+                if (module is not None and module not in item["tried"]
+                        and "error" not in install_missing(module)):
+                    item["tried"].add(module)
+                    queue.insert(0, item)
+                    continue
+            if (run.get("exitcode") == -signal.SIGKILL and not run.get("timed_out")
+                    and not item["alone"]):
+                item["alone"] = True
+                alone.append(item)
+                print(f"{entry['label']} killed (SIGKILL) while {len(running)} other "
+                      "script(s) ran; requeued alone", file=sys.stderr, flush=True)
+                continue
+            run["compat_rewrites"] = item["rewrites"]
+            _store_run(checkpoint, checkpoint_path, item["key"],
+                       record_id=entry["record_id"], code=item["code"],
+                       dataset=entry["dataset"], run=run)
+            entry["run"], entry["reused"] = run, False
+            _log_done(entry)
+        if not finished:
+            time.sleep(0.05)
+    requeued = [item["entry"]["record_id"] for item in pending if item["alone"]]
+    print(
+        f"[rerun] pool finished {len(pending)} script(s); largest script private "
+        f"memory {largest / _GiB:.1f} GB; run alone after a kill: "
+        f"{requeued or 'none'}",
+        file=sys.stderr, flush=True,
+    )
 
 
 def preflight_env(python: str, *, timeout: int = 60) -> tuple[bool, str]:
@@ -1478,6 +2085,17 @@ def main(argv: list[str] | None = None) -> int:
         help="Per-experiment timeout in seconds (default 3600 = 60 min).",
     )
     parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help=(
+            "Run up to this many scripts at once (default 1, one at a time). Above "
+            "1, a script starts only when the job's memory can hold it, gets "
+            "cpus // jobs BLAS/OpenMP threads, and is run again alone if the kernel "
+            "kills it."
+        ),
+    )
+    parser.add_argument(
         "--max-output-chars",
         type=int,
         default=6000,
@@ -1499,6 +2117,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.no_preload or not hasattr(os, "fork"):
         _PRELOAD_ENABLED = False
 
+    if args.jobs < 1:
+        parser.error("--jobs must be at least 1.")
     if args.direction == "predictive" and args.predictive_manifest is None:
         parser.error("--direction predictive requires --predictive-manifest PATH.")
     if args.direction == "predictive" and args.top is not None:
@@ -1643,9 +2263,12 @@ def main(argv: list[str] | None = None) -> int:
         for item in ((origin_payload or {}).get("results") or [])
     }
 
-    results = []
-    n_executed = n_checkpoint_reused = n_base_reused = 0
+    # Plan every record first, then run all origin work and then all
+    # extrapolation work, so --jobs can spread each phase over the cores.
+    results: list[dict | None] = []
+    n_base_reused = 0
     selected_execution_ids = []
+    plans = []
     for rank, r in enumerate(ranked, start=1):
         code, source = resolve_code(r, args.code_dir, args.corrected_dir)
         rid = r.get("id")
@@ -1690,15 +2313,17 @@ def main(argv: list[str] | None = None) -> int:
                 f"--origin-results code fingerprint for id={rid} does not match "
                 "the code selected for extrapolation."
             )
-        print(
-            f"[rerun {rank}/{len(ranked)}] id={rid} ({source}) "
-            f"{'extra-only' if args.extra_only else 'origin'} …",
-            file=sys.stderr,
-            flush=True,
-        )
-        failure_kind = None  # None | "environment" | "analysis"
+        plan = {
+            "rank": rank, "record": r, "rid": rid, "code": code, "source": source,
+            "recorded_code": recorded_code, "changed": changed,
+            "origin_result": origin_result, "slot": len(results),
+            "failure_kind": None,  # None | "environment" | "data-loading" | "analysis"
+        }
+        results.append(None)  # filled in once the record's work has run
+        plans.append(plan)
+        label = f"[rerun {rank}/{len(ranked)}] id={rid}"
         if args.extra_only:
-            run = {
+            plan["run"] = {
                 "timed_out": bool(origin_result.get("rerun_timed_out")),
                 "exitcode": origin_result.get("rerun_exitcode"),
                 "stdout": origin_result.get("rerun_stdout") or "",
@@ -1708,152 +2333,123 @@ def main(argv: list[str] | None = None) -> int:
             usability = origin_result.get("result_status")
             usability_reason = origin_result.get("result_failure_reason")
             if usability not in {"USABLE", "UNUSABLE"}:
-                usability, usability_reason = result_usability(run)
+                usability, usability_reason = result_usability(plan["run"])
+            plan.update(usability=usability, reason=usability_reason)
         elif not code.strip():
-            run = {
+            plan["run"] = {
                 "timed_out": False,
                 "exitcode": None,
                 "stdout": "",
                 "stderr": "[rerun] record has no 'code' to execute",
                 "runtime_ms": 0,
             }
-            outcome = "NO-CODE"
-            failure_kind = "analysis"
-            usability, usability_reason = "UNUSABLE", "no-code"
+            plan.update(failure_kind="analysis", usability="UNUSABLE", reason="no-code")
+            print(f"{label} ({source}) origin NO-CODE in 0s", file=sys.stderr, flush=True)
         else:
-            run, reused = _run_work_item(
-                code,
-                pkl,
-                args.timeout,
-                run_sha256=run_sha256,
-                record_id=rid,
-                checkpoint=checkpoint,
-                checkpoint_path=checkpoint_path,
-                companions=companions[pkl],
-            )
-            n_checkpoint_reused += int(reused)
-            n_executed += int(not reused)
-            usability, usability_reason = result_usability(run)
-            if run["timed_out"]:
-                outcome = "TIMEOUT"
-            elif run["exitcode"] == 0 and usability == "USABLE":
-                outcome = "OK"
-            elif run["exitcode"] == 0:
-                outcome = f"UNUSABLE({usability_reason})"
-                failure_kind = (
-                    "data-loading" if usability_reason == "dataset-loading" else "analysis"
-                )
-            else:
-                failure_kind = classify_failure(run["stderr"])
-                if failure_kind == "environment":
-                    outcome = f"ENV-FAILED(exit={run['exitcode']})"
-                else:
-                    outcome = f"FAILED(exit={run['exitcode']})"
+            prior = base_by_id.get(rid_key) or {}
+            plan["work"] = {
+                "code": code, "dataset": pkl, "companions": companions[pkl],
+                "record_id": rid, "label": f"{label} ({source}) origin",
+                "predicted_s": (prior.get("rerun_runtime_ms") or 0) / 1000 or None,
+            }
 
-        if not args.extra_only:
-            print(
-                f"[rerun {rank}/{len(ranked)}] id={rid} {outcome} "
-                f"in {run['runtime_ms'] / 1000:.0f}s",
-                file=sys.stderr,
-                flush=True,
+    def execute(work: list[dict]) -> tuple[int, int]:
+        execute_work_items(work, jobs=args.jobs, timeout=args.timeout,
+                           run_sha256=run_sha256, checkpoint=checkpoint,
+                           checkpoint_path=checkpoint_path)
+        reused = sum(1 for entry in work if entry["reused"])
+        return len(work) - reused, reused
+
+    n_executed, n_checkpoint_reused = execute(
+        [plan["work"] for plan in plans if "work" in plan]
+    )
+    for plan in plans:
+        if "work" in plan:
+            plan["run"] = plan["work"]["run"]
+            _, plan["failure_kind"], plan["usability"], plan["reason"] = run_outcome(
+                plan["run"]
             )
 
-        # Extrapolation: run the SAME code on each other dataset to test whether
-        # the finding generalizes. Skip when the code didn't even run on origin
-        # (no point — there's no analysis to carry over).
-        extrapolations = []
-        if extra_pkls and code.strip() and usability == "USABLE":
-            for ei, ep in enumerate(extra_pkls, start=1):
-                xcode, retargeted, refusal = retarget_image(
-                    code, companions[pkl], companions[ep]
-                )
-                if refusal:
-                    print(
-                        f"[rerun {rank}/{len(ranked)}] id={rid} extrapolate "
-                        f"{ei}/{len(extra_pkls)} {ep.name} "
-                        "UNUSABLE(origin-image-path), not run",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                    extrapolations.append(
-                        {
-                            "pkl": str(ep),
-                            "pkl_name": ep.name,
-                            "exitcode": None,
-                            "timed_out": False,
-                            "runtime_ms": 0,
-                            "result_status": "UNUSABLE",
-                            "result_failure_reason": "origin-image-path",
-                            "stdout": "",
-                            "stderr": refusal,
-                        }
-                    )
-                    continue
-                if retargeted:
-                    print(
-                        f"[rerun {rank}/{len(ranked)}] id={rid} extrapolate "
-                        f"{ei}/{len(extra_pkls)} {ep.name}: image folder "
-                        f"{retargeted}",
-                        file=sys.stderr,
-                        flush=True,
-                    )
-                xrun, reused = _run_work_item(
-                    xcode,
-                    ep,
-                    args.timeout,
-                    run_sha256=run_sha256,
-                    record_id=rid,
-                    checkpoint=checkpoint,
-                    checkpoint_path=checkpoint_path,
-                    companions=companions[ep],
-                )
-                n_checkpoint_reused += int(reused)
-                n_executed += int(not reused)
-                xusability, xreason = result_usability(xrun)
-                xoutcome = (
-                    "TIMEOUT"
-                    if xrun["timed_out"]
-                    else (
-                        "OK"
-                        if xrun["exitcode"] == 0 and xusability == "USABLE"
-                        else (
-                            f"UNUSABLE({xreason})"
-                            if xrun["exitcode"] == 0
-                            else f"FAILED(exit={xrun['exitcode']})"
-                        )
-                    )
-                )
-                print(
-                    f"[rerun {rank}/{len(ranked)}] id={rid} extrapolate "
-                    f"{ei}/{len(extra_pkls)} {ep.name} {xoutcome} "
-                    f"in {xrun['runtime_ms'] / 1000:.0f}s",
-                    file=sys.stderr,
-                    flush=True,
-                )
-                extrapolations.append(
+    # Extrapolation: run the SAME code on each other dataset to test whether
+    # the finding generalizes. Skip when the code didn't even run on origin
+    # (no point — there's no analysis to carry over).
+    extra_work = []
+    for plan in plans:
+        plan["extrapolations"] = []
+        if not (extra_pkls and plan["code"].strip() and plan["usability"] == "USABLE"):
+            continue
+        for ei, ep in enumerate(extra_pkls, start=1):
+            label = (f"[rerun {plan['rank']}/{len(ranked)}] id={plan['rid']} "
+                     f"extrapolate {ei}/{len(extra_pkls)} {ep.name}")
+            xcode, retargeted, refusal = retarget_image(
+                plan["code"], companions[pkl], companions[ep]
+            )
+            if refusal:
+                print(f"{label} UNUSABLE(origin-image-path), not run",
+                      file=sys.stderr, flush=True)
+                plan["extrapolations"].append(
                     {
                         "pkl": str(ep),
                         "pkl_name": ep.name,
-                        "exitcode": xrun["exitcode"],
-                        "timed_out": xrun["timed_out"],
-                        "runtime_ms": xrun["runtime_ms"],
-                        "result_status": xusability,
-                        "result_failure_reason": xreason,
-                        "stdout": truncate(xrun["stdout"], args.max_output_chars),
-                        "stderr": truncate(xrun["stderr"], args.max_output_chars),
-                        **({"image_retargeted": retargeted} if retargeted else {}),
+                        "exitcode": None,
+                        "timed_out": False,
+                        "runtime_ms": 0,
+                        "result_status": "UNUSABLE",
+                        "result_failure_reason": "origin-image-path",
+                        "stdout": "",
+                        "stderr": refusal,
                     }
                 )
+                continue
+            if retargeted:
+                print(f"{label}: image folder {retargeted}", file=sys.stderr, flush=True)
+            work = {
+                "code": xcode, "dataset": ep, "companions": companions[ep],
+                "record_id": plan["rid"], "label": label,
+                "predicted_s": (plan["run"].get("runtime_ms") or 0) / 1000 or None,
+                "retargeted": retargeted,
+            }
+            plan["extrapolations"].append(work)
+            extra_work.append(work)
+    executed, reused = execute(extra_work)
+    n_executed += executed
+    n_checkpoint_reused += reused
 
+    for plan in plans:
+        extrapolations = []
+        for item in plan["extrapolations"]:
+            if "run" not in item:  # refused before running
+                extrapolations.append(item)
+                continue
+            xrun = item["run"]
+            xusability, xreason = result_usability(xrun)
+            extrapolations.append(
+                {
+                    "pkl": str(item["dataset"]),
+                    "pkl_name": item["dataset"].name,
+                    "exitcode": xrun["exitcode"],
+                    "timed_out": xrun["timed_out"],
+                    "runtime_ms": xrun["runtime_ms"],
+                    "result_status": xusability,
+                    "result_failure_reason": xreason,
+                    "stdout": truncate(xrun["stdout"], args.max_output_chars),
+                    "stderr": truncate(xrun["stderr"], args.max_output_chars),
+                    "input_audit": xrun.get("input_audit") or {},
+                    "compat_rewrites": xrun.get("compat_rewrites") or [],
+                    **({"image_retargeted": item["retargeted"]}
+                       if item["retargeted"] else {}),
+                }
+            )
         if args.extra_only:
-            result = dict(origin_result)
+            result = dict(plan["origin_result"])
             result["extrapolations"] = extrapolations
         else:
+            r, run, code = plan["record"], plan["run"], plan["code"]
             result = {
-                "rank": rank,
-                "id": rid,
+                "rank": plan["rank"],
+                "id": plan["rid"],
                 "status": r.get("status", ""),
-                "code_source": source,
+                "code_source": plan["source"],
                 "surprisal": round(r["_surprisal"], 4),
                 "priority_score": round(r.get("_priority", 0.0), 4),
                 "hypothesis": (r.get("hypothesis") or "").strip(),
@@ -1863,18 +2459,20 @@ def main(argv: list[str] | None = None) -> int:
                 ),
                 "rerun_exitcode": run["exitcode"],
                 "rerun_timed_out": run["timed_out"],
-                "rerun_failure_kind": failure_kind,
-                "result_status": usability,
-                "result_failure_reason": usability_reason,
+                "rerun_failure_kind": plan["failure_kind"],
+                "result_status": plan["usability"],
+                "result_failure_reason": plan["reason"],
                 "rerun_runtime_ms": run["runtime_ms"],
                 "rerun_stdout": truncate(run["stdout"], args.max_output_chars),
                 "rerun_stderr": truncate(run["stderr"], args.max_output_chars),
+                "input_audit": run.get("input_audit") or {},
+                "compat_rewrites": run.get("compat_rewrites") or [],
                 "extrapolations": extrapolations,
-                "recorded_code_sha256": code_sha256(recorded_code),
+                "recorded_code_sha256": code_sha256(plan["recorded_code"]),
                 "executed_code_sha256": code_sha256(code),
-                "code_changed": changed,
+                "code_changed": plan["changed"],
             }
-        results.append(result)
+        results[plan["slot"]] = result
 
     n_ok = sum(1 for item in results if item.get("result_status") == "USABLE")
     n_timeout = sum(1 for item in results if item.get("rerun_timed_out"))
@@ -1893,6 +2491,7 @@ def main(argv: list[str] | None = None) -> int:
         "rank_by": args.rank_by,
         "top": args.top,
         "timeout_s": args.timeout,
+        "jobs": args.jobs,
         "code_dir": str(args.code_dir) if args.code_dir is not None else None,
         "corrected_dir": str(args.corrected_dir)
         if args.corrected_dir is not None

@@ -824,5 +824,523 @@ class CompanionTests(unittest.TestCase):
             )
 
 
+# A stand-in tensorstore: ``open`` rejects a spec marked bad, like panda's 0.1.71
+# rejecting {"type": "anonymous"} S3 credentials (new-merge-1 id 33).
+_FAKE_TENSORSTORE = '''
+class Future:
+    def __init__(self, value):
+        self._value = value
+
+    def result(self, timeout=None):
+        return self._value
+
+
+class TensorStore:
+    def __array__(self, dtype=None, copy=None):
+        import numpy
+        return numpy.zeros(2)
+
+
+def open(spec, **kwargs):
+    if spec.get("bad"):
+        raise ValueError('Object includes extra members: "type"')
+    return Future(TensorStore())
+'''
+
+_READ_SPECS = '''
+import os, sys
+sys.path.insert(0, os.environ["FAKE_TS_DIR"])
+import numpy as np
+import tensorstore as ts
+patches = 0
+for spec in SPECS:
+    try:
+        patches += int(np.array(ts.open(spec).result()).size > 0)
+    except Exception as exc:
+        print("open failed:", exc)
+print("patches", patches)
+print("delta AP +0.00000")
+'''
+
+
+class InputAuditTests(unittest.TestCase):
+    def _run(self, code: str, root: Path, *, preload: bool) -> dict:
+        fake = root / "fake"
+        (fake / "tensorstore").mkdir(parents=True, exist_ok=True)
+        (fake / "tensorstore" / "__init__.py").write_text(_FAKE_TENSORSTORE)
+        pkl = root / "dataset_cache_audit_add.pkl"
+        pkl.write_bytes(rerun.pickle.dumps({}))
+        resident = {str(pkl.resolve()): {}} if preload else {}
+        with mock.patch.object(rerun, "_PRELOAD_ENABLED", preload), \
+                mock.patch.dict(rerun._PAYLOAD_CACHE, resident, clear=True), \
+                mock.patch.dict(rerun.os.environ, {"FAKE_TS_DIR": str(fake)}), \
+                mock.patch.dict(rerun.sys.modules), \
+                contextlib.redirect_stderr(io.StringIO()):
+            # A forked child inherits this process's modules: hide a real
+            # tensorstore another test imported so the child loads the fake.
+            for name in [m for m in rerun.sys.modules if m.split(".")[0] == "tensorstore"]:
+                del rerun.sys.modules[name]
+            return rerun.rerun_one(code, pkl, timeout=120)
+
+    @staticmethod
+    def _paths():
+        return (False, True) if hasattr(rerun.os, "fork") else (False,)
+
+    def test_swallowed_read_is_unusable_on_both_paths(self) -> None:
+        for preload in self._paths():
+            with self.subTest(preload=preload), tempfile.TemporaryDirectory() as tmpdir:
+                run = self._run("SPECS = [{'bad': True}]\n" + _READ_SPECS,
+                                Path(tmpdir), preload=preload)
+                self.assertEqual(run["exitcode"], 0, run["stderr"])
+                self.assertEqual(
+                    {k: run["input_audit"]["tensorstore"][k] for k in ("ok", "failed")},
+                    {"ok": 0, "failed": 1},
+                )
+                self.assertEqual(rerun.result_usability(run),
+                                 ("UNUSABLE", "swallowed-input-error"))
+                self.assertEqual(
+                    run["stderr"].strip().splitlines()[-1],
+                    "[runner] swallowed input error: tensorstore: ValueError: "
+                    "Object includes extra members: \"type\"",
+                )
+
+    def test_partial_read_failures_stay_usable(self) -> None:
+        for preload in self._paths():
+            with self.subTest(preload=preload), tempfile.TemporaryDirectory() as tmpdir:
+                run = self._run("SPECS = [{'bad': True}, {}, {}]\n" + _READ_SPECS,
+                                Path(tmpdir), preload=preload)
+                self.assertIn("patches 2", run["stdout"])
+                counts = run["input_audit"]["tensorstore"]
+                # two opens, two results and two array reads succeeded
+                self.assertEqual((counts["ok"], counts["failed"]), (6, 1))
+                self.assertEqual(rerun.result_usability(run), ("USABLE", None))
+                self.assertNotIn("[runner] swallowed", run["stderr"])
+
+    def test_corrupt_npz_array_is_swallowed_but_absent_keys_are_not(self) -> None:
+        import numpy as np
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            npz = root / "companion.npz"
+            np.savez(npz, a=np.arange(3), b=np.arange(4))
+            info = zipfile.ZipFile(npz).getinfo("b.npy")
+            data = bytearray(npz.read_bytes())
+            extra = int.from_bytes(data[info.header_offset + 28:info.header_offset + 30],
+                                   "little")
+            start = info.header_offset + 30 + len(info.filename.encode()) + extra
+            data[start:start + 6] = b"\0" * 6  # break b.npy's magic string
+            npz.write_bytes(bytes(data))
+            code = (
+                "import numpy as np\n"
+                f"d = np.load({str(npz)!r})\n"
+                "a = d['a']\n"
+                "try:\n    d['missing']\nexcept KeyError:\n    pass\n"
+                "try:\n    d['b']\nexcept Exception as exc:\n"
+                "    print('b unreadable:', type(exc).__name__)\n"
+                "print('rows', len(a))\n"
+            )
+            run = self._run(code, root, preload=False)
+        audit = run["input_audit"]
+        self.assertEqual(run["exitcode"], 0, run["stderr"])
+        self.assertEqual(audit["np.load:companion.npz"]["ok"], 1)
+        self.assertEqual(audit["npz:companion.npz[a]"]["ok"], 1)
+        self.assertEqual(audit["npz:companion.npz[missing]"]["absent"], 1)
+        self.assertEqual(audit["npz:companion.npz[b]"]["failed"], 1)
+        self.assertEqual(rerun.swallowed_inputs(audit), ["npz:companion.npz[b]"])
+        self.assertEqual(rerun.result_usability(run),
+                         ("UNUSABLE", "swallowed-input-error"))
+
+    def test_zero_image_inputs_line_is_unusable(self) -> None:
+        def usability(stdout: str, audit=None) -> tuple:
+            return rerun.result_usability({"timed_out": False, "exitcode": 0,
+                                           "stdout": stdout, "input_audit": audit})
+
+        zero = ("UNUSABLE", "zero-inputs")
+        self.assertEqual(usability(
+            "INPUTS READ fragment_nodes=10 companion_rows=5 image_patches=0/120\n"), zero)
+        self.assertEqual(usability(
+            "INPUTS READ: 0 fragment nodes, 0 companion rows, 0 image patches read.\n"),
+            zero)
+        self.assertEqual(usability(
+            "INPUTS READ fragment_nodes=10 companion_rows=5 image_patches=0/0\n"),
+            ("USABLE", None))
+        self.assertEqual(usability("INPUTS READ: 11245 image patches read\n"),
+                         ("USABLE", None))
+        self.assertEqual(
+            usability("metric=1\n", {"tensorstore": {"ok": 0, "failed": 2}}),
+            ("UNUSABLE", "swallowed-input-error"),
+        )
+
+
+class CompatRewriteTests(unittest.TestCase):
+    CODE = (
+        "spec = {'kvstore': {'driver': 's3', "
+        "'aws_credentials': {'type': 'anonymous'}}}\n"
+        "other = dict(aws_credentials={\"type\": \"anonymous\"})\n"
+    )
+
+    def test_rewrite_applies_only_when_the_probe_says_so(self) -> None:
+        with mock.patch.object(rerun, "_compat_needed", return_value=True):
+            code, names = rerun.apply_compat_rewrites(self.CODE)
+        self.assertEqual(names, ["tensorstore-anonymous-credentials"])
+        self.assertIn("'aws_credentials': {'anonymous': True}", code)
+        self.assertIn('aws_credentials={"anonymous": True}', code)
+        with mock.patch.object(rerun, "_compat_needed", return_value=False):
+            self.assertEqual(rerun.apply_compat_rewrites(self.CODE), (self.CODE, []))
+        with mock.patch.object(rerun, "_compat_needed") as needed:
+            self.assertEqual(rerun.apply_compat_rewrites("print(1)\n"), ("print(1)\n", []))
+        needed.assert_not_called()  # no probe unless the pattern occurs
+
+    def test_work_item_runs_and_keys_the_rewritten_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataset = Path(tmpdir) / "data.pkl"
+            dataset.write_bytes(b"one")
+            checkpoint = rerun._load_checkpoint(None)
+            executed = []
+
+            def fake_run(code, path, timeout, companions=()):
+                executed.append(code)
+                return {"timed_out": False, "exitcode": 0, "stdout": "metric=1\n",
+                        "stderr": "", "runtime_ms": 1}
+
+            with mock.patch.object(rerun, "_compat_needed", return_value=True), \
+                    mock.patch.object(rerun, "rerun_one", side_effect=fake_run), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                run, reused = rerun._run_work_item(
+                    self.CODE, dataset, 10, run_sha256="run", record_id=33,
+                    checkpoint=checkpoint, checkpoint_path=None,
+                )
+        self.assertFalse(reused)
+        self.assertEqual(run["compat_rewrites"], ["tensorstore-anonymous-credentials"])
+        self.assertNotIn("'type'", executed[0])
+        (item,) = checkpoint["work_items"].values()
+        self.assertEqual(item["code_sha256"], rerun.code_sha256(executed[0]))
+
+    def test_result_keeps_the_script_hash_and_lists_rewrites(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            run_json = root / "run.json"
+            run_json.write_text("[]")
+            origin = root / "origin.pkl"
+            origin.write_bytes(b"origin")
+            records = [_record(33, self.CODE)]
+
+            def fake_run(code, path, timeout, companions=()):
+                return {"timed_out": False, "exitcode": 0, "stdout": "metric=1\n",
+                        "stderr": "", "runtime_ms": 1,
+                        "input_audit": {"tensorstore": {"ok": 3, "failed": 0}}}
+
+            output = io.StringIO()
+            with (
+                mock.patch.object(rerun, "load_records", return_value=records),
+                mock.patch.object(rerun, "rank_records", return_value=(records, None, [])),
+                mock.patch.object(rerun, "preflight_env", return_value=(True, "2")),
+                mock.patch.object(rerun, "_compat_needed", return_value=True),
+                mock.patch.object(rerun, "rerun_one", side_effect=fake_run),
+                contextlib.redirect_stdout(output),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                rc = rerun.main([str(run_json), "--pkl", str(origin)])
+        self.assertEqual(rc, 0)
+        (result,) = json.loads(output.getvalue())["results"]
+        self.assertEqual(result["executed_code_sha256"], rerun.code_sha256(self.CODE))
+        self.assertEqual(result["compat_rewrites"], ["tensorstore-anonymous-credentials"])
+        self.assertEqual(result["input_audit"]["tensorstore"]["ok"], 3)
+        self.assertEqual(result["result_status"], "USABLE")
+
+    def test_rewritten_spec_parses_with_the_installed_tensorstore(self) -> None:
+        if importlib.util.find_spec("tensorstore") is None:
+            self.skipTest("tensorstore is not installed")
+        rule = rerun.COMPAT_REWRITES[0]
+        rerun._compat_needed.cache_clear()
+        needed = rerun._compat_needed(rule)
+        code = (
+            "import tensorstore as ts\n"
+            "spec = {'driver': 'zarr', 'kvstore': {'driver': 's3', "
+            "'bucket': 'aind-open-data', 'path': 'p/', "
+            "'aws_credentials': {'type': 'anonymous'}}}\n"
+            "ts.Spec(spec)\n"
+        )
+        rewritten, names = rerun.apply_compat_rewrites(code)
+        self.assertEqual(names, [rule.name] if needed else [])
+        proc = subprocess.run([rerun.sys.executable, "-c", rewritten],
+                              capture_output=True, text=True, timeout=120)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_work_items_from_the_previous_runner_version_are_not_reused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataset = Path(tmpdir) / "data.pkl"
+            dataset.write_bytes(b"one")
+            with mock.patch.object(rerun, "_RUNNER_VERSION", "work-items-v1"):
+                old_key = rerun._work_key(
+                    run_sha256="run", record_id=1, code_hash=rerun.code_sha256("code"),
+                    dataset=dataset, timeout=10,
+                )
+            stale = {"timed_out": False, "exitcode": 0, "stdout": "metric=0\n",
+                     "stderr": "", "runtime_ms": 1}
+            checkpoint = {"schema_version": 1, "work_items": {old_key: {"run": stale}}}
+            fresh = dict(stale, stdout="metric=1\n")
+            with mock.patch.object(rerun, "rerun_one", return_value=fresh) as run_one:
+                run, reused = rerun._run_work_item(
+                    "code", dataset, 10, run_sha256="run", record_id=1,
+                    checkpoint=checkpoint, checkpoint_path=None,
+                )
+        self.assertEqual((run["stdout"], reused, run_one.call_count),
+                         ("metric=1\n", False, 1))
+
+
+
+class _FakeHandle:
+    """A started script that ends ``seconds`` after it starts with ``run``."""
+
+    def __init__(self, run: dict, seconds: float, live: list) -> None:
+        self._run, self._end, self._live = run, rerun.time.monotonic() + seconds, live
+        self.peak_private_bytes = 0
+        live.append(self)
+
+    def poll(self):
+        if rerun.time.monotonic() < self._end:
+            return None
+        if self in self._live:
+            self._live.remove(self)
+        return dict(self._run)
+
+
+def _ok_run(stdout: str = "metric=1\n") -> dict:
+    return {"timed_out": False, "exitcode": 0, "stdout": stdout, "stderr": "",
+            "runtime_ms": 1, "input_audit": {}}
+
+
+class ParallelPoolTests(unittest.TestCase):
+    TIMEOUT_S = 8  # roomy enough for a cold interpreter start on a busy node
+    # One record per outcome the runner distinguishes; id 3 times out (TIMEOUT_S).
+    CODES = {
+        1: "print('metric=1')\n",
+        2: "raise SystemExit(3)\n",
+        3: "import time\ntime.sleep(120)\n",
+        4: ("import io, numpy as np\n"
+            "try:\n    np.load(io.BytesIO(b'not an array'))\nexcept Exception:\n    pass\n"
+            "print('delta AP +0.00000')\n"),
+        5: "print('No dataset found.')\n",
+        6: "import os\nprint('threads', os.environ.get('OMP_NUM_THREADS'))\n",
+    }
+
+    def _main(self, root: Path, jobs: int, *, preload: bool) -> dict:
+        run_json = root / "run.json"
+        run_json.write_text("[]")
+        origin = root / "dataset_cache_origin_add.pkl"
+        extra = root / "dataset_cache_extra_add.pkl"
+        for path in (origin, extra):
+            path.write_bytes(rerun.pickle.dumps({}))
+        records = [_record(rid, code) for rid, code in self.CODES.items()]
+        output = io.StringIO()
+        argv = [str(run_json), "--pkl", str(origin), "--extra-pkl", str(extra),
+                "--timeout", str(self.TIMEOUT_S), "--jobs", str(jobs)]
+        if not preload:
+            argv.append("--no-preload")
+        with (
+            mock.patch.object(rerun, "load_records", return_value=records),
+            mock.patch.object(rerun, "rank_records", return_value=(records, None, [])),
+            mock.patch.object(rerun, "preflight_env", return_value=(True, "2")),
+            mock.patch.object(rerun, "_PRELOAD_ENABLED", preload),
+            mock.patch.dict(rerun._PAYLOAD_CACHE, {}, clear=True),
+            contextlib.redirect_stdout(output),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            self.assertEqual(rerun.main(argv), 0)
+        return json.loads(output.getvalue())
+
+    @staticmethod
+    def _comparable(payload: dict) -> list[dict]:
+        results = json.loads(json.dumps(payload["results"]))
+        for result in results:
+            result.pop("rerun_runtime_ms")
+            for extra in result["extrapolations"]:
+                extra.pop("runtime_ms")
+            if result["id"] == 6:  # the thread cap is the one intended difference
+                result.pop("rerun_stdout")
+                for extra in result["extrapolations"]:
+                    extra.pop("stdout")
+        return results
+
+    def test_jobs_1_and_3_write_the_same_results_on_both_paths(self) -> None:
+        paths = (False, True) if hasattr(rerun.os, "fork") else (False,)
+        for preload in paths:
+            with self.subTest(preload=preload), tempfile.TemporaryDirectory() as tmpdir:
+                serial = self._main(Path(tmpdir), 1, preload=preload)
+                parallel = self._main(Path(tmpdir), 3, preload=preload)
+                self.assertEqual((serial["jobs"], parallel["jobs"]), (1, 3))
+                self.assertEqual(self._comparable(serial), self._comparable(parallel))
+                by_id = {r["id"]: r for r in parallel["results"]}
+                self.assertEqual(
+                    {rid: by_id[rid]["result_failure_reason"] for rid in by_id},
+                    {1: None, 2: "nonzero-exit", 3: "timeout",
+                     4: "swallowed-input-error", 5: "dataset-loading", 6: None},
+                )
+                # Extrapolation follows a USABLE origin only.
+                self.assertEqual([len(by_id[rid]["extrapolations"]) for rid in by_id],
+                                 [1, 0, 0, 0, 0, 1])
+                threads = str(max(1, rerun._cpu_count() // 3))
+                self.assertIn(f"threads {threads}", by_id[6]["rerun_stdout"])
+                self.assertIn(f"threads {rerun.os.environ.get('OMP_NUM_THREADS')}",
+                              {r["id"]: r for r in serial["results"]}[6]["rerun_stdout"])
+
+    def test_pool_caps_concurrency_runs_longest_first_and_keeps_order(self) -> None:
+        live, started, peak = [], [], [0]
+        durations = {1: 0.1, 2: 0.6, 3: 0.3, 4: 0.5, 5: 0.2}
+
+        def fake_start(code, dataset, timeout, companions=(), *, threads=None):
+            started.append(code)
+            handle = _FakeHandle(_ok_run(code), durations[int(code)], live)
+            peak[0] = max(peak[0], len(live))
+            return handle
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dataset = Path(tmpdir) / "data.pkl"
+            dataset.write_bytes(b"x")
+            checkpoint_path = Path(tmpdir) / "checkpoint.json"
+            checkpoint = rerun._load_checkpoint(checkpoint_path)
+            work = [{"code": str(rid), "dataset": dataset, "companions": (),
+                     "record_id": rid, "label": f"id={rid}", "predicted_s": seconds}
+                    for rid, seconds in durations.items()]
+            # id 5 is already in the checkpoint and must never start.
+            _, _, key = rerun._work_item("5", dataset, 10, run_sha256="run", record_id=5)
+            rerun._store_run(checkpoint, None, key, record_id=5, code="5",
+                             dataset=dataset, run=_ok_run("cached\n"))
+            with mock.patch.object(rerun, "start_run", side_effect=fake_start), \
+                    mock.patch.object(rerun, "_memory_headroom", return_value=None), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rerun._run_pool(work, jobs=2, timeout=10, run_sha256="run",
+                                checkpoint=checkpoint, checkpoint_path=checkpoint_path)
+            saved = json.loads(checkpoint_path.read_text())
+        self.assertEqual(started, ["2", "4", "3", "1"])
+        self.assertEqual(peak[0], 2)
+        self.assertEqual([entry["run"]["stdout"] for entry in work],
+                         ["1", "2", "3", "4", "cached\n"])
+        self.assertEqual([entry["reused"] for entry in work],
+                         [False, False, False, False, True])
+        self.assertEqual(len(saved["work_items"]), 5)
+        self.assertEqual(saved["work_items"][key]["run"]["stdout"], "cached\n")
+
+    def test_memory_gate_holds_back_new_scripts(self) -> None:
+        live, peak = [], [0]
+
+        def fake_start(code, dataset, timeout, companions=(), *, threads=None):
+            handle = _FakeHandle(_ok_run(), 0.1, live)
+            peak[0] = max(peak[0], len(live))
+            return handle
+
+        work = [{"code": str(i), "dataset": Path(__file__), "companions": (),
+                 "record_id": i, "label": f"id={i}"} for i in range(4)]
+        with mock.patch.object(rerun, "start_run", side_effect=fake_start), \
+                mock.patch.object(rerun, "_memory_headroom", return_value=1 << 20), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rerun._run_pool(work, jobs=4, timeout=10, run_sha256="run",
+                            checkpoint=rerun._load_checkpoint(None), checkpoint_path=None)
+        self.assertEqual(peak[0], 1)  # 1 MiB of headroom admits one script at a time
+        self.assertTrue(all(entry["run"]["exitcode"] == 0 for entry in work))
+
+    def test_memory_headroom_reads_the_tightest_cgroup_then_meminfo(self) -> None:
+        gib = 1 << 30
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir) / "cgroup"
+            leaf = root / "job" / "step" / "task"
+            leaf.mkdir(parents=True)
+            (leaf / "memory.max").write_text("max\n")
+
+            def limit(node: Path, maximum: int, current: int, inactive: int) -> None:
+                (node / "memory.max").write_text(f"{maximum}\n")
+                (node / "memory.current").write_text(f"{current}\n")
+                (node / "memory.stat").write_text(f"anon 1\ninactive_file {inactive}\n")
+
+            limit(root / "job" / "step", 100 * gib, 60 * gib, 10 * gib)  # 50 GiB free
+            limit(root / "job", 80 * gib, 75 * gib, 5 * gib)             # 10 GiB free
+            cgroup = Path(tmpdir) / "self_cgroup"
+            cgroup.write_text("0::/job/step/task\n")
+            meminfo = Path(tmpdir) / "meminfo"
+            meminfo.write_text("MemTotal: 100 kB\nMemAvailable: 64 kB\n")
+            self.assertEqual(rerun._memory_headroom(str(cgroup), str(root), str(meminfo)),
+                             10 * gib)
+            cgroup.write_text("0::/elsewhere\n")
+            self.assertEqual(rerun._memory_headroom(str(cgroup), str(root), str(meminfo)),
+                             64 * 1024)
+            self.assertIsNone(rerun._memory_headroom(str(cgroup), str(root),
+                                                     str(Path(tmpdir) / "none")))
+
+    def test_a_killed_script_is_run_again_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            pkl = root / "dataset_cache_kill_add.pkl"
+            pkl.write_bytes(rerun.pickle.dumps({}))
+            marker = root / "killed-once"
+            once = ("import os, signal\nfrom pathlib import Path\n"
+                    f"m = Path({str(marker)!r})\n"
+                    "if not m.exists():\n    m.touch()\n"
+                    "    os.kill(os.getpid(), signal.SIGKILL)\n"
+                    "print('metric=1')\n")
+            always = "import os, signal\nos.kill(os.getpid(), signal.SIGKILL)\n"
+            work = [{"code": code, "dataset": pkl, "companions": (), "record_id": rid,
+                     "label": f"id={rid}"}
+                    for rid, code in ((1, once), (2, always), (3, "print('metric=3')\n"))]
+            log = io.StringIO()
+            with mock.patch.object(rerun, "_PRELOAD_ENABLED", False), \
+                    contextlib.redirect_stderr(log):
+                rerun._run_pool(work, jobs=3, timeout=60, run_sha256="run",
+                                checkpoint=rerun._load_checkpoint(None),
+                                checkpoint_path=None)
+        self.assertEqual(work[0]["run"]["exitcode"], 0)
+        self.assertIn("metric=1", work[0]["run"]["stdout"])
+        self.assertEqual(work[1]["run"]["exitcode"], -rerun.signal.SIGKILL)
+        self.assertEqual(work[2]["run"]["exitcode"], 0)
+        self.assertEqual(log.getvalue().count("requeued alone"), 2)
+
+    def test_pool_installs_a_missing_package_and_requeues(self) -> None:
+        live = []
+        runs = [{"timed_out": False, "exitcode": 1, "stdout": "", "runtime_ms": 1,
+                 "stderr": "ModuleNotFoundError: No module named 'lightgbm'"}, _ok_run()]
+
+        def fake_start(code, dataset, timeout, companions=(), *, threads=None):
+            return _FakeHandle(runs.pop(0), 0.0, live)
+
+        work = [{"code": "x", "dataset": Path(__file__), "companions": (),
+                 "record_id": 1, "label": "id=1"}]
+        with mock.patch.object(rerun, "start_run", side_effect=fake_start), \
+                mock.patch.object(rerun, "_INSTALL_MISSING", True), \
+                mock.patch.object(rerun, "missing_module", return_value="lightgbm"), \
+                mock.patch.object(rerun, "install_missing",
+                                  return_value={"version": "4.7.0"}) as install, \
+                mock.patch.object(rerun, "_memory_headroom", return_value=None), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rerun._run_pool(work, jobs=2, timeout=10, run_sha256="run",
+                            checkpoint=rerun._load_checkpoint(None), checkpoint_path=None)
+        install.assert_called_once_with("lightgbm")
+        self.assertEqual(work[0]["run"]["exitcode"], 0)
+
+    def test_thread_caps_reach_both_paths_and_only_when_asked(self) -> None:
+        import importlib
+        importlib.import_module("numpy")  # loads a BLAS the forked child inherits
+
+        code = ("import os\nfrom threadpoolctl import threadpool_info\n"
+                "print(os.environ.get('OMP_NUM_THREADS'),"
+                " sorted({p['num_threads'] for p in threadpool_info()}))\n")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pkl = Path(tmpdir) / "dataset_cache_threads_add.pkl"
+            pkl.write_bytes(rerun.pickle.dumps({}))
+            paths = (False, True) if hasattr(rerun.os, "fork") else (False,)
+            for preload in paths:
+                with self.subTest(preload=preload), \
+                        mock.patch.object(rerun, "_PRELOAD_ENABLED", preload), \
+                        mock.patch.dict(rerun._PAYLOAD_CACHE, {}, clear=True), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    capped = rerun.start_run(code, pkl, 60, threads=2).wait()
+                    plain = rerun.rerun_one(code, pkl, 60)
+                env, pools = capped["stdout"].split(" ", 1)
+                self.assertEqual(env, "2")
+                self.assertTrue(set(json.loads(pools)) <= {2}, capped["stdout"])
+                self.assertTrue(plain["stdout"].startswith(
+                    str(rerun.os.environ.get("OMP_NUM_THREADS"))))
+
+
 if __name__ == "__main__":
     unittest.main()
