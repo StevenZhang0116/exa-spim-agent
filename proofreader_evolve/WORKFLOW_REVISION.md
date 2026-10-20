@@ -7,13 +7,13 @@ edit graphs, expand candidates, retrain detectors or deploy scorers automaticall
 
 ## Pipeline
 
-![Fixed-pool scorer evolution with TRAIN search and development-validation selection](workflow_diagram.svg)
+![Fixed-pool scorer evolution with TRAIN search and development-validation selection](workflow_diagram.png)
 
 A one-page visual overview (frozen inputs, the generation loop, outputs and the
-blindness boundary) is in [workflow_overview.svg](workflow_overview.svg); the data
+blindness boundary) is in [workflow_overview.png](workflow_overview.png); the data
 model the search runs on (fixed candidate rows, growing columns, contexts attached to
 the top band, labels held apart, the five paths from contexts to a score, and who sees
-labels) is in [data_overview.svg](data_overview.svg).
+labels) is in [data_overview.png](data_overview.png).
 
 ```mermaid
 flowchart TD
