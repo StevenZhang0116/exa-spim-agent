@@ -7,7 +7,7 @@ description: >-
   corrected scripts (<FIXED_DIR>/hypo_<id>.py), selects the authoritative
   feature implementation per id, and lifts each eligible computation,
   consolidates them into ONE script with shared skeleton traversal passes, creates
-  a constrained model configuration, compares its allowlisted families under nested validation,
+  a constrained model configuration, compares its allowlisted families under nested CV,
   and produces one output row per target row (candidate merge site for merge runs,
   segment for legacy segment-level merge runs; candidate segment pair for split runs). Use when asked to build or apply a detector
   / classifier / ensemble from exa-spim AutoDiscovery findings.
@@ -46,12 +46,12 @@ source selection must resolve those outcomes before combining features.
 | Path | What you take from it |
 |---|---|
 | `<RUN>.predictive-selection.json` (predictive runs) | the authoritative selected id list; loose scripts and stale manifests may not add or remove ids |
-| `autodiscovery/<RUN>.summary.md` | which hypotheses were returned, each one's id, title, verdict (SOUND / WEAK / MINOR / MAJOR), ROC-AUC, generalization call, and its stated caveats |
+| `autodiscovery/<RUN>.summary.md` | which hypotheses were returned, each one's id, title, verdict (SOUND / WEAK / MINOR / MAJOR / CRITICAL), deployability, AP increment against the raw card, generalization and post-correction calls, and its stated caveats |
 | `<RERUN_DIR>/hypo_<id>.py` | loading-fixed reproduction code and the default feature-definition source |
 | `<RERUN_DIR>/MANIFEST.json` | the id → script mapping; use the path supplied by the orchestrator |
 | `<FIXED_DIR>/hypo_<id>.py` (optional) | corrected-test code; use it for detector feature math only when it changes feature/sample/aggregation semantics and its corrected measurement is usable |
 | `<RUN>.split-feature-applicability.json` (split build) | source-bound minimum node-role requirements; match the selected source by hypothesis id and SHA-256 |
-| `markdowns/labeled_dataset_cache.md` | the `_add.pkl` schema: `fragments_graph`, `gt_merge_labels`, `gt_node_canonical_label`, `gt_edge_error`, `gt_graph`, `node_xyz`, `node_radius`, `component_id_to_swc_id` |
+| `markdowns/labeled_dataset_cache.md` | the `_add.pkl` schema: `fragments_graph`, `gt_merge_labels`, `gt_node_canonical_label`, `gt_edge_error`, `gt_graph`, `node_xyz`, `node_radius`, `component_id_to_swc_id`, `img_path` (the raw volume's public S3 path, the only image location a detector may use) |
 
 Read every returned hypothesis's `.rerun` script and every same-id `.fixed`
 script before writing anything. Do not reconstruct a feature from report prose:
@@ -68,7 +68,11 @@ independent multivariate signal. Apply these safety gates first:
 - Exclude reproduction **FAILED/UNUSABLE** unless a later usable corrected run
   repairs the relevant failure.
 - Exclude an uncorrected **CRITICAL** statistical verdict.
-- Exclude **OVERTURNED** corrections or corrected results whose effect vanished.
+- An **OVERTURNED** correction judges the record's claim, not the feature. Read
+  the entry's `Feature effect` bullet: exclude when it says ARTIFACT (the measured
+  quantity is not the hypothesized one) or when the entry has no such bullet and
+  the orchestrator names no operator override for that id; GAIN, NULL or LOSS may
+  be included like WEAK/MINOR findings, with the reversal stated in source_reason.
 - Keep **DIVERGED** only with the divergence and source rationale recorded.
 
 For a hypothesis with both scripts, require a matching corrected
@@ -82,7 +86,8 @@ is otherwise eligible. A report correction whose fixed script is missing is
   the corrected report result controls evidence only.
 - `feature_semantics_changed`: de-duplication, sample construction, aggregation,
   thresholds, defaults, or the feature quantity changed. Use `.fixed` only if
-  its corrected measurement is usable and not OVERTURNED.
+  its corrected measurement is usable and the hypothesis is included under the
+  OVERTURNED rule above.
 - `unclear`: exclude rather than guessing which implementation is authoritative.
 
 ## Procedure
@@ -111,8 +116,9 @@ records `name`, `quantity`, `constants`, `aggregation`, `reduction`,
 Do not transcribe evidence statuses, paths, hashes, selection metadata, or the
 public inventory schema. Those are mechanical provenance: the driver joins them
 by explicit hypothesis ID and compiles the semantic draft into public inventory
-v2 for merge or v3 for split. Split v3 copies the exact selected source's
-validated `node_role_requirement` into each feature. This separation is
+v2 for legacy segment merge, v4 for merge sites or v5 for split pairs. The split
+inventory copies the exact selected source's checked `node_role_requirement`
+into each feature. This separation is
 deliberate—use report evidence to make the scientific decision, but do not spend
 agent reasoning copying it into fields that deterministic code owns.
 
@@ -204,7 +210,7 @@ algorithms and reductions while retaining their public columns as NaN with
 is_defined=False. Skip expensive common preparation when it has no enabled
 consumer. Default and explicitly all-enabled extraction must be semantically
 identical. The runtime—not this fragment—owns `--measuretime`, cost reports,
-selection validation, atomic/checkpointed artifacts, top-K aggregation,
+selection checks, atomic/checkpointed artifacts, top-K aggregation,
 provenance, and profiling-only early exit.
 
 Implement `profile_segment_limit` as a deterministic profiling-only restriction
@@ -223,7 +229,7 @@ supplied non-empty exclusion reasons reach model JSON and joblib. The runtime
 continues to accept a deliberately hand-authored minimal selection that omits
 both timing provenance fields.
 Also confirm direct `--exclude-hypotheses ID [ID ...]` uses the same unknown,
-duplicate, empty-selection, and indivisible-shared-unit validation, conflicts
+duplicate, empty-selection, and indivisible-shared-unit checks, conflicts
 with the JSON option, and is preserved in model JSON/joblib as manual CLI provenance.
 
 Long component traversal must also remain diagnosable from the durable log. When
@@ -235,10 +241,18 @@ enabled. Timing informs an explicit later selection; it does not choose exclusio
 automatically. Evaluate removable cost together with semantics-equivalent
 optimization, scientific value, coverage, redundancy, and held-out evidence.
 
-For image extraction, initialize `patch_cache = {}` inside the per-row worker,
-never in `extract_features` scope. Features for one row may share its patches,
-but no NumPy image array may remain cached after that row returns; an
-extraction-wide patch cache grows with the dataset and is forbidden.
+For image extraction, open the raw volume at `payload["img_path"]` (anonymous
+S3 read of the cache's public OME-Zarr path, passed through the blind view),
+choosing the resolution level and patch geometry from the selected source's
+constants. A detector has no companion manifest: never read
+`rerank_companion_*.json`, never embed an `s3://` literal, never fall back to a
+stand-in value. When `img_path` is absent or empty (Stage 3 scores the
+benchmark tables with only `fragments_graph`, `min_cable_length` and
+`img_path`), leave every image feature undefined and continue. Initialize
+`patch_cache = {}` inside the per-row worker, never in `extract_features`
+scope. Features for one row may share its patches, but no NumPy image array may
+remain cached after that row returns; an extraction-wide patch cache grows with
+the dataset and is forbidden.
 
 Remove install and sandbox scaffolding. Do not implement or edit model
 configuration, estimators, nested CV, figures, output files, logging
@@ -318,8 +332,8 @@ reproducibility commands, but never edit or replace it.
   each figure contain. Figure 06 is winner-aware: signed standardized
   coefficients for ordinary logistic winners, EBM global term importance plus
   top univariate shape functions for an explainable-boosting winner, native
-  unsigned importance for compatible tree winners, and validation permutation
-  importance as a fallback. Figure 07 remains the common AP-scored validation
+  unsigned importance for compatible tree winners, and held-out permutation
+  importance as a fallback. Figure 07 remains the common AP-scored held-out
   permutation importance across model families.
 - **How to read the results**, in this order, because the reverse order is how a
   confounded fit gets believed: the all-undefined group size and undefined share
@@ -331,9 +345,11 @@ reproducibility commands, but never edit or replace it.
   outside the traced neurons rather than a false positive); that linear coefficients split credit between
   correlated features, while nonlinear global importance is generally unsigned
   and not comparable across families; discovery-stage selection bias; uneven feature coverage;
-  and the target-specific localization limit: merge output is segment-level,
-  while split output ranks a candidate segment pair and representative endpoint
-  occurrence rather than identifying every missing voxel in the gap.
+  and the target-specific localization limit: merge-site output ranks a
+  candidate node within the claim radius (legacy segment merge output is
+  segment-level), while split output ranks a candidate segment pair and
+  representative endpoint occurrence rather than identifying every missing
+  voxel in the gap.
 
 If a later invocation *does* give you a finished run's log and CSV, fold the
 measured numbers in then — deflated scope first — and delete the not-yet-run

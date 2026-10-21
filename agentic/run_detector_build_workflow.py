@@ -8,7 +8,7 @@ takes that finished report, the reproducer's loading-fixed hypothesis scripts
 test-fixer scripts under the matching ``.fixed/`` directory, and WRITES A DETECTOR — one
 script that computes every eligible selected hypothesis's features in shared passes over
 the skeleton graph, evaluates several appropriately regularized tabular models
-under nested cross-validation, and fits the selected strategy to score one
+under nested CV, and fits the selected strategy to score one
 candidate merge site (junction or tip-to-shaft node) for merge runs (the default; --merge-row-unit segment
 restores the established segment-level detector) or one candidate segment pair
 for split runs.
@@ -28,9 +28,10 @@ merge-site builds take their candidate rule from
 ``proofreader_evolve/candidate_pools.json``, applied by ``candidate_rules.py`` at the
 repository root (2026-10-16); the rule is never selected here. The driver cross-checks selection, rerun
 MANIFEST and source hashes before generation, then validates inventory paths
-and hashes when compiling or reusing that artifact. Executable checks use
-``--help``, synthetic model smoke tests and invalid-config/no-output checks;
-they do not certify arbitrary generated feature formulas. Real cache loading
+and hashes when compiling or reusing that artifact. Executable checks (run once,
+after assembly) use ``--help``, synthetic model smoke tests and
+invalid-config/no-output checks; they do not certify arbitrary generated feature
+formulas. Real cache loading
 and graph traversal can require >20 GB RAM and hours of work, so the operator
 runs the finished script on a compute node with the data.
 The origin dataset is recorded in the
@@ -78,8 +79,8 @@ file, split into what this workflow rewrites anyway, what a compute-node rerun o
 the detector recreates, and what nothing here can bring back — plus any
 uncommitted git paths, since an untracked file is gone for good. ``--yes`` skips
 the prompt (required in batch jobs, which have no terminal); ``--keep-existing``
-reuses completed artifacts only after validation against current inputs and
-contracts, and offers retained drafts to their stage for repair. Detector run
+reuses completed artifacts only after they pass the checks against current inputs
+and contracts, and offers retained drafts to their stage for repair. Detector run
 outputs are preserved and may be stale after a rebuild.
 
 The steps (split and merge-site builds first freeze the candidate rule driver-side,
@@ -119,9 +120,11 @@ with no agent turn):
                            explicit adaptations respected, disabled work skipped,
                            defined flags consistent, no sandbox
                            pip preamble, parses, --help works), report defects
-                           without editing the assembled detector, run
-                           driver-owned no-data CLI checks, and add semantic
-                           interpretation outside the immutable provenance block.
+                           without editing the assembled detector, and add
+                           semantic interpretation outside the immutable
+                           provenance block; the driver then re-checks only that
+                           the detector still parses and is byte-identical (the
+                           executable contract ran once, after assembly).
                            No pkl, no results — README.md points to the driver-owned
                            RUN_COMMANDS.md and says in what order to read the numbers
                            when they arrive.
@@ -566,9 +569,20 @@ def build_steps(
     corrected_results_rel: str | None = None,
     target: DetectorTarget = DetectorTarget.MERGE,
     split_applicability_rel: str | None = None,
+    keep_overturned_ids: tuple[int, ...] = (),
+    keep_overturned_reason: str | None = None,
 ) -> list[dict]:
     """Build the model-selection detector workflow instructions."""
     spec = target_spec(target)
+    keep_note = ""
+    if keep_overturned_ids:
+        keep_note = (
+            f" The operator keeps OVERTURNED id(s) "
+            f"{', '.join(str(i) for i in keep_overturned_ids)} although their entries "
+            f"carry no Feature effect bullet, for this reason: {keep_overturned_reason} "
+            "Include them when otherwise eligible and quote that reason in "
+            "source_reason."
+        )
     detector_rel = f"{out_dir_rel}/{spec.detector_name}"
     feature_impl_rel = f"{out_dir_rel}/{FEATURE_IMPLEMENTATION_DRAFT_NAME}"
     inventory_rel = f"{out_dir_rel}/{FEATURE_INVENTORY_NAME}"
@@ -583,7 +597,7 @@ def build_steps(
         else f"{out_dir_rel}/{CANDIDATE_POLICY_NAME}"
     )
     candidate_rules_rel = f"{out_dir_rel}/{CANDIDATE_RULES_NAME}"
-    feature_policy_validation_arg = (
+    feature_policy_check_arg = (
         f" --candidate-policy {candidate_policy_rel}"
         if spec.target in (DetectorTarget.SPLIT, DetectorTarget.MERGE_SITE)
         else ""
@@ -746,16 +760,18 @@ on side a; A-B and A-C with different geometry; multiple compatible occurrences
 with different values; first_compatible versus aggregate reductions; absent
 applicability; canonical-pair relabeling, row order and GT blindness. Also check
 segment/component context uses BOTH sides rather than broadcasting one side.
-State which formulas were actually tested. Schema, storage and cost validation
+State which formulas were actually tested. Schema, storage and cost checks
 do not prove arbitrary generated formulas equivalent to their sources.
 """.strip()
         oof_verification = """
-Segment-disjoint split folds must never share either candidate segment between
-train and validation. Candidate rows whose two segments do not land together in
-a validation fold remain explicitly unscored (NaN), while each eligible row is
-scored once. Persist `n_scored`, report finite-score coverage, and exclude
-unscored rows from OOF queues/workload; recall on that queue is conditional on
-the OOF-scored subset, not the complete candidate universe.
+Folds are the runtime's purged spatial blocks (`fold_groups` / `fold_partitions`
+in candidate_rules.py): every GT-judgeable candidate pair is held out exactly
+once (500 um blocks of the anchor midpoint, assigned label-free), and the fit
+rows of each fold share no segment with its held rows. Rows GT cannot judge
+(NaN label: a segment without a GT node label) are never fitted or scored
+out-of-fold; they carry the fitted model's score only. `n_scored` equals the
+judgeable count, coverage is reported over judgeable rows, and OOF queues and
+metrics exclude unjudgeable rows.
 """.strip()
         measuretime_scope = f"""
 For split measuretime, `profile_segment_limit` means a deterministic sample of
@@ -807,7 +823,7 @@ positive-label radius; do not substitute claim radius for training tolerance.
 Never recompute GT sites or use gt_junction_audit / gt_merge_site_metadata in
 feature math. Junction-derived labels can favor junction-geometry features by
 construction; disclose this ascertainment bias rather than claiming independent
-biological validation. Original hypothesis verdicts are historical discovery
+biological confirmation. Original hypothesis verdicts are historical discovery
 evidence, not fresh measurements under the updated site labels.
 
 Anchor every inventoried feature honestly using the structured scope fields
@@ -910,10 +926,12 @@ blocked GT metadata access. A changed cache during extraction must fail, not
 silently record the new file identity against old in-memory labels.
 """.strip()
         oof_verification = """
-Segment-disjoint merge-site folds must never share a segment between train and
-validation. Because each candidate row carries exactly one segment, the folds
-partition the universe cleanly: every row is scored exactly once and OOF
-coverage must be complete.
+Folds group rows by segment (`fold_groups` / `fold_partitions` in
+candidate_rules.py): every candidate of a segment is held out together and the
+fit side is purged of that segment, so every GT-judgeable candidate is scored
+exactly once. Rows GT cannot judge (NaN label: the segment carries no GT node
+label, or the candidate lies beyond the claim radius of a GT node) are never
+fitted or scored out-of-fold; they carry the fitted model's score only.
 """.strip()
         measuretime_scope = """
 For merge-site measuretime, `profile_segment_limit` means a deterministic
@@ -1006,8 +1024,12 @@ is present on disk, and do not omit a selected id.
 For each returned hypothesis, first determine whether it is eligible:
 - Exclude reproduction FAILED/UNUSABLE unless a later corrected run produced a
   usable measurement that repairs the relevant failure.
-- Exclude an uncorrected CRITICAL statistical verdict, an OVERTURNED corrected
-  verdict, or a corrected result whose effect vanished.
+- Exclude an uncorrected CRITICAL statistical verdict.
+- An OVERTURNED corrected verdict judges the record's claim, not the feature.
+  Read the entry's `Feature effect` bullet: exclude when it says ARTIFACT (the
+  measured quantity is not the hypothesized one) or when the entry has no such
+  bullet; GAIN, NULL or LOSS may be included like WEAK/MINOR findings, with the
+  reversal stated in source_reason.{keep_note}
 - Exclude any hypothesis whose report entry carries `Deployability:
   GT-REFERENCING`, and any hypothesis whose feature quantity you find is
   measured against GT state (distance/density to gt_graph, anything derived
@@ -1018,7 +1040,7 @@ For each returned hypothesis, first determine whether it is eligible:
   the assembler/runtime reject GT access in feature code, so an inclusion here
   only wastes the build.
 - Keep DIVERGED only with its divergence recorded explicitly; keep WEAK/MINOR
-  because multivariate validation can still find independent signal.
+  because multivariate selection can still find independent signal.
 
 For every same-id pair, first require a matching corrected measurement/verdict
 in the report. A fixed file without that evidence is stale_fixed_ignored: record
@@ -1037,7 +1059,8 @@ feature_semantics_changed, or unclear:
 - feature_semantics_changed means the correction changes the quantity supplied
   to the detector (including de-duplication, sample construction, aggregation,
   thresholds or defaults). Use the .fixed script as feature_source only when its
-  corrected measurement is usable and not OVERTURNED.
+  corrected measurement is usable and the hypothesis is included under the
+  OVERTURNED rule above.
 - unclear means you cannot prove semantic equivalence or identify a safe fixed
   feature definition; exclude it rather than guessing.
 
@@ -1069,7 +1092,7 @@ fields above extend the base feature field set. Undefined values
 in the eventual detector are NaN plus an explicit <feature>_is_defined column.
 
 Before returning, run this narrow read-only self-check from the project root:
-python -m agentic.detector_build.draft_validation semantic --draft \
+python -m agentic.detector_build.draft_check semantic --draft \
   {semantics_rel} --run-json {run_rel} --target {target.value}
 It must print DRAFT_VALIDATION_OK. If it reports a mismatch, repair the draft and
 run the same command again.
@@ -1115,8 +1138,8 @@ The exact permitted grid keys are:
 {parameter_contract}
 For explainable_boosting, interactions is a non-negative integer count. Fitting
 cost must inform EVERY grid: nested selection refits every grid point three times
-per outer fold across five outer folds plus a final all-rows search (~18x per
-grid point), so total wall-clock scales with the SUM of all families' grid
+per outer fold across three outer folds plus a final search on all judgeable rows
+(~12x per grid point), so total wall-clock scales with the SUM of all families' grid
 sizes times per-fit cost. Budget the whole candidate set to stay clearly under
 the {MAX_GRID_COMBINATIONS}-per-family cap rather than filling it: vary only
 1-2 hyperparameters per family with 2-3 well-spread values each (defaults from
@@ -1143,7 +1166,7 @@ arbitrary estimator name. The driver will reject missing baselines, more than
 hashes, and oversized grids before detector generation begins.
 
 Before returning, run this narrow read-only self-check from the project root:
-python -m agentic.detector_build.draft_validation model-advice --draft \
+python -m agentic.detector_build.draft_check model-advice --draft \
   {model_advice_rel} --inventory {inventory_rel} --policy {policy_rel}
 It must print DRAFT_VALIDATION_OK. If it reports a mismatch, repair the draft and
 run the same command again.
@@ -1383,6 +1406,18 @@ only rare image access—keep the existing serial traversal. Still accept the
 `image_workers=1` argument for the runtime contract, but do not create a thread
 pool. Do not parallelize graph traversal merely because worker helpers exist.
 
+IMAGE LOCATION. An image-derived feature opens the raw volume at
+`payload["img_path"]` (the cache's public S3 OME-Zarr path, passed through the
+blind view) with anonymous credentials, choosing its own resolution level and
+patch geometry from the selected source's constants. A detector has no
+companion manifest and no hard-coded bucket path: never read
+`rerank_companion_*.json`, never embed an `s3://` literal, and never fall back
+to a stand-in value. When `img_path` is absent or empty (Stage 3 scores the
+benchmark tables with only `fragments_graph`, `min_cable_length` and
+`img_path`), every image feature is undefined (NaN, is_defined 0) and
+extraction continues without raising. Open the volume once per extraction and
+read patches per row; do not probe the volume at import time.
+
 When `verbose=True`, additionally print flushed, machine-searchable start/done
 records for long segment/component work so the last durable line identifies the
 active feature if a run hangs or is killed. Row-loop progress lines must use a
@@ -1418,8 +1453,8 @@ driver will AST-validate the fragment, inject it into the reviewed template, and
 independently execute the assembled detector's no-data contract checks.
 
 Before returning, run this narrow read-only self-check from the project root:
-python -m agentic.detector_build.draft_validation feature --draft \
-  {feature_impl_rel} --template {runtime_template_rel} --target {target.value}{feature_policy_validation_arg} --inventory {inventory_rel}
+python -m agentic.detector_build.draft_check feature --draft \
+  {feature_impl_rel} --template {runtime_template_rel} --target {target.value}{feature_policy_check_arg} --inventory {inventory_rel}
 It must print DRAFT_VALIDATION_OK. If it reports a mismatch, repair the fragment
 and run the same command again.
 
@@ -1531,16 +1566,18 @@ VERIFY READ-ONLY BEFORE DOCUMENTING
    {MAX_OPTIONAL_MODELS} optional families.
    Configuration cannot supply imports/classes/code. Names, implementations,
    grids, dependency declarations and fixed complexity order agree everywhere.
-4. Outer validation labels affect metrics only. Inner folds tune and select. The
-   one-standard-error rule is correct. {oof_verification}
+4. Outer held-fold labels affect metrics only. Inner folds tune and select. The
+   one-standard-error rule is correct. Labels are three-valued (1 / 0 / NaN):
+   the runtime fits, selects and evaluates on GT-judgeable rows and scores every
+   row with the fitted model. {oof_verification}
    --test-pkl cannot influence the final full-data winner.
 5. The policy-selected `{PRIMARY_METRIC}` is primary. Queue and threshold sweep
-   use the final winner's nested OOF,
-   never in-sample scores. Held-out prediction reuses the fitted winner and cannot
+   use the final winner's nested OOF over GT-judgeable rows, never in-sample
+   scores; a second queue ranks every row by the fitted model and says so. Held-out prediction reuses the fitted winner and cannot
    mutate preprocessing.
 6. The model-selection JSON explains why the model won; joblib carries pipeline and
    ordered schema; CSV columns are unambiguous. Nonlinear models do not present
-   impurity importance as validation importance.
+   impurity importance as held-out importance.
     data_provenance is shared by model JSON, joblib and the CSV provenance sidecar;
     it binds loaded cache identity, actual ordered row labels and runtime universe
     audits. It is audit-only metadata and must never be a predictor input.
@@ -1550,12 +1587,15 @@ VERIFY READ-ONLY BEFORE DOCUMENTING
     mode that prints `{SMOKE_SUCCESS_MARKER}` only after its assertions pass.
     The model smoke uses synthetic feature matrices; it does not execute every
     path of the generated extract_features implementation. Do not equate its
-    success with real extraction validation. Verify accumulator method/call
+    success with real extraction checks. Verify accumulator method/call
     signatures and explicitly report which generated extraction paths were
     tested on a small synthetic graph without cloud access or real caches. The
-   driver independently runs parsing, --help, model smoke and invalid-config/
-   no-output checks after assembly and again after this turn; do not claim
-   success in lieu of executable checks.
+   driver independently ran parsing, --help, model smoke and invalid-config/
+   no-output checks after assembly, and after this turn it re-checks only that
+   the detector still parses and is byte-identical; do not claim success in lieu
+   of those executable checks. Also confirm the image-location rule: image
+   features open `payload["img_path"]`, read no companion manifest, embed no
+   bucket path, and are undefined rather than failing when the key is absent.
 
 Then document every excluded hypothesis and the per-feature rerun/fixed source
 choice, plus provenance, feature mapping and defined conditions; why each model
@@ -1757,20 +1797,45 @@ def _survey_out_dir(out_dir: Path) -> dict:
         name = path.name
         if rel in _REGENERATED:
             groups["regenerated"].append((rel, size))
-        elif rel.startswith("figures/") or (
-                name.startswith(("merge_detector_", "split_detector_"))
-                and (name.endswith(".csv") or name.endswith(".log.txt")
-                     or name.endswith(".joblib"))) or (
-                name.startswith("model_selection_") and name.endswith(".json")) or (
-                name.startswith("analysis_timing_") and name.endswith(".json")) or (
-                name.startswith("hypothesis_cost_report_") and name.endswith(".md")) or (
-                name.startswith("hypothesis_selection_template_")
-                and name.endswith(".json")) or (
-                name.startswith("measuretime_") and name.endswith(".log.txt")):
+        elif _is_detector_run_output(rel, name):
             groups["rerunnable"].append((rel, size))
         else:
             groups["irreplaceable"].append((rel, size))
     return groups
+
+
+_OUTPUT_PREFIXES = tuple(
+    target_spec(target).output_prefix + "_"
+    for target in (DetectorTarget.MERGE, DetectorTarget.MERGE_SITE, DetectorTarget.SPLIT)
+)
+_RERUNNABLE_NAMES = frozenset((
+    "conda-explicit.txt", "python-version.txt", "input-pkl.sha256",
+    "result_analysis_evidence.json", "result_analysis_workflow.log.txt",
+))
+
+
+def _is_detector_run_output(rel: str, name: str) -> bool:
+    """Whether a file is recreated by running the generated detector (or its analysis) again.
+
+    RUN_COMMANDS.md writes every run into ``runs/<brain>-<purpose>/``, so anything under
+    ``runs/`` is a run output; the same names at the top level come from the driver's
+    printed default command. The prefixes are the targets' public output prefixes
+    (``merge_detector``, ``merge_junction_detector``, ``split_detector``).
+    """
+    if rel.startswith("runs/") or rel.startswith("figures/"):
+        return True
+    if name in _RERUNNABLE_NAMES or name.startswith("slurm-") and name.endswith(".out"):
+        return True
+    if name.startswith(_OUTPUT_PREFIXES) and name.endswith(
+            (".csv", ".csv.provenance.json", ".log.txt", ".joblib")):
+        return True
+    return (
+        (name.startswith("model_selection_") and name.endswith(".json"))
+        or (name.startswith("analysis_timing_") and name.endswith(".json"))
+        or (name.startswith("hypothesis_cost_report_") and name.endswith(".md"))
+        or (name.startswith("hypothesis_selection_template_") and name.endswith(".json"))
+        or (name.startswith("measuretime_") and name.endswith(".log.txt"))
+    )
 
 
 def _git_dirty(out_dir: Path) -> list[str]:
@@ -1894,7 +1959,7 @@ def _load_json_object(path: Path, label: str) -> dict:
 
 
 def _integer_ids(value, label: str, path: Path) -> list[int]:
-    """Compatibility wrapper around ordered ID validation."""
+    """Compatibility wrapper around the ordered ID check."""
     return _resolved_integer_ids(value, label, path, PROJECT_ROOT)
 
 
@@ -1984,6 +2049,7 @@ def validate_inventory(
     split_applicability_path: Path | None = None,
     run_json: Path | None = None,
     merge_site: bool = False,
+    keep_overturned_ids: tuple[int, ...] = (),
 ) -> None:
     """Enforce inventory semantics and per-hypothesis source provenance.
 
@@ -1991,12 +2057,16 @@ def validate_inventory(
     post-correction verdicts with no USABLE corrected measurement are expected
     to have been transcribed as null by the compiler, so the report-match check
     compares against the same normalized value instead of the raw token.
+
+    ``keep_overturned_ids`` are OVERTURNED hypotheses the operator keeps although
+    their report entries carry no Feature effect bullet (reports written before
+    the bullet existed). An entry whose Feature effect is ARTIFACT is never kept.
     """
     inventory = _load_json_object(inventory_path, "feature inventory")
     split_inventory = split_applicability_path is not None
     if split_inventory != (run_json is not None):
         raise SystemExit(
-            "Split inventory validation requires both applicability path and run JSON."
+            "The split inventory check requires both applicability path and run JSON."
         )
     top_level_fields = {
         "schema_version", "selection_manifest", "selected_ids", "hypotheses",
@@ -2097,6 +2167,10 @@ def validate_inventory(
     feature_names: set[str] = set()
     for row in rows:
         hypothesis_id = row["id"]
+        feature_effect = (
+            (report_evidence.get(hypothesis_id) or {}).get("feature_effect")
+            if report_evidence is not None else None
+        )
         if set(row) != row_fields:
             raise SystemExit(
                 f"Inventory hypothesis {hypothesis_id} must contain exactly: "
@@ -2239,7 +2313,21 @@ def validate_inventory(
                 raise SystemExit(f"Unclear hypothesis {hypothesis_id} cannot be included.")
             post_verdict = str(post_correction_verdict).upper()
             if "OVERTURNED" in post_verdict:
-                raise SystemExit(f"Overturned hypothesis {hypothesis_id} cannot be included.")
+                # The token judges the record's claim; the Feature effect bullet
+                # judges the feature. Only an artifact (or an entry that says
+                # nothing about the feature and is not kept by the operator) is out.
+                if feature_effect == "ARTIFACT":
+                    raise SystemExit(
+                        f"Overturned hypothesis {hypothesis_id} measured an artifact "
+                        "(Feature effect: ARTIFACT) and cannot be included."
+                    )
+                if (feature_effect not in ("GAIN", "NULL", "LOSS")
+                        and hypothesis_id not in keep_overturned_ids):
+                    raise SystemExit(
+                        f"Overturned hypothesis {hypothesis_id} cannot be included: its "
+                        "report entry has no Feature effect of GAIN, NULL or LOSS and it "
+                        "is not among the --keep-overturned ids."
+                    )
             reproduction_status = str(reproduction_status).upper()
             if any(status in reproduction_status for status in ("FAILED", "UNUSABLE")) \
                     and corrected_status != "USABLE":
@@ -2383,7 +2471,7 @@ def validate_inventory(
 
 
 def validate_detector_source(detector_path: Path) -> None:
-    """Compatibility wrapper for deterministic syntax validation."""
+    """Compatibility wrapper for the deterministic syntax check."""
     try:
         _validate_detector_source(detector_path)
     except SystemExit as exc:
@@ -2458,9 +2546,28 @@ async def run_workflow(
     reconcile_unbacked_verdicts: bool = False,
     merge_row_unit: str = "site",
     candidate_pools_path: Path | None = None,
+    keep_overturned_ids: tuple[int, ...] = (),
+    keep_overturned_reason: str | None = None,
 ) -> None:
     context = resolve_run_context(
         run_json, reconcile_unbacked_verdicts=reconcile_unbacked_verdicts
+    )
+    keep_overturned_ids = tuple(dict.fromkeys(int(i) for i in keep_overturned_ids))
+    if keep_overturned_ids:
+        unknown = [i for i in keep_overturned_ids if i not in context.selected_ids]
+        if unknown:
+            raise SystemExit(
+                f"--keep-overturned names id(s) {unknown} that the run did not select."
+            )
+        if not (keep_overturned_reason or "").strip():
+            raise SystemExit("--keep-overturned requires --keep-overturned-reason.")
+        log(
+            f"Operator keeps OVERTURNED hypothesis id(s) {list(keep_overturned_ids)} "
+            f"(entries without a Feature effect bullet): {keep_overturned_reason}"
+        )
+    kept_overturned = (
+        {"ids": list(keep_overturned_ids), "reason": keep_overturned_reason}
+        if keep_overturned_ids else None
     )
     # Merge-error runs build the merge-site detector by default; the
     # established segment-level target remains an explicit legacy option via
@@ -2513,6 +2620,8 @@ async def run_workflow(
             _rel_to_root(split_applicability_path)
             if split_applicability_path is not None else None
         ),
+        keep_overturned_ids=keep_overturned_ids,
+        keep_overturned_reason=keep_overturned_reason,
     )
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -2682,6 +2791,7 @@ async def run_workflow(
             cache_hint=origin_cache_hint(run_json),
             primary_metric=PRIMARY_METRIC,
             target=context.target,
+            kept_overturned=kept_overturned,
             candidate_policy_path=(
                 out_dir / policy_artifact_name
                 if spec.target in (DetectorTarget.SPLIT, DetectorTarget.MERGE_SITE)
@@ -2741,6 +2851,7 @@ async def run_workflow(
                 split_applicability_path=split_applicability_path,
                 run_json=(run_json if split_applicability_path is not None else None),
                 merge_site=spec.target is DetectorTarget.MERGE_SITE,
+                keep_overturned_ids=keep_overturned_ids,
             )
         except SystemExit as exc:
             log(
@@ -2759,7 +2870,7 @@ async def run_workflow(
             )
 
     # Public artifacts are also resumable only after their complete driver-owned
-    # validation passes against the current inputs/policy. This avoids paying for
+    # checks pass against the current inputs/policy. This avoids paying for
     # already successful upstream agent stages after a later-stage interruption.
     inventory_path = out_dir / FEATURE_INVENTORY_NAME
     if (any(step["name"] == "inventory-features" for step in steps)
@@ -2777,6 +2888,7 @@ async def run_workflow(
                 split_applicability_path=split_applicability_path,
                 run_json=(run_json if split_applicability_path is not None else None),
                 merge_site=spec.target is DetectorTarget.MERGE_SITE,
+                keep_overturned_ids=keep_overturned_ids,
             )
         except SystemExit as exc:
             log(f"Existing feature inventory is stale; rebuilding it: {exc}")
@@ -2918,6 +3030,7 @@ async def run_workflow(
                         run_json=(
                             run_json if split_applicability_path is not None else None
                         ),
+                        keep_overturned_ids=keep_overturned_ids,
                     )
 
                 await finalize_step_with_repairs(
@@ -2996,15 +3109,14 @@ async def run_workflow(
                     )
                 else:
                     def finalize_documentation() -> None:
+                        # The detector is immutable after step 3 (hash guard), so
+                        # the executable contract checked at assembly still holds;
+                        # only the parse is repeated here.
                         validate_detector_source(detector_path)
-                        validate_detector_executable(
-                            detector_path,
-                            out_dir / MODEL_CONFIG_NAME,
-                        )
                         if (readme_driver_block is None
                                 or readme_skeleton_sha256 is None):
                             raise SystemExit(
-                                "README skeleton validation state is missing.")
+                                "README skeleton check state is missing.")
                         validate_readme_enrichment(
                             out_dir / README_NAME,
                             expected_driver_block=readme_driver_block,
@@ -3134,7 +3246,7 @@ def main() -> int:
         action="store_true",
         help=(
             "Do not delete a pre-existing output folder. Driver-generated build "
-            "stages are reused only after validation against current inputs, "
+            "stages are reused only after they pass the checks against current inputs, "
             "policy, and hashes; retained invalid drafts are repaired by the "
             "stage agent. Detector run outputs are preserved unchanged and may "
             "therefore still belong to an older generated detector."
@@ -3157,11 +3269,36 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--keep-overturned",
+        type=int,
+        nargs="+",
+        default=(),
+        metavar="ID",
+        help=(
+            "Hypothesis ids with an OVERTURNED post-correction verdict that the "
+            "inventory may still include although their report entries carry no "
+            "Feature effect bullet (reports written before that bullet existed). "
+            "Since 2026-10-21 the gate reads the bullet: GAIN/NULL/LOSS may be "
+            "included, ARTIFACT never. Requires --keep-overturned-reason; the ids "
+            "and reason are recorded in the inventory instruction and the README."
+        ),
+    )
+    parser.add_argument(
+        "--keep-overturned-reason",
+        default=None,
+        metavar="TEXT",
+        help="Why the --keep-overturned ids are kept (quoted in the README).",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Stream every assistant text block as it arrives.",
     )
     args = parser.parse_args()
+    if args.keep_overturned and not (args.keep_overturned_reason or "").strip():
+        parser.error("--keep-overturned requires --keep-overturned-reason.")
+    if args.keep_overturned_reason and not args.keep_overturned:
+        parser.error("--keep-overturned-reason needs --keep-overturned ids.")
 
     if args.yes and args.keep_existing:
         parser.error("--yes and --keep-existing contradict each other: one deletes "
@@ -3236,6 +3373,8 @@ def main() -> int:
                 reconcile_unbacked_verdicts=args.reconcile_unbacked_verdicts,
                 merge_row_unit=args.merge_row_unit,
                 candidate_pools_path=candidate_pools_path,
+                keep_overturned_ids=tuple(args.keep_overturned),
+                keep_overturned_reason=args.keep_overturned_reason,
             ))
             outcome = "OK"
         except SystemExit as exc:

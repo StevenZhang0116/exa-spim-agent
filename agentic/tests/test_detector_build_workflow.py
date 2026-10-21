@@ -1254,7 +1254,7 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("clf.term_importances()", template)
         self.assertIn("clf.explain_global()", template)
         self.assertIn("native model-specific importance", template)
-        self.assertIn("def validation_permutation():", template)
+        self.assertIn("def heldout_permutation():", template)
         self.assertNotIn('save(fig, 6, "linear_coefficients")', template)
         # Nested-selection progress logging: every grid point, every family
         # (per outer fold and in the final all-rows search) must announce
@@ -1906,9 +1906,9 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn(".feature_semantics.json", inventory)
         self.assertIn("strict inventory-v2 validator", inventory)
         self.assertIn("MUST be JSON null (not an empty string)", inventory)
-        self.assertIn("draft_validation semantic", inventory)
-        self.assertIn("draft_validation model-advice", configure)
-        self.assertIn("draft_validation feature", generate)
+        self.assertIn("draft_check semantic", inventory)
+        self.assertIn("draft_check model-advice", configure)
+        self.assertIn("draft_check feature", generate)
         self.assertEqual(
             inventory.count("DRAFT_VALIDATION_OK"), 1,
         )
@@ -2035,8 +2035,9 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("makes the ranked cost report untrustworthy", generate)
         self.assertIn("candidate-pair-level", verify)
         self.assertIn("CANDIDATE_RULES_SHA256", verify)
-        self.assertIn("remain explicitly unscored (NaN)", verify)
-        self.assertIn("conditional on\nthe OOF-scored subset", verify)
+        self.assertIn("held out exactly\nonce", verify)
+        self.assertIn("never fitted or scored\nout-of-fold", verify)
+        self.assertIn("coverage is reported over judgeable rows", verify)
         self.assertIn("split_site_detector.py", verify)
 
     def test_validate_model_config_accepts_bounded_allowlisted_config(self) -> None:
@@ -2917,3 +2918,247 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RunLayoutTests(unittest.TestCase):
+    """Output names come from the target spec and run directories are rerunnable."""
+
+    def test_merge_site_run_commands_use_the_junction_prefix(self) -> None:
+        from agentic.tests.candidate_rule_fixtures import merge_rule, write_policy
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            app = root / "app"
+            app.mkdir()
+            detector = app / "merge_junction_detector.py"
+            inventory = app / "feature_inventory.json"
+            config = app / "model_candidates.json"
+            policy = root / "detector_model_policy.json"
+            template = root / "detector_runtime.py.tmpl"
+            detector.write_text("print('detector')\n")
+            inventory.write_text('{"schema_version": 4}\n')
+            config.write_text('{"schema_version": 2}\n')
+            policy.write_text("{}\n")
+            template.write_text("# runtime\n")
+            candidate_policy = write_policy(
+                app / "merge_candidate_policy.json", "merge", merge_rule())
+            commands = app / "RUN_COMMANDS.md"
+            workflow.write_run_commands(
+                commands,
+                project_root=root,
+                run_rel="autodiscovery/new-merge-1.json",
+                detector_path=detector,
+                detector_rel="app/merge_junction_detector.py",
+                inventory_path=inventory,
+                inventory_rel="app/feature_inventory.json",
+                model_config_path=config,
+                model_config_rel="app/model_candidates.json",
+                model_policy_path=policy,
+                model_policy_rel="detector_model_policy.json",
+                runtime_template_path=template,
+                runtime_template_rel="detector_runtime.py.tmpl",
+                cache_hint="cache/dataset_cache_794495_mcl100_add.pkl",
+                agent_model="test",
+                agent_effort="test",
+                target=DetectorTarget.MERGE_SITE,
+                candidate_policy_path=candidate_policy,
+                candidate_policy_rel="app/merge_candidate_policy.json",
+            )
+            text = commands.read_text()
+            # the names the runtime (OUTPUT_PREFIX), the result-analysis driver and
+            # Stage 3's resolver all expect for a merge-site detector
+            self.assertIn("merge_junction_detector_${BRAIN}.csv", text)
+            self.assertIn("merge_junction_detector_${BRAIN}.log.txt", text)
+            self.assertIn("merge_junction_detector_794495.joblib", text)
+            self.assertIn("--job-name=merge-junction-detector", text)
+            self.assertIn("candidate-bearing segments (3 by default)", text)
+            self.assertIn("Each candidate-related segment/component", text)
+            self.assertNotIn("merge_detector_", text)
+            self.assertNotIn("split_detector_", text)
+
+    def test_run_outputs_under_runs_and_every_prefix_are_rerunnable(self) -> None:
+        rerunnable = (
+            "runs/794495-default/merge_junction_detector_794495.joblib",
+            "runs/794495-default/model_selection_794495.json",
+            "runs/794495-default/figures/01_coverage.png",
+            "runs/794495-default/slurm-123.out",
+            "runs/794495-default/conda-explicit.txt",
+            "merge_junction_detector_794495.csv",
+            "merge_junction_detector_794495.csv.provenance.json",
+            "split_detector_794495.log.txt",
+            "merge_detector_794495.joblib",
+            "model_selection_794495.json",
+            "slurm-99.out",
+            "input-pkl.sha256",
+            "result_analysis_evidence.json",
+        )
+        for rel in rerunnable:
+            with self.subTest(rel=rel):
+                self.assertTrue(workflow._is_detector_run_output(rel, Path(rel).name))
+        for rel in ("notes.md", "RESULT_ANALYSIS.md", "hypothesis_selection_794495.json",
+                    "merge_junction_detector_794495.txt"):
+            with self.subTest(rel=rel):
+                self.assertFalse(workflow._is_detector_run_output(rel, Path(rel).name))
+
+    def test_instructions_carry_the_image_location_rule_and_single_executable_check(self) -> None:
+        steps = workflow.build_steps(
+            run_rel="autodiscovery/new-split-1.json",
+            summary_rel="autodiscovery/new-split-1.summary.md",
+            rerun_rel="autodiscovery/new-split-1.json.predictive.rerun",
+            fixed_rel=None,
+            selection_rel="autodiscovery/new-split-1.predictive-selection.json",
+            selected_ids=[4, 16],
+            out_dir_rel="autodiscovery-application/new-split-1",
+            target=DetectorTarget.SPLIT,
+            split_applicability_rel="autodiscovery/new-split-1.split-feature-applicability.json",
+        )
+        by_name = {step["name"]: step["instruction"] for step in steps}
+        generate = by_name["generate-detector"]
+        verify = by_name["verify-and-document"]
+        self.assertIn("IMAGE LOCATION", generate)
+        self.assertIn('payload["img_path"]', generate)
+        self.assertIn("never embed an `s3://` literal", generate)
+        self.assertIn("undefined (NaN, is_defined 0) and\nextraction continues", generate)
+        self.assertIn("re-checks only that\n   the detector still parses", verify)
+        self.assertNotIn("again after this turn", verify)
+        self.assertIn("image-location rule", verify)
+
+
+class KeepOverturnedTests(unittest.TestCase):
+    """OVERTURNED judges the record's claim; the Feature effect bullet gates the feature."""
+
+    FEATURE = {
+        "name": "clutter_penalty", "quantity": "gap scaled by foreign segments",
+        "constants": {"radius_um": 25}, "aggregation": "per candidate",
+        "reduction": "none", "traversal_phase": "edge_pass",
+        "measurable_condition": "always", "historical_undefined_sentinel": None,
+    }
+
+    def _fixture(self, root: Path, effect_bullet: str | None) -> tuple[Path, Path, Path, Path]:
+        workflow.PROJECT_ROOT = root
+        rerun = root / "run.json.rerun"
+        fixed = root / "run.json.fixed"
+        rerun.mkdir()
+        fixed.mkdir()
+        (rerun / "hypo_9.py").write_text("FEATURE = 1\n")
+        (fixed / "hypo_9.py").write_text("FEATURE = 1  # test only\n")
+        summary = root / "run.summary.md"
+        summary.write_text(
+            "### 2. Clutter\n"
+            "- **Run:** run · **ID:** 9 · **Direction:** Negative\n"
+            "- **Reproduction:** REPRODUCED\n"
+            "- **Verdict:** MAJOR\n"
+            "- **Post-correction verdict:** OVERTURNED — the claim pointed the wrong way\n"
+            + (f"- **Feature effect:** {effect_bullet} — +0.0020\n" if effect_bullet else "")
+        )
+        corrected = root / "run.json.corrected.json"
+        corrected.write_text(json.dumps({
+            "code_dir": workflow._rel_to_root(rerun),
+            "corrected_dir": workflow._rel_to_root(fixed),
+            "results": [{"id": 9, "result_status": "USABLE"}],
+        }))
+        semantics = root / ".feature_semantics.json"
+        semantics.write_text(json.dumps({
+            "schema_version": 1,
+            "hypotheses": [{
+                "id": 9, "included": True, "exclusion_reason": None,
+                "correction_scope": "test_only", "feature_source": "rerun",
+                "source_reason": "The corrected test reversed the claim; the penalty gains.",
+                "features": [self.FEATURE],
+            }],
+        }))
+        inventory = root / "feature_inventory.json"
+        workflow.compile_feature_inventory(
+            semantics, inventory, selected_ids=[9], selection_manifest=None,
+            summary_path=summary, corrected_results_path=corrected,
+            rerun_dir=rerun, fixed_dir=fixed, project_root=root,
+        )
+        return inventory, summary, rerun, fixed
+
+    def _validate(self, root: Path, inventory, summary, rerun, fixed, **kwargs) -> None:
+        workflow.validate_inventory(
+            inventory, [9], None, rerun, fixed, summary, root / "run.json.corrected.json",
+            **kwargs)
+
+    def test_gain_null_loss_may_be_included_and_artifact_never(self) -> None:
+        for effect in ("GAIN", "NULL", "LOSS"):
+            with self.subTest(effect=effect), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self._validate(root, *self._fixture(root, effect))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parts = self._fixture(root, "ARTIFACT")
+            with self.assertRaisesRegex(SystemExit, "measured an artifact"):
+                self._validate(root, *parts)
+            with self.assertRaisesRegex(SystemExit, "measured an artifact"):
+                self._validate(root, *parts, keep_overturned_ids=(9,))
+
+    def test_without_the_bullet_only_the_operator_override_admits_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            parts = self._fixture(root, None)
+            with self.assertRaisesRegex(SystemExit, "not among the --keep-overturned ids"):
+                self._validate(root, *parts)
+            self._validate(root, *parts, keep_overturned_ids=(9,))
+            with self.assertRaisesRegex(SystemExit, "not among the --keep-overturned ids"):
+                self._validate(root, *parts, keep_overturned_ids=(49,))
+
+    def test_evidence_carries_feature_effect_from_json_and_bullets(self) -> None:
+        from agentic.detector_build import inputs
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            summary = root / "run.summary.md"
+            summary.write_text(
+                "### 1. x\n- **Run:** r · **ID:** 9 · **Direction:** Negative\n"
+                "- **Reproduction:** REPRODUCED\n- **Verdict:** MAJOR\n"
+                "- **Post-correction verdict:** OVERTURNED\n- **Feature effect:** GAIN — +0.002\n")
+            self.assertEqual(inputs.report_evidence_by_id(summary, root)[9]["feature_effect"], "GAIN")
+            (root / "run.json.verdicts.json").write_text(json.dumps({
+                "schema_version": 1, "run": "run.json", "entries": {"9": {
+                    "reproduce": {"verdict": "REPRODUCED"},
+                    "verify": {"verdict": "MAJOR", "deployability": "BLIND-COMPUTABLE"},
+                    "fix_tests": {"verdict": "OVERTURNED", "feature_effect": "LOSS",
+                                  "effect_delta_ap": -0.01}}}}))
+            evidence = inputs.report_evidence_by_id(summary, root)
+            self.assertEqual(evidence[9]["feature_effect"], "LOSS")
+            self.assertEqual(evidence[9]["post_correction_verdict"], "OVERTURNED")
+
+    def test_instruction_states_the_rule_and_the_override(self) -> None:
+        common = dict(
+            run_rel="autodiscovery/new-split-1.json",
+            summary_rel="autodiscovery/new-split-1.summary.md",
+            rerun_rel="autodiscovery/new-split-1.json.predictive.rerun",
+            fixed_rel="autodiscovery/new-split-1.json.predictive.fixed",
+            selection_rel="autodiscovery/new-split-1.predictive-selection.json",
+            selected_ids=[9, 49], out_dir_rel="autodiscovery-application/new-split-1",
+            target=DetectorTarget.SPLIT,
+            split_applicability_rel="autodiscovery/new-split-1.split-feature-applicability.json",
+        )
+        plain = {s["name"]: s["instruction"] for s in workflow.build_steps(**common)}
+        self.assertIn("judges the record's claim, not the feature", plain["inventory-features"])
+        self.assertIn("exclude when it says ARTIFACT", plain["inventory-features"])
+        self.assertNotIn("The operator keeps OVERTURNED", plain["inventory-features"])
+        kept = {s["name"]: s["instruction"] for s in workflow.build_steps(
+            **common, keep_overturned_ids=(9, 49),
+            keep_overturned_reason="Reports predate the Feature effect bullet; id 9 gains.")}
+        self.assertIn("The operator keeps OVERTURNED id(s) 9, 49", kept["inventory-features"])
+        self.assertIn("id 9 gains.", kept["inventory-features"])
+
+    def test_readme_records_the_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inventory = root / "feature_inventory.json"
+            inventory.write_text(json.dumps({"selection_manifest": None, "hypotheses": []}))
+            config = root / "model_candidates.json"
+            config.write_text(json.dumps({"selection_basis": "x", "candidates": []}))
+            readme = root / "README.md"
+            workflow.write_readme_skeleton(
+                readme, run_rel="autodiscovery/run.json", summary_rel="autodiscovery/run.summary.md",
+                inventory_path=inventory, inventory_rel="app/feature_inventory.json",
+                model_config_path=config, model_config_rel="app/model_candidates.json",
+                detector_rel="app/merge_site_detector.py", run_commands_rel="app/RUN_COMMANDS.md",
+                cache_hint=None, primary_metric="average_precision",
+                kept_overturned={"ids": [9, 49], "reason": "predates the bullet"},
+            )
+            block = workflow.read_driver_generated_block(readme)
+            self.assertIn("Kept OVERTURNED hypotheses (operator override", block)
+            self.assertIn("ids 9, 49; reason: predates the bullet", block)

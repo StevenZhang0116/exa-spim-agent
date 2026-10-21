@@ -41,8 +41,14 @@ def write_readme_skeleton(
     target: DetectorTarget = DetectorTarget.MERGE,
     candidate_policy_path: Path | None = None,
     candidate_policy_rel: str | None = None,
+    kept_overturned: dict | None = None,
 ) -> None:
-    """Write factual mechanical documentation before semantic agent review."""
+    """Write factual mechanical documentation before semantic agent review.
+
+    ``kept_overturned`` (``{"ids": [...], "reason": str}``) records an operator's
+    decision to keep OVERTURNED hypotheses whose report entries carry no Feature
+    effect bullet; it is provenance the semantic review must not remove.
+    """
     inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
     model_config = json.loads(model_config_path.read_text(encoding="utf-8"))
     rows = inventory["hypotheses"]
@@ -171,6 +177,14 @@ nor `gt_merge_site_metadata` is accessible to feature extraction.
         )
 
     cache = cache_hint or "cache/dataset_cache_<brain>_mcl<N>_add.pkl"
+    kept_line = ""
+    if kept_overturned and kept_overturned.get("ids"):
+        kept_ids = ", ".join(str(i) for i in kept_overturned["ids"])
+        kept_line = (
+            f"- Kept OVERTURNED hypotheses (operator override, entries without a "
+            f"Feature effect bullet): ids {kept_ids}; reason: "
+            f"{_cell(kept_overturned.get('reason') or '')}\n"
+        )
     title = {
         DetectorTarget.MERGE: "Merge detector",
         DetectorTarget.MERGE_SITE: "Merge-site detector",
@@ -194,7 +208,7 @@ nor `gt_merge_site_metadata` is accessible to feature extraction.
 - Generated detector: `{detector_rel}`
 - Instance-bound command guide: `{run_commands_rel}`
 - Selection manifest: `{inventory.get('selection_manifest')}`
-{candidate_provenance}
+{kept_line}{candidate_provenance}
 
 {candidate_section}
 
@@ -213,7 +227,7 @@ values are provenance, not the new missingness representation.
 Primary metric: `{primary_metric}`. Candidate-set rationale:
 {model_config.get('selection_basis')}
 
-Actual family selection happens only through nested cross-validation in the
+Actual family selection happens only through nested CV in the
 generated detector. Weighted classifier outputs are scores and are not
 automatically calibrated probabilities.
 
@@ -258,11 +272,13 @@ candidate-policy parameters is not an untouched end-to-end test set.
 Read undefined coverage first, then average precision and review-budget
 precision/recall, then held-out transfer; read ROC-AUC last. Training thresholds
 and queues use winner OOF; selector OOF separately evaluates the selection
-procedure. Never use the final in-sample score as a validation metric.
-For split detectors, segment-disjoint folds can deliberately leave cross-fold
-candidate pairs without an OOF score. The CSV preserves those rows with NaN;
-queues exclude them, model metrics report `n_scored`, and OOF recall is
-conditional on the scored subset rather than the complete candidate universe.
+procedure. Never use the final in-sample score as a held-out metric.
+Labels are three-valued: 1 (error), 0 (GT-confirmed no error) and NaN (GT cannot
+judge the row). The model is fitted, selected and evaluated on the judgeable rows
+and scores every row; unjudgeable rows carry the fitted model's score only, so
+every metric and OOF queue is over judgeable rows. Folds hold every judgeable row
+out exactly once (spatial blocks with fragment purge for split, segments for
+merge sites), the same rule as the benchmark's internal folds.
 
 {DRIVER_BLOCK_END}
 
@@ -342,6 +358,18 @@ def write_run_commands(
     brain = brain_match.group(1) if brain_match else "<brain>"
     app_dir = Path(detector_rel).parent.as_posix()
     spec = target_spec(target)
+    # Every output name comes from the target's public prefix, the value the runtime
+    # (OUTPUT_PREFIX), the result-analysis driver and Stage 3's detector resolver
+    # share; a hand-written name here once told merge-site operators to write a
+    # CSV the analysis driver could not find.
+    prefix = spec.output_prefix
+    job_name = prefix.replace("_", "-")
+    if spec.target is DetectorTarget.MERGE:
+        sample_noun = "component-bearing segments"
+        progress_line = "Each segment and component has start/done progress."
+    else:
+        sample_noun = "candidate-bearing segments"
+        progress_line = "Each candidate-related segment/component has start/done progress."
 
     detector_sha = sha256(detector_path)
     inventory_sha = sha256(inventory_path)
@@ -484,7 +512,7 @@ feature writes and `to_frame()`; neither check proves full real-data coverage.
 ## Profile hypothesis computational cost
 
 This loads the real cache and runs every candidate hypothesis on only a small,
-deterministic sample of component-bearing segments (3 by default), then exits before the
+deterministic sample of {sample_noun} (3 by default), then exits before the
 undefined audit, nested CV, model fitting, held-out scoring, CSV, joblib,
 model-selection JSON, or figures. Its purpose is to estimate which hypothesis
 computations can be removed from the final run. Timing does not make that decision
@@ -538,8 +566,8 @@ python "$DETECTOR" "$DATA_PKL" \\
     --model-config "$MODEL_CONFIG" \\
     --inventory "$INVENTORY" \\
     --out-dir "$RUN_DIR" \\
-    --out-csv "$RUN_DIR/merge_detector_${{BRAIN}}.csv" \\
-    --log-txt "$RUN_DIR/merge_detector_${{BRAIN}}.log.txt" \\
+    --out-csv "$RUN_DIR/{prefix}_${{BRAIN}}.csv" \\
+    --log-txt "$RUN_DIR/{prefix}_${{BRAIN}}.log.txt" \\
     --n-jobs 2 \\
     --model-jobs 4 \\
     --no-figures
@@ -567,8 +595,8 @@ python "$DETECTOR" "$DATA_PKL" \\
     --model-config "$MODEL_CONFIG" \\
     --inventory "$INVENTORY" \\
     --out-dir "$RUN_DIR" \\
-    --out-csv "$RUN_DIR/merge_detector_${{BRAIN}}.csv" \\
-    --log-txt "$RUN_DIR/merge_detector_${{BRAIN}}.log.txt" \\
+    --out-csv "$RUN_DIR/{prefix}_${{BRAIN}}.csv" \\
+    --log-txt "$RUN_DIR/{prefix}_${{BRAIN}}.log.txt" \\
     --n-jobs 2 \\
     --model-jobs 4 \\
     --no-figures
@@ -608,8 +636,8 @@ python "$DETECTOR" "$DATA_PKL" \\
     --model-config "$MODEL_CONFIG" \\
     --inventory "$INVENTORY" \\
     --out-dir "$RUN_DIR" \\
-    --out-csv "$RUN_DIR/merge_detector_${{BRAIN}}.csv" \\
-    --log-txt "$RUN_DIR/merge_detector_${{BRAIN}}.log.txt" \\
+    --out-csv "$RUN_DIR/{prefix}_${{BRAIN}}.csv" \\
+    --log-txt "$RUN_DIR/{prefix}_${{BRAIN}}.log.txt" \\
     --n-jobs 2 \\
     --model-jobs 4 \\
     --no-figures
@@ -620,12 +648,12 @@ python "$DETECTOR" "$DATA_PKL" \\
 In another shell, follow the durable log and inspect component timing records:
 
 ```bash
-tail -f "$RUN_DIR/merge_detector_${{BRAIN}}.log.txt"
+tail -f "$RUN_DIR/{prefix}_${{BRAIN}}.log.txt"
 
-rg '\\[extract\\]\\[component\\]' "$RUN_DIR/merge_detector_${{BRAIN}}.log.txt"
+rg '\\[extract\\]\\[component\\]' "$RUN_DIR/{prefix}_${{BRAIN}}.log.txt"
 ```
 
-Each segment and component has start/done progress. Each component-pass feature
+{progress_line} Each component-pass feature
 has a flushed start record before its work and a done record with elapsed time.
 If the process hangs or is killed, the final unmatched `feature:start` line names
 the active feature; successful completion prints per-feature `calls` and `total_s`.
@@ -642,8 +670,8 @@ python "$DETECTOR" "$DATA_PKL" \\
     --model-config "$MODEL_CONFIG" \\
     --inventory "$INVENTORY" \\
     --out-dir "$RUN_DIR" \\
-    --out-csv "$RUN_DIR/merge_detector_${{BRAIN}}.csv" \\
-    --log-txt "$RUN_DIR/merge_detector_${{BRAIN}}.log.txt" \\
+    --out-csv "$RUN_DIR/{prefix}_${{BRAIN}}.csv" \\
+    --log-txt "$RUN_DIR/{prefix}_${{BRAIN}}.log.txt" \\
     --fig-dir "$RUN_DIR/figures" \\
     --n-jobs 2 \\
     --model-jobs 4
@@ -661,8 +689,8 @@ python "$DETECTOR" "$DATA_PKL" \\
     --model-config "$MODEL_CONFIG" \\
     --inventory "$INVENTORY" \\
     --out-dir "$RUN_DIR" \\
-    --out-csv "$RUN_DIR/merge_detector_${{BRAIN}}_exclude_empty.csv" \\
-    --log-txt "$RUN_DIR/merge_detector_${{BRAIN}}_exclude_empty.log.txt" \\
+    --out-csv "$RUN_DIR/{prefix}_${{BRAIN}}_exclude_empty.csv" \\
+    --log-txt "$RUN_DIR/{prefix}_${{BRAIN}}_exclude_empty.log.txt" \\
     --exclude-empty \\
     --n-jobs 2 \\
     --model-jobs 4 \\
@@ -683,8 +711,8 @@ python "$DETECTOR" "$DATA_PKL" \\
     --model-config "$MODEL_CONFIG" \\
     --inventory "$INVENTORY" \\
     --out-dir "$RUN_DIR" \\
-    --out-csv "$RUN_DIR/merge_detector_${{BRAIN}}.csv" \\
-    --log-txt "$RUN_DIR/merge_detector_${{BRAIN}}.log.txt" \\
+    --out-csv "$RUN_DIR/{prefix}_${{BRAIN}}.csv" \\
+    --log-txt "$RUN_DIR/{prefix}_${{BRAIN}}.log.txt" \\
     --fig-dir "$RUN_DIR/figures" \\
     --n-jobs 2 \\
     --model-jobs 4
@@ -702,10 +730,10 @@ sbatch \\
     --mem=80G \\
     --cpus-per-task=4 \\
     --time=04:00:00 \\
-    --job-name=merge-detector \\
+    --job-name={job_name} \\
     --output="$RUN_DIR/slurm-%j.out" \\
     --chdir={q_root} \\
-    --wrap="source /shared/utils.x86_64/anaconda3-2024.10/etc/profile.d/conda.sh && conda activate panda && python \\\"$DETECTOR\\\" \\\"$DATA_PKL\\\" --model-config \\\"$MODEL_CONFIG\\\" --inventory \\\"$INVENTORY\\\" --out-dir \\\"$RUN_DIR\\\" --out-csv \\\"$RUN_DIR/merge_detector_${{BRAIN}}.csv\\\" --log-txt \\\"$RUN_DIR/merge_detector_${{BRAIN}}.log.txt\\\" --n-jobs 2 --model-jobs 4 --no-figures"
+    --wrap="source /shared/utils.x86_64/anaconda3-2024.10/etc/profile.d/conda.sh && conda activate panda && python \\\"$DETECTOR\\\" \\\"$DATA_PKL\\\" --model-config \\\"$MODEL_CONFIG\\\" --inventory \\\"$INVENTORY\\\" --out-dir \\\"$RUN_DIR\\\" --out-csv \\\"$RUN_DIR/{prefix}_${{BRAIN}}.csv\\\" --log-txt \\\"$RUN_DIR/{prefix}_${{BRAIN}}.log.txt\\\" --n-jobs 2 --model-jobs 4 --no-figures"
 ```
 
 Check status and follow the logs with:
@@ -713,16 +741,16 @@ Check status and follow the logs with:
 ```bash
 squeue -u "$USER"
 tail -f "$RUN_DIR"/slurm-*.out
-tail -f "$RUN_DIR/merge_detector_${{BRAIN}}.log.txt"
+tail -f "$RUN_DIR/{prefix}_${{BRAIN}}.log.txt"
 ```
 
 ## Expected outputs in each run directory
 
-- `merge_detector_{brain}.csv`
-- `merge_detector_{brain}.csv.provenance.json`
+- `{prefix}_{brain}.csv`
+- `{prefix}_{brain}.csv.provenance.json`
 - `model_selection_{brain}.json`
-- `merge_detector_{brain}.joblib`
-- `merge_detector_{brain}.log.txt`
+- `{prefix}_{brain}.joblib`
+- `{prefix}_{brain}.log.txt`
 - `figures/` unless `--no-figures` is used
 
 The separate `--measuretime` directory contains the timing JSON, ranked cost
@@ -751,10 +779,10 @@ not a label-only ablation. Preserve old results before output cleanup;
 `--keep-existing` does not refresh historical training outputs.
 
 Read undefined coverage first, then average precision and review-budget
-precision/recall, then held-out transfer, and ROC-AUC last.
-For split detectors, also read finite OOF coverage: segment-disjoint validation
-can leave cross-fold candidate rows unscored, and reported OOF workload recall
-is conditional on the scored subset.
+precision/recall, then held-out transfer, and ROC-AUC last. Labels are
+three-valued (1 / 0 / NaN = GT cannot judge); metrics and OOF queues are over
+the judgeable rows, which the folds hold out exactly once, and the fitted model
+scores every row.
 
 ## Generate the bilingual result-analysis report
 
@@ -775,7 +803,7 @@ It writes these files inside `$RUN_DIR`:
 - `result_analysis_evidence.json`: deterministic numeric evidence and hashes;
 - `RESULT_ANALYSIS.md`: full English analysis followed by its full Chinese
   translation, with an immutable evidence block;
-- `result_analysis_workflow.log.txt`: agent execution and validation log.
+- `result_analysis_workflow.log.txt`: agent execution and check log.
 
 ## Reproducibility record
 
@@ -790,20 +818,6 @@ python --version > "$RUN_DIR/python-version.txt"
 sha256sum "$DATA_PKL" > "$RUN_DIR/input-pkl.sha256"
 ```
 """
-    if spec.target is DetectorTarget.SPLIT:
-        # The command guide is deliberately generated from one reviewed body so
-        # hash/provenance and operational steps cannot drift between targets.
-        # Replace only task vocabulary; command structure remains identical.
-        content = content.replace("merge_detector_", "split_detector_")
-        content = content.replace("merge-detector", "split-detector")
-        content = content.replace(
-            "component-bearing segments (3 by default)",
-            "candidate-bearing segments (3 by default)",
-        )
-        content = content.replace(
-            "Each segment and component has start/done progress.",
-            "Each candidate-related segment/component has start/done progress.",
-        )
     temporary = commands_path.with_name(f".{commands_path.name}.tmp")
     temporary.write_text(content, encoding="utf-8")
     temporary.replace(commands_path)

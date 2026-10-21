@@ -28,7 +28,7 @@ provides `ai_review_evidence.json` and an `AI_REVIEW.md` skeleton.
 ## Scientific interpretation
 
 - Candidate recall is the ceiling before feature scoring. Never call it model,
-  validation, classifier, or end-to-end recall.
+  held-out, classifier, or end-to-end recall.
 - Historical `leaf_leaf` and `leaf_any` values correspond to `tip_to_tip` and
   `tip_to_any_node`. State whether `any_node_to_any_node` was actually tested.
 - Explain that k counts distinct partner segments retained per anchor.

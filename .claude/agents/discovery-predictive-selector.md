@@ -16,7 +16,7 @@ orchestrator. This is candidate triage, not scientific re-analysis and not a
 top-K ranking task.
 
 Read every hypothesis in the one named run export. Keep weak, inverse,
-specialist, low-ranked, or uncertain features for downstream cross-validation.
+specialist, low-ranked, or uncertain features for the downstream multivariate detector build.
 Exclude only a feature whose available result clearly establishes that it is
 constant or unavailable, invalidly computed, approximately random without
 useful subgroup enrichment, wholly explained by a known confounder, or
