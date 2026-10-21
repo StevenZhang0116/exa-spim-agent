@@ -19,7 +19,12 @@ Revised 2026-10-15, twice: tie-aware average precision with corrected baseline
 figures and reporting rules for differences and subgroups (Evaluation), fewer
 constraints on what to explore (Goal, Evaluation, Firewall); then the candidate pool
 widened from 50 to 80 um (§1), with counts and baselines from the regenerated
-companion. Earlier texts are archived.
+companion. Revised 2026-10-21 after the audit of the 2026-10-20 run: the scoring code
+gains the paired bootstrap and a tie-breaking null, the raw baseline is told apart
+from the refit control, class contrasts are reported at matched gap and non-tip
+partners are addressed, the image firewall is a printed check, and the faults that
+recurred in that run are named (Feature definition, Evaluation, Firewall). Earlier
+texts are archived.
 
 ---
 
@@ -283,6 +288,21 @@ hours: share preprocessing across rows (one pass over segments, a KD-tree built
 once, one image read per candidate) and never scan the whole graph per row. Report
 the wall time.
 
+**Validity rules from the earlier runs.** Each of these produced a feature that
+measured something other than its name in the 2026-10-20 run:
+- a count of nearby nodes, tips, junctions or segments must exclude the candidate's
+  own nodes and both segments of the pair; a count that includes them measures the
+  pair's own size, and "crowding is higher at true splits" came only from that;
+- `frag.node_segment_id(i)` is the segment id (a string; compare with `int`).
+  `frag.node_component_id` is a connected-component index and is **not** a segment
+  id: compared with the companion's `segment_id_a` / `segment_id_b` it matches
+  nothing, silently;
+- never allocate an array indexed by raw segment ids (they reach 4.6e10): remap
+  with `np.unique(ids, return_inverse=True)`. Two scripts asked for 340 GiB this way
+  and could not be re-run anywhere;
+- a quantity whose name says "normalized" or "ratio" must not be the gap under
+  another name: print its Spearman correlation with `gap_um`.
+
 **Code layout.** Write each experiment as a self-contained script that loads the
 three files by their names here (`dataset_cache_794495_mcl100_add.pkl`,
 `rerank_companion_794495_split.npz` and `rerank_companion_794495_split.json`) from
@@ -292,7 +312,10 @@ same names, so do not hard-code row counts, ids or brain-specific constants. Pri
 one line of the form
 `INPUTS READ fragment_nodes=<n> companion_rows=<n> image_patches=<read>/<requested>`
 (`image_patches=0/0` when the feature uses no image), so the record itself shows
-what its numbers were computed from.
+what its numbers were computed from. Every number on that line, and every other
+check your script prints, must be computed from the arrays read in that run: a
+literal row count fails on the next brain, and a printed "PASSED" that no code
+evaluated is not a check. Also print `VARIANTS COMPARED <n>` (Evaluation).
 
 ### Evaluation
 
@@ -308,7 +331,7 @@ spatial blocks, so neighbouring candidates do not straddle training and evaluati
   `fit_mask_fold{f}` and a non-NaN label; score the rows of `fold == f`. The fit
   masks already exclude rows that share a fragment with the held-out fold.
 - Never tune on a held-out fold. Repeatedly comparing many variants on the same
-  folds overfits them; report how many variants you compared.
+  folds overfits them; print `VARIANTS COMPARED <n>` with the number you compared.
 
 **Scoring code (use it as given):**
 
@@ -334,24 +357,63 @@ def precision_at_fraction(comp, scores, fraction, keys=None, counts=False):
         k_total += len(top)
     return (tp, k_total) if counts else tp / k_total
 
-def average_precision(comp, scores):
-    """Average precision over labeled rows. Tied scores form one threshold (as in
-    sklearn.metrics.average_precision_score), so a score that ties many rows is not
-    credited for the row order inside its ties."""
-    label = comp["label"]
-    rows = np.flatnonzero(~np.isnan(label))
-    s = -np.asarray(scores, dtype=float)[rows]
+def _ap(hits, scores):
+    """Tie-aware average precision of boolean `hits` ranked by `scores`, high first.
+    Tied scores form one threshold (as in sklearn.metrics.average_precision_score), so
+    a score that ties many rows is not credited for the row order inside its ties."""
+    s = -np.asarray(scores, dtype=float)
     order = np.argsort(s, kind="stable")
-    s, hits = s[order], label[rows][order] == 1
+    s, hits = s[order], np.asarray(hits, dtype=bool)[order]
     last = np.flatnonzero(np.r_[s[1:] != s[:-1], True])   # last row of every tie group
     tp = np.cumsum(hits)[last]
     return float(np.sum(tp / (last + 1) * np.diff(np.r_[0, tp])) / max(hits.sum(), 1))
+
+def average_precision(comp, scores):
+    """Average precision over labeled rows."""
+    label = comp["label"]
+    rows = np.flatnonzero(~np.isnan(label))
+    return _ap(label[rows] == 1, np.asarray(scores, dtype=float)[rows])
 
 def labeled_share_at_fraction(comp, scores, fraction):
     """Share of GT-labeled rows among the top `fraction` of ALL rows (labeled or not)."""
     order = np.argsort(-np.asarray(scores, dtype=float), kind="stable")
     top = order[:max(1, int(round(fraction * len(order))))]
     return float((~np.isnan(comp["label"][top])).mean())
+
+def paired_bootstrap_delta_ap(comp, scores, reference, n_draws=1000, seed=0):
+    """Paired bootstrap of AP(scores) - AP(reference) over labeled rows: labeled rows are
+    resampled with replacement within each fold, the same draws for both scores."""
+    label, fold = comp["label"], comp["fold"]
+    labeled = np.flatnonzero(~np.isnan(label))
+    hits = label == 1
+    by_fold = [labeled[fold[labeled] == f] for f in np.unique(fold[labeled])]
+    s, r = np.asarray(scores, dtype=float), np.asarray(reference, dtype=float)
+    rng = np.random.default_rng(seed)
+    deltas = np.empty(n_draws)
+    for i in range(n_draws):
+        rows = np.concatenate([rng.choice(x, size=len(x), replace=True) for x in by_fold])
+        deltas[i] = _ap(hits[rows], s[rows]) - _ap(hits[rows], r[rows])
+    point = _ap(hits[labeled], s[labeled]) - _ap(hits[labeled], r[labeled])
+    p_one = float(np.mean(deltas <= 0))          # share of draws with no gain
+    return {"delta": point, "ci95": [float(np.percentile(deltas, 2.5)),
+                                     float(np.percentile(deltas, 97.5))],
+            "p_one_sided": p_one, "p_two_sided": float(min(1.0, 2 * min(p_one, 1 - p_one)))}
+
+def tie_break_null(comp, reference, model_ap, n_draws=200, seed=0):
+    """Share of random tie-breaks of `reference` whose AP reaches `model_ap`. A score
+    that only reorders the rows the baseline ties gains AP without information; a gain
+    counts only when this share is at most 0.05."""
+    label = comp["label"]
+    rows = np.flatnonzero(~np.isnan(label))
+    hits, base = label[rows] == 1, np.asarray(reference, dtype=float)[rows]
+    distinct = np.unique(base)
+    step = float(np.min(np.diff(distinct))) if len(distinct) > 1 else 1.0
+    rng = np.random.default_rng(seed)
+    aps = np.array([_ap(hits, base + rng.uniform(0.0, 0.5 * step, len(rows)))
+                    for _ in range(n_draws)])
+    return {"share_null_ge_model": float(np.mean(aps >= model_ap)),
+            "null_mean": float(aps.mean()),
+            "null_95": [float(np.percentile(aps, 2.5)), float(np.percentile(aps, 97.5))]}
 ```
 
 Scores must be finite for every row (`labeled_share_at_fraction` ranks all rows):
@@ -365,8 +427,17 @@ Report for each feature and for the model:
 - the same numbers for the baselines below;
 - a paired bootstrap 95% interval of the **difference in average precision to the
   gap baseline** (the ranking by `gap_um` itself, not a model fitted to it; not the
-  random rate; not a difference in ROC-AUC): resample labeled rows with replacement
-  within each fold, 1,000 draws, same draws for both scores.
+  random rate; not a difference in ROC-AUC): `paired_bootstrap_delta_ap` above, which
+  resamples labeled rows with replacement within each fold, 1,000 draws, the same
+  draws for both scores; report its `delta`, `ci95` and `p_one_sided`;
+- `VARIANTS COMPARED <n>`: how many scores or models you evaluated for this record.
+  Name the primary model before you compare; the others are variants, reported next
+  to it, and a variant does not become the headline because it scored best;
+- when your score or the baseline ties many labeled rows, the tie-breaking null
+  (`tie_break_null`): the share of random tie-breaks of the baseline that reach the
+  model's AP. Gap ties few rows (1,356 of the 6,076 labeled rows share a gap value,
+  and random tie-breaks move its AP by less than 0.001), so this matters for scores
+  built on integer-valued or categorical features.
 
 All of these are computed on the whole labeled set. A number computed on a subset
 of rows (one fold, one anchor side, one gap range) must carry the subset's row and
@@ -398,7 +469,11 @@ when the companion changes):**
   gap 19.0 um on labeled rows, 33.7 um on unlabeled ones). The baseline is this ranking;
   a model fitted to gap alone (a logistic fit, a binned or tree model) can score
   lower out of fold, and an increment measured against such a model is not an
-  increment over gap.
+  increment over gap. In the 2026-10-20 run a pooled three-fold logistic fit of gap
+  alone scored 0.8185 and six records measured their increment against such a fit.
+  Report a fitted gap model only as the **refit control**, labeled so, next to the raw
+  ranking: the headline increment and its interval are against the raw ranking, and
+  the control shows how much of a fitted model's deficit is the refit itself.
 
 Use gap as the baseline. Many quantities computable from the candidate's own
 geometry are monotone in, or strongly correlated with, the gap distance: alone they
@@ -410,8 +485,28 @@ gap ranking alone. A feature counts as found when that interval lies above zero,
 alone or added to a model that already contains gap; a clear univariate separation
 with a non-positive increment is a negative result and is reported as one. Also
 report the feature's Spearman correlation with `gap_um` on labeled rows: above 0.8
-in absolute value it mostly restates gap, and the record should say so. What to
-measure is yours to find; report how many variants you compared.
+in absolute value it mostly restates gap, and the record should say so.
+
+**Report class contrasts at matched gap.** Nearly every geometric or image quantity
+of a pair correlates with its gap (true splits have a median gap of 4.4 um here,
+non-splits 38 um): report each class contrast within gap tertiles next to the
+pooled one. A contrast that vanishes at matched gap is gap, however large it looks
+pooled; in the 2026-10-20 run most "brighter gap line" contrasts vanished at matched
+gap, and the two that survived shrank to about a third of their pooled size.
+
+**Non-tip partners.** 61% of labeled rows (74.5% of all rows) pair a tip with a shaft
+or branch node of the other segment, and that node has no terminal direction: a
+feature that uses the partner's direction or tangent must say what it does there
+(restrict itself to rows whose partner is a tip and leave NaN elsewhere, or use a
+direction-free quantity). A random sign at the partner is noise that reads as a
+null.
+
+**An interval that spans zero is "not detected", not "no effect".** Report the
+increment with its interval whichever way it points, and the number of labeled
+rows it rests on; several refutations of the earlier runs were gains on another
+brain.
+
+What to measure is yours to find; print `VARIANTS COMPARED <n>`.
 
 ### Firewall and validity checks
 
@@ -434,6 +529,16 @@ measure is yours to find; report how many variants you compared.
   computed on substituted data is void whatever its numbers, and is discarded.
   Print for every input that it was read and how many rows or patches came from
   it (the `INPUTS READ` line).
+- **Image reads are checked, not trusted.** For an image feature the `INPUTS READ`
+  line must show `image_patches=<read>/<requested>` with `read` above zero (patches
+  outside the volume may be missing; patches that failed to read may not), and the
+  audit treats a record whose "intensities" are a function of graph quantities as
+  substituted data. If the image cannot be opened, print
+  `STOPPED: image unavailable (<error>)` and record no result. `tensorstore`
+  releases spell anonymous S3 credentials differently (`{'type': 'anonymous'}` or
+  `{'anonymous': True}`): when the open is rejected, change the spelling or install
+  the package; never proxy. Four records of the 2026-10-20 run computed
+  "intensities" from the gap distance or the radius and were discarded.
 - **Names must match inputs.** A feature's name and description must say what its
   code reads: a quantity computed from graph geometry is not an image feature, and
   a "contrast" or "intensity" whose code never touched the image is substituted
@@ -462,13 +567,16 @@ interpretation), so it can be re-run on its own. For each feature you keep:
    - bootstrap interval of the AP difference to the gap ranking, and the increment
      of the two-column model (gap plus the feature) over gap alone with its
      interval, plus the Spearman correlation with `gap_um`;
+   - the refit control (the same model fitted on gap alone), labeled so, and the
+     tie-breaking null share when the scores tie;
+   - the class contrast within gap tertiles next to the pooled one;
    - the `INPUTS READ` line (fragment nodes, companion rows, image patches read
      and requested), since a run on substituted data is void;
    - NaN fraction per label;
    - labeled share in the top of the full ranking, and the labeled-versus-unlabeled
      distribution difference;
    - wall time for all rows;
-   - how many variants you compared;
+   - the `VARIANTS COMPARED` line and the name of the primary model;
    - typical failure cases (top-ranked label-0 rows, missed label-1 rows) as
      companion row indices.
 

@@ -103,9 +103,10 @@ driver records it as needing no correction.
      `canonical_stats.finite`; then `canonical_stats.report(comp, scores,
      name="<model>")`. Its CANONICAL block prints the tie-aware AP, the raw
      baseline of the kind (node degree for merge, gap distance for split, the
-     ranking itself), the paired bootstrap interval of the increment and the
-     labeled shares, so every corrected increment is comparable across
-     hypotheses and runs. The BASELINE CARD in the driver's instruction is the
+     ranking itself), the paired bootstrap interval of the increment, the
+     tie-breaking null share (what random tie-breaks of the baseline alone reach;
+     a gain counts only when that share is at most 0.05) and the labeled shares,
+     so every corrected increment is comparable across hypotheses and runs. The BASELINE CARD in the driver's instruction is the
      figure your increments are measured against. Keep the record's other
      statistics (class contrasts, subgroup figures) beside it.
 

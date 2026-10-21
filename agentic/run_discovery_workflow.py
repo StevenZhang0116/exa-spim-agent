@@ -1449,7 +1449,7 @@ def build_steps(
                 f"are in {corrected_outputs_rel}/ (hypo_<id>.stdout.txt, and "
                 "hypo_<id>.<pkl stem>.stdout.txt per extra dataset); corrected "
                 "scripts print a CANONICAL block (ap, delta, bootstrap ci95, "
-                "p_one_sided) measured by agentic/canonical_stats.py against the raw "
+                "p_one_sided, tie_break_null share) measured by agentic/canonical_stats.py against the raw "
                 "baseline — judge from it. Do NOT re-run "
                 "anything. For each corrected hypothesis assign UPHELD / WEAKENED / "
                 "OVERTURNED by comparing the corrected numbers (statistic, p, effect "
@@ -2109,7 +2109,9 @@ def fix_tests_author_instruction(
         "with `canonical_stats.finite`, and print `canonical_stats.report(comp, "
         "scores, name=...)` for the corrected model (and for each variant you keep): "
         "its CANONICAL block carries the tie-aware AP, the raw baseline, the paired "
-        "bootstrap interval of the increment and the labeled shares. "
+        "bootstrap interval of the increment, the tie-breaking null share (what random "
+        "tie-breaks of the baseline alone reach; a gain counts only at or below 0.05) "
+        "and the labeled shares. "
         + baseline_rule()
         + draft_note
         + " Check each script cheaply (compile it, or run its statistics on a small "

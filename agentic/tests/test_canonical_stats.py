@@ -119,6 +119,22 @@ class CanonicalStatsTests(unittest.TestCase):
         again = cs.paired_bootstrap_delta_ap(comp, oracle, base, n_draws=200, seed=3)
         self.assertEqual(again["mean"], gain["mean"])
 
+    def test_tie_break_null_floor_of_a_tied_baseline(self) -> None:
+        comp = _merge_companion()
+        name, base = cs.baseline(comp)
+        base_ap = cs.average_precision(comp, base)
+        null = cs.tie_break_null(comp, base, base_ap, n_draws=50)
+        # the tie-aware AP of a heavily tied baseline sits near the floor of its random tie-breaks
+        self.assertGreaterEqual(null["share_null_ge_model"], 0.5)
+        self.assertGreaterEqual(null["null_mean"], base_ap - 1e-9)
+        rows = ~np.isnan(comp["label"])
+        oracle = np.where(np.isnan(comp["label"]), 0.0, comp["label"])
+        perfect = base + 0.1 * oracle  # breaks degree's ties with the answer key
+        self.assertEqual(cs.tie_break_null(comp, base, cs.average_precision(comp, perfect),
+                                           n_draws=50)["share_null_ge_model"], 0.0)
+        self.assertEqual(null["n_draws"], 50)
+        del rows
+
     def test_report_prints_a_parseable_canonical_block(self) -> None:
         comp = _merge_companion()
         oracle = np.where(np.isnan(comp["label"]), 0.0, comp["label"])

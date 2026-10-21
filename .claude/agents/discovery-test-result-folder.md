@@ -22,7 +22,8 @@ verdict for an unusable corrected result, and never invent missing numbers.
 
 Corrected scripts print a CANONICAL block (`agentic/canonical_stats.py`: the
 tie-aware AP of the model and of the raw baseline, the increment, the paired
-bootstrap interval and p-values, the labeled shares); judge from it, and read
+bootstrap interval and p-values, the tie-breaking null share, the labeled
+shares); judge from it, and read
 the full outputs in `<results>.outputs/` when the JSON truncates them.
 
 When the instruction asks for a `Feature effect` bullet, judge the feature

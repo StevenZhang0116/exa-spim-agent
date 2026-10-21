@@ -19,6 +19,12 @@ Revised 2026-10-17: the candidate pool adds a second family, tip-to-shaft candid
 (§1), and the labels follow a corrected labeling of the cache; every count and
 baseline figure is recomputed from the new companion, results are also reported per
 family, and the labeled-share check compares with the degree baseline (Evaluation).
+Revised 2026-10-21 after the audit of the 2026-10-19 run: the scoring code gains the
+paired bootstrap and the tie-breaking null that integer degree needs, the raw baseline
+is told apart from the refit control, models must be able to represent degree 4,
+class contrasts are reported within family and within junctions, the image firewall
+is a printed check, and the faults that recurred in that run are named (Feature
+definition, Evaluation, Firewall). Earlier texts are archived.
 
 ---
 
@@ -304,6 +310,23 @@ hours: share preprocessing across rows (one pass over segments, a KD-tree built
 once, one image read per candidate) and never scan the whole graph per row. Report
 the wall time.
 
+**Validity rules from the earlier runs.** Each of these produced a feature that
+measured something other than its name in the 2026-10-19 run:
+- a count of nearby nodes, tips, junctions or segments must exclude the candidate's
+  own node, its arms and its segment; a count that includes them measures the
+  candidate's own degree or length ("fewer foreign tips at merges" counted every
+  tip within 50 um and vanished within junctions);
+- `frag.node_segment_id(i)` is the segment id (a string; compare with `int`).
+  `frag.node_component_id` is a connected-component index and is **not** a segment
+  id: compared with the companion's `segment_id` it matches nothing, silently.
+  Five records of that run measured a constant, or a quantity other than the one
+  they named, because their segment lookup matched nothing or fell through to a
+  fallback;
+- never allocate an array indexed by raw segment ids (they reach 4.6e10): remap
+  with `np.unique(ids, return_inverse=True)`;
+- a quantity that is defined only at a branch point is NaN at a tip-to-shaft row;
+  do not fill it with a value that only tells the families apart.
+
 **Code layout.** Write each experiment as a self-contained script that loads the
 three files by their names here (`dataset_cache_794495_mcl100_add.pkl`,
 `rerank_companion_794495_merge.npz` and `rerank_companion_794495_merge.json`) from
@@ -313,7 +336,10 @@ same names, so do not hard-code row counts, ids or brain-specific constants. Pri
 one line of the form
 `INPUTS READ fragment_nodes=<n> companion_rows=<n> image_patches=<read>/<requested>`
 (`image_patches=0/0` when the feature uses no image), so the record itself shows
-what its numbers were computed from.
+what its numbers were computed from. Every number on that line, and every other
+check your script prints, must be computed from the arrays read in that run: a
+literal row count fails on the next brain, and a printed "PASSED" that no code
+evaluated is not a check. Also print `VARIANTS COMPARED <n>` (Evaluation).
 
 ### Evaluation
 
@@ -328,7 +354,7 @@ segment, so candidates of one segment never straddle training and evaluation:
 - **A model of several features**: for fold `f`, fit on rows with
   `fit_mask_fold{f}` and a non-NaN label; score the rows of `fold == f`.
 - Never tune on a held-out fold. Repeatedly comparing many variants on the same
-  folds overfits them; report how many variants you compared.
+  folds overfits them; print `VARIANTS COMPARED <n>` with the number you compared.
 
 **Scoring code (use it as given):**
 
@@ -354,24 +380,63 @@ def precision_at_fraction(comp, scores, fraction, keys=None, counts=False):
         k_total += len(top)
     return (tp, k_total) if counts else tp / k_total
 
-def average_precision(comp, scores):
-    """Average precision over labeled rows. Tied scores form one threshold (as in
-    sklearn.metrics.average_precision_score), so a score that ties many rows is not
-    credited for the row order inside its ties."""
-    label = comp["label"]
-    rows = np.flatnonzero(~np.isnan(label))
-    s = -np.asarray(scores, dtype=float)[rows]
+def _ap(hits, scores):
+    """Tie-aware average precision of boolean `hits` ranked by `scores`, high first.
+    Tied scores form one threshold (as in sklearn.metrics.average_precision_score), so
+    a score that ties many rows is not credited for the row order inside its ties."""
+    s = -np.asarray(scores, dtype=float)
     order = np.argsort(s, kind="stable")
-    s, hits = s[order], label[rows][order] == 1
+    s, hits = s[order], np.asarray(hits, dtype=bool)[order]
     last = np.flatnonzero(np.r_[s[1:] != s[:-1], True])   # last row of every tie group
     tp = np.cumsum(hits)[last]
     return float(np.sum(tp / (last + 1) * np.diff(np.r_[0, tp])) / max(hits.sum(), 1))
+
+def average_precision(comp, scores):
+    """Average precision over labeled rows."""
+    label = comp["label"]
+    rows = np.flatnonzero(~np.isnan(label))
+    return _ap(label[rows] == 1, np.asarray(scores, dtype=float)[rows])
 
 def labeled_share_at_fraction(comp, scores, fraction):
     """Share of GT-labeled rows among the top `fraction` of ALL rows (labeled or not)."""
     order = np.argsort(-np.asarray(scores, dtype=float), kind="stable")
     top = order[:max(1, int(round(fraction * len(order))))]
     return float((~np.isnan(comp["label"][top])).mean())
+
+def paired_bootstrap_delta_ap(comp, scores, reference, n_draws=1000, seed=0):
+    """Paired bootstrap of AP(scores) - AP(reference) over labeled rows: labeled rows are
+    resampled with replacement within each fold, the same draws for both scores."""
+    label, fold = comp["label"], comp["fold"]
+    labeled = np.flatnonzero(~np.isnan(label))
+    hits = label == 1
+    by_fold = [labeled[fold[labeled] == f] for f in np.unique(fold[labeled])]
+    s, r = np.asarray(scores, dtype=float), np.asarray(reference, dtype=float)
+    rng = np.random.default_rng(seed)
+    deltas = np.empty(n_draws)
+    for i in range(n_draws):
+        rows = np.concatenate([rng.choice(x, size=len(x), replace=True) for x in by_fold])
+        deltas[i] = _ap(hits[rows], s[rows]) - _ap(hits[rows], r[rows])
+    point = _ap(hits[labeled], s[labeled]) - _ap(hits[labeled], r[labeled])
+    p_one = float(np.mean(deltas <= 0))          # share of draws with no gain
+    return {"delta": point, "ci95": [float(np.percentile(deltas, 2.5)),
+                                     float(np.percentile(deltas, 97.5))],
+            "p_one_sided": p_one, "p_two_sided": float(min(1.0, 2 * min(p_one, 1 - p_one)))}
+
+def tie_break_null(comp, reference, model_ap, n_draws=200, seed=0):
+    """Share of random tie-breaks of `reference` whose AP reaches `model_ap`. A score
+    that only reorders the rows the baseline ties gains AP without information; a gain
+    counts only when this share is at most 0.05."""
+    label = comp["label"]
+    rows = np.flatnonzero(~np.isnan(label))
+    hits, base = label[rows] == 1, np.asarray(reference, dtype=float)[rows]
+    distinct = np.unique(base)
+    step = float(np.min(np.diff(distinct))) if len(distinct) > 1 else 1.0
+    rng = np.random.default_rng(seed)
+    aps = np.array([_ap(hits, base + rng.uniform(0.0, 0.5 * step, len(rows)))
+                    for _ in range(n_draws)])
+    return {"share_null_ge_model": float(np.mean(aps >= model_ap)),
+            "null_mean": float(aps.mean()),
+            "null_95": [float(np.percentile(aps, 2.5)), float(np.percentile(aps, 97.5))]}
 ```
 
 Scores must be finite for every row (`labeled_share_at_fraction` ranks all rows):
@@ -388,8 +453,16 @@ Report for each feature and for the model:
 - the same numbers for the baselines below;
 - a paired bootstrap 95% interval of the **difference in average precision to the
   degree baseline** (not to the random rate, and not a difference in ROC-AUC):
-  resample labeled rows with replacement within each fold, 1,000 draws, same draws
-  for both scores.
+  `paired_bootstrap_delta_ap` above, which resamples labeled rows with replacement
+  within each fold, 1,000 draws, the same draws for both scores; report its `delta`,
+  `ci95` and `p_one_sided`;
+- the tie-breaking null (`tie_break_null`), always: degree ties 9,742 of the 9,745
+  labeled rows, so a score that only reorders those ties gains AP without carrying
+  information. Report the share of random tie-breaks of degree that reach the
+  model's AP; a gain counts only when that share is at most 0.05;
+- `VARIANTS COMPARED <n>`: how many scores or models you evaluated for this record.
+  Name the primary model before you compare; the others are variants, reported next
+  to it, and a variant does not become the headline because it scored best.
 
 All of these are computed on the whole labeled set. A number computed on a subset
 of rows (one fold, one family, one degree value, one region) must carry the subset's
@@ -429,6 +502,13 @@ when the companion changes):**
   18.1%, 12.3% and 10.2% labeled rows against 5.1% overall. Degree takes only three
   values among the labeled rows (2, 3, 4), so every labeled row is tied; the
   tie-aware `average_precision` above gives 0.028, and 0.028 is the figure to beat.
+  Random tie-breaks of degree alone average AP 0.035 on this companion (95% range
+  0.027 to 0.048; on the 802449 companion 0.058, 0.054 to 0.062), so a model whose AP
+  lies inside that range has only reordered degree's ties: report `tie_break_null`
+  for every model. Pooled per-fold logistic fits of degree alone score 0.0258 to
+  0.0286 (a fitted tree 0.0185), and eleven records of the 2026-10-19 run measured
+  their increment against such a fit: report it only as the **refit control**,
+  labeled so; the headline increment and its interval are against the raw ranking.
 - **Segment cable length** (total edge length of the candidate's segment, direction
   chosen on the fitting rows) is **not** a usable baseline: AP 0.017, 4/97 at 1%,
   30/1,950 at 20%. Labeled candidates sit on long segments (median 6,973 um against
@@ -447,7 +527,31 @@ share): a feature whose top 1% of all rows is mostly labeled rows is doing what 
 length does and is a negative result. With 146 positives, precision at 1% is 97
 ranked rows and a few hits, and one fold can carry 40% of the positives: judge mainly
 by the AP and its interval, and report per-fold values.
-What to measure is yours to find; report how many variants you compared.
+
+**Models must be able to represent degree.** Degree 4 has 11 to 16 labeled rows per
+fitting fold (72 degree-4 rows in the brain, 20 of them labeled). A tree or boosted
+model with a minimum leaf or child count of 20 or more cannot isolate them and
+scores below the degree ranking whatever else it is given: in the 2026-10-19 run
+seventeen such models reported no gain or a loss; a logistic model on the same
+columns turned six of them into gains beyond the tie-breaking null, and a seventh
+feature cleared it as a tie-break of degree on its own. Fit a logistic
+model (degree as a column or one-hot), or keep the leaf minimum at or below 5, and
+report the same model fitted on degree alone as the refit control.
+
+**Report class contrasts within family and within junctions.** Every tip-to-shaft
+row has degree 2, every junction degree 3 or 4, and 141 of the 146 positives are
+junctions, so a pooled contrast between classes restates the family mix unless it
+also holds within junctions (and within degree 3): report the within-junction AUC
+or medians next to the pooled ones. The tip-to-shaft family holds 5 positives here:
+report its figures with a permutation p-value and draw no conclusion from that
+family on this brain.
+
+**An interval that spans zero is "not detected", not "no effect".** Report the
+increment with its interval whichever way it points, and the number of labeled
+rows it rests on; several refutations of the earlier runs were gains on another
+brain.
+
+What to measure is yours to find; print `VARIANTS COMPARED <n>`.
 
 ### Firewall and validity checks
 
@@ -470,6 +574,16 @@ What to measure is yours to find; report how many variants you compared.
   computed on substituted data is void whatever its numbers, and is discarded.
   Print for every input that it was read and how many rows or patches came from
   it (the `INPUTS READ` line).
+- **Image reads are checked, not trusted.** For an image feature the `INPUTS READ`
+  line must show `image_patches=<read>/<requested>` with `read` above zero (patches
+  outside the volume may be missing; patches that failed to read may not), and the
+  audit treats a record whose "intensities" are a function of graph quantities as
+  substituted data. If the image cannot be opened, print
+  `STOPPED: image unavailable (<error>)` and record no result. `tensorstore`
+  releases spell anonymous S3 credentials differently (`{'type': 'anonymous'}` or
+  `{'anonymous': True}`): when the open is rejected, change the spelling or install
+  the package; never proxy. One record of the 2026-10-19 run named the
+  scatter matrix of candidate coordinates a Hessian and was discarded.
 - **Names must match inputs.** A feature's name and description must say what its
   code reads: a quantity computed from graph geometry is not an image feature, and
   a "contrast" or "intensity" whose code never touched the image is substituted
@@ -497,13 +611,17 @@ interpretation), so it can be re-run on its own. For each feature you keep:
    - bootstrap interval of the AP difference to degree, and the increment of the
      two-column model (degree plus the feature) over degree alone with its
      interval;
+   - the tie-breaking null share of the headline model, and the refit control (the
+     same model fitted on degree alone), labeled so;
+   - the class contrast within junctions (and within degree 3) next to the pooled
+     one, and the tip-to-shaft figures with their counts;
    - the `INPUTS READ` line (fragment nodes, companion rows, image patches read
      and requested), since a run on substituted data is void;
    - NaN fraction per label;
    - labeled share in the top of the full ranking, and the labeled-versus-unlabeled
      distribution difference;
    - wall time for all rows;
-   - how many variants you compared;
+   - the `VARIANTS COMPARED` line and the name of the primary model;
    - typical failure cases (top-ranked label-0 rows, missed label-1 rows) as
      companion row indices.
 

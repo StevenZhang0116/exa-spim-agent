@@ -6,8 +6,11 @@ One implementation of the scoring the feature specifications define
 the tie-aware out-of-fold average precision, the precision of the top fraction
 of labeled rows, the labeled share at the top of the full ranking, the raw
 baseline of each kind (node degree for merge candidates, gap distance for split
-candidates, both as the ranking itself and never a model fitted to it), and the
-paired bootstrap of the increment in average precision over that baseline.
+candidates, both as the ranking itself and never a model fitted to it), the
+paired bootstrap of the increment in average precision over that baseline, and
+the tie-breaking null (the AP that random tie-breaks of the baseline reach; integer
+degree ties every labeled merge row, so a score that only reorders those ties gains
+AP without information).
 
 Why one module: the verifier of new-merge-1 (2026-10-19) found corrected tests
 measured against five different "baselines" (a logistic fit of degree at 0.0258
@@ -49,6 +52,7 @@ import numpy as np
 STANDARD_FRACTIONS: tuple[float, ...] = (0.01, 0.025, 0.05, 0.10, 0.15, 0.20)
 SHARE_FRACTIONS: tuple[float, ...] = (0.01, 0.05, 0.20)
 N_DRAWS: int = 1000
+TIE_BREAK_DRAWS: int = 200
 SEED: int = 0
 # Columns the card and the scoring read; the rest of a companion stays on disk.
 _MERGE_COLUMNS = ("row", "label", "fold", "segment_id", "node_id", "degree")
@@ -208,6 +212,36 @@ def paired_bootstrap_delta_ap(
     }
 
 
+def tie_break_null(
+    comp, reference, model_ap: float, *, n_draws: int = TIE_BREAK_DRAWS, seed: int = SEED,
+) -> dict:
+    """Share of random tie-breaks of ``reference`` whose AP reaches ``model_ap``.
+
+    Each draw adds uniform noise smaller than half the smallest step between distinct
+    reference values, so only tied rows are reordered. Degree ties 9,742 of the 9,745
+    labeled merge rows of 794495 and random tie-breaks average AP 0.035 (95% range
+    0.027 to 0.048) against the tie-aware 0.0278, so the specifications count a gain
+    only when this share is at most 0.05. Gap ties few split rows and the null stays
+    within 0.001 of the baseline there.
+    """
+    label = comp["label"]
+    rows = np.flatnonzero(~np.isnan(label))
+    hits = label[rows] == 1
+    base = np.asarray(reference, dtype=float)[rows]
+    distinct = np.unique(base[np.isfinite(base)])
+    step = float(np.min(np.diff(distinct))) if len(distinct) > 1 else 1.0
+    rng = np.random.default_rng(seed)
+    aps = np.array([_ap(hits, base + rng.uniform(0.0, 0.5 * step, len(rows)))
+                    for _ in range(n_draws)])
+    return {
+        "share_null_ge_model": float(np.mean(aps >= model_ap)),
+        "null_mean": float(aps.mean()),
+        "null_95": [float(np.percentile(aps, 2.5)), float(np.percentile(aps, 97.5))],
+        "n_draws": int(n_draws),
+        "seed": seed,
+    }
+
+
 def label_shift(comp, values) -> dict:
     """How ``values`` differ between labeled and unlabeled rows (KS statistic, medians)."""
     from scipy.stats import ks_2samp
@@ -276,6 +310,7 @@ def evaluate(
         result["bootstrap"] = paired_bootstrap_delta_ap(
             comp, scores, bscores, n_draws=n_draws, seed=seed
         )
+        result["tie_break_null"] = tie_break_null(comp, bscores, result["ap"], seed=seed)
     return result
 
 
@@ -302,6 +337,14 @@ def format_report(result: dict) -> str:
             f"ci95=[{boot['ci95'][0]:+.5f}, {boot['ci95'][1]:+.5f}] "
             f"p_one_sided={boot['p_one_sided']:.4f} p_two_sided={boot['p_two_sided']:.4f} "
             f"draws={boot['n_draws']} seed={boot['seed']}"
+        )
+    null = result.get("tie_break_null")
+    if null:
+        lines.append(
+            f"CANONICAL tie_break_null share_null_ge_model={null['share_null_ge_model']:.3f} "
+            f"null_mean={null['null_mean']:.5f} "
+            f"null_95=[{null['null_95'][0]:.5f}, {null['null_95'][1]:.5f}] "
+            f"draws={null['n_draws']}"
         )
     for fr, row in result["labeled_share"].items():
         lines.append(
@@ -360,6 +403,9 @@ def baseline_card(npz_path) -> dict:
         "precision": {fr: row["baseline"] for fr, row in result["precision"].items()},
         "labeled_share": {fr: row["baseline"] for fr, row in result["labeled_share"].items()},
         "labeled_share_overall": result["labeled_share_overall"],
+        # What random tie-breaks of the baseline alone reach: the floor a model's
+        # AP must clear before an increment means anything.
+        "tie_break_null": tie_break_null(comp, bscores, result["baseline_ap"]),
     }
 
 
@@ -370,6 +416,22 @@ def card_text(card: dict) -> str:
     shares = ", ".join(f"{v:.1%} at {float(fr):.0%}" for fr, v in card["labeled_share"].items())
     what = ("node degree, higher first" if card["baseline"] == "degree"
             else "gap distance, smaller first")
+    # Cards written before 2026-10-21 (and hand-built ones) carry no null figures.
+    null = card.get("tie_break_null")
+    null_text = ""
+    if null and null["null_95"][1] - null["null_95"][0] >= 0.005:
+        null_text = (
+            f" Random tie-breaks of the baseline alone average AP {null['null_mean']:.4f} "
+            f"(95% range {null['null_95'][0]:.4f} to {null['null_95'][1]:.4f}): a model "
+            "whose AP lies inside that range has only reordered the baseline's ties, so "
+            "a gain counts only when the CANONICAL tie_break_null share is at most 0.05."
+        )
+    elif null:
+        null_text = (
+            f" The baseline ties few rows: random tie-breaks move its AP only between "
+            f"{null['null_95'][0]:.4f} and {null['null_95'][1]:.4f}, so the CANONICAL "
+            "tie_break_null share matters only for scores that tie many rows."
+        )
     return (
         f"BASELINE CARD ({card['companion']}, brain {card['brain']}, {card['kind']}): "
         f"{card['n_labeled']:,} labeled rows with {card['n_pos']:,} positives "
@@ -379,7 +441,7 @@ def card_text(card: dict) -> str:
         f"rows holds {shares} labeled rows against {card['labeled_share_overall']:.1%} "
         "overall. An increment is measured against this ranking, not against a model "
         "fitted to the same column, and with the tie-aware average precision of "
-        "agentic/canonical_stats.py."
+        "agentic/canonical_stats.py." + null_text
     )
 
 
