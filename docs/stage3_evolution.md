@@ -146,7 +146,9 @@ process creation are denied before candidate code executes. Linux with
 See [workflow revision](../proofreader_evolve/WORKFLOW_REVISION.md).
 
 There are no default frozen detectors since 2026-10-17 ([Stage 2](stage2_detector_build.md#24-detectors-currently-in-use)): pass one
-`--merge-dir` and one `--split-dir`, or set `DEFAULT_MERGE_DIR` / `DEFAULT_SPLIT_DIR` in
+`--merge-dir` and one `--split-dir` (a deliverable directory, or one of its
+`runs/<brain>-<purpose>/` run directories, which the resolver binds to the script through
+the run's recorded detector SHA-256), or set `DEFAULT_MERGE_DIR` / `DEFAULT_SPLIT_DIR` in
 `proofreader_evolve/cli/precompute_error_scores.py` once the new detectors exist.
 Detector-fitted brains cannot be validation brains. The reviser requires
 `ANTHROPIC_API_KEY`; preparation and baseline-only evaluation do not call an LLM.

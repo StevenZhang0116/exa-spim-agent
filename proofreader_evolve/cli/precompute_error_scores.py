@@ -72,11 +72,32 @@ def _load_joblib(path: Path) -> dict:
     return bundle
 
 
-def _resolve_detector_dir(dir_arg: str, kind: str) -> tuple[Path, Path]:
-    """Resolve one detector deliverable folder to ``(script_path, joblib_path)``.
+def _run_detector_sha256(run_dir: Path, joblib_path: Path) -> str | None:
+    """``data_provenance.detector_sha256`` of the run that wrote ``joblib_path``, or None.
 
-    Accept merge-junction and split-site detectors. Exactly one
-    supported script and one matching fitted model must exist in the folder.
+    The detector runtime records the SHA-256 of its own script in every
+    ``model_selection_<brain>.json`` (``data_provenance.detector_sha256``), which is what
+    binds a run directory to the script that produced it.
+    """
+    brain = joblib_path.stem.rsplit("_", 1)[-1]
+    path = run_dir / f"model_selection_{brain}.json"
+    if not path.is_file():
+        return None
+    record = json.loads(path.read_text())
+    digest = (record.get("data_provenance") or {}).get("detector_sha256")
+    return digest if isinstance(digest, str) and len(digest) == 64 else None
+
+
+def _resolve_detector_dir(dir_arg: str, kind: str) -> tuple[Path, Path]:
+    """Resolve a detector deliverable folder or one of its run folders to ``(script, joblib)``.
+
+    Accept merge-junction and split-site detectors. The folder holds exactly one
+    supported script and exactly one matching fitted model; or it is a run directory
+    (``RUN_COMMANDS.md`` writes every run into ``<deliverable>/runs/<brain>-<purpose>/``)
+    that holds the model while the deliverable directory above it holds the script. A run
+    directory is accepted
+    only when its ``model_selection_<brain>.json`` names the script's SHA-256, so a
+    model can never be paired with a detector that did not produce it.
     """
     if kind not in ("merge", "split"):
         raise ValueError("Detector kind must be merge or split")
@@ -89,22 +110,40 @@ def _resolve_detector_dir(dir_arg: str, kind: str) -> tuple[Path, Path]:
     names = (["merge_junction_detector.py"]
              if kind == "merge" else ["split_site_detector.py"])
     scripts = [d / name for name in names if (d / name).is_file()]
+    # A run directory sits at <deliverable>/runs/<brain>-<purpose>/ (RUN_COMMANDS.md);
+    # the script is two levels up. One level up is accepted too for a flat layout.
+    for ancestor in (d.parent, d.parent.parent):
+        if scripts or ancestor == d:
+            break
+        scripts = [ancestor / name for name in names if (ancestor / name).is_file()]
     if len(scripts) != 1:
         raise SystemExit(
-            f"--{kind}-dir must contain exactly one of {names}; found {len(scripts)}: {d}")
+            f"--{kind}-dir must contain exactly one of {names}, or be a run directory "
+            f"under a deliverable directory that does; found {len(scripts)}: {d}")
     script = scripts[0]
     prefix = "merge_junction_detector" if script.name == "merge_junction_detector.py" else f"{kind}_detector"
     joblibs = sorted(path for path in d.glob(f"{prefix}_*.joblib") if path.is_file())
     if not joblibs:
         raise SystemExit(
             f"--{kind}-dir has no {prefix}_*.joblib — run the detector "
-            f"first (see {d / 'RUN_COMMANDS.md'})")
+            f"first (see {script.parent / 'RUN_COMMANDS.md'})")
     if len(joblibs) > 1:
         raise SystemExit(
             f"--{kind}-dir holds {len(joblibs)} {prefix}_*.joblib files "
             f"({', '.join(p.name for p in joblibs)}) — remove all but the "
             f"intended one: {d}")
-    return script, joblibs[0]
+    model = joblibs[0]
+    recorded = _run_detector_sha256(d, model)
+    if script.parent != d and recorded is None:
+        raise SystemExit(
+            f"{d} is a run directory but its model_selection JSON does not record "
+            "data_provenance.detector_sha256; run the detector again (any detector "
+            "assembled since 2026-10 records it) or pass the deliverable directory")
+    if recorded is not None and recorded != _sha256(script):
+        raise SystemExit(
+            f"{model.name} in {d} was produced by a detector with SHA-256 {recorded}, "
+            f"not by {script} ({_sha256(script)}); keep each run with its own detector")
+    return script, model
 
 
 def _model_analysis_keys(module, feature_order):
@@ -177,7 +216,12 @@ def resolve_detector_runs(merge_dirs=None, split_dirs=None):
         if len(directories) != 1:
             raise ValueError(f"Exactly one {kind} detector run is required")
         script, model = _resolve_detector_dir(directories[0], kind)
-        selected[kind] = [{"run_id": script.parent.name, "dir": str(script.parent),
+        run_dir = model.parent
+        run_id = (script.parent.name if run_dir == script.parent
+                  else f"{script.parent.name}/{run_dir.relative_to(script.parent).as_posix()}")
+        # "dir" is where the run outputs live (joblib, model_selection JSON); the
+        # script may sit one level up. Readers use _script_path / _model_path.
+        selected[kind] = [{"run_id": run_id, "dir": str(run_dir), "script_dir": str(script.parent),
                            "script": script.name, "script_sha256": _sha256(script),
                            "file": model.name, "sha256": _sha256(model)}]
     return selected
@@ -190,11 +234,19 @@ def _cache_identity(path):
             "mtime_ns": stat.st_mtime_ns, "inode": stat.st_ino}
 
 
+def _script_path(record) -> Path:
+    """The detector script of a resolved record (beside the run outputs, or one level up)."""
+    return Path(record.get("script_dir") or record["dir"]) / record["script"]
+
+
+def _model_path(record) -> Path:
+    return Path(record["dir"]) / record["file"]
+
+
 def _assert_detector_unchanged(record):
-    directory = Path(record["dir"])
-    if (_sha256(directory / record["script"]) != record["script_sha256"]
-            or _sha256(directory / record["file"]) != record["sha256"]):
-        raise RuntimeError(f"Detector artifacts changed during preparation: {directory}")
+    if (_sha256(_script_path(record)) != record["script_sha256"]
+            or _sha256(_model_path(record)) != record["sha256"]):
+        raise RuntimeError(f"Detector artifacts changed during preparation: {record['dir']}")
 
 
 def main(argv=None):

@@ -215,9 +215,9 @@ def ensure_native_tables(brain, source_path, selected, tables_dir, prepare=False
         try:
             for kind, record, provenance, directory in missing:
                 pc.log(f"[{brain}/{kind}] preparing full detector-native universe (no evolution cap)")
-                module = pc._import_module(Path(record["dir"]) / record["script"],
+                module = pc._import_module(pc._script_path(record),
                                            f"native_{kind}_{record['script_sha256']}")
-                bundle = pc._load_joblib(Path(record["dir"]) / record["file"])
+                bundle = pc._load_joblib(pc._model_path(record))
                 if list(bundle["feature_order"]) != provenance["training"]["feature_order"]:
                     raise ValueError("Model-selection metadata and fitted feature schema disagree")
                 table = build_native_table(payload, kind, module, bundle,

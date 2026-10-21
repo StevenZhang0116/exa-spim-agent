@@ -102,6 +102,12 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(inference_metadata({"min_cable_length": 100, "gt_graph": object()}, 100),
                          {"min_cable_length": 100})
         self.assertEqual(inference_metadata({}, 100), {"min_cable_length": 100})
+        # the raw image location is GT-free and passes through; an empty one does not
+        self.assertEqual(inference_metadata({"min_cable_length": 100, "img_path": "s3://bucket/x.zarr",
+                                             "gt_graph": object()}, 100),
+                         {"min_cable_length": 100, "img_path": "s3://bucket/x.zarr"})
+        self.assertEqual(inference_metadata({"min_cable_length": 100, "img_path": ""}, 100),
+                         {"min_cable_length": 100})
         for payload, expected in (({}, None), ({"min_cable_length": 100}, 200),
                                   ({}, True), ({}, -1), ({}, 1.5)):
             with self.subTest(expected=expected), self.assertRaises(ValueError):
