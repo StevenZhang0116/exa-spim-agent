@@ -185,7 +185,8 @@ def summarize_csv(
     contract: dict | None = None,
 ) -> dict:
     contract = contract or _result_contract({})
-    rows: list[tuple[float, str, int, int]] = []
+    # (oof score, identity, label or None when GT cannot judge the row, merge_creating)
+    rows: list[tuple[float, str, int | None, int]] = []
     with csv_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
         required = set(contract["identity"]) | {contract["label"], contract["score"]}
@@ -193,29 +194,39 @@ def summarize_csv(
         if missing:
             raise SystemExit(f"CSV {csv_path} is missing required columns: {missing}")
         for row in reader:
-            label_raw = _float(row[contract["label"]], contract["label"])
-            if label_raw not in (0.0, 1.0):
-                raise SystemExit(
-                    f"CSV has non-binary {contract['label']}: {label_raw!r}")
+            # Labels are three-valued since 2026-10-21: 1, 0, or blank/NaN when GT
+            # cannot judge the row (such rows are scored by the fitted model only).
+            label_text = (row[contract["label"]] or "").strip()
+            if label_text == "" or label_text.lower() == "nan":
+                label: int | None = None
+            else:
+                label_raw = _float(label_text, contract["label"])
+                if label_raw not in (0.0, 1.0):
+                    raise SystemExit(
+                        f"CSV has non-binary {contract['label']}: {label_raw!r}")
+                label = int(label_raw)
             identity = ":".join(str(row[name]) for name in contract["identity"])
             rows.append((
                 _oof_score(row[contract["score"]], contract["score"]),
                 identity,
-                int(label_raw),
+                label,
                 int(_float(row.get("is_merge_creating", "0"),
                            "is_merge_creating")),
             ))
     if not rows:
         raise SystemExit(f"CSV {csv_path} has no data rows.")
-    n_positive = sum(item[2] for item in rows)
+    judgeable = [item for item in rows if item[2] is not None]
+    if not judgeable:
+        raise SystemExit(f"CSV {csv_path} has no GT-judgeable rows.")
+    n_positive = sum(item[2] for item in judgeable)
     if n_positive == 0:
         raise SystemExit(f"CSV {csv_path} has no positive {contract['positive']} rows.")
-    scored_rows = [item for item in rows if math.isfinite(item[0])]
+    # OOF scores exist for judgeable rows only; a judgeable row without one means a
+    # fold produced no score for it (reported, never silently dropped).
+    scored_rows = [item for item in judgeable if math.isfinite(item[0])]
     if not scored_rows:
         raise SystemExit(f"CSV {csv_path} has no finite {contract['score']} values.")
-    if contract["target"] == "merge_detection" and len(scored_rows) != len(rows):
-        raise SystemExit(
-            f"Merge CSV {csv_path} unexpectedly has unscored OOF rows.")
+    n_judgeable_unscored = len(judgeable) - len(scored_rows)
     scored_rows.sort(key=lambda item: (-item[0], item[1]))
     n_scored_positive = sum(item[2] for item in scored_rows)
     if n_scored_positive == 0:
@@ -233,27 +244,30 @@ def summarize_csv(
             "merges_found": found if contract["target"] == "merge_detection" else None,
             "precision": found / k,
             "recall": found / n_scored_positive,
-            "recall_scope": "oof_scored_rows",
+            "recall_scope": "oof_scored_judgeable_rows",
             "merge_creating_joins": (
                 merge_creating if contract["target"] == "split_detection" else None),
         })
     return {
         "n_rows": len(rows),
         "row_unit": contract["row_unit"],
+        "n_judgeable": len(judgeable),
+        "n_unjudgeable": len(rows) - len(judgeable),
         "n_positive": n_positive,
-        "n_negative": len(rows) - n_positive,
+        "n_negative": len(judgeable) - n_positive,
         "n_oof_scored": len(scored_rows),
         "n_oof_unscored": len(rows) - len(scored_rows),
+        "n_judgeable_unscored": n_judgeable_unscored,
         "n_oof_scored_positive": n_scored_positive,
-        "oof_coverage": len(scored_rows) / len(rows),
+        "oof_coverage": len(scored_rows) / len(judgeable),
         "oof_scored_prevalence": n_scored_positive / len(scored_rows),
         "positive_name": contract["positive"],
         "negative_name": contract["negative"],
         "score_column": contract["score"],
         "n_merge": n_positive if contract["target"] == "merge_detection" else None,
-        "n_clean": (len(rows) - n_positive
+        "n_clean": (len(judgeable) - n_positive
                     if contract["target"] == "merge_detection" else None),
-        "prevalence": n_positive / len(rows),
+        "prevalence": n_positive / len(judgeable),
         "review_workload": workload,
     }
 
@@ -301,6 +315,12 @@ def collect_evidence(result_dir: Path, application_dir: Path) -> dict:
     if (audit_rows != csv_summary["n_rows"] or
             audit_positive != csv_summary["n_positive"]):
         raise SystemExit("Model-selection audit counts do not match the detector CSV.")
+    # Detectors since 2026-10-21 record the three-valued split of the rows as well.
+    if ("n_judgeable" in audit
+            and audit.get("n_judgeable") != csv_summary["n_judgeable"]):
+        raise SystemExit(
+            "Model-selection audit n_judgeable does not match the detector CSV's "
+            "rows with a 0/1 label.")
 
     detector_path = application_dir / contract["detector_name"]
     inventory_path = application_dir / "feature_inventory.json"
@@ -458,8 +478,8 @@ def write_report_skeleton(report_path: Path, evidence: dict, evidence_sha: str) 
 - Detector target / row unit: `{evidence['detector_target']}` / `{evidence['row_unit']}`
 - Brain / MCL / scope: `{evidence['brain']}` / `{evidence['train_mcl']}` / `{evidence['scope']}`
 - Final winner: `{evidence['final_winner']}` with `{json.dumps(evidence['final_params'], sort_keys=True)}`
-- Rows: {csv_summary['n_rows']}; positives ({evidence['positive_name']}): {csv_summary['n_positive']}; negatives ({evidence['negative_name']}): {csv_summary['n_negative']}; prevalence: {_fmt(csv_summary['prevalence'])}
-- Finite OOF scores: {csv_summary['n_oof_scored']} / {csv_summary['n_rows']} ({_fmt(csv_summary['oof_coverage'])}); unscored rows: {csv_summary['n_oof_unscored']}. Review-workload recall is conditional on the OOF-scored subset.
+- Rows: {csv_summary['n_rows']}; GT-judgeable: {csv_summary['n_judgeable']} (positives ({evidence['positive_name']}): {csv_summary['n_positive']}; negatives ({evidence['negative_name']}): {csv_summary['n_negative']}; prevalence among judgeable rows: {_fmt(csv_summary['prevalence'])}); not judgeable by GT (NaN label, scored by the fitted model only): {csv_summary['n_unjudgeable']}
+- Finite OOF scores: {csv_summary['n_oof_scored']} / {csv_summary['n_judgeable']} judgeable rows ({_fmt(csv_summary['oof_coverage'])}); judgeable rows without an OOF score: {csv_summary['n_judgeable_unscored']}. Review-workload precision and recall are over the OOF-scored judgeable rows.
 - All features undefined: {audit.get('all_undefined_count', '—')}; positives in that group: {audit.get('all_undefined_positives', audit.get('all_undefined_merges', '—'))}
 - Convergence warnings in detector log: {evidence['convergence_warning_count']}
 - Held-out result present: {'yes' if evidence['heldout'] is not None else 'no'}

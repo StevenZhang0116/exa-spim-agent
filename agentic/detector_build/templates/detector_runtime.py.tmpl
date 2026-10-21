@@ -6,7 +6,9 @@ ONE self-contained CLI that:
   * extracts audited target-level geometry features in shared traversal passes,
   * compares several regularized/boosted model families with nested CV,
   * selects and fits the winning family with a leak-free one-standard-error rule,
-  * scores every adjudicable target row out-of-fold,
+  * scores every GT-judgeable target row out-of-fold (labels are 1 / 0 / NaN; the
+    purged group folds hold each judgeable row out once) and every row with the
+    fitted model,
   * optionally transfers the fitted pipeline to a different held-out brain,
   * profiles hypothesis cost on a small sample with --measuretime and exits pre-model, or
   * skips explicitly excluded computation with --hypothesis-selection or
@@ -118,7 +120,7 @@ def _memoized(cache, key, compute):
 
 # --------------------------------------------------------------------------- #
 # Embedded declarative model policy (SHA-256                                   #
-# c410b3c213eae37e578e7c48c007a8333dadc7f6550967f29c85277e0a82a1dd).           #
+# 49bff33b338efb4410e80620daaf20e4e9632c35986eb38dfe4ab0b68fe84f83).           #
 # This embedded copy is the runtime trust anchor. The build driver validates   #
 # the on-disk policy; the deployed detector validates model_candidates.json    #
 # against this exact policy hash without requiring that policy file.           #
@@ -130,7 +132,7 @@ EMBEDDED_MODEL_POLICY = {
         "max_grid_combinations": 16,
         "primary_metric": "average_precision",
         "selection_rule": "one_standard_error",
-        "outer_folds": 5,
+        "outer_folds": 3,
         "inner_folds": 3,
         "random_seed": 42,
         "review_budget": 100,
@@ -246,7 +248,7 @@ EMBEDDED_MODEL_POLICY = {
     },
 }
 EMBEDDED_MODEL_POLICY_SHA256 = (
-    "c410b3c213eae37e578e7c48c007a8333dadc7f6550967f29c85277e0a82a1dd"
+    "49bff33b338efb4410e80620daaf20e4e9632c35986eb38dfe4ab0b68fe84f83"
 )
 
 RANDOM_SEED = 42
@@ -297,7 +299,7 @@ def _sha256_canonical_json(obj):
 
 
 # --------------------------------------------------------------------------- #
-# Parameter value-rule validation (mirrors the policy vocabulary exactly).     #
+# Parameter value-rule checks (mirror the policy vocabulary exactly).          #
 # --------------------------------------------------------------------------- #
 def _is_int(x):
     return isinstance(x, int) and not isinstance(x, bool)
@@ -534,7 +536,7 @@ def build_comp_to_seg(frag):
 
 # --------------------------------------------------------------------------- #
 # Hypothesis-cost profiling and final-run selection. Feature code supplies     #
-# declarative groups; runtime owns validation, artifacts, and CLI semantics.   #
+# declarative groups; runtime owns the checks, artifacts, and CLI semantics.   #
 # --------------------------------------------------------------------------- #
 def validate_analysis_timing_groups(groups):
     """Require one selectable timing-group owner per feature and hypothesis."""
@@ -1044,7 +1046,7 @@ def write_hypothesis_cost_artifacts(timing_path, out_dir, brain):
         "Edit the generated `hypothesis_selection_template_%s.json`, then pass "
         "it to the final run with `--hypothesis-selection`." % brain,
         "For a quick manual choice, pass ids directly as "
-        "`--exclude-hypotheses <ID1> <ID2>`. The same shared-unit validation applies.",
+        "`--exclude-hypotheses <ID1> <ID2>`. The same shared-unit checks apply.",
         "",
     ])
     tmp = report_path + ".tmp.%d" % os.getpid()
@@ -1260,86 +1262,44 @@ def _score_matrix(estimator, X):
     return estimator.predict(X)
 
 
-def _cv_splits(X, y, n_splits, seed, samples=None):
-    """Return ordinary stratified folds or conservative segment-disjoint folds.
+def _judged(y):
+    """Rows GT can judge: finite labels (1 or 0). NaN rows are never fitted or scored OOF."""
+    return np.isfinite(np.asarray(y, dtype=float))
 
-    For split rows, validation contains only pairs whose two segments are held
-    out together; training contains only pairs touching no held-out segment.
-    Boundary pairs are deliberately omitted.  Consequently split OOF coverage
-    can be below 100% and is reported explicitly instead of leaking a shared
-    segment across train and validation.
 
-    Merge-site rows carry ONE segment each, so the same segment-disjoint rule
-    partitions cleanly: every candidate lands in exactly one validation fold
-    (full OOF coverage) and no segment's junctions are shared between train
-    and validation.
+def _cv_splits(X, y, n_splits, seed, samples=None, groups=None):
+    """Return ``(train, test)`` index pairs over rows whose labels are all judgeable.
+
+    Split and merge-site rows with ``groups`` (the adapter's label-free ``fold_groups``)
+    use ``candidate_rules.fold_partitions``: every group is held out exactly once and
+    the fit side is purged of every segment a held row touches, so each row receives
+    one OOF score and no segment is shared between a fold's fit and held rows. This is
+    the benchmark's own internal fold rule. Without groups (synthetic smoke frames,
+    legacy segment rows) the folds are ordinary stratified folds.
     """
     from sklearn.model_selection import StratifiedKFold
 
+    y = np.asarray(y)
     if (DETECTOR_TARGET not in ("split_detection", "merge_site_detection")
-            or samples is None):
+            or samples is None or groups is None):
         splitter = StratifiedKFold(
             n_splits=n_splits, shuffle=True, random_state=seed)
         return list(splitter.split(X, y))
-
-    if DETECTOR_TARGET == "merge_site_detection":
-        segments = sorted({int(sample["segment_id"]) for sample in samples})
-        if len(segments) < n_splits:
-            raise ValueError("too few distinct segments for segment-disjoint CV")
-        rng = np.random.RandomState(seed)
-        shuffled = np.asarray(segments, dtype=np.int64)
-        rng.shuffle(shuffled)
-        fold_of = {int(segment): int(index % n_splits)
-                   for index, segment in enumerate(shuffled)}
-        splits = []
-        for fold in range(n_splits):
-            assignment = np.asarray([
-                fold_of[int(sample["segment_id"])] for sample in samples
-            ], dtype=int)
-            test = np.flatnonzero(assignment == fold)
-            train = np.flatnonzero(assignment != fold)
-            if (len(train) < 2 or len(test) < 2 or
-                    len(np.unique(y[train])) < 2 or len(np.unique(y[test])) < 2):
-                raise ValueError(
-                    "segment-disjoint CV fold %d lacks rows or both classes "
-                    "(train=%d test=%d)" % (fold, len(train), len(test)))
-            splits.append((train, test))
-        return splits
-
-    segments = sorted({
-        int(sample[key]) for sample in samples
-        for key in ("segment_id_a", "segment_id_b")
-    })
-    if len(segments) < n_splits:
-        raise ValueError("too few distinct segments for segment-disjoint CV")
-    rng = np.random.RandomState(seed)
-    shuffled = np.asarray(segments, dtype=np.int64)
-    rng.shuffle(shuffled)
-    fold_of = {int(segment): int(index % n_splits)
-               for index, segment in enumerate(shuffled)}
+    if len(groups) != len(samples) or len(samples) != len(y):
+        raise ValueError("fold groups, samples and labels are not aligned")
     splits = []
-    for fold in range(n_splits):
-        test = np.asarray([
-            i for i, sample in enumerate(samples)
-            if fold_of[int(sample["segment_id_a"])] == fold
-            and fold_of[int(sample["segment_id_b"])] == fold
-        ], dtype=int)
-        train = np.asarray([
-            i for i, sample in enumerate(samples)
-            if fold_of[int(sample["segment_id_a"])] != fold
-            and fold_of[int(sample["segment_id_b"])] != fold
-        ], dtype=int)
+    for fold, (train, test) in enumerate(fold_partitions(samples, groups, n_splits)):
         if (len(train) < 2 or len(test) < 2 or
                 len(np.unique(y[train])) < 2 or len(np.unique(y[test])) < 2):
             raise ValueError(
-                "segment-disjoint CV fold %d lacks rows or both classes "
+                "purged group fold %d lacks rows or both classes "
                 "(train=%d test=%d)" % (fold, len(train), len(test)))
-        splits.append((train, test))
+        splits.append((np.asarray(train, dtype=int), np.asarray(test, dtype=int)))
     return splits
 
 
 def inner_cv_family(family, grid, X, y, inner_folds, seed, samples=None,
-                    log=None):
+                    log=None, groups=None):
     """3-fold inner CV over a family's grid.  Returns list of dicts:
     {params, mean_ap, std_ap, mean_se}.
 
@@ -1351,7 +1311,7 @@ def inner_cv_family(family, grid, X, y, inner_folds, seed, samples=None,
     """
     from sklearn.metrics import average_precision_score
 
-    splits = _cv_splits(X, y, inner_folds, seed, samples=samples)
+    splits = _cv_splits(X, y, inner_folds, seed, samples=samples, groups=groups)
     grid_points = list(iter_param_grid(grid))
     results = []
     for point_i, params in enumerate(grid_points):
@@ -1419,11 +1379,14 @@ def select_family_1se(family_scores, simplicity_order):
     return eligible[0] if eligible else gname
 
 
-def run_nested_selection(X, y, configured, policy, log, samples=None):
-    """Full nested CV.
+def run_nested_selection(X, y, configured, policy, log, samples=None, groups=None):
+    """Full nested CV over the GT-judgeable rows.
 
-    Returns dict with per-family OOF score arrays, selector OOF array, per-fold
-    inner choices, selection frequencies, and per-family outer metrics.
+    Rows with a NaN label (GT cannot judge them) take no part: they are never
+    fitted and receive no OOF score (NaN in every OOF array); the fitted final
+    model scores them afterwards. Returns dict with per-family OOF score arrays
+    (full length), selector OOF array, per-fold inner choices, selection
+    frequencies, per-family outer metrics and the judgeable row count.
     """
     from sklearn.metrics import average_precision_score, roc_auc_score
 
@@ -1433,14 +1396,24 @@ def run_nested_selection(X, y, configured, policy, log, samples=None):
     seed = sel["random_seed"]
     simplicity = sel["simplicity_order"]
 
+    y_all = np.asarray(y, dtype=float)
+    n_all = len(y_all)
+    judged = np.flatnonzero(_judged(y_all))
+    X = np.asarray(X)[judged]
+    y = y_all[judged].astype(np.int64)
+    samples = [samples[int(i)] for i in judged] if samples is not None else None
+    groups = [groups[int(i)] for i in judged] if groups is not None else None
     n = len(y)
     families = list(configured.keys())
     oof = {f: np.full(n, np.nan) for f in families}
     oof_selector = np.full(n, np.nan)
     per_fold = []
     selection_freq = defaultdict(int)
+    if n_all != n:
+        log("nested selection: %d of %d rows are GT-judgeable; the other %d are "
+            "neither fitted nor scored out-of-fold" % (n, n_all, n_all - n))
 
-    outer = _cv_splits(X, y, outer_folds, seed, samples=samples)
+    outer = _cv_splits(X, y, outer_folds, seed, samples=samples, groups=groups)
     for k, (tr, te) in enumerate(outer):
         log("outer fold %d/%d (train=%d test=%d)"
             % (k + 1, outer_folds, len(tr), len(te)))
@@ -1450,12 +1423,14 @@ def run_nested_selection(X, y, configured, policy, log, samples=None):
             grid = configured[f]["grid"]
             train_samples = ([samples[int(i)] for i in tr]
                              if samples is not None else None)
+            train_groups = ([groups[int(i)] for i in tr]
+                            if groups is not None else None)
             log("  fold %d/%d %s: %d grid point(s) x %d inner fold(s)"
                 % (k + 1, outer_folds, f, _grid_size(grid), inner_folds))
             t_family = time.time()
             results = inner_cv_family(
                 f, grid, X[tr], y[tr], inner_folds, seed,
-                samples=train_samples, log=log)
+                samples=train_samples, log=log, groups=train_groups)
             choice = best_params_1se(results)
             if choice is None:
                 log("  fold %d/%d %s: NO usable inner result after %.1fs"
@@ -1523,33 +1498,49 @@ def run_nested_selection(X, y, configured, policy, log, samples=None):
                             "oof_roc_auc": None,
                             "n_scored": int(smask.sum())}
 
+    # Scatter the judgeable-row scores back to full-length arrays.
+    def _full(values):
+        out = np.full(n_all, np.nan)
+        out[judged] = values
+        return out
+
     return {
-        "oof": oof,
-        "oof_selector": oof_selector,
+        "oof": {f: _full(oof[f]) for f in families},
+        "oof_selector": _full(oof_selector),
         "per_fold": per_fold,
         "selection_frequency": dict(selection_freq),
         "family_metrics": metrics,
         "selector_metrics": selector_metrics,
+        "n_rows": int(n_all),
+        "n_judgeable": int(n),
     }
 
 
-def fit_final_winner(X, y, configured, policy, log, samples=None):
-    """Repeat the same inner search on ALL rows, apply the one-standard-error
-    rule with the policy simplicity order, fit the winner on all rows."""
+def fit_final_winner(X, y, configured, policy, log, samples=None, groups=None):
+    """Repeat the same inner search on ALL judgeable rows, apply the
+    one-standard-error rule with the policy simplicity order, fit the winner on
+    those rows (NaN-label rows are never fitted)."""
     sel = policy["selection"]
     inner_folds = sel["inner_folds"]
     seed = sel["random_seed"]
     simplicity = sel["simplicity_order"]
 
+    judged = np.flatnonzero(_judged(y))
+    X = np.asarray(X)[judged]
+    y = np.asarray(y, dtype=float)[judged].astype(np.int64)
+    samples = [samples[int(i)] for i in judged] if samples is not None else None
+    groups = [groups[int(i)] for i in judged] if groups is not None else None
+
     family_best = {}
     per_family_choice = {}
     for f in configured:
         grid = configured[f]["grid"]
-        log("final search %s: %d grid point(s) x %d inner fold(s) on all rows"
-            % (f, _grid_size(grid), inner_folds))
+        log("final search %s: %d grid point(s) x %d inner fold(s) on all %d "
+            "judgeable rows" % (f, _grid_size(grid), inner_folds, len(y)))
         t_family = time.time()
         results = inner_cv_family(
-            f, grid, X, y, inner_folds, seed, samples=samples, log=log)
+            f, grid, X, y, inner_folds, seed, samples=samples, log=log,
+            groups=groups)
         choice = best_params_1se(results)
         if choice is None:
             log("final search %s: NO usable inner result after %.1fs"
@@ -1603,9 +1594,9 @@ def ascertainment_audit(samples, y, winner_oof, feat_df, covs_by_display, log):
         cov_arrays[name] = np.asarray(
             [covs_by_display[sample_display(s)][name] for s in samples],
             dtype=float)
-    y = np.asarray(y, dtype=np.int64)
+    y = np.asarray(y, dtype=float)  # 1 / 0 / NaN (not judgeable)
     oof = np.asarray(winner_oof, dtype=float)
-    oof_mask = np.isfinite(oof)
+    oof_mask = np.isfinite(oof) & _judged(y)
     # Bound the correlation work like figure 04 does: rank correlations on a
     # deterministic row sample, never the full 500k-row universe (scipy's
     # spearmanr masked path is banned for the same reason — see the template
@@ -1647,7 +1638,7 @@ def ascertainment_audit(samples, y, winner_oof, feat_df, covs_by_display, log):
             bins = np.digitize(cov, edges)
             for b in range(int(bins.max()) + 1):
                 m = (bins == b) & oof_mask & np.isfinite(cov)
-                n_bin, n_pos = int(m.sum()), int(y[m].sum())
+                n_bin, n_pos = int(m.sum()), int(np.sum(y[m] == 1))
                 ap = (float(average_precision_score(y[m], oof[m]))
                       if n_pos and n_pos < n_bin else None)
                 strata.append({"stratum": int(b), "n": n_bin,
@@ -1676,13 +1667,21 @@ def ascertainment_audit(samples, y, winner_oof, feat_df, covs_by_display, log):
 
 
 def undefined_audit(df, y, log):
+    y = np.asarray(y, dtype=float)  # 1 / 0 / NaN (not judgeable)
+    judged = _judged(y)
     n = len(y)
+    n_judgeable = int(judged.sum())
     n_positive = int(np.sum(y == 1))
     n_negative = int(np.sum(y == 0))
     print("\n==================== UNDEFINED / COVERAGE AUDIT ====================")
-    print("%s: %d  positive (%s): %d  negative (%s): %d  prevalence: %.4f"
-          % (ROW_UNIT_PLURAL, n, POSITIVE_NAME, n_positive, NEGATIVE_NAME,
-             n_negative, n_positive / n if n else float("nan")))
+    print("%s: %d  GT-judgeable: %d  positive (%s): %d  negative (%s): %d  "
+          "prevalence among judgeable: %.4f"
+          % (ROW_UNIT_PLURAL, n, n_judgeable, POSITIVE_NAME, n_positive,
+             NEGATIVE_NAME, n_negative,
+             n_positive / n_judgeable if n_judgeable else float("nan")))
+    if n_judgeable < n:
+        print("  %d %s have no GT label (NaN): they are scored by the fitted model "
+              "but never fitted or evaluated" % (n - n_judgeable, ROW_UNIT_PLURAL))
 
     all_undef = np.ones(n, dtype=bool)
     print("\nper-feature undefined share (overall / positives undefined):")
@@ -1717,18 +1716,20 @@ def undefined_audit(df, y, log):
         fc = name + "_is_defined"
         if fc not in df.columns:
             continue
-        flag = df[fc].values.astype(bool)
-        vals = df[name].values.astype(float)
+        flag = df[fc].values.astype(bool)[judged]
+        vals = df[name].values.astype(float)[judged]
+        yj = y[judged].astype(np.int64)
         # full set: undefined -> sentinel-free neutral fill for AUC only
-        full_auc = _single_feature_auc(vals, flag, y, scope="full")
-        sub_auc = _single_feature_auc(vals, flag, y, scope="defined")
+        full_auc = _single_feature_auc(vals, flag, yj, scope="full")
+        sub_auc = _single_feature_auc(vals, flag, yj, scope="defined")
         print("  %-42s full=%s  defined=%s"
               % (name, _fmt(full_auc), _fmt(sub_auc)))
     print("===================================================================\n")
     return {
         "row_unit": ROW_UNIT, "n_rows": n, "n_positive": n_positive,
-        "n_negative": n_negative, "prevalence":
-        (n_positive / n if n else None),
+        "n_negative": n_negative, "n_judgeable": n_judgeable,
+        "n_unjudgeable": n - n_judgeable,
+        "prevalence": (n_positive / n_judgeable if n_judgeable else None),
         "all_undefined_count": n_allundef,
         "all_undefined_positives": n_allundef_positive,
         # Legacy aliases keep downstream merge readers compatible.
@@ -1919,11 +1920,11 @@ def make_figures(fig_dir, prefix, df, y, nested, winner_oof, selector_oof,
     # 06: winner-aware model explanation. Linear models expose signed
     # standardized coefficients; EBM exposes additive term importance and shape
     # functions; tree models may expose native unsigned importance. A model
-    # without a reliable native summary falls back to validation permutation
+    # without a reliable native summary falls back to held-out permutation
     # importance, using the same cached calculation as figure 07.
     permutation_cache = {}
 
-    def validation_permutation():
+    def heldout_permutation():
         if "result" in permutation_cache:
             return permutation_cache["result"]
         if "error" in permutation_cache:
@@ -2085,7 +2086,7 @@ def make_figures(fig_dir, prefix, df, y, nested, winner_oof, selector_oof,
 
     if not fig6_written:
         try:
-            r = validation_permutation()
+            r = heldout_permutation()
             order = np.argsort(r.importances_mean)[::-1]
             fig, ax = plt.subplots(figsize=(11, 7))
             pos = np.arange(len(order))
@@ -2094,7 +2095,7 @@ def make_figures(fig_dir, prefix, df, y, nested, winner_oof, selector_oof,
             ax.set_yticks(pos)
             ax.set_yticklabels([feature_order[i] for i in order], fontsize=6)
             ax.invert_yaxis()
-            ax.set_xlabel("validation AP decrease after permutation")
+            ax.set_xlabel("held-out AP decrease after permutation")
             ax.set_title("winner model explanation: permutation fallback\n"
                          "no reliable native global importance was available")
             save(fig, 6, "winner_model_explanation")
@@ -2103,9 +2104,9 @@ def make_figures(fig_dir, prefix, df, y, nested, winner_oof, selector_oof,
             if log:
                 log("winner-explanation figure skipped: %r" % (exc,))
 
-    # 07: common model-agnostic permutation importance on validation data.
+    # 07: common model-agnostic permutation importance on a held-out split.
     try:
-        r = validation_permutation()
+        r = heldout_permutation()
         fig, ax = plt.subplots(figsize=(11, 6))
         order = np.argsort(r.importances_mean)[::-1]
         ax.bar(range(len(feature_order)), r.importances_mean[order],
@@ -2113,7 +2114,7 @@ def make_figures(fig_dir, prefix, df, y, nested, winner_oof, selector_oof,
         ax.set_xticks(range(len(feature_order)))
         ax.set_xticklabels([feature_order[i] for i in order],
                            rotation=90, fontsize=5)
-        ax.set_title("permutation importance (validation, AP-scored)")
+        ax.set_title("permutation importance (held-out split, AP-scored)")
         save(fig, 7, "permutation_importance")
     except Exception as exc:
         if log:
@@ -2125,7 +2126,7 @@ def make_figures(fig_dir, prefix, df, y, nested, winner_oof, selector_oof,
 def _winner_params_placeholder(nested, winner):
     """Best-effort winner params for figure 06 fallback and figure 07.
 
-    These figures train their own validation split and need one valid grid point.
+    These figures train their own held-out split and need one valid grid point.
     """
     for rec in reversed(nested["per_fold"]):
         ch = rec["family_choice"].get(winner)
@@ -2175,7 +2176,7 @@ def assemble_configured(cfg, log, strict_required=True):
 # --------------------------------------------------------------------------- #
 # SYNTHETIC SMOKE TEST.  No data files, no outputs; prints DETECTOR_SMOKE_OK    #
 # ONLY after every assertion passes.  An invalid/unknown family in the config   #
-# must already have failed validation (nonzero exit, no marker, no file).       #
+# must already have failed the config check (nonzero exit, no marker, no file).  #
 # --------------------------------------------------------------------------- #
 def run_smoke_test(config_path, inventory_sha256, log):
     log("synthetic smoke test: validating config %s" % config_path)
@@ -2198,9 +2199,13 @@ def run_smoke_test(config_path, inventory_sha256, log):
     rng = np.random.RandomState(RANDOM_SEED)
     n = 240
     p = len(FEATURE_NAMES)
-    y = (rng.rand(n) < 0.15).astype(np.int64)
+    y = (rng.rand(n) < 0.15).astype(float)
+    # rows GT cannot judge: scored by the final model, never fitted or scored OOF
+    y[rng.rand(n) < 0.1] = np.nan
+    judged = np.isfinite(y)
+    n_judged = int(judged.sum())
     base = rng.randn(n, p)
-    base[:, 0] += 1.5 * y  # give one feature real signal
+    base[:, 0] += 1.5 * np.nan_to_num(y)  # give one feature real signal
     # inject structural missingness in some columns
     miss = rng.rand(n, p) < 0.3
     X = base.copy()
@@ -2212,21 +2217,25 @@ def run_smoke_test(config_path, inventory_sha256, log):
     policy = EMBEDDED_MODEL_POLICY
     nested = run_nested_selection(X, y, smoke_configured, policy, log)
 
-    # assert: every expected OOF column is filled exactly once per outer row
+    # assert: every expected OOF column is filled exactly once per judgeable
+    # outer row and never on an unjudgeable row
     for f in smoke_configured:
         col = nested["oof"][f]
         assert col.shape == (n,), "family %s OOF wrong shape" % f
         filled = np.sum(~np.isnan(col))
-        assert filled == n, ("family %s filled %d/%d OOF rows"
-                             % (f, filled, n))
+        assert filled == n_judged, ("family %s filled %d/%d judgeable OOF rows"
+                                    % (f, filled, n_judged))
+        assert np.all(np.isnan(col[~judged])), \
+            "family %s scored rows GT cannot judge out-of-fold" % f
     sel = nested["oof_selector"]
-    assert np.sum(~np.isnan(sel)) == n, "selector OOF not fully filled"
+    assert np.sum(~np.isnan(sel)) == n_judged, "selector OOF not filled on judgeable rows"
+    assert nested["n_judgeable"] == n_judged and nested["n_rows"] == n
 
     # assert: fold-local preprocessing handles NaNs (a linear family produced
     # finite scores despite NaN inputs)
     lin = "logistic_l2"
     assert lin in smoke_configured, "logistic_l2 must be configured"
-    assert np.all(np.isfinite(nested["oof"][lin])), \
+    assert np.all(np.isfinite(nested["oof"][lin][judged])), \
         "logistic_l2 produced non-finite OOF scores (NaN handling failed)"
 
     # fit final winner, then prove held-out prediction does NOT mutate the fitted
@@ -2234,6 +2243,9 @@ def run_smoke_test(config_path, inventory_sha256, log):
     winner, win_params, est, _ = fit_final_winner(
         X, y, smoke_configured, policy, log)
     pre_state = _snapshot_preprocessing(est)
+    # the fitted winner scores every row, judgeable or not, with finite values
+    assert np.all(np.isfinite(_score_matrix(est, X))), \
+        "final winner produced non-finite scores on the full frame"
     X_test = rng.randn(50, p)
     X_test[rng.rand(50, p) < 0.4] = np.nan
     _ = _score_matrix(est, X_test)
@@ -2537,7 +2549,8 @@ def _extract_features_runtime(payload, *, verbose=True, timing=None,
     # looked up per row instead.
     true_by_display = {}
     for sample, label in zip(samples_true, labels_true):
-        true_by_display[sample_display(sample)] = (sample, int(label))
+        # 1 / 0 / NaN; a supplied cache (Stage 3 passes int zeros) comes through as is
+        true_by_display[sample_display(sample)] = (sample, float(label))
     if len(true_by_display) != len(samples_true):
         raise ValueError(
             "sample_display is not unique over the runtime universe (%d displays "
@@ -2547,7 +2560,7 @@ def _extract_features_runtime(payload, *, verbose=True, timing=None,
         raise ValueError(
             "extract_features contract violation: returned %d rows but the "
             "runtime universe has %d" % (n_samples, len(samples_true)))
-    relabeled = np.zeros(n_samples, dtype=np.int64)
+    relabeled = np.full(n_samples, np.nan)
     restored_samples = []
     seen_displays = set()
     for pos, s in enumerate(samples):
@@ -2592,6 +2605,19 @@ def _apply_scope(feat_df, samples, labels, exclude_empty, log):
     return df2, kept_samples, kept_labels
 
 
+def _apply_scope_with_groups(feat_df, samples, labels, groups, exclude_empty, log):
+    """``_apply_scope`` that also keeps the fold groups aligned with the kept rows."""
+    if not exclude_empty:
+        return feat_df, samples, labels, groups
+    df2, kept_samples, kept_labels, keep = _drop_all_undefined(
+        feat_df, samples, labels)
+    log("--exclude-empty: dropped %d all-undefined rows (kept %d)"
+        % (len(samples) - len(kept_samples), len(kept_samples)))
+    kept_groups = ([g for g, retained in zip(groups, keep) if retained]
+                   if groups is not None else None)
+    return df2, kept_samples, kept_labels, kept_groups
+
+
 def _print_queue(samples, labels, scores, budget, title):
     scored = np.flatnonzero(np.isfinite(scores))
     order = scored[np.argsort(-scores[scored])]
@@ -2623,15 +2649,18 @@ def _input_provenance(path, identity, samples, labels, universe_audit, scope):
         raise RuntimeError("Input cache changed during load/extraction: %s; rerun against a stable cache" % path)
     if len(samples) != len(labels):
         raise ValueError("Cannot fingerprint misaligned sample/label rows")
+    labels = np.asarray(labels, dtype=float)
     digest = hashlib.sha256()
     for sample, label in zip(samples, labels):
-        record = [sample_display(sample), int(label)]
+        # NaN (GT cannot judge) digests as -1, the companions' convention.
+        record = [sample_display(sample), -1 if not np.isfinite(label) else int(label)]
         digest.update((json.dumps(record, separators=(",", ":")) + "\n").encode())
     return {
         "cache_identity": dict(identity), "scope": scope,
-        "n_rows": len(samples), "n_positive": int(np.sum(np.asarray(labels) == 1)),
+        "n_rows": len(samples), "n_positive": int(np.sum(labels == 1)),
+        "n_judgeable": int(np.sum(np.isfinite(labels))),
         "ordered_row_labels_sha256": digest.hexdigest(),
-        "row_digest_fields": ["sample_display", "binary_label"],
+        "row_digest_fields": ["sample_display", "three_valued_label(-1=not_judgeable)"],
         "sample_universe_audit": copy.deepcopy(universe_audit),
     }
 
@@ -2799,6 +2828,9 @@ def run_detector(args, log):
         image_workers=args.n_jobs)
     feat_df = acc.to_frame()
     universe_audit = sample_universe_audit(payload, samples, labels)
+    # Label-free fold groups (spatial blocks / segments) need the graph, so they
+    # are taken now, before the payload is released; None for legacy rows.
+    row_groups = fold_groups(payload, samples, prefix=train_brain)
     # Ascertainment covariates (GT/size; AUDIT-ONLY) must be captured while the
     # payload is alive; keyed by row display so the exclude-empty scope filter
     # below cannot desynchronize them from the surviving rows.
@@ -2815,20 +2847,25 @@ def run_detector(args, log):
     del payload
     gc.collect()
 
-    feat_df, samples, labels = _apply_scope(
-        feat_df, samples, labels, args.exclude_empty, log)
-    y = np.asarray(labels, dtype=np.int64)
+    feat_df, samples, labels, row_groups = _apply_scope_with_groups(
+        feat_df, samples, labels, row_groups, args.exclude_empty, log)
+    y = np.asarray(labels, dtype=float)  # 1 / 0 / NaN (GT cannot judge)
+    judged = _judged(y)
+    log("labels: %d rows, %d GT-judgeable (%d positive); %d unjudgeable rows are "
+        "scored by the fitted model only"
+        % (len(y), int(judged.sum()), int(np.sum(y == 1)), int((~judged).sum())))
     train_provenance = _input_provenance(
         args.pkl, train_identity, samples, y, universe_audit, scope)
 
     audit = undefined_audit(feat_df, y, log)
 
     X = feat_df[model_feature_names].values.astype(float)
-    log("running nested model selection (outer=%d inner=%d)"
+    log("running nested model selection (outer=%d inner=%d, %s)"
         % (policy["selection"]["outer_folds"],
-           policy["selection"]["inner_folds"]))
+           policy["selection"]["inner_folds"],
+           "purged group folds" if row_groups is not None else "stratified folds"))
     nested = run_nested_selection(
-        X, y, configured, policy, log, samples=samples)
+        X, y, configured, policy, log, samples=samples, groups=row_groups)
 
     print("\n==================== MODEL FAMILY COMPARISON ====================")
     for f, m in nested["family_metrics"].items():
@@ -2842,7 +2879,7 @@ def run_detector(args, log):
     print("  selection frequency:", nested["selection_frequency"])
 
     winner, win_params, final_est, _ = fit_final_winner(
-        X, y, configured, policy, log, samples=samples)
+        X, y, configured, policy, log, samples=samples, groups=row_groups)
     print("\nFINAL WINNER: %s   params=%s" % (winner, win_params))
     print("  (chosen by one-standard-error rule in simplicity order %s)"
           % (policy["selection"]["simplicity_order"],))
@@ -2855,7 +2892,12 @@ def run_detector(args, log):
     _report_thresholds(y, winner_oof, args.review_budget, samples=samples)
     _print_queue(samples, labels, np.where(
         np.isnan(winner_oof), -np.inf, winner_oof),
-        args.review_budget, "TOP REVIEW QUEUE (winner OOF)")
+        args.review_budget, "TOP REVIEW QUEUE (winner OOF, GT-judgeable rows)")
+    if not judged.all():
+        # Unjudgeable rows have no OOF score; the fitted model ranks every row.
+        _print_queue(samples, labels, in_sample, args.review_budget,
+                     "TOP REVIEW QUEUE (fitted model, every row; in-sample for "
+                     "judgeable rows)")
 
     try:
         ascertainment = ascertainment_audit(
@@ -2933,6 +2975,23 @@ def run_detector(args, log):
         "ascertainment_audit": ascertainment,
         "heldout": heldout_report,
     }
+    model_selection_record["label_rule"] = {
+        "definition": universe_audit.get("label_rule"),
+        "values": "1 error / 0 GT-confirmed no error / NaN not judgeable by GT",
+        "n_rows": int(len(y)), "n_judgeable": int(judged.sum()),
+        "n_unjudgeable": int((~judged).sum()), "n_positive": int(np.sum(y == 1)),
+        "fitted_rows": "judgeable only", "scored_rows": "all",
+    }
+    model_selection_record["cv_folds"] = {
+        "outer_folds": policy["selection"]["outer_folds"],
+        "inner_folds": policy["selection"]["inner_folds"],
+        "grouping": (
+            None if row_groups is None else
+            "spatial_blocks_with_fragment_purge" if DETECTOR_TARGET == "split_detection"
+            else "segment_with_fragment_purge"),
+        "block_um": fold_block_um() if row_groups is not None else None,
+        "held_rows": "every judgeable row exactly once",
+    }
     out_json = os.path.join(args.out_dir, "model_selection_%s.json" % train_brain)
     with open(out_json, "w") as fh:
         json.dump(model_selection_record, fh, indent=2, default=_json_default)
@@ -2953,11 +3012,14 @@ def run_detector(args, log):
                  "hypothesis_selection": hypothesis_selection}, out_joblib)
     log("wrote joblib: %s" % out_joblib)
 
-    # ---- figures ---- #
+    # ---- figures (GT-judgeable rows: the only rows with labels and OOF scores) ---- #
     if not args.no_figures:
         fig_dir = args.fig_dir or os.path.join(args.out_dir, "figures")
-        make_figures(fig_dir, prefix, feat_df, y, nested, winner_oof,
-                     selector_oof, winner, final_est, model_feature_names,
+        fig_nested = dict(nested)
+        fig_nested["oof"] = {f: a[judged] for f, a in nested["oof"].items()}
+        make_figures(fig_dir, prefix, feat_df.loc[judged].reset_index(drop=True),
+                     y[judged].astype(np.int64), fig_nested, winner_oof[judged],
+                     selector_oof[judged], winner, final_est, model_feature_names,
                      heldout=False, log=log, winner_params=win_params)
         log("wrote training figures to %s" % fig_dir)
 
@@ -2966,12 +3028,14 @@ def run_detector(args, log):
 
 def _report_thresholds(y, oof, budget, samples=None):
     from sklearn.metrics import average_precision_score, roc_auc_score
-    m = ~np.isnan(oof)
+    y = np.asarray(y, dtype=float)
+    m = ~np.isnan(oof) & _judged(y)
     print("\n==================== OOF THRESHOLD / WORKLOAD ====================")
+    print("  over the %d GT-judgeable rows with an OOF score" % int(m.sum()))
     if m.sum() == 0 or len(np.unique(y[m])) < 2:
         print("  insufficient OOF coverage for threshold sweep.")
         return
-    yy = y[m]
+    yy = y[m].astype(np.int64)
     ss = oof[m]
     ap = average_precision_score(yy, ss)
     auc = roc_auc_score(yy, ss)
@@ -3023,7 +3087,8 @@ def _run_heldout(args, final_est, winner, win_params, configured, policy,
 
     df_t, samples_t, labels_t = _apply_scope(
         df_t, samples_t, labels_t, args.exclude_empty, log)
-    y_t = np.asarray(labels_t, dtype=np.int64)
+    y_t = np.asarray(labels_t, dtype=float)  # 1 / 0 / NaN (GT cannot judge)
+    judged_t = _judged(y_t)
     heldout_provenance = _input_provenance(
         args.test_pkl, test_identity, samples_t, y_t, heldout_universe_audit, scope)
 
@@ -3035,21 +3100,25 @@ def _run_heldout(args, final_est, winner, win_params, configured, policy,
     # score with the fitted pipeline; TRAINING imputation constant is applied
     # (SimpleImputer inside the pipeline uses its fitted statistics — the test
     #  brain's own statistics never enter).
-    scores_t = _score_matrix(final_est, X_t)
+    scores_t = _score_matrix(final_est, X_t)  # every row; metrics on judgeable rows
 
     print("\n==================== HELD-OUT TRANSFER (%s from %s) ============"
           % (test_brain, train_brain))
-    ok = len(np.unique(y_t)) > 1
+    yj = y_t[judged_t].astype(np.int64)
+    sj = scores_t[judged_t]
+    ok = len(np.unique(yj)) > 1
     if ok:
-        ap_t = float(average_precision_score(y_t, scores_t))
-        auc_t = float(roc_auc_score(y_t, scores_t))
+        ap_t = float(average_precision_score(yj, sj))
+        auc_t = float(roc_auc_score(yj, sj))
     else:
         ap_t = auc_t = float("nan")
-    print("  held-out AP=%.4f  ROC-AUC=%.4f  (prevalence=%.4f)"
-          % (ap_t, auc_t, float(np.mean(y_t == 1))))
+    print("  held-out AP=%.4f  ROC-AUC=%.4f  (prevalence=%.4f over %d GT-judgeable "
+          "rows of %d)"
+          % (ap_t, auc_t, float(np.mean(yj == 1)) if len(yj) else float("nan"),
+             len(yj), len(y_t)))
     print("  test brain all-undefined share: %.4f" % all_undef_share)
-    order = np.argsort(-scores_t)
-    ys = y_t[order]
+    order = np.argsort(-sj)
+    ys = yj[order]
     total_pos = max(int(np.sum(ys == 1)), 1)
     for k in [args.review_budget, 100]:
         if k <= len(ys):
@@ -3066,6 +3135,7 @@ def _run_heldout(args, final_est, winner, win_params, configured, policy,
         "held_out_roc_auc": auc_t if ok else None,
         "test_all_undefined_share": all_undef_share,
         "n_test_rows": int(len(y_t)),
+        "n_test_judgeable": int(judged_t.sum()),
         "n_test_positive": int(np.sum(y_t == 1)),
         "sample_universe_audit": heldout_universe_audit,
     }
@@ -3075,9 +3145,9 @@ def _run_heldout(args, final_est, winner, win_params, configured, policy,
     if not args.no_figures:
         fig_dir = args.fig_dir or os.path.join(args.out_dir, "figures")
         ho_prefix = "%s_%s_heldout-from-%s" % (test_brain, scope, train_brain)
-        nested_ho = {"oof": {winner: scores_t}}
-        make_figures(fig_dir, ho_prefix, df_t, y_t, nested_ho, scores_t,
-                     scores_t, winner, final_est, model_feature_names,
+        nested_ho = {"oof": {winner: sj}}
+        make_figures(fig_dir, ho_prefix, df_t.loc[judged_t].reset_index(drop=True),
+                     yj, nested_ho, sj, sj, winner, final_est, model_feature_names,
                      heldout=True, log=log)
         log("wrote held-out figures (01,02,04) to %s" % fig_dir)
     return heldout_report

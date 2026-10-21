@@ -155,6 +155,9 @@ class SplitParityTests(unittest.TestCase):
                     self.assertTrue(same(samples, old_samples))
                     self.assertEqual(labels.tolist(), old_labels.tolist())
                     audit = cr.split_audit(payload, samples, labels)
+                    # n_judgeable / n_unjudgeable are new (three-valued labels, 2026-10-21)
+                    self.assertEqual(audit["n_judgeable"] + audit["n_unjudgeable"], len(samples))
+                    audit = {k: v for k, v in audit.items() if k not in ("n_judgeable", "n_unjudgeable")}
                     self.assertTrue(same(audit, {k: v for k, v in old_audit.items()
                                                  if k in audit}))
                     self.assertEqual(set(old_audit) - set(audit), {
@@ -295,3 +298,147 @@ class RuleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LabelAndFoldTests(unittest.TestCase):
+    """The detector's judgeability rule and purged folds equal the benchmark harness's."""
+
+    def _payload_with_gt_xyz(self, seed):
+        payload = random_payload(seed)
+        rng = np.random.default_rng(seed + 1000)
+        gt = payload["gt_graph"]
+        # GT nodes near the fragments (most) and a few far away, so near_gt_150 bites
+        gt.node_xyz = rng.uniform(0, 70, (gt.number_of_nodes(), 3))
+        gt.node_xyz[:5] += 1000.0
+        return payload
+
+    def test_label_availability_matches_the_harness_definitions(self):
+        from proofreader_evolve.harness import label_availability as la
+        for seed in SEEDS:
+            payload = self._payload_with_gt_xyz(seed)
+            for kind, rule in (("split", split_rule("tip_to_any_node", 80.0, 2)),
+                               ("merge", merge_rule(gap=20.0, k=2))):
+                rows, labels = cr.build_universe(kind, dict(payload), rule)
+                with self.subTest(seed=seed, kind=kind):
+                    mask, definition = cr.label_availability(kind, payload, rows)
+                    expected = la.compute(kind, rows, payload["gt_node_canonical_label"],
+                                          payload["gt_graph"].node_xyz)
+                    self.assertEqual(definition, la.DEFAULT_DEFINITION[kind])
+                    np.testing.assert_array_equal(mask, expected[definition])
+                    three, _ = cr.three_valued_labels(kind, payload, rows, labels)
+                    np.testing.assert_array_equal(three, la.three_valued(labels, mask))
+                    counts = cr.label_counts(three)
+                    self.assertEqual(counts["n_judgeable"] + counts["n_unjudgeable"], len(rows))
+                    self.assertEqual(counts["n_positive"], int(np.sum(labels == 1)))
+
+    def test_merge_without_gt_coordinates_falls_back_to_segment_on_gt(self):
+        payload = random_payload(SEEDS[0])
+        rows, labels = cr.build_universe("merge", dict(payload), merge_rule(gap=20.0, k=2))
+        mask, definition = cr.label_availability("merge", payload, rows)
+        self.assertEqual(definition, "segment_on_gt")
+        segments = cr.gt_segments(payload["gt_node_canonical_label"])
+        self.assertEqual(mask.tolist(), [int(r["segment_id"]) in segments for r in rows])
+
+    def test_positive_rows_are_always_judgeable(self):
+        payload = self._payload_with_gt_xyz(SEEDS[0])
+        rows, labels = cr.build_universe("split", dict(payload), split_rule("tip_to_any_node", 80.0, 2))
+        labels = np.asarray(labels).copy()
+        mask, _ = cr.label_availability("split", payload, rows)
+        off = np.flatnonzero(~mask)
+        if len(off):
+            labels[off[0]] = 1
+            with self.assertRaisesRegex(ValueError, "positive row"):
+                cr.three_valued_labels("split", payload, rows, labels)
+
+    def test_fold_partitions_hold_every_row_once_and_purge_shared_segments(self):
+        for seed in SEEDS:
+            payload = random_payload(seed)
+            graph = payload["fragments_graph"]
+            for kind, rule in (("split", split_rule("tip_to_any_node", 80.0, 2)),
+                               ("merge", merge_rule(gap=20.0, k=2))):
+                rows, _ = cr.build_universe(kind, dict(payload), rule)
+                groups = cr.fold_groups(kind, rows, graph.node_xyz, block_um=20.0)
+                with self.subTest(seed=seed, kind=kind):
+                    self.assertEqual(len(groups), len(rows))
+                    partitions = cr.fold_partitions(kind, rows, groups, 3)
+                    held_all = np.concatenate([held for _, held in partitions])
+                    self.assertEqual(sorted(held_all.tolist()), list(range(len(rows))))
+                    for fit, held in partitions:
+                        held_segments = {s for i in held for s in cr.row_segments(kind, rows[i])}
+                        for i in fit:
+                            self.assertTrue(held_segments.isdisjoint(cr.row_segments(kind, rows[i])))
+                        self.assertFalse(set(fit.tolist()) & set(held.tolist()))
+                    # label-free and deterministic
+                    self.assertEqual([h.tolist() for _, h in cr.fold_partitions(kind, rows, groups, 3)],
+                                     [h.tolist() for _, h in partitions])
+
+    @staticmethod
+    def _blocks_split_payload(n_blocks=6, spacing_um=600.0):
+        """One candidate pair per 500 um block, positive in even blocks, judgeable negative in
+        odd blocks: enough groups and both classes in every fit fold for the harness."""
+        graph = _Graph()
+        xyz, components, mapping = [], [], {}
+        gt = _Graph()
+        gt_labels, gt_edges, edge_error = [], [], []
+        for block in range(n_blocks):
+            a, b = 2 * block + 1, 2 * block + 2
+            base = np.array([block * spacing_um + 100.0, 100.0, 100.0])
+            for segment, offset in ((a, 0.0), (b, 10.0)):
+                first = len(xyz)
+                xyz.extend([base + [offset, 0.0, 0.0], base + [offset, 40.0, 0.0]])
+                components.extend([segment * 10, segment * 10])
+                mapping[segment * 10] = f"{segment}.0.swc"
+                graph.add_edge(first, first + 1)
+            ga, gb = len(gt_labels), len(gt_labels) + 1
+            gt_labels.extend([a, b])
+            gt.add_node(ga)
+            gt.add_node(gb)
+            if block % 2 == 0:
+                gt.add_edge(ga, gb)
+                edge_error.append(1)
+        graph.node_xyz = np.asarray(xyz, dtype=float)
+        graph.node_component_id = np.asarray(components)
+        graph.component_id_to_swc_id = mapping
+        return {"fragments_graph": graph, "gt_graph": gt,
+                "gt_node_canonical_label": np.asarray(gt_labels),
+                "gt_edge_error": np.asarray(edge_error)}
+
+    def test_fold_partitions_match_the_harness_grouped_folds(self):
+        from types import SimpleNamespace
+        from proofreader_evolve.harness import internal_validation as iv
+
+        def compare(kind, payload, rule):
+            graph = payload["fragments_graph"]
+            rows, labels = cr.build_universe(kind, dict(payload), rule)
+            self.assertTrue(rows)
+            table = SimpleNamespace(
+                candidates=rows, truth=np.asarray(labels, dtype=float),
+                features=np.zeros((len(rows), 1)),
+                meta={"provenance": {"kind": kind}, "pool_sha256": "x" * 64},
+                local_context=SimpleNamespace(store=SimpleNamespace(
+                    graph=lambda provenance: (graph, None))))
+            partitions, description = iv.grouped_folds(
+                {"1": SimpleNamespace(tables={kind: table})}, kind, selection_brains=["1"])
+            ours = cr.fold_partitions(
+                kind, rows, cr.fold_groups(kind, rows, graph.node_xyz, prefix="1"), iv.FOLDS)
+            self.assertEqual(iv.SPATIAL_BLOCK_UM, cr.FOLD_BLOCK_UM)
+            self.assertEqual(len(ours), len(partitions))
+            for (fit, held), (fit_h, held_h) in zip(ours, partitions):
+                self.assertEqual(sorted(held.tolist()), sorted(np.asarray(held_h["1"]).tolist()))
+                self.assertEqual(sorted(fit.tolist()), sorted(np.asarray(fit_h["1"]).tolist()))
+            return len(rows)
+
+        # split: a deterministic universe spanning six 500 um blocks
+        n_split = compare("split", self._blocks_split_payload(), split_rule("tip_to_any_node", 80.0, 2))
+        self.assertEqual(n_split, 6)
+        # merge: the random fixtures, wherever the harness accepts them (both classes per fit fold)
+        compared = 0
+        for seed in SEEDS:
+            try:
+                compare("merge", random_payload(seed), merge_rule(gap=20.0, k=2))
+            except ValueError as exc:
+                if "fitting classes" not in str(exc) and "independent groups" not in str(exc):
+                    raise
+                continue
+            compared += 1
+        self.assertGreater(compared, 0)

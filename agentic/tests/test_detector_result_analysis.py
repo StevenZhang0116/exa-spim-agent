@@ -117,7 +117,9 @@ class DetectorResultAnalysisTests(unittest.TestCase):
             "label_name": "is_split",
             "score_prefix": "split_probability",
             "audit": {
-                "n_rows": 4,
+                "n_rows": 5,
+                "n_judgeable": 4,
+                "n_unjudgeable": 1,
                 "n_positive": 2,
                 "n_negative": 2,
                 "all_undefined_count": 0,
@@ -142,19 +144,27 @@ class DetectorResultAnalysisTests(unittest.TestCase):
             "1,3,4,0,1,0.8\n"
             "2,5,6,1,0,0.7\n"
             "3,7,8,0,0,\n"
+            # GT cannot judge this pair (blank label): scored by the fitted model only
+            "4,9,10,,0,\n"
         )
 
         evidence = analysis.collect_evidence(result, application)
 
         self.assertEqual(evidence["detector_target"], "split_detection")
+        self.assertEqual(evidence["csv_summary"]["n_rows"], 5)
+        self.assertEqual(evidence["csv_summary"]["n_judgeable"], 4)
+        self.assertEqual(evidence["csv_summary"]["n_unjudgeable"], 1)
         self.assertEqual(evidence["csv_summary"]["n_positive"], 2)
+        self.assertEqual(evidence["csv_summary"]["n_negative"], 2)
+        self.assertEqual(evidence["csv_summary"]["prevalence"], 0.5)
         self.assertEqual(evidence["csv_summary"]["n_oof_scored"], 3)
-        self.assertEqual(evidence["csv_summary"]["n_oof_unscored"], 1)
+        self.assertEqual(evidence["csv_summary"]["n_oof_unscored"], 2)
         self.assertEqual(evidence["csv_summary"]["oof_coverage"], 0.75)
         self.assertEqual(
             evidence["csv_summary"]["review_workload"][0]["recall_scope"],
-            "oof_scored_rows",
+            "oof_scored_judgeable_rows",
         )
+        self.assertEqual(evidence["csv_summary"]["n_judgeable_unscored"], 1)
         self.assertEqual(
             evidence["csv_summary"]["review_workload"][0]["merge_creating_joins"],
             1,

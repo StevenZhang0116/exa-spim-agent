@@ -60,7 +60,7 @@ CANDIDATE_MAX_DISTANCE_UM = {float(rule["radius_um"])!r}
 CANDIDATE_PER_ANCHOR_K = {rule["per_anchor_k"]!r}
 CANDIDATE_GLOBAL_CAP = {rule["global_cap"]!r}
 '''
-        return common + shared + constants + _RULES_LOADER + _SPLIT_ADAPTER
+        return common + shared + constants + _RULES_LOADER + _FOLD_GROUPS + _SPLIT_ADAPTER
     constants = f'''CANDIDATE_RULE_KIND = "merge"
 CANDIDATE_MODE = {rule["mode"]!r}
 CANDIDATE_NMS_UM = {float(rule["nms_um"])!r}
@@ -70,7 +70,7 @@ CANDIDATE_CLAIM_RADIUS_UM = {float(rule["claim_radius_um"])!r}
 CANDIDATE_POSITIVE_LABEL_RADIUS_UM = {float(rule["positive_label_radius_um"])!r}
 CANDIDATE_SITE_SNAP_MAX_UM = 50.0
 '''
-    return common + shared + constants + _RULES_LOADER + _MERGE_SITE_ADAPTER
+    return common + shared + constants + _RULES_LOADER + _FOLD_GROUPS + _MERGE_SITE_ADAPTER
 
 
 _MERGE_ADAPTER = r'''
@@ -90,6 +90,19 @@ def build_sample_universe(payload):
 # Compatibility for already-audited merge feature fragments while new
 # generation instructions use the target-neutral name.
 build_segment_universe = build_sample_universe
+
+
+def fold_groups(payload, samples, prefix=None):
+    """Legacy segment rows have no grouping rule; the runtime uses stratified folds."""
+    return None
+
+
+def fold_partitions(samples, groups, n_folds):
+    raise RuntimeError("legacy segment rows have no group folds")
+
+
+def fold_block_um():
+    return None
 
 
 def sample_output_frame(samples, labels):
@@ -172,6 +185,30 @@ def _candidate_rules():
 '''
 
 
+_FOLD_GROUPS = r'''
+def fold_groups(payload, samples, prefix=None):
+    """Label-free cross-fold group per row (candidate_rules.fold_groups).
+
+    Split rows group by the 500 um spatial block of their anchor midpoint, merge-site
+    rows by segment; fold_partitions holds every group out once and purges the fit side
+    of every segment a held row touches, so each judgeable row gets one OOF score.
+    With ``prefix`` = the brain id the keys (and so the folds) are the companions' own.
+    """
+    return _candidate_rules().fold_groups(
+        CANDIDATE_RULE_KIND, samples, payload["fragments_graph"].node_xyz, prefix=prefix)
+
+
+def fold_partitions(samples, groups, n_folds):
+    """``[(fit, held), ...]`` from candidate_rules.fold_partitions for this target's kind."""
+    return _candidate_rules().fold_partitions(CANDIDATE_RULE_KIND, samples, groups, n_folds)
+
+
+def fold_block_um():
+    """Spatial block size of the split fold groups (None for merge-site rows)."""
+    return _candidate_rules().FOLD_BLOCK_UM if CANDIDATE_RULE_KIND == "split" else None
+'''
+
+
 _SPLIT_ADAPTER = r'''
 def _gt_neuron_membership(gt):
     """Stable GT-neuron key (connected-component index)."""
@@ -223,7 +260,13 @@ def build_sample_universe(payload):
     cached = payload.get("__detector_sample_universe_cache__")
     if cached is not None:
         return cached
-    result = _candidate_rules().build_split_universe(payload, CANDIDATE_RULE)
+    rules = _candidate_rules()
+    samples, binary = rules.build_split_universe(payload, CANDIDATE_RULE)
+    # Three-valued labels: 0 only where GT can judge the pair (both segments carry
+    # a GT node label), NaN otherwise. The model fits and is scored on judgeable
+    # rows; every row is still scored by the fitted model.
+    labels, _definition = rules.three_valued_labels("split", payload, samples, binary)
+    result = (samples, labels)
     payload["__detector_sample_universe_cache__"] = result
     return result
 
@@ -243,7 +286,7 @@ def sample_output_frame(samples, labels):
         "node_id_a", "node_id_b", "gap_um", "anchor_side", "partner_rank",
         "node_role_a", "node_role_b",
         "is_merge_creating", "contains_known_merge_segment"])
-    frame[LABEL_NAME] = np.asarray(labels, dtype=np.int64)
+    frame[LABEL_NAME] = np.asarray(labels, dtype=float)  # 1 / 0 / NaN (not judgeable)
     return frame
 
 
@@ -264,6 +307,7 @@ def sample_universe_audit(payload, samples, labels):
         "candidate_max_distance_um": CANDIDATE_MAX_DISTANCE_UM,
         "candidate_per_anchor_k": CANDIDATE_PER_ANCHOR_K,
         "candidate_global_cap": CANDIDATE_GLOBAL_CAP,
+        "label_rule": _candidate_rules().label_availability("split", payload, samples)[1],
         **_candidate_rules().split_audit(payload, samples, labels),
     }
 
@@ -337,8 +381,14 @@ def build_sample_universe(payload):
     cached = payload.get("__detector_sample_universe_cache__")
     if cached is not None:
         return cached
-    samples, labels, audit = _candidate_rules().build_merge_universe(payload, CANDIDATE_RULE)
+    rules = _candidate_rules()
+    samples, binary, audit = rules.build_merge_universe(payload, CANDIDATE_RULE)
     payload["__detector_universe_site_audit__"] = audit
+    # Three-valued labels: 0 only where GT can judge the candidate (its segment
+    # carries a GT node label and it lies within NEAR_GT_UM of a GT node), NaN
+    # otherwise. The model fits and is scored on judgeable rows; every row is
+    # still scored by the fitted model.
+    labels, _definition = rules.three_valued_labels("merge", payload, samples, binary)
     result = (samples, labels)
     payload["__detector_sample_universe_cache__"] = result
     return result
@@ -356,7 +406,7 @@ def sample_output_frame(samples, labels):
         columns=columns,
     )
     frame["tip_gap_um"] = pd.to_numeric(frame["tip_gap_um"], errors="coerce")
-    frame[LABEL_NAME] = np.asarray(labels, dtype=np.int64)
+    frame[LABEL_NAME] = np.asarray(labels, dtype=float)  # 1 / 0 / NaN (not judgeable)
     return frame
 
 
@@ -380,7 +430,10 @@ def sample_universe_audit(payload, samples, labels):
         "candidate_claim_radius_um": CANDIDATE_CLAIM_RADIUS_UM,
         "candidate_positive_label_radius_um": CANDIDATE_POSITIVE_LABEL_RADIUS_UM,
         "candidate_site_snap_max_um": CANDIDATE_SITE_SNAP_MAX_UM,
+        "label_rule": _candidate_rules().label_availability("merge", payload, samples)[1],
         **_candidate_rules().merge_audit(audit, samples, labels, CANDIDATE_RULE),
+        **{key: value for key, value in _candidate_rules().label_counts(labels).items()
+           if key in ("n_judgeable", "n_unjudgeable")},
     }
 
 

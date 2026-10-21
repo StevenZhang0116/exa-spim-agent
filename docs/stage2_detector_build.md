@@ -4,9 +4,9 @@
 
 A detector is one script that enumerates GT-blind candidates over a fragment
 graph, computes the inventoried features in shared passes, selects a model under
-nested cross-validation and scores every candidate. The build workflow writes
-that script from a finished report; it never loads a dataset. Fitting happens
-afterwards on a compute node.
+nested CV on the GT-judgeable candidates and scores every candidate. The build
+workflow writes that script from a finished report; it never loads a dataset.
+Fitting happens afterwards on a compute node.
 
 ## 2.1 Candidate rules, sweeps and the frozen candidate policy
 
@@ -59,7 +59,11 @@ Deliverables land in `autodiscovery-application/<RUN>/`. Rebuilding into an
 existing folder asks for confirmation because it would leave a new script beside
 an old run's outputs; `--yes` skips the prompt in batch jobs and `--keep-existing`
 reuses validated artifacts. `--merge-row-unit segment` restores the older
-segment-level merge detector instead of junction sites. Feature contracts are
+segment-level merge detector instead of junction sites. `--keep-overturned ID ...
+--keep-overturned-reason TEXT` lets the inventory include OVERTURNED hypotheses
+whose report entries predate the `Feature effect` bullet (reports since
+2026-10-21 carry it, and the build then excludes only `ARTIFACT`); the ids and
+reason are recorded in the README's provenance block. Feature contracts are
 documented in [`docs/merge_site_feature_scope.md`](merge_site_feature_scope.md),
 [`docs/split_feature_scope.md`](split_feature_scope.md) and
 [`docs/detector_cost_validation.md`](detector_cost_validation.md).
@@ -80,11 +84,30 @@ sbatch --mem=80G --wrap="\
 The runbook first profiles feature cost on a small sample (`--measuretime`;
 `agentic/run_feature_cost_analysis.py` adds the complementary code-structure
 view), then runs the chosen hypotheses on the full brain with average precision
-as the model-selection objective. A completed run writes out-of-fold candidate
-scores (`*_detector_<brain>.csv`), the model-selection manifest
-(`model_selection_<brain>.json`, which records the training brain and feature
-order that Stage 3 relies on), the fitted winner (`*_<brain>.joblib`), a log and
-figures. `agentic/run_detector_result_analysis.py` then produces a grounded
+as the model-selection objective. Labels are three-valued, as everywhere else in
+the repository since 2026-10-09: 1 (error), 0 (GT-confirmed no error) and NaN
+(GT cannot judge the row: a split pair whose segments do not both carry a GT node
+label, a merge candidate whose segment carries none or that lies beyond the claim
+radius of a GT node; `candidate_rules.label_availability`, the same rule as the
+Stage 3 availability sidecars). The model is fitted, selected and evaluated on the
+judgeable rows only and scores every row. Folds are the benchmark's own internal
+folds (`candidate_rules.fold_groups` / `fold_partitions`): split rows group by the
+500 um block of their anchor midpoint, merge-site rows by segment; every judgeable
+row is held out exactly once and the fit side of each fold is purged of every
+segment a held row touches. With the brain id as the group prefix the held sets
+are the companions' `fold` sets, so the detector's out-of-fold AP is measured on
+the rows the baseline card and the discovery scripts used. (Before 2026-10-21 the
+runtime assigned segments to folds at random and dropped every pair whose
+segments landed in different folds, which left 80% of split rows without an
+out-of-fold score, and it trained on all rows with 0 for every unjudgeable pair.)
+A completed run writes the candidate scores (`*_detector_<brain>.csv`; the
+out-of-fold columns are NaN on unjudgeable rows, the fitted model's score covers
+all rows), the model-selection manifest (`model_selection_<brain>.json`, which
+records the training brain, feature order, label rule and fold rule that Stage 3
+relies on), the fitted winner (`*_<brain>.joblib`), a log and figures. Stage 3
+takes the run directory itself (`--merge-dir` / `--split-dir`), finding the
+script in the deliverable directory above it and checking the run's recorded
+detector SHA-256 against it. `agentic/run_detector_result_analysis.py` then produces a grounded
 bilingual `RESULT_ANALYSIS.md` from the saved numbers. The GT-site tools in
 [the GT merge-site tools](gt_merge_site_tools.md) compare a detector's
 positives with the cached GT sites.

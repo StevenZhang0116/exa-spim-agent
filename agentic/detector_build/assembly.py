@@ -55,7 +55,7 @@ RUNTIME_OWNED_SYMBOLS = frozenset({
     "CANDIDATE_TIP_GAP_UM", "CANDIDATE_TIP_PARTNER_K", "CANDIDATE_RULE",
     "CANDIDATE_RULE_KIND", "CANDIDATE_RULES_SHA256", "CANDIDATE_RULES_FILENAME",
     "_CANDIDATE_RULES_MODULE", "_candidate_rules",
-    "build_sample_universe",
+    "build_sample_universe", "fold_groups", "fold_partitions", "fold_block_um",
     "compatible_occurrences",
     "sample_output_frame", "sample_display", "sample_universe_audit",
     "ascertainment_covariates",

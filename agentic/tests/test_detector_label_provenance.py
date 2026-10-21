@@ -25,7 +25,8 @@ def runtime():
     from agentic.tests.candidate_rule_fixtures import RULES_PATH
     namespace.update(os=os, json=json, hashlib=hashlib, __file__=str(RULES_PATH))
     names = {"_cache_file_identity", "_input_provenance", "run_detector", "_run_heldout",
-             "_apply_scope", "_drop_all_undefined", "_json_default"}
+             "_apply_scope", "_apply_scope_with_groups", "_drop_all_undefined", "_judged",
+             "_json_default"}
     tree = ast.parse(TEMPLATE.read_text())
     functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
     exec(compile(ast.Module(body=functions, type_ignores=[]), str(TEMPLATE), "exec"), namespace)
@@ -48,6 +49,27 @@ class DetectorLabelProvenanceTests(unittest.TestCase):
             self.assertEqual(evidence["n_rows"], 1)
             self.assertEqual(evidence["n_positive"], 0)
             self.assertEqual(evidence["sample_universe_audit"]["n_rows"], 2)
+
+    def test_digest_records_unjudgeable_rows_as_minus_one(self):
+        namespace = runtime()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cache.pkl"
+            path.write_bytes(b"cache")
+            identity = namespace["_cache_file_identity"](path)
+            samples = [{"node_id": i, "segment_id": 111, "degree": 3} for i in (1, 2, 3)]
+            three_valued = namespace["_input_provenance"](
+                path, identity, samples, np.array([1., np.nan, 0.]), {}, "full")
+            as_minus_one = namespace["_input_provenance"](
+                path, identity, samples, np.array([1, -1, 0]), {}, "full")
+            binary = namespace["_input_provenance"](
+                path, identity, samples, np.array([1, 0, 0]), {}, "full")
+            self.assertEqual(three_valued["ordered_row_labels_sha256"],
+                             as_minus_one["ordered_row_labels_sha256"])
+            self.assertNotEqual(three_valued["ordered_row_labels_sha256"],
+                                binary["ordered_row_labels_sha256"])
+            self.assertEqual(three_valued["n_positive"], 1)
+            self.assertEqual(three_valued["n_judgeable"], 2)
+            self.assertIn("three_valued_label", three_valued["row_digest_fields"][1])
 
     def test_hash_records_actual_ordered_labels_and_detects_replacement(self):
         namespace = runtime()

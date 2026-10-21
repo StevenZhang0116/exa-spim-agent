@@ -46,7 +46,7 @@ orchestrator gives you exactly one result directory, one driver-generated
 
 The skeleton already contains the exact required section headings in both
 languages, each followed by a placeholder. Fill EVERY placeholder in place; do
-NOT renumber, retitle, add, or remove any heading — validation compares heading
+NOT renumber, retitle, add, or remove any heading — the driver's check compares heading
 text verbatim. The numbered list below describes what each pre-written section
 must contain:
 
@@ -55,10 +55,13 @@ must contain:
    can differ from the highest-AP family under the one-standard-error rule. Use
    selector metrics/fold frequency to discuss stability when available.
 3. **Manual-review workload** — interpret deterministic precision@k/recall@k counts.
-   Scores are rankings, not calibrated probabilities. State OOF score coverage;
-   when some split candidate pairs are deliberately unscored by segment-disjoint
-   CV, recall@k is conditional on the OOF-scored subset and is not recall over
-   the complete candidate universe.
+   Scores are rankings, not calibrated probabilities. Labels are three-valued
+   (1 / 0 / NaN = GT cannot judge the row): state how many rows are judgeable,
+   that out-of-fold scores exist for judgeable rows only (every judgeable row is
+   held out once by the purged group folds) and that unjudgeable rows carry the
+   fitted model's score alone, so precision@k / recall@k are over the OOF-scored
+   judgeable rows and not over the complete candidate universe. Report any
+   judgeable rows left without an OOF score.
 4. **Figure-by-figure interpretation** — mention every listed PNG by basename exactly once or more.
    Distinguish what is visibly shown from your inference.
 5. **Missingness and confounding** — quantify all-undefined rows and positive labels. Explain why a
@@ -76,7 +79,7 @@ must contain:
    not comparable across model families; an EBM shape is an additive model-score
    contribution, not a causal response. Figure 06 describes the final model fit
    on all training rows; it is not held-out performance evidence. Figure 07 is
-   the common AP-scored validation permutation check. Negative permutation
+   the common AP-scored held-out permutation check. Negative permutation
    importance means instability, redundancy, or noise, not a reliable inverse mechanism.
 7. **Limitations and next steps** — held-out status, skipped candidates, convergence warnings,
    `--exclude-empty` sensitivity, and cross-brain transfer as applicable.

@@ -35,6 +35,16 @@ positive_label_radius_um}``:
 Positive: a GT merge site, snapped to the nearest node of its own segment within 50 um,
 lies within ``positive_label_radius_um`` of fragment cable; cable distances are searched to
 ``claim_radius_um``, which is also the radius site coverage is reported at.
+
+``build_universe`` returns binary labels (the benchmark tables store them so and attach the
+three-valued rule through their availability sidecars). ``label_availability`` is that rule,
+written once here for the detectors: GT can judge a split row when both segments carry a GT
+node label, and a merge row when its segment does and the candidate lies within
+``NEAR_GT_UM`` of a GT node; ``three_valued_labels`` applies it (0 -> NaN where GT cannot
+judge). ``fold_groups`` / ``fold_partitions`` are the label-free cross-fold rule the
+benchmark's internal folds use (split: 500 um spatial blocks of the anchor midpoint;
+merge: the segment), with the fit side purged of every segment a held row touches, so each
+row is held out exactly once.
 """
 from __future__ import annotations
 
@@ -47,8 +57,14 @@ import math
 
 import numpy as np
 
-RULES_VERSION = 1
+RULES_VERSION = 2
 KINDS = ("merge", "split")
+# Judgeability (the three-valued label's 0-versus-NaN rule) and the fold grouping, the
+# same constants as proofreader_evolve/harness (label_availability.NEAR_GT_UM and the
+# internal folds' SPATIAL_BLOCK_UM).
+NEAR_GT_UM = 150.0
+FOLD_BLOCK_UM = 500.0
+AVAILABILITY_DEFINITIONS = {"split": "segment_on_gt", "merge": "near_gt_150"}
 SPLIT_MODES = ("tip_to_tip", "tip_to_any_node", "any_node_to_any_node")
 MERGE_MODES = ("junction", "junction+tip_to_shaft")
 JUNCTION, TIP_TO_SHAFT = "junction", "tip_to_shaft"
@@ -381,6 +397,8 @@ def split_audit(payload, samples, labels) -> dict:
         "n_rows": int(len(samples)),
         "n_positive": int(np.sum(labels == 1)),
         "n_negative": int(np.sum(labels == 0)),
+        **{key: value for key, value in label_counts(labels).items()
+           if key in ("n_judgeable", "n_unjudgeable")},
         "n_truth_records": int(len(truth)),
         "n_truth_pairs": int(len(truth_pairs)),
         "n_reachable_truth_pairs": int(len(reachable)),
@@ -660,3 +678,132 @@ def build_universe(kind, payload, rule):
     if kind == "split":
         return build_split_universe(payload, rule)
     raise ValueError(f"Unknown candidate kind {kind!r}")
+
+
+# ----------------------------------------------------------------------------- labels
+def gt_segments(gt_node_label) -> set:
+    """Segments that carry at least one GT node label."""
+    labels = np.asarray(gt_node_label)
+    return {int(x) for x in np.unique(labels) if int(x) != 0}
+
+
+def label_availability(kind, payload, rows):
+    """``(mask, definition)``: whether GT can judge each row, and the rule that decided.
+
+    split ``segment_on_gt``: both segments carry a GT node label. merge ``near_gt_150``: the
+    segment carries a GT node label and the candidate lies within ``NEAR_GT_UM`` of a GT
+    node (``payload["gt_graph"].node_xyz``); without GT coordinates the merge rule falls
+    back to ``segment_on_gt`` and says so. A positive row is always judgeable.
+    """
+    if kind not in KINDS:
+        raise ValueError(f"Unknown candidate kind {kind!r}")
+    segments = gt_segments(payload["gt_node_canonical_label"])
+    if kind == "split":
+        mask = np.fromiter((int(r["segment_id_a"]) in segments and int(r["segment_id_b"]) in segments
+                            for r in rows), dtype=bool, count=len(rows))
+        return mask, "segment_on_gt"
+    on_gt = np.fromiter((int(r["segment_id"]) in segments for r in rows), dtype=bool, count=len(rows))
+    gt = payload.get("gt_graph")
+    gt_xyz = getattr(gt, "node_xyz", None) if gt is not None else None
+    if gt_xyz is None or len(gt_xyz) == 0 or not len(rows):
+        return on_gt, "segment_on_gt"
+    from scipy.spatial import cKDTree
+    xyz = np.array([[r["x_um"], r["y_um"], r["z_um"]] for r in rows], dtype=float).reshape(-1, 3)
+    distance, _ = cKDTree(np.asarray(gt_xyz, dtype=float)).query(xyz)
+    return on_gt & (np.asarray(distance) <= NEAR_GT_UM), "near_gt_150"
+
+
+def three_valued_labels(kind, payload, rows, labels):
+    """``(labels, definition)``: 1 error, 0 GT-confirmed no error, NaN not judgeable."""
+    mask, definition = label_availability(kind, payload, rows)
+    labels = np.asarray(labels, dtype=float)
+    if labels.shape != mask.shape:
+        raise ValueError("labels and rows are not aligned")
+    if np.any((labels == 1) & ~mask):
+        raise ValueError("a positive row is marked unavailable; the inputs contradict each other")
+    out = labels.copy()
+    out[~mask] = np.nan
+    return out, definition
+
+
+def label_counts(labels) -> dict:
+    labels = np.asarray(labels, dtype=float)
+    nan = int(np.isnan(labels).sum())
+    ones = int(np.sum(labels == 1))
+    return {"n_positive": ones, "n_negative": int(len(labels) - nan - ones),
+            "n_judgeable": int(len(labels) - nan), "n_unjudgeable": nan}
+
+
+# ----------------------------------------------------------------------------- folds
+def row_segments(kind, row) -> tuple:
+    if kind == "merge":
+        return (int(row["segment_id"]),)
+    return (int(row["segment_id_a"]), int(row["segment_id_b"]))
+
+
+def fold_groups(kind, rows, node_xyz=None, block_um=FOLD_BLOCK_UM, prefix=None) -> list:
+    """Label-free group key per row: the fragment segment (merge) or the ``block_um`` spatial
+    block of the midpoint of the row's two anchors (split, ``node_xyz`` of the fragment graph).
+
+    The keys are the benchmark harness's (``<brain>/fragment/<segment>`` and
+    ``<brain>/block/<x>/<y>/<z>``) when ``prefix`` is the brain id, so the SHA-256 tie-break
+    in ``fold_partitions`` orders groups exactly as the companions' folds do and a detector
+    trained on that brain holds out the companion's own held rows.
+    """
+    head = "" if prefix in (None, "") else f"{prefix}/"
+    if kind == "merge":
+        return [f"{head}fragment/{int(r['segment_id'])}" for r in rows]
+    if kind != "split":
+        raise ValueError(f"Unknown candidate kind {kind!r}")
+    if not len(rows):
+        return []
+    if node_xyz is None:
+        raise ValueError("split fold groups need the fragment graph's node_xyz")
+    xyz = np.asarray(node_xyz, dtype=float)
+    a = np.fromiter((int(r["node_id_a"]) for r in rows), dtype=np.int64, count=len(rows))
+    b = np.fromiter((int(r["node_id_b"]) for r in rows), dtype=np.int64, count=len(rows))
+    if (a < 0).any() or (b < 0).any() or (a >= len(xyz)).any() or (b >= len(xyz)).any():
+        raise ValueError("split anchors fall outside node_xyz")
+    centers = (xyz[a] + xyz[b]) / 2.0
+    if not np.isfinite(centers).all():
+        raise ValueError("non-finite anchor coordinates")
+    blocks = np.floor(centers / float(block_um)).astype(np.int64)
+    return [f"{head}block/{x}/{y}/{z}" for x, y, z in blocks]
+
+
+def fold_partitions(kind, rows, groups, n_folds):
+    """``[(fit, held), ...]`` row-index arrays, one pair per fold.
+
+    Groups are assigned to folds largest first (SHA-256 of the key breaks ties), each to the
+    least loaded fold, without reading labels. The held set of a fold is every row of its
+    groups, so the held sets partition the rows; the fit set is every other row that shares
+    no segment with a held row (the purge). The same rule as the benchmark's internal folds.
+    """
+    rows = list(rows)
+    groups = [str(g) for g in groups]
+    if len(groups) != len(rows):
+        raise ValueError("groups and rows are not aligned")
+    n_folds = int(n_folds)
+    if n_folds < 2:
+        raise ValueError("at least two folds are needed")
+    counts = defaultdict(int)
+    for group in groups:
+        counts[group] += 1
+    if len(counts) < n_folds:
+        raise ValueError(f"{n_folds} folds need at least {n_folds} groups; {len(counts)} found")
+    loads, assignment = [0] * n_folds, {}
+    for group in sorted(counts, key=lambda g: (-counts[g], hashlib.sha256(g.encode()).hexdigest())):
+        fold = min(range(n_folds), key=lambda f: (loads[f], f))
+        assignment[group] = fold
+        loads[fold] += counts[group]
+    fold_of_row = np.fromiter((assignment[g] for g in groups), dtype=np.int64, count=len(rows))
+    segments = [row_segments(kind, row) for row in rows]
+    partitions = []
+    for fold in range(n_folds):
+        held = np.flatnonzero(fold_of_row == fold)
+        held_segments = {segment for index in held for segment in segments[index]}
+        fit = np.asarray([index for index in np.flatnonzero(fold_of_row != fold)
+                          if not any(segment in held_segments for segment in segments[index])],
+                         dtype=np.int64)
+        partitions.append((fit, held))
+    return partitions

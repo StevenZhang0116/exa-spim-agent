@@ -5,7 +5,7 @@
     "max_grid_combinations": 16,
     "primary_metric": "average_precision",
     "selection_rule": "one_standard_error",
-    "outer_folds": 5,
+    "outer_folds": 3,
     "inner_folds": 3,
     "random_seed": 42,
     "review_budget": 100,

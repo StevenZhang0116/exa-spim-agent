@@ -398,8 +398,10 @@ class MergeSiteAdapterTests(unittest.TestCase):
         self.assertEqual((shaft["candidate_family"], shaft["segment_id"], shaft["degree"]),
                          ("tip_to_shaft", 444, 2))
         self.assertAlmostEqual(shaft["tip_gap_um"], 6.0)
-        self.assertEqual(labels.tolist(), [1, 0, 0])
+        # segment 444 carries no GT node label, so GT cannot judge its candidate: NaN
+        np.testing.assert_array_equal(labels, [1.0, 0.0, np.nan])
         audit = namespace["sample_universe_audit"](payload, samples, labels)
+        self.assertEqual((audit["n_judgeable"], audit["n_unjudgeable"]), (2, 1))
         self.assertEqual(audit["candidate_tip_gap_um"], 10.0)
         self.assertEqual(audit["candidate_tip_partner_k"], 2)
         self.assertEqual((audit["n_junction_candidates"], audit["n_tip_to_shaft_candidates"]), (2, 1))

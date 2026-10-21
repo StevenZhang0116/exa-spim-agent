@@ -188,3 +188,68 @@ class DetectorTargetRuntimeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ThreeValuedLabelTests(unittest.TestCase):
+    """Adapters return 1 / 0 / NaN labels and name the judgeability rule in the audit."""
+
+    def test_split_pair_off_gt_is_unjudgeable(self) -> None:
+        frag = _Graph()
+        frag.add_edges_from([(0, 1), (2, 3), (4, 5)])
+        frag.node_xyz = np.asarray([
+            [-100.0, 0.0, 0.0], [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0], [1000.0, 0.0, 0.0],
+            [0.0, 3.0, 0.0], [0.0, 1000.0, 0.0],
+        ])
+        frag.node_component_id = np.asarray([10, 10, 20, 20, 30, 30])
+        frag.component_id_to_swc_id = {10: "10.0.swc", 20: "20.0.swc", 30: "30.0.swc"}
+        gt = _Graph()
+        gt.add_edge(0, 1)
+        gt.node_xyz = np.zeros((2, 3))
+        payload = {
+            "fragments_graph": frag, "gt_graph": gt,
+            # segment 30 carries no GT node label: pairs with it cannot be judged
+            "gt_node_canonical_label": np.asarray([10, 20]),
+            "gt_edge_error": np.asarray([1]),
+        }
+        namespace = _adapter_namespace(DetectorTarget.SPLIT)
+        samples, labels = namespace["build_sample_universe"](payload)
+        by_pair = {(s["segment_id_a"], s["segment_id_b"]): label for s, label in zip(samples, labels)}
+        self.assertEqual(set(by_pair), {(10, 20), (10, 30), (20, 30)})
+        self.assertEqual(by_pair[(10, 20)], 1.0)
+        self.assertTrue(np.isnan(by_pair[(10, 30)]))
+        self.assertTrue(np.isnan(by_pair[(20, 30)]))
+        audit = namespace["sample_universe_audit"](payload, samples, labels)
+        self.assertEqual(audit["label_rule"], "segment_on_gt")
+        self.assertEqual((audit["n_judgeable"], audit["n_unjudgeable"]), (1, 2))
+        frame = namespace["sample_output_frame"](samples, labels)
+        self.assertTrue(frame["is_split"].isna().any())
+        groups = namespace["fold_groups"](payload, samples)
+        self.assertEqual(len(groups), len(samples))
+        self.assertTrue(all(g.startswith("block/") for g in groups))
+        self.assertTrue(all(g.startswith("794495/block/") for g in
+                            namespace["fold_groups"](payload, samples, prefix="794495")))
+
+    def test_merge_site_candidate_far_from_gt_is_unjudgeable(self) -> None:
+        from agentic.tests.test_merge_site_target import _merge_site_payload, _adapter_namespace as merge_namespace
+        payload = _merge_site_payload()
+        gt = _Graph()
+        gt.add_edge(0, 1)
+        # GT nodes near segment 111's junction only; segment 222 (x = 100..110) is > 150 um away
+        gt.node_xyz = np.asarray([[10.0, 0.0, 0.0], [-300.0, 0.0, 0.0]])
+        payload["gt_graph"] = gt
+        namespace = merge_namespace()
+        samples, labels = namespace["build_sample_universe"](payload)
+        by_segment = {s["segment_id"]: label for s, label in zip(samples, labels)}
+        self.assertEqual(by_segment[111], 1.0)
+        self.assertEqual(by_segment[222], 0.0)  # 100 um from the GT node at x=10: judgeable
+        payload.pop("__detector_sample_universe_cache__")
+        gt.node_xyz = np.asarray([[10.0, 0.0, 0.0], [-300.0, 0.0, 0.0]]) - [300.0, 0.0, 0.0]
+        payload["gt_merge_sites"] = [s for s in payload["gt_merge_sites"] if s["segment_id"] != 111]
+        samples, labels = namespace["build_sample_universe"](payload)
+        audit = namespace["sample_universe_audit"](payload, samples, labels)
+        self.assertEqual(audit["label_rule"], "near_gt_150")
+        self.assertTrue(np.isnan(dict(zip((s["segment_id"] for s in samples), labels))[222]))
+        self.assertEqual(audit["n_unjudgeable"], int(np.isnan(labels).sum()))
+        self.assertEqual(namespace["fold_groups"](payload, samples),
+                         [f"fragment/{s['segment_id']}" for s in samples])
