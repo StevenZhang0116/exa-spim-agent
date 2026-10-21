@@ -143,7 +143,8 @@ counts, CIs, scores, belief probabilities) verbatim from the helper output, and
 keep verbatim every identifier, run/dataset id, metric/test name, and verdict
 token (`REPRODUCED`, `DIVERGED`, `GENERALIZES`, `DOES-NOT-GENERALIZE`,
 `PARTIAL`, `OK`, `MINOR`, `MAJOR`, `CRITICAL`, `UPHELD`, `WEAKENED`,
-`OVERTURNED`, `Positive`, `Negative`, `Neutral`).
+`OVERTURNED`, `GAIN`, `NULL`, `LOSS`, `ARTIFACT`, `Positive`, `Negative`,
+`Neutral`).
 
 After writing the file, reply with the report path and a 3–5 bullet executive
 summary: how many distinct findings remain after consolidation, the most

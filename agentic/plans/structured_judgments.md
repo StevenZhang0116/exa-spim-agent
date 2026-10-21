@@ -55,7 +55,11 @@ new-merge-1 run of 2026-10-19 three of its judgments depended on agents reading 
 - Each fold step's instruction carries `verdicts_rule(phase, file, ...)`: the agent also
   writes `<RUN>.<phase>-verdicts.json` with `{"phase", "entries": {id: {...}}}`.
   Verify entries carry `verdict`, `test_fault`, `deployability` and a `headline`
-  (p, delta_ap, ci95, baseline); fix_tests entries allow a null verdict.
+  (p, delta_ap, ci95, baseline); fix_tests entries allow a null verdict. Since
+  2026-10-21 fix_tests entries also carry `feature_effect` (GAIN | NULL | LOSS |
+  ARTIFACT) and `effect_delta_ap`, checked against a `Feature effect` bullet; the
+  detector build gates OVERTURNED hypotheses on it
+  (`agentic/plans/detector_build_revision.md`).
 - `_check_phase_verdicts`: file present, phase matches, tokens in `VERDICT_VOCAB`, exactly
   the ids the phase's results JSON measured (`corrected_only` for fix-tests), agreement with
   the report's bullet for every token the report carries, and the bullet's presence.

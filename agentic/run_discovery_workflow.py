@@ -69,7 +69,7 @@ A full (non-smoke) run also tees its entire console output to
 ``<RUN>.json[.predictive].workflow.log.txt`` beside the export (override with
 ``--log-txt``, ``/dev/null`` to skip): the dataset guards, step progress, every
 subagent tool call, each step's final reply, the compute subprocesses' live
-``[rerun k/N]`` output, validation WARNINGs, and any fatal diagnostic. It is
+``[rerun k/N]`` output, the driver's WARNING lines, and any fatal diagnostic. It is
 flushed as it goes and closed with an ``# OK/FAILED after Ns`` footer, so a log
 with no footer means the process was killed rather than finished.
 
@@ -202,7 +202,7 @@ def driver_log(log_txt: Path, append: bool = False):
     Mirrors ``run_detector_build_workflow.py``: the workflow runs for hours over
     several agent turns and several long compute subprocesses, and until now none
     of that output was persisted anywhere — a run that died mid-step left no
-    record of which step it was on, which validation WARNINGs had fired, or what
+    record of which step it was on, which WARNING lines had fired, or what
     the compute child printed before it failed. Everything written through
     ``sys.stdout`` / ``sys.stderr`` inside the block is tee'd here as it goes.
 
@@ -393,7 +393,14 @@ VERDICT_VOCAB: dict[str, frozenset[str]] = {
     "verify": frozenset({"SOUND", "WEAK", "MINOR", "MAJOR", "CRITICAL"}),
     "deployability": frozenset({"BLIND-COMPUTABLE", "GT-REFERENCING"}),
     "fix_tests": frozenset({"UPHELD", "WEAKENED", "OVERTURNED"}),
+    # What the corrected test says about the FEATURE itself (a field of the
+    # fix_tests entries), independent of the record's claim direction: the
+    # detector build keeps an OVERTURNED record's feature unless this says ARTIFACT.
+    "feature_effect": frozenset({"GAIN", "NULL", "LOSS", "ARTIFACT"}),
 }
+# The phases that write a verdicts file (deployability and feature_effect are
+# fields of the verify and fix_tests entries, not phases).
+VERDICT_PHASES: tuple[str, ...] = ("reproduce", "generalize", "verify", "fix_tests")
 # The report bullet each phase's token also appears in (the cross-check).
 VERDICT_BULLETS: dict[str, str] = {
     "reproduce": "Reproduction",
@@ -401,6 +408,7 @@ VERDICT_BULLETS: dict[str, str] = {
     "verify": "Verdict",
     "deployability": "Deployability",
     "fix_tests": "Post-correction verdict",
+    "feature_effect": "Feature effect",
 }
 # Baseline cards of the companions (pkl rel -> canonical_stats.baseline_card),
 # computed once at startup and printed into the verify / fix-tests
@@ -566,8 +574,8 @@ def predictive_selection_instruction(json_rel: str, manifest_rel: str) -> str:
         "direction is Positive or Negative. Do NOT impose any AUC, PR-AUC, "
         "p-value, effect-size, priority-score, rank, or top-K cutoff. Do NOT "
         "exclude a feature merely because its standalone evidence is weak, "
-        "low-ranked, inverse, specialist, or uncertain; keep it for downstream "
-        "cross-validation. EXCLUDE only features that the available result "
+        "low-ranked, inverse, specialist, or uncertain; keep it for the downstream "
+        "multivariate detector build. EXCLUDE only features that the available result "
         "clearly establishes are constant/unavailable, invalidly computed, "
         "approximately random with no useful subgroup enrichment, or entirely "
         "explained by a known confounder. A statistically significant but "
@@ -579,7 +587,7 @@ def predictive_selection_instruction(json_rel: str, manifest_rel: str) -> str:
         "Every original hypothesis ID must appear exactly once, either in "
         "selected_ids or excluded. Preserve each ID's original JSON type, make "
         "selected_ids unique, and write valid JSON only. The driver will add "
-        "source-hash and policy-version cache metadata after validation. Report "
+        "source-hash and policy-version cache metadata after checking it. Report "
         "the selected IDs and output path. " + recorded_audit_rule()
     )
 
@@ -859,7 +867,12 @@ def verdicts_rule(phase: str, phase_file_rel: str, ids_note: str) -> str:
                   '"baseline": "<what the increment was measured against>" or null}}',
         "fix_tests": '{"verdict": "UPHELD|WEAKENED|OVERTURNED" or null when the corrected '
                      'result is not USABLE, "generalization": '
-                     '"GENERALIZES|PARTIAL|DOES-NOT-GENERALIZE|INCONCLUSIVE" or null}',
+                     '"GENERALIZES|PARTIAL|DOES-NOT-GENERALIZE|INCONCLUSIVE" or null, '
+                     '"feature_effect": "GAIN|NULL|LOSS|ARTIFACT" (the Feature effect '
+                     'bullet: what the corrected test says about the feature itself '
+                     'against the raw card) or null when verdict is null, '
+                     '"effect_delta_ap": <AP increment of the isolating model of the '
+                     'hypothesized quantity against the raw card, or null>}',
     }[phase]
     return (
         f"ALSO write {phase_file_rel}: valid JSON "
@@ -1454,11 +1467,22 @@ def build_steps(
                 "INCONCLUSIVE or any other substitute token: the detector-build "
                 "workflow rejects any verdict token that lacks a USABLE "
                 "measurement, and the entry's original verifier verdict stands. "
+                "Beside every verdict also write a 'Feature effect' bullet whose token "
+                "judges the FEATURE, not the record's claim: GAIN when the isolating "
+                "model of the hypothesized quantity beats the raw card with a paired-"
+                "bootstrap interval above zero (after Holm where the script applies "
+                "it), NULL when that interval spans zero, LOSS when it lies below "
+                "zero, ARTIFACT when the measured quantity is not the hypothesized one "
+                "(a stand-in, a self-inclusive count, a GT-derived value), so the "
+                "result says nothing about the feature. An OVERTURNED record whose "
+                "feature gains is GAIN: the detector build keeps such a feature and "
+                "drops only ARTIFACT. State the increment you judged from after the "
+                "token. "
                 + f"Read {summary_rel} and fold Corrected test / Corrected result "
-                "/ Post-correction verdict"
+                "/ Post-correction verdict / Feature effect"
                 + (" / Corrected generalization" if extra_pkls_rel else "")
                 + " bullets INTO each fixed entry in place (keep all prior bullets; "
-                "the verdict bullet only where allowed above), "
+                "the verdict and Feature effect bullets only where allowed above), "
                 "plus one '## Statistical Test Corrections — Summary' section. "
                 + layout_rule("## Statistical Test Corrections — Summary")
                 + verdicts_rule("fix_tests", verdict_file("fix_tests"),
@@ -2384,6 +2408,24 @@ def _check_phase_verdicts(spec: dict, summary_path: Path) -> list[str]:
             if gen is not None and gen not in VERDICT_VOCAB["generalize"]:
                 problems.append(f"id {rid}: generalization {gen!r} is not one of "
                                 f"{sorted(VERDICT_VOCAB['generalize'])}")
+            effect = entry.get("feature_effect")
+            if token is None:
+                if effect is not None:
+                    problems.append(f"id {rid}: feature_effect must be null when verdict is null")
+            elif effect not in VERDICT_VOCAB["feature_effect"]:
+                problems.append(f"id {rid}: feature_effect {effect!r} is not one of "
+                                f"{sorted(VERDICT_VOCAB['feature_effect'])}")
+            else:
+                effect_bullet = report.get(rid, {}).get(VERDICT_BULLETS["feature_effect"])
+                if effect_bullet is None:
+                    problems.append(f"id {rid}: the report has no Feature effect bullet")
+                elif effect_bullet != effect:
+                    problems.append(f"id {rid}: JSON feature_effect {effect} but the "
+                                    f"report says {effect_bullet}")
+            delta = entry.get("effect_delta_ap")
+            if delta is not None and (isinstance(delta, bool)
+                                      or not isinstance(delta, (int, float))):
+                problems.append(f"id {rid}: effect_delta_ap must be a number or null")
     return problems
 
 
@@ -2409,7 +2451,7 @@ def _reset_verdicts(json_rel: str) -> None:
     paths = [PROJECT_ROOT / verdicts_path(json_rel),
              PROJECT_ROOT / f"{json_rel}{scope}{VERIFY_LEDGER_SUFFIX}"] + [
         PROJECT_ROOT / f"{json_rel}{scope}.{phase}-verdicts.json"
-        for phase in VERDICT_VOCAB if phase != "deployability"
+        for phase in VERDICT_PHASES
     ]
     removed = []
     for path in paths:
@@ -2896,10 +2938,9 @@ def survey_prior_artifacts(json_path: Path, direction: str) -> list[tuple[Path, 
             "full per-record outputs of a previous run")
         add(result_path.with_name(f"{result_path.name}.diff.json"),
             "previous recorded-vs-rerun output diff")
-    for phase in VERDICT_VOCAB:
-        if phase != "deployability":
-            add(json_path.with_name(f"{json_path.name}{scope}.{phase}-verdicts.json"),
-                "a fold step's verdicts JSON from a previous run")
+    for phase in VERDICT_PHASES:
+        add(json_path.with_name(f"{json_path.name}{scope}.{phase}-verdicts.json"),
+            "a fold step's verdicts JSON from a previous run")
     add(json_path.with_name(f"{json_path.name}{scope}.verdicts.json"),
         "merged verdicts of a previous run; a fresh run starts it over")
     add(json_path.with_name(f"{json_path.name}{scope}.baseline.json"),
@@ -3544,7 +3585,7 @@ def main() -> int:
             f"<RUN>.json[.predictive]{DRIVER_LOG_SUFFIX} beside the run export. "
             "Everything printed — the dataset guards, step progress, each "
             "subagent tool call, every step's final reply, the compute "
-            "subprocesses' live progress, validation WARNINGs, and any fatal "
+            "subprocesses' live progress, the driver's WARNING lines, and any fatal "
             "diagnostic — is tee'd there as well as to the terminal, flushed as "
             "it goes, so a workflow that dies mid-step still leaves a record. "
             "Pass /dev/null to skip. Ignored with --smoke, whose output is "
@@ -3717,7 +3758,7 @@ def main() -> int:
     # A full run is hours long across several agent turns and compute
     # subprocesses, so everything from here on is tee'd to a file: the dataset
     # guards (including a fatal mismatch), step progress, each step's final reply,
-    # the compute children's live output, and validation WARNINGs.
+    # the compute children's live output, and the driver's WARNING lines.
     log_txt = args.log_txt or driver_log_path(json_path)
     log_txt = log_txt if log_txt.is_absolute() else (PROJECT_ROOT / log_txt).resolve()
 

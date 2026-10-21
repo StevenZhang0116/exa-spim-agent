@@ -25,6 +25,16 @@ tie-aware AP of the model and of the raw baseline, the increment, the paired
 bootstrap interval and p-values, the labeled shares); judge from it, and read
 the full outputs in `<results>.outputs/` when the JSON truncates them.
 
+When the instruction asks for a `Feature effect` bullet, judge the feature
+itself against the raw baseline card, independent of whether the record's claim
+survived: GAIN, NULL or LOSS from the paired-bootstrap interval of the isolating
+model of the hypothesized quantity (above zero, spanning zero, below zero), and
+ARTIFACT when the measured quantity is not the hypothesized one (a stand-in, a
+self-inclusive count, a GT-derived value). A record whose claim is OVERTURNED
+because its feature works the other way is GAIN. Write the bullet only beside a
+verdict, and put the same token in the verdicts JSON (`feature_effect`) with the
+increment you judged from (`effect_delta_ap`).
+
 Add the requested per-entry fields and one corrections summary while preserving
 all prior report content and canonical section order. When the driver's
 instruction names a verdicts JSON file, also write it with exactly the schema

@@ -46,7 +46,8 @@ the final `.md`: `foo.summary.md` → `foo.summary.zh.md`; a bare `foo.md` →
   `Logit`, `LLR`, `Pseudo R²`, `BH-FDR`, `rank-biserial`), units (`µm`), and
   the fixed verdict tokens (`REPRODUCED`, `DIVERGED`, `GENERALIZES`,
   `DOES-NOT-GENERALIZE`, `PARTIAL`, `OK`, `MINOR`, `MAJOR`, `CRITICAL`,
-  `UPHELD`, `WEAKENED`, `OVERTURNED`, `Positive`, `Negative`, `Neutral`). These
+  `UPHELD`, `WEAKENED`, `OVERTURNED`, `GAIN`, `NULL`, `LOSS`, `ARTIFACT`,
+  `Positive`, `Negative`, `Neutral`). These
   are domain tokens other tools and agents grep for — leave them untouched.
 - **Preserve Markdown structure exactly.** Same heading levels and order, same
   bullet/field labels, same tables (translate the prose in cells but keep

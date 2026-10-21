@@ -142,11 +142,15 @@ def verdicts_evidence_by_id(
         if not isinstance(phases, dict):
             continue
         verify = phases.get("verify") or {}
+        fix_tests = phases.get("fix_tests") or {}
         evidence[hypothesis_id] = {
             "reproduction_status": (phases.get("reproduce") or {}).get("verdict"),
             "statistical_verdict": verify.get("verdict"),
-            "post_correction_verdict": (phases.get("fix_tests") or {}).get("verdict"),
+            "post_correction_verdict": fix_tests.get("verdict"),
             "deployability": verify.get("deployability"),
+            # What the corrected test says about the feature itself (GAIN | NULL |
+            # LOSS | ARTIFACT); None on verdicts written before the field existed.
+            "feature_effect": fix_tests.get("feature_effect"),
         }
     return evidence
 
@@ -212,6 +216,7 @@ def report_evidence_by_id(
             # Verifier's blind-inference judgment (BLIND-COMPUTABLE |
             # GT-REFERENCING); None on reports written before the token existed.
             "deployability": field("Deployability"),
+            "feature_effect": field("Feature effect"),
         }
     return evidence
 

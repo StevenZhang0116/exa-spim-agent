@@ -1373,3 +1373,91 @@ class FixTestsBatchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FeatureEffectTests(unittest.TestCase):
+    """The fix-tests entries carry what the corrected test says about the feature itself."""
+
+    REPORT = """# Run
+
+## Header
+
+## Ranked Conclusions (highest priority first)
+
+### 1. (Priority 0.5 · Surprise 0.7) one
+- **Run:** r · **ID:** 10 · **Belief:** x
+- **Reproduction:** REPRODUCED (code: recorded)
+- **Verdict:** MAJOR
+- **Post-correction verdict:** OVERTURNED — the claim pointed the wrong way
+- **Feature effect:** GAIN — +0.0020, CI [+0.0006, +0.0037]
+
+## Reproduction — Summary
+"""
+
+    def setUp(self) -> None:
+        self._old = (workflow.PROJECT_ROOT, workflow.DIRECTION)
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        workflow.PROJECT_ROOT = self.root
+        workflow.DIRECTION = "predictive"
+        (self.root / "run.summary.md").write_text(self.REPORT)
+        (self.root / "run.json.predictive.corrected.json").write_text(json.dumps(
+            {"results": [{"id": 10, "code_source": "corrected", "result_status": "USABLE"}]}))
+        self.spec = {"phase": "fix_tests", "file": "run.json.predictive.fix_tests-verdicts.json",
+                     "ids_from": "run.json.predictive.corrected.json", "corrected_only": True}
+
+    def tearDown(self) -> None:
+        workflow.PROJECT_ROOT, workflow.DIRECTION = self._old
+        self._tmp.cleanup()
+
+    def _problems(self, entry: dict) -> list[str]:
+        (self.root / self.spec["file"]).write_text(json.dumps(
+            {"phase": "fix_tests", "entries": {"10": entry}}))
+        return workflow._check_phase_verdicts(self.spec, self.root / "run.summary.md")
+
+    def test_feature_effect_is_in_the_rule_and_the_vocabulary(self) -> None:
+        rule = workflow.verdicts_rule("fix_tests", "x.json", "every corrected result")
+        self.assertIn('"feature_effect": "GAIN|NULL|LOSS|ARTIFACT"', rule)
+        self.assertIn('"effect_delta_ap"', rule)
+        self.assertEqual(workflow.VERDICT_VOCAB["feature_effect"],
+                         {"GAIN", "NULL", "LOSS", "ARTIFACT"})
+        self.assertEqual(workflow.VERDICT_BULLETS["feature_effect"], "Feature effect")
+        self.assertNotIn("feature_effect", workflow.VERDICT_PHASES)
+
+    def test_feature_effect_must_match_the_bullet_and_be_a_token(self) -> None:
+        good = {"verdict": "OVERTURNED", "generalization": None,
+                "feature_effect": "GAIN", "effect_delta_ap": 0.002}
+        self.assertEqual(self._problems(good), [])
+        problems = self._problems({**good, "feature_effect": "LOSS"})
+        self.assertTrue(any("JSON feature_effect LOSS but the report says GAIN" in p
+                            for p in problems))
+        problems = self._problems({**good, "feature_effect": "big"})
+        self.assertTrue(any("feature_effect 'big' is not one of" in p for p in problems))
+        problems = self._problems({**good, "effect_delta_ap": "x"})
+        self.assertTrue(any("effect_delta_ap must be a number or null" in p for p in problems))
+        problems = self._problems({"verdict": None, "generalization": None,
+                                   "feature_effect": "GAIN", "effect_delta_ap": None})
+        self.assertTrue(any("feature_effect must be null when verdict is null" in p
+                            for p in problems))
+
+    def test_missing_feature_effect_bullet_is_reported(self) -> None:
+        (self.root / "run.summary.md").write_text(
+            self.REPORT.replace("- **Feature effect:** GAIN — +0.0020, CI [+0.0006, +0.0037]\n", ""))
+        problems = self._problems({"verdict": "OVERTURNED", "generalization": None,
+                                   "feature_effect": "GAIN", "effect_delta_ap": 0.002})
+        self.assertTrue(any("the report has no Feature effect bullet" in p for p in problems))
+
+    def test_fold_instruction_defines_the_bullet(self) -> None:
+        saved = workflow.PREDICTIVE_MANIFEST
+        workflow.PREDICTIVE_MANIFEST = "autodiscovery/run.predictive-selection.json"
+        try:
+            steps = workflow.build_steps(
+                "autodiscovery/run.json", "cache/dataset_cache_794495_mcl100_add.pkl",
+                "autodiscovery/run.summary.md")
+        finally:
+            workflow.PREDICTIVE_MANIFEST = saved
+        fold = next(step for step in steps if step["name"] == "fix-tests-fold")
+        self.assertIn("'Feature effect' bullet", fold["instruction"])
+        self.assertIn("ARTIFACT when the measured quantity is not the hypothesized one",
+                      fold["instruction"])
+        self.assertIn("/ Post-correction verdict / Feature effect", fold["instruction"])

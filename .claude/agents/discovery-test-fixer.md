@@ -124,6 +124,14 @@ driver records it as needing no correction.
      small once n is handled correctly, or significance marginal).
    - **OVERTURNED** — the correct test no longer supports the conclusion (effect
      not significant under the right test, or driven entirely by the artefact).
+   Beside every verdict also judge the **Feature effect**, which is about the
+   feature itself and not about the record's claim: **GAIN** when the isolating
+   model of the hypothesized quantity beats the raw card with a paired-bootstrap
+   interval above zero (after Holm where applied), **NULL** when the interval
+   spans zero, **LOSS** when it lies below zero, **ARTIFACT** when the measured
+   quantity is not the hypothesized one (a stand-in, a self-inclusive count, a
+   GT-derived value). A record OVERTURNED because its feature works the other way
+   is GAIN; the detector build keeps every effect but ARTIFACT.
    Ground every call in the corrected numbers; never invent a result. Assign a
    verdict ONLY when the corrected `result_status == "USABLE"`. For any other
    status (`UNUSABLE`/`FAILED`, e.g. a timeout), describe the failure in the
@@ -149,6 +157,7 @@ prior bullets intact):
 - **Corrected test:** <name of the right test + why the original was wrong>
 - **Corrected result:** <new statistic, p, effect size + CI vs the original numbers — quote both, or "could not run: <reason>">
 - **Post-correction verdict:** UPHELD | WEAKENED | OVERTURNED — <ONLY when the corrected result is USABLE; omit this whole bullet otherwise (never write INCONCLUSIVE or any substitute)>
+- **Feature effect:** GAIN | NULL | LOSS | ARTIFACT — <only beside a verdict: what the corrected test says about the feature itself against the raw card, with the isolating model's increment and interval>
 - **Corrected generalization:** GENERALIZES | PARTIAL | DOES-NOT-GENERALIZE | INCONCLUSIVE — <only when extra datasets were run, judged UNDER THE CORRECT TEST; start with the verdict word, then quote the corrected statistic/effect per extra dataset. Omit this whole bullet if no extra datasets were run>
 ```
 
@@ -165,7 +174,7 @@ It must contain:
   runs produced no usable measurement and therefore carry no verdict).
 - A short list of the OVERTURNED / WEAKENED findings, cross-referenced to entry
   number / id, each with the right test and the one-line reason the original
-  test was wrong.
+  test was wrong, and which of them still carry a GAIN feature effect.
 - A one-paragraph synthesis: which conclusions change once the correct test is
   applied, and which were robust to the test choice.
 

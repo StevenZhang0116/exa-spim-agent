@@ -180,7 +180,8 @@ def build_steps(out_rel: str, report_rels: list[str]) -> list[dict[str, str]]:
                 "identifier, hypothesis id, run/dataset id, file path, code span, "
                 "metric/test name, unit, and verdict token (REPRODUCED, DIVERGED, "
                 "GENERALIZES, DOES-NOT-GENERALIZE, PARTIAL, OK, MINOR, MAJOR, "
-                "CRITICAL, UPHELD, WEAKENED, OVERTURNED). Do NOT re-run or re-judge "
+                "CRITICAL, UPHELD, WEAKENED, OVERTURNED, GAIN, NULL, LOSS, ARTIFACT). "
+                "Do NOT re-run or re-judge "
                 "anything. Write exactly that one file and report its path."
             ),
         }

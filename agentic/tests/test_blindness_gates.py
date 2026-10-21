@@ -206,6 +206,8 @@ class DeployabilityTokenTests(unittest.TestCase):
         self.assertEqual(evidence[55], {
             "reproduction_status": "REPRODUCED", "statistical_verdict": "MAJOR",
             "post_correction_verdict": "OVERTURNED", "deployability": "GT-REFERENCING",
+            # verdicts written before the Feature effect field read as None
+            "feature_effect": None,
         })
         self.assertEqual(evidence[7]["reproduction_status"], "FAILED")
         self.assertIsNone(evidence[7]["statistical_verdict"])
