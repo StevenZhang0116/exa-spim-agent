@@ -19,21 +19,23 @@ AD_FIELDS = ["id", "status", "hypothesis", "surprisal", "isSurprising", "prior",
              "codeOutput", "richOutputs", "runtimeMs", "createdAt"]
 
 
-def write_record(work: Path, rid: int, *, prior=0.6, posterior=None, exit_code=0, code="print('x')\n",
+def write_record(work: Path, rid: int, *, result=True, exit_code=0, code="print('x')\n",
                  stdout="INPUTS READ fragment_nodes=3\nAP 0.5\n", stderr=""):
     (work / "records").mkdir(exist_ok=True)
     (work / "outputs").mkdir(exist_ok=True)
+    plan = ({"objective": "rank and score", "steps": "1. load 2. score", "deliverables": "AP lines"}
+            if rid % 2 else "rank and score")   # odd ids: AD-shaped object; even ids: a plain string
     (work / "records" / f"{rid}.proposal.json").write_text(json.dumps(
-        {"hypothesis": f"Hypothesis {rid} says more is better.", "experimentPlan": "rank and score", "prior": prior}))
+        {"hypothesis": f"Hypothesis {rid} says more is better.", "experimentPlan": plan}))
     (work / f"hypo_{rid}.py").write_text(code)
     (work / "outputs" / f"hypo_{rid}.stdout.txt").write_text(stdout)
     (work / "outputs" / f"hypo_{rid}.stderr.txt").write_text(stderr)
     (work / "outputs" / f"hypo_{rid}.meta.json").write_text(json.dumps(
         {"id": rid, "exit_code": exit_code, "runtime_ms": 1234, "started_at": "2026-10-22T10:00:00+00:00",
          "finished_at": "2026-10-22T10:00:01+00:00", "timeout_s": 60}))
-    if posterior is not None:
+    if result:
         (work / "records" / f"{rid}.result.json").write_text(json.dumps(
-            {"analysis": "AP 0.5 beats nothing.", "review": "small n", "posterior": posterior}))
+            {"analysis": "AP 0.5 beats nothing.", "review": "small n"}))
 
 
 def fake_materials(root: Path, kind="merge", brain="1", mcl=100) -> None:
@@ -46,26 +48,20 @@ def fake_materials(root: Path, kind="merge", brain="1", mcl=100) -> None:
 
 
 class RecordTests(unittest.TestCase):
-    def test_belief_and_surprisal_follow_the_export_conventions(self) -> None:
-        b = ad.belief(0.9167)
+    def test_belief_fields_are_neutral_constants_in_ad_shape(self) -> None:
+        b = ad.belief(ad.NEUTRAL_BELIEF)
         self.assertEqual(b["_type"], "boolean_cat")
-        self.assertEqual(b["definitely_true"], 5)
+        self.assertEqual(b["uncertain"], 5)
         self.assertEqual(sum(b[name] for name, _ in ad.BELIEF_BUCKETS), 5)
-        self.assertAlmostEqual(b["mean"], 0.9167)
-        self.assertEqual(ad.belief(0.45)["uncertain"], 5)
-        s, surprising = ad.surprisal(0.9167, 0.40625)
-        self.assertAlmostEqual(s, -0.7953, places=3)   # the 2026-10-19 export's first record
-        self.assertTrue(surprising)
-        s2, surprising2 = ad.surprisal(0.7083, 0.734375)
-        self.assertAlmostEqual(s2, 0.0406, places=3)
-        self.assertFalse(surprising2)
+        self.assertEqual(b["mean"], 0.5)
+        self.assertEqual(ad.belief(0.9167)["definitely_true"], 5)
 
     def test_assembled_record_has_every_ad_field(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
-            write_record(work, 1, prior=0.6, posterior=0.9)
-            write_record(work, 2, prior=0.5, posterior=None, exit_code=1, stderr="Traceback: boom")
-            write_record(work, 3, prior=0.5, posterior=0.3, exit_code=124)
+            write_record(work, 1)
+            write_record(work, 2, result=False, exit_code=1, stderr="Traceback: boom")
+            write_record(work, 3, exit_code=124)
             (work / "outputs" / "hypo_1_figure.png").write_bytes(b"png")
             records = ad.assemble_export(work, 5)
             self.assertEqual([r["id"] for r in records], [1, 2, 3])
@@ -76,38 +72,37 @@ class RecordTests(unittest.TestCase):
             self.assertIn("INPUTS READ", one["codeOutput"])
             self.assertEqual(one["runtimeMs"], 1234)
             self.assertEqual(one["createdAt"], "2026-10-22T10:00:01+00:00")
-            self.assertEqual(one["richOutputs"], [{"path": "outputs/hypo_1_figure.png", "type": "image/png"}])
-            self.assertTrue(one["isSurprising"])
+            self.assertEqual(one["richOutputs"], [{"image/png": "cG5n"}])   # base64 of b"png", AD-style
+            self.assertEqual(one["experimentPlan"], {"objective": "rank and score", "steps": "1. load 2. score",
+                                                     "deliverables": "AP lines"})
+            self.assertEqual(records[1]["experimentPlan"],
+                             {"objective": "rank and score", "steps": "", "deliverables": ""})
+            self.assertEqual((one["prior"], one["posterior"], one["surprisal"], one["isSurprising"]),
+                             (0.5, 0.5, 0.0, False))        # neutral constants, never asked of the agent
             two = records[1]
             self.assertEqual(two["status"], "FAILED")      # no result file, non-zero exit
             self.assertIn("STDERR:\nTraceback", two["codeOutput"])
-            self.assertEqual(two["posterior"], two["prior"])  # unchanged belief when never judged
+            self.assertEqual(two["analysis"], "")
             self.assertEqual(records[2]["status"], "FAILED")  # killed by the timeout despite a result file
             json.dumps(records)
-
-    def test_bad_probability_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            work = Path(tmp)
-            write_record(work, 1, prior=1.4, posterior=0.5)
-            with self.assertRaisesRegex(SystemExit, "prior"):
-                ad.assemble_export(work, 1)
 
 
 class BatchingTests(unittest.TestCase):
     def test_next_batch_finishes_proposed_ids_before_new_ones(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
-            write_record(work, 1, posterior=0.7)
-            write_record(work, 2, posterior=None)
+            write_record(work, 1)
+            write_record(work, 2, result=False)
             self.assertEqual(ad.record_state(work, 1), "complete")
             self.assertEqual(ad.record_state(work, 2), "proposed")
             self.assertEqual(ad.record_state(work, 3), "absent")
             self.assertEqual(ad.next_batch(work, 6, 3), [2, 3, 4])
             self.assertEqual(ad.next_batch(work, 2, 3), [2])
-            write_record(work, 2, posterior=0.2)
+            write_record(work, 2)
             self.assertEqual(ad.next_batch(work, 2, 3), [])
             ledger = ad.write_ledger(work, 6).read_text()
-            self.assertIn("1 [done] prior=0.6 posterior=0.7: Hypothesis 1", ledger)
+            self.assertIn("1 [done]: Hypothesis 1", ledger)
+            self.assertNotIn("prior", ledger)
             instruction = ad.batch_instruction(work, [3, 4], "merge", "1", 100)
             self.assertIn("ids [3, 4]", instruction)
             self.assertIn("rerank_companion_1_merge.npz", instruction)
@@ -195,9 +190,9 @@ class DriverLoopTests(unittest.TestCase):
                                  max_budget_usd, timeout_s):
                 calls.append((list(ids), round(max_budget_usd, 2), model, effort))
                 for rid in ids[:-1] if len(ids) > 1 else ids:  # last id of a batch left unfinished
-                    write_record(work_dir, rid, posterior=0.8)
+                    write_record(work_dir, rid)
                 if len(ids) > 1:
-                    write_record(work_dir, ids[-1], posterior=None)
+                    write_record(work_dir, ids[-1], result=False)
                 return {"cost_usd": 4.0, "tokens": None}
 
             with patch.object(ad, "PROJECT_ROOT", root), patch.object(ad, "run_batch_claude", fake_batch), \
@@ -241,7 +236,7 @@ class DriverLoopTests(unittest.TestCase):
                            price_in, price_out, sandbox):
                 calls.append((list(ids), model, effort, sandbox))
                 for rid in ids:
-                    write_record(work_dir, rid, posterior=0.5)
+                    write_record(work_dir, rid)
                 return {"cost_usd": 0.0, "tokens": {"input_tokens": 100, "output_tokens": 10,
                                                     "cached_input_tokens": 0, "reasoning_output_tokens": 0},
                         "exit_code": 0}

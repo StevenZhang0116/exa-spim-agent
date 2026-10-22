@@ -3,8 +3,8 @@ name: discovery-researcher
 description: >-
   Runs the discovery research itself for the AutoDiscovery ablation: given the task
   specification and the three data files, proposes hypotheses, writes and runs one
-  experiment script per hypothesis through the driver's runner, and records prior,
-  result, analysis and posterior as JSON record files. Use when asked to research,
+  experiment script per hypothesis through the driver's runner, and records the
+  analysis and review of each result as JSON record files. Use when asked to research,
   propose or test hypotheses for an exa-spim discovery run driven by a coding agent.
 tools: Bash, Read, Write, Edit, Glob
 model: inherit
@@ -33,13 +33,13 @@ For each assigned id, in this order:
 1. **Propose** — write `records/<id>.proposal.json` BEFORE any code:
    ```json
    {"hypothesis": "<one falsifiable sentence naming the quantity and its direction, under 350 characters>",
-    "experimentPlan": "<what the script will compute, on which rows, and how it is scored>",
-    "prior": 0.0-1.0}
+    "experimentPlan": {"objective": "<what the script measures and why>",
+                       "steps": "<numbered steps: inputs, computation, rows, scoring>",
+                       "deliverables": "<what the printed output will show>"}}
    ```
-   `prior` is your probability, before running anything, that the hypothesis
-   holds on this dataset. Check `records/ledger.txt`: a hypothesis that restates
-   a recorded one (same quantity, same mechanism) is not new; vary the
-   quantity, the scale, the neighbourhood or the mechanism.
+   Check `records/ledger.txt`: a hypothesis that restates a recorded one (same
+   quantity, same mechanism) is not new; vary the quantity, the scale, the
+   neighbourhood or the mechanism.
 2. **Write** `hypo_<id>.py` in the work directory: self-contained, opens the
    three data files by their bare names (the runner runs it from the work
    directory), computes the hypothesized quantity for
@@ -56,12 +56,10 @@ For each assigned id, in this order:
 5. **Record** `records/<id>.result.json`:
    ```json
    {"analysis": "<what was measured and what the numbers say, quoting the printed figures>",
-    "review": "<the weaknesses: confounds, ties, small counts, what would change the conclusion>",
-    "posterior": 0.0-1.0}
+    "review": "<the weaknesses: confounds, ties, small counts, what would change the conclusion>"}
    ```
-   `posterior` is your probability after seeing the result. It may stay near the
-   prior when the result is inconclusive; it should move when the evidence is
-   clear in either direction. Never adjust the proposal file after the run.
+   State plainly whether the result supports, refutes or leaves open the
+   hypothesis. Never adjust the proposal file after the run.
 
 Then move to the next assigned id. Scripts are run serially; every one loads
 the full dataset.
@@ -79,5 +77,4 @@ the full dataset.
 ## Output
 
 The record files are the deliverable. In your final reply, list the assigned ids
-with one line each: hypothesis, prior → posterior, and whether the script
-succeeded.
+with one line each: hypothesis, outcome, and whether the script succeeded.

@@ -5,7 +5,8 @@ receives **exactly the AutoDiscovery materials** and returns an export in the
 **same JSON shape**, so `run_discovery_workflow.py`, the detector build and every
 audit read it unchanged. It is an ablation, not a new product: no baseline card,
 no `canonical_stats` module, no extra brain, no feedback beyond what
-AutoDiscovery also lacks.
+AutoDiscovery also lacks, and no self-assessed beliefs: the predictive workflow
+never ranks by them, so the agent is not asked for a prior or a posterior.
 
 Two engines share the files and the researcher instructions
 (`.claude/agents/discovery-researcher.md`):
@@ -34,12 +35,12 @@ Linked by their AutoDiscovery names into `autodiscovery/<run>.<engine>/`:
 
 Hypotheses are produced in batches (`--batch 5`); every batch is one fresh
 session, so context never accumulates. Before each batch the driver writes
-`records/ledger.txt` (every hypothesis recorded so far, with prior and
-posterior) so the session does not repeat them. For each id the agent writes
-`records/<id>.proposal.json` (hypothesis, experimentPlan, prior) before any code,
+`records/ledger.txt` (every hypothesis recorded so far and whether it
+finished) so the session does not repeat them. For each id the agent writes
+`records/<id>.proposal.json` (hypothesis, experimentPlan) before any code,
 writes `hypo_<id>.py`, runs it only through the driver-owned `run_hypo.sh`
 (timeout, captured stdout/stderr, exit code, runtime), and writes
-`records/<id>.result.json` (analysis, review, posterior). The driver stops at
+`records/<id>.result.json` (analysis, review). The driver stops at
 `--hypotheses`, `--max-cost-usd` or `--max-hours`, whichever comes first, or when
 a batch completes nothing; the same `--run-name` resumes after the last complete
 id. The driver appends one line per batch to `agent_discovery.log.txt` in the
@@ -49,9 +50,10 @@ under `codex/` there.
 ## Export
 
 `autodiscovery/<run>.json`: one record per proposed id with the AutoDiscovery
-fields. `surprisal = (posterior - prior) x 1.5583` (the constant every record of
-the 2026-10-19 export obeys), `isSurprising` when the shift is at least 0.25,
-`priorBelief`/`posteriorBelief` as five-vote `boolean_cat` dicts, `status`
+fields. The belief fields are neutral constants in AutoDiscovery's shape
+(`prior` = `posterior` = 0.5, `surprisal` 0, `isSurprising` false, five-vote
+`boolean_cat` dicts with every vote on `uncertain`); `experimentPlan` is the
+object with `objective`, `steps` and `deliverables` the ranker expects; `status`
 `SUCCEEDED` only when the script exited 0 and a result was recorded,
 `codeOutput`/`runtimeMs`/`createdAt` from the runner. `manifest.json` in the work
 directory records the engine, model, sessions, tokens, cost and agent time.

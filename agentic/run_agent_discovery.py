@@ -3,13 +3,17 @@
 
 An ablation of AutoDiscovery. A coding agent gets exactly what AutoDiscovery gets,
 one task specification and three data files, proposes hypotheses, writes and runs
-one experiment script per hypothesis on this node, and records its beliefs before
-and after the result. The driver turns the records into ``autodiscovery/<run>.json``
+one experiment script per hypothesis on this node, and records an analysis and a
+review of the result. The driver turns the records into ``autodiscovery/<run>.json``
 with the same fields as an AutoDiscovery export (``id``, ``status``, ``hypothesis``,
 ``surprisal``, ``isSurprising``, ``prior``, ``posterior``, ``priorBelief``,
 ``posteriorBelief``, ``analysis``, ``review``, ``experimentPlan``, ``code``,
 ``codeOutput``, ``richOutputs``, ``runtimeMs``, ``createdAt``), so
-``run_discovery_workflow.py`` and the detector build read it unchanged.
+``run_discovery_workflow.py`` and the detector build read it unchanged. The belief
+fields are AutoDiscovery's self-assessment and play no part in the predictive
+workflow (which keeps every non-excluded hypothesis), so they are written as
+neutral constants (prior = posterior = 0.5, surprisal 0, not surprising) rather
+than asked of the agent.
 
 Two engines, the same files and the same researcher instructions
 (``.claude/agents/discovery-researcher.md``):
@@ -78,10 +82,9 @@ ENGINES = ("claude", "codex")
 DEFAULT_MODEL = {"claude": os.environ.get("AGENT_DISCOVERY_CLAUDE_MODEL", "claude-opus-5-5"),
                  "codex": os.environ.get("AGENT_DISCOVERY_CODEX_MODEL", "gpt-6-astra")}
 DEFAULT_EFFORT = "high"
-# AutoDiscovery's surprisal is (posterior - prior) times this constant on every
-# record of the 2026-10-19 export; "surprising" starts between 0.28 and 0.41.
-SURPRISAL_SCALE = 1.5583
-SURPRISING_SHIFT = 0.25
+# AutoDiscovery's belief fields, written as neutral constants: no agent is asked
+# for a prior or a posterior (the predictive workflow never ranks by them).
+NEUTRAL_BELIEF = 0.5
 BELIEF_BUCKETS = (("definitely_false", 0.2), ("maybe_false", 0.4), ("uncertain", 0.6),
                   ("maybe_true", 0.8), ("definitely_true", 1.01))
 RUN_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -107,11 +110,6 @@ def belief(probability: float) -> dict:
             "prior_params": [0.5, 0.5], **votes}
 
 
-def surprisal(prior: float, posterior: float) -> tuple[float, bool]:
-    shift = float(posterior) - float(prior)
-    return shift * SURPRISAL_SCALE, abs(shift) >= SURPRISING_SHIFT
-
-
 def _read_json(path: Path) -> dict | None:
     if not path.is_file():
         return None
@@ -122,14 +120,26 @@ def _read_json(path: Path) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-def _probability(value, label: str, rid: int) -> float:
-    try:
-        p = float(value)
-    except (TypeError, ValueError) as exc:
-        raise SystemExit(f"id {rid}: {label} is not a probability: {value!r}") from exc
-    if not 0.0 <= p <= 1.0:
-        raise SystemExit(f"id {rid}: {label} must lie in [0, 1], got {p}")
-    return p
+PLAN_KEYS = ("objective", "steps", "deliverables")
+
+
+def experiment_plan(value) -> dict:
+    """AutoDiscovery's ``experimentPlan`` is an object with objective / steps /
+    deliverables (the ranker reads ``objective``); a plain string becomes the objective."""
+    if isinstance(value, dict):
+        return {key: str(value.get(key, "") or "").strip() for key in PLAN_KEYS}
+    return {"objective": str(value or "").strip(), "steps": "", "deliverables": ""}
+
+
+def rich_outputs(outputs_dir: Path, rid: int) -> list[dict]:
+    """Figures the script saved as ``outputs/hypo_<id>_*.png``, embedded the way
+    AutoDiscovery embeds them (``{"image/png": <base64>}``)."""
+    import base64
+
+    if not outputs_dir.is_dir():
+        return []
+    return [{"image/png": base64.b64encode(path.read_bytes()).decode("ascii")}
+            for path in sorted(outputs_dir.glob(f"hypo_{rid}_*.png"))]
 
 
 def record_state(work_dir: Path, rid: int) -> str:
@@ -159,29 +169,24 @@ def assemble_record(work_dir: Path, rid: int) -> dict | None:
     stdout = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.is_file() else ""
     stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.is_file() else ""
     output = stdout + (f"\nSTDERR:\n{stderr}" if stderr.strip() else "")
-    prior = _probability(proposal.get("prior"), "prior", rid)
-    posterior = _probability(result.get("posterior", prior), "posterior", rid)
-    shift, surprising = surprisal(prior, posterior)
     ran_ok = meta.get("exit_code") == 0
     succeeded = ran_ok and bool(result)
-    outputs_dir = work_dir / "outputs"
-    figures = sorted(p.name for p in outputs_dir.glob(f"hypo_{rid}_*.png")) if outputs_dir.is_dir() else []
     return {
         "id": rid,
         "status": "SUCCEEDED" if succeeded else "FAILED",
         "hypothesis": str(proposal.get("hypothesis", "")).strip(),
-        "surprisal": shift,
-        "isSurprising": surprising,
-        "prior": prior,
-        "posterior": posterior,
-        "priorBelief": belief(prior),
-        "posteriorBelief": belief(posterior),
+        "surprisal": 0.0,
+        "isSurprising": False,
+        "prior": NEUTRAL_BELIEF,
+        "posterior": NEUTRAL_BELIEF,
+        "priorBelief": belief(NEUTRAL_BELIEF),
+        "posteriorBelief": belief(NEUTRAL_BELIEF),
         "analysis": str(result.get("analysis", "")).strip(),
         "review": str(result.get("review", "")).strip(),
-        "experimentPlan": str(proposal.get("experimentPlan", "")).strip(),
+        "experimentPlan": experiment_plan(proposal.get("experimentPlan")),
         "code": code_path.read_text(encoding="utf-8") if code_path.is_file() else "",
         "codeOutput": output,
-        "richOutputs": [{"path": f"outputs/{name}", "type": "image/png"} for name in figures],
+        "richOutputs": rich_outputs(work_dir / "outputs", rid),
         "runtimeMs": int(meta.get("runtime_ms", 0) or 0),
         "createdAt": meta.get("finished_at") or datetime.now(timezone.utc).isoformat(),
         "exitCode": meta.get("exit_code"),
@@ -257,9 +262,7 @@ def write_ledger(work_dir: Path, n_hypotheses: int) -> Path:
             continue
         result = _read_json(work_dir / "records" / f"{rid}.result.json") or {}
         state = "done" if result else "unfinished"
-        verdict = f" posterior={result.get('posterior')}" if result else ""
-        lines.append(f"{rid} [{state}] prior={proposal.get('prior')}{verdict}: "
-                     f"{str(proposal.get('hypothesis', '')).strip()[:220]}")
+        lines.append(f"{rid} [{state}]: {str(proposal.get('hypothesis', '')).strip()[:220]}")
     ledger = work_dir / "records" / "ledger.txt"
     ledger.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
     return ledger
@@ -279,10 +282,11 @@ rerank_companion_{brain}_{kind}.npz and rerank_companion_{brain}_{kind}.json in 
 directory, which every script opens by exactly those names (the runner changes into
 the directory before running it). {w}/records/ledger.txt lists every hypothesis
 already recorded in this run: do not repeat one. {resume}For each id, in this order:
-write {w}/records/<id>.proposal.json (hypothesis, experimentPlan, prior) before any
-code; write {w}/hypo_<id>.py; run it only with `{w}/run_hypo.sh <id>`; read
-{w}/outputs/hypo_<id>.stdout.txt and .stderr.txt; write {w}/records/<id>.result.json
-(analysis, review, posterior). Work the ids one at a time, serially (every script
+write {w}/records/<id>.proposal.json (hypothesis; experimentPlan as an object with
+objective, steps and deliverables) before any code; write {w}/hypo_<id>.py; run it
+only with `{w}/run_hypo.sh <id>`; read {w}/outputs/hypo_<id>.stdout.txt and
+.stderr.txt; write {w}/records/<id>.result.json (analysis, review). Work the ids
+one at a time, serially (every script
 loads the full dataset), and stop when all assigned ids have a result file. Do not
 touch any other id and do not edit anything under {w}/outputs/.
 """.strip()
@@ -501,8 +505,9 @@ def main(argv: list[str] | None = None) -> int:
     manifest_path = work_dir / "manifest.json"
     manifest = _read_json(manifest_path) or {
         "run_name": args.run_name, "kind": args.kind, "brain": args.brain, "mcl": args.mcl,
-        "engine": args.engine, "model": args.model, "effort": args.effort,
         "sessions": [], "cost_usd": 0.0, "seconds": 0.0}
+    for key, value in (("engine", args.engine), ("model", args.model), ("effort", args.effort)):
+        manifest.setdefault(key, value)
     if not args.assemble_only:
         prepare_work_dir(work_dir, args.kind, args.brain, args.mcl, args.script_timeout)
         if args.engine == "codex" and not (args.price_in or args.price_out):
