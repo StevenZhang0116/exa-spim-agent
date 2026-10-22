@@ -194,8 +194,8 @@ nor `gt_merge_site_metadata` is accessible to feature extraction.
 
 > **Build-time status:** when this README was generated, the detector had only
 > been checked without a real dataset. This immutable provenance block is not
-> updated by later detector runs. After a completed run with figures, generate
-> the measured result report with the command in `RUN_COMMANDS.md`.
+> updated by later detector runs. After a completed run, generate the
+> feature-importance report with the command in `RUN_COMMANDS.md`.
 
 {DRIVER_BLOCK_START}
 
@@ -257,9 +257,9 @@ brain; it must not influence model or preprocessing selection.
 - `analysis_timing_<brain>.json` only for the profiling-only `--measuretime` run
 - `hypothesis_cost_report_<brain>.md` and
   `hypothesis_selection_template_<brain>.json` from the same profiling run
-- bilingual `RESULT_ANALYSIS.md` (complete English, then complete Chinese),
-  `result_analysis_evidence.json`, and `result_analysis_workflow.log.txt` after
-  separately invoking the result analyst
+- `IMPORTANCE_REPORT.md`, `importance_evidence.json` and
+  `importance_report_workflow.log.txt` after separately invoking the
+  feature-importance report
 
 Model JSON and joblib carry the same `data_provenance` as the CSV sidecar:
 training and held-out cache identities, scope, ordered-row label digests, and
@@ -359,9 +359,9 @@ def write_run_commands(
     app_dir = Path(detector_rel).parent.as_posix()
     spec = target_spec(target)
     # Every output name comes from the target's public prefix, the value the runtime
-    # (OUTPUT_PREFIX), the result-analysis driver and Stage 3's detector resolver
+    # (OUTPUT_PREFIX), the importance-report driver and Stage 3's detector resolver
     # share; a hand-written name here once told merge-site operators to write a
-    # CSV the analysis driver could not find.
+    # CSV the report driver could not find.
     prefix = spec.output_prefix
     job_name = prefix.replace("_", "-")
     if spec.target is DetectorTarget.MERGE:
@@ -788,26 +788,22 @@ three-valued (1 / 0 / NaN = GT cannot judge); metrics and OOF queues are over
 the judgeable rows, which the folds hold out exactly once, and the fitted model
 scores every row.
 
-## Generate the bilingual result-analysis report
+## Feature-importance short report
 
-Run this only after the detector has completed successfully **with figures**.
-The path argument may be the application directory itself or a nested completed
-run directory under it. The driver verifies the completion marker, JSON/CSV
-counts, saved fitted model, provenance hashes, and all training figures 01–07;
-then `detector-result-analyst` reads the immutable evidence manifest and every
-PNG without rerunning extraction or training. It writes the complete English
-analysis first and then a faithful complete Chinese translation.
+After any completed run (figures optional), write the deterministic importance
+evidence and a short English summary of which features and hypotheses drive the
+ranking: standardized coefficients or native importances, in-sample permutation
+drops, univariate AP against the raw baseline, and the same views summed per
+hypothesis. Run it on a compute node (it loads the fitted model and the CSV's
+judgeable rows, never the pkl); the agent turn needs `ANTHROPIC_API_KEY`:
 
 ```bash
-python agentic/run_detector_result_analysis.py "$RUN_DIR"
+python agentic/run_detector_importance_report.py "$RUN_DIR"             # evidence + agent summary
+python agentic/run_detector_importance_report.py "$RUN_DIR" --no-agent  # evidence tables only
 ```
 
-It writes these files inside `$RUN_DIR`:
-
-- `result_analysis_evidence.json`: deterministic numeric evidence and hashes;
-- `RESULT_ANALYSIS.md`: full English analysis followed by its full Chinese
-  translation, with an immutable evidence block;
-- `result_analysis_workflow.log.txt`: agent execution and check log.
+It writes `importance_evidence.json`, `IMPORTANCE_REPORT.md` and
+`importance_report_workflow.log.txt` inside `$RUN_DIR`.
 
 ## Reproducibility record
 

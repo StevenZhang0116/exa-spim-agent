@@ -117,8 +117,8 @@ records the training brain, feature order, label rule and fold rule that Stage 3
 relies on), the fitted winner (`*_<brain>.joblib`), a log and figures. Stage 3
 takes the run directory itself (`--merge-dir` / `--split-dir`), finding the
 script in the deliverable directory above it and checking the run's recorded
-detector SHA-256 against it. `agentic/run_detector_result_analysis.py` then produces a grounded
-bilingual `RESULT_ANALYSIS.md` from the saved numbers. The GT-site tools in
+detector SHA-256 against it. `agentic/run_detector_importance_report.py` then writes the
+feature-importance evidence and short report from the saved numbers. The GT-site tools in
 [the GT merge-site tools](gt_merge_site_tools.md) compare a detector's
 positives with the cached GT sites.
 
@@ -131,3 +131,17 @@ on the old candidate pools. New detectors are built from new AutoDiscovery runs 
 revised specifications (`proofreader_evolve/plans/rebuild_after_relabel_and_split_pool.md`);
 until then Stage 3 has no default detectors. A detector's fitting brain can never serve as a
 validation brain in Stage 3.
+
+### Feature-importance short report (2026-10-22)
+
+`agentic/run_detector_importance_report.py <run dir>` writes `importance_evidence.json`
+(the winner's standardized coefficients or native importances, in-sample permutation
+drops on the judgeable rows, univariate AP of every feature against the raw baseline,
+and the same views summed per hypothesis with the discovery verdicts and hypothesis
+text) and a short English `IMPORTANCE_REPORT.md` written by the
+`detector-importance-summarizer` subagent from that evidence alone; `--no-agent`
+writes the evidence and the tables only. The driver checks the report (immutable block,
+headings, placeholders) and caps the summary at 600 words. Figures are not required, so
+it also serves runs made with `--no-figures`. The earlier full bilingual report
+(`run_detector_result_analysis.py`, `RESULT_ANALYSIS.md`) was deleted on 2026-10-22 without
+ever having been run; its result-directory helpers live in `agentic/detector_importance.py`.

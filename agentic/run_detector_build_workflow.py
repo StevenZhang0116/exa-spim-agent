@@ -60,12 +60,10 @@ context. Subagents live in ``.claude/agents/`` and are auto-discovered via
 
 The generated detector run additionally writes target-row CSV scores, a JSON
 model-selection manifest, a fitted winner joblib, a run log and figures.
-After a successful run with figures, invoke
-``agentic/run_detector_result_analysis.py PATH`` to validate those artifacts and
-ask the ``detector-result-analyst`` subagent to write a grounded bilingual
-``RESULT_ANALYSIS.md``: complete English first, followed by a faithful complete
-Chinese translation. ``PATH`` may be the application directory or one nested
-completed run directory under it.
+After a successful run, invoke ``agentic/run_detector_importance_report.py PATH``
+to write the deterministic ``importance_evidence.json`` and ask the
+``detector-importance-summarizer`` subagent for the short ``IMPORTANCE_REPORT.md``.
+``PATH`` is the completed run directory under the application directory.
 
 The driver tees its own stdout+stderr — step progress, subagent tool calls, each
 step's final reply, and any fatal diagnostic — into the log as it goes rather
@@ -156,8 +154,8 @@ For example, the default merge-site target uses:
         python autodiscovery-application/<RUN>/merge_junction_detector.py \
             cache/dataset_cache_<brain>_mcl<N>_add.pkl"
 
-Then analyze that completed result directory:
-    python agentic/run_detector_result_analysis.py \
+Then summarize that completed run's feature importance:
+    python agentic/run_detector_importance_report.py \
         autodiscovery-application/<RUN>/runs/<COMPLETED-RESULT>
 """
 
@@ -1822,7 +1820,7 @@ _OUTPUT_PREFIXES = tuple(
 )
 _RERUNNABLE_NAMES = frozenset((
     "conda-explicit.txt", "python-version.txt", "input-pkl.sha256",
-    "result_analysis_evidence.json", "result_analysis_workflow.log.txt",
+    "importance_evidence.json", "importance_report_workflow.log.txt",
 ))
 
 

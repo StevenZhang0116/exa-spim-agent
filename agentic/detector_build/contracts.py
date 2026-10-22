@@ -54,7 +54,7 @@ class TargetSpec:
     positive_name: str
     negative_name: str
     # Display plurals and CSV identity columns are part of the same public
-    # vocabulary: the result-analysis driver derives its evidence/report
+    # vocabulary: the importance-report driver derives its evidence/report
     # wording and CSV column contract from here instead of a local copy.
     positive_plural: str
     negative_plural: str
