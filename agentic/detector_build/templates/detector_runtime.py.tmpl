@@ -103,6 +103,55 @@ def _bounded_thread_map(function, items, max_workers):
                 yield result
 
 
+_IMAGE_ROW_BLOCK_UM = 64.0
+_IMAGE_CACHE_POOL_BYTES = 4 << 30
+_IMAGE_S3_CONCURRENCY_FLOOR = 32
+
+
+def _image_row_order(xyz_um, block_um=_IMAGE_ROW_BLOCK_UM):
+    """Row indices in a chunk-friendly order for the image pass.
+
+    Candidate rows are enumerated by identity, not by position, so consecutive
+    rows read unrelated zarr chunks. Sorting rows by the (z, y, x) block of
+    their anchor keeps neighbouring reads inside the same chunks, which the
+    TensorStore cache pool then serves without a second S3 fetch. Results must
+    still be stored by row id: this only changes the submission order. Rows
+    with a non-finite anchor sort last; ties keep row order.
+    """
+    xyz = np.asarray(xyz_um, dtype=float)
+    if xyz.ndim != 2 or xyz.shape[1] != 3:
+        raise ValueError("xyz_um must be an (n, 3) array of anchor coordinates")
+    n = int(xyz.shape[0])
+    if n == 0:
+        return np.zeros(0, dtype=np.int64)
+    finite = np.all(np.isfinite(xyz), axis=1)
+    blocks = np.zeros((n, 3), dtype=np.int64)
+    blocks[finite] = np.floor(xyz[finite] / float(block_um)).astype(np.int64)
+    missing = (~finite).astype(np.int64)
+    # lexsort: the last key is the primary one.
+    order = np.lexsort((np.arange(n), blocks[:, 0], blocks[:, 1], blocks[:, 2], missing))
+    return order.astype(np.int64)
+
+
+def _image_store_context(workers):
+    """TensorStore context for the image volume, sized for `workers` threads.
+
+    A larger cache pool lets rows that share zarr chunks reuse them (see
+    `_image_row_order`), and the S3 request limit is raised above the thread
+    count so the pool is never throttled by the kvstore driver's default
+    concurrency. Opening the volume without this context is a defect.
+    """
+    import tensorstore as ts
+
+    workers = max(1, int(workers))
+    return ts.Context({
+        "cache_pool": {"total_bytes_limit": int(_IMAGE_CACHE_POOL_BYTES)},
+        "data_copy_concurrency": {"limit": max(4, workers)},
+        "s3_request_concurrency": {
+            "limit": max(_IMAGE_S3_CONCURRENCY_FLOOR, 2 * workers)},
+    })
+
+
 def _memoized(cache, key, compute):
     """Return cache[key], computing and storing it once on first use.
 
@@ -2361,9 +2410,10 @@ def build_arg_parser():
     ap.add_argument("--review-budget", type=int, default=100)
     ap.add_argument(
         "--n-jobs", type=int, default=0,
-        help="image-patch worker threads for image-heavy detectors "
-             "(-1 = all available CPUs; default: 0 = auto, capped at 8; "
-             "1 = serial extraction; ignored by sparse/non-image extraction).")
+        help="image-patch worker threads for detectors with image-derived "
+             "hypotheses; the pass waits on S3 reads, so N may exceed the CPU "
+             "count (-1 = all available CPUs; default: 0 = auto, capped at 8; "
+             "1 = serial extraction; ignored by graph-only extraction).")
     ap.add_argument(
         "--model-jobs", type=int, default=1,
         help="threads inside each tree/boosting estimator fit "

@@ -292,3 +292,23 @@ Then build split from `new-split-1_2026-10-20`, and merge from `new-merge-1_2026
 once its workflow has finished; run both detectors into `runs/<brain>-default/`, point
 `DEFAULT_*_DIR` at those run directories, and continue with
 `proofreader_evolve/plans/rebuild_after_relabel_and_split_pool.md`.
+
+## Addendum 2026-10-21 (evening): image pass always threaded
+
+The 2026-10-19/20 builds ran their image pass serially (3.3 rows/s on 794495):
+the builder rule made the pass thread-aware only when image hypotheses were a
+strict majority (20 of 73, 22 of 88). Revised and done:
+
+- any image-derived hypothesis makes the pass thread-aware (`assembly.py`
+  `image_pass`; driver generate/verify text; builder agent text; runbook text);
+- the runtime template provides `_image_row_order` (64 um block order so
+  neighbouring rows reuse zarr chunks) and `_image_store_context(workers)`
+  (4 GiB cache pool, S3 request limit max(32, 2 x workers)); the assembler
+  requires both whenever an image pass exists, and `RUNTIME_OWNED_SYMBOLS`
+  reserves them;
+- generated runbooks use `--n-jobs 32`; `precompute_error_scores.py` gains
+  `--image-workers` (threaded through `ensure_native_tables` and
+  `build_native_table`) so Stage 3 scoring pays the same throughput;
+- the two existing builds re-run Step 3 and 4 with `--keep-existing` (the
+  inventory and model candidates are recovered; the hidden draft is gone, so
+  the feature code is re-authored under the new contract).

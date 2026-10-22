@@ -66,6 +66,36 @@ class PreparationTests(unittest.TestCase):
                 self.assertEqual(actual, rows)
                 self.assertEqual(len(seen), 1)
 
+    def test_image_workers_reach_extractors_that_accept_them(self):
+        rows = [{"candidate_id": "one"}]
+        frame = pd.DataFrame({"a": [1.]})
+        module = SimpleNamespace(
+            ANALYSIS_TIMING_GROUPS=[{"key": "needed", "feature_names": ["a"]}],
+            sample_display=lambda row: row["candidate_id"])
+        received = []
+
+        def threaded(working, verbose=True, enabled_analysis_keys=None, image_workers=1):
+            received.append(image_workers)
+            return rows, [0], SimpleNamespace(to_frame=lambda: frame)
+
+        def serial(working, verbose=True, enabled_analysis_keys=None):
+            received.append("absent")
+            return rows, [0], SimpleNamespace(to_frame=lambda: frame)
+
+        module._extract_features_runtime = threaded
+        with redirect_stdout(io.StringIO()):
+            pc._extract_candidate_features({}, module, rows, ["a"], image_workers=40)
+            pc._extract_candidate_features({}, module, rows, ["a"])
+        module._extract_features_runtime = serial
+        with redirect_stdout(io.StringIO()):
+            pc._extract_candidate_features({}, module, rows, ["a"], image_workers=40)
+        self.assertEqual(received, [40, 0, "absent"])
+
+    def test_image_workers_flag_is_validated_before_loading(self):
+        with redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                pc.main(["--brain", "1", "--pkl", "unused", "--image-workers", "-2"])
+
     def test_removed_preparation_flags_rejected_before_loading(self):
         for main, prefix in (
                 (pc.main, ["--brain", "1", "--pkl", "unused"]),

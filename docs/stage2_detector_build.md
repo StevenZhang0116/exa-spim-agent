@@ -81,6 +81,16 @@ sbatch --mem=80G --wrap="\
         cache/dataset_cache_<brain>_mcl<N>_add.pkl"
 ```
 
+Any detector with an image-derived hypothesis runs its image pass through a
+bounded thread pool (`--n-jobs N`). Since 2026-10-21 this holds for any image
+hypothesis; before that only when image hypotheses were a strict majority,
+which left the 2026-10-19/20 builds serial at about 3 rows/s. The pass waits
+on S3, so `N` may exceed the CPU count; rows are submitted in a chunk-friendly
+spatial order (`_image_row_order`) and the volume is opened with a cache pool
+and S3 request limit sized for the pool (`_image_store_context`). Stage 3
+scores every brain with the same extraction code, so this throughput is what
+Stage 3 pays.
+
 The runbook first profiles feature cost on a small sample (`--measuretime`;
 `agentic/run_feature_cost_analysis.py` adds the complementary code-structure
 view), then runs the chosen hypotheses on the full brain with average precision

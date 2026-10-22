@@ -254,6 +254,15 @@ scope. Features for one row may share its patches, but no NumPy image array may
 remain cached after that row returns; an extraction-wide patch cache grows with
 the dataset and is forbidden.
 
+Whenever any included hypothesis reads the image (phase `image_patch_pass`), the
+image pass is thread-aware: `extract_features` accepts `image_workers=1`,
+resolves it with the runtime's `_resolve_image_worker_count`, submits rows to
+`_bounded_thread_map` in the order of `_image_row_order(anchor_xyz_um)`, stores
+results by row id, opens the volume once with
+`ts.open(spec, context=_image_store_context(workers))`, and forces one worker
+when `timing is not None`. The pass waits on S3, so this holds for a single
+image hypothesis as much as for a majority. A graph-only build stays serial.
+
 Remove install and sandbox scaffolding. Do not implement or edit model
 configuration, estimators, nested CV, figures, output files, logging
 infrastructure, CLI parsing, `AnalysisTimingRecorder`,

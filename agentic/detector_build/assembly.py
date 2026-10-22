@@ -45,6 +45,8 @@ RUNTIME_OWNED_SYMBOLS = frozenset({
     "write_hypothesis_cost_artifacts", "_collect_measuretime_versions",
     "run_measuretime", "_available_cpu_count", "_resolve_image_worker_count",
     "_bounded_thread_map", "_memoized", "_extract_features_runtime",
+    "_image_row_order", "_image_store_context", "_IMAGE_ROW_BLOCK_UM",
+    "_IMAGE_CACHE_POOL_BYTES", "_IMAGE_S3_CONCURRENCY_FLOOR",
     "DETECTOR_TARGET", "DETECTOR_FILENAME", "OUTPUT_PREFIX", "ROW_UNIT",
     "ROW_UNIT_PLURAL", "LABEL_NAME", "POSITIVE_NAME", "NEGATIVE_NAME",
     "SCORE_PREFIX", "CANDIDATE_POLICY_CONFIG_ID", "CANDIDATE_PAIRING_RULE",
@@ -440,11 +442,14 @@ def _validate_timing_contract(tree: ast.Module, path: Path) -> set[str]:
         if group["phase"] == "image_patch_pass"
         for hypothesis_id in group["hypothesis_ids"]
     }
-    image_heavy = len(image_hypothesis_ids) * 2 > len(hypothesis_owner)
-    if image_heavy:
+    # Any image-derived hypothesis makes the image pass thread-aware: the pass
+    # waits on S3 reads, so one image hypothesis costs the serial loop as much
+    # as a majority would (since 2026-10-21; a strict majority before).
+    image_pass = bool(image_hypothesis_ids)
+    if image_pass:
         if len(positional) < 6 or positional[5].arg != "image_workers":
             raise SystemExit(
-                "Image-heavy extract_features must accept image_workers after "
+                "Image-pass extract_features must accept image_workers after "
                 "profile_segment_limit."
             )
         worker_default_index = 5 - default_start
@@ -454,19 +459,29 @@ def _validate_timing_contract(tree: ast.Module, path: Path) -> set[str]:
                     extract.args.defaults[worker_default_index], ast.Constant)
                 or extract.args.defaults[worker_default_index].value != 1):
             raise SystemExit(
-                "Image-heavy extract_features image_workers must default to 1."
+                "Image-pass extract_features image_workers must default to 1."
             )
         called_names = {
             node.func.id for node in ast.walk(extract)
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
         }
         required_helpers = {
-            "_bounded_thread_map", "_resolve_image_worker_count"
+            "_bounded_thread_map", "_resolve_image_worker_count",
+            "_image_row_order",
         }
         if not required_helpers.issubset(called_names):
             raise SystemExit(
-                "Image-heavy extract_features must use the runtime bounded "
-                "thread-map and automatic worker-count helpers."
+                "Image-pass extract_features must use the runtime bounded "
+                "thread-map, worker-count and _image_row_order helpers."
+            )
+        module_called_names = {
+            node.func.id for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        if "_image_store_context" not in module_called_names:
+            raise SystemExit(
+                "Image-pass feature code must open the image volume with the "
+                "runtime _image_store_context(workers) TensorStore context."
             )
         accumulator_classes = [
             node for node in tree.body
@@ -499,7 +514,7 @@ def _validate_timing_contract(tree: ast.Module, path: Path) -> set[str]:
             )
             if lock_constructors or set_uses_context_manager:
                 raise SystemExit(
-                    "Image-heavy accumulator set() must not acquire a shared "
+                    "Image-pass accumulator set() must not acquire a shared "
                     "per-feature write lock; give each row one worker owner or "
                     "commit row-local results in the parent thread."
                 )

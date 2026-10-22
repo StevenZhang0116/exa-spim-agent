@@ -169,8 +169,9 @@ class NativePoolTests(unittest.TestCase):
             source.write_bytes(b"synthetic labeled cache placeholder")
             seen = {}
 
-            def build(data, kind, module, bundle, pool_policy=None):
+            def build(data, kind, module, bundle, pool_policy=None, image_workers=0):
                 seen[kind] = pool_policy
+                self.assertEqual(image_workers, 0)
                 rows = [{"segment_id": 1, "node_id": 0}] if kind == "merge" else [{"segment_id_a": 1, "segment_id_b": 2}]
                 return native.NativeTable(kind, pd.DataFrame({"detector_score": [.5]}), rows, np.array([1]),
                                           {"pool_sha256": native.pool_digest(kind, rows), "rows": 1})
@@ -250,7 +251,7 @@ class NativePoolTests(unittest.TestCase):
             source = root / "dataset_cache_1_mcl100_add.pkl"
             source.write_bytes(b"synthetic labeled cache placeholder")
             built = []
-            def build(data, kind, module, bundle, pool_policy=None):
+            def build(data, kind, module, bundle, pool_policy=None, image_workers=0):
                 rows = [{"segment_id": 1, "node_id": 0}] if kind == "merge" else [{"segment_id_a": 1, "segment_id_b": 2}]
                 built.append(kind)
                 return native.NativeTable(kind, pd.DataFrame({"detector_score": [.5]}), rows, np.array([1]),

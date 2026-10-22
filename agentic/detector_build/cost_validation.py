@@ -384,7 +384,10 @@ class Analyzer:
         if base.axes and base.cls not in {"@module", "@external"}:
             values.insert(0, base)
         value = combined(values)
-        if name in REDUCTIONS | SCANS | INDEXES | ELEMENTWISE | ARRAY_WRAPPERS or name == "sorted":
+        if (name in REDUCTIONS | SCANS | INDEXES | ELEMENTWISE | ARRAY_WRAPPERS
+                or name in {"sorted", "_image_row_order"}):
+            # _image_row_order is the runtime's one-time sort of the image-pass
+            # rows (a pre-pass, like sorted); its cost follows its argument.
             # asarray may be zero-copy; other array transforms can traverse data.
             if name != "asarray":
                 self.work(node, name, value)
@@ -415,7 +418,8 @@ class Analyzer:
             self.work(node, name, value)
             return combined(values, axes=())
         benign = {"start_analysis", "stop_analysis", "start_phase", "stop_phase", "set",
-                  "append", "add", "print", "sample_display", "compatible_occurrences"}
+                  "append", "add", "print", "sample_display", "compatible_occurrences",
+                  "_image_store_context"}
         if self.row:
             # Timing, recording and logging calls do not inspect feature arrays.
             if name not in benign:

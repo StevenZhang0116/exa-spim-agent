@@ -356,16 +356,18 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             )
             validate_feature_implementation(feature)
 
-    def test_image_heavy_feature_fragment_requires_bounded_threads(self) -> None:
+    def test_image_pass_feature_fragment_requires_bounded_threads(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             feature = Path(tmpdir) / "feature.py"
+            # One image hypothesis among graph ones is enough: the image pass
+            # waits on S3, so the rule no longer asks for a strict majority.
             serial_source = (
                 "FEATURE_REGISTRY = [('x',), ('y',)]\n"
                 "ANALYSIS_TIMING_GROUPS = [\n"
                 "    {'key': 'hypo_1', 'hypothesis_ids': [1], "
                 "'phase': 'image_patch_pass', 'feature_names': ['x']},\n"
                 "    {'key': 'hypo_2', 'hypothesis_ids': [2], "
-                "'phase': 'image_patch_pass', 'feature_names': ['y']},\n"
+                "'phase': 'graph_walk_pass', 'feature_names': ['y']},\n"
                 "]\n"
                 "COMPUTATION_PLAN = [{\n"
                 "    'primitive': 'row_math', 'cost_class': 'constant',\n"
@@ -389,7 +391,7 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "must accept image_workers"):
                 validate_feature_implementation(feature)
 
-            threaded_source = serial_source.replace(
+            unordered_source = serial_source.replace(
                 "profile_segment_limit=None):",
                 "profile_segment_limit=None, image_workers=1):",
             ).replace(
@@ -398,7 +400,32 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                 "    workers = _resolve_image_worker_count(image_workers)\n"
                 "    list(_bounded_thread_map(lambda item: item, [], workers))\n",
             )
+            feature.write_text(unordered_source)
+            with self.assertRaisesRegex(SystemExit, "_image_row_order"):
+                validate_feature_implementation(feature)
+
+            no_context_source = unordered_source.replace(
+                "    workers = _resolve_image_worker_count(image_workers)\n",
+                "    workers = _resolve_image_worker_count(image_workers)\n"
+                "    order = _image_row_order([[0.0, 0.0, 0.0]])\n",
+            )
+            feature.write_text(no_context_source)
+            with self.assertRaisesRegex(SystemExit, "_image_store_context"):
+                validate_feature_implementation(feature)
+
+            threaded_source = no_context_source.replace(
+                "    order = _image_row_order([[0.0, 0.0, 0.0]])\n",
+                "    order = _image_row_order([[0.0, 0.0, 0.0]])\n"
+                "    context = _image_store_context(workers)\n",
+            )
             feature.write_text(threaded_source)
+            validate_feature_implementation(feature)
+
+            graph_only_source = serial_source.replace(
+                "'phase': 'image_patch_pass', 'feature_names': ['x']",
+                "'phase': 'graph_walk_pass', 'feature_names': ['x']",
+            )
+            feature.write_text(graph_only_source)
             validate_feature_implementation(feature)
 
             locked_source = threaded_source.replace(
@@ -441,6 +468,8 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
                     "        timing.start_phase('image_patch_pass')\n"
                     "        timing.start_analysis('hypo_1')\n"
                     "    workers = _resolve_image_worker_count(image_workers)\n"
+                    "    order = _image_row_order([[0.0, 0.0, 0.0]])\n"
+                    "    context = _image_store_context(workers)\n"
                     "    def _cached_patch(patch_cache):\n"
                     "        return _memoized(patch_cache, ('center', 'shape'), lambda: 1)\n"
                     + cache_setup +
@@ -1242,6 +1271,9 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertNotIn("pending.popleft().result()", template)
         self.assertIn("def _available_cpu_count", template)
         self.assertIn("def _resolve_image_worker_count", template)
+        self.assertIn("def _image_row_order", template)
+        self.assertIn("def _image_store_context", template)
+        self.assertIn("s3_request_concurrency", template)
         self.assertIn("def _memoized", template)
         self.assertIn("def _extract_features_runtime", template)
         self.assertIn("default=0", template)
@@ -1300,6 +1332,62 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         namespace["os"] = types.SimpleNamespace(cpu_count=lambda: 6)
         self.assertEqual(resolve(-1), 6)
         self.assertEqual(resolve(0), 6)
+
+    def test_runtime_image_row_order_groups_rows_by_block(self) -> None:
+        import numpy as np
+
+        tree = ast.parse(workflow.RUNTIME_TEMPLATE_PATH.read_text())
+        nodes = [
+            node for node in tree.body
+            if (isinstance(node, ast.FunctionDef) and node.name == "_image_row_order")
+            or (isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "_IMAGE_ROW_BLOCK_UM"
+                for target in node.targets))
+        ]
+        namespace = {"np": np}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]),
+                     "<image-row-order>", "exec"), namespace)
+        order_fn = namespace["_image_row_order"]
+
+        xyz = np.array([
+            [500.0, 10.0, 10.0],    # block (7, 0, 0)
+            [10.0, 10.0, 10.0],     # block (0, 0, 0)
+            [np.nan, 0.0, 0.0],     # non-finite: last
+            [20.0, 20.0, 20.0],     # block (0, 0, 0), after row 1
+            [10.0, 10.0, 200.0],    # block (0, 0, 3): z is the primary key
+        ])
+        order = order_fn(xyz)
+        self.assertEqual(order.dtype, np.int64)
+        self.assertEqual(sorted(order.tolist()), [0, 1, 2, 3, 4])
+        self.assertEqual(order.tolist(), [1, 3, 0, 4, 2])
+        self.assertEqual(order_fn(np.zeros((0, 3))).tolist(), [])
+        with self.assertRaisesRegex(ValueError, r"\(n, 3\)"):
+            order_fn(np.zeros((3, 2)))
+
+    def test_runtime_image_store_context_scales_with_workers(self) -> None:
+        tree = ast.parse(workflow.RUNTIME_TEMPLATE_PATH.read_text())
+        nodes = [
+            node for node in tree.body
+            if (isinstance(node, ast.FunctionDef) and node.name == "_image_store_context")
+            or (isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name)
+                and target.id in {"_IMAGE_CACHE_POOL_BYTES", "_IMAGE_S3_CONCURRENCY_FLOOR"}
+                for target in node.targets))
+        ]
+        recorded = []
+        fake_ts = types.SimpleNamespace(Context=lambda spec: recorded.append(spec) or spec)
+        namespace = {}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]),
+                     "<image-store-context>", "exec"), namespace)
+        with patch.dict(sys.modules, {"tensorstore": fake_ts}):
+            spec_40 = namespace["_image_store_context"](40)
+            spec_1 = namespace["_image_store_context"](1)
+        self.assertEqual(spec_40["cache_pool"]["total_bytes_limit"], 4 << 30)
+        self.assertEqual(spec_40["s3_request_concurrency"]["limit"], 80)
+        self.assertEqual(spec_40["data_copy_concurrency"]["limit"], 40)
+        self.assertEqual(spec_1["s3_request_concurrency"]["limit"], 32)
+        self.assertEqual(spec_1["data_copy_concurrency"]["limit"], 4)
+        self.assertEqual(len(recorded), 2)
 
     def test_runtime_bounded_thread_map_yields_completion_order(self) -> None:
         tree = ast.parse(workflow.RUNTIME_TEMPLATE_PATH.read_text())
@@ -1958,11 +2046,17 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertIn("enabled_analysis_keys=None", generate)
         self.assertIn("profile_segment_limit=None", generate)
         self.assertIn("image_workers=1", generate)
-        self.assertIn("strict\nmajority", generate)
+        self.assertIn("any included hypothesis id is image-derived", generate)
+        self.assertNotIn("strict\nmajority", generate)
         self.assertIn("_bounded_thread_map", generate)
+        self.assertIn("_image_row_order(anchor_xyz_um)", generate)
+        self.assertIn("context=_image_store_context(workers)", generate)
         self.assertIn("`-1`\n  uses every CPU", generate)
         self.assertIn("force one image worker whenever `timing is not None`", generate)
-        self.assertIn("half or fewer", generate)
+        self.assertIn("graph-only build", generate)
+        self.assertNotIn("half or fewer", generate)
+        self.assertIn("owns any included hypothesis id", verify)
+        self.assertIn("_image_store_context", verify)
         self.assertIn("default limit of\n3", generate)
         self.assertIn("final-run selection unit", generate)
         self.assertIn("does not make the final\ndecision automatically", generate)

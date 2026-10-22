@@ -150,6 +150,10 @@ There are no default frozen detectors since 2026-10-17 ([Stage 2](stage2_detecto
 `runs/<brain>-<purpose>/` run directories, which the resolver binds to the script through
 the run's recorded detector SHA-256), or set `DEFAULT_MERGE_DIR` / `DEFAULT_SPLIT_DIR` in
 `proofreader_evolve/cli/precompute_error_scores.py` once the new detectors exist.
+The detectors' image pass is threaded (2026-10-21): pass `--image-workers N` to
+`precompute_error_scores.py` (0 = auto capped at 8, -1 = all CPUs; the pass waits
+on S3, so N may exceed the CPU count), which reaches every detector whose extraction
+entry accepts `image_workers`; older detectors run as before.
 Detector-fitted brains cannot be validation brains. The reviser requires
 `ANTHROPIC_API_KEY`; preparation and baseline-only evaluation do not call an LLM.
 

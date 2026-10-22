@@ -11,6 +11,7 @@ reused; corrupt or mismatched tables are never silently replaced.
 import argparse
 import hashlib
 import importlib.util
+import inspect
 import json
 import sys
 from datetime import datetime
@@ -178,8 +179,13 @@ def _model_analysis_keys(module, feature_order):
     return {owners[name] for name in required}
 
 
-def _extract_candidate_features(payload, module, samples, feature_order):
-    """Extract only model-required groups on the unchanged GT-free universe."""
+def _extract_candidate_features(payload, module, samples, feature_order, image_workers=0):
+    """Extract only model-required groups on the unchanged GT-free universe.
+
+    ``image_workers`` reaches a detector whose extraction entry accepts it (the
+    runtime's image pass: 0 = auto capped at 8, -1 = all CPUs, N = N threads);
+    older detectors without the parameter run as before.
+    """
     enabled = _model_analysis_keys(module, feature_order)
     skipped = sorted(group["key"] for group in module.ANALYSIS_TIMING_GROUPS
                      if group["key"] not in enabled)
@@ -189,12 +195,22 @@ def _extract_candidate_features(payload, module, samples, feature_order):
                if not key.startswith("gt_") and not key.startswith("__detector_")}
     working["__detector_sample_universe_cache__"] = (samples, np.zeros(len(samples), dtype=np.int64))
     extractor = getattr(module, "_extract_features_runtime", None)
-    if extractor is not None:
-        rows, labels, accumulator = extractor(working, verbose=True, enabled_analysis_keys=enabled)
-    else:
+    direct = extractor is None
+    if direct:
+        extractor = module.extract_features
+    kwargs = {"verbose": True, "enabled_analysis_keys": enabled}
+    try:
+        accepts_workers = "image_workers" in inspect.signature(extractor).parameters
+    except (TypeError, ValueError):
+        accepts_workers = False
+    if accepts_workers:
+        kwargs["image_workers"] = int(image_workers)
+        log(f"[extract] image_workers={int(image_workers)} (0 = auto capped at 8, -1 = all CPUs)")
+    if direct:
         view = module._BlindPayloadView(working, samples) if hasattr(module, "_BlindPayloadView") else working
-        rows, labels, accumulator = module.extract_features(view, verbose=True,
-                                                            enabled_analysis_keys=enabled)
+        rows, labels, accumulator = extractor(view, **kwargs)
+    else:
+        rows, labels, accumulator = extractor(working, **kwargs)
     identity = module.sample_display
     if [identity(row) for row in rows] != [identity(row) for row in samples]:
         raise RuntimeError("Detector extraction changed candidate identity/order")
@@ -257,11 +273,16 @@ def main(argv=None):
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT))
     parser.add_argument("--merge-dir", action="append", help="One merge-junction detector directory")
     parser.add_argument("--split-dir", action="append", help="One split-site detector directory")
+    parser.add_argument("--image-workers", type=int, default=0,
+                        help="threads for the detectors' image pass (S3-bound, may exceed the CPU "
+                             "count): 0 = auto capped at 8, -1 = all CPUs, N = N threads")
     args = parser.parse_args(argv)
+    if args.image_workers < -1:
+        parser.error("--image-workers must be -1, zero, or a positive integer")
     from proofreader_evolve.harness.native_pool import ensure_native_tables
     selected = resolve_detector_runs(args.merge_dir, args.split_dir)
     bank = ensure_native_tables(args.brain, args.pkl, selected, args.out_dir,
-                                prepare=True, mcl=args.mcl)
+                                prepare=True, mcl=args.mcl, image_workers=args.image_workers)
     log(json.dumps(bank.meta, indent=2))
     log("# OK (fixed native pool)")
     return 0

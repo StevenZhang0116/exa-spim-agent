@@ -122,7 +122,7 @@ def build_native_universe(payload, kind, module, pool_policy=None):
     return safe, truth.astype(np.int8), meta
 
 
-def build_native_table(payload, kind, module, bundle, pool_policy=None):
+def build_native_table(payload, kind, module, bundle, pool_policy=None, image_workers=0):
     """Native universe and native feature aggregation, not evolution approximations.
 
     Rows come from ``candidate_rules`` under ``pool_policy`` (None means the declared rule);
@@ -137,7 +137,8 @@ def build_native_table(payload, kind, module, bundle, pool_policy=None):
     # used annotations to attach evaluator-only labels after geometric selection.
     working = {"fragments_graph": payload["fragments_graph"], **inference_metadata(payload)}
     if safe:
-        _, accumulator = pc._extract_candidate_features(working, module, safe, bundle["feature_order"])
+        _, accumulator = pc._extract_candidate_features(working, module, safe, bundle["feature_order"],
+                                                        image_workers=image_workers)
         features = accumulator.to_frame().reset_index(drop=True)[list(bundle["feature_order"])].copy()
         scores = pc._score(bundle["pipeline"], features.to_numpy(dtype=float))
     else:
@@ -172,7 +173,8 @@ class NativeTables:
     meta: dict
 
 
-def ensure_native_tables(brain, source_path, selected, tables_dir, prepare=False, mcl=100):
+def ensure_native_tables(brain, source_path, selected, tables_dir, prepare=False, mcl=100,
+                         image_workers=0):
     """Build once or load exact native pools; old capped tables never match."""
     from proofreader_evolve.cli import precompute_error_scores as pc
     brain = str(brain)
@@ -221,7 +223,8 @@ def ensure_native_tables(brain, source_path, selected, tables_dir, prepare=False
                 if list(bundle["feature_order"]) != provenance["training"]["feature_order"]:
                     raise ValueError("Model-selection metadata and fitted feature schema disagree")
                 table = build_native_table(payload, kind, module, bundle,
-                                           pool_policy=provenance["pool_policy"])
+                                           pool_policy=provenance["pool_policy"],
+                                           image_workers=image_workers)
                 table.meta["training_brain"] = provenance["training"]["brain"]
                 pc._assert_detector_unchanged(record)
                 if training_provenance(record) != provenance["training"]:

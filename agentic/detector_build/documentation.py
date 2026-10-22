@@ -568,7 +568,7 @@ python "$DETECTOR" "$DATA_PKL" \\
     --out-dir "$RUN_DIR" \\
     --out-csv "$RUN_DIR/{prefix}_${{BRAIN}}.csv" \\
     --log-txt "$RUN_DIR/{prefix}_${{BRAIN}}.log.txt" \\
-    --n-jobs 2 \\
+    --n-jobs 32 \\
     --model-jobs 4 \\
     --no-figures
 ```
@@ -597,7 +597,7 @@ python "$DETECTOR" "$DATA_PKL" \\
     --out-dir "$RUN_DIR" \\
     --out-csv "$RUN_DIR/{prefix}_${{BRAIN}}.csv" \\
     --log-txt "$RUN_DIR/{prefix}_${{BRAIN}}.log.txt" \\
-    --n-jobs 2 \\
+    --n-jobs 32 \\
     --model-jobs 4 \\
     --no-figures
 ```
@@ -617,12 +617,16 @@ original all-hypothesis behavior.
 
 Real ExaSPIM caches can require tens of GB and component traversal can take
 hours. Use a compute node, request at least 80 GB RAM unless a measured profile
-justifies less, and allow several hours. For an image-heavy generated detector,
-`--n-jobs N` controls the bounded `image_patch_pass` thread pool (`0` selects up
-to 8 workers automatically, `-1` uses every CPU reported as available, and `1`
-is the exact serial path). On Linux, “available” honors the process affinity or
-Slurm cpuset before falling back to the host CPU count. Graph-only and rare-image
-detectors keep serial extraction and ignore this worker setting.
+justifies less, and allow several hours. For a detector with any image-derived
+hypothesis, `--n-jobs N` controls the bounded `image_patch_pass` thread pool
+(`0` selects up to 8 workers automatically, `-1` uses every CPU reported as
+available, and `1` is the exact serial path). The pass waits on S3 reads, not
+on CPU, so `N` may exceed the CPU count (40 is reasonable on a node with a fast
+uplink); rows are read in a chunk-friendly spatial order and the volume is
+opened with a cache pool and S3 request limit sized for the pool. On Linux,
+“available” honors the process affinity or Slurm cpuset before falling back to
+the host CPU count. Graph-only detectors keep serial extraction and ignore this
+worker setting.
 `--model-jobs N` additionally parallelizes each tree/boosting estimator fit
 (random_forest, extra_trees, xgboost) with N threads. It changes wall-clock
 only: seeds, CV structure, scores, and model selection are bitwise identical to
@@ -638,7 +642,7 @@ python "$DETECTOR" "$DATA_PKL" \\
     --out-dir "$RUN_DIR" \\
     --out-csv "$RUN_DIR/{prefix}_${{BRAIN}}.csv" \\
     --log-txt "$RUN_DIR/{prefix}_${{BRAIN}}.log.txt" \\
-    --n-jobs 2 \\
+    --n-jobs 32 \\
     --model-jobs 4 \\
     --no-figures
 ```
@@ -673,7 +677,7 @@ python "$DETECTOR" "$DATA_PKL" \\
     --out-csv "$RUN_DIR/{prefix}_${{BRAIN}}.csv" \\
     --log-txt "$RUN_DIR/{prefix}_${{BRAIN}}.log.txt" \\
     --fig-dir "$RUN_DIR/figures" \\
-    --n-jobs 2 \\
+    --n-jobs 32 \\
     --model-jobs 4
 ```
 
@@ -692,7 +696,7 @@ python "$DETECTOR" "$DATA_PKL" \\
     --out-csv "$RUN_DIR/{prefix}_${{BRAIN}}_exclude_empty.csv" \\
     --log-txt "$RUN_DIR/{prefix}_${{BRAIN}}_exclude_empty.log.txt" \\
     --exclude-empty \\
-    --n-jobs 2 \\
+    --n-jobs 32 \\
     --model-jobs 4 \\
     --no-figures
 ```
@@ -714,7 +718,7 @@ python "$DETECTOR" "$DATA_PKL" \\
     --out-csv "$RUN_DIR/{prefix}_${{BRAIN}}.csv" \\
     --log-txt "$RUN_DIR/{prefix}_${{BRAIN}}.log.txt" \\
     --fig-dir "$RUN_DIR/figures" \\
-    --n-jobs 2 \\
+    --n-jobs 32 \\
     --model-jobs 4
 ```
 
@@ -733,7 +737,7 @@ sbatch \\
     --job-name={job_name} \\
     --output="$RUN_DIR/slurm-%j.out" \\
     --chdir={q_root} \\
-    --wrap="source /shared/utils.x86_64/anaconda3-2024.10/etc/profile.d/conda.sh && conda activate panda && python \\\"$DETECTOR\\\" \\\"$DATA_PKL\\\" --model-config \\\"$MODEL_CONFIG\\\" --inventory \\\"$INVENTORY\\\" --out-dir \\\"$RUN_DIR\\\" --out-csv \\\"$RUN_DIR/{prefix}_${{BRAIN}}.csv\\\" --log-txt \\\"$RUN_DIR/{prefix}_${{BRAIN}}.log.txt\\\" --n-jobs 2 --model-jobs 4 --no-figures"
+    --wrap="source /shared/utils.x86_64/anaconda3-2024.10/etc/profile.d/conda.sh && conda activate panda && python \\\"$DETECTOR\\\" \\\"$DATA_PKL\\\" --model-config \\\"$MODEL_CONFIG\\\" --inventory \\\"$INVENTORY\\\" --out-dir \\\"$RUN_DIR\\\" --out-csv \\\"$RUN_DIR/{prefix}_${{BRAIN}}.csv\\\" --log-txt \\\"$RUN_DIR/{prefix}_${{BRAIN}}.log.txt\\\" --n-jobs 32 --model-jobs 4 --no-figures"
 ```
 
 Check status and follow the logs with:

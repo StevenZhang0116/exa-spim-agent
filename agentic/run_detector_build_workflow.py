@@ -1371,11 +1371,12 @@ row universe and exact normal-run behavior. The runtime passes a default limit o
 {measuretime_scope}
 
 Choose image-patch concurrency mechanically from ANALYSIS_TIMING_GROUPS after
-the inventory has been implemented. Count included hypothesis ids (not feature
-columns): an id is image-derived when its actual phase reads the image and must
-use the exact phase name `image_patch_pass`. If image-derived ids are a strict
-majority of all included hypothesis ids, make the candidate/segment image pass
-thread-aware through `image_workers`:
+the inventory has been implemented. An id is image-derived when its actual
+phase reads the image and must use the exact phase name `image_patch_pass`. If
+any included hypothesis id is image-derived, make the candidate/segment image
+pass thread-aware through `image_workers`: the pass waits on S3 reads, not on
+CPU, so one image hypothesis costs the serial loop as much as fifty would, and
+the same extraction code later scores every benchmark brain in Stage 3:
 - `image_workers=1` is the exact serial path; `0` calls the runtime-provided
   `_resolve_image_worker_count`, which caps automatic parallelism at 8; `-1`
   uses every CPU available to the process, honoring `os.sched_getaffinity(0)`
@@ -1397,14 +1398,23 @@ thread-aware through `image_workers`:
   but patch caches remain candidate-local and bounded. Initialize `patch_cache = {{}}`
   inside the per-row worker, never in `extract_features` scope, and do not retain
   image arrays after that row returns;
+- submit image-pass rows in the order returned by the runtime-provided
+  `_image_row_order(anchor_xyz_um)` (the rows' anchor coordinates in row
+  order; it returns a permutation of row indices grouped by 64 um block, so
+  neighbouring rows reuse the zarr chunks the cache pool already holds) and
+  store every result by its row id; use the same order on the serial path;
+- open the volume once with `ts.open(spec, context=_image_store_context(workers))`,
+  where `workers` is the resolved worker count: the runtime-provided context
+  sizes the TensorStore cache pool and S3 request concurrency for the thread
+  pool, and a volume opened without it is a defect;
 - force one image worker whenever `timing is not None`, because
   AnalysisTimingRecorder intentionally attributes one active hypothesis at a
   time; `--measuretime` must therefore remain comparable and deterministic;
 - print the resolved worker count in the image-pass start record.
-If image-derived ids are half or fewer—including graph-only runs and runs with
-only rare image access—keep the existing serial traversal. Still accept the
-`image_workers=1` argument for the runtime contract, but do not create a thread
-pool. Do not parallelize graph traversal merely because worker helpers exist.
+When no included hypothesis id is image-derived (a graph-only build), keep the
+existing serial traversal. Still accept the `image_workers=1` argument for the
+runtime contract, but do not create a thread pool. Do not parallelize graph
+traversal merely because worker helpers exist.
 
 IMAGE LOCATION. An image-derived feature opens the raw volume at
 `payload["img_path"]` (the cache's public S3 OME-Zarr path, passed through the
@@ -1415,8 +1425,9 @@ companion manifest and no hard-coded bucket path: never read
 to a stand-in value. When `img_path` is absent or empty (Stage 3 scores the
 benchmark tables with only `fragments_graph`, `min_cable_length` and
 `img_path`), every image feature is undefined (NaN, is_defined 0) and
-extraction continues without raising. Open the volume once per extraction and
-read patches per row; do not probe the volume at import time.
+extraction continues without raising. Open the volume once per extraction with
+the runtime-provided `_image_store_context`, read patches per row in
+`_image_row_order`, and do not probe the volume at import time.
 
 When `verbose=True`, additionally print flushed, machine-searchable start/done
 records for long segment/component work so the last durable line identifies the
@@ -1527,14 +1538,15 @@ VERIFY READ-ONLY BEFORE DOCUMENTING
    rows and must not appear; use pandas .corr(method="spearman") on a
    capped row sample instead). A mismatch
    between plan and code is a defect to report, not to silently fix. If `image_patch_pass`
-   owns a strict majority of included hypothesis ids, normal extraction uses
-   the runtime's bounded completion-order thread map, honors `--n-jobs` (-1 =
-   all available CPUs, 0 = auto capped at 8, 1 = serial), assigns each row to
-   one worker without adding a shared per-feature write lock around runtime
-   accumulator calls, preserves stable output
-   placement by row id, and logs the worker count;
-   timing mode forces the identical serial path. If image ids are half or fewer,
-   extraction remains serial and does not create a thread pool.
+   owns any included hypothesis id, normal extraction uses the runtime's
+   bounded completion-order thread map over rows submitted in
+   `_image_row_order`, opens the volume with `_image_store_context`, honors
+   `--n-jobs` (-1 = all available CPUs, 0 = auto capped at 8, 1 = serial),
+   assigns each row to one worker without adding a shared per-feature write lock
+   around runtime accumulator calls, preserves stable output placement by row
+   id, and logs the worker count; timing mode forces the identical serial path.
+   A graph-only build (no image-derived id) remains serial and does not create
+   a thread pool.
    `--measuretime` profiles candidate work on its small deterministic segment
    sample, separately accounts for any required global pre-pass, and writes the
    schema-v2 timing JSON, ranked hypothesis cost report, and editable schema-v1
