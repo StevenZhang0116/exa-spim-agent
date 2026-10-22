@@ -1389,6 +1389,67 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
         self.assertEqual(spec_1["data_copy_concurrency"]["limit"], 4)
         self.assertEqual(len(recorded), 2)
 
+    def _template_namespace(self, names: set[str], namespace: dict) -> dict:
+        tree = ast.parse(workflow.RUNTIME_TEMPLATE_PATH.read_text())
+        nodes = [
+            node for node in tree.body
+            if (isinstance(node, (ast.FunctionDef, ast.ClassDef)) and node.name in names)
+            or (isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id in names
+                for target in node.targets))
+        ]
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), "<template>", "exec"), namespace)
+        return namespace
+
+    def test_runtime_queue_printer_tolerates_unjudgeable_labels(self) -> None:
+        import io
+        from contextlib import redirect_stdout
+
+        import numpy as np
+
+        namespace = self._template_namespace(
+            {"_print_queue"},
+            {"np": np, "sample_display": lambda s: str(s), "LABEL_NAME": "label"})
+        samples = ["a", "b", "c"]
+        labels = np.array([np.nan, 1.0, 0.0])
+        scores = np.array([0.9, 0.5, 0.1])
+        out = io.StringIO()
+        with redirect_stdout(out):
+            namespace["_print_queue"](samples, labels, scores, 3, "QUEUE")
+        lines = [line for line in out.getvalue().splitlines() if line.strip().startswith(("1 ", "2 ", "3 "))]
+        self.assertEqual(len(lines), 3)
+        self.assertTrue(lines[0].rstrip().endswith("-"), lines[0])
+        self.assertTrue(lines[1].rstrip().endswith("1"), lines[1])
+        self.assertTrue(lines[2].rstrip().endswith("0"), lines[2])
+
+    def test_runtime_blind_view_blocks_every_gt_key(self) -> None:
+        import numpy as np
+
+        namespace = self._template_namespace(
+            {"_GT_PAYLOAD_KEYS", "_SAMPLE_AUDIT_KEYS", "_is_gt_key", "BlindnessViolation",
+             "_blind_sample", "_BlindPayloadView"},
+            {"np": np})
+        self.assertIn("gt_label_policy", namespace["_GT_PAYLOAD_KEYS"])
+        view = namespace["_BlindPayloadView"](
+            {"fragments_graph": "graph", "gt_label_policy": {"x": 1}, "gt_future_key": 2}, [])
+        violation = namespace["BlindnessViolation"]
+        self.assertEqual(view["fragments_graph"], "graph")
+        for key in ("gt_label_policy", "gt_future_key", "gt_graph"):
+            with self.assertRaises(violation):
+                view[key]
+            with self.assertRaises(violation):
+                view.get(key, None)
+            self.assertNotIn(key, view)
+            with self.assertRaises(violation):
+                view[key] = 1
+        self.assertEqual(view.keys(), ["fragments_graph"])
+
+    def test_runtime_rejects_same_cache_for_heldout_and_requires_inventory(self) -> None:
+        template = workflow.RUNTIME_TEMPLATE_PATH.read_text()
+        self.assertIn("--test-pkl must be a different cache than the training pkl", template)
+        self.assertIn("training requires a readable --inventory file", template)
+        self.assertNotIn("re-verified at those files' original locations", template)
+
     def test_runtime_bounded_thread_map_yields_completion_order(self) -> None:
         tree = ast.parse(workflow.RUNTIME_TEMPLATE_PATH.read_text())
         bounded_map = next(
@@ -1612,11 +1673,10 @@ class DetectorBuildWorkflowTests(unittest.TestCase):
             self.assertNotIn("hand-authored selection. Omitting\nOmitting", text)
             self.assertIn("--mem=80G", text)
             self.assertIn("conda list --explicit", text)
-            self.assertIn("Generate the bilingual result-analysis report", text)
-            self.assertIn('run_detector_result_analysis.py "$RUN_DIR"', text)
-            self.assertIn("result_analysis_evidence.json", text)
-            self.assertIn("complete English", text)
-            self.assertIn("complete Chinese translation", text)
+            self.assertIn("Feature-importance short report", text)
+            self.assertIn('run_detector_importance_report.py "$RUN_DIR"', text)
+            self.assertIn("importance_evidence.json", text)
+            self.assertNotIn("run_detector_result_analysis.py", text)
 
     def test_split_documentation_uses_split_public_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -3058,7 +3118,7 @@ class RunLayoutTests(unittest.TestCase):
                 candidate_policy_rel="app/merge_candidate_policy.json",
             )
             text = commands.read_text()
-            # the names the runtime (OUTPUT_PREFIX), the result-analysis driver and
+            # the names the runtime (OUTPUT_PREFIX), the importance-report driver and
             # Stage 3's resolver all expect for a merge-site detector
             self.assertIn("merge_junction_detector_${BRAIN}.csv", text)
             self.assertIn("merge_junction_detector_${BRAIN}.log.txt", text)
@@ -3083,12 +3143,12 @@ class RunLayoutTests(unittest.TestCase):
             "model_selection_794495.json",
             "slurm-99.out",
             "input-pkl.sha256",
-            "result_analysis_evidence.json",
+            "importance_evidence.json",
         )
         for rel in rerunnable:
             with self.subTest(rel=rel):
                 self.assertTrue(workflow._is_detector_run_output(rel, Path(rel).name))
-        for rel in ("notes.md", "RESULT_ANALYSIS.md", "hypothesis_selection_794495.json",
+        for rel in ("notes.md", "IMPORTANCE_REPORT.md", "hypothesis_selection_794495.json",
                     "merge_junction_detector_794495.txt"):
             with self.subTest(rel=rel):
                 self.assertFalse(workflow._is_detector_run_output(rel, Path(rel).name))

@@ -312,3 +312,31 @@ strict majority (20 of 73, 22 of 88). Revised and done:
 - the two existing builds re-run Step 3 and 4 with `--keep-existing` (the
   inventory and model candidates are recovered; the hidden draft is gone, so
   the feature code is re-authored under the new contract).
+
+### Template defects found by the 2026-10-21 verify steps (fixed the same night)
+
+Both re-built detectors' verify-and-document steps reported one build-blocking
+defect in the runtime template and three gaps: `_print_queue` crashed on a
+GT-unjudgeable (NaN) label in the every-row queue (a real run would die after
+the final fit, before any output); `_BlindPayloadView` did not block
+`gt_label_policy`; `--test-pkl` equal to the training cache was accepted; the
+inventory hash check was skipped silently when the file was missing and the
+module docstring overstated what is checked. All four are fixed in the template
+(`_print_queue` prints `-`; every `gt_*` key is blocked; same-cache held-out is
+rejected; training requires `--inventory`; docstring corrected) with template
+tests. Both detectors were re-assembled from their embedded feature fragments
+(extracted byte-for-byte, proven by re-assembly with the build-time template),
+passed the driver's source and executable checks, and were installed with
+regenerated `RUN_COMMANDS.md` and an annotated README; the previous files are
+kept under `../tmp_reassemble_20261021/`. Lesson: the driver's post-assembly
+checks never reach `run_detector`; a synthetic end-to-end run with NaN labels
+belongs in the template tests.
+
+### 2026-10-22: result-analysis driver deleted
+
+`agentic/run_detector_result_analysis.py`, its test and `detector-result-analyst.md` were
+deleted unused (no `RESULT_ANALYSIS.md` was ever generated). The per-run report is now
+`agentic/run_detector_importance_report.py` (`importance_evidence.json`, short English
+`IMPORTANCE_REPORT.md`); the result-directory helpers moved to
+`agentic/detector_importance.py`, and the runbook, README skeleton and the rerunnable
+output names follow. Mentions of the old driver above are historical.

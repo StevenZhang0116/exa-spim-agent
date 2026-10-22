@@ -16,8 +16,10 @@ ONE self-contained CLI that:
 
 Feature semantics are copied verbatim (constants, reductions, aggregations)
 from the audited hypothesis source scripts named in `feature_inventory.json`;
-each source's SHA-256 is re-verified at those files' original locations when the
-inventory is present.  Generated detectors are not fully validated on a real
+each source's SHA-256 is recorded there and checked by the build driver, and at
+run time the inventory's own SHA-256 is cross-checked against the model
+configuration (training and profiling runs require the inventory file).
+Generated detectors are not fully validated on a real
 pkl during the build; successful end-to-end real-data verification remains an
 operator step.  Run on a compute node with >=80 GB RAM under `panda`.
 
@@ -2456,9 +2458,15 @@ class BlindnessViolation(RuntimeError):
 _GT_PAYLOAD_KEYS = frozenset({
     "gt_edge_error", "gt_graph", "gt_node_canonical_label", "gt_merge_labels",
     "gt_merge_sites", "gt_junction_audit", "gt_merge_site_metadata",
+    "gt_label_policy",
     # GT-derived runtime scratch (merge-site adapter's site-distance audit).
     "__detector_universe_site_audit__",
 })
+
+
+def _is_gt_key(key):
+    """Every ``gt_*`` payload key is answer-key state, named above or not."""
+    return key in _GT_PAYLOAD_KEYS or (isinstance(key, str) and key.startswith("gt_"))
 # GT-derived audit/label fields stripped from sample rows handed to feature math.
 _SAMPLE_AUDIT_KEYS = frozenset({
     "is_split", "split_kind", "is_merge_creating",
@@ -2494,7 +2502,7 @@ class _BlindPayloadView(object):
                           np.zeros(len(samples), dtype=np.int64))
 
     def _resolve(self, key):
-        if key in _GT_PAYLOAD_KEYS:
+        if _is_gt_key(key):
             raise BlindnessViolation(
                 "feature extraction read payload[%r]: features must be "
                 "computable from the fragments graph / image alone (GT is "
@@ -2514,19 +2522,19 @@ class _BlindPayloadView(object):
         return self._payload.get(key, default)
 
     def __contains__(self, key):
-        if key in _GT_PAYLOAD_KEYS:
+        if _is_gt_key(key):
             return False
         return (key == "__detector_sample_universe_cache__"
                 or key in self._payload)
 
     def __setitem__(self, key, value):
-        if key in _GT_PAYLOAD_KEYS or key == "__detector_sample_universe_cache__":
+        if _is_gt_key(key) or key == "__detector_sample_universe_cache__":
             raise BlindnessViolation(
                 "feature extraction may not write payload[%r]" % (key,))
         self._payload[key] = value
 
     def keys(self):
-        return [k for k in self._payload.keys() if k not in _GT_PAYLOAD_KEYS]
+        return [k for k in self._payload.keys() if not _is_gt_key(k)]
 
     def __iter__(self):
         return iter(self.keys())
@@ -2677,9 +2685,12 @@ def _print_queue(samples, labels, scores, budget, title):
     print("\n%s (top %d by score):" % (title, min(budget, len(order))))
     print("  rank  sample                                      score  %s" % LABEL_NAME)
     for rank, idx in enumerate(order[:budget], 1):
-        print("  %4d  %-42s  %.5f  %d"
-              % (rank, sample_display(samples[idx])[:42], scores[idx],
-                 int(labels[idx])))
+        # Labels are three-valued (1 / 0 / NaN = GT cannot judge); a NaN row
+        # can rank anywhere in the every-row queue and must print, not crash.
+        label = labels[idx]
+        label_text = "%d" % int(label) if np.isfinite(label) else "-"
+        print("  %4d  %-42s  %.5f  %s"
+              % (rank, sample_display(samples[idx])[:42], scores[idx], label_text))
         if rank >= 20:
             break
 
@@ -2837,6 +2848,9 @@ def run_detector(args, log):
     import joblib
 
     inventory_sha = _inventory_sha(args.inventory)
+    if inventory_sha is None:
+        raise SystemExit("training requires a readable --inventory file: the model "
+                         "configuration is bound to feature_inventory.json by its SHA-256")
     cfg = load_and_validate_config(args.model_config, inventory_sha)
     config_sha = _sha256_file(args.model_config)
     configured, skipped = assemble_configured(cfg, log)
@@ -3231,6 +3245,11 @@ def main(argv=None):
 
     if args.n_jobs < -1:
         parser.error("--n-jobs must be -1, zero, or a positive integer")
+
+    if args.pkl and args.test_pkl and (
+            os.path.realpath(args.pkl) == os.path.realpath(args.test_pkl)):
+        parser.error("--test-pkl must be a different cache than the training pkl "
+                     "(a held-out brain, never the training brain)")
 
     if args.model_jobs < -1 or args.model_jobs == 0:
         parser.error("--model-jobs must be -1 or a positive integer")
