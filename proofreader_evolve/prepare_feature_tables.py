@@ -1,4 +1,4 @@
-"""Generate evolution-matching detector tables, then run read-only validation.
+"""Generate evolution-matching detector tables and their availability sidecars, then run read-only validation.
 
 Run with panda on an allocated compute node (e.g. n257):
     python -u proofreader_evolve/prepare_feature_tables.py --brains 794495 789202 794491 794493 802449
@@ -7,17 +7,23 @@ Without --brains, the preparation default is 789202 and 794491; include 794495
 explicitly to prepare the current default evolution TRAIN brain. MCL defaults
 to 100, with labeled _add caches, the candidate pools declared in candidate_pools.json and
 the default frozen detectors. Precompute, preflight and evolution all resolve the detectors
-through precompute_error_scores (DEFAULT_MERGE_DIR / DEFAULT_SPLIT_DIR, unset since the
-2026-08 detectors were deleted on 2026-10-17 until the new builds exist).
+through precompute_error_scores (DEFAULT_MERGE_DIR / DEFAULT_SPLIT_DIR, the 2026-10 builds
+since 2026-10-23).
 Each brain runs in a fresh subprocess to release memory before the next.
-Existing matching tables are reused. The first failure stops the script with a
-nonzero exit code. No LLM calls or evolution.
+After the tables, precompute_availability writes the label-availability sidecars, which
+the closing preflight (and evolution) require; without them a fresh table always failed it.
+Existing matching tables and valid sidecars are reused. The first failure stops the script
+with a nonzero exit code. No LLM calls or evolution.
 
 Use --dry-run to print commands without importing models or loading any data.
 Real runs mirror console output to proofreader_evolve/log/prepare_feature_tables_<timestamp>_<pid>.log.txt.
 Use --log-txt to choose a log file (appended to if it already exists).
 Use --threads all to give numerical libraries all CPUs available to this process
-(respecting CPU affinity). Serial detector loops remain serial.
+(respecting CPU affinity). Serial detector loops remain serial. The detectors' image
+pass is threaded: --image-workers N is forwarded to precompute_error_scores (0 = auto
+capped at 8, -1 = all CPUs available to the process; the pass waits on S3, so N may
+exceed the CPU count). The image pass dominates the wall time: the 2026-10 detector
+builds read about 19 (split) and 32 (merge) rows per second with 16 workers.
 Merge extraction can scan the entire graph; this is not a quick smoke test.
 """
 
@@ -105,6 +111,10 @@ def parse_args(argv=None):
     parser.add_argument("--mcl", type=int, default=100)
     parser.add_argument("--threads", type=thread_argument, default=1, metavar="N|all",
                         help="Numerical-library threads: positive integer or all available CPUs (default: 1)")
+    parser.add_argument("--image-workers", type=int, default=0, metavar="N",
+                        help="Threads for the detectors' image pass, forwarded to precompute_error_scores: "
+                             "0 = auto capped at 8, -1 = all CPUs available to the process, N = N threads "
+                             "(default: 0)")
     parser.add_argument("--out-dir", type=Path,
                         default=PROJECT_ROOT / "proofreader_evolve" / "feature_tables")
     parser.add_argument("--dry-run", action="store_true")
@@ -117,6 +127,8 @@ def parse_args(argv=None):
         parser.error("Brain IDs must not repeat")
     if args.mcl < 0:
         parser.error("MCL must be >= 0")
+    if args.image_workers < -1:
+        parser.error("--image-workers must be -1, zero, or a positive integer")
     args.requested_threads = args.threads
     args.available_cpus = available_cpu_count()
     if args.threads == "all":
@@ -132,7 +144,10 @@ def commands(args):
         cache = PROJECT_ROOT / "cache" / f"dataset_cache_{brain}_mcl{args.mcl}_add.pkl"
         result.append([sys.executable, "-u", "-m", "proofreader_evolve.cli.precompute_error_scores",
                        "--brain", brain, "--mcl", str(args.mcl), "--pkl", str(cache),
-                       "--out-dir", str(args.out_dir)])
+                       "--out-dir", str(args.out_dir), "--image-workers", str(args.image_workers)])
+    result.append([sys.executable, "-u", "-m", "proofreader_evolve.cli.precompute_availability",
+                   "--brains", *args.brains, "--mcl", str(args.mcl),
+                   "--feature-tables-dir", str(args.out_dir)])
     result.append([sys.executable, "-u", "-m", "proofreader_evolve.cli.preflight",
                    "--brains", *args.brains, "--mcl", str(args.mcl),
                    "--feature-tables-dir", str(args.out_dir)])
@@ -176,8 +191,8 @@ def run(args):
     planned = commands(args)
     if not args.dry_run:
         # Check all inputs before doing expensive work on the first brain.
-        missing = [cmd[cmd.index("--pkl") + 1] for cmd in planned[:-1]
-                   if not Path(cmd[cmd.index("--pkl") + 1]).is_file()]
+        missing = [cmd[cmd.index("--pkl") + 1] for cmd in planned
+                   if "--pkl" in cmd and not Path(cmd[cmd.index("--pkl") + 1]).is_file()]
         if missing:
             print("Missing source cache(s):\n" + "\n".join(missing), file=sys.stderr)
             return 1
@@ -188,7 +203,8 @@ def run(args):
     env["JOBLIB_MULTIPROCESSING"] = "0"
     print(f"Project: {PROJECT_ROOT}\nOutput: {args.out_dir}\n"
           f"Threads: {args.threads} (requested: {args.requested_threads}; "
-          f"available CPUs: {args.available_cpus})", flush=True)
+          f"available CPUs: {args.available_cpus})\n"
+          f"Image workers: {args.image_workers} (0 = auto capped at 8, -1 = all CPUs)", flush=True)
     for command in planned:
         print("\n" + shlex.join(command), flush=True)
         if args.dry_run:
@@ -203,7 +219,7 @@ def run(args):
             print("Interrupted; no further brains will be started.", file=sys.stderr)
             return 130
     if not args.dry_run:
-        print("\nAll requested tables generated and validated. No evolution was started.", flush=True)
+        print("\nAll requested tables and sidecars generated and validated. No evolution was started.", flush=True)
     return 0
 
 

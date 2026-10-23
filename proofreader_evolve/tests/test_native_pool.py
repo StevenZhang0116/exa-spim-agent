@@ -225,11 +225,12 @@ class NativePoolTests(unittest.TestCase):
                 self.assertTrue(np.any(truth_a != truth_b))
 
     @unittest.skipUnless(pc.DEFAULT_MERGE_DIR and pc.DEFAULT_SPLIT_DIR,
-                         "no default frozen detectors configured (the 2026-08 ones were deleted)")
+                         "no default frozen detectors configured")
     def test_real_frozen_feature_extraction_and_model_parity_on_tiny_graph(self):
         selected = pc.resolve_detector_runs()
         for kind, records in selected.items():
-            module = pc._import_module(Path(records[0]["dir"]) / records[0]["script"], "test_real_" + kind)
+            # The script sits beside the run outputs or two levels up (a runs/<brain>-<purpose>/ dir).
+            module = pc._import_module(pc._script_path(records[0]), "test_real_" + kind)
             with self.subTest(kind=kind), redirect_stdout(io.StringIO()):
                 record = records[0]
                 bundle = pc._load_joblib(Path(record["dir"]) / record["file"])

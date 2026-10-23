@@ -124,12 +124,22 @@ positives with the cached GT sites.
 
 ## 2.4 Detectors currently in use
 
-None at the moment. The 2026-08 detectors (merge `junction|nms=20|r=150`, split
-`tip_to_any_node|r=50|k=2`, both fitted on 794495) and all AutoDiscovery results were
-deleted on 2026-10-17: they were trained on the labels before the 2026-10-15 relabel and
-on the old candidate pools. New detectors are built from new AutoDiscovery runs on the
-revised specifications (`proofreader_evolve/plans/rebuild_after_relabel_and_split_pool.md`);
-until then Stage 3 has no default detectors. A detector's fitting brain can never serve as a
+Since 2026-10-23 Stage 3 resolves these two runs by default (`DEFAULT_MERGE_DIR` /
+`DEFAULT_SPLIT_DIR` in `proofreader_evolve/cli/precompute_error_scores.py`). Both were fitted
+on 794495 with the labels of the 2026-10-15 relabel and the schema-2 pools of
+`proofreader_evolve/candidate_pools.json`; the AP figures are on the GT-judgeable rows:
+
+| kind | run directory | winner | nested OOF AP | raw baseline | held-out 802449 AP |
+|---|---|---|---:|---:|---:|
+| merge | `autodiscovery-application/new-merge-1_2026-10-19/runs/794495-with-figures` | `logistic_l2` (C = 0.001), 293 features | 0.0619 | degree 0.0278 | 0.0746 (degree 0.058) |
+| split | `autodiscovery-application/new-split-1_2026-10-20/runs/794495-with-figures` | `hist_gradient_boosting`, 352 features | 0.8793 | `gap_um` 0.8255 | 0.9139 (`gap_um` 0.8905) |
+
+Each run directory holds the fitted joblib, `model_selection_794495.json` (whose
+`data_provenance.detector_sha256` binds the run to the script two levels up), the scored CSV
+with its provenance sidecar, the figures and `IMPORTANCE_REPORT.md`. The 2026-08 detectors
+(merge `junction|nms=20|r=150`, split `tip_to_any_node|r=50|k=2`) and all AutoDiscovery results
+of that generation were deleted on 2026-10-17: they were trained on the labels before the
+relabel and on the old candidate pools. A detector's fitting brain can never serve as a
 validation brain in Stage 3.
 
 ### Feature-importance short report (2026-10-22)

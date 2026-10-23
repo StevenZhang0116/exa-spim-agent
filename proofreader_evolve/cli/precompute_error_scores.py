@@ -28,10 +28,13 @@ from proofreader_evolve.harness import dataset as ds
 HERE = Path(__file__).resolve().parents[1]
 DEFAULT_OUT = HERE / "feature_tables"
 APP_DIR = PROJECT_ROOT / "autodiscovery-application"
-# Default frozen detectors (a directory under APP_DIR). None since 2026-10-17: the 2026-08
-# detectors were deleted; set these to the new builds (rebuild plan, section 3 step 4).
-DEFAULT_MERGE_DIR = None
-DEFAULT_SPLIT_DIR = None
+# Default frozen detectors: a deliverable directory under APP_DIR, or one of its
+# runs/<brain>-<purpose>/ run directories (bound to the script through the run's recorded
+# detector SHA-256). Set on 2026-10-23 to the first builds on the relabeled caches and the
+# schema-2 pools (rebuild plan, section 3 step 4): merge logistic_l2, split
+# hist_gradient_boosting, both fitted on 794495.
+DEFAULT_MERGE_DIR = APP_DIR / "new-merge-1_2026-10-19" / "runs" / "794495-with-figures"
+DEFAULT_SPLIT_DIR = APP_DIR / "new-split-1_2026-10-20" / "runs" / "794495-with-figures"
 
 
 def log(msg: str) -> None:

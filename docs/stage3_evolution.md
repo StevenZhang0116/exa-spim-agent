@@ -31,7 +31,11 @@ Exactly one detector per kind is required.
 On an allocated compute node in panda:
 
 ```bash
-python -u proofreader_evolve/prepare_feature_tables.py --brains 794495 789202 794491 794493 802449 --mcl 100
+# A full rebuild runs on the interactive node, one brain after the other and resumable:
+#   bash proofreader_evolve/rebuild_brains.sh [brain ...]
+# (tables, sidecars, companion check, context cache, preflight; rebuild plan section 4). The steps by hand
+# (prepare_feature_tables.py also writes the availability sidecars before its closing preflight):
+python -u proofreader_evolve/prepare_feature_tables.py --brains 794495 789202 794491 794493 802449 --mcl 100 --threads all --image-workers -1
 # Once per brain: fragment neighbourhoods plus level-1 and level-0 image patches for the
 # top detector-ranked candidates of each kind (default 20,000; S3 reads; roughly 30 min per brain and kind at 20,000).
 # --band-rows 50000 grows an existing complete entry in place, reading only the new rows; older-microscope
@@ -145,15 +149,21 @@ process creation are denied before candidate code executes. Linux with
 `libseccomp.so.2` is required; unavailable isolation fails the evaluation.
 See [workflow revision](../proofreader_evolve/WORKFLOW_REVISION.md).
 
-There are no default frozen detectors since 2026-10-17 ([Stage 2](stage2_detector_build.md#24-detectors-currently-in-use)): pass one
-`--merge-dir` and one `--split-dir` (a deliverable directory, or one of its
+The default frozen detectors (`DEFAULT_MERGE_DIR` / `DEFAULT_SPLIT_DIR` in
+`proofreader_evolve/cli/precompute_error_scores.py`) are the 2026-10 builds since 2026-10-23
+([Stage 2](stage2_detector_build.md#24-detectors-currently-in-use)):
+`autodiscovery-application/new-merge-1_2026-10-19/runs/794495-with-figures` and
+`autodiscovery-application/new-split-1_2026-10-20/runs/794495-with-figures`, both fitted on
+794495. `--merge-dir` / `--split-dir` override them (a deliverable directory, or one of its
 `runs/<brain>-<purpose>/` run directories, which the resolver binds to the script through
-the run's recorded detector SHA-256), or set `DEFAULT_MERGE_DIR` / `DEFAULT_SPLIT_DIR` in
-`proofreader_evolve/cli/precompute_error_scores.py` once the new detectors exist.
-The detectors' image pass is threaded (2026-10-21): pass `--image-workers N` to
-`precompute_error_scores.py` (0 = auto capped at 8, -1 = all CPUs; the pass waits
-on S3, so N may exceed the CPU count), which reaches every detector whose extraction
-entry accepts `image_workers`; older detectors run as before.
+the run's recorded detector SHA-256).
+The detectors' image pass is threaded (2026-10-21): `--image-workers N` on
+`precompute_error_scores.py`, forwarded by `prepare_feature_tables.py` (0 = auto capped at 8,
+-1 = all CPUs; the pass waits on S3, so N may exceed the CPU count), reaches every detector
+whose extraction entry accepts `image_workers`; older detectors run as before. The pass
+dominates the table build (about 19 split and 32 merge rows per second with 16 workers);
+`proofreader_evolve/rebuild_brains.sh` runs the rebuild on the interactive node one brain at a
+time, evolution brains first, and resumes where it stopped (rebuild plan, section 4).
 Detector-fitted brains cannot be validation brains. The reviser requires
 `ANTHROPIC_API_KEY`; preparation and baseline-only evaluation do not call an LLM.
 

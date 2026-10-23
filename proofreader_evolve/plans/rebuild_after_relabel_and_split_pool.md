@@ -73,28 +73,97 @@ swap, reflection or global offset; the skeleton signal exceeded every 12 um shif
 29 of 30 patches (794491 node 12298945, a bright featureless region, is the exception). The
 notes are in `figs/candidate_image_alignment_20261018/review_notes.json`.
 
-## 4. Rebuild order (per brain, one brain per process, `srun -n1` on a compute node)
+## 4. Rebuild order (one brain at a time on the interactive node; updated 2026-10-23)
+
+Step 3.4 is done: since 2026-10-23 `DEFAULT_MERGE_DIR` / `DEFAULT_SPLIT_DIR` point at
+`autodiscovery-application/new-merge-1_2026-10-19/runs/794495-with-figures` (logistic_l2) and
+`autodiscovery-application/new-split-1_2026-10-20/runs/794495-with-figures` (hist_gradient_boosting),
+both fitted on 794495; every Stage 3 entry point resolves them without `--merge-dir` / `--split-dir`.
+
+Everything runs on the interactive node (n280 from 2026-10-23: 40 CPUs, 200 GB, ends
+2026-10-31 18:18), in a terminal inside that allocation with panda; there is no Slurm script.
+`proofreader_evolve/rebuild_brains.sh` runs the per-brain steps below for one brain after the
+other, evolution brains first (794495 802449 789202 794493 794491, then 754613 754612 754610
+750318 751473 747807), stops at the first failure and ends with a preflight over the brains of
+the call. It prints `# OK brain <b>` per finished brain and `# OK` / `# FAILED` at the end; the
+log is `proofreader_evolve/log/rebuild_brains_<timestamp>_<pid>.log.txt`, with each step's own log
+beside it. Every step reuses finished work, so rerunning the same command after an interruption
+(or on the next allocation) resumes at the first unfinished brain and kind; only the kind that
+was cut off is built again from its start.
+
+Once, before the first call, delete the stale artifacts (they never match the new digests, so
+this frees disk and avoids confusion; do not repeat it before a resume):
 
 ```bash
-conda activate panda
-rm -rf proofreader_evolve/feature_tables/<b> proofreader_evolve/context_cache/<b>/split proofreader_evolve/context_cache/<b>/merge proofreader_evolve/descriptor_bank/<b>
-python -u proofreader_evolve/prepare_feature_tables.py --brains <b> --mcl 100 --threads all        # about 3 h for 794495; split pool 30% larger
-python -u -m proofreader_evolve.cli.precompute_availability --brains <b> --mcl 100                  # 1.5 min
-python - <<'PY'                                                                                    # 794495 and 802449: the tables must reproduce the companions
-import json, pathlib
-for kind in ("merge", "split"):
-    comp = json.load(open(f"markdowns/rerank_companion_<b>_{kind}.json"))["pool_sha256"]
-    tables = [json.load(open(p))["pool_sha256"] for p in pathlib.Path("proofreader_evolve/feature_tables/<b>").glob("*/meta.json")]
-    print(kind, "companion pool matches a table:", comp in tables)
-PY
-# image-alignment receipt: re-recorded from the cache at the end of section 3; redo it only if the pkl changed since
-python -u -m proofreader_evolve.cli.precompute_context_cache --brains <b> --mcl 100 --readers 16 --band-rows 50000 --labeled-extension   # both kinds rebuilt (new pools); split about 2 h
-python -m proofreader_evolve.cli.preflight --brains <all eleven> --train-brains 794495 802449 --mcl 100 --context-cache proofreader_evolve/context_cache
+for b in 747807 750318 751473 754610 754612 754613 789202 794491 794493 794495 802449; do
+    rm -rf proofreader_evolve/feature_tables/$b proofreader_evolve/context_cache/$b/split \
+           proofreader_evolve/context_cache/$b/merge proofreader_evolve/descriptor_bank/$b
+done
 ```
 
-Budget: about 3 h x 11 for the tables and 2 h x 11 for the split context caches, serial. Tables can
-run two or three brains at once on a 400 GB node (each is its own subprocess); context caches read
-S3 with 16 readers, one brain at a time. Allocate several days.
+Then, on the interactive node:
+
+```bash
+nohup bash proofreader_evolve/rebuild_brains.sh >/dev/null 2>&1 &   # all eleven brains; or name brains as arguments
+tail -f "$(ls -t proofreader_evolve/log/rebuild_brains_*.log.txt | head -1)"
+```
+
+`IMAGE_WORKERS` (default -1, one per CPU), `READERS` (32) and `BAND_ROWS` (50000) override the
+defaults. The closing preflight is the one this section asks for when the call covers all eleven
+brains:
+
+```bash
+python -m proofreader_evolve.cli.preflight \
+    --brains 747807 750318 751473 754610 754612 754613 789202 794491 794493 794495 802449 \
+    --train-brains 794495 802449 --mcl 100 --context-cache proofreader_evolve/context_cache
+```
+
+What the script does per brain (the same commands serve a manual rerun of one step, panda):
+
+```bash
+python -u proofreader_evolve/prepare_feature_tables.py --brains <b> --mcl 100 --threads all --image-workers -1   # tables of both kinds, sidecars (about 1.5 min), single-brain preflight; -1 = one image worker per CPU
+# 794495 and 802449 only: each table's pool_sha256 must equal its companion's
+#   (markdowns/rerank_companion_<b>_<kind>.json); the script loads the tables the default detectors resolve to and stops on a mismatch
+# image-alignment receipt: re-recorded from the cache at the end of section 3; redo it only if the pkl changed since
+python -u -m proofreader_evolve.cli.precompute_context_cache --brains <b> --mcl 100 --readers 32 --band-rows 50000 --labeled-extension --threads all   # both kinds (new pools)
+```
+
+Since 2026-10-23 `prepare_feature_tables.py` writes the availability sidecars itself (through
+`precompute_availability`) before its closing preflight. Before, that preflight required the
+sidecars the next step would write, so a fresh table build always ended `FAILED`
+(`log/prepare_feature_tables_20261013_151554_332376_313597.log.txt`) and a stop-at-first-failure
+driver would have halted after the first brain's tables.
+
+Budget. The detectors' image pass dominates now (the 2026-08 tables had no image features, so
+the earlier "about 3 h for 794495" no longer holds). At the 16-worker rates of the 2026-10 builds
+(split 19 rows/s, merge 32 rows/s) the image time per brain is the split pool
+(`tip_to_any_node|r=80|k=2`, counts from the r=80 sweep) plus the merge pool (J+S20 counts from
+`notebooks/merge_shaft_reach/`):
+
+| brain | split rows | merge rows | image hours at 16 workers |
+|---|---:|---:|---:|
+| 747807 | 2,211,738 | 1,226,500 | 43 |
+| 751473 | 1,992,222 | 835,393 | 36 |
+| 794491 | 1,343,936 | 542,686 | 24 |
+| 802449 | 1,286,517 | 553,193 | 24 |
+| 750318 | 1,237,112 | 491,632 | 22 |
+| 794495 | 689,677 | 192,177 | 12 |
+| 794493 | 510,914 | 198,751 | 9 |
+| 754610 | 401,056 | 191,083 | 7.5 |
+| 754612 | 134,265 | 70,950 | 2.6 |
+| 754613 | 107,076 | 78,253 | 2.3 |
+| 789202 | 54,310 | 56,771 | 1.3 |
+
+About 184 h of image pass in all, plus the graph passes (split 802449 took 1.9 h in the build),
+the context caches (about 2 h for a split band of 50,000 rows) and the pkl loads. On one node
+the brains run in series, so at the 16-worker rates the whole rebuild needs more than the
+roughly 199 h the n280 allocation has left (2026-10-23 10:18 to 2026-10-31 18:18). The pass is
+S3-bound, so 40 workers may run faster than the 16-worker rates: read the `rate=` lines of
+794495 (first brain, 12 h at 16 workers) and extrapolate before counting on it. The order puts
+the five evolution brains first (about 70 h at the 16-worker rates), so evolution can start
+before the older-microscope brains finish; whatever is left resumes on the next allocation with
+the same command. 200 GB held the 802449 extraction in the detector build; one brain at a time,
+never two.
 
 ## 5. After the rebuild, once
 

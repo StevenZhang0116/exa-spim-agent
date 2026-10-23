@@ -24,7 +24,7 @@ class PrepareTablesScriptTests(unittest.TestCase):
     def test_defaults_match_evolution_and_preflight(self):
         args = launcher.parse_args([])
         planned = launcher.commands(args)
-        self.assertEqual(len(planned), 3)
+        self.assertEqual(len(planned), 4)
         for brain, command in zip(("789202", "794491"), planned):
             self.assertIn(f"dataset_cache_{brain}_mcl100_add.pkl", " ".join(command))
             self.assertNotIn("--candidate-mode", command)
@@ -32,6 +32,27 @@ class PrepareTablesScriptTests(unittest.TestCase):
             self.assertNotIn("--merge-max-sites", command)
         self.assertIn("proofreader_evolve.cli.preflight", planned[-1])
         self.assertNotIn("--check-api", planned[-1])
+        for command in planned[:-2]:
+            self.assertEqual(command[command.index("--image-workers") + 1], "0")
+        for command in planned[-2:]:
+            self.assertNotIn("--image-workers", command)
+            self.assertNotIn("--pkl", command)
+
+    def test_sidecars_are_written_after_every_table_and_before_preflight(self):
+        out_dir = self.root / "tables"
+        planned = launcher.commands(launcher.parse_args(["--brains", "794495", "802449",
+                                                         "--out-dir", str(out_dir)]))
+        self.assertEqual([command[3] for command in planned],
+                         ["proofreader_evolve.cli.precompute_error_scores"] * 2
+                         + ["proofreader_evolve.cli.precompute_availability", "proofreader_evolve.cli.preflight"])
+        sidecars = planned[-2]
+        self.assertEqual(sidecars[sidecars.index("--brains") + 1:sidecars.index("--mcl")], ["794495", "802449"])
+        self.assertEqual(sidecars[sidecars.index("--feature-tables-dir") + 1], str(out_dir))
+
+    def test_image_workers_forwarded_to_every_table_command(self):
+        for value in ("-1", "32"):
+            planned = launcher.commands(launcher.parse_args(["--brains", "794495", "--image-workers", value]))
+            self.assertEqual(planned[0][planned[0].index("--image-workers") + 1], value)
 
     def test_dry_run_never_starts_processes_or_checks_inputs(self):
         with patch.object(launcher, "run_command") as run, \
@@ -45,7 +66,7 @@ class PrepareTablesScriptTests(unittest.TestCase):
         with patch.object(Path, "is_file", return_value=True), \
                 patch.object(launcher, "run_command") as run, redirect_stdout(io.StringIO()):
             self.assertEqual(launcher.main(["--threads", "2"]), 0)
-        self.assertEqual(run.call_count, 3)
+        self.assertEqual(run.call_count, 4)
         self.assertTrue(all(c.kwargs["env"]["OPENBLAS_NUM_THREADS"] == "2" for c in run.call_args_list))
 
     def test_all_uses_affinity_and_logs_resolved_threads(self):
@@ -137,6 +158,7 @@ class PrepareTablesScriptTests(unittest.TestCase):
     def test_invalid_arguments(self):
         for arguments in (["--brains", "../cache"], ["--brains", "1", "1"],
                           ["--mcl", "-1"], ["--threads", "0"], ["--threads", "-1"],
-                          ["--threads", "1.5"], ["--threads", "invalid"]):
+                          ["--threads", "1.5"], ["--threads", "invalid"],
+                          ["--image-workers", "-2"], ["--image-workers", "all"]):
             with self.subTest(arguments=arguments), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 launcher.parse_args(arguments)
