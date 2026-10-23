@@ -42,12 +42,15 @@ session, so context never accumulates. Before each batch the driver writes
 `records/ledger.txt` (every hypothesis recorded so far and whether it
 finished) so the session does not repeat them. For each id the agent writes
 `records/<id>.proposal.json` (hypothesis, experimentPlan) before any code,
-writes `hypo_<id>.py`, runs it only through the driver-owned `run_hypo.sh`
-(timeout, captured stdout/stderr, exit code, runtime), and writes
-`records/<id>.result.json` (analysis, review). The driver stops at
-`--hypotheses`, `--max-cost-usd` or `--max-hours`, whichever comes first, or when
-a batch completes nothing; the same `--run-name` resumes after the last complete
-id. The driver appends one line per batch to `agent_discovery.log.txt` in the
+writes `hypo_<id>.py`, starts it only through the driver-owned `run_hypo.sh`
+(detached under a timeout, so it outlives the agent's shell call; captured
+stdout/stderr, exit code, runtime) and polls `wait_hypo.sh <id>` in the foreground
+until it reports `done:`, and writes `records/<id>.result.json` (analysis, review).
+The driver stops at `--hypotheses`, `--max-cost-usd` or `--max-hours`, whichever
+comes first, or when a batch leaves nothing new behind (no proposal, script, run or
+result); the same `--run-name` resumes unfinished ids first. The Claude session has
+`Task` and `Monitor` disallowed: a background subagent and a file watch each once
+ended a session before its results existed. The driver appends one line per batch to `agent_discovery.log.txt` in the
 work directory; Codex sessions leave their JSONL events, last message and stderr
 under `codex/` there.
 

@@ -48,9 +48,14 @@ For each assigned id, in this order:
    cases). Image reads follow `task.md`'s firewall rules: a quantity derived from
    the graph is never called an intensity, and an image that cannot be opened
    stops the script with the prescribed message instead of a substitute.
-3. **Run** it only with `<work directory>/run_hypo.sh <id>` (it writes
-   `outputs/hypo_<id>.stdout.txt`, `.stderr.txt` and `.meta.json`). Never run
-   the script another way and never edit anything under `outputs/`.
+3. **Run** it only with `<work directory>/run_hypo.sh <id>`, which starts the
+   script detached and returns at once, then call
+   `<work directory>/wait_hypo.sh <id>` as an ordinary foreground shell command,
+   again and again, until it prints `done:` (each call waits up to 100 s; a
+   script takes minutes to tens of minutes). The runner writes
+   `outputs/hypo_<id>.stdout.txt`, `.stderr.txt` and `.meta.json`. Never run the
+   script another way, never put a shell command in the background or set a
+   file watch, and never edit anything under `outputs/`.
 4. **Read** the outputs. A script that crashed or printed no result may be fixed
    and re-run at most twice; after that, record the failure honestly.
 5. **Record** `records/<id>.result.json`:

@@ -155,6 +155,14 @@ def record_state(work_dir: Path, rid: int) -> str:
     return "complete" if result.is_file() else "proposed"
 
 
+def progress_marker(work_dir: Path) -> tuple[int, int, int, int]:
+    """Counts of proposals, results, scripts and run records: a batch that changes
+    none of them made no progress."""
+    records, outputs = work_dir / "records", work_dir / "outputs"
+    return (len(list(records.glob("*.proposal.json"))), len(list(records.glob("*.result.json"))),
+            len(list(work_dir.glob("hypo_*.py"))), len(list(outputs.glob("hypo_*.meta.json"))))
+
+
 def next_batch(work_dir: Path, n_hypotheses: int, batch: int) -> list[int]:
     """The next ids to work on: unfinished ones first, then new ids, ``batch`` at most."""
     pending = [rid for rid in range(1, n_hypotheses + 1) if record_state(work_dir, rid) != "complete"]
@@ -220,26 +228,69 @@ def materials(kind: str, brain: str, mcl: int) -> dict[str, Path]:
 
 
 RUN_HYPO_SH = """#!/bin/bash
-# Driver-owned runner: the only way a hypothesis script is executed. Captures stdout,
-# stderr, exit code and wall time so the export's codeOutput/runtimeMs are the driver's.
+# Driver-owned runner: the only way a hypothesis script is executed. Starts
+# hypo_<id>.py detached (it outlives the agent's shell call) under a timeout and
+# returns at once; wait_hypo.sh <id> blocks until outputs/hypo_<id>.meta.json
+# exists. stdout, stderr, exit code and wall time are the driver's record.
 set -u
 id="$1"
 cd "$(dirname "$0")"
 mkdir -p outputs
+if [ -f "outputs/hypo_${id}.pid" ] && kill -0 "$(cat "outputs/hypo_${id}.pid")" 2>/dev/null; then
+    echo "hypo_${id}.py is already running (pid $(cat "outputs/hypo_${id}.pid")); poll it with $(pwd)/wait_hypo.sh ${id}"
+    exit 2
+fi
+rm -f "outputs/hypo_${id}.meta.json"
 export AWS_EC2_METADATA_DISABLED=true MPLBACKEND=Agg OMP_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 MKL_NUM_THREADS=4
-start_ns=$(date +%s%N)
-started=$(date -u +%Y-%m-%dT%H:%M:%S.%6N+00:00)
-timeout --signal=TERM --kill-after=30 {timeout}s "{python}" -u "hypo_${{id}}.py" \\
-    > "outputs/hypo_${{id}}.stdout.txt" 2> "outputs/hypo_${{id}}.stderr.txt"
-code=$?
-end_ns=$(date +%s%N)
-finished=$(date -u +%Y-%m-%dT%H:%M:%S.%6N+00:00)
-printf '{{"id": %s, "exit_code": %s, "runtime_ms": %s, "started_at": "%s", "finished_at": "%s", "timeout_s": {timeout}}}\\n' \\
-    "$id" "$code" "$(( (end_ns - start_ns) / 1000000 ))" "$started" "$finished" > "outputs/hypo_${{id}}.meta.json"
-echo "hypo_${{id}}.py exit=$code runtime_s=$(( (end_ns - start_ns) / 1000000000 ))"
-echo "--- stdout (last 60 lines) ---"; tail -n 60 "outputs/hypo_${{id}}.stdout.txt"
-echo "--- stderr (last 20 lines) ---"; tail -n 20 "outputs/hypo_${{id}}.stderr.txt"
-exit $code
+setsid nohup bash -c '
+    id="$1"; limit="$2"; python="$3"
+    start_ns=$(date +%s%N)
+    started=$(date -u +%Y-%m-%dT%H:%M:%S.%6N+00:00)
+    timeout --signal=TERM --kill-after=30 "${limit}s" "$python" -u "hypo_${id}.py" \\
+        > "outputs/hypo_${id}.stdout.txt" 2> "outputs/hypo_${id}.stderr.txt"
+    code=$?
+    end_ns=$(date +%s%N)
+    finished=$(date -u +%Y-%m-%dT%H:%M:%S.%6N+00:00)
+    printf "{\\"id\\": %s, \\"exit_code\\": %s, \\"runtime_ms\\": %s, \\"started_at\\": \\"%s\\", \\"finished_at\\": \\"%s\\", \\"timeout_s\\": %s}\\n" \\
+        "$id" "$code" "$(( (end_ns - start_ns) / 1000000 ))" "$started" "$finished" "$limit" > "outputs/hypo_${id}.meta.json.tmp"
+    mv "outputs/hypo_${id}.meta.json.tmp" "outputs/hypo_${id}.meta.json"
+    rm -f "outputs/hypo_${id}.pid"
+' _ "$id" "@TIMEOUT@" "@PYTHON@" > /dev/null 2>&1 &
+echo $! > "outputs/hypo_${id}.pid"
+echo "started hypo_${id}.py (pid $!, timeout @TIMEOUT@ s); poll with: $(pwd)/wait_hypo.sh ${id}"
+"""
+
+WAIT_HYPO_SH = """#!/bin/bash
+# wait_hypo.sh <id> [max_seconds=100]: block until outputs/hypo_<id>.meta.json
+# exists (exit 0 and print the tail of the outputs), or give up after max_seconds
+# (exit 3: call again). Short waits keep every shell call inside the agent's own
+# command timeout; the script itself keeps running between calls.
+set -u
+id="$1"
+max="${2:-100}"
+cd "$(dirname "$0")"
+for ((waited = 0; waited < max; waited += 5)); do
+    if [ -f "outputs/hypo_${id}.meta.json" ]; then
+        echo "done: $(cat "outputs/hypo_${id}.meta.json")"
+        echo "--- stdout (last 60 lines) ---"; tail -n 60 "outputs/hypo_${id}.stdout.txt"
+        echo "--- stderr (last 20 lines) ---"; tail -n 20 "outputs/hypo_${id}.stderr.txt"
+        exit 0
+    fi
+    if [ ! -f "outputs/hypo_${id}.pid" ]; then
+        echo "hypo_${id}.py was never started (no pid file); start it with $(pwd)/run_hypo.sh ${id}"
+        exit 4
+    fi
+    if ! kill -0 "$(cat "outputs/hypo_${id}.pid")" 2>/dev/null; then
+        sleep 2
+        [ -f "outputs/hypo_${id}.meta.json" ] && continue
+        echo "hypo_${id}.py is not running and wrote no meta file (killed?); start it again with $(pwd)/run_hypo.sh ${id}"
+        exit 4
+    fi
+    sleep 5
+done
+since=$(( $(date +%s) - $(stat -c %Y "outputs/hypo_${id}.pid") ))
+echo "hypo_${id}.py still running (${since}s so far); call $(pwd)/wait_hypo.sh ${id} again"
+exit 3
 """
 
 
@@ -256,8 +307,12 @@ def prepare_work_dir(work_dir: Path, kind: str, brain: str, mcl: int, script_tim
             link.unlink()
         link.symlink_to(source.resolve())
     runner = work_dir / "run_hypo.sh"
-    runner.write_text(RUN_HYPO_SH.format(timeout=int(script_timeout), python=python or sys.executable))
+    runner.write_text(RUN_HYPO_SH.replace("@TIMEOUT@", str(int(script_timeout)))
+                      .replace("@PYTHON@", python or sys.executable))
     runner.chmod(0o755)
+    waiter = work_dir / "wait_hypo.sh"
+    waiter.write_text(WAIT_HYPO_SH)
+    waiter.chmod(0o755)
 
 
 def write_ledger(work_dir: Path, n_hypotheses: int) -> Path:
@@ -290,12 +345,14 @@ directory, which every script opens by exactly those names (the runner changes i
 the directory before running it). {w}/records/ledger.txt lists every hypothesis
 already recorded in this run: do not repeat one. {resume}For each id, in this order:
 write {w}/records/<id>.proposal.json (hypothesis; experimentPlan as an object with
-objective, steps and deliverables) before any code; write {w}/hypo_<id>.py; run it
-only with `{w}/run_hypo.sh <id>`; read {w}/outputs/hypo_<id>.stdout.txt and
-.stderr.txt; write {w}/records/<id>.result.json (analysis, review). Work the ids
-one at a time, serially (every script
-loads the full dataset), and stop when all assigned ids have a result file. Do not
-touch any other id and do not edit anything under {w}/outputs/.
+objective, steps and deliverables) before any code; write {w}/hypo_<id>.py; start it
+only with `{w}/run_hypo.sh <id>` (returns at once) and then call
+`{w}/wait_hypo.sh <id>` as an ordinary foreground shell command, again and again,
+until it prints `done:` (each call waits up to 100 s; scripts take minutes to tens of
+minutes); read {w}/outputs/hypo_<id>.stdout.txt and .stderr.txt; write
+{w}/records/<id>.result.json (analysis, review). Work the ids one at a time, serially
+(every script loads the full dataset), and stop only when all assigned ids have a
+result file. Do not touch any other id and do not edit anything under {w}/outputs/.
 """.strip()
 
 
@@ -315,9 +372,10 @@ def session_prompt(work_dir: Path, ids: list[int], kind: str, brain: str, mcl: i
     foreground, until every assigned id has a result file."""
     return (researcher_instructions() + "\n\n# This batch\n\n"
             + batch_instruction(work_dir, ids, kind, brain, mcl)
-            + "\n\nDo this work yourself in this session, in the foreground: do not delegate it "
-              "to a background task or subagent, and do not end your turn before every "
-              "assigned id has its result file.")
+            + "\n\nDo this work yourself in this session, in the foreground: no subagent, no "
+              "background shell command, no file watch; wait for a script only by calling "
+              "wait_hypo.sh repeatedly. Do not end your turn before every assigned id has its "
+              "result file.")
 
 
 # --------------------------------------------------------------------------- claude engine
@@ -330,7 +388,9 @@ async def run_batch_claude(work_dir: Path, ids: list[int], kind: str, brain: str
         cwd=str(work_dir),
         setting_sources=[],      # no project settings, agents or CLAUDE.md: the prompt is the whole brief
         allowed_tools=["Bash", "Read", "Write", "Edit", "Glob"],
-        disallowed_tools=["Task"],   # the work happens in this session, never in a background subagent
+        # The work happens in this session: no subagent, and no watch tool that ends the
+        # turn while a script runs (a Monitor call ended a session before any result).
+        disallowed_tools=["Task", "Monitor"],
         permission_mode="bypassPermissions",
         model=model,
         effort=effort,
@@ -554,6 +614,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[driver] {args.engine}/{args.model} batch ids {ids} (spent ${spent:.2f}, {elapsed_h:.2f} h)",
                   flush=True)
             batch_started = time.monotonic()
+            before = progress_marker(work_dir)
             try:
                 outcome = run_batch(args, work_dir, ids, spent)
             except BaseException:
@@ -570,10 +631,13 @@ def main(argv: list[str] | None = None) -> int:
             with log.open("a", encoding="utf-8") as handle:
                 handle.write(f"batch {ids}: cost ${outcome['cost_usd']:.4f}, tokens {outcome.get('tokens')}, "
                              f"completed {completed}\n")
-            if not completed:
-                print("[driver] the batch completed no hypothesis; stopping to avoid spending on a stuck loop",
-                      flush=True)
+            if not completed and progress_marker(work_dir) == before:
+                print("[driver] the batch produced nothing new (no proposal, script, run or result); "
+                      "stopping to avoid spending on a stuck loop", flush=True)
                 break
+            if not completed:
+                print("[driver] the batch completed no hypothesis but left new work behind; "
+                      "the next session resumes it", flush=True)
     records = assemble_export(work_dir, args.hypotheses, {key: manifest.get(key) for key in ("engine", "model", "effort")})
     if not records:
         # Never clobber an export with nothing: a work directory without records

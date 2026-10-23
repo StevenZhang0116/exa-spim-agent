@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import subprocess
 import sys
 import tempfile
@@ -145,22 +144,49 @@ class BatchingTests(unittest.TestCase):
 
 
 class RunnerTests(unittest.TestCase):
-    def test_runner_captures_output_exit_code_and_runtime(self) -> None:
+    def _install(self, work: Path, timeout: int = 30) -> None:
+        (work / "run_hypo.sh").write_text(ad.RUN_HYPO_SH.replace("@TIMEOUT@", str(timeout)).replace("@PYTHON@", sys.executable))
+        (work / "run_hypo.sh").chmod(0o755)
+        (work / "wait_hypo.sh").write_text(ad.WAIT_HYPO_SH)
+        (work / "wait_hypo.sh").chmod(0o755)
+
+    def test_runner_starts_detached_and_waiter_reports_the_outcome(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
-            (work / "run_hypo.sh").write_text(ad.RUN_HYPO_SH.format(timeout=30, python=sys.executable))
-            (work / "run_hypo.sh").chmod(0o755)
-            (work / "hypo_7.py").write_text("import sys\nprint('INPUTS READ ok')\nprint('warn', file=sys.stderr)\nsys.exit(3)\n")
-            proc = subprocess.run([str(work / "run_hypo.sh"), "7"], capture_output=True, text=True,
-                                  cwd=tmp, env={**os.environ})
-            self.assertEqual(proc.returncode, 3)
-            self.assertIn("exit=3", proc.stdout)
+            self._install(work)
+            (work / "hypo_7.py").write_text(
+                "import sys, time\ntime.sleep(2)\nprint('INPUTS READ ok')\nprint('warn', file=sys.stderr)\nsys.exit(3)\n")
+            started = subprocess.run([str(work / "run_hypo.sh"), "7"], capture_output=True, text=True, cwd=tmp)
+            self.assertEqual(started.returncode, 0)
+            self.assertIn("started hypo_7.py", started.stdout)
+            self.assertTrue((work / "outputs" / "hypo_7.pid").is_file())
+            again = subprocess.run([str(work / "run_hypo.sh"), "7"], capture_output=True, text=True, cwd=tmp)
+            self.assertEqual(again.returncode, 2)          # already running: refuse a second start
+            waited = subprocess.run([str(work / "wait_hypo.sh"), "7", "60"], capture_output=True, text=True, cwd=tmp)
+            self.assertEqual(waited.returncode, 0, waited.stdout + waited.stderr)
+            self.assertIn("done:", waited.stdout)
+            self.assertIn("INPUTS READ ok", waited.stdout)
             meta = json.loads((work / "outputs" / "hypo_7.meta.json").read_text())
             self.assertEqual(meta["exit_code"], 3)
-            self.assertGreaterEqual(meta["runtime_ms"], 0)
+            self.assertGreaterEqual(meta["runtime_ms"], 2000)
             self.assertTrue(meta["finished_at"].endswith("+00:00"))
             self.assertEqual((work / "outputs" / "hypo_7.stdout.txt").read_text(), "INPUTS READ ok\n")
             self.assertEqual((work / "outputs" / "hypo_7.stderr.txt").read_text(), "warn\n")
+            self.assertFalse((work / "outputs" / "hypo_7.pid").exists())
+            never = subprocess.run([str(work / "wait_hypo.sh"), "8", "5"], capture_output=True, text=True, cwd=tmp)
+            self.assertEqual(never.returncode, 4)          # never started
+
+    def test_waiter_returns_still_running_within_its_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            self._install(work)
+            (work / "hypo_9.py").write_text("import time\ntime.sleep(12)\n")
+            subprocess.run([str(work / "run_hypo.sh"), "9"], capture_output=True, text=True, cwd=tmp, check=True)
+            waited = subprocess.run([str(work / "wait_hypo.sh"), "9", "5"], capture_output=True, text=True, cwd=tmp)
+            self.assertEqual(waited.returncode, 3)
+            self.assertIn("still running", waited.stdout)
+            done = subprocess.run([str(work / "wait_hypo.sh"), "9", "60"], capture_output=True, text=True, cwd=tmp)
+            self.assertEqual(done.returncode, 0)
 
 
 class CodexGlueTests(unittest.TestCase):
@@ -185,7 +211,7 @@ class CodexGlueTests(unittest.TestCase):
         self.assertTrue(prompt.startswith("# Discovery Researcher"))
         self.assertIn("# This batch", prompt)
         self.assertIn("ids [1, 2]", prompt)
-        self.assertIn("do not delegate it to a background task or subagent", prompt)
+        self.assertIn("no subagent, no background shell command, no file watch", prompt)
 
     def test_codex_events_are_summed_and_priced(self) -> None:
         lines = [
@@ -237,6 +263,7 @@ class DriverLoopTests(unittest.TestCase):
             self.assertEqual(calls[0][2:], ("claude-opus-5-5", "high"))
             work = root / "autodiscovery" / "claude-merge-t.claude"
             self.assertTrue((work / "run_hypo.sh").is_file())
+            self.assertTrue((work / "wait_hypo.sh").is_file())
             self.assertTrue((work / "task.md").is_symlink())
             manifest = json.loads((work / "manifest.json").read_text())
             self.assertEqual(manifest["cost_usd"], 12.0)
@@ -255,6 +282,33 @@ class DriverLoopTests(unittest.TestCase):
                          "--hypotheses", "7", "--assemble-only",
                          "--autodiscovery-dir", str(root / "autodiscovery")])
             self.assertEqual(len(calls), 3)
+
+    def test_loop_continues_after_partial_progress_and_stops_when_nothing_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_materials(root)
+            calls = []
+
+            async def fake_batch(work_dir, ids, kind, brain, mcl, *, model, effort, verbose,
+                                 max_budget_usd, timeout_s):
+                calls.append(list(ids))
+                if len(calls) == 1:          # proposals and scripts only: progress without a result
+                    for rid in ids:
+                        write_record(work_dir, rid, result=False)
+                elif len(calls) == 2:        # finishes them
+                    for rid in ids:
+                        write_record(work_dir, rid)
+                # third call: touches nothing -> the driver must stop
+                return {"cost_usd": 1.0, "tokens": None}
+
+            with patch.object(ad, "PROJECT_ROOT", root), patch.object(ad, "run_batch_claude", fake_batch), \
+                    redirect_stdout(io.StringIO()) as out:
+                ad.main(["--kind", "merge", "--brain", "1", "--run-name", "claude-merge-p",
+                         "--hypotheses", "6", "--batch", "3", "--max-cost-usd", "100",
+                         "--autodiscovery-dir", str(root / "autodiscovery")])
+            self.assertEqual(calls, [[1, 2, 3], [1, 2, 3], [4, 5, 6]])
+            self.assertIn("left new work behind", out.getvalue())
+            self.assertIn("produced nothing new", out.getvalue())
 
     def test_codex_engine_runs_unpriced_until_the_hypotheses_are_done(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
