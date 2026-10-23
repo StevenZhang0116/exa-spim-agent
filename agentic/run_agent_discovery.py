@@ -16,13 +16,17 @@ neutral constants (prior = posterior = 0.5, surprisal 0, not surprising) rather
 than asked of the agent.
 
 Two engines, the same files and the same researcher instructions
-(``.claude/agents/discovery-researcher.md``):
+(``.claude/agents/discovery-researcher.md``, read by the driver and placed in the
+prompt; neither engine loads project settings, CLAUDE.md or AGENTS.md, so the
+agent sees the AutoDiscovery materials and nothing else):
 
-- ``--engine claude``: a Claude Agent SDK session per batch that invokes the
-  ``discovery-researcher`` subagent (cost from the SDK's result message);
-- ``--engine codex``: ``codex exec`` (OpenAI Codex CLI) per batch with the
-  researcher instructions as the prompt (tokens from its ``turn.completed`` events;
-  cost = tokens x ``--price-in`` / ``--price-out`` per million, 0 when unpriced).
+- ``--engine claude``: a Claude Agent SDK session per batch working in the
+  foreground with Bash and file tools (no subagent: a delegated background task
+  ended the first session before any record existed; cost from the SDK's result
+  message);
+- ``--engine codex``: ``codex exec`` (OpenAI Codex CLI) per batch (tokens from its
+  ``turn.completed`` events; cost = tokens x ``--price-in`` / ``--price-out`` per
+  million, 0 when unpriced).
 
 Materials (all by their AutoDiscovery names, linked into the work directory):
 ``markdowns/<kind>_features_for_proofreader_evolve.md`` as ``task.md``,
@@ -193,11 +197,14 @@ def assemble_record(work_dir: Path, rid: int) -> dict | None:
     }
 
 
-def assemble_export(work_dir: Path, n_hypotheses: int) -> list[dict]:
+def assemble_export(work_dir: Path, n_hypotheses: int, provenance: dict | None = None) -> list[dict]:
+    """Every proposed id's record; ``provenance`` (engine, model, effort) is added to
+    each record after the AutoDiscovery fields so two exports can be told apart."""
     records = []
     for rid in range(1, n_hypotheses + 1):
         record = assemble_record(work_dir, rid)
         if record is not None:
+            record.update(provenance or {})
             records.append(record)
     return records
 
@@ -302,6 +309,17 @@ def researcher_instructions(spec_path: Path = RESEARCHER_SPEC) -> str:
     return text.strip()
 
 
+def session_prompt(work_dir: Path, ids: list[int], kind: str, brain: str, mcl: int) -> str:
+    """The whole prompt of one session, for either engine: the researcher
+    instructions, then this batch. The session itself does the work, in the
+    foreground, until every assigned id has a result file."""
+    return (researcher_instructions() + "\n\n# This batch\n\n"
+            + batch_instruction(work_dir, ids, kind, brain, mcl)
+            + "\n\nDo this work yourself in this session, in the foreground: do not delegate it "
+              "to a background task or subagent, and do not end your turn before every "
+              "assigned id has its result file.")
+
+
 # --------------------------------------------------------------------------- claude engine
 async def run_batch_claude(work_dir: Path, ids: list[int], kind: str, brain: str, mcl: int, *,
                            model: str, effort: str, verbose: bool, max_budget_usd: float | None,
@@ -309,15 +327,16 @@ async def run_batch_claude(work_dir: Path, ids: list[int], kind: str, brain: str
     """One fresh SDK session for one batch; the session's reported cost."""
     sdk = load_claude_sdk()
     options = sdk.agent_options(
-        cwd=str(PROJECT_ROOT),   # the project's .claude/agents must be in scope
-        setting_sources=["project"],
-        allowed_tools=["Task", "Bash", "Read", "Write", "Edit", "Glob"],
+        cwd=str(work_dir),
+        setting_sources=[],      # no project settings, agents or CLAUDE.md: the prompt is the whole brief
+        allowed_tools=["Bash", "Read", "Write", "Edit", "Glob"],
+        disallowed_tools=["Task"],   # the work happens in this session, never in a background subagent
         permission_mode="bypassPermissions",
         model=model,
         effort=effort,
         **({"max_budget_usd": float(max_budget_usd)} if max_budget_usd else {}),
     )
-    prompt = "Use the discovery-researcher subagent. " + batch_instruction(work_dir, ids, kind, brain, mcl)
+    prompt = session_prompt(work_dir, ids, kind, brain, mcl)
     cost = 0.0
     async with open_agent_session(sdk.client, options=options, connect_timeout_s=60) as client:
         await client.query(prompt)
@@ -349,6 +368,7 @@ def codex_command(work_dir: Path, model: str, effort: str, last_message: Path, s
     """``codex exec`` argv; the prompt goes in on stdin (``-``)."""
     argv = [shutil.which("codex") or "codex", "exec", "--json", "--skip-git-repo-check",
             "-C", str(work_dir), "-m", model, "-c", f'model_reasoning_effort="{effort}"',
+            "-c", "project_doc_max_bytes=0",   # no AGENTS.md from the repository: the prompt is the whole brief
             "-o", str(last_message)]
     if sandbox == "bypass":
         # The compute node (an externally bounded Slurm job) is the sandbox; the
@@ -400,7 +420,7 @@ def run_batch_codex(work_dir: Path, ids: list[int], kind: str, brain: str, mcl: 
     tag = f"{ids[0]}-{ids[-1]}_{datetime.now():%Y%m%d-%H%M%S}"
     events_path = codex_dir / f"events_{tag}.jsonl"
     last_message = codex_dir / f"last_message_{tag}.txt"
-    prompt = researcher_instructions() + "\n\n# This batch\n\n" + batch_instruction(work_dir, ids, kind, brain, mcl)
+    prompt = session_prompt(work_dir, ids, kind, brain, mcl)
     argv = codex_command(work_dir, model, effort, last_message, sandbox)
     lines: list[str] = []
     with events_path.open("w", encoding="utf-8") as events:
@@ -554,7 +574,15 @@ def main(argv: list[str] | None = None) -> int:
                 print("[driver] the batch completed no hypothesis; stopping to avoid spending on a stuck loop",
                       flush=True)
                 break
-    records = assemble_export(work_dir, args.hypotheses)
+    records = assemble_export(work_dir, args.hypotheses, {key: manifest.get(key) for key in ("engine", "model", "effort")})
+    if not records:
+        # Never clobber an export with nothing: a work directory without records
+        # (deleted, or a run that produced none) leaves the existing file alone.
+        raise SystemExit(f"no records under {work_dir / 'records'}; {export_path} left unchanged")
+    existing = json.loads(export_path.read_text(encoding="utf-8")) if export_path.is_file() else []
+    if isinstance(existing, list) and len(existing) > len(records):
+        raise SystemExit(f"{export_path} already holds {len(existing)} records, the work directory only "
+                         f"{len(records)}; refusing to shrink it (delete the export first if that is intended)")
     export_path.write_text(json.dumps(records, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
     manifest["export"] = str(export_path)
     manifest["records"] = len(records)

@@ -9,12 +9,16 @@ AutoDiscovery also lacks, and no self-assessed beliefs: the predictive workflow
 never ranks by them, so the agent is not asked for a prior or a posterior.
 
 Two engines share the files and the researcher instructions
-(`.claude/agents/discovery-researcher.md`):
+(`.claude/agents/discovery-researcher.md`, read by the driver and placed at the
+top of every session's prompt). Neither session loads project settings,
+`CLAUDE.md` or `AGENTS.md`, so the agent sees the materials and the prompt and
+nothing else; the session does the work itself, in the foreground (a delegated
+background subagent once ended a session before any record existed):
 
 | `--engine` | session per batch | default model | cost source |
 |---|---|---|---|
-| `claude` | Claude Agent SDK, `discovery-researcher` subagent | `claude-opus-5-5` | the SDK's result message |
-| `codex` | `codex exec --json` (OpenAI Codex CLI), instructions as the prompt | `gpt-6-astra` | tokens of its `turn.completed` events times `--price-in` / `--price-out` per million; unpriced (0) unless given, then only `--hypotheses` and `--max-hours` stop the run |
+| `claude` | Claude Agent SDK with Bash and file tools, `Task` disallowed | `claude-opus-5-5` | the SDK's result message |
+| `codex` | `codex exec --json` (OpenAI Codex CLI) | `gpt-6-astra` | tokens of its `turn.completed` events times `--price-in` / `--price-out` per million; unpriced (0) unless given, then only `--hypotheses` and `--max-hours` stop the run |
 
 `--model` and `--effort` override both (`effort` becomes the SDK effort or
 Codex's `model_reasoning_effort`). The Codex engine runs with
@@ -55,8 +59,10 @@ fields. The belief fields are neutral constants in AutoDiscovery's shape
 `boolean_cat` dicts with every vote on `uncertain`); `experimentPlan` is the
 object with `objective`, `steps` and `deliverables` the ranker expects; `status`
 `SUCCEEDED` only when the script exited 0 and a result was recorded,
-`codeOutput`/`runtimeMs`/`createdAt` from the runner. `manifest.json` in the work
-directory records the engine, model, sessions, tokens, cost and agent time.
+`codeOutput`/`runtimeMs`/`createdAt` from the runner. Each record also carries
+`engine`, `model` and `effort` after the AutoDiscovery fields, so two exports can be
+told apart; `manifest.json` in the work directory records the sessions, tokens,
+cost and agent time.
 
 ## Running
 

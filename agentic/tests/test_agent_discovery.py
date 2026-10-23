@@ -63,10 +63,11 @@ class RecordTests(unittest.TestCase):
             write_record(work, 2, result=False, exit_code=1, stderr="Traceback: boom")
             write_record(work, 3, exit_code=124)
             (work / "outputs" / "hypo_1_figure.png").write_bytes(b"png")
-            records = ad.assemble_export(work, 5)
+            records = ad.assemble_export(work, 5, {"engine": "claude", "model": "claude-opus-5-5", "effort": "high"})
             self.assertEqual([r["id"] for r in records], [1, 2, 3])
             one = records[0]
             self.assertEqual(list(one.keys())[:17], AD_FIELDS)
+            self.assertEqual((one["engine"], one["model"], one["effort"]), ("claude", "claude-opus-5-5", "high"))
             self.assertEqual(one["status"], "SUCCEEDED")
             self.assertEqual(one["code"], "print('x')\n")
             self.assertIn("INPUTS READ", one["codeOutput"])
@@ -110,6 +111,28 @@ class BatchingTests(unittest.TestCase):
             self.assertIn(f"{work}/records/<id>.proposal.json", instruction)
             self.assertNotIn("subagent", instruction)   # engine-independent wording
 
+    def test_export_is_never_emptied_or_shrunk(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_materials(root)
+            auto = root / "autodiscovery"
+            work = auto / "claude-merge-t.claude"
+            (work / "records").mkdir(parents=True)
+            export = auto / "claude-merge-t.json"
+            export.write_text(json.dumps([{"id": 1}, {"id": 2}]))
+            args = ["--kind", "merge", "--brain", "1", "--run-name", "claude-merge-t", "--hypotheses", "3",
+                    "--assemble-only", "--autodiscovery-dir", str(auto)]
+            with patch.object(ad, "PROJECT_ROOT", root), redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(SystemExit, "no records"):
+                    ad.main(args)
+                write_record(work, 1)
+                with self.assertRaisesRegex(SystemExit, "refusing to shrink"):
+                    ad.main(args)
+                write_record(work, 2)
+                write_record(work, 3)
+                ad.main(args)
+            self.assertEqual(len(json.loads(export.read_text())), 3)
+
     def test_run_name_kind_follows_the_downstream_token_rule(self) -> None:
         self.assertEqual(ad.run_name_kind("claude-merge-1_2026-10-22"), "merge")
         self.assertEqual(ad.run_name_kind("codex-split-1_2026-10-22"), "split")
@@ -149,6 +172,7 @@ class CodexGlueTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("-m") + 1], "gpt-6-astra")
         self.assertIn('model_reasoning_effort="high"', argv)
         self.assertIn("--dangerously-bypass-approvals-and-sandbox", argv)
+        self.assertIn("project_doc_max_bytes=0", argv)
         self.assertEqual(argv[-1], "-")
         sandboxed = ad.codex_command(Path("/w"), "m", "low", Path("/w/l.txt"), "workspace-write")
         self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", sandboxed)
@@ -157,6 +181,11 @@ class CodexGlueTests(unittest.TestCase):
         self.assertFalse(instructions.startswith("---"))
         self.assertIn("# Discovery Researcher", instructions)
         self.assertIn("proposal.json", instructions)
+        prompt = ad.session_prompt(Path("/w"), [1, 2], "merge", "1", 100)
+        self.assertTrue(prompt.startswith("# Discovery Researcher"))
+        self.assertIn("# This batch", prompt)
+        self.assertIn("ids [1, 2]", prompt)
+        self.assertIn("do not delegate it to a background task or subagent", prompt)
 
     def test_codex_events_are_summed_and_priced(self) -> None:
         lines = [
@@ -215,6 +244,7 @@ class DriverLoopTests(unittest.TestCase):
             self.assertEqual(len(manifest["sessions"]), 3)
             export = json.loads((root / "autodiscovery" / "claude-merge-t.json").read_text())
             self.assertEqual([r["id"] for r in export], [1, 2, 3, 4, 5, 6, 7])
+            self.assertEqual(export[0]["model"], "claude-opus-5-5")
             self.assertEqual(sum(r["status"] == "SUCCEEDED" for r in export), 6)
             self.assertEqual(export[6]["status"], "FAILED")
 
