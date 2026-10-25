@@ -80,12 +80,13 @@ Step 3.4 is done: since 2026-10-23 `DEFAULT_MERGE_DIR` / `DEFAULT_SPLIT_DIR` poi
 `autodiscovery-application/new-split-1_2026-10-20/runs/794495-with-figures` (hist_gradient_boosting),
 both fitted on 794495; every Stage 3 entry point resolves them without `--merge-dir` / `--split-dir`.
 
-Everything runs on the interactive node (n280 from 2026-10-23: 40 CPUs, 200 GB, ends
-2026-10-31 18:18), in a terminal inside that allocation with panda; there is no Slurm script.
-`proofreader_evolve/rebuild_brains.sh` runs the per-brain steps below for one brain after the
-other, evolution brains first (794495 802449 789202 794493 794491, then 754613 754612 754610
-750318 751473 747807), stops at the first failure and ends with a preflight over the brains of
-the call. It prints `# OK brain <b>` per finished brain and `# OK` / `# FAILED` at the end; the
+Everything runs on interactive nodes, in a terminal inside each allocation with panda; there is
+no Slurm script. `proofreader_evolve/rebuild_brains.sh` runs the per-brain steps below for one
+brain after the other (default order: evolution brains first, 794495 802449 789202 794493
+794491, then 754613 754612 754610 750318 751473 747807), stops at the first failure and ends
+with a preflight over the brains of the call. Several nodes may each run one call on their own
+brains: tables, sidecars and context caches live in per-brain directories and every log name
+carries a timestamp and pid. It prints `# OK brain <b>` per finished brain and `# OK` / `# FAILED` at the end; the
 log is `proofreader_evolve/log/rebuild_brains_<timestamp>_<pid>.log.txt`, with each step's own log
 beside it. Every step reuses finished work, so rerunning the same command after an interruption
 (or on the next allocation) resumes at the first unfinished brain and kind; only the kind that
@@ -101,16 +102,20 @@ for b in 747807 750318 751473 754610 754612 754613 789202 794491 794493 794495 8
 done
 ```
 
-Then, on the interactive node:
+Then, from a terminal of each node's own JupyterLab (not `srun --overlap` from the login node:
+Slurm ends a step's background processes with the step). Since 2026-10-23 14:03 three nodes run
+one group each, every node starting with an evolution brain, so all five finish in about a day:
 
 ```bash
-nohup bash proofreader_evolve/rebuild_brains.sh >/dev/null 2>&1 &   # all eleven brains; or name brains as arguments
-tail -f "$(ls -t proofreader_evolve/log/rebuild_brains_*.log.txt | head -1)"
+nohup bash proofreader_evolve/rebuild_brains.sh 794495 794493 789202 747807 >/dev/null 2>&1 &        # n283 (80 CPUs)
+nohup bash proofreader_evolve/rebuild_brains.sh 802449 751473 >/dev/null 2>&1 &                      # n280 (40 CPUs)
+nohup bash proofreader_evolve/rebuild_brains.sh 794491 750318 754610 754612 754613 >/dev/null 2>&1 & # n282 (40 CPUs)
+grep -H "# OK brain\|# OK after\|# FAILED" proofreader_evolve/log/rebuild_brains_*.log.txt
 ```
 
 `IMAGE_WORKERS` (default -1, one per CPU), `READERS` (32) and `BAND_ROWS` (50000) override the
-defaults. The closing preflight is the one this section asks for when the call covers all eleven
-brains:
+defaults. A call checks the TRAIN/selection roles only when it holds both 794495 and 802449, so
+with the three groups run this preflight once every node has printed `# OK`:
 
 ```bash
 python -m proofreader_evolve.cli.preflight \
@@ -155,15 +160,26 @@ the earlier "about 3 h for 794495" no longer holds). At the 16-worker rates of t
 | 789202 | 54,310 | 56,771 | 1.3 |
 
 About 184 h of image pass in all, plus the graph passes (split 802449 took 1.9 h in the build),
-the context caches (about 2 h for a split band of 50,000 rows) and the pkl loads. On one node
-the brains run in series, so at the 16-worker rates the whole rebuild needs more than the
-roughly 199 h the n280 allocation has left (2026-10-23 10:18 to 2026-10-31 18:18). The pass is
-S3-bound, so 40 workers may run faster than the 16-worker rates: read the `rate=` lines of
-794495 (first brain, 12 h at 16 workers) and extrapolate before counting on it. The order puts
-the five evolution brains first (about 70 h at the 16-worker rates), so evolution can start
-before the older-microscope brains finish; whatever is left resumes on the next allocation with
-the same command. 200 GB held the 802449 extraction in the detector build; one brain at a time,
-never two.
+the context caches (about 2 h for a split band of 50,000 rows) and the pkl loads. Measured on
+n280 with 40 workers (2026-10-23, 794495): merge 47.4 rows/s (192,177 rows in 68 min, 1.5 times
+the 16-worker rate) but split only 17.4 rows/s, below the 16-worker 19 rows/s, so the split
+pass is bound by S3 reads, not CPUs. At those rates the image pass still sums to about 184 h,
+which one node could not finish before its allocation ended; the three groups above take about
+60 to 64 h of image pass each (65 to 75 h with the other steps). Three nodes read the public
+bucket at once: if a node's split `rate=` falls well below 17 rows/s, S3 is throttling and one
+group should wait. 200 GB held the 802449 extraction in the detector build; 747807 (2.2 M split
+rows) has never been extracted and may need more. One brain at a time per node, never two.
+
+Observed by 2026-10-25 15:20. Done (`# OK brain`, companion pools of 794495 and 802449 match):
+794495 (split table 15 h, about 13 rows/s with three nodes reading; context cache 1 h 45 min),
+802449, 794491, 794493 and 789202, so all five evolution brains. Running: 747807 split on n283
+(15 rows/s, about 37 h left), 751473 split on n280 (21 rows/s, about 14 h left). Stalled: the
+750318 split image pass on n282 stopped at row 439,600 of 1,237,112 near 05:50 on 2026-10-25; all
+40 image threads wait on open S3 connections with no CPU use, and only heartbeat lines follow. The
+detector's image reads have no timeout, so such a run never recovers: stop it and rerun the same
+call (finished brains and kinds are reused). The three calls of 2026-10-23 will not run their
+closing preflight: `rebuild_brains.sh` was edited while they ran and their script handles went
+stale, so run the eleven-brain preflight by hand.
 
 ## 5. After the rebuild, once
 

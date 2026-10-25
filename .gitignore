@@ -123,3 +123,4 @@ notebooks/merge_site_gt_tip/
 notebooks/label_counts/
 notebooks/split_canonical_gap/
 notebooks/evaluable_precision_test/
+notebooks/gt_neuron_length/

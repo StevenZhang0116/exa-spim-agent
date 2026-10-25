@@ -46,7 +46,8 @@ python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802
 python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802449 789202 794493 794491 --mcl 100 --readers 16 --band-rows 50000 --labeled-extension
 # When a dataset cache (_add.pkl) is rebuilt, every artifact below descends from it; the order, the identity
 # checks and the times are in docs/dataset_artifact_dependencies.md.
-# REQUIRED before evolution/preflight: label-availability sidecars (minutes per brain). Labels become
+# REQUIRED before evolution/preflight: label-availability sidecars (minutes per brain; prepare_feature_tables.py
+# writes them, this command alone reuses valid ones). Labels become
 # three-valued (1 error / 0 GT-confirmed no error / NaN not judgeable); ranking, Precision@K, bootstrap and
 # fitting use GT-labeled rows only (see WORKFLOW_REVISION "Three-valued labels throughout").
 python -u -m proofreader_evolve.cli.precompute_availability --brains 794495 802449 789202 794493 794491 --mcl 100

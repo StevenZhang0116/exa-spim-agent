@@ -4,12 +4,14 @@
 # companion pool check (794495 and 802449) and the context cache of both kinds with the
 # labeled extension; then one preflight over the brains of this call.
 #
-# Run it inside the allocation (a terminal on the interactive node); the steps use the CPUs
+# Run it inside the allocation (a terminal of the interactive node's JupyterLab); the steps use the CPUs
 # this process may run on. Every step reuses finished work (tables per brain and kind, valid
 # sidecars, complete cache entries), so the same command after an interruption resumes at the
 # first unfinished brain and kind; a kind interrupted mid-way is built again from its start.
-# The first failure stops the script. Never run two of these at once: 200 GB held one brain
-# (802449 in the detector build), two brains together are untested.
+# The first failure stops the script. Never run two of these on one node: 200 GB held one brain
+# (802449 in the detector build), two brains together are untested. Calls on different nodes with
+# different brains are independent (per-brain directories, per-call logs). The TRAIN/selection
+# role check of the closing preflight runs only when the call holds both 794495 and 802449.
 #
 #   bash proofreader_evolve/rebuild_brains.sh [brain ...]          # default: all eleven brains
 #   nohup bash proofreader_evolve/rebuild_brains.sh >/dev/null 2>&1 &   # keeps running when the terminal closes
