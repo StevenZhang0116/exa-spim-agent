@@ -1,8 +1,9 @@
-"""Per-pool Top-K from GT positives (objective v3, 2026-10-12).
+"""Per-pool Top-K from GT positives (objective v3, 2026-10-12; per-kind ratio and capless kinds, v4, 2026-10-26).
 
-Budgets resolve K = min(cap, ceil(positive_ratio x positives)) per pool and flag pools
-below the positive floor; such pools are scored and reported but excluded from the
-kind-first mean, the paired bootstrap and kind headroom. Synthetic fixtures only.
+Budgets resolve K = ceil(positive_ratio[kind] x positives) per pool, limited to the kind's
+cap when it has one, and flag pools below the positive floor; such pools are scored and
+reported but excluded from the kind-first mean, the paired bootstrap and kind headroom.
+Synthetic fixtures only.
 """
 
 import asyncio
@@ -55,8 +56,8 @@ class BudgetsTests(unittest.TestCase):
         self.assertEqual(dict(budgets), {"merge": 300, "split": 500})
         described = budgets.describe()
         self.assertEqual((described["caps"], described["positive_ratio"], described["min_positives"]),
-                         ({"merge": 300, "split": 500}, 2.0, 20))
-        self.assertIn("ceil(positive_ratio x GT positives)", described["k_rule"])
+                         ({"merge": 300, "split": 500}, {"merge": 2.0, "split": 2.0}, 20))
+        self.assertIn("ceil(positive_ratio[kind] x GT positives)", described["k_rule"])
         for bad in ({"merge": 0}, {"merge": 1.5}):
             with self.assertRaises(ValueError):
                 scoring.Budgets(bad)
@@ -64,10 +65,39 @@ class BudgetsTests(unittest.TestCase):
             with self.subTest(ratio=ratio, floor=floor), self.assertRaises(ValueError):
                 scoring.Budgets({"merge": 1}, positive_ratio=ratio, min_positives=floor)
 
+    def test_per_kind_ratio_and_a_kind_without_a_cap(self):
+        # 2026-10-26 defaults: merge 2 x positives under a cap of 300, split exactly its positives, no cap.
+        budgets = scoring.Budgets({"merge": 300, "split": None}, positive_ratio={"merge": 2.0, "split": 1.0},
+                                  min_positives=20)
+        many = np.array([1.] * 825 + [0.] * 100 + [np.nan] * 40)
+        nine = np.array([1.] * 9 + [0.] * 440)
+        self.assertEqual(budgets.k_for("split", many), 825)  # K = positives, above the old cap of 500/1000
+        self.assertEqual(budgets.k_for("merge", many), 300)
+        self.assertEqual(budgets.k_for("split", nine), 9)
+        self.assertEqual(budgets.k_for("split", np.zeros(3)), 1)
+        self.assertIsNone(budgets["split"])
+        self.assertEqual(dict(budgets), {"merge": 300, "split": None})
+        self.assertEqual(budgets.positive_ratio, {"merge": 2.0, "split": 1.0})
+        self.assertEqual(budgets.kind_budget("merge", [18, 300]), 300)  # the cap, whatever the pools resolve
+        self.assertEqual(budgets.kind_budget("split", [9, 825]), 825)  # no cap: the largest resolved pool K
+        self.assertIsNone(budgets.kind_budget("split"))
+        self.assertEqual(budgets.kind_budgets({"a/split": {"requested_k": 9}, "b/split": {"requested_k": 825},
+                                               "a/merge": {"requested_k": 18}}), {"merge": 300, "split": 825})
+        described = budgets.describe()
+        self.assertEqual((described["caps"], described["positive_ratio"]),
+                         ({"merge": 300, "split": None}, {"merge": 2.0, "split": 1.0}))
+        self.assertIn("limited to caps[kind] when the kind has a cap", described["k_rule"])
+        with self.assertRaisesRegex(ValueError, "no Top-K cap"):
+            scoring.Budgets({"split": None})  # fixed K without a cap is undefined
+        with self.assertRaisesRegex(ValueError, "exactly the budgeted kinds"):
+            scoring.Budgets({"merge": 300, "split": None}, positive_ratio={"merge": 2.0})
+        with self.assertRaises(ValueError):
+            scoring.Budgets({"merge": 0.5})
+
     def test_plain_mappings_coerce_to_fixed_k_counting_every_pool(self):
         budgets = scoring.Budgets.coerce({"split": 7})
         self.assertIsInstance(budgets, scoring.Budgets)
-        self.assertEqual((budgets.positive_ratio, budgets.min_positives, budgets["split"]), (0., 0, 7))
+        self.assertEqual((budgets.positive_ratio, budgets.min_positives, budgets["split"]), ({"split": 0.}, 0, 7))
         self.assertIs(scoring.Budgets.coerce(budgets), budgets)
 
     def test_resolve_lists_every_pool_from_labels_only(self):
@@ -160,6 +190,13 @@ class ScheduleTests(unittest.TestCase):
         self.assertAlmostEqual(room["split"], ((1 - .9) + (1 - .93)) / 2)
         self.assertEqual(ks.mean_k(cells, budgets, kinds), {"merge": 162., "split": 500.})
         self.assertEqual(ks.mean_k({}, budgets, kinds), {"merge": 300., "split": 500.})
+        uncapped = {"merge": 300, "split": None}
+        self.assertEqual(ks.mean_k(cells, uncapped, kinds), {"merge": 162., "split": 500.})
+        self.assertEqual(ks.mean_k({}, uncapped, kinds), {"merge": 300., "split": float("inf")})
+        below = {"a/split": {"positives": 9, "requested_k": 9, "precision": .5, "in_mean": False}}
+        self.assertEqual(ks.mean_k(below, uncapped, kinds), {"merge": 300., "split": 9.})
+        result = ks.allocate(kinds, cells={}, budgets=uncapped, records=[], paused={}, pending={})
+        self.assertFalse(result["kinds"]["split"]["saturated"])
         saturated = {"a/merge": {"positives": 81, "requested_k": 162, "precision": .499, "in_mean": True},
                      "a/split": {"positives": 1476, "requested_k": 500, "precision": .5, "in_mean": True}}
         result = ks.allocate(kinds, cells=saturated, budgets=budgets, records=[], paused={}, pending={})
@@ -183,24 +220,47 @@ class FeedbackAndRecordTests(unittest.TestCase):
         self.assertIn("k_rule explains", feedback["reading_guide"])
         self.assertNotIn("validation", text.lower())
 
-    def test_record_readers_accept_all_three_objective_versions(self):
+    def test_feedback_budget_of_a_capless_kind_is_the_largest_train_pool_k(self):
+        budgets = scoring.Budgets({"split": None}, positive_ratio=1.0, min_positives=0)
+        report = scoring.evaluate(BASELINE, {"1": fixture("1"), "2": fixture("2")}, budgets, examples=True)
+        self.assertEqual(report["cells"]["1/split"]["requested_k"], 1)  # the fixture's one positive
+        self.assertIsNone(report["budgets"]["caps"]["split"])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "feedback.json"
+            write_train_feedback(path, report, [], budgets, target_kind="split")
+            feedback = json.loads(path.read_text())
+        self.assertEqual(feedback["budgets"], {"split": 1})
+        self.assertIsNone(feedback["k_rule"]["caps"]["split"])
+        self.assertIn("one K per kind", feedback["reading_guide"])
+
+    def test_record_readers_accept_all_four_objective_versions(self):
         self.assertEqual(records.PRECISION, scoring.SCORING_VERSION)
         self.assertEqual(records.PRECISION_VERSIONS,
-                         {records.LEGACY_PRECISION, records.PRECISION_V2, records.PRECISION})
+                         {records.LEGACY_PRECISION, records.PRECISION_V2, records.PRECISION_V3, records.PRECISION})
         self.assertEqual(records.objective({"objective": records.PRECISION_V2}), records.PRECISION_V2)
+        self.assertEqual(records.objective({"objective": records.PRECISION_V3}), records.PRECISION_V3)
+        self.assertEqual(records.PRECISION_V3, "native-precision-at-k-v3-positive-scaled-k")
 
 
 class DriverTests(unittest.TestCase):
     def test_defaults_and_argument_validation(self):
         from proofreader_evolve.cli import run_precision_evolution as driver
         args = driver.parse_args([])
-        self.assertEqual((args.k_positive_ratio, args.min_positives), (2.0, 20))
-        self.assertEqual((args.merge_k, args.split_k), (300, 1000))  # split cap 1000 since 2026-10-12
+        self.assertEqual((args.k_positive_ratio, args.min_positives), ({"merge": 2.0, "split": 1.0}, 20))
+        self.assertEqual((args.merge_k, args.split_k), (300, None))  # split uncapped since 2026-10-26 (1000 before)
         with redirect_stderr(io.StringIO()):
-            for bad in (["--k-positive-ratio", "-1"], ["--k-positive-ratio", "nan"], ["--min-positives", "-1"]):
+            for bad in (["--k-positive-ratio", "-1"], ["--k-positive-ratio", "nan"], ["--min-positives", "-1"],
+                        ["--k-positive-ratio", "0"],  # split has no cap, so a zero ratio leaves its K undefined
+                        ["--k-positive-ratio", "merge=2"], ["--k-positive-ratio", "merge=2,omit=1"],
+                        ["--k-positive-ratio", "merge=2,merge=1,split=1"], ["--split-k", "0"], ["--merge-k", "x"]):
                 with self.subTest(bad=bad), self.assertRaises(SystemExit):
                     driver.parse_args(bad)
-        self.assertEqual(driver.parse_args(["--k-positive-ratio", "0"]).k_positive_ratio, 0.)
+        self.assertEqual(driver.parse_args(["--k-positive-ratio", "0", "--split-k", "3"]).k_positive_ratio,
+                         {"merge": 0., "split": 0.})
+        self.assertEqual(driver.parse_args(["--k-positive-ratio", "merge=2, split=1.5"]).k_positive_ratio,
+                         {"merge": 2., "split": 1.5})
+        self.assertEqual(driver.parse_args(["--split-k", "1000"]).split_k, 1000)
+        self.assertIsNone(driver.parse_args(["--merge-k", "none"]).merge_k)
 
     def run_driver(self, extra):
         from proofreader_evolve.cli import run_precision_evolution as driver
@@ -218,7 +278,7 @@ class DriverTests(unittest.TestCase):
     def test_manifest_records_resolved_pool_budgets_and_the_seed_uses_them(self):
         manifest, seed, trace = self.run_driver(['--min-positives', '0', '--k-positive-ratio', '2'])
         self.assertEqual(manifest["budgets"]["caps"], {"merge": 300, "split": 3})
-        self.assertEqual(manifest["budgets"]["positive_ratio"], 2.0)
+        self.assertEqual(manifest["budgets"]["positive_ratio"], {"merge": 2.0, "split": 2.0})
         self.assertEqual(manifest["pool_budgets"]["1/split"],
                          {"positives": 1, "cap": 3, "requested_k": 2, "in_mean": True})
         self.assertEqual(seed["validation"]["cells"]["2/split"]["requested_k"], 2)
@@ -226,6 +286,17 @@ class DriverTests(unittest.TestCase):
         self.assertIn("2/split K=2/3 positives=1", trace)
         self.assertNotIn("label_availability_warning", trace)
         self.assertEqual(manifest["objective"], scoring.SCORING_VERSION)
+
+    def test_a_capless_split_ranks_its_positives(self):
+        # The last --split-k wins over run_driver's default of 3: no cap, default ratio 1 for split.
+        manifest, seed, trace = self.run_driver(['--min-positives', '0', '--split-k', 'none'])
+        self.assertEqual(manifest["budgets"]["caps"], {"merge": 300, "split": None})
+        self.assertEqual(manifest["budgets"]["positive_ratio"], {"merge": 2.0, "split": 1.0})
+        self.assertEqual(manifest["pool_budgets"]["1/split"],
+                         {"positives": 1, "cap": None, "requested_k": 1, "in_mean": True})
+        self.assertEqual(seed["validation"]["cells"]["2/split"]["requested_k"], 1)
+        self.assertIn("2/split K=1/no cap positives=1", trace)
+        self.assertNotIn("label_availability_warning", trace)
 
     def test_fixed_k_mode_keeps_the_crowding_warning(self):
         manifest, seed, trace = self.run_driver(['--min-positives', '0', '--k-positive-ratio', '0'])

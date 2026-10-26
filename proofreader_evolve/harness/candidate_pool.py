@@ -13,12 +13,30 @@ REFERENCE_EVERY = 3
 EVIDENCE_PATIENCE = 2
 FOLLOWUP_ATTEMPTS = 2
 REFERENCE_FIELDS = (
-    'experiment', 'target_kind', 'sequence', 'component_sha256', 'family',
+    'experiment', 'target_kind', 'sequence', 'component_sha256', 'scores_sha256', 'family',
     'hypothesis', 'strategy', 'parameter_grid', 'snapshot', 'status', 'train',
     'cached', 'parameters', 'formula_sha256', 'target_precision', 'top_k_sha256',
     'specialist_profile', 'candidate_type', 'classifier', 'training',
     'research', 'feature_evidence', 'selection', 'in_sample_precision', 'selection_gate',
 )
+
+
+def scores_digest(kind, *states):
+    """SHA-256 of this kind's exact score vectors over the given ``(label, state)`` pairs.
+
+    Two programs that reproduce the same scores on every TRAIN and selection cell are the
+    same candidate for the outer evaluator whatever their bytes (run ``5to8nx13``, generation
+    15: a rewritten champion with identical merge scores was validated again). The host uses
+    this digest, next to ``component_sha256``, to recognise a repeated submission.
+    """
+    digest = hashlib.sha256()
+    for label, state in states:
+        for cell in sorted(state):
+            if cell.rsplit('/', 1)[-1] != kind:
+                continue
+            digest.update(f'{label}:{cell}'.encode())
+            digest.update(np.ascontiguousarray(np.asarray(state[cell]['scores'], dtype='<f8')).tobytes())
+    return digest.hexdigest()
 
 
 def candidate_metadata(component, kind, report, state, *, coverage=None):
@@ -52,6 +70,9 @@ class CandidatePool:
         # Separate from the bounded TRAIN archive: a weaker TRAIN score cannot
         # evict the component currently used by the outer evaluator.
         self.references = {kind: None for kind in kinds}
+        # Candidates the outer evaluator has measured: identity and promotion status only
+        # (no validation numbers), so a known ranking is never submitted twice.
+        self.validated = {kind: [] for kind in kinds}
         self.covered_history = {kind: set() for kind in kinds}
         self.best_slice_hits = {kind: {} for kind in kinds}
         self.progress = {kind: {'rounds': 0, 'train_rounds': 0, 'stalled_rounds': 0, 'stalled_explorations': 0,
@@ -63,6 +84,31 @@ class CandidatePool:
 
     def add(self, entry):
         self._retain(entry['target_kind'], [entry])
+
+    def mark_validated(self, entry, generation, promoted):
+        """Record an outer measurement of this candidate: identity and promotion status only."""
+        kind = entry['target_kind']
+        if kind not in self.validated:
+            raise ValueError('Validated candidate of an unconfigured kind')
+        item = {'generation': int(generation), 'experiment': entry['experiment'],
+                'component_sha256': entry['component_sha256'], 'scores_sha256': entry.get('scores_sha256'),
+                'promoted': bool(promoted)}
+        self.validated[kind].append(item)
+        return deepcopy(item)
+
+    def validation_of(self, kind, entry):
+        """The earliest outer measurement of a candidate identical by bytes or kind scores, else None."""
+        component, scores = entry.get('component_sha256'), entry.get('scores_sha256')
+        for item in self.validated.get(kind, ()):
+            by = ('component' if component is not None and item['component_sha256'] == component
+                  else 'scores' if scores and item['scores_sha256'] == scores else None)
+            if by is not None:
+                return {'generation': item['generation'], 'experiment': item['experiment'],
+                        'promoted': item['promoted'], 'by': by}
+        return None
+
+    def _annotate(self, entry):
+        return {**deepcopy(entry), 'outer_measurement': self.validation_of(entry['target_kind'], entry)}
 
     def set_reference(self, entry):
         """Pin a measured TRAIN snapshot; callers never pass heldout measurements."""
@@ -148,7 +194,8 @@ class CandidatePool:
             comparison = self.coverage.compare(entry, [parent])
             if comparison['additional_positive_hits'] or comparison['improved_slices']:
                 results.append({'experiment': entry['experiment'], 'family': entry['family'],
-                                'target_precision': entry['target_precision'], **comparison})
+                                'target_precision': entry['target_precision'],
+                                'outer_measurement': self.validation_of(kind, entry), **comparison})
         return sorted(results, key=lambda item: (
             -len(item['improved_slices']), -item['additional_macro_recall'], -item['target_precision']))
 
@@ -210,7 +257,7 @@ class CandidatePool:
                     'scheduled_round': progress['scheduled_rounds'],
                     'followup_required': followup, 'investigation': investigation,
                     'observed_sources': self.research.sources(kind) if self.research is not None else None,
-                    'search_parent': deepcopy(parent), 'best_precision_before': champion['target_precision'],
+                    'search_parent': self._annotate(parent), 'best_precision_before': champion['target_precision'],
                     'complementary_candidates': self._complements(parent),
                     'research_focus': ('failure_driven_feature_discovery' if explore else 'controlled_parameter_tuning'),
                     'hypothesis_advice': self.hypotheses.advice(kind) if self.hypotheses is not None else None,
@@ -292,8 +339,9 @@ class CandidatePool:
         return deepcopy(progress)
 
     def summary(self):
-        # Metrics and diagnostics remain TRAIN-only. Reference identity is supplied
-        # by the host; no heldout scores, labels or decision reasons are included.
+        # Metrics and diagnostics remain TRAIN-only. Reference identity and each candidate's
+        # outer_measurement status (generation, promoted) are supplied by the host; no heldout
+        # scores, labels or decision reasons are included.
         return {'selection': 'train-champion-and-specialists-v1' if self.coverage else 'near-best-train',
                 'scheduling': 'measured-investigation-promotion-followup-v3',
                 'coverage': self.coverage.definitions() if self.coverage else None,
@@ -324,6 +372,8 @@ class CandidatePool:
             'experiment', 'component_sha256', 'family', 'formula_sha256', 'parameters', 'candidate_type', 'classifier',
             'target_precision', 'top_k_sha256', 'train', 'specialist_profile', 'retention', 'research', 'feature_evidence',
             'selection', 'in_sample_precision', 'selection_gate')}
+        # Agent-visible name: the outer evaluator's measurement status (generation, promoted), no numbers.
+        result['outer_measurement'] = self.validation_of(entry['target_kind'], entry)
         if self.coverage is not None:
             members = self.members[entry['target_kind']]
             result['vs_champion'] = self.coverage.compare(entry, members[:1])

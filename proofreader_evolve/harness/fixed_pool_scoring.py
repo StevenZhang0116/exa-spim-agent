@@ -13,6 +13,13 @@ excluded from the promotion mean, the bootstrap and kind headroom. Both inputs a
 label counts, so every K is fixed for a run. The mean is taken per kind over the
 counted brains and then over kinds; with every pool counted this equals the former
 equal-brain mean of per-brain kind means.
+
+Since 2026-10-26 (v4) the ratio is per kind and a kind may have no cap. The defaults
+are merge 2.0 under a cap of 300 (unchanged) and split 1.0 with no cap, so a split pool
+ranks exactly its GT positives (R-precision: precision equals recall at that depth).
+The fixed split cap of 1000 had saturated: the frozen detector alone reached
+Precision@1000 of 0.92 to 0.97 on the validation pools while the labeled ranking still
+held 1,759 to 2,783 positives, and precision at K = positives was 0.83 to 0.88.
 """
 
 from collections.abc import Mapping
@@ -29,36 +36,53 @@ from .model_execution import DEFAULT_MEMORY_MB
 from .label_availability import labeled_rows, labels_digest
 
 
-SCORING_VERSION = "native-precision-at-k-v3-positive-scaled-k"
+SCORING_VERSION = "native-precision-at-k-v4-per-kind-k"
 AGGREGATION = "equal-kind-mean-of-equal-brain-precision"
-VALIDATION_GATE_VERSION = "mean-validation-precision-v3-positive-scaled-k"
-BOOTSTRAP_GATE_VERSION = "mean-validation-bootstrap-v3-positive-scaled-k"
+VALIDATION_GATE_VERSION = "mean-validation-precision-v4-per-kind-k"
+BOOTSTRAP_GATE_VERSION = "mean-validation-bootstrap-v4-per-kind-k"
 GATE_MODES = ("bootstrap", "margin")
 
 
 class Budgets(Mapping):
     """Per-kind Top-K caps plus the rule resolving each pool's K from its GT positives.
 
-    ``budgets[kind]`` is the cap (the historical fixed K). ``k_for(kind, truth)`` is the
-    K ranked on one pool: ``min(cap, ceil(positive_ratio * positives))`` when
-    ``positive_ratio > 0``, otherwise the cap. ``in_mean(truth)`` is False for pools with
-    fewer than ``min_positives`` GT positives; those pools are scored and reported but
-    never enter the promotion mean, the bootstrap or kind headroom. Both depend on
-    label counts only, so every pool's K is fixed for a run. A plain ``{kind: K}``
-    mapping coerces to fixed-K budgets that count every pool (the pre-v3 behaviour).
+    ``budgets[kind]`` is the cap (the historical fixed K), or ``None`` for a kind without a
+    cap. ``k_for(kind, truth)`` is the K ranked on one pool:
+    ``ceil(positive_ratio[kind] * positives)``, limited to the cap when the kind has one; a
+    zero ratio keeps the cap (fixed K), so a kind without a cap needs a positive ratio.
+    ``positive_ratio`` is one number for every kind or a ``{kind: ratio}`` mapping naming
+    exactly the budgeted kinds (since 2026-10-26: merge 2.0 under a cap of 300, split 1.0
+    without a cap, so a split pool ranks exactly its GT positives). ``in_mean(truth)`` is
+    False for pools with fewer than ``min_positives`` GT positives; those pools are scored
+    and reported but never enter the promotion mean, the bootstrap or kind headroom.
+    Everything depends on label counts only, so every pool's K is fixed for a run. A plain
+    ``{kind: K}`` mapping coerces to fixed-K budgets that count every pool (the pre-v3
+    behaviour).
     """
 
     def __init__(self, caps, positive_ratio=0., min_positives=0):
         caps = dict(caps)
         for kind, cap in caps.items():
-            if type(cap) is not int or cap < 1:
-                raise ValueError(f"Top-K cap for {kind} must be a positive integer")
-        if (isinstance(positive_ratio, bool) or not isinstance(positive_ratio, (int, float))
-                or not math.isfinite(positive_ratio) or positive_ratio < 0):
-            raise ValueError("positive_ratio must be a finite nonnegative number (0 keeps the fixed cap)")
+            if cap is not None and (type(cap) is not int or cap < 1):
+                raise ValueError(f"Top-K cap for {kind} must be a positive integer or None (no cap)")
+        if isinstance(positive_ratio, Mapping):
+            ratios = dict(positive_ratio)
+            if set(ratios) != set(caps):
+                raise ValueError("positive_ratio must name exactly the budgeted kinds: "
+                                 f"{sorted(caps)} vs {sorted(ratios)}")
+        else:
+            ratios = {kind: positive_ratio for kind in caps}
+        for kind, ratio in ratios.items():
+            if (isinstance(ratio, bool) or not isinstance(ratio, (int, float))
+                    or not math.isfinite(ratio) or ratio < 0):
+                raise ValueError(f"positive_ratio for {kind} must be a finite nonnegative number "
+                                 "(0 keeps the fixed cap)")
+            if caps[kind] is None and ratio <= 0:
+                raise ValueError(f"{kind} has no Top-K cap, so its positive_ratio must be > 0")
         if type(min_positives) is not int or min_positives < 0:
             raise ValueError("min_positives must be a nonnegative integer (0 counts every pool)")
-        self.caps, self.positive_ratio, self.min_positives = caps, float(positive_ratio), min_positives
+        self.caps, self.min_positives = caps, min_positives
+        self.positive_ratio = {kind: float(ratios[kind]) for kind in caps}
 
     @classmethod
     def coerce(cls, value):
@@ -78,19 +102,40 @@ class Budgets(Mapping):
         return int(np.nansum(np.asarray(truth, dtype=float)))
 
     def k_for(self, kind, truth):
-        cap = self.caps[kind]
-        if self.positive_ratio <= 0:
+        cap, ratio = self.caps[kind], self.positive_ratio[kind]
+        if ratio <= 0:
             return cap
-        return max(1, min(cap, math.ceil(self.positive_ratio * self.positives(truth))))
+        k = math.ceil(ratio * self.positives(truth))
+        if cap is not None:
+            k = min(cap, k)
+        return max(1, k)
+
+    def kind_budget(self, kind, resolved_ks=()):
+        """One literal K for a kind (agent-facing ``budgets``, image ``selection_k``): the cap
+        when the kind has one, otherwise the largest of the given resolved pool Ks; None when
+        neither exists."""
+        cap = self.caps[kind]
+        if cap is not None:
+            return cap
+        ks = [int(k) for k in resolved_ks]
+        return max(ks) if ks else None
+
+    def kind_budgets(self, cells):
+        """``kind_budget`` for every budgeted kind from a report's cells (``requested_k``)."""
+        return {kind: self.kind_budget(kind, (cell["requested_k"] for name, cell in cells.items()
+                                              if name.rsplit("/", 1)[-1] == kind))
+                for kind in self.caps}
 
     def in_mean(self, truth):
         return self.positives(truth) >= self.min_positives
 
     def describe(self):
-        return {"caps": dict(self.caps), "positive_ratio": self.positive_ratio,
+        scaled = any(ratio > 0 for ratio in self.positive_ratio.values())
+        return {"caps": dict(self.caps), "positive_ratio": dict(self.positive_ratio),
                 "min_positives": self.min_positives,
-                "k_rule": ("K per pool = min(cap, ceil(positive_ratio x GT positives))"
-                           if self.positive_ratio > 0 else "K per pool = cap (fixed)"),
+                "k_rule": ("K per pool = ceil(positive_ratio[kind] x GT positives), limited to caps[kind] "
+                           "when the kind has a cap; a zero ratio keeps the cap (fixed K)"
+                           if scaled else "K per pool = cap (fixed)"),
                 "mean_rule": (f"pools with fewer than {self.min_positives} GT positives are scored and "
                               "reported but excluded from the mean"
                               if self.min_positives > 0 else "every pool counts toward the mean")}
@@ -243,7 +288,7 @@ def acceptance(parent, candidate, margin=0, *, require_no_cell_regression=True):
                     f"delta={gain:+.6f}, margin={margin:g}")
 
 
-BOOTSTRAP_VERSION = "paired-poisson-bootstrap-v3-positive-scaled-k"
+BOOTSTRAP_VERSION = "paired-poisson-bootstrap-v4-per-kind-k"
 
 
 def _prefix_hits(order, truth, counts, k):

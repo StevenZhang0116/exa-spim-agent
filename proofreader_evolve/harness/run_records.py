@@ -12,12 +12,14 @@ from pathlib import Path
 # this module stays standard-library only). v1 runs (before 2026-10-09) ranked every row with
 # two-valued labels; v2 (2026-10-09 to 2026-10-11) ranks GT-labeled rows only (three-valued
 # labels) at one fixed K per kind; v3 (2026-10-12) resolves each pool's K from its GT positives
-# and excludes pools below a positive floor from the mean. All three are read; their numbers
-# are not comparable across versions.
-PRECISION = "native-precision-at-k-v3-positive-scaled-k"
+# and excludes pools below a positive floor from the mean; v4 (2026-10-26) makes the positive
+# ratio per kind and lets a kind run without a cap (split: K = its GT positives). All four are
+# read; their numbers are not comparable across versions.
+PRECISION = "native-precision-at-k-v4-per-kind-k"
+PRECISION_V3 = "native-precision-at-k-v3-positive-scaled-k"
 PRECISION_V2 = "native-precision-at-k-v2-three-valued"
 LEGACY_PRECISION = "native-precision-at-k-v1"
-PRECISION_VERSIONS = frozenset({LEGACY_PRECISION, PRECISION_V2, PRECISION})
+PRECISION_VERSIONS = frozenset({LEGACY_PRECISION, PRECISION_V2, PRECISION_V3, PRECISION})
 METRIC_NAME = "macro Precision@K"
 
 

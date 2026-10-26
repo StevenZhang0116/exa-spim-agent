@@ -146,7 +146,8 @@ def _pool(value):
     def candidate(entry):
         return {key: entry.get(key) for key in (
             'experiment', 'component_sha256', 'family', 'target_precision', 'in_sample_precision', 'retention',
-            'specialist_profile', 'vs_champion', 'vs_other_retained')} | {'selection': _metrics(entry.get('selection'))} \
+            'specialist_profile', 'vs_champion', 'vs_other_retained', 'outer_measurement')} \
+            | {'selection': _metrics(entry.get('selection'))} \
             if isinstance(entry, dict) else None
     return {'selection': value.get('selection'), 'scheduling': value.get('scheduling'),
             'settings': value.get('settings'),
@@ -170,6 +171,8 @@ def generation_status(row, event_names):
         return 'accepted'
     if row.get('submission_unchanged'):
         return 'unchanged'
+    if row.get('submission_repeat'):
+        return 'repeated'
     if row.get('validation') is not None and row.get('accepted') is False:
         return 'rejected'
     if 'generation_interrupted' in event_names:

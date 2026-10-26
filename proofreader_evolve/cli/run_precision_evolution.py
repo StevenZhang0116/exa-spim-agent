@@ -85,6 +85,7 @@ def _record_handoff(memory, gen_dir, target_kind, generation, record, trace):
             'selection_precision': (record.get('selection') or {}).get('macro_precision'),
             'promoted': bool(record.get('accepted')),
             'status': ('unchanged_submission' if record.get('submission_unchanged')
+                       else 'repeated_submission' if record.get('submission_repeat')
                        else 'submitted' if record.get('submitted_experiment') else 'no_submission')}
     item = memory.hypotheses.record_handoff({**proposal, 'target_kind': target_kind}, generation, handoff, host)
     trace.emit('research_handoff', f"Handoff recorded: {len(handoff.get('open_questions', []))} open question(s), "
@@ -92,6 +93,24 @@ def _record_handoff(memory, gen_dir, target_kind, generation, record, trace):
                f"{'given' if handoff.get('next_experiment') else 'absent'}"
                + (f"; adjusted: {'; '.join(notes)}" if notes else ''), **item)
     return {**item, 'adjustments': notes}
+
+
+TRAIN_ARTEFACT_DIRS = ('experiments', 'classifier_fits', 'descriptor_runs')
+# Agent-authored and TRAIN-only files of earlier generations; evaluation.json, reviser_result.json,
+# trajectories and image_evidence.json stay closed because they carry validation measurements.
+EARLIER_GENERATION_FILES = ('scorer.py', 'training.py', 'descriptor.py', 'analysis.py', 'rules.md',
+                            'proposal.json', 'search_plan.json', 'hypothesis_memory.json', 'train_feedback.json',
+                            'feature_statistics.json', 'failure_cases.json')
+
+
+def earlier_generation_readables(run_dir, gen_dir):
+    """Readable files and TRAIN artefact trees of this run's earlier generations (2026-10-26)."""
+    paths, dirs = [], []
+    current = Path(gen_dir).name
+    for earlier in sorted(p for p in Path(run_dir).glob('gen[0-9]*') if p.is_dir() and p.name < current):
+        paths.extend(earlier / name for name in EARLIER_GENERATION_FILES)
+        dirs.extend(earlier / name for name in TRAIN_ARTEFACT_DIRS)
+    return paths, dirs
 
 
 async def revise(run_dir, policy_path, rules_path, report_path, model, *,
@@ -110,8 +129,11 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
         readable.extend(policy_path.parent / name for name in (
             'image_context_guide.md', 'volume_analysis_guide.md', 'image_scoring_plan.json',
             'descriptor_guide.md'))
-    readable_dirs = ([policy_path.parent / name for name in ('experiments', 'classifier_fits', 'descriptor_runs')]
-                     if experiments is not None else [])
+    readable_dirs = ([policy_path.parent / name for name in TRAIN_ARTEFACT_DIRS] if experiments is not None else [])
+    if experiments is not None:
+        earlier_paths, earlier_dirs = earlier_generation_readables(run_dir, policy_path.parent)
+        readable.extend(earlier_paths)
+        readable_dirs.extend(earlier_dirs)
     options = bind_session_options(
         options, policy_path, rules_path, report_path,
         readable_paths=readable, readable_dirs=readable_dirs,
@@ -134,7 +156,14 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
             f"Whole-TRAIN feature statistics are at {policy_path.parent / 'feature_statistics.json'}. "
             "Your measured attempts, classifier fits and descriptor runs in this generation directory "
             "(experiments/, classifier_fits/, descriptor_runs/) are readable; a tool result the SDK parks on disk "
-            "is also readable, or read the attempt's result.json instead. "
+            "is also readable, or read the attempt's result.json instead. Earlier generations' scorer.py, "
+            "training.py, descriptor.py, analysis.py, proposal.json, search_plan.json, train_feedback.json and "
+            "their experiments/, classifier_fits/ and descriptor_runs/ trees are readable too: read a previous "
+            "program before rewriting it from memory. search_plan.search_parent.outer_measurement and the candidate pool's "
+            "outer_measurement fields say whether the outer evaluator already measured a candidate and whether it "
+            "was promoted; a submission identical to one of those (same bytes or the same scores on every TRAIN and "
+            "selection cell) ends the generation as repeated with no outer evaluation, so in a tuning round the control "
+            "arm is for comparison, not for submission. "
             "Use mcp__training__search_memory to look up related previous strategies before repeating them. "
             "Read failure_cases.json, hypothesis_memory.json and feature_discovery_guide.md once. "
             "The feedback examples and failure cases describe the search branch you start from (search_branch); "
@@ -345,6 +374,48 @@ def _validation_brains(value):
     return None if value == "auto" else _csv_brains(value)
 
 
+KINDS = ("merge", "split")
+
+
+def _cap_argument(text):
+    """A per-kind Top-K cap: a positive integer, or 'none' for no cap."""
+    if str(text).strip().lower() in ("none", "no-cap", "uncapped"):
+        return None
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected a positive integer or 'none', got {text!r}")
+    if value < 1:
+        raise argparse.ArgumentTypeError("K cap must be >= 1 (or 'none' for no cap)")
+    return value
+
+
+def _ratio_argument(text):
+    """One positive ratio for every kind ('2'), or per-kind ratios ('merge=2,split=1')."""
+    def one(value, label):
+        try:
+            ratio = float(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{label}: expected a number, got {value!r}")
+        if not math.isfinite(ratio) or ratio < 0:
+            raise argparse.ArgumentTypeError(f"{label}: must be a finite number >= 0 (0 keeps the fixed K cap)")
+        return ratio
+    if "=" not in text:
+        ratio = one(text, "k-positive-ratio")
+        return {kind: ratio for kind in KINDS}
+    ratios = {}
+    for item in text.split(","):
+        kind, _, value = item.partition("=")
+        kind = kind.strip()
+        if kind not in KINDS or kind in ratios:
+            raise argparse.ArgumentTypeError(f"k-positive-ratio: unknown or repeated kind {kind!r}; use merge=R,split=R")
+        ratios[kind] = one(value.strip(), f"k-positive-ratio {kind}")
+    missing = [kind for kind in KINDS if kind not in ratios]
+    if missing:
+        raise argparse.ArgumentTypeError(f"k-positive-ratio: no ratio for {', '.join(missing)}; use merge=R,split=R")
+    return ratios
+
+
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--train-brains", type=_csv_brains, default=["794495"])
@@ -388,16 +459,20 @@ def parse_args(argv=None):
     p.add_argument("--mcl", type=int, default=100)
     p.add_argument("--generations", type=int, default=15)
     # Three-valued defaults (2026-10-09 K sweep, TODO.md): K must stay well below the GT-labeled rows per cell.
-    # Split cap raised to 1000 on 2026-10-12: the 500-row window saturated at the end of run phg8xri5
-    # (WORKFLOW_REVISION "Split cap raised to 1000"); every split pool has >= 1,020 GT positives.
-    p.add_argument("--merge-k", type=int, default=300,
-                   help="Top-K budget per merge cell over GT-labeled rows (default: 300; 100 before 2026-10-09)")
-    p.add_argument("--split-k", type=int, default=1000,
-                   help="Top-K budget per split cell over GT-labeled rows (default: 1000 since 2026-10-12; "
-                        "500 from 2026-10-09, 100 before)")
-    p.add_argument("--k-positive-ratio", type=float, default=2.0,
-                   help="Each pool ranks K = min(kind budget, ceil(ratio x its GT positives)), so every counted "
-                        "pool has the same attainable ceiling; 0 keeps the fixed kind budget (default: 2.0, 2026-10-12)")
+    # Split cap raised to 1000 on 2026-10-12 (the 500-row window saturated at the end of run phg8xri5) and
+    # removed on 2026-10-26: the frozen detector alone scored Precision@1000 0.92-0.97 on the validation
+    # pools, which hold 1,759-2,783 GT positives each, so split now ranks K = its GT positives
+    # (WORKFLOW_REVISION "Split K = GT positives").
+    p.add_argument("--merge-k", type=_cap_argument, default=300,
+                   help="Top-K cap per merge cell over GT-labeled rows, or 'none' for no cap "
+                        "(default: 300; 100 before 2026-10-09)")
+    p.add_argument("--split-k", type=_cap_argument, default=None,
+                   help="Top-K cap per split cell over GT-labeled rows, or 'none' (default since 2026-10-26: no cap, "
+                        "K = ceil(ratio x GT positives); 1000 from 2026-10-12, 500 from 2026-10-09, 100 before)")
+    p.add_argument("--k-positive-ratio", type=_ratio_argument, default={"merge": 2.0, "split": 1.0},
+                   help="Each pool ranks K = ceil(ratio x its GT positives), limited to the kind cap when there is "
+                        "one; a single number applies to every kind, 'merge=R,split=R' sets each kind; 0 keeps the "
+                        "fixed kind cap (default: merge=2,split=1 since 2026-10-26; 2.0 for both from 2026-10-12)")
     p.add_argument("--min-positives", type=int, default=20,
                    help="Pools with fewer GT positives are scored and reported but excluded from the promotion "
                         "mean, the bootstrap and kind headroom; 0 counts every pool (default: 20, 2026-10-12)")
@@ -490,10 +565,11 @@ def parse_args(argv=None):
     if (not math.isfinite(args.descriptor_wall_seconds) or args.descriptor_wall_seconds <= 0
             or not math.isfinite(args.descriptor_generation_wall_seconds) or args.descriptor_generation_wall_seconds <= 0):
         p.error("Descriptor wall budgets must be positive and finite")
-    if args.generations < 0 or args.mcl < 0 or min(args.merge_k, args.split_k) < 1:
-        p.error("generations/MCL must be >= 0; K must be >= 1")
-    if not math.isfinite(args.k_positive_ratio) or args.k_positive_ratio < 0:
-        p.error("k-positive-ratio must be a finite number >= 0 (0 keeps the fixed K)")
+    if args.generations < 0 or args.mcl < 0:
+        p.error("generations/MCL must be >= 0")
+    for kind, cap in (("merge", args.merge_k), ("split", args.split_k)):
+        if cap is None and args.k_positive_ratio[kind] <= 0:
+            p.error(f"--{kind}-k none needs a positive --k-positive-ratio for {kind} (K would be undefined)")
     if args.min_positives < 0:
         p.error("min-positives must be >= 0 (0 counts every pool)")
     if args.reviser_max_turns < 1:
@@ -754,8 +830,10 @@ async def _run(args, revise_fn, run_dir, trace):
                "top_k_hits = GT-positive rows selected in Top K; Precision@K = hits / effective_k; "
                "Recall@K = hits / pool positives (N/A when zero). Merge counts are candidate sites; "
                "split counts are segment pairs. These are not total GT error counts or reachable-GT counts. "
-               "requested_k is each pool's own K: min(kind budget, ceil(k_positive_ratio x pool positives)) when "
-               "the ratio is positive, else the kind budget; pools with fewer than min_positives GT positives "
+               "requested_k is each pool's own K: ceil(k_positive_ratio[kind] x pool positives), limited to the "
+               "kind cap when the kind has one (merge 300 by default; split has no cap since 2026-10-26, so its K "
+               "is its GT positives), or the fixed kind cap when the ratio is 0; pools with fewer than "
+               "min_positives GT positives "
                "are scored and reported but excluded from the promotion mean (in_mean=false). "
                "The mean is taken per kind over counted brains, then over kinds. "
                "Evaluation datasets are logged as validation.")
@@ -765,7 +843,7 @@ async def _run(args, revise_fn, run_dir, trace):
                               positive_ratio=args.k_positive_ratio, min_positives=args.min_positives)
     pool_budgets = budgets.resolve(banks)
     trace.emit("pool_budgets", "Per-pool Top-K from GT positives: " + "; ".join(
-        f"{cell} K={info['requested_k']}/{info['cap']} positives={info['positives']}"
+        f"{cell} K={info['requested_k']}/{info['cap'] if info['cap'] is not None else 'no cap'} positives={info['positives']}"
         + ("" if info['in_mean'] else " (excluded from mean)") for cell, info in sorted(pool_budgets.items())),
         **budgets.describe(), cells=pool_budgets)
     excluded = sorted(cell for cell, info in pool_budgets.items() if not info['in_mean'])
@@ -779,10 +857,14 @@ async def _run(args, revise_fn, run_dir, trace):
             if cells and not any(pool_budgets[c]['in_mean'] for c in cells):
                 raise ValueError(f"Every {role} {kind} pool is below --min-positives {args.min_positives} "
                                  f"({', '.join(cells)}); lower the floor or choose other brains")
-    if args.k_positive_ratio <= 0:
-        crowded = sorted(f"{cell} (K={budgets[cell.rsplit('/', 1)[1]]}, labeled={info['counts']['1'] + info['counts']['0']})"
-                         for cell, info in availability_summary.items()
-                         if budgets[cell.rsplit('/', 1)[1]] * 2 > info['counts']['1'] + info['counts']['0'])
+    fixed_kinds = {kind for kind, ratio in budgets.positive_ratio.items() if ratio <= 0}
+    if fixed_kinds:
+        crowded = []
+        for cell, info in sorted(availability_summary.items()):
+            kind = cell.rsplit('/', 1)[1]
+            labeled = info['counts']['1'] + info['counts']['0']
+            if kind in fixed_kinds and budgets[kind] * 2 > labeled:
+                crowded.append(f"{cell} (K={budgets[kind]}, labeled={labeled})")
         if crowded:
             trace.emit("label_availability_warning", "K exceeds half of the GT-labeled rows; Precision@K there "
                        "approaches the labeled base rate: " + "; ".join(crowded), cells=crowded)
@@ -970,6 +1052,7 @@ async def _run(args, revise_fn, run_dir, trace):
     parent_selection = {}
     for kind in kinds:
         entry = memory.seed(kind, parent_sources[kind], rules[kind], parent_train, parent_state)
+        pool.mark_validated(entry, 0, True)  # the accepted component is a known ranking from the start
         parent_selection[kind] = load_selection(entry['snapshot'])
         trace.emit('seed_selection', f"Seed {kind}: {protocol.mode} selection precision "
                    f"{entry['target_precision']:.6f}; in-sample {entry['in_sample_precision']:.6f}",
@@ -1124,7 +1207,8 @@ async def _run(args, revise_fn, run_dir, trace):
             classifier_timeout=args.classifier_time_budget, classifier_memory_mb=args.classifier_memory_mb,
             classifier_threads=args.classifier_threads, parent_selection=parent_selection[target_kind],
             descriptor_budget=descriptor_budget,
-            branch={**branch_meta, 'selection': branch_report, 'state': branch_state})
+            branch={**branch_meta, 'selection': branch_report, 'state': branch_state},
+            validated=lambda entry, kind=target_kind: pool.validation_of(kind, entry))
         record = {"generation": generation, "accepted": False, "target_kind": target_kind,
                   "kind_allocation": allocation,
                   "search_mode": plan['mode'], "search_reason": plan['reason'],
@@ -1196,6 +1280,27 @@ async def _run(args, revise_fn, run_dir, trace):
                 record.update(accepted=False, reason="VALIDATION: " + reason)
                 gen_trace.emit(stage, reason, experiment=submitted['entry']['experiment'],
                                component_sha256=submitted['entry']['component_sha256'])
+            elif (known := pool.validation_of(target_kind, submitted['entry'])) is not None:
+                # Same bytes or the same scores on every TRAIN and selection cell as a candidate the
+                # outer evaluator already measured (including a rewritten accepted component): the
+                # validation would only repeat a known result (2026-10-26).
+                stage = "repeated_submission"
+                reason = (f"Repeated submission: {submitted['entry']['experiment']} has the same "
+                          f"{'component' if known['by'] == 'component' else target_kind + ' scores'} as "
+                          f"{known['experiment']} (validated in generation {known['generation']}, "
+                          f"{'promoted' if known['promoted'] else 'not promoted'}); "
+                          "validation evaluation skipped, parent retained")
+                record["submission_repeat"] = dict(known)
+                record["validation_gate"] = {"version": scoring.gate_version(args.promotion_gate),
+                                             "mode": args.promotion_gate, "passed": False, "reason": reason,
+                                             "skipped": "repeated_submission",
+                                             "brains": list(args.validation_brains),
+                                             "parent_mean": parent_validation["macro_precision"],
+                                             "candidate_mean": parent_validation["macro_precision"]}
+                record.update(accepted=False, reason="VALIDATION: " + reason)
+                gen_trace.emit(stage, reason, experiment=submitted['entry']['experiment'],
+                               component_sha256=submitted['entry']['component_sha256'],
+                               **{f'repeat_{key}': value for key, value in known.items()})
             else:
                 stage = "validation_descriptors"
                 record['descriptors_referenced'] = experiments.required_descriptors(candidate_source)
@@ -1249,6 +1354,7 @@ async def _run(args, revise_fn, run_dir, trace):
                                                  if candidate_validation["cells"][cell]["precision"] < before["precision"]],
                                              "paired_bootstrap": bootstrap}
                 record.update(accepted=accepted, reason="VALIDATION: " + reason)
+                record["submission_validated"] = pool.mark_validated(submitted['entry'], generation, accepted)
                 if accepted:
                     source, rules[target_kind] = candidate_source, candidate_rules
                     parent_sources[target_kind] = submitted['component']
@@ -1328,7 +1434,8 @@ async def _run(args, revise_fn, run_dir, trace):
             stream.write(json.dumps(record, allow_nan=False) + "\n")
         outcome = ('incomplete' if record.get('failure_stage') == 'research_check' else
                    'failed' if record.get('failure_stage') else 'accepted' if record['accepted'] else
-                   'unchanged' if record.get('submission_unchanged') else 'rejected')
+                   'unchanged' if record.get('submission_unchanged') else
+                   'repeated' if record.get('submission_repeat') else 'rejected')
         decision = (f"Generation {generation}: {outcome}; "
                     f"{record['reason']}; {record['wall_seconds']:.1f}s; "
                     f"{'new parent saved' if record['accepted'] else 'parent retained'}; "

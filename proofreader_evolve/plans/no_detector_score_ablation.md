@@ -73,9 +73,12 @@ brain roles, generations and budgets:
 ```bash
 python -m proofreader_evolve.cli.run_evolution \
     --train-brains 794495,802449 --selection-brains 802449 \
-    --validation-brains 789202,794493,794491 --merge-k 300 --split-k 1000 \
+    --validation-brains 789202,794493,794491 --merge-k 300 \
     --detector-prior no-score --generations 15
 ```
+
+Since 2026-10-26 split ranks K = its GT positives with no cap (`--split-k 1000` was the cap when this
+plan was written; passing it would restore the old window).
 
 - With `--context-cache`, every brain used needs the labeled extension
   (built for all eleven brains on 2026-10-13 with every GT-labeled row cached, see TODO.md).

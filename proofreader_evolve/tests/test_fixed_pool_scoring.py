@@ -91,7 +91,9 @@ class FixedScoringTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             args = driver.parse_args(['--min-positives', '0', '--selection-protocol', 'in_sample', '--promotion-gate', 'margin', '--kind-schedule', 'alternate', "--train-brains", "1", "--validation-brains", "2",
                                       "--split-k", "1", "--generations", "3", "--runs-dir", tmp])
-            attempts = iter([IMPROVED, BASELINE, "bad syntax!"])
+            # Generation 2 resubmits a scaled seed: the seed itself is a known ranking since 2026-10-26
+            # (repeated, no outer evaluation), while scaled scores are a fresh candidate that is rejected.
+            attempts = iter([IMPROVED, BASELINE.replace("return ", "return 2.0 * "), "bad syntax!"])
 
             async def revise(run_dir, policy, rules, report, model, *, experiments):
                 text = report.read_text()

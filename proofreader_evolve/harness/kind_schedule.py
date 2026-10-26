@@ -60,11 +60,23 @@ def headroom(cells, budgets, kinds):
 
 
 def mean_k(cells, budgets, kinds):
-    """Mean resolved K of the counted cells per kind; the kind cap when none are counted."""
+    """Mean resolved K of the counted cells per kind.
+
+    With no counted cell the kind cap stands in; a kind without a cap falls back to the
+    mean K of its uncounted cells, or infinity when it has no cells at all (then nothing
+    can be declared saturated).
+    """
     result = {}
     for kind, counted in _counted(cells, kinds).items():
-        result[kind] = (math.fsum(int(cell["requested_k"]) for cell in counted) / len(counted)
-                        if counted else float(budgets[kind]))
+        if counted:
+            result[kind] = math.fsum(int(cell["requested_k"]) for cell in counted) / len(counted)
+            continue
+        cap = budgets[kind]
+        if cap is not None:
+            result[kind] = float(cap)
+            continue
+        every = [int(cell["requested_k"]) for name, cell in cells.items() if name.rsplit("/", 1)[-1] == kind]
+        result[kind] = math.fsum(every) / len(every) if every else math.inf
     return result
 
 

@@ -51,7 +51,7 @@ python autodiscovery-application/<RUN>/merge_junction_detector.py cache/dataset_
 # Stage 3: evolve the scorer on the detectors' own candidate pools
 python -m proofreader_evolve.cli.run_evolution \
     --train-brains 794495,802449 --selection-brains 802449 \
-    --validation-brains 789202,794493,794491 --merge-k 300 --split-k 1000
+    --validation-brains 789202,794493,794491 --merge-k 300
 ```
 
 ## Documentation

@@ -63,8 +63,9 @@ in the current generation's `proposal.json`.
   positives. Fitted models receive only labeled rows (plus optional `X_unlabeled`,
   see `classifier_guide.md`).
 - Promotion gate: improve the mean Precision@K over GT-labeled rows on the fixed
-  development-validation brains. Each pool ranks its own K = min(this kind's budget,
-  ceil(ratio x the pool's GT positives)); pools below the GT-positive floor are scored
+  development-validation brains. Each pool ranks its own K = ceil(this kind's ratio x the
+  pool's GT positives), limited to the kind's cap when it has one (merge: 2 x positives up to
+  300; split: exactly its positives, no cap); pools below the GT-positive floor are scored
   and reported but excluded (`in_mean` in feedback). First average each kind over the
   counted brains, then average the kinds. Individual brain/kind regressions are allowed.
   The mean gain must also clear row-resampling noise: the host requires the lower
@@ -151,7 +152,17 @@ in the current generation's `proposal.json`.
   a fresh measurement from its workspace branch. Seeds and unchanged references
   do not enqueue follow-ups. Submitting the accepted component byte-for-byte
   unchanged ends the generation as `unchanged`: the host records it in the ledger
-  and hypothesis memory and runs no outer evaluation, so it tests nothing. Otherwise, every third scheduled generation of each
+  and hypothesis memory and runs no outer evaluation, so it tests nothing. Likewise, a
+  submission identical to any candidate the outer evaluator already measured (the same
+  bytes, or the same scores on every TRAIN and selection cell) ends the generation as
+  `repeated` without an outer evaluation. `outer_measurement` on the search parent, the
+  pool members and training-tool results says whether a candidate was already measured
+  and whether it was promoted (no numbers); in a tuning round the control arm is for
+  comparison, not for submission, and `restore_candidate("best")` prefers a measured
+  candidate the outer evaluator has not seen. Earlier generations' scorer.py,
+  training.py, descriptor.py, proposal.json and their experiments/, classifier_fits/
+  and descriptor_runs/ trees are readable: read a previous program before rewriting it
+  from memory. Otherwise, every third scheduled generation of each
   kind explores the reference; `search_plan.branch_role`
   identifies the assigned role. In a reference round, develop the assigned
   method using its TRAIN diagnostics; do not discard it solely because another

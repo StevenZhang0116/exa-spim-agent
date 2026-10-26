@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from . import fixed_pool_scoring as scoring
-from .candidate_pool import candidate_metadata
+from .candidate_pool import candidate_metadata, scores_digest
 from .classifier_contract import (MAX_MODEL_SOURCE_BYTES, frozen_model, classifier_configs,
                                   classifier_info, config_identity, normalize_config, validate_program,
                                   verify_artifacts, MODEL_VERSION)
@@ -141,6 +141,7 @@ class ExperimentMemory:
                  'train': metrics_only(report), 'cached': True,
                  'in_sample_precision': in_sample_precision(report, kind),
                  'selection': metrics_only(selection_report),
+                 'scores_sha256': scores_digest(kind, ('train', state), ('selection', selection_state)),
                  **candidate_metadata(component, kind, selection_report, selection_state, coverage=self.coverage)}
         if model is not None:
             summary = {key: model[key] for key in ('config', 'training_brains', 'training_rows', 'training_fingerprint')}
@@ -193,8 +194,11 @@ class TrainingExperiments:
                  train, parent_report, parent_state, budgets, timeout, margin,
                  memory, max_evaluations=8, generation=0, search_plan=None,
                  classifier_timeout=300, classifier_memory_mb=DEFAULT_MEMORY_MB, classifier_threads=1,
-                 parent_selection=None, descriptor_budget=None, branch=None):
+                 parent_selection=None, descriptor_budget=None, branch=None, validated=None):
         self.gen_dir, self.policy_path, self.rules_path = gen_dir, policy_path, rules_path
+        # Host lookup (entry -> {generation, experiment, promoted, by} or None) of candidates the
+        # outer evaluator already measured; status only, never a validation number.
+        self.validated = validated
         self.proposal_path = gen_dir / 'proposal.json'
         self.training_path = gen_dir / 'training.py'
         self.target_kind, self.parent_sources = target_kind, dict(parent_sources)
@@ -520,6 +524,8 @@ class TrainingExperiments:
                          selection=metrics_only(selection_report),
                          selection_gate=self._selection_gate(selection_report),
                          selection_ranking_delta={k: v['ranking_delta'] for k, v in selection_feedback['cells'].items()},
+                         scores_sha256=scores_digest(self.target_kind, ('train', measured_state),
+                                                     ('selection', selection_state)),
                          **candidate_metadata(component, self.target_kind, selection_report, selection_state,
                                               coverage=self.memory.coverage))
             entry['feature_evidence'] = self.memory.hypotheses.candidate_evidence(entry)
@@ -532,6 +538,13 @@ class TrainingExperiments:
             write_train_feedback(feedback_path, report, [], self.budgets, target_kind=self.target_kind,
                                  report_role='candidate', selection=selection_feedback, protocol=self.protocol_info)
             public = {**entry, 'feedback': json.loads(feedback_path.read_text())}
+            known = self._already_validated(entry)
+            if known is not None:
+                public['outer_measurement'] = known
+                self.trace.emit('outer_measurement_known', f"{entry['experiment']}: same {known['by']} as "
+                                f"{known['experiment']}, measured by the outer evaluator in generation "
+                                f"{known['generation']} ({'promoted' if known['promoted'] else 'not promoted'})",
+                                **{k: known[k] for k in ('generation', 'experiment', 'promoted', 'by')})
             log_metrics(self.trace, f"TRAIN {entry['experiment']}", report, self.parent_report)
             self.trace.emit('selection_measurement', f"{entry['experiment']}: {self.protocol.mode} selection "
                             f"precision={selection_report['macro_precision']:.6f} "
@@ -577,6 +590,14 @@ class TrainingExperiments:
                         ranking_delta=entry['ranking_delta'], evaluations_remaining=self.remaining)
         return public
 
+    def _already_validated(self, entry):
+        """Host fact for a measured candidate the outer evaluator has already seen (status only)."""
+        known = self.validated(entry) if self.validated is not None else None
+        if known is None:
+            return None
+        return {**known, 'note': 'The outer evaluator already measured this ranking; submitting it again ends '
+                                 'the generation as repeated, with no outer evaluation.'}
+
     @staticmethod
     def _best(results):
         valid = [r for r in results if r['report'] is not None]
@@ -614,7 +635,15 @@ class TrainingExperiments:
 
     def restore(self, candidate_id):
         if candidate_id == 'best':
-            return self._restore_result(self._best(self.attempts))
+            # Prefer the best candidate the outer evaluator has not measured yet; a known ranking
+            # would end the generation as repeated. Fall back to the plain best when all are known.
+            measured = [r for r in self.attempts if r['report'] is not None]
+            novel = [r for r in measured if self._already_validated(r['entry']) is None]
+            response = self._restore_result(self._best(novel or self.attempts))
+            if novel and len(novel) < len(measured):
+                response['note'] = ('Candidates the outer evaluator already measured were skipped; '
+                                    'the best not-yet-validated measured candidate was restored.')
+            return response
         if candidate_id == 'parent':
             candidate_id = self.search_plan['search_parent'].get('experiment')
         entry = self.memory.candidates.get(candidate_id)
@@ -943,8 +972,11 @@ class TrainingExperiments:
             selected = select_image_rows(table.features, spec, table.keys)
             cells[f'{brain}/{self.target_kind}'] = selection_coverage(table.features, spec, selected, table.keys)
         # Image selection is one literal selection_k applied to every TRAIN brain, so it is
-        # compared with this kind's K budget (feedback.budgets), not a pool's resolved K.
-        cap = self.budgets[self.target_kind]
+        # compared with this kind's K budget (feedback.budgets: the cap, or for a kind without a
+        # cap the largest K resolved on a TRAIN pool), not a single pool's resolved K.
+        budgets = scoring.Budgets.coerce(self.budgets)
+        cap = budgets.kind_budget(self.target_kind, (budgets.k_for(self.target_kind, bank.tables[self.target_kind].truth)
+                                                     for bank in self.train.values()))
         warnings = []
         if spec['selection_mode'] != 'top_k_boundary':
             warnings.append('Top-only sampling does not deliberately cover candidates just outside K')
@@ -1439,7 +1471,8 @@ class TrainingExperiments:
             return await invoke(self.compute_descriptors, arguments)
 
         @tool('restore_candidate', 'Restore an immutable measured snapshot by short ID, e.g. '
-              'gen002/attempt001, parent (assigned branch), or best (this generation). No evaluation charge.',
+              'gen002/attempt001, parent (assigned branch), or best (this generation\'s best measured candidate '
+              'the outer evaluator has not seen yet; the plain best when all were seen). No evaluation charge.',
               {'candidate_id': str})
         async def restore_candidate(arguments):
             return await invoke(self.restore, arguments)

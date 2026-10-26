@@ -143,6 +143,8 @@ class RecordTests(unittest.TestCase):
             self.assertEqual(search._outcome_reason(rows[-1])[1], records.decision_reason(rows[-1]))
             unchanged = {**precision(3, False, None), "submission_unchanged": True}
             self.assertEqual(search._outcome_reason(unchanged)[0], "unchanged")  # not "rejected" (2026-10-12)
+            repeated = {**precision(4, False, None), "submission_repeat": {"generation": 1, "promoted": False}}
+            self.assertEqual(search._outcome_reason(repeated)[0], "repeated")  # 2026-10-26
             self.assertEqual(search._outcome_reason(rows[-1])[0], "rejected")
 
 

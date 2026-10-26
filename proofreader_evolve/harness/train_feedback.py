@@ -48,9 +48,11 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
     TRAIN numbers remain visible as diagnostics only.
     """
     example_source = selection if selection is not None else parent_train
-    # Per-kind Top-K caps stay the agent-facing `budgets`; each pool's resolved K is its
-    # requested_k, and the rule that produced it is spelled out in k_rule.
-    caps = dict(budgets)
+    # The agent-facing `budgets` is one literal K per kind: the kind's cap, or for a kind
+    # without a cap the largest K resolved on a TRAIN pool (2026-10-26); each pool's resolved K
+    # is its requested_k, and the rule that produced it is spelled out in k_rule.
+    caps = (budgets.kind_budgets(parent_train["cells"]) if hasattr(budgets, "kind_budgets")
+            else dict(budgets))
     k_rule = budgets.describe() if hasattr(budgets, "describe") else None
     attempts = [{"generation": h["generation"],
                  "train": metrics_only(h["train"]), "train_gate": h.get("train_gate")}
@@ -72,7 +74,8 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                     "Do not infer global score/label correlation from selected errors. Preserve current true positives. "
                     "Numbers are rounded to 6 significant digits for display only; null means missing. "
                     "All feature columns of the selected examples are included. "
-                    "budgets are the per-kind Top-K caps; each pool's requested_k is the K actually ranked there "
+                    "budgets are one K per kind (the kind's cap, or for a kind without a cap the largest K "
+                    "resolved on a TRAIN pool); each pool's requested_k is the K actually ranked there "
                     "(k_rule explains how it follows from the pool's GT positives), and in_mean says whether the "
                     "pool counts toward the mean. "
                     "The scorer contract is in the system prompt and rules.md."

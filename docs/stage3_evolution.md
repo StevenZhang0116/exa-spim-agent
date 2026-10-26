@@ -7,10 +7,12 @@ order in which their candidates are presented. It is an LLM-driven search: a
 fresh agent session is the mutation operator, a TRAIN-side selection score ranks
 exploration branches, and a held-out validation gate alone decides promotion: the
 mean Precision@K (per kind over the counted brains, then over kinds) must rise by
-more than paired-bootstrap resampling noise. Since 2026-10-12 each pool ranks its
-own K = min(kind budget, ceil(2 x its GT positives)), so every counted pool has the
-same attainable ceiling, and pools with fewer than 20 GT positives are reported but
-excluded from the mean (`--k-positive-ratio`, `--min-positives`).
+more than paired-bootstrap resampling noise. Each pool ranks its own
+K = ceil(ratio x its GT positives), limited to the kind's cap when it has one: merge
+2 x positives under a cap of 300 (2026-10-12), split exactly its positives with no cap
+(2026-10-26, so split Precision@K equals Recall@K), and pools with fewer than 20 GT
+positives are reported but excluded from the mean (`--k-positive-ratio`,
+`--merge-k` / `--split-k`, `--min-positives`).
 Generations are allocated between the merge and split components by
 pending follow-ups, a floor, recent validated gain and remaining headroom.
 The subsections below follow one generation of the loop in the figure; the
@@ -59,13 +61,15 @@ export ANTHROPIC_API_KEY=...  AWS_EC2_METADATA_DISABLED=true
 python -u -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495,802449 --selection-brains 802449 \
   --validation-brains 789202,794493,794491 \
-  --merge-k 300 --split-k 1000 --generations 20 \
+  --merge-k 300 --generations 20 \
   --context-cache proofreader_evolve/context_cache --descriptor-workers auto \
   --classifier-threads 4 --classifier-time-budget 1800 --reviser-max-turns 40 \
   --skip-auxiliary-ablation
-# --merge-k / --split-k are per-kind caps. Each pool ranks K = min(cap, ceil(--k-positive-ratio x its GT
-# positives)) (default ratio 2.0; 0 restores one fixed K per kind) and pools with fewer than --min-positives
-# GT positives (default 20) are scored and reported but excluded from the promotion mean (2026-10-12).
+# --merge-k / --split-k are per-kind caps (an integer or none). Each pool ranks K = ceil(ratio x its GT
+# positives), limited to the cap when the kind has one; --k-positive-ratio takes one number or merge=R,split=R
+# (default merge=2,split=1 since 2026-10-26: merge min(300, 2 x positives), split exactly its positives with no
+# cap; 0 keeps a fixed cap). Pools with fewer than --min-positives GT positives (default 20) are scored and
+# reported but excluded from the promotion mean (2026-10-12).
 # Controls for attribution: --kind-schedule alternate (strict merge/split rotation),
 # --promotion-gate margin (point-estimate gate), omit --context-cache (no descriptors),
 # --detector-prior no-score (withhold the frozen detector score: constant seed, same pools and detector
@@ -73,12 +77,12 @@ python -u -m proofreader_evolve.cli.run_evolution \
 # Historical in-sample ranking with the detector-fitted TRAIN brain alone:
 python -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495 --validation-brains auto --selection-protocol in_sample \
-  --merge-k 300 --split-k 1000 --generations 1
+  --merge-k 300 --generations 1
 ```
 
 The CLI defaults are a single TRAIN brain **794495**, the `grouped_oof` selection
 protocol, the `bootstrap` promotion gate (1000 draws, alpha 0.05), `adaptive` kind
-allocation, 15 generations, and K caps of 300 (merge) / 1000 (split) over GT-labeled rows (300 / 500 from 2026-10-09 to 2026-10-12, 100 / 100 before), with each pool's K scaled to 2 x its GT positives and pools under 20 positives excluded from the mean (2026-10-12). The bare defaults do **not** start
+allocation, 15 generations, a merge cap of 300 and no split cap over GT-labeled rows (split cap 1000 from 2026-10-12 to 2026-10-26, 300 / 500 from 2026-10-09, 100 / 100 before), with each merge pool's K at 2 x its GT positives, each split pool's K at its GT positives (2026-10-26) and pools under 20 positives excluded from the mean (2026-10-12). The bare defaults do **not** start
 a run: `grouped_oof` ranks TRAIN branches on a brain the detectors were not fitted
 on, and 794495 is the detectors' training brain, so the driver aborts with
 "No eligible selection brain". Add a detector-naive TRAIN brain and name it as the
@@ -120,8 +124,9 @@ The editable scorer is seeded from `proofreader_evolve/artifacts/scorer.py`:
 `detector_score` and optional custom local geometry features (under `--detector-prior no-score` the
 score column is withheld and the seed is the constant `artifacts/scorer_no_score.py`); `ctx` contains the candidate kind. It must return one finite
 score per row. The harness selects exactly min(K, GT-labeled rows) with deterministic
-tie breaking, where K is the pool's own budget: min(kind cap, ceil(`--k-positive-ratio` x the
-pool's GT positives)), fixed for the run because it depends on labels only. GT labels are
+tie breaking, where K is the pool's own budget: ceil(the kind's `--k-positive-ratio` x the
+pool's GT positives), limited to the kind's cap when it has one (merge 300, split none),
+fixed for the run because it depends on labels only. GT labels are
 stored separately and never passed to the scorer.
 Training feedback includes labeled examples with TRAIN-only inspection handles; validation feedback is
 not supplied to the reviser. Promotion uses **mean validation Precision@K only**:
@@ -425,7 +430,14 @@ validation brains, even if its TRAIN precision did not improve. A submission tha
 byte-identical to the accepted combined scorer is not evaluated at all: the generation
 ends as `unchanged` (ledger flag `submission_unchanged`, trajectory event
 `unchanged_submission`, handoff host status `unchanged_submission`), the parent is
-retained and no descriptor inference runs (2026-10-12). Full-precision
+retained and no descriptor inference runs (2026-10-12). Since 2026-10-26 the same holds
+for a submission identical to any candidate the outer evaluator already measured, by
+bytes or by `scores_sha256` (the exact scores of its kind on every TRAIN and selection
+cell): the generation ends as `repeated` (ledger `submission_repeat`, gate
+`skipped: repeated_submission`, handoff host status `repeated_submission`). The agent is
+told beforehand through `outer_measurement` (generation and promotion status, no
+numbers) on the search parent, the pool members and training-tool results, and can read
+earlier generations' programs and TRAIN artefact trees. Full-precision
 validation means decide promotion together with the paired-bootstrap noise bound
 (section 3.3); reports retain each brain/kind's result, any regressed cells and
 the bootstrap interval. An evaluation failure on any selected brain rejects the
