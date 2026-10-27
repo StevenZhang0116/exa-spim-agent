@@ -27,7 +27,7 @@ from .local_features import augmented_features
 from .model_execution import predict_model, DEFAULT_MEMORY_MB
 
 
-PROTOCOL_VERSION = 'grouped-cv-precision-v4-per-kind-k'
+PROTOCOL_VERSION = 'grouped-cv-precision-v5-uniform-k'
 MODES = ('grouped_oof', 'in_sample')
 
 

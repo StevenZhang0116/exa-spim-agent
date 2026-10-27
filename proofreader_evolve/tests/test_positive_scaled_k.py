@@ -233,29 +233,34 @@ class FeedbackAndRecordTests(unittest.TestCase):
         self.assertIsNone(feedback["k_rule"]["caps"]["split"])
         self.assertIn("one K per kind", feedback["reading_guide"])
 
-    def test_record_readers_accept_all_four_objective_versions(self):
+    def test_record_readers_accept_all_five_objective_versions(self):
         self.assertEqual(records.PRECISION, scoring.SCORING_VERSION)
         self.assertEqual(records.PRECISION_VERSIONS,
-                         {records.LEGACY_PRECISION, records.PRECISION_V2, records.PRECISION_V3, records.PRECISION})
+                         {records.LEGACY_PRECISION, records.PRECISION_V2, records.PRECISION_V3, records.PRECISION_V4,
+                          records.PRECISION})
         self.assertEqual(records.objective({"objective": records.PRECISION_V2}), records.PRECISION_V2)
         self.assertEqual(records.objective({"objective": records.PRECISION_V3}), records.PRECISION_V3)
         self.assertEqual(records.PRECISION_V3, "native-precision-at-k-v3-positive-scaled-k")
+        self.assertEqual(records.PRECISION_V4, "native-precision-at-k-v4-per-kind-k")
+        self.assertEqual(records.PRECISION, "native-precision-at-k-v5-uniform-k")
 
 
 class DriverTests(unittest.TestCase):
     def test_defaults_and_argument_validation(self):
         from proofreader_evolve.cli import run_precision_evolution as driver
         args = driver.parse_args([])
-        self.assertEqual((args.k_positive_ratio, args.min_positives), ({"merge": 2.0, "split": 1.0}, 20))
-        self.assertEqual((args.merge_k, args.split_k), (300, None))  # split uncapped since 2026-10-26 (1000 before)
+        self.assertEqual((args.k_positive_ratio, args.min_positives), ({"merge": 1.0, "split": 1.0}, 20))
+        # No cap on either kind since 2026-10-27 (merge 300 before; split 1000 until 2026-10-26).
+        self.assertEqual((args.merge_k, args.split_k), (None, None))
         with redirect_stderr(io.StringIO()):
             for bad in (["--k-positive-ratio", "-1"], ["--k-positive-ratio", "nan"], ["--min-positives", "-1"],
-                        ["--k-positive-ratio", "0"],  # split has no cap, so a zero ratio leaves its K undefined
+                        ["--k-positive-ratio", "0"],  # no kind has a cap, so a zero ratio leaves K undefined
+                        ["--k-positive-ratio", "0", "--split-k", "3"],  # merge still capless
                         ["--k-positive-ratio", "merge=2"], ["--k-positive-ratio", "merge=2,omit=1"],
                         ["--k-positive-ratio", "merge=2,merge=1,split=1"], ["--split-k", "0"], ["--merge-k", "x"]):
                 with self.subTest(bad=bad), self.assertRaises(SystemExit):
                     driver.parse_args(bad)
-        self.assertEqual(driver.parse_args(["--k-positive-ratio", "0", "--split-k", "3"]).k_positive_ratio,
+        self.assertEqual(driver.parse_args(["--k-positive-ratio", "0", "--merge-k", "300", "--split-k", "3"]).k_positive_ratio,
                          {"merge": 0., "split": 0.})
         self.assertEqual(driver.parse_args(["--k-positive-ratio", "merge=2, split=1.5"]).k_positive_ratio,
                          {"merge": 2., "split": 1.5})
@@ -277,7 +282,7 @@ class DriverTests(unittest.TestCase):
 
     def test_manifest_records_resolved_pool_budgets_and_the_seed_uses_them(self):
         manifest, seed, trace = self.run_driver(['--min-positives', '0', '--k-positive-ratio', '2'])
-        self.assertEqual(manifest["budgets"]["caps"], {"merge": 300, "split": 3})
+        self.assertEqual(manifest["budgets"]["caps"], {"merge": None, "split": 3})
         self.assertEqual(manifest["budgets"]["positive_ratio"], {"merge": 2.0, "split": 2.0})
         self.assertEqual(manifest["pool_budgets"]["1/split"],
                          {"positives": 1, "cap": 3, "requested_k": 2, "in_mean": True})
@@ -290,8 +295,8 @@ class DriverTests(unittest.TestCase):
     def test_a_capless_split_ranks_its_positives(self):
         # The last --split-k wins over run_driver's default of 3: no cap, default ratio 1 for split.
         manifest, seed, trace = self.run_driver(['--min-positives', '0', '--split-k', 'none'])
-        self.assertEqual(manifest["budgets"]["caps"], {"merge": 300, "split": None})
-        self.assertEqual(manifest["budgets"]["positive_ratio"], {"merge": 2.0, "split": 1.0})
+        self.assertEqual(manifest["budgets"]["caps"], {"merge": None, "split": None})
+        self.assertEqual(manifest["budgets"]["positive_ratio"], {"merge": 1.0, "split": 1.0})
         self.assertEqual(manifest["pool_budgets"]["1/split"],
                          {"positives": 1, "cap": None, "requested_k": 1, "in_mean": True})
         self.assertEqual(seed["validation"]["cells"]["2/split"]["requested_k"], 1)
@@ -299,7 +304,7 @@ class DriverTests(unittest.TestCase):
         self.assertNotIn("label_availability_warning", trace)
 
     def test_fixed_k_mode_keeps_the_crowding_warning(self):
-        manifest, seed, trace = self.run_driver(['--min-positives', '0', '--k-positive-ratio', '0'])
+        manifest, seed, trace = self.run_driver(['--min-positives', '0', '--k-positive-ratio', '0', '--merge-k', '3'])
         self.assertEqual(seed["validation"]["cells"]["2/split"]["requested_k"], 3)
         self.assertIn("label_availability_warning", trace)
 

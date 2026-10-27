@@ -136,6 +136,49 @@ accepted parent's full-precision measurements. TRAIN feedback's `parent_train` a
 `ranking_delta` and `failure_cases.json` describe the exploration branch (v17);
 `search_plan.json` identifies the branch.
 
+### Uniform K = GT positives (2026-10-27, objective v5)
+
+**Motivation.** The first two v4 runs, `precision_20261026_210812_yqeacq5s` (n280, 13
+generations) and `precision_20261027_000457_5d0_pbkb` (n242, 14 generations; both stopped on
+2026-10-27), each accepted two merge generations early (0.4714 to 0.4948 and 0.4714 to 0.4909)
+and then rejected every later candidate: point deltas between -0.004 and +0.005 against
+bootstrap lower bounds of -0.001 to -0.009, and six split generations whose selection gain
+(0.846 to 0.861-0.866 on 802449) reversed on four of the five validation brains. The merge
+cap of 300 bound on exactly one pool, the selection brain 802449 (1,038 merge positives among
+27,934 labeled rows), so the agent's selection score was Precision@300, the head of the
+ranking at recall 0.13, while the validation merge pools (41 to 144 positives) were scored at
+K = 2 x positives, a depth where recall was 0.24 to 0.40. Re-ranking every measured
+candidate's stored `selection_state.npz` (`notebooks/k_rule_check/selection_k_variants.py`)
+shows the mismatch directly: over the 20 validated merge candidates of both runs, the Spearman
+correlation between the submitted candidate's selection score and its validation merge mean
+was 0.67 at K = 300, 0.88 at K = positives, 0.85 at 1.5 x, 0.75 at 2 x and 0.73 at 3 x
+(per run 0.63 / 0.76 / 0.80 / 0.78 / 0.75 and 0.43 / 0.70 / 0.73 / 0.55 / 0.55). Within one
+generation the attempts' Precision@300 spread over 0.35 to 0.45 while one hit is 0.0033 and
+the binomial standard deviation at 134 hits of 300 is 0.029, so the agent treated 0.447
+against 0.46 as a result. The validation side of the same check
+(`notebooks/k_rule_check/validation_k_variants.py`, merge tables of the five validation brains
+re-scored from the runs' model artifacts) is recorded in the evidence log row below.
+
+**Rule.** Defaults are now uniform: no cap for either kind and ratio 1.0 for both
+(`--merge-k none`, `--k-positive-ratio 1`), so every pool in TRAIN, selection and validation
+ranks exactly its GT positives and Precision@K equals Recall@K (R-precision) for merge as it
+already did for split. The selection brain is scored at the same operating point as the
+validation brains (802449 merge K = 1,038; validation merge K = 74 / 41 / 125 / 144 / 140),
+the attainable ceiling is 1 for both kinds (merge headroom in `kind_schedule` was capped at
+0.5 under ratio 2), and `--merge-k 300 --k-positive-ratio merge=2,split=1` restores v4.
+`Budgets` itself is unchanged. Versions: `SCORING_VERSION`, both gate versions,
+`BOOTSTRAP_VERSION` and `PROTOCOL_VERSION` are `*-v5-uniform-k`; `run_records` reads v1 to
+v5 (`PRECISION_V4` added). Agent-facing `budgets` is the largest TRAIN pool K per kind
+(merge 1,038 from 802449, split 6,535), as it already was for the capless split.
+
+**What follows.** Numbers are not comparable with v4: merge precision roughly doubles at
+K = positives while the split half is unchanged, and the next run's seed is the v5 reference.
+Not changed: selection still uses one brain (802449) with within-brain grouped folds, which
+cannot see cross-brain shift (the split re-rankers of both runs gained on 802449 and lost on
+four validation brains); cross-brain selection over the rebuilt brains is the next revision.
+The validation merge pools remain small (524 labeled slots at K = positives, 1,048 at 2 x), so
+the gate's resolving power is unchanged by this rule.
+
 ### Repeated submissions and earlier-generation access (2026-10-26)
 
 **Motivation (run `precision_20261025_193120_5to8nx13`, 20 generations).** Nine generations
@@ -1219,10 +1262,11 @@ python -m proofreader_evolve.cli.preflight --brains 794495 802449 789202 794493 
 python -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495,802449 --selection-brains 802449 \
   --validation-brains 789202,794493,794491 \
-  --merge-k 300 --generations 20 \
+  --generations 20 \
   --context-cache proofreader_evolve/context_cache --descriptor-workers auto
-# K per pool (2026-10-26): merge min(300, 2 x GT positives); split exactly its GT positives, no cap
-# (--split-k none, --k-positive-ratio merge=2,split=1 are the defaults; --split-k 1000 restores the old cap).
+# K per pool (2026-10-27): every pool ranks exactly its GT positives, no cap for either kind
+# (--merge-k none --split-k none --k-positive-ratio 1 are the defaults; --merge-k 300 --k-positive-ratio
+# merge=2,split=1 restores the 2026-10-26 rule, --split-k 1000 the older split cap).
 # Kinds are allocated adaptively by default; add --kind-schedule alternate for strict rotation.
 # Ablation without the frozen detector score: add --detector-prior no-score (constant seed, own descriptor
 # bank; with --context-cache every GT-labeled row must be cached: the labeled extension, built 2026-10-13).
@@ -1231,7 +1275,7 @@ python -m proofreader_evolve.cli.run_evolution \
 # Historical in-sample ranking for attribution (single detector-fitted TRAIN brain):
 python -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495 --validation-brains auto --selection-protocol in_sample \
-  --merge-k 300 --generations 5
+  --generations 5
 ```
 
 Defaults are TRAIN `794495`, the `grouped_oof` selection protocol and automatic
@@ -1708,7 +1752,7 @@ records the motivating run and the original proposals.
 
 | Source / relationship | Mechanism and implementation | Differences and claim boundary | Evidence status |
 |---|---|---|---|
-| R-precision, precision at the depth equal to the number of relevant items (Manning, Raghavan and Schütze, *Introduction to Information Retrieval*, Cambridge University Press, 2008, section 8.4), `manning2008`; **engineering reference** with **project-specific** per-kind budgets in objective v4 (2026-10-26) | Split pools rank K = their GT positives (`--split-k none`, `--k-positive-ratio merge=2,split=1`), so Precision@K equals Recall@K there; merge keeps K = min(300, 2 x positives). [fixed_pool_scoring.py](harness/fixed_pool_scoring.py) `Budgets`, [run_precision_evolution.py](cli/run_precision_evolution.py), [kind_schedule.py](harness/kind_schedule.py). | Defined over the GT-labeled rows of a fixed detector pool, not over all split errors of a brain: unlabeled rows are never ranked and the pool reaches about 95% of canonical splits. The per-kind ratio and the capless kind are our design; no claim that the metric change improves proofreading outcomes. | Detector-only curves measured on 2026-10-26 (`notebooks/split_rank_curves.py`); the next evolution run supplies the v4 seed and baseline. |
+| R-precision, precision at the depth equal to the number of relevant items (Manning, Raghavan and Schütze, *Introduction to Information Retrieval*, Cambridge University Press, 2008, section 8.4), `manning2008`; **engineering reference** with **project-specific** per-kind budgets in objective v4 (2026-10-26) and uniform budgets in v5 (2026-10-27) | Every pool of either kind ranks K = its GT positives (`--merge-k none --split-k none --k-positive-ratio 1`, the v5 defaults), so Precision@K equals Recall@K in TRAIN, selection and validation alike; v4 had applied this to split only, with merge at K = min(300, 2 x positives). [fixed_pool_scoring.py](harness/fixed_pool_scoring.py) `Budgets`, [run_precision_evolution.py](cli/run_precision_evolution.py), [kind_schedule.py](harness/kind_schedule.py). | Defined over the GT-labeled rows of a fixed detector pool, not over all split errors of a brain: unlabeled rows are never ranked and the pool reaches about 95% of canonical splits. The per-kind ratio and the capless kind are our design; no claim that the metric change improves proofreading outcomes. | Detector-only curves measured on 2026-10-26 (`notebooks/split_rank_curves.py`); the next evolution run supplies the v4 seed and baseline. |
 | [OME-NGFF 0.4 coordinate specification](https://ngff.openmicroscopy.org/0.4/) and [TensorStore Zarr driver](https://google.github.io/tensorstore/driver/zarr/index.html); **engineering standard** | Explicit image axes, spatial units, composed scale/translation, voxel-center mapping and read-only chunk access. [image_coordinates.py](harness/image_coordinates.py), [image_context.py](harness/image_context.py). | Standards specify representation/IO, not biological registration. We additionally require a source/cache-bound sampled overlay review. This is not a new literature-derived discovery algorithm. | Coordinate/transport tests on n257; real level-0 image/fragment review across five brains. See the v9 evidence entry. |
 | FAMOSE/Crafter conceptual motivation above; **adapted idea**, with **project-specific** image access | Extend failure-driven information acquisition and paired feature diagnostics to raw fluorescence. [image_features.py](harness/image_features.py), [image_preview.py](harness/image_preview.py), [feature_ablation.py](harness/feature_ablation.py). | Arbitrary image encoders are allowed, not a prescribed pretrained vision model. Our raw-patch removal control, image request budgets and registration receipts are local design choices. No claim that these papers implement this microscopy interface or that viewing images improves our ranking. | Pixel access, isolation and ablation transport checked; no image-model fitting, live LLM image session or measured image-ranking gain yet. |
 | [FAMOSE, February 2026 preprint](https://arxiv.org/abs/2602.17641), `burghardt2026`; **adapted idea** | Measure proposed features conditional on existing predictors. [feature_ablation.py](harness/feature_ablation.py), [internal_validation.py](harness/internal_validation.py), and `evaluate_feature_ablation` in [train_experiments.py](harness/train_experiments.py). | Our two arms use one agent-written program with full inputs versus a constant-masked feature group, with refitting for classifiers. We use grouped TRAIN OOF Precision@K; this is not FAMOSE's feature-selection implementation or its ROC-AUC/RMSE protocol. Formula comparisons are descriptive. | Synthetic regression checks passed in v9/v10, including paired refit/transport accounting with fitting mocked. No measured incremental ranking gain on real brains yet. |
@@ -1730,6 +1774,7 @@ records the motivating run and the original proposals.
 
 | Date / version | Change and motivation | Verification / future evidence |
 |---|---|---|
+| 2026-10-27 / uniform K = GT positives (objective v5) | **Project-specific design** with R-precision as the standard reference (`manning2008`). Defaults `--merge-k none` and `--k-positive-ratio 1` (merge was ratio 2 under a cap of 300), so every pool of either kind ranks exactly its GT positives in TRAIN, selection and validation; versions `*-v5-uniform-k`, `run_records` reads v1 to v5. Motivation: in runs `yqeacq5s` and `5d0_pbkb` the merge cap bound only on the selection brain 802449 (1,038 positives), so selection measured Precision@300 (recall 0.13) while validation measured K = 2 x positives (recall 0.24-0.40); over their 20 validated merge candidates the selection score's Spearman correlation with the validation merge mean was 0.67 at K = 300 and 0.88 at K = positives (`notebooks/k_rule_check/selection_k_variants.py`). Validation side (`validation_k_variants.py`, merge tables of the five validation brains re-scored from the runs' model artifacts; the re-scoring reproduced every ledger hit count at K = 2 x positives): at K = positives the seed scores 0.107 (66 hits of 524 slots) and the three descriptor-free validated candidates 0.153 to 0.158 (93 to 95 hits), against 0.096 (118 of 1,048) and 0.116 to 0.120 (138 to 150) at K = 2 x positives; the seed-to-first-acceptance gain is +29 hits at K = positives and +32 at 2 x, so the rule change halves the slots without changing the hit-level signal, and 794493 stays at 2 to 5 hits under either K. The other 17 validated merge candidates reference `bank_agent_*` descriptor columns and were not re-scored. | `tests/test_positive_scaled_k.py` (defaults, five readable objective versions, capless driver runs) and `tests/test_bootstrap_gate.py` (its fixed-K fixture pins `--k-positive-ratio 2`); full suite on 2026-10-27 (regression-test section). Check scripts and logs under `notebooks/k_rule_check/`. No evolution run under v5 yet; the next run's seed is the v5 reference and v4 numbers (`yqeacq5s` 0.4948, `5d0_pbkb` 0.4909) are not comparable. |
 | 2026-10-26 / repeated submissions and earlier-generation access | **Project-specific design** (no literature source). `scores_sha256` (exact kind score vectors over TRAIN and selection states) joins `component_sha256` as a candidate's identity; the pool records every outer measurement (`mark_validated` / `validation_of`) and a submission identical to a measured candidate ends the generation as `repeated` with no validation evaluation (ledger `submission_repeat`, gate `skipped: repeated_submission`, report status `repeated`, handoff host status `repeated_submission`). The agent sees `outer_measurement` (generation, promoted, by) on the search parent, complementary candidates, pool members and training-tool results; `restore_candidate("best")` and the submission fallback prefer a not-yet-measured candidate; earlier generations' agent-authored files and `experiments/`, `classifier_fits/`, `descriptor_runs/` trees are readable (validation-bearing files stay closed). Motivation: nine of twenty generations of `precision_20261025_193120_5to8nx13` re-measured known candidates (8, 10, 16, 19 cached repeats; 15 a rewrite with identical scores; 13, 14, 18 unchanged) and six reads of earlier generations' programs were denied. See "Repeated submissions and earlier-generation access". | New `tests/test_repeated_submission.py` (9 tests: cached repeat of a rejected candidate ends as repeated with the tool note, the handoff status and the agent-visible statuses; a rewritten accepted component is a repeat by scores; a scaled variant with the same ranking is still measured; the fallback prefers a not-yet-measured candidate; `scores_digest` exactness and kind scoping; pool marking and annotation without validation numbers; status vocabulary; earlier-generation listing and guard decisions). Full suite on 2026-10-26: see the regression-test section. No evolution run yet. |
 | 2026-10-26 / split K = GT positives (objective v4) | **Project-specific design** with R-precision as the standard reference (Manning, Raghavan and Schütze, *Introduction to Information Retrieval*, 2008, section 8.4; `manning2008`). `Budgets` gains a per-kind `positive_ratio` and capless kinds; defaults merge ratio 2.0 / cap 300 (unchanged) and split ratio 1.0 / no cap (`--split-k none`, `--k-positive-ratio merge=2,split=1`), so each split pool ranks K = its GT positives and Precision@K equals Recall@K there. Agent-facing `budgets` is the cap or, for a capless kind, the largest TRAIN pool K (`Budgets.kind_budget`); `kind_schedule.mean_k` and the crowding warning handle capless kinds; versions `*-v4-per-kind-k`, `run_records` reads v1 to v4. Motivation: in `precision_20261025_193120_5to8nx13` the validation split cells sat at Precision@1000 0.92 to 0.98 with 1,759 to 2,783 positives per pool (recall 0.35 to 0.53) and half of the split generations were repeats; the frozen detector alone scores 0.83 to 0.88 at K = positives and 0.56 to 0.29 in the 1500 to 2500 labeled rank bands, so the capped window hid the band where ranking still matters. K = 2 x positives collapses 789202 to its labeled base rate (2P > labeled rows). | `tests/test_positive_scaled_k.py` (17 tests: per-kind ratio, capless kind, `kind_budget`, scheduler fallback, CLI parsing, a driver run with `--split-k none`) and the full suite on 2026-10-26 (see the regression-test section). Detector-only split curves: `notebooks/split_rank_curves.py` (n13, 2026-10-26; outputs under `notebooks/split_rank_curves/`). No evolution run under v4 yet; the next run's seed is the v4 reference, and v3 numbers (`5to8nx13` final 0.5190) are not comparable. |
 | 2026-10-17 / companions without a detector; no default frozen detectors | **Project-specific design** (no literature source). `native_pool.build_native_universe` accepts `module=None`; the pool-only companion export and `notebooks/merge_shaft_candidate_reach.py` no longer load a frozen detector (rows and labels come from `candidate_rules.py`; the manifest records `detector: null`, `detector_rule_matches: null`). The 2026-08 detectors and all AutoDiscovery results were deleted as stale (fitted before the 2026-10-15 relabel, on the old pools), so `precompute_error_scores.DEFAULT_MERGE_DIR` / `DEFAULT_SPLIT_DIR` are `None` and `resolve_detector_runs` stops with a message until `--merge-dir` / `--split-dir` or new defaults are given (`check_image_alignment` gained both flags). Native-pool tests use stand-in detector folders; the real-detector parity test runs only when defaults are configured, and the test of the deleted split detector's `h33` group was removed. | Both test suites pass after the change; real evidence comes with the new detectors (`plans/rebuild_after_relabel_and_split_pool.md`). |
@@ -1847,8 +1892,8 @@ coercion of plain mappings, label-only resolution), `evaluate` at per-pool K wit
 membership flags, the kind-first mean equalling the legacy mean on a complete grid and
 skipping excluded cells, the pinned `in_mean` benchmark identity, bootstrap intervals
 that ignore excluded cells, headroom and saturation on counted cells only, feedback
-caps/`k_rule`/`in_mean` without validation text, the readable objective versions (v1 to v4 since 2026-10-26), the parsed
-default caps (merge 300; split 1000 from 2026-10-12, uncapped since 2026-10-26), and driver runs recording `pool_budgets`, keeping the crowding warning in fixed-K mode and
+caps/`k_rule`/`in_mean` without validation text, the readable objective versions (v1 to v5 since 2026-10-27), the parsed
+default caps (none for either kind since 2026-10-27; merge 300 before, split 1000 from 2026-10-12 to 2026-10-26), and driver runs recording `pool_budgets`, keeping the crowding warning in fixed-K mode and
 refusing a kind whose every pool is below the floor. Tiny-fixture driver tests pass
 `--min-positives 0` because their pools hold one or two GT positives. `tests/test_reviser_limits.py` covers the MCP
 output and file-read caps in the reviser environment, the 128 KB feedback budget,

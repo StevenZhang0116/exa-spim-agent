@@ -126,8 +126,11 @@ class DriverGateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
             seed = Path(tmp) / 'seed.py'
             seed.write_text(DETECTOR)
+            # The fixture's tweak is built around the fixed K of both pools, so the ratio stays 2 (the
+            # default until 2026-10-27): with ratio 1 the 600-row TRAIN pool would rank K = its 120 positives.
             args = driver.parse_args(['--min-positives', '0', '--selection-protocol', 'in_sample', '--train-brains', '1',
                                       '--validation-brains', '2', '--merge-k', str(K), '--split-k', '1',
+                                      '--k-positive-ratio', '2',
                                       '--generations', str(len(attempts)), '--runs-dir', tmp,
                                       '--start-from', str(seed), '--bootstrap-draws', '200', *extra])
             queue = iter(attempts)

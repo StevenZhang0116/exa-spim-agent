@@ -20,6 +20,16 @@ ranks exactly its GT positives (R-precision: precision equals recall at that dep
 The fixed split cap of 1000 had saturated: the frozen detector alone reached
 Precision@1000 of 0.92 to 0.97 on the validation pools while the labeled ranking still
 held 1,759 to 2,783 positives, and precision at K = positives was 0.83 to 0.88.
+
+Since 2026-10-27 (v5) the default rule is uniform: no kind has a cap and both ratios are
+1.0, so every pool of either kind, in TRAIN, selection and validation alike, ranks exactly
+its GT positives (R-precision). The merge cap of 300 bound on one pool only, the selection
+brain 802449 (1,038 merge positives, so K = 300 measured the head of the ranking at recall
+0.13), while the validation merge pools (41 to 144 positives, K = 2 x positives) measured a
+depth where recall was 0.24 to 0.40. Over the 20 validated merge candidates of runs
+`precision_20261026_210812_yqeacq5s` and `precision_20261027_000457_5d0_pbkb`, selection
+Precision@300 ranked the candidates against their validation merge means with Spearman
+0.67; Precision@K at K = positives did so with 0.88 (`notebooks/k_rule_check/`).
 """
 
 from collections.abc import Mapping
@@ -36,10 +46,10 @@ from .model_execution import DEFAULT_MEMORY_MB
 from .label_availability import labeled_rows, labels_digest
 
 
-SCORING_VERSION = "native-precision-at-k-v4-per-kind-k"
+SCORING_VERSION = "native-precision-at-k-v5-uniform-k"
 AGGREGATION = "equal-kind-mean-of-equal-brain-precision"
-VALIDATION_GATE_VERSION = "mean-validation-precision-v4-per-kind-k"
-BOOTSTRAP_GATE_VERSION = "mean-validation-bootstrap-v4-per-kind-k"
+VALIDATION_GATE_VERSION = "mean-validation-precision-v5-uniform-k"
+BOOTSTRAP_GATE_VERSION = "mean-validation-bootstrap-v5-uniform-k"
 GATE_MODES = ("bootstrap", "margin")
 
 
@@ -51,8 +61,9 @@ class Budgets(Mapping):
     ``ceil(positive_ratio[kind] * positives)``, limited to the cap when the kind has one; a
     zero ratio keeps the cap (fixed K), so a kind without a cap needs a positive ratio.
     ``positive_ratio`` is one number for every kind or a ``{kind: ratio}`` mapping naming
-    exactly the budgeted kinds (since 2026-10-26: merge 2.0 under a cap of 300, split 1.0
-    without a cap, so a split pool ranks exactly its GT positives). ``in_mean(truth)`` is
+    exactly the budgeted kinds (defaults since 2026-10-27: ratio 1.0 and no cap for both
+    kinds, so every pool ranks exactly its GT positives; from 2026-10-26 merge was 2.0 under
+    a cap of 300 and split 1.0 without a cap). ``in_mean(truth)`` is
     False for pools with fewer than ``min_positives`` GT positives; those pools are scored
     and reported but never enter the promotion mean, the bootstrap or kind headroom.
     Everything depends on label counts only, so every pool's K is fixed for a run. A plain
@@ -288,7 +299,7 @@ def acceptance(parent, candidate, margin=0, *, require_no_cell_regression=True):
                     f"delta={gain:+.6f}, margin={margin:g}")
 
 
-BOOTSTRAP_VERSION = "paired-poisson-bootstrap-v4-per-kind-k"
+BOOTSTRAP_VERSION = "paired-poisson-bootstrap-v5-uniform-k"
 
 
 def _prefix_hits(order, truth, counts, k):

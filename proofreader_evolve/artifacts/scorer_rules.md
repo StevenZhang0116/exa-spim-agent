@@ -64,8 +64,8 @@ in the current generation's `proposal.json`.
   see `classifier_guide.md`).
 - Promotion gate: improve the mean Precision@K over GT-labeled rows on the fixed
   development-validation brains. Each pool ranks its own K = ceil(this kind's ratio x the
-  pool's GT positives), limited to the kind's cap when it has one (merge: 2 x positives up to
-  300; split: exactly its positives, no cap); pools below the GT-positive floor are scored
+  pool's GT positives), limited to the kind's cap when it has one (default: no cap and ratio 1
+  for both kinds, so every pool ranks exactly its positives); pools below the GT-positive floor are scored
   and reported but excluded (`in_mean` in feedback). First average each kind over the
   counted brains, then average the kinds. Individual brain/kind regressions are allowed.
   The mean gain must also clear row-resampling noise: the host requires the lower

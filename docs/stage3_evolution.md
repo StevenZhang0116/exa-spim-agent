@@ -8,9 +8,11 @@ fresh agent session is the mutation operator, a TRAIN-side selection score ranks
 exploration branches, and a held-out validation gate alone decides promotion: the
 mean Precision@K (per kind over the counted brains, then over kinds) must rise by
 more than paired-bootstrap resampling noise. Each pool ranks its own
-K = ceil(ratio x its GT positives), limited to the kind's cap when it has one: merge
-2 x positives under a cap of 300 (2026-10-12), split exactly its positives with no cap
-(2026-10-26, so split Precision@K equals Recall@K), and pools with fewer than 20 GT
+K = ceil(ratio x its GT positives), limited to the kind's cap when it has one. Since
+2026-10-27 no kind has a cap and both ratios are 1, so every pool ranks exactly its GT
+positives and Precision@K equals Recall@K (R-precision) for merge and split alike, in
+TRAIN, selection and validation (merge was 2 x positives under a cap of 300 from
+2026-10-12 to 2026-10-27; split uncapped since 2026-10-26). Pools with fewer than 20 GT
 positives are reported but excluded from the mean (`--k-positive-ratio`,
 `--merge-k` / `--split-k`, `--min-positives`).
 Generations are allocated between the merge and split components by
@@ -61,15 +63,16 @@ export ANTHROPIC_API_KEY=...  AWS_EC2_METADATA_DISABLED=true
 python -u -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495,802449 --selection-brains 802449 \
   --validation-brains 789202,794493,794491 \
-  --merge-k 300 --generations 20 \
+  --generations 20 \
   --context-cache proofreader_evolve/context_cache --descriptor-workers auto \
   --classifier-threads 4 --classifier-time-budget 1800 --reviser-max-turns 40 \
   --skip-auxiliary-ablation
 # --merge-k / --split-k are per-kind caps (an integer or none). Each pool ranks K = ceil(ratio x its GT
 # positives), limited to the cap when the kind has one; --k-positive-ratio takes one number or merge=R,split=R
-# (default merge=2,split=1 since 2026-10-26: merge min(300, 2 x positives), split exactly its positives with no
-# cap; 0 keeps a fixed cap). Pools with fewer than --min-positives GT positives (default 20) are scored and
-# reported but excluded from the promotion mean (2026-10-12).
+# (default since 2026-10-27: no caps and ratio 1 for both kinds, so every pool ranks exactly its GT positives;
+# merge=2,split=1 with a merge cap of 300 from 2026-10-26; 0 keeps a fixed cap). Pools with fewer than
+# --min-positives GT positives (default 20) are scored and reported but excluded from the promotion mean
+# (2026-10-12).
 # Controls for attribution: --kind-schedule alternate (strict merge/split rotation),
 # --promotion-gate margin (point-estimate gate), omit --context-cache (no descriptors),
 # --detector-prior no-score (withhold the frozen detector score: constant seed, same pools and detector
@@ -77,12 +80,12 @@ python -u -m proofreader_evolve.cli.run_evolution \
 # Historical in-sample ranking with the detector-fitted TRAIN brain alone:
 python -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495 --validation-brains auto --selection-protocol in_sample \
-  --merge-k 300 --generations 1
+  --generations 1
 ```
 
 The CLI defaults are a single TRAIN brain **794495**, the `grouped_oof` selection
 protocol, the `bootstrap` promotion gate (1000 draws, alpha 0.05), `adaptive` kind
-allocation, 15 generations, a merge cap of 300 and no split cap over GT-labeled rows (split cap 1000 from 2026-10-12 to 2026-10-26, 300 / 500 from 2026-10-09, 100 / 100 before), with each merge pool's K at 2 x its GT positives, each split pool's K at its GT positives (2026-10-26) and pools under 20 positives excluded from the mean (2026-10-12). The bare defaults do **not** start
+allocation, 15 generations, no Top-K cap for either kind over GT-labeled rows (merge cap 300 until 2026-10-27; split cap 1000 from 2026-10-12 to 2026-10-26, 300 / 500 from 2026-10-09, 100 / 100 before), with each pool's K at its GT positives (merge 2 x positives until 2026-10-27), each split pool's K at its GT positives (2026-10-26) and pools under 20 positives excluded from the mean (2026-10-12). The bare defaults do **not** start
 a run: `grouped_oof` ranks TRAIN branches on a brain the detectors were not fitted
 on, and 794495 is the detectors' training brain, so the driver aborts with
 "No eligible selection brain". Add a detector-naive TRAIN brain and name it as the

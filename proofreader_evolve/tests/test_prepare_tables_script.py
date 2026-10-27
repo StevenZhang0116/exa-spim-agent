@@ -47,7 +47,9 @@ class PrepareTablesScriptTests(unittest.TestCase):
                          + ["proofreader_evolve.cli.precompute_availability", "proofreader_evolve.cli.preflight"])
         sidecars = planned[-2]
         self.assertEqual(sidecars[sidecars.index("--brains") + 1:sidecars.index("--mcl")], ["794495", "802449"])
-        self.assertEqual(sidecars[sidecars.index("--feature-tables-dir") + 1], str(out_dir))
+        # The launcher resolves the directory; compare resolved paths so a symlinked TMPDIR
+        # (compute nodes: /scratch/fast -> /local1/tmp/fast) does not fail the test.
+        self.assertEqual(Path(sidecars[sidecars.index("--feature-tables-dir") + 1]).resolve(), out_dir.resolve())
 
     def test_image_workers_forwarded_to_every_table_command(self):
         for value in ("-1", "32"):

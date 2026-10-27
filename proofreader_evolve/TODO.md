@@ -12,7 +12,8 @@ Done 2026-10-09 (WORKFLOW_REVISION "Three-valued labels throughout"): labels are
 guides use GT-labeled rows; optional `X_unlabeled` for `fit`. Still open:
 
 - **K for three-valued runs (defaults set 2026-10-09: merge 300, split 500; split cap 1000
-  from 2026-10-12; split uncapped, K = its GT positives, since 2026-10-26).** Labeled
+  from 2026-10-12; split uncapped, K = its GT positives, since 2026-10-26; merge uncapped
+  with ratio 1 as well since 2026-10-27, see WORKFLOW_REVISION "Uniform K = GT positives").** Labeled
   rows per cell are small (merge: 449-18,564; split: 1,795-13,074), so K = 2000 covered
   most or all labeled rows of several cells. Frozen-baseline P@K sweep over labeled rows
   (`scripts/three_valued_smoke.py`, log `notebooks/log/three_valued_k_sweep.log`):

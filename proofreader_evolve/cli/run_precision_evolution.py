@@ -462,17 +462,22 @@ def parse_args(argv=None):
     # Split cap raised to 1000 on 2026-10-12 (the 500-row window saturated at the end of run phg8xri5) and
     # removed on 2026-10-26: the frozen detector alone scored Precision@1000 0.92-0.97 on the validation
     # pools, which hold 1,759-2,783 GT positives each, so split now ranks K = its GT positives
-    # (WORKFLOW_REVISION "Split K = GT positives").
-    p.add_argument("--merge-k", type=_cap_argument, default=300,
+    # (WORKFLOW_REVISION "Split K = GT positives"). Merge cap removed and merge ratio set to 1 on 2026-10-27:
+    # the cap bound only on the selection brain (802449, 1,038 merge positives), so selection measured the
+    # head of the ranking while validation measured depth 2P; uniform K = GT positives everywhere
+    # (WORKFLOW_REVISION "Uniform K = GT positives").
+    p.add_argument("--merge-k", type=_cap_argument, default=None,
                    help="Top-K cap per merge cell over GT-labeled rows, or 'none' for no cap "
-                        "(default: 300; 100 before 2026-10-09)")
+                        "(default since 2026-10-27: no cap, K = ceil(ratio x GT positives); 300 from 2026-10-09, "
+                        "100 before)")
     p.add_argument("--split-k", type=_cap_argument, default=None,
                    help="Top-K cap per split cell over GT-labeled rows, or 'none' (default since 2026-10-26: no cap, "
                         "K = ceil(ratio x GT positives); 1000 from 2026-10-12, 500 from 2026-10-09, 100 before)")
-    p.add_argument("--k-positive-ratio", type=_ratio_argument, default={"merge": 2.0, "split": 1.0},
+    p.add_argument("--k-positive-ratio", type=_ratio_argument, default={"merge": 1.0, "split": 1.0},
                    help="Each pool ranks K = ceil(ratio x its GT positives), limited to the kind cap when there is "
                         "one; a single number applies to every kind, 'merge=R,split=R' sets each kind; 0 keeps the "
-                        "fixed kind cap (default: merge=2,split=1 since 2026-10-26; 2.0 for both from 2026-10-12)")
+                        "fixed kind cap (default: 1 for both kinds since 2026-10-27, i.e. K = GT positives; "
+                        "merge=2,split=1 from 2026-10-26; 2.0 for both from 2026-10-12)")
     p.add_argument("--min-positives", type=int, default=20,
                    help="Pools with fewer GT positives are scored and reported but excluded from the promotion "
                         "mean, the bootstrap and kind headroom; 0 counts every pool (default: 20, 2026-10-12)")
@@ -831,8 +836,9 @@ async def _run(args, revise_fn, run_dir, trace):
                "Recall@K = hits / pool positives (N/A when zero). Merge counts are candidate sites; "
                "split counts are segment pairs. These are not total GT error counts or reachable-GT counts. "
                "requested_k is each pool's own K: ceil(k_positive_ratio[kind] x pool positives), limited to the "
-               "kind cap when the kind has one (merge 300 by default; split has no cap since 2026-10-26, so its K "
-               "is its GT positives), or the fixed kind cap when the ratio is 0; pools with fewer than "
+               "kind cap when the kind has one (no kind has a cap and both ratios are 1 by default since 2026-10-27, "
+               "so every pool's K is its GT positives; merge was capped at 300 before), or the fixed kind cap when "
+               "the ratio is 0; pools with fewer than "
                "min_positives GT positives "
                "are scored and reported but excluded from the promotion mean (in_mean=false). "
                "The mean is taken per kind over counted brains, then over kinds. "

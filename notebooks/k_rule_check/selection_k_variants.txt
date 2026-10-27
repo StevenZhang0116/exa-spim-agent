@@ -1,0 +1,48 @@
+merge table dir: c9018a47486d9b35f59437bdc0c306de93cf55d4757b37983ce23b90b8fe25ba
+802449/merge rows=553193 labeled=27934 positives=1038
+
+=== precision_20261026_210812_yqeacq5s
+seed selection: K300=0.0733 K=P=0.0838 K=1.5P=0.0796 K=2P=0.0814 K=3P=0.0800
+gen01 merge accepted submitted=attempt005 val_merge_mean=0.1204 merge_hits=150 K300=0.4133 K=P=0.2861 K=1.5P=0.2531 K=2P=0.2322 K=3P=0.1904  | attempts n=6 spread K300:[0.340,0.413] K=P:[0.246,0.289] K=1.5P:[0.218,0.253] K=2P:[0.192,0.232] K=3P:[0.158,0.190]
+gen02 merge rejected submitted=attempt005 val_merge_mean=0.1168 merge_hits=138 K300=0.4233 K=P=0.2890 K=1.5P=0.2473 K=2P=0.2206 K=3P=0.1891  | attempts n=5 spread K300:[0.407,0.427] K=P:[0.286,0.289] K=1.5P:[0.247,0.257] K=2P:[0.221,0.234] K=3P:[0.189,0.193]
+gen03 merge accepted submitted=attempt004 val_merge_mean=0.1432 merge_hits=174 K300=0.4333 K=P=0.3073 K=1.5P=0.2710 K=2P=0.2351 K=3P=0.1936  | attempts n=5 spread K300:[0.410,0.433] K=P:[0.286,0.313] K=1.5P:[0.253,0.273] K=2P:[0.232,0.242] K=3P:[0.189,0.200]
+gen04 merge rejected submitted=attempt004 val_merge_mean=0.1466 merge_hits=177 K300=0.4433 K=P=0.3102 K=1.5P=0.2717 K=2P=0.2384 K=3P=0.1946  | attempts n=4 spread K300:[0.430,0.443] K=P:[0.307,0.311] K=1.5P:[0.271,0.274] K=2P:[0.235,0.238] K=3P:[0.194,0.195]
+gen06 merge rejected submitted=attempt008 val_merge_mean=0.1468 merge_hits=175 K300=0.4367 K=P=0.3112 K=1.5P=0.2736 K=2P=0.2413 K=3P=0.1965  | attempts n=9 spread K300:[0.430,0.450] K=P:[0.307,0.314] K=1.5P:[0.269,0.278] K=2P:[0.237,0.245] K=3P:[0.192,0.198]
+gen07 merge rejected submitted=attempt007 val_merge_mean=0.1428 merge_hits=174 K300=0.4433 K=P=0.3112 K=1.5P=0.2704 K=2P=0.2375 K=3P=0.1959  | attempts n=7 spread K300:[0.353,0.443] K=P:[0.257,0.313] K=1.5P:[0.234,0.276] K=2P:[0.211,0.239] K=3P:[0.183,0.197]
+gen08 merge rejected submitted=attempt004 val_merge_mean=0.1448 merge_hits=176 K300=0.4433 K=P=0.3160 K=1.5P=0.2781 K=2P=0.2423 K=3P=0.2004  | attempts n=4 spread K300:[0.423,0.443] K=P:[0.315,0.320] K=1.5P:[0.277,0.281] K=2P:[0.242,0.248] K=3P:[0.200,0.205]
+gen10 merge rejected submitted=attempt006 val_merge_mean=0.1468 merge_hits=178 K300=0.4400 K=P=0.3266 K=1.5P=0.2864 K=2P=0.2510 K=3P=0.2110  | attempts n=8 spread K300:[0.420,0.447] K=P:[0.319,0.329] K=1.5P:[0.276,0.287] K=2P:[0.243,0.253] K=3P:[0.201,0.211]
+gen11 merge repeated submitted=attempt003 val_merge_mean=nan merge_hits=-1 K300=0.4333 K=P=0.3073 K=1.5P=0.2710 K=2P=0.2351 K=3P=0.1936  | attempts n=5 spread K300:[0.420,0.433] K=P:[0.301,0.320] K=1.5P:[0.263,0.276] K=2P:[0.233,0.245] K=3P:[0.192,0.205]
+gen12 merge rejected submitted=attempt001 val_merge_mean=0.1508 merge_hits=181 K300=0.4467 K=P=0.3208 K=1.5P=0.2723 K=2P=0.2389 K=3P=0.1975  | attempts n=1 spread K300:[0.447,0.447] K=P:[0.321,0.321] K=1.5P:[0.272,0.272] K=2P:[0.239,0.239] K=3P:[0.197,0.197]
+
+=== precision_20261027_000457_5d0_pbkb
+seed selection: K300=0.0733 K=P=0.0838 K=1.5P=0.0796 K=2P=0.0814 K=3P=0.0800
+gen01 merge accepted submitted=attempt005 val_merge_mean=0.1157 merge_hits=141 K300=0.4167 K=P=0.2823 K=1.5P=0.2396 K=2P=0.2144 K=3P=0.1830  | attempts n=7 spread K300:[0.377,0.420] K=P:[0.270,0.292] K=1.5P:[0.227,0.250] K=2P:[0.204,0.227] K=3P:[0.168,0.192]
+gen02 merge accepted submitted=attempt005 val_merge_mean=0.1354 merge_hits=165 K300=0.4133 K=P=0.2909 K=1.5P=0.2588 K=2P=0.2317 K=3P=0.1924  | attempts n=5 spread K300:[0.357,0.413] K=P:[0.257,0.292] K=1.5P:[0.213,0.259] K=2P:[0.187,0.232] K=3P:[0.154,0.192]
+gen03 merge rejected submitted=attempt005 val_merge_mean=0.1107 merge_hits=135 K300=0.4200 K=P=0.2900 K=1.5P=0.2537 K=2P=0.2240 K=3P=0.1940  | attempts n=8 spread K300:[0.400,0.427] K=P:[0.290,0.309] K=1.5P:[0.243,0.273] K=2P:[0.213,0.237] K=3P:[0.186,0.198]
+gen05 merge rejected submitted=attempt001 val_merge_mean=0.1360 merge_hits=166 K300=0.4333 K=P=0.2967 K=1.5P=0.2653 K=2P=0.2375 K=3P=0.1936  | attempts n=8 spread K300:[0.413,0.447] K=P:[0.297,0.307] K=1.5P:[0.260,0.268] K=2P:[0.234,0.239] K=3P:[0.193,0.197]
+gen06 merge rejected submitted=attempt002 val_merge_mean=0.1283 merge_hits=159 K300=0.4367 K=P=0.3006 K=1.5P=0.2710 K=2P=0.2423 K=3P=0.1946  | attempts n=5 spread K300:[0.413,0.437] K=P:[0.291,0.303] K=1.5P:[0.267,0.271] K=2P:[0.235,0.243] K=3P:[0.194,0.196]
+gen07 merge rejected submitted=attempt006 val_merge_mean=0.1413 merge_hits=169 K300=0.4333 K=P=0.3054 K=1.5P=0.2659 K=2P=0.2375 K=3P=0.1943  | attempts n=8 spread K300:[0.423,0.447] K=P:[0.300,0.307] K=1.5P:[0.261,0.269] K=2P:[0.231,0.239] K=3P:[0.192,0.195]
+gen09 merge rejected submitted=attempt004 val_merge_mean=0.1325 merge_hits=163 K300=0.4433 K=P=0.2987 K=1.5P=0.2601 K=2P=0.2317 K=3P=0.1924  | attempts n=6 spread K300:[0.403,0.443] K=P:[0.299,0.309] K=1.5P:[0.255,0.268] K=2P:[0.231,0.240] K=3P:[0.192,0.197]
+gen10 merge rejected submitted=attempt002 val_merge_mean=0.1307 merge_hits=159 K300=0.4333 K=P=0.3025 K=1.5P=0.2588 K=2P=0.2322 K=3P=0.1952  | attempts n=6 spread K300:[0.413,0.437] K=P:[0.288,0.311] K=1.5P:[0.256,0.267] K=2P:[0.227,0.241] K=3P:[0.193,0.197]
+gen11 merge rejected submitted=attempt004 val_merge_mean=0.1403 merge_hits=170 K300=0.4267 K=P=0.2938 K=1.5P=0.2595 K=2P=0.2303 K=3P=0.1952  | attempts n=3 spread K300:[0.417,0.427] K=P:[0.292,0.301] K=1.5P:[0.259,0.263] K=2P:[0.230,0.234] K=3P:[0.190,0.197]
+gen13 merge rejected submitted=attempt003 val_merge_mean=0.1408 merge_hits=169 K300=0.4567 K=P=0.3170 K=1.5P=0.2742 K=2P=0.2365 K=3P=0.2004  | attempts n=4 spread K300:[0.443,0.457] K=P:[0.310,0.320] K=1.5P:[0.268,0.274] K=2P:[0.235,0.237] K=3P:[0.198,0.203]
+gen14 merge rejected submitted=attempt001 val_merge_mean=0.1454 merge_hits=174 K300=0.4400 K=P=0.3179 K=1.5P=0.2775 K=2P=0.2423 K=3P=0.2033  | attempts n=6 spread K300:[0.420,0.447] K=P:[0.308,0.325] K=1.5P:[0.266,0.277] K=2P:[0.239,0.245] K=3P:[0.200,0.205]
+
+=== Spearman between selection metric of the submitted merge candidate and its validation merge mean (both runs pooled, n=20)
+K300    rho=+0.667 p=0.001
+K=P     rho=+0.876 p=0.000
+K=1.5P  rho=+0.851 p=0.000
+K=2P    rho=+0.751 p=0.000
+K=3P    rho=+0.731 p=0.000
+--- precision_20261026_210812_yqeacq5s n=9
+K300    rho=+0.627 p=0.071
+K=P     rho=+0.762 p=0.017
+K=1.5P  rho=+0.800 p=0.010
+K=2P    rho=+0.783 p=0.013
+K=3P    rho=+0.750 p=0.020
+--- precision_20261027_000457_5d0_pbkb n=11
+K300    rho=+0.431 p=0.185
+K=P     rho=+0.700 p=0.016
+K=1.5P  rho=+0.729 p=0.011
+K=2P    rho=+0.549 p=0.080
+K=3P    rho=+0.553 p=0.078
