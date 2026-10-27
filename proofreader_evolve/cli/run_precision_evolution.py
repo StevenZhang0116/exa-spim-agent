@@ -454,7 +454,7 @@ def parse_args(argv=None):
     p.add_argument("--descriptor-bank", type=Path, default=None,
                    help="Persistent cache of computed descriptor values, keyed by descriptor code hash "
                         "(default: proofreader_evolve/descriptor_bank; descriptor_bank_no_score with "
-                        "--detector-prior no-score)")
+                        "--detector-prior no-score, descriptor_bank_raw with --detector-prior raw)")
     p.add_argument("--descriptor-workers", default="auto", metavar="auto|N",
                    help="Parallel sandboxed workers for descriptor computation (default: available CPUs minus 2)")
     p.add_argument("--descriptor-wall-seconds", type=float, default=1800.,
@@ -549,18 +549,22 @@ def parse_args(argv=None):
     p.add_argument("--detector-prior", choices=detector_prior.MODES, default="frozen",
                    help="frozen (default): detector_score is a predictor and the default seed; no-score: "
                         "ablation that withholds the frozen detector score from scorers, training programs, "
-                        "descriptors and the reviser (same pools, detector feature columns, labels, K, brains)")
+                        "descriptors and the reviser (same pools, detector feature columns, labels, K, brains); "
+                        "raw (2026-10-27): also withholds every discovered h<n>_ feature column, leaving the "
+                        "label-blind raw candidate attributes (raw_*), the context cache and the agent's descriptors")
     p.add_argument("--runs-dir", type=Path, default=HERE / "runs")
     args = p.parse_args(argv)
-    no_score = args.detector_prior == "no-score"
+    ablation = args.detector_prior != "frozen"
     if args.start_from is None:
-        args.start_from = HERE / "artifacts" / ("scorer_no_score.py" if no_score else "scorer.py")
-    frozen_bank = HERE / "descriptor_bank"
+        args.start_from = HERE / "artifacts" / ("scorer_no_score.py" if ablation else "scorer.py")
+    default_banks = {"frozen": HERE / "descriptor_bank", "no-score": HERE / "descriptor_bank_no_score",
+                     "raw": HERE / "descriptor_bank_raw"}
     if args.descriptor_bank is None:
-        args.descriptor_bank = HERE / "descriptor_bank_no_score" if no_score else frozen_bank
-    elif no_score and args.descriptor_bank.resolve() == frozen_bank.resolve():
-        p.error("--detector-prior no-score needs its own --descriptor-bank: cached values in the default bank "
-                "may have been computed from detector_score")
+        args.descriptor_bank = default_banks[args.detector_prior]
+    elif ablation and any(args.descriptor_bank.resolve() == bank.resolve()
+                          for mode_name, bank in default_banks.items() if mode_name != args.detector_prior):
+        p.error(f"--detector-prior {args.detector_prior} needs its own --descriptor-bank: cached values in another "
+                "mode's bank may have been computed from columns this mode withholds")
     if set(args.train_brains) & set(args.validation_brains or []):
         p.error("Train and validation brains must be disjoint")
     if args.selection_brains is not None and set(args.selection_brains) - set(args.train_brains):
@@ -745,8 +749,9 @@ def _restore_descriptors(args, banks, kinds, parent_sources, descriptor_runs, bu
         for column, record in columns.items():
             if record['scope'] not in detector_prior.NO_SCORE_DESCRIPTOR_SCOPES:
                 raise ValueError(f"Descriptor column {column} uses scope {record['scope']!r}, a detector-rank "
-                                 "window; --detector-prior no-score accepts all_cached only")
-            detector_prior.check_source(programs[record['code_sha256']]['program'], f'Descriptor column {column}')
+                                 f"window; --detector-prior {args.detector_prior} accepts all_cached only")
+            detector_prior.check_source(programs[record['code_sha256']]['program'], f'Descriptor column {column}',
+                                        raw=detector_prior.raw_enabled(args))
     for code in {record['code_sha256'] for record in columns.values()}:
         program, spec = programs[code]['program'], programs[code]['spec']
         scope = next(record['scope'] for record in columns.values() if record['code_sha256'] == code)
@@ -799,8 +804,8 @@ def _auxiliary_ablation(args, protocol, kinds, run_dir, fit_limits, trace):
 
 
 def _contract(args):
-    """System prompt and seed rules; the ablation appends what is withheld."""
-    return CONTRACT + detector_prior.NOTICE if detector_prior.enabled(args) else CONTRACT
+    """System prompt and seed rules; an ablation appends what is withheld."""
+    return CONTRACT + detector_prior.notice(args)
 
 
 async def run(args, revise_fn=None):
@@ -909,16 +914,29 @@ async def _run(args, revise_fn, run_dir, trace):
         return result
 
     baseline, stripped_cells = None, []
+    raw = detector_prior.raw_enabled(args)
     if no_score:
-        # Measure the host comparator first, then withhold the score from everything downstream.
+        # Measure the host comparators first, then withhold the columns from everything downstream.
         baseline = frozen_baseline()
-        stripped_cells = detector_prior.strip(banks)
-        trace.emit("detector_prior", f"Ablation --detector-prior no-score: detector_score withheld from "
-                   f"{len(stripped_cells)} tables; seed {args.start_from.name}",
+        stripped_cells = detector_prior.strip_to_raw(banks) if raw else detector_prior.strip(banks)
+        if raw:
+            heuristic = detector_prior.raw_heuristic_source()
+            trace.emit("baseline_evaluation", "Evaluating raw-heuristic baselines on the raw columns "
+                       "(split: smallest gap first; merge: junction arity, tip gap as tie-breaker)")
+            baseline["raw_heuristics"] = {
+                "train": scoring.evaluate(heuristic, train, budgets, args.policy_time_budget,
+                                          memory_mb=args.classifier_memory_mb),
+                "validation": scoring.evaluate(heuristic, validation, budgets, args.policy_time_budget,
+                                               memory_mb=args.classifier_memory_mb)}
+            log_metrics(trace, "Raw-heuristic baseline train", baseline["raw_heuristics"]["train"])
+            log_metrics(trace, "Raw-heuristic baseline validation", baseline["raw_heuristics"]["validation"])
+        trace.emit("detector_prior", f"Ablation --detector-prior {args.detector_prior}: "
+                   f"{'detector_score and every discovered feature column' if raw else 'detector_score'} withheld "
+                   f"from {len(stripped_cells)} tables; seed {args.start_from.name}",
                    **detector_prior.describe(args, stripped_cells))
     source = args.start_from.read_text()
     if no_score:
-        detector_prior.check_source(source, f"Starting scorer {args.start_from}")
+        detector_prior.check_source(source, f"Starting scorer {args.start_from}", raw=raw)
     parent_sources = components(source)
     available = set.intersection(*(set(bank.tables) for bank in banks.values()))
     kinds = [k for k in ("merge", "split") if k in available]

@@ -8,8 +8,8 @@ def ranked_rows(frame, spec, keys=None):
     feature = spec['selection_feature']
     if feature not in frame:
         if feature == 'detector_score':
-            raise ValueError("detector_score is withheld in this run (--detector-prior no-score); set the image "
-                             "selection_feature to another base predictor column")
+            raise ValueError("detector_score is withheld in this run (--detector-prior no-score/raw); set the image "
+                             "selection_feature to another base predictor column (under raw: a raw_* column)")
         raise ValueError('Image selection_feature must name an existing base predictor')
     values = frame[feature].to_numpy(dtype=float, copy=True)
     priority = -values if spec['selection_largest'] else values

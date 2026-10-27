@@ -679,7 +679,10 @@ class ContextEntry:
             raise ValueError(f'{len(missing)} requested rows are outside the cached band and labeled extension')
         sites, totals = self.geometry(rows)
         images = self.image(rows, tier) if inputs in ('image', 'both') else [None] * len(rows)
+        # Manifest base columns present on the table, plus raw candidate columns (--detector-prior raw)
+        # that replace the detector's frame after the cache was built.
         base = [c for c in self.base_columns if c in table.features.columns]
+        base += [c for c in table.features.columns if str(c).startswith('raw_') and c not in base]
         frame = table.features[base]
         contexts, patches = [], []
         geometry = self.manifest['geometry']

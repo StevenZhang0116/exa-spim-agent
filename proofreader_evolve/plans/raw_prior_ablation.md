@@ -1,6 +1,9 @@
 # Plan: ablation from raw candidates (`--detector-prior raw`)
 
-Status (2026-10-27): agreed, not implemented. Decisions taken with the user the same day:
+Status (2026-10-27): implemented the same day (`harness/detector_prior.py`, driver, `context_cache.contexts`,
+`tests/test_raw_prior.py`; design record section "Raw-candidate ablation" in `WORKFLOW_REVISION.md`).
+Step 3 (preflight mode column) was dropped: the preflight does not take the mode. Decisions taken with the
+user the same day:
 (1) raw columns as listed below, no coordinates, occurrence aggregates included; (2) constant
 seed; (3) descriptor generation wall budget 7200 s for raw runs; (4) runs are sequential, one
 setup per run; (5) the candidate-pool definition is part of the benchmark and stays.

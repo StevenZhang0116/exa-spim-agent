@@ -74,6 +74,9 @@ python -u -m proofreader_evolve.cli.run_evolution \
 # cross-brain signal); validation unchanged. --aggregation positive-weighted (default since 2026-10-27) pools
 # each kind's counted pools by GT positives in selection, validation, bootstrap and headroom; equal-brain
 # restores the equal-weight mean of every earlier run.
+# Ablations: --detector-prior no-score withholds the frozen detector score (2026-10-12); --detector-prior raw
+# (2026-10-27) also withholds every discovered h<n>_ feature column, leaving the raw_* candidate attributes, the
+# context cache and the agent's descriptors (own descriptor bank; --descriptor-generation-wall-seconds 7200).
 # --merge-k / --split-k are per-kind caps (an integer or none). Each pool ranks K = ceil(ratio x its GT
 # positives), limited to the cap when the kind has one; --k-positive-ratio takes one number or merge=R,split=R
 # (default since 2026-10-27: no caps and ratio 1 for both kinds, so every pool ranks exactly its GT positives;

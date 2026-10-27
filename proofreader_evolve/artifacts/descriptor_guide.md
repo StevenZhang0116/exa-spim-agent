@@ -36,7 +36,9 @@ the cached rows in parallel sandboxed workers and registers the results as
 4. Use the columns like any predictor: in a formula (handle NaN on rows outside
    the cache; `bank_context_available` is 1 inside the detector band), in `training.py`
    (classifiers see them automatically), or measure their increment with
-   `evaluate_feature_ablation` by listing them in `research.feature_columns`.
+   `evaluate_feature_ablation` by listing them in `research.feature_columns`. Under
+   `--detector-prior raw` the base predictors are only the `raw_*` candidate attributes, so
+   every other feature comes from descriptors like these.
 5. On submission the host computes every referenced descriptor on the other
    brains' cached contexts for frozen inference; you never see those values.
 

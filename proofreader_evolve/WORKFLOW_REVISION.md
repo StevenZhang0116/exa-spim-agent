@@ -136,6 +136,57 @@ accepted parent's full-precision measurements. TRAIN feedback's `parent_train` a
 `ranking_delta` and `failure_cases.json` describe the exploration branch (v17);
 `search_plan.json` identifies the branch.
 
+### Raw-candidate ablation `--detector-prior raw` (2026-10-27)
+
+**Question.** How much of the final validation precision comes from the whole AutoDiscovery
+plus detector pipeline? `no-score` (2026-10-12) withholds only the fitted ranking and keeps the
+293 `h*` feature columns that the AutoDiscovery runs discovered and the detector build computed
+(the 802449 merge table holds 294 columns: 293 `h*` plus `detector_score`; the label-blind
+candidate attributes are not in the frame at all). `raw` withholds the `h*` columns too. Plan and
+decisions: `plans/raw_prior_ablation.md`.
+
+**What the agent gets per arm.**
+
+| | frozen | no-score | raw |
+|---|---|---|---|
+| `detector_score` | predictor and seed | no | no |
+| 293 `h*` columns | yes | yes | no |
+| raw candidate columns | implicit in `h*` | implicit in `h*` | the only base columns |
+| seed | `artifacts/scorer.py` | `artifacts/scorer_no_score.py` (constant) | the same constant |
+| `bank_context_available` / `row_in_band` | yes | no | no |
+| descriptor scopes | pilot, boundary, all_cached | all_cached | all_cached |
+| descriptor bank | `descriptor_bank/` | `descriptor_bank_no_score/` | `descriptor_bank_raw/` |
+
+**Mechanism.** `detector_prior.strip_to_raw` replaces every loaded table's frame (TRAIN and
+validation alike, in memory; files and digests untouched) by `raw_columns(kind, candidates)`,
+built from the label-blind rows of `candidate_rules.GEOMETRY_FIELDS` / `OCCURRENCE_FIELDS`:
+merge `raw_degree`, `raw_candidate_family` (junction 0 / tip_to_shaft 1), `raw_tip_gap_um` (NaN
+on junction rows); split `raw_gap_um`, `raw_partner_rank`, `raw_anchor_side` (a 0 / b 1),
+`raw_node_role_a/b` (tip 1 / non_tip 0), `raw_occurrence_count`, `raw_occurrence_gap_min_um`,
+`raw_occurrence_gap_max_um`. Coordinates and identifiers are never exposed. The score and the
+dropped frame stay on the table as host-only copies. Descriptor contexts carry the raw columns
+(`context_cache.contexts` adds `raw_*` columns to the manifest's base columns);
+`check_source` refuses `h<digits>_` names as well as the hidden names for the seed and for
+restored descriptor programs; the contract appends `NOTICE_RAW`; each mode has its own
+descriptor bank and refuses the other modes' banks. Everything `no-score` withholds stays
+withheld (band hidden, `all_cached` only, every GT-labeled row must be cached).
+
+**Baselines.** Before the strip the host measures the frozen detector (as `no-score`); after
+it, two raw heuristics on the raw columns (`raw_heuristic_source`: split by the smallest gap,
+merge by junction arity with the tip gap as tie-breaker), recorded under
+`baseline.json["raw_heuristics"]` as paper references, never the seed and never shown to the
+agent. The seed is the constant scorer, so its Precision@K is near the labeled base rate.
+
+**Comparison.** Identical pools, K rule, partition, aggregation, gate and budgets in the three
+arms; raw runs pass `--descriptor-generation-wall-seconds 7200`. Starting points differ a lot
+(frozen split seed about 0.85, raw split seed near 0.41 on 802449), so the arms are compared on
+final values, not per-generation gains: raw to no-score is the discovered features'
+contribution, no-score to frozen the fitted detector's, frozen to the evolved scorer
+evolution's. Runs are sequential, one setup per run (frozen, then no-score, then raw), each
+preceded by its `--generations 0` seed baseline. Neither ablation has completed a real run.
+Not in scope: the pool definition (benchmark), table or cache rebuilds, a cache-free arm, the
+preflight (it does not know the mode).
+
 ### Uniform K = GT positives (2026-10-27, objective v5)
 
 **Motivation.** The first two v4 runs, `precision_20261026_210812_yqeacq5s` (n280, 13
@@ -1816,6 +1867,7 @@ records the motivating run and the original proposals.
 
 | Date / version | Change and motivation | Verification / future evidence |
 |---|---|---|
+| 2026-10-27 / raw-candidate ablation (`--detector-prior raw`) | **Project-specific design** (ablation arm; `plans/raw_prior_ablation.md`). Withholds the frozen score and every discovered `h<digits>_` feature column; the frame is rebuilt from the label-blind candidate attributes (`raw_*`), descriptor contexts carry them, `check_source` refuses the discovered names, own bank `descriptor_bank_raw/`, constant seed, raw-heuristic baselines (split gap, merge degree) recorded beside the frozen baseline. Decomposes the final number into discovered features / fitted detector / evolution across the three arms. | `tests/test_raw_prior.py` (raw columns for both kinds, strip once per shared table, source checks, argument defaults and bank refusals, a tiny driver run recording both baselines and withholding the columns on TRAIN and validation) and `tests/test_detector_prior.py`; full suite 2026-10-27. No run yet: seed baselines of the three arms on the eleven-brain partition come first. |
 | 2026-10-27 / uniform K = GT positives (objective v5) | **Project-specific design** with R-precision as the standard reference (`manning2008`). Defaults `--merge-k none` and `--k-positive-ratio 1` (merge was ratio 2 under a cap of 300), so every pool of either kind ranks exactly its GT positives in TRAIN, selection and validation; versions `*-v5-uniform-k`, `run_records` reads v1 to v5. Motivation: in runs `yqeacq5s` and `5d0_pbkb` the merge cap bound only on the selection brain 802449 (1,038 positives), so selection measured Precision@300 (recall 0.13) while validation measured K = 2 x positives (recall 0.24-0.40); over their 20 validated merge candidates the selection score's Spearman correlation with the validation merge mean was 0.67 at K = 300 and 0.88 at K = positives (`notebooks/k_rule_check/selection_k_variants.py`). Validation side (`validation_k_variants.py`, merge tables of the five validation brains re-scored from the runs' model artifacts; the re-scoring reproduced every ledger hit count at K = 2 x positives): at K = positives the seed scores 0.107 (66 hits of 524 slots) and the three descriptor-free validated candidates 0.153 to 0.158 (93 to 95 hits), against 0.096 (118 of 1,048) and 0.116 to 0.120 (138 to 150) at K = 2 x positives; the seed-to-first-acceptance gain is +29 hits at K = positives and +32 at 2 x, so the rule change halves the slots without changing the hit-level signal, and 794493 stays at 2 to 5 hits under either K. The other 17 validated merge candidates reference `bank_agent_*` descriptor columns and were not re-scored. Same day: whole-brain holdout selection brains (`--selection-holdout-brains`, `holdout_precision` as the cross-brain signal) and the positive-weighted per-kind aggregation (`--aggregation`, default positive-weighted), with the eleven-brain partition above; see the v5 section. | `tests/test_positive_scaled_k.py` (defaults, five readable objective versions, capless driver runs), `tests/test_bootstrap_gate.py` (its fixed-K fixture pins `--k-positive-ratio 2`) and `tests/test_holdout_and_weighted_mean.py` (holdout folds, protocol report, pooled aggregation, acceptance, headroom, bootstrap, flags); full suite on 2026-10-27 (regression-test section). Check scripts and logs under `notebooks/k_rule_check/`. No evolution run under v5 yet; the next run's seed is the v5 reference and v4 numbers (`yqeacq5s` 0.4948, `5d0_pbkb` 0.4909) are not comparable. |
 | 2026-10-26 / repeated submissions and earlier-generation access | **Project-specific design** (no literature source). `scores_sha256` (exact kind score vectors over TRAIN and selection states) joins `component_sha256` as a candidate's identity; the pool records every outer measurement (`mark_validated` / `validation_of`) and a submission identical to a measured candidate ends the generation as `repeated` with no validation evaluation (ledger `submission_repeat`, gate `skipped: repeated_submission`, report status `repeated`, handoff host status `repeated_submission`). The agent sees `outer_measurement` (generation, promoted, by) on the search parent, complementary candidates, pool members and training-tool results; `restore_candidate("best")` and the submission fallback prefer a not-yet-measured candidate; earlier generations' agent-authored files and `experiments/`, `classifier_fits/`, `descriptor_runs/` trees are readable (validation-bearing files stay closed). Motivation: nine of twenty generations of `precision_20261025_193120_5to8nx13` re-measured known candidates (8, 10, 16, 19 cached repeats; 15 a rewrite with identical scores; 13, 14, 18 unchanged) and six reads of earlier generations' programs were denied. See "Repeated submissions and earlier-generation access". | New `tests/test_repeated_submission.py` (9 tests: cached repeat of a rejected candidate ends as repeated with the tool note, the handoff status and the agent-visible statuses; a rewritten accepted component is a repeat by scores; a scaled variant with the same ranking is still measured; the fallback prefers a not-yet-measured candidate; `scores_digest` exactness and kind scoping; pool marking and annotation without validation numbers; status vocabulary; earlier-generation listing and guard decisions). Full suite on 2026-10-26: see the regression-test section. No evolution run yet. |
 | 2026-10-26 / split K = GT positives (objective v4) | **Project-specific design** with R-precision as the standard reference (Manning, Raghavan and Schütze, *Introduction to Information Retrieval*, 2008, section 8.4; `manning2008`). `Budgets` gains a per-kind `positive_ratio` and capless kinds; defaults merge ratio 2.0 / cap 300 (unchanged) and split ratio 1.0 / no cap (`--split-k none`, `--k-positive-ratio merge=2,split=1`), so each split pool ranks K = its GT positives and Precision@K equals Recall@K there. Agent-facing `budgets` is the cap or, for a capless kind, the largest TRAIN pool K (`Budgets.kind_budget`); `kind_schedule.mean_k` and the crowding warning handle capless kinds; versions `*-v4-per-kind-k`, `run_records` reads v1 to v4. Motivation: in `precision_20261025_193120_5to8nx13` the validation split cells sat at Precision@1000 0.92 to 0.98 with 1,759 to 2,783 positives per pool (recall 0.35 to 0.53) and half of the split generations were repeats; the frozen detector alone scores 0.83 to 0.88 at K = positives and 0.56 to 0.29 in the 1500 to 2500 labeled rank bands, so the capped window hid the band where ranking still matters. K = 2 x positives collapses 789202 to its labeled base rate (2P > labeled rows). | `tests/test_positive_scaled_k.py` (17 tests: per-kind ratio, capless kind, `kind_budget`, scheduler fallback, CLI parsing, a driver run with `--split-k none`) and the full suite on 2026-10-26 (see the regression-test section). Detector-only split curves: `notebooks/split_rank_curves.py` (n13, 2026-10-26; outputs under `notebooks/split_rank_curves/`). No evolution run under v4 yet; the next run's seed is the v4 reference, and v3 numbers (`5to8nx13` final 0.5190) are not comparable. |
