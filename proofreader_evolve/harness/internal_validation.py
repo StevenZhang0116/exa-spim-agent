@@ -24,7 +24,7 @@ def _fragments(kind, row):
     return tuple(str(row[field]) for field in fields)
 
 
-def grouped_folds(train, kind, *, selection_brains=None):
+def grouped_folds(train, kind, *, selection_brains=None, holdout_brains=()):
     """Fixed, label-independent assignment; purge shared split fragments per fold.
 
     Each selection-brain row receives one out-of-fold prediction, retaining the
@@ -32,17 +32,29 @@ def grouped_folds(train, kind, *, selection_brains=None):
     ``selection_brains``) are fully included in every fitting set. Too few groups
     or unusable fit labels make the diagnostic unavailable; there is no silent
     fallback to a random row split.
+
+    ``holdout_brains`` (a subset of the selection brains, 2026-10-27) are held out
+    whole: every row of such a brain forms one group assigned to a single fold
+    (round-robin over folds in brain order, outside the load balance of the grouped
+    brains), so its out-of-fold scores come from a model that never saw the brain,
+    while the brain joins the fitting set of every other fold.
     """
     selection = sorted(train) if selection_brains is None else sorted(str(b) for b in selection_brains)
     if not selection or set(selection) - set(train):
         raise ValueError('Selection brains must be a nonempty subset of the TRAIN brains')
     auxiliary = sorted(set(train) - set(selection))
+    holdout = sorted(str(b) for b in holdout_brains)
+    if set(holdout) - set(selection):
+        raise ValueError('Whole-brain holdout brains must be a subset of the selection brains')
     groups, fragment_rows, counts = {}, {}, {}
     for brain, bank in sorted(train.items()):
         table = bank.tables[kind]
         fragments = [_fragments(kind, row) for row in table.candidates]
         fragment_rows[brain] = fragments
         if brain not in selection:
+            continue
+        if brain in holdout:
+            groups[brain] = [f'{brain}/whole'] * len(fragments)
             continue
         if kind == 'merge':
             values = [f'{brain}/fragment/{ids[0]}' for ids in fragments]
@@ -63,8 +75,11 @@ def grouped_folds(train, kind, *, selection_brains=None):
         groups[brain] = values
         for value in values:
             counts[value] = counts.get(value, 0) + 1
-    if len(counts) < FOLDS:
+    grouped_brains = [brain for brain in selection if brain not in holdout]
+    if grouped_brains and len(counts) < FOLDS:
         raise ValueError(f'Internal validation requires at least {FOLDS} independent groups')
+    if not grouped_brains and len(holdout) < FOLDS:
+        raise ValueError(f'Whole-brain holdouts alone need at least {FOLDS} selection brains')
     loads, assignments = [0] * FOLDS, {}
     # Largest groups first, stable hash for ties; never inspect labels to assign folds.
     # Only selection-brain groups are balanced; auxiliary rows join every fold.
@@ -72,6 +87,8 @@ def grouped_folds(train, kind, *, selection_brains=None):
         fold = min(range(FOLDS), key=lambda f: (loads[f], f))
         assignments[group] = fold
         loads[fold] += counts[group]
+    for index, brain in enumerate(holdout):
+        assignments[f'{brain}/whole'] = index % FOLDS
     fold_ids = {brain: np.asarray([assignments[g] for g in values], dtype=np.int8)
                 for brain, values in groups.items()}
     partitions, summary = [], []
@@ -93,7 +110,8 @@ def grouped_folds(train, kind, *, selection_brains=None):
             fit_rows[brain], held_rows[brain] = fitted, held
             truth = np.asarray(table.truth, dtype=float)
             fit_labels.extend(truth[fitted][~np.isnan(truth[fitted])])
-            cells[brain] = {'role': 'selection' if brain in selection else 'auxiliary',
+            cells[brain] = {'role': ('selection_holdout' if brain in holdout
+                                     else 'selection' if brain in selection else 'auxiliary'),
                             'fit_rows': len(fitted), 'held_rows': len(held),
                             'held_labeled_rows': int((~np.isnan(truth[held])).sum()),
                             'purged_rows': int((~keep).sum()),
@@ -106,7 +124,8 @@ def grouped_folds(train, kind, *, selection_brains=None):
     for brain in sorted(train):
         identity.update(brain.encode())
         identity.update(train[brain].tables[kind].meta['pool_sha256'].encode())
-        identity.update(('selection' if brain in selection else 'auxiliary').encode())
+        identity.update(('selection_holdout' if brain in holdout
+                         else 'selection' if brain in selection else 'auxiliary').encode())
         if brain in fold_ids:
             identity.update(fold_ids[brain].tobytes())
         for fitted, held in partitions:
@@ -114,6 +133,11 @@ def grouped_folds(train, kind, *, selection_brains=None):
             identity.update(held[brain].astype('<i8').tobytes())
     return partitions, {'version': SPLIT_VERSION, 'folds': FOLDS,
                         'selection_brains': selection, 'auxiliary_brains': auxiliary,
+                        'holdout_brains': holdout,
+                        'holdout_rule': ('A holdout brain is one group held out whole in a single fold (round-robin '
+                                         'over folds in brain order, outside the load balance) and fitted on in the '
+                                         'other folds; its out-of-fold score is a cross-brain measurement.'
+                                         if holdout else None),
                         'grouping': 'fragment' if kind == 'merge' else 'spatial_blocks_with_fragment_purge',
                         'spatial_block_um': SPATIAL_BLOCK_UM if kind == 'split' else None,
                         'partition_sha256': identity.hexdigest(), 'fold_details': summary,

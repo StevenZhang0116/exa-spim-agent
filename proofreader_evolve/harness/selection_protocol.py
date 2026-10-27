@@ -120,12 +120,16 @@ def load_selection(directory):
 
 
 class SelectionProtocol:
-    def __init__(self, train, budgets, *, kinds=None, selection_brains=None, mode='grouped_oof'):
+    def __init__(self, train, budgets, *, kinds=None, selection_brains=None, mode='grouped_oof',
+                 holdout_brains=()):
         if mode not in MODES:
             raise ValueError(f'Unknown selection protocol {mode!r}; use one of {MODES}')
         if not train:
             raise ValueError('The selection protocol needs at least one TRAIN brain')
         self.train, self.budgets, self.mode = train, Budgets.coerce(budgets), mode
+        self.holdout_brains = sorted(str(b) for b in holdout_brains)
+        if self.holdout_brains and mode != 'grouped_oof':
+            raise ValueError('Whole-brain holdout selection brains need the grouped_oof protocol')
         available = set.intersection(*(set(bank.tables) for bank in train.values()))
         self.kinds = [k for k in (kinds or sorted(available)) if k in available and k in self.budgets]
         if mode == 'in_sample':
@@ -134,12 +138,15 @@ class SelectionProtocol:
             selection = sorted(str(b) for b in (selection_brains or ()))
             if not selection or set(selection) - set(train):
                 raise ValueError('grouped_oof selection needs a nonempty subset of TRAIN brains as selection brains')
+            if set(self.holdout_brains) - set(selection):
+                raise ValueError('Whole-brain holdout brains must be a subset of the selection brains')
         self.selection_brains = selection
         self.auxiliary_brains = sorted(set(train) - set(selection))
         self.partitions = {}
         if mode == 'grouped_oof':
             for kind in self.kinds:
-                self.partitions[kind] = grouped_folds(train, kind, selection_brains=selection)
+                self.partitions[kind] = grouped_folds(train, kind, selection_brains=selection,
+                                                      holdout_brains=self.holdout_brains)
 
     @property
     def requires_fold_fits(self):
@@ -164,6 +171,12 @@ class SelectionProtocol:
         info = {'version': PROTOCOL_VERSION, 'mode': self.mode,
                 'selection_brains': list(self.selection_brains),
                 'auxiliary_train_brains': list(self.auxiliary_brains),
+                'holdout_brains': list(self.holdout_brains),
+                'holdout_role': ('Holdout selection brains are held out whole in one fold each: their out-of-fold '
+                                 'scores come from a model that never saw the brain (cross-brain measurement, '
+                                 'reported as holdout_precision per kind); they join the fitting rows of the '
+                                 'other folds.' if self.holdout_brains else None),
+                'aggregation': self.budgets.aggregation,
                 'folds': FOLDS if grouped else None,
                 'metric': 'grouped_cv_precision' if grouped else 'in_sample_precision_at_k',
                 'ranking': ('Per-fold ranking of out-of-fold scores with largest-remainder fold budgets '
@@ -215,7 +228,13 @@ class SelectionProtocol:
             metrics['labels_sha256'] = labels_digest(table.truth)
             report['cells'][cell] = metrics
             state[cell] = {'scores': scores, 'chosen': chosen}
-        report.update(aggregate_precision(report['cells']))
+        report.update(aggregate_precision(report['cells'], self.budgets.aggregation))
+        holdout_cells = [f'{brain}/{kind}' for brain in self.holdout_brains]
+        counted = [cell for cell in holdout_cells if report['cells'][cell].get('in_mean', True)]
+        pooled_k = sum(int(report['cells'][cell]['effective_k']) for cell in counted)
+        report['holdout_cells'] = holdout_cells
+        report['holdout_precision'] = (sum(int(report['cells'][cell]['tp']) for cell in counted) / pooled_k
+                                       if pooled_k else None)
         return report, state
 
     def measure_formula(self, kind, measured_state, policy_sha256=None):

@@ -47,7 +47,22 @@ from .label_availability import labeled_rows, labels_digest
 
 
 SCORING_VERSION = "native-precision-at-k-v5-uniform-k"
-AGGREGATION = "equal-kind-mean-of-equal-brain-precision"
+AGGREGATIONS = ("equal-brain", "positive-weighted")
+AGGREGATION_LABELS = {"equal-brain": "equal-kind-mean-of-equal-brain-precision",
+                      "positive-weighted": "equal-kind-mean-of-positive-weighted-precision"}
+AGGREGATION = AGGREGATION_LABELS["equal-brain"]  # label of the historical rule (v1 to v5 runs before 2026-10-27)
+
+
+def aggregation_mode(value):
+    """The aggregation mode for a mode name or a report's aggregation label."""
+    if value is None:
+        return "equal-brain"
+    if value in AGGREGATIONS:
+        return value
+    for mode, label in AGGREGATION_LABELS.items():
+        if value == label:
+            return mode
+    raise ValueError(f"Unknown aggregation {value!r}; use one of {AGGREGATIONS}")
 VALIDATION_GATE_VERSION = "mean-validation-precision-v5-uniform-k"
 BOOTSTRAP_GATE_VERSION = "mean-validation-bootstrap-v5-uniform-k"
 GATE_MODES = ("bootstrap", "margin")
@@ -71,7 +86,7 @@ class Budgets(Mapping):
     behaviour).
     """
 
-    def __init__(self, caps, positive_ratio=0., min_positives=0):
+    def __init__(self, caps, positive_ratio=0., min_positives=0, aggregation="equal-brain"):
         caps = dict(caps)
         for kind, cap in caps.items():
             if cap is not None and (type(cap) is not int or cap < 1):
@@ -92,7 +107,9 @@ class Budgets(Mapping):
                 raise ValueError(f"{kind} has no Top-K cap, so its positive_ratio must be > 0")
         if type(min_positives) is not int or min_positives < 0:
             raise ValueError("min_positives must be a nonnegative integer (0 counts every pool)")
-        self.caps, self.min_positives = caps, min_positives
+        if aggregation not in AGGREGATIONS:
+            raise ValueError(f"aggregation must be one of {AGGREGATIONS}, got {aggregation!r}")
+        self.caps, self.min_positives, self.aggregation = caps, min_positives, aggregation
         self.positive_ratio = {kind: float(ratios[kind]) for kind in caps}
 
     @classmethod
@@ -142,14 +159,20 @@ class Budgets(Mapping):
 
     def describe(self):
         scaled = any(ratio > 0 for ratio in self.positive_ratio.values())
+        pooled = self.aggregation == "positive-weighted"
         return {"caps": dict(self.caps), "positive_ratio": dict(self.positive_ratio),
                 "min_positives": self.min_positives,
+                "aggregation": self.aggregation, "aggregation_label": AGGREGATION_LABELS[self.aggregation],
                 "k_rule": ("K per pool = ceil(positive_ratio[kind] x GT positives), limited to caps[kind] "
                            "when the kind has a cap; a zero ratio keeps the cap (fixed K)"
                            if scaled else "K per pool = cap (fixed)"),
-                "mean_rule": (f"pools with fewer than {self.min_positives} GT positives are scored and "
-                              "reported but excluded from the mean"
-                              if self.min_positives > 0 else "every pool counts toward the mean")}
+                "mean_rule": ((f"pools with fewer than {self.min_positives} GT positives are scored and "
+                               "reported but excluded from the mean"
+                               if self.min_positives > 0 else "every pool counts toward the mean")
+                              + ("; within each kind the counted pools are pooled by GT positives (hits "
+                                 "summed over pools / K summed over pools), then the kinds are averaged"
+                                 if pooled else "; within each kind the counted pools are averaged with equal "
+                                 "weight, then the kinds are averaged"))}
 
     def resolve(self, tables_by_brain):
         """Per-pool K and mean membership for a bank mapping; depends on labels only."""
@@ -169,14 +192,19 @@ def gate_version(mode):
     return BOOTSTRAP_GATE_VERSION if mode == "bootstrap" else VALIDATION_GATE_VERSION
 
 
-def aggregate_precision(cells):
-    """Equal-kind mean of the equal-brain mean precision over the pools that count.
+def aggregate_precision(cells, aggregation="equal-brain"):
+    """Equal-kind mean of the per-kind precision over the pools that count.
 
+    ``aggregation`` (a mode or a report label) sets the per-kind rule: ``equal-brain``
+    averages the counted pools' precision with equal weight (the rule of every run before
+    2026-10-27); ``positive-weighted`` pools them by GT positives (hits summed over pools
+    divided by K summed over pools, i.e. the pooled recall at K = positives), so a pool
+    with 41 positives no longer carries the weight of one with 144.
     Pools flagged ``in_mean: false`` (too few GT positives) are reported but skipped.
-    Every evaluated brain must still carry the same kinds, so the grid stays complete;
-    when every pool counts this equals the former equal-brain mean of per-brain means.
+    Every evaluated brain must still carry the same kinds, so the grid stays complete.
     """
-    grouped, by_kind, excluded = {}, {}, []
+    mode = aggregation_mode(aggregation)
+    grouped, by_kind, counts, excluded = {}, {}, {}, []
     for name, cell in cells.items():
         brain, kind = name.rsplit("/", 1)
         precision = float(cell["precision"])
@@ -187,6 +215,11 @@ def aggregate_precision(cells):
             excluded.append(name)
             continue
         by_kind.setdefault(kind, {})[brain] = precision
+        if mode == "positive-weighted":
+            tp, k = int(cell["tp"]), int(cell["effective_k"])
+            if tp < 0 or k < 0 or tp > k:
+                raise ValueError(f"Invalid hit count on {name}")
+            counts.setdefault(kind, []).append((tp, k))
     if not grouped:
         raise ValueError("No candidate pools supplied")
     if len({tuple(sorted(values)) for values in grouped.values()}) != 1:
@@ -195,14 +228,20 @@ def aggregate_precision(cells):
     if missing:
         raise ValueError(f"No {missing[0]} pool counts toward the mean: every {missing[0]} pool is below "
                          "the GT-positive floor")
-    per_kind = {kind: math.fsum(values.values()) / len(values) for kind, values in sorted(by_kind.items())}
+    if mode == "positive-weighted":
+        per_kind = {}
+        for kind in sorted(by_kind):
+            pooled_k = sum(k for _, k in counts[kind])
+            per_kind[kind] = sum(tp for tp, _ in counts[kind]) / pooled_k if pooled_k else 0.
+    else:
+        per_kind = {kind: math.fsum(values.values()) / len(values) for kind, values in sorted(by_kind.items())}
     per_brain = {}
     for values in by_kind.values():
         for brain, precision in values.items():
             per_brain.setdefault(brain, []).append(precision)
     per_brain = {brain: math.fsum(v) / len(v) for brain, v in sorted(per_brain.items())}
-    return {"aggregation": AGGREGATION, "per_kind_precision": per_kind, "per_brain_precision": per_brain,
-            "excluded_cells": sorted(excluded),
+    return {"aggregation": AGGREGATION_LABELS[mode], "per_kind_precision": per_kind,
+            "per_brain_precision": per_brain, "excluded_cells": sorted(excluded),
             "macro_precision": math.fsum(per_kind.values()) / len(per_kind)}
 
 
@@ -268,7 +307,7 @@ def evaluate(source, tables_by_brain, budgets, timeout=120, examples=False, *,
             if examples:
                 metrics.update(describe(table, scores, chosen, generation, cell,
                                         (parent_state or {}).get(cell), features=features))
-    report.update(aggregate_precision(report["cells"]))
+    report.update(aggregate_precision(report["cells"], budgets.aggregation))
     return report
 
 
@@ -286,8 +325,11 @@ def acceptance(parent, candidate, margin=0, *, require_no_cell_regression=True):
                 raise ValueError(f"Candidate changed fixed benchmark: {cell}/{key}")
         if before.get("in_mean", True) != after.get("in_mean", True):
             raise ValueError(f"Candidate changed fixed benchmark: {cell}/in_mean")
-    before_mean = aggregate_precision(parent["cells"])["macro_precision"]
-    after_mean = aggregate_precision(candidate["cells"])["macro_precision"]
+    mode = aggregation_mode(parent.get("aggregation"))
+    if aggregation_mode(candidate.get("aggregation")) != mode:
+        raise ValueError("Cannot compare evaluations with different aggregations")
+    before_mean = aggregate_precision(parent["cells"], mode)["macro_precision"]
+    after_mean = aggregate_precision(candidate["cells"], mode)["macro_precision"]
     if require_no_cell_regression:
         for cell, before in parent["cells"].items():
             if candidate["cells"][cell]["precision"] < before["precision"]:
@@ -329,6 +371,7 @@ def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *,
     if not (isinstance(alpha, float) and math.isfinite(alpha) and 0. < alpha < 1.):
         raise ValueError("Bootstrap alpha must be a float in (0, 1)")
     budgets = Budgets.coerce(budgets)
+    pooled = budgets.aggregation == "positive-weighted"
     rng = np.random.default_rng(seed)
     cells = {}
     for brain, banks in tables_by_brain.items():
@@ -362,16 +405,25 @@ def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *,
             precision_before = hits_before / k_before if k_before else 0.
             precision_after = hits_after / k_after if k_after else 0.
             per_cell[cell][draw] = precision_after - precision_before
-            sampled[cell] = precision_after - precision_before
+            sampled[cell] = (hits_before, k_before, hits_after, k_after, precision_after - precision_before)
         by_kind = {}
         for cell in counted:
             _, kind = cell.rsplit("/", 1)
             by_kind.setdefault(kind, []).append(sampled[cell])
-        deltas[draw] = math.fsum(math.fsum(v) / len(v) for v in by_kind.values()) / len(by_kind)
+        if pooled:
+            kind_deltas = []
+            for values in by_kind.values():
+                k_before, k_after = sum(v[1] for v in values), sum(v[3] for v in values)
+                kind_deltas.append((sum(v[2] for v in values) / k_after if k_after else 0.)
+                                   - (sum(v[0] for v in values) / k_before if k_before else 0.))
+            deltas[draw] = math.fsum(kind_deltas) / len(by_kind)
+        else:
+            deltas[draw] = math.fsum(math.fsum(v[4] for v in values) / len(values)
+                                     for values in by_kind.values()) / len(by_kind)
     bounds = [100. * alpha / 2., 100. * (1. - alpha / 2.)]
     low, high = np.percentile(deltas, bounds)
     return {"version": BOOTSTRAP_VERSION, "draws": draws, "seed": seed, "alpha": alpha,
-            "aggregation": AGGREGATION, "excluded_cells": sorted(set(cells) - counted),
+            "aggregation": AGGREGATION_LABELS[budgets.aggregation], "excluded_cells": sorted(set(cells) - counted),
             "macro_delta_ci": [float(low), float(high)],
             "macro_delta_ci95": [float(v) for v in np.percentile(deltas, [2.5, 97.5])],
             "macro_delta_point": float(np.mean(deltas)),

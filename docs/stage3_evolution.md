@@ -61,12 +61,19 @@ python -m proofreader_evolve.cli.preflight --brains 794495 789202 794491 794493 
 # Full run (settings of the recorded 2026-10-05 trial except K, which that trial set to 2000; 20 generations):
 export ANTHROPIC_API_KEY=...  AWS_EC2_METADATA_DISABLED=true
 python -u -m proofreader_evolve.cli.run_evolution \
-  --train-brains 794495,802449 --selection-brains 802449 \
-  --validation-brains 789202,794493,794491 \
+  --train-brains 794495,802449,747807,754610,754612,754613 \
+  --selection-brains 802449,747807,754610,754612,754613 \
+  --selection-holdout-brains 747807,754610,754612,754613 \
+  --validation-brains 789202,794493,794491,750318,751473 \
   --generations 20 \
   --context-cache proofreader_evolve/context_cache --descriptor-workers auto \
   --classifier-threads 4 --classifier-time-budget 1800 --reviser-max-turns 40 \
   --skip-auxiliary-ablation
+# Partition since 2026-10-27: 794495 auxiliary TRAIN (detector-fitted); 802449 within-brain grouped folds; the
+# four holdout selection brains are scored whole by models that never saw them (holdout_precision, the
+# cross-brain signal); validation unchanged. --aggregation positive-weighted (default since 2026-10-27) pools
+# each kind's counted pools by GT positives in selection, validation, bootstrap and headroom; equal-brain
+# restores the equal-weight mean of every earlier run.
 # --merge-k / --split-k are per-kind caps (an integer or none). Each pool ranks K = ceil(ratio x its GT
 # positives), limited to the cap when the kind has one; --k-positive-ratio takes one number or merge=R,split=R
 # (default since 2026-10-27: no caps and ratio 1 for both kinds, so every pool ranks exactly its GT positives;

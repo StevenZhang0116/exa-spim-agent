@@ -66,8 +66,10 @@ in the current generation's `proposal.json`.
   development-validation brains. Each pool ranks its own K = ceil(this kind's ratio x the
   pool's GT positives), limited to the kind's cap when it has one (default: no cap and ratio 1
   for both kinds, so every pool ranks exactly its positives); pools below the GT-positive floor are scored
-  and reported but excluded (`in_mean` in feedback). First average each kind over the
-  counted brains, then average the kinds. Individual brain/kind regressions are allowed.
+  and reported but excluded (`in_mean` in feedback). Within each kind the counted brains
+  are pooled by GT positives (hits summed over brains / K summed over brains; the feedback's
+  `aggregation` names the rule), then the kinds are averaged. Individual brain/kind
+  regressions are allowed.
   The mean gain must also clear row-resampling noise: the host requires the lower
   bound of a paired bootstrap interval of that gain to be above zero, so a change
   worth one or two extra Top-K hits will not be promoted.

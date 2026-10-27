@@ -50,9 +50,16 @@ def _counted(cells, kinds):
 
 
 def headroom(cells, budgets, kinds):
-    """Equal-brain mean remaining precision per kind on the counted validation pools."""
+    """Remaining precision per kind on the counted validation pools, under the budgets'
+    aggregation (equal-brain mean, or pooled by GT positives when positive-weighted)."""
+    pooled = getattr(budgets, "aggregation", "equal-brain") == "positive-weighted"
     result = {}
     for kind, counted in _counted(cells, kinds).items():
+        if pooled and counted:
+            total_k = sum(int(cell["requested_k"]) for cell in counted)
+            attainable = sum(min(int(cell["positives"]), int(cell["requested_k"])) for cell in counted)
+            result[kind] = (attainable - sum(int(cell["tp"]) for cell in counted)) / total_k
+            continue
         values = [min(int(cell["positives"]), int(cell["requested_k"])) / int(cell["requested_k"])
                   - float(cell["precision"]) for cell in counted]
         result[kind] = math.fsum(values) / len(values) if values else 0.

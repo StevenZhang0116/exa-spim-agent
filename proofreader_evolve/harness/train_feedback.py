@@ -15,6 +15,9 @@ def metrics_only(report):
         return None
     return {"macro_precision": report["macro_precision"],
             **({"mode": report["mode"]} if "mode" in report else {}),
+            **({"aggregation": report["aggregation"]} if "aggregation" in report else {}),
+            **({"holdout_cells": report["holdout_cells"], "holdout_precision": report["holdout_precision"]}
+               if report.get("holdout_cells") else {}),
             "cells": {name: {key: cell[key] for key in (*METRICS, *SELECTION_METRICS) if key in cell}
                       | ({'local_context': cell['local_context']} if 'local_context' in cell else {})
                       | ({'image_context': cell['image_context']} if 'image_context' in cell else {})
@@ -77,7 +80,12 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                     "budgets are one K per kind (the kind's cap, or for a kind without a cap the largest K "
                     "resolved on a TRAIN pool); each pool's requested_k is the K actually ranked there "
                     "(k_rule explains how it follows from the pool's GT positives), and in_mean says whether the "
-                    "pool counts toward the mean. "
+                    "pool counts toward the mean. macro_precision combines the counted cells of each kind by the "
+                    "k_rule's aggregation (positive-weighted: hits summed over brains / K summed over brains; "
+                    "equal-brain: mean of the cells) and then averages the kinds. When holdout_cells are listed, "
+                    "those selection brains were held out whole (a model that never saw the brain scored them) and "
+                    "holdout_precision pools only those cells: a gain that appears in macro_precision but not in "
+                    "holdout_precision does not transfer across brains. "
                     "The scorer contract is in the system prompt and rules.md."
                     + (" Examples, ranking_delta and the official selection score come from "
                        "selection_protocol (out-of-fold on selection brains, not in-sample). "

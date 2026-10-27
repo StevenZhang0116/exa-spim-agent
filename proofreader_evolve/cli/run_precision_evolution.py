@@ -430,6 +430,11 @@ def parse_args(argv=None):
     p.add_argument("--selection-protocol", choices=("grouped_oof", "in_sample"), default="grouped_oof",
                    help="grouped_oof ranks TRAIN branches by out-of-fold precision on selection brains "
                         "(default); in_sample keeps the historical full-pool in-sample ranking for attribution")
+    p.add_argument("--selection-holdout-brains", type=_csv_brains, default=None, metavar="ID,ID,...",
+                   help="Selection brains held out whole (one fold each, grouped_oof only, 2026-10-27): their "
+                        "out-of-fold scores come from models that never saw the brain, a cross-brain selection "
+                        "signal reported as holdout_precision; the other selection brains keep their within-brain "
+                        "grouped folds (default: none)")
     p.add_argument("--skip-auxiliary-ablation", action="store_true",
                    help="Skip the one-time baseline diagnostic that refits the seed training template with "
                         "and without auxiliary TRAIN rows under the selection protocol")
@@ -481,6 +486,11 @@ def parse_args(argv=None):
     p.add_argument("--min-positives", type=int, default=20,
                    help="Pools with fewer GT positives are scored and reported but excluded from the promotion "
                         "mean, the bootstrap and kind headroom; 0 counts every pool (default: 20, 2026-10-12)")
+    p.add_argument("--aggregation", choices=scoring.AGGREGATIONS, default="positive-weighted",
+                   help="How the counted pools of one kind are combined before the kinds are averaged, in "
+                        "selection, validation, the bootstrap and kind headroom: positive-weighted pools hits / K "
+                        "over brains (default since 2026-10-27); equal-brain averages the pools with equal weight "
+                        "(the rule of every run before)")
     p.add_argument("--precision-margin", type=float, default=0,
                    help="Required absolute gain in the mean validation Precision@K (each kind over its counted "
                         "pools, then over kinds) (default: 0)")
@@ -629,13 +639,22 @@ def _load_evaluation_banks(args, selected, trace):
     else:
         selection_brains = list(args.train_brains)
     args.selection_brains = selection_brains
+    holdout_brains = list(args.selection_holdout_brains or [])
+    if holdout_brains and args.selection_protocol != "grouped_oof":
+        raise ValueError("--selection-holdout-brains needs the grouped_oof selection protocol")
+    unknown = sorted(set(holdout_brains) - set(selection_brains))
+    if unknown:
+        raise ValueError(f"Whole-brain holdout brains must be selection brains: {unknown}")
+    args.selection_holdout_brains = holdout_brains
     auxiliary_brains = [b for b in args.train_brains if b not in selection_brains]
     auto = args.validation_brains is None
     selection = {"mode": "auto" if auto else "explicit", "train_brains": list(args.train_brains),
                  "detector_training_brains": sorted(fitted_brains), "excluded": {},
                  "selection_protocol": args.selection_protocol, "selection_brains": selection_brains,
+                 "selection_holdout_brains": holdout_brains,
                  "auxiliary_train_brains": auxiliary_brains,
-                 "roles": {**{b: "selection TRAIN (official out-of-fold score)" if args.selection_protocol == "grouped_oof"
+                 "roles": {**{b: ("selection TRAIN (whole-brain out-of-fold score)" if b in holdout_brains
+                                  else "selection TRAIN (official out-of-fold score)") if args.selection_protocol == "grouped_oof"
                               else "TRAIN (in-sample selection)" for b in selection_brains},
                            **{b: "auxiliary TRAIN (fitting rows only; in-sample diagnostics)" for b in auxiliary_brains}}}
     if auto:
@@ -841,12 +860,14 @@ async def _run(args, revise_fn, run_dir, trace):
                "the ratio is 0; pools with fewer than "
                "min_positives GT positives "
                "are scored and reported but excluded from the promotion mean (in_mean=false). "
-               "The mean is taken per kind over counted brains, then over kinds. "
-               "Evaluation datasets are logged as validation.")
+               "Within each kind the counted pools are combined by the configured aggregation (positive-weighted: "
+               "hits / K pooled over brains, the default since 2026-10-27; equal-brain: equal-weight mean), then the "
+               "kinds are averaged. Evaluation datasets are logged as validation.")
     train = {b: banks[b] for b in args.train_brains}
     validation = {b: banks[b] for b in args.validation_brains}
     budgets = scoring.Budgets({"merge": args.merge_k, "split": args.split_k},
-                              positive_ratio=args.k_positive_ratio, min_positives=args.min_positives)
+                              positive_ratio=args.k_positive_ratio, min_positives=args.min_positives,
+                              aggregation=args.aggregation)
     pool_budgets = budgets.resolve(banks)
     trace.emit("pool_budgets", "Per-pool Top-K from GT positives: " + "; ".join(
         f"{cell} K={info['requested_k']}/{info['cap'] if info['cap'] is not None else 'no cap'} positives={info['positives']}"
@@ -908,11 +929,13 @@ async def _run(args, revise_fn, run_dir, trace):
     if not kinds:
         raise ValueError("No common scoring component to evolve")
     protocol = SelectionProtocol(train, budgets, kinds=kinds, selection_brains=args.selection_brains,
-                                 mode=args.selection_protocol)
+                                 mode=args.selection_protocol, holdout_brains=args.selection_holdout_brains or ())
     fit_limits = {"fit_timeout": args.classifier_time_budget, "score_timeout": args.policy_time_budget,
                   "memory_mb": args.classifier_memory_mb, "threads": args.classifier_threads}
     trace.emit("selection_protocol", f"TRAIN branch selection: {protocol.mode}; selection brains "
-               f"{', '.join(protocol.selection_brains)}; auxiliary {', '.join(protocol.auxiliary_brains) or 'none'}",
+               f"{', '.join(protocol.selection_brains)}; whole-brain holdouts "
+               f"{', '.join(protocol.holdout_brains) or 'none'}; auxiliary "
+               f"{', '.join(protocol.auxiliary_brains) or 'none'}; aggregation {budgets.aggregation}",
                **protocol.describe())
     descriptor_runs, restored_descriptors = None, None
     if args.context_cache is not None:

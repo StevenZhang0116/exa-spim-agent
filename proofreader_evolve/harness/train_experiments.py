@@ -379,7 +379,7 @@ class TrainingExperiments:
             if cell.endswith('/' + self.target_kind):
                 report['cells'][cell] = deepcopy(measured['cells'][cell])
                 state[cell] = measured_state[cell]
-        report.update(scoring.aggregate_precision(report['cells']))
+        report.update(scoring.aggregate_precision(report['cells'], scoring.Budgets.coerce(self.budgets).aggregation))
         return report, state
 
     def evaluate(self):
