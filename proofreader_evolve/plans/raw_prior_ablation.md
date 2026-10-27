@@ -154,9 +154,9 @@ COMMON="--train-brains 794495,802449,747807,754610,754612,754613 \
   --selection-brains 802449,747807,754610,754612,754613 \
   --selection-holdout-brains 747807,754610,754612,754613 \
   --validation-brains 789202,794493,794491,750318,751473 \
-  --context-cache proofreader_evolve/context_cache --descriptor-workers auto \
-  --classifier-threads 16 --classifier-memory-mb 98304 \
+  --context-cache proofreader_evolve/context_cache --classifier-memory-mb 98304 \
   --classifier-time-budget 3600 --policy-time-budget 2400"
+# --classifier-threads 8 and --descriptor-workers 24 are the defaults since 2026-10-27.
 # 1. frozen (main result)
 python -u -m proofreader_evolve.cli.run_evolution $COMMON --generations 20
 # 2. no-score (fitted ranking withheld)

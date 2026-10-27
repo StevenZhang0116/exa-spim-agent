@@ -455,8 +455,10 @@ def parse_args(argv=None):
                    help="Persistent cache of computed descriptor values, keyed by descriptor code hash "
                         "(default: proofreader_evolve/descriptor_bank; descriptor_bank_no_score with "
                         "--detector-prior no-score, descriptor_bank_raw with --detector-prior raw)")
-    p.add_argument("--descriptor-workers", default="auto", metavar="auto|N",
-                   help="Parallel sandboxed workers for descriptor computation (default: available CPUs minus 2)")
+    p.add_argument("--descriptor-workers", default=24, metavar="auto|N",
+                   help="Parallel sandboxed workers for descriptor computation (default: 24 since 2026-10-27, after "
+                        "the eleven-brain seed baseline peaked at the 200 GiB job limit with 38 workers; 'auto' = "
+                        "available CPUs minus 2)")
     p.add_argument("--descriptor-wall-seconds", type=float, default=1800.,
                    help="Wall-clock budget for one compute_descriptors call (default: 1800)")
     p.add_argument("--descriptor-generation-wall-seconds", type=float, default=5400.,
@@ -502,8 +504,9 @@ def parse_args(argv=None):
     p.add_argument("--classifier-memory-mb", type=int, default=16384,
                    help="Address-space limit for fitting, fit-time extraction, diagnostics, 3D analysis and "
                         "fixed-pool scoring (default: 16384 MiB; 8192 before 2026-10-08)")
-    p.add_argument("--classifier-threads", type=int, default=1,
-                   help="Numerical library CPU threads for fit/predict and 3D analysis (default: 1)")
+    p.add_argument("--classifier-threads", type=int, default=8,
+                   help="Numerical library CPU threads for fit/predict and 3D analysis (default: 8 since "
+                        "2026-10-27; 1 before)")
     p.add_argument("--start-from-artifacts", type=Path,
                    help="Model artifact store for --start-from (default: sibling model_artifacts directory)")
     p.add_argument("--model", default=DEFAULT_MODEL)

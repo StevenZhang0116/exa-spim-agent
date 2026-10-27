@@ -66,9 +66,10 @@ python -u -m proofreader_evolve.cli.run_evolution \
   --selection-holdout-brains 747807,754610,754612,754613 \
   --validation-brains 789202,794493,794491,750318,751473 \
   --generations 20 \
-  --context-cache proofreader_evolve/context_cache --descriptor-workers auto \
-  --classifier-threads 4 --classifier-time-budget 1800 --reviser-max-turns 40 \
-  --skip-auxiliary-ablation
+  --context-cache proofreader_evolve/context_cache \
+  --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400
+# Resource defaults since 2026-10-27: --classifier-threads 8, --descriptor-workers 24 ('auto' = granted CPUs
+# minus 2); the eleven-brain seed baseline with 38 workers peaked at the 200 GiB job limit on n280.
 # Partition since 2026-10-27: 794495 auxiliary TRAIN (detector-fitted); 802449 within-brain grouped folds; the
 # four holdout selection brains are scored whole by models that never saw them (holdout_precision, the
 # cross-brain signal); validation unchanged. --aggregation positive-weighted (default since 2026-10-27) pools
@@ -255,9 +256,9 @@ One new fit plus TRAIN evaluation consumes one shared budget unit; failed fits
 also consume one with no metric. Exact training-source/parameter repeats reuse
 the fitted model. Explore generations can rewrite the whole program; tune
 fixes its AST and nonnumeric settings while refitting numeric parameters.
-Defaults are 300 seconds wall/CPU, 16384 MiB (8192 before 2026-10-08) and one numerical-library thread
-(`--classifier-time-budget`, `--classifier-memory-mb`, `--classifier-threads`);
-the recorded full runs use 1800 seconds and 4 threads.
+Defaults are 300 seconds wall/CPU, 16384 MiB (8192 before 2026-10-08) and eight numerical-library threads
+(`--classifier-time-budget`, `--classifier-memory-mb`, `--classifier-threads`; one thread before 2026-10-27);
+the recorded full runs use 1800 to 3600 seconds, 4 to 16 threads and 98304 MiB.
 Artifact storage permits 128 MiB / 256 regular files per model. The agent chooses
 and records randomness seeds. `model_environment.json` lists installed packages
 and budgets; training stdout/stderr is saved and its last 8 KB returned to the agent.
