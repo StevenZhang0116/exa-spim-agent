@@ -262,11 +262,14 @@ candidate (gained / lost / newly selected groups on top of the seed's five), abo
 parent (`unchanged`). The byte budget cannot grow: the feedback tokenises at 1.75 to 1.9 bytes per
 token, so 128 KB is already about 70,000 of the 100,000-token MCP-output and file-read caps.
 `write_train_feedback` therefore drops whole cells' examples as a last resort, fewest GT positives
-first (754613, 754612, ... before 802449), keeps their metrics and `ranking_delta`, lists them in
+first (754613 with 9 positives, then 754610 with 19, before 802449), keeps their metrics and
+`ranking_delta`, lists them in
 `examples_omitted_cells` (report and `feedback_ready` event, explained in the reading guide), and
 raises only when a single cell at one example per group still exceeds the budget. The raw arm
 (three raw columns, 26 KB) never hit the limit. Both runs were stopped the same evening to restart
-on this code.
+on this code. The restarted frozen run (`precision_20261027_220207_3zf4mz8t`) exercised the fallback in
+generation 1: candidate feedbacks of 101 to 104 KB at one example per group with 754613 and 754610
+omitted, and all six training experiments evaluated.
 
 **Positive-weighted aggregation (same day).** `Budgets` carries `aggregation`
 (`--aggregation positive-weighted`, the new default; `equal-brain` is the rule of every
