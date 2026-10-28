@@ -45,7 +45,8 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
 
     Historical attempts carry metrics and diagnostic TRAIN comparisons, never repeated
     examples or validation diagnostics. Reduce examples symmetrically by group
-    before dropping old history, and disclose that sampling in the report.
+    before dropping old history, then drop whole cells' examples (fewest GT positives
+    first, metrics kept), and disclose that sampling in the report.
     When a selection report is supplied, examples and ranking deltas come from the
     official selection measurement (out-of-fold on selection brains); in-sample
     TRAIN numbers remain visible as diagnostics only.
@@ -60,7 +61,14 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
     attempts = [{"generation": h["generation"],
                  "train": metrics_only(h["train"]), "train_gate": h.get("train_gate")}
                 for h in history[-5:]]
+    example_cells = [name for name in example_source["cells"]
+                     if not target_kind or name.rsplit('/', 1)[-1] == target_kind]
+    # Last resort once one example per group still exceeds the budget: drop whole cells' examples,
+    # fewest GT positives first (2026-10-27: five selection cells x about 290 frozen feature
+    # columns need 155 KB for one example per group). The cells keep their metrics and ranking_delta.
+    drop_order = sorted(example_cells, key=lambda name: example_source["cells"][name].get("positives") or 0)
     while True:
+        omitted = [name for name in drop_order if name not in example_cells]
         for per_class, prune in ((4, False), (4, True), (2, True), (1, True)):
             report = {
                 "format": ("stratified-train-v5" if branch is not None else "stratified-train-v4")
@@ -76,7 +84,9 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                     "These are bounded diagnostic examples, not a representative dataset. "
                     "Do not infer global score/label correlation from selected errors. Preserve current true positives. "
                     "Numbers are rounded to 6 significant digits for display only; null means missing. "
-                    "All feature columns of the selected examples are included. "
+                    "All feature columns of the selected examples are included. When examples_omitted_cells "
+                    "is non-empty, those cells' examples were dropped to fit the read budget (fewest GT positives "
+                    "first); their metrics and ranking_delta remain. "
                     "budgets are one K per kind (the kind's cap, or for a kind without a cap the largest K "
                     "resolved on a TRAIN pool); each pool's requested_k is the K actually ranked there "
                     "(k_rule explains how it follows from the pool's GT positives), and in_mean says whether the "
@@ -104,6 +114,7 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                     "selection_protocol": protocol} if selection is not None else {}),
                 "examples_per_group_limit": per_class,
                 "columns_pruned": prune,
+                "examples_omitted_cells": omitted,
                 "examples": {},
                 "ranking_delta": {name: c.get('ranking_delta') for name, c in example_source['cells'].items()},
                 "attempts": attempts,
@@ -111,9 +122,8 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                 "feature_statistics_file": str(statistics_file) if statistics_file else None,
                 "history_attempts_omitted": len(history) - len(attempts),
             }
-            for name, cell in example_source["cells"].items():
-                if target_kind and name.rsplit('/', 1)[-1] != target_kind:
-                    continue
+            for name in example_cells:
+                cell = example_source["cells"][name]
                 available = cell.get("training_examples", [])
                 grouped = {}
                 for e in available:
@@ -137,11 +147,16 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
             if size <= MAX_FEEDBACK_BYTES:
                 path.write_text(text, encoding="utf-8")
                 return {"bytes": size, "examples_per_group_limit": per_class,
-                        "history_attempts": len(attempts)}
+                        "history_attempts": len(attempts), "examples_omitted_cells": omitted}
         if memory:
             memory = memory[:-1]
             continue
-        if not attempts:
-            raise ValueError(f"Compact TRAIN feedback exceeds the {MAX_FEEDBACK_BYTES // 1000} KB read budget even with one example "
-                             "per group; reduce the number of training brains in this run")
-        attempts = attempts[1:]
+        if attempts:
+            attempts = attempts[1:]
+            continue
+        if len(example_cells) > 1:
+            dropped = next(name for name in drop_order if name in example_cells)
+            example_cells = [name for name in example_cells if name != dropped]
+            continue
+        raise ValueError(f"Compact TRAIN feedback exceeds the {MAX_FEEDBACK_BYTES // 1000} KB read budget even with one example "
+                         "per group from a single cell; reduce the feature columns or training brains in this run")

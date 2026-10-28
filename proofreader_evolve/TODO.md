@@ -552,6 +552,10 @@ Two generations were lost to end-of-session checks and the search stayed in tuni
   Raised again 2026-10-07 (feedback 128 KB, SDK file-read cap 100,000 tokens,
   generation artefact directories readable) after parked results above about 50 KB
   could not be read in one call; see WORKFLOW_REVISION "Limit increases".
+  2026-10-27: on the eleven-brain partition (five selection merge cells x about 290 frozen
+  feature columns) one example per group already needs 155 KB, and the budget cannot grow
+  (1.75 to 1.9 bytes per token puts 128 KB near the 100,000-token caps), so whole cells now
+  lose their examples, fewest GT positives first (`examples_omitted_cells`), before the error.
   Still open if context cost matters later: return file paths plus summaries
   instead of embedding the full feedback (about 39 KB of feature matrix) in
   `train_classifier` / `restore_candidate` results, and index-level

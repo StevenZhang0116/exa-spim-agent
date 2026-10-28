@@ -1248,7 +1248,9 @@ async def _run(args, revise_fn, run_dir, trace):
                                              protocol=protocol.describe(target_kind),
                                              branch={**branch_meta, 'selection': metrics_only(branch_report)})
         gen_trace.emit("feedback_ready", f"Compact TRAIN feedback: {feedback_info['bytes']} bytes; "
-                       f"up to {feedback_info['examples_per_group_limit']} examples per group/cell",
+                       f"up to {feedback_info['examples_per_group_limit']} examples per group/cell"
+                       + (f"; examples omitted for {', '.join(feedback_info['examples_omitted_cells'])}"
+                          if feedback_info['examples_omitted_cells'] else ""),
                        **feedback_info)
         experiments = TrainingExperiments(
             gen_dir, policy_path, rules_path, target_kind, parent_sources, train, parent_train,

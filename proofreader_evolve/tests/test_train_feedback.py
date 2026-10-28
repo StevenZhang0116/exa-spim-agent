@@ -73,6 +73,46 @@ class FeedbackTests(unittest.TestCase):
                 feedback.write_train_feedback(path, report(), [], {})
             self.assertFalse(path.exists())
 
+    def test_cells_with_the_fewest_positives_lose_their_examples_before_failing(self):
+        # 2026-10-27: five selection cells x about 290 frozen feature columns exceeded the budget at one
+        # example per group, so every training experiment of the frozen run failed. Whole cells now lose
+        # their examples, fewest GT positives first, and keep their metrics and ranking_delta.
+        parent = report(40)
+        parent["cells"]["1/merge"]["positives"] = 50
+        parent["cells"]["1/split"]["positives"] = 5
+        for cell in parent["cells"].values():
+            examples = cell["training_examples"]
+            cell["training_examples"] = [examples[0], examples[8]]  # one example per group
+            for example in cell["training_examples"]:
+                example["features"]["feature_0_descriptive_name"] = .5  # nothing to prune
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "feedback.json"
+            full = feedback.write_train_feedback(path, parent, [], {})
+            self.assertEqual(full["examples_omitted_cells"], [])
+            self.assertEqual(sorted(json.loads(path.read_text())["examples"]), ["1/merge", "1/split"])
+            # The per-group variants differ by one byte only ("columns_pruned": false/true), so the budget
+            # has to sit clearly below them to force a cell out.
+            with patch.object(feedback, "MAX_FEEDBACK_BYTES", full["bytes"] - 100):
+                info = feedback.write_train_feedback(path, parent, [], {})
+                data = json.loads(path.read_text())
+            self.assertEqual(info["examples_omitted_cells"], ["1/split"])
+            self.assertEqual(data["examples_omitted_cells"], ["1/split"])
+            self.assertEqual(list(data["examples"]), ["1/merge"])
+            self.assertEqual(data["examples"]["1/merge"]["included"], 2)
+            self.assertIn("1/split", data["parent_train"]["cells"])
+            self.assertIn("1/split", data["ranking_delta"])
+            self.assertIn("examples_omitted_cells", data["reading_guide"])
+            self.assertLessEqual(info["bytes"], full["bytes"] - 100)
+            # A single cell that still does not fit fails explicitly, as before.
+            with patch.object(feedback, "MAX_FEEDBACK_BYTES", info["bytes"] - 100), \
+                    self.assertRaisesRegex(ValueError, "read budget"):
+                feedback.write_train_feedback(path, parent, [], {})
+            # The target kind restricts the candidates before any cell is dropped.
+            with patch.object(feedback, "MAX_FEEDBACK_BYTES", info["bytes"]):
+                only = feedback.write_train_feedback(path, parent, [], {}, target_kind="split")
+            self.assertEqual(only["examples_omitted_cells"], [])
+            self.assertEqual(list(json.loads(path.read_text())["examples"]), ["1/split"])
+
     def test_reviser_turn_budget_is_configurable_and_forwarded(self):
         self.assertEqual(driver.parse_args(['--min-positives', '0', '--selection-protocol', 'in_sample']).reviser_max_turns, 60)
         with self.assertRaises(SystemExit):
