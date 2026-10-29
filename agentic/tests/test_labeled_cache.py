@@ -7,6 +7,7 @@ from __future__ import annotations
 import contextlib
 import io as stringio
 import pickle
+import random
 import sys
 import tempfile
 import unittest
@@ -21,7 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from labeled_cache import __main__ as cli  # noqa: E402
-from labeled_cache import build, io, policy  # noqa: E402
+from labeled_cache import build, io, policy, source_check  # noqa: E402
 from labeled_cache.build import BuildRequest, ReproductionMismatch, apply_policy, plan  # noqa: E402
 
 
@@ -271,6 +272,100 @@ class CliTests(unittest.TestCase):
                     ["--brains", "1", "--refresh-image-path", "--force-relabel"]):
             with self.assertRaises(SystemExit), contextlib.redirect_stderr(stringio.StringIO()):
                 cli.parse_args(bad)
+
+
+def _fragment(name, n, start=(100.0, 200.0, 300.0), step=(2.0, 0.0, 0.0)):
+    """A parsed-SWC-like dict: a straight chain of ``n`` nodes in microns."""
+    xyz = np.asarray(start, dtype=np.float64) + np.arange(n)[:, None] * np.asarray(step, dtype=np.float64)
+    return {"swc_name": name, "xyz": xyz}
+
+
+class SourceCheckTests(unittest.TestCase):
+    """``labeled_cache.source_check``: sampling, tallying and reporting on synthetic data; no cloud."""
+
+    aniso = (0.5, 0.5, 1.0)
+
+    def test_fragment_id_accepts_swc_name_variants(self):
+        self.assertEqual([source_check.fragment_id(n) for n in ("123", "123.swc", "123.1", "x7")], [123, 123, 123, None])
+
+    def test_sampling_uses_interior_nodes_and_the_builder_voxel_convention(self):
+        rng = random.Random(1)
+        frag = _fragment("42", 10)
+        samples = source_check.sample_fragment_nodes([frag, _fragment("7", 4), _fragment("bad", 10)], 3, 5, self.aniso, rng)
+        self.assertEqual(len(samples), 3)
+        for segment, voxel in samples:
+            self.assertEqual(segment, 42)
+            index = (voxel[2] * self.aniso[0] - 100.0) / 2.0  # x back to the chain index
+            self.assertTrue(2 <= index <= 7, voxel)
+            self.assertEqual(voxel, (300, 400, int((100.0 + 2.0 * index) / 0.5)))  # (z, y, x) = xyz / anisotropy reversed
+        again = source_check.sample_fragment_nodes([frag, _fragment("7", 4), _fragment("bad", 10)], 3, 5, self.aniso, random.Random(1))
+        self.assertEqual(samples, again)
+
+    def test_tally_classifies_every_outcome(self):
+        patches = {
+            (1, 1, 1): np.full((3, 3, 3), 5),                   # exact
+            (2, 2, 2): np.pad(np.full((1, 1, 1), 5), 1),        # 5 only at the centre -> exact
+            (3, 3, 3): np.where(np.indices((3, 3, 3)).sum(0) == 0, 5, 9),  # 5 at a corner, 9 at the centre -> within 1 vox
+            (4, 4, 4): np.zeros((3, 3, 3), dtype=int),          # background
+            (5, 5, 5): np.full((3, 3, 3), 8),                   # other id
+        }
+
+        def read(voxel):
+            if voxel == (6, 6, 6):
+                raise IndexError("outside the volume")
+            return patches[voxel]
+
+        samples = [(5, v) for v in sorted(patches)] + [(5, (6, 6, 6))]
+        counts = source_check.tally(samples, read)
+        self.assertEqual((counts["nodes"], counts["exact_match"], counts["match_within_1vox"], counts["background"],
+                          counts["other_id"], counts["read_failed"]), (6, 2, 1, 1, 1, 1))
+        self.assertEqual(counts["agreement_pct"], 60.0)
+        self.assertEqual(counts["top_other_ids"], [(8, 1)])
+
+    def test_verdicts_and_table(self):
+        good = {"segmentation_id": "seg-a", "fragments": 2, "nodes": 200, "exact_match": 190, "match_within_1vox": 8,
+                "background": 2, "other_id": 0, "read_failed": 0, "agreement_pct": 99.0}
+        bad = dict(good, agreement_pct=3.0, exact_match=6, match_within_1vox=0, other_id=194)
+        few = dict(good, nodes=20, read_failed=0)
+        self.assertEqual(source_check.verdict(good, 95, 100), "matched")
+        self.assertEqual(source_check.verdict(bad, 95, 100), "MISMATCH")
+        self.assertEqual(source_check.verdict(few, 95, 100), "insufficient")
+        self.assertEqual(source_check.verdict({"error": "x"}, 95, 100), "error")
+        reports = {"1": dict(good, verdict="matched"), "2": {"error": "boom"}}
+        table = source_check.markdown_table(reports)
+        self.assertIn("| 1 | `seg-a` | 2 | 200 | 190 | 8 | 2 | 0 | 0 | 99.0% | matched |", table)
+        self.assertIn("| 2 |", table)
+        self.assertIn("error: boom", table)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "receipts.md"
+            source_check.record(reports, path, "cmd one")
+            source_check.record(reports, path, "cmd two")
+            text = path.read_text()
+            self.assertEqual(text.count("# Fragment / segmentation source agreement"), 1)
+            self.assertEqual(text.count("`cmd one`"), 1)
+            self.assertEqual(text.count("`cmd two`"), 1)
+            self.assertEqual(text.count("| 1 | `seg-a` |"), 2)
+
+    def test_cli_exit_code_follows_the_verdicts(self):
+        def fake_check(brain, **kwargs):
+            if brain == "9":
+                return {"segmentation_id": "s", "error": "no such brain", "verdict": "error"}
+            return {"segmentation_id": "s", "fragments_layout": "l", "fragments": 1, "nodes": 120, "exact_match": 118,
+                    "match_within_1vox": 2, "background": 0, "other_id": 0, "read_failed": 0, "agreement_pct": 100.0,
+                    "seconds": 0.1, "verdict": "matched"}
+
+        with patch.object(source_check, "check_brain", side_effect=fake_check):
+            out = stringio.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(source_check.main(["--brains", "1", "1"]), 0)
+            self.assertEqual(out.getvalue().count("1: matched"), 1)
+            with contextlib.redirect_stdout(stringio.StringIO()):
+                self.assertEqual(source_check.main(["--brains", "1", "9"]), 1)
+        for bad in (["--brains", "1", "--fragments", "0"], ["--brains", "1", "--min-agreement", "120"],
+                    ["--brains", "1", "--anisotropy", "0", "1", "1"],
+                    ["--brains", "1", "--fragments", "10", "--nodes-per-fragment", "4"]):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(stringio.StringIO()):
+                source_check.parse_args(bad)
 
 
 if __name__ == "__main__":

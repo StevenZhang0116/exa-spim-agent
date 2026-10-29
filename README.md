@@ -62,7 +62,7 @@ python -m proofreader_evolve.cli.run_evolution \
 | [docs/stage1_discovery.md](docs/stage1_discovery.md) | AutoDiscovery runs, the discovery workflow phases and artifacts, consolidation and ranking |
 | [docs/stage2_detector_build.md](docs/stage2_detector_build.md) | candidate rules and sweeps, the detector build steps, running a detector, detectors in use |
 | [docs/stage3_evolution.md](docs/stage3_evolution.md) | table preparation, the evolution run, scorer contract and promotion gate, the reviser session, exploration tools, archive and scheduling, run artifacts and reports |
-| [docs/labeled_caches.md](docs/labeled_caches.md) | building and verifying the labeled caches, comparing brains and MCLs |
+| [docs/labeled_caches.md](docs/labeled_caches.md) | building and verifying the labeled caches, checking that a brain's fragments and segmentation are one run, comparing brains and MCLs |
 | [docs/gt_merge_site_tools.md](docs/gt_merge_site_tools.md) | inspecting cached GT merge sites against detector positives |
 | [docs/dataset_artifact_dependencies.md](docs/dataset_artifact_dependencies.md) | what to rebuild, in which order, after a cache changes |
 | [markdowns/README.md](markdowns/README.md) | the task specifications given to AutoDiscovery and the cache schema |

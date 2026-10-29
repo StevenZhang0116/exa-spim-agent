@@ -11,7 +11,7 @@ being comparable. Times are what the 794495 rebuild of 2026-10-13 took on n268 (
 | Input | Where it is defined | Used by |
 |---|---|---|
 | GT tracings (one SWC per neuron, `voxel/` copy) | `gs://allen-nd-goog/ground_truth_tracings/<brain>/voxel` (`labeled_cache/io.py`, `GT_PATH_TEMPLATE`) | `gt_graph` and every GT-derived label in the cache |
-| Predicted segmentation (`label_mask`) and fragment SWCs | `configs/segmentation_paths.json` (new layout, takes precedence) or `configs/segmentation_datasets.rtf` + legacy template, resolved by `scripts/dataset_config.py` | `fragments_graph`; `label_gt_from_segmentation` |
+| Predicted segmentation (`label_mask`) and fragment SWCs | `configs/segmentation_paths.json` (new layout, takes precedence) or `configs/segmentation_datasets.rtf` + legacy template, resolved by `scripts/dataset_config.py` | `fragments_graph`; `label_gt_from_segmentation`. The two must be one segmentation run: `python -m labeled_cache.source_check --brains <b>` reads sampled fragment node voxels back from the segmentation and reports the id agreement (`docs/fragment_segmentation_match.md`; all eleven brains 97.9-100% on 2026-10-29) |
 | Fused image prefix | `configs/exaspim_image_prefixes.json` | `img_path` in the cache (written by the base stage; `python -m labeled_cache --brains <b> --refresh-image-path` rewrites it in both pkl files after a volume moves). Image reads use the URI reviewed in `configs/image_alignment.json` first: the context cache and companions through `image_context`, the plotting scripts through `scripts/dataset_config.get_reviewed_img_path` / `get_cache_img_path` |
 | Benchmark candidate pools | `proofreader_evolve/candidate_pools.json` (schema 2: split `tip_to_any_node|r=80|k=2` since 2026-10-15; merge `junction+tip_to_shaft|nms=20|gap=20|k=2|r=150` since 2026-10-16), applied by `candidate_rules.py` at the repository root (also copied beside every detector built since 2026-10-16) | the candidate rows of every native table and companion of that kind. The rule and the module's SHA-256 are in the table provenance, so editing either gives new table directories: items 2 and 3 below are redone for that kind on every brain. `pool_sha256` hashes the rows only; when the rows change (the usual case for an edited entry), items 4, 6 and 7 are redone too, while a module edit that keeps the rows keeps them valid (check with a pool-only companion export, as on 2026-10-17 for split). The cache itself is untouched |
 
@@ -99,6 +99,11 @@ check the context-cache identity before rebuilding it.
   `notebooks/merge_label_shadow_findings.md`, the feature specifications (item 5).
 
 ## 5. Verification after a rebuild
+
+Before the build of a new brain, or after its `configs/segmentation_paths.json` entry changes,
+`python -m labeled_cache.source_check --brains <b> --record` confirms that the fragment SWCs and
+the dense segmentation are one segmentation run (close to 100% of sampled fragment node voxels
+carry the fragment's own segment id). After the build:
 
 1. `preflight --context-cache` passes for every brain (tables, sidecars, context cache).
 2. GT matches GCS: `../claude_scratch/compare_gt_794495_20261013.py <brain>` loads the cache

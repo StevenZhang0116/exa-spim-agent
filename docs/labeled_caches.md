@@ -92,6 +92,28 @@ The added fields are:
 See [`markdowns/labeled_dataset_cache.md`](../markdowns/labeled_dataset_cache.md)
 for the complete schema.
 
+### Check that the two sources are one segmentation run
+
+The base stage loads the fragment SWCs (`fragments_path`) and the label stage reads the
+dense segmentation (`segmentation_path`); nothing in the build compares them, and a wrong
+pair (a re-exported segmentation with older skeletons, a mistyped folder in
+`configs/segmentation_paths.json`) would only surface later as near-zero GT label
+coverage. Before building a new brain, or after either entry changes, run (login node,
+seconds, GCS credentials):
+
+```bash
+python -m labeled_cache.source_check --brains 751473 --record
+```
+
+It samples interior fragment nodes, converts them to voxels the way the builder does,
+reads the segmentation at those voxels and reports how many carry the fragment's own id.
+Matched sources give close to 100% (exact or within one voxel; the eleven current brains gave
+97.9-100%, the older-microscope brains at the low end because more of their resampled nodes
+sit one voxel off the centre line); an unrelated segmentation gives close to 0%, and the exit
+code is 1 below `--min-agreement` (95%). `--record` appends the table to
+[`docs/fragment_segmentation_match.md`](fragment_segmentation_match.md), where the eleven
+current brains were recorded on 2026-10-29.
+
 ## A4. Verify the labeled cache
 
 Run [notebooks/verify_add_cache_metrics.py](../notebooks/verify_add_cache_metrics.py)
