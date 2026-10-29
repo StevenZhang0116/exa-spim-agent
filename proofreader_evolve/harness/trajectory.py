@@ -90,9 +90,7 @@ class Trajectory:
 
 def metric_summary(report):
     """Keep progress logs small; detailed training examples live in feedback."""
-    return {"macro_precision": report["macro_precision"],
-            "aggregation": report.get("aggregation"),
-            "per_brain_precision": report.get("per_brain_precision", {}),
+    return {"aggregation": report.get("aggregation"),
             "per_kind_precision": report.get("per_kind_precision", {}),
             "excluded_cells": report.get("excluded_cells", []),
             "cells": {name: {k: cell[k] for k in (
@@ -109,12 +107,14 @@ def log_metrics(trace, label, report, parent=None):
     cell so console truncation cannot hide datasets when many brains are used.
     """
     summary = metric_summary(report)
-    lines = [f"{label}: macro Precision@K={report['macro_precision']:.4f}"]
-    if parent is not None:
-        summary["delta_macro_precision"] = report["macro_precision"] - parent["macro_precision"]
-        lines[0] += f" (delta={summary['delta_macro_precision']:+.4f})"
-    for brain, value in summary["per_brain_precision"].items():
-        lines.append(f"{brain} mean={value:.4f}")
+    lines = [label]
+    for kind, value in summary['per_kind_precision'].items():
+        line = f"{kind} Precision@K={value:.4f}"
+        if parent is not None:
+            delta = value - parent['per_kind_precision'][kind]
+            summary.setdefault('delta_per_kind_precision', {})[kind] = delta
+            line += f" (delta={delta:+.4f})"
+        lines.append(line)
     for name, cell in summary["cells"].items():
         if parent is not None:
             cell["delta_precision"] = cell["precision"] - parent["cells"][name]["precision"]

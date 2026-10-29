@@ -196,8 +196,8 @@ class ThreeValuedScoringTests(unittest.TestCase):
         # The candidate only reorders unlabeled rows: the labeled ranking is unchanged.
         parent = {"1/split": {"scores": np.array([.9, .8, .7, .1])}}
         candidate = {"1/split": {"scores": np.array([.1, .8, .7, .95])}}
-        result = scoring.paired_bootstrap(parent, candidate, banks, {"split": 1}, draws=50)
-        self.assertEqual(result["macro_delta_ci"], [0., 0.])
+        result = scoring.paired_bootstrap(parent, candidate, banks, {"split": 1}, draws=50, target_kind='split')
+        self.assertEqual(result["delta_ci"], [0., 0.])
 
     def test_partitioned_metrics_rank_labeled_rows_per_fold(self):
         from proofreader_evolve.harness.selection_protocol import partitioned_rank_metrics

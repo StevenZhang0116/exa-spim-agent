@@ -32,7 +32,7 @@ def cell(positives, k, precision):
 
 
 def row(kind, accepted, parent=None, candidate=None):
-    gate = None if parent is None else {"parent_mean": parent, "candidate_mean": candidate}
+    gate = None if parent is None else {"target_kind": kind, "parent_precision": parent, "candidate_precision": candidate}
     return {"target_kind": kind, "accepted": accepted, "validation_gate": gate}
 
 
@@ -158,7 +158,7 @@ class DriverTests(unittest.TestCase):
         self.assertGreater(records[2]['kind_allocation']['kinds']['split']['momentum'], 0.)
         self.assertEqual(records[3]['kind_allocation']['kinds']['merge']['generations_since'], 3)
         self.assertEqual(manifest['kind_schedule']['mode'], 'adaptive')
-        self.assertEqual(manifest['search_version'], 'branch-feedback-handoff-v17')
+        self.assertEqual(manifest['search_version'], 'per-kind-selection-objective-v18')
         self.assertEqual([plan['allocation_rule'] for plan in plans],
                          ['headroom', 'pending_followup', 'momentum', 'floor'])
         for text in [json.dumps(plan) for plan in plans] + pools:

@@ -62,17 +62,21 @@ in the current generation's `proposal.json`.
   and the bootstrap use GT-labeled rows only; NaN rows are never hits or false
   positives. Fitted models receive only labeled rows (plus optional `X_unlabeled`,
   see `classifier_guide.md`).
-- Promotion gate: improve the mean Precision@K over GT-labeled rows on the fixed
+- Promotion gate: improve the target kind's Precision@K over GT-labeled rows on the fixed
   development-validation brains. Each pool ranks its own K = ceil(this kind's ratio x the
   pool's GT positives), limited to the kind's cap when it has one (default: no cap and ratio 1
   for both kinds, so every pool ranks exactly its positives); pools below the GT-positive floor are scored
   and reported but excluded (`in_mean` in feedback). Within each kind the counted brains
-  are pooled by GT positives (hits summed over brains / K summed over brains; the feedback's
-  `aggregation` names the rule), then the kinds are averaged. Individual brain/kind
+  use sum(hits) / sum(effective K) by default; `equal-brain` gives counted brains equal
+  weight. The feedback's `aggregation` names the rule and `per_kind_precision` gives
+  each kind's score. Individual brain/kind
   regressions are allowed.
-  The mean gain must also clear row-resampling noise: the host requires the lower
-  bound of a paired bootstrap interval of that gain to be above zero, so a change
-  worth one or two extra Top-K hits will not be promoted.
+  The target-kind gain must exceed the configured precision margin. In the default
+  bootstrap gate it must also clear row-resampling noise: the host requires the lower
+  bound of a paired bootstrap interval of that gain to be above zero. The optional
+  margin gate uses only the point-estimate gain.
+  Selection ranking and paired feature ablations use the same per-kind aggregation
+  and positive floor on the selection brains; validation remains separate and hidden.
   The selection score guides exploration and is not a hard promotion requirement;
   `train_gate` in tool feedback is a diagnostic comparison only.
   Returning fewer candidates cannot inflate precision; the harness always takes
@@ -137,7 +141,7 @@ in the current generation's `proposal.json`.
 - The TRAIN candidate pool keeps the overall champion, then specialists that
   recover positives missed by retained branches or improve a geometry slice;
   remaining slots may hold near-best alternatives. Specialists bypass the 0.02
-  mean-precision tolerance, within the same pool-size limit (default 5 per kind).
+  target-kind selection-score tolerance, within the same pool-size limit (default 5 per kind).
   Inspect `specialist_profile`, `retention`, `vs_champion`, and
   `vs_other_retained` in candidate_pool.json. Slice hits/recall use the same
   global Top K, not a new K per slice. Split slices use representative gap

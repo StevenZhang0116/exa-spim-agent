@@ -3,6 +3,7 @@
 import json
 
 
+FEEDBACK_VERSION = "stratified-train-v6-per-kind-objective"
 MAX_FEEDBACK_BYTES = 128_000  # 48 KB -> 96 KB (2026-10-05) -> 128 KB (2026-10-07, with the SDK file-read cap raised);
 # in run precision_20261007_112554 six of ten generations were pruned to one or two examples per group at 96 KB.
 METRICS = ("precision", "tp", "fp", "requested_k", "effective_k", "pool_size", "n_labeled", "n_unlabeled",
@@ -13,7 +14,7 @@ SELECTION_METRICS = ("protocol", "fold_budgets", "fold_tp", "fold_held_rows")
 def metrics_only(report):
     if report is None:
         return None
-    return {"macro_precision": report["macro_precision"],
+    return {"per_kind_precision": report["per_kind_precision"],
             **({"mode": report["mode"]} if "mode" in report else {}),
             **({"aggregation": report["aggregation"]} if "aggregation" in report else {}),
             **({"holdout_cells": report["holdout_cells"], "holdout_precision": report["holdout_precision"]}
@@ -71,8 +72,7 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
         omitted = [name for name in drop_order if name not in example_cells]
         for per_class, prune in ((4, False), (4, True), (2, True), (1, True)):
             report = {
-                "format": ("stratified-train-v5" if branch is not None else "stratified-train-v4")
-                if selection is not None else "stratified-train-v3",
+                "format": FEEDBACK_VERSION,
                 "reading_guide": (
                     "TRAIN only. Labels are three-valued: 1 = error, 0 = GT-confirmed no error, NaN = not "
                     "judgeable by GT (n_unlabeled). Top-K, precision and recall use GT-labeled rows only "
@@ -88,19 +88,19 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                     "is non-empty, those cells' examples were dropped to fit the read budget (fewest GT positives "
                     "first); their metrics and ranking_delta remain. "
                     "budgets are one K per kind (the kind's cap, or for a kind without a cap the largest K "
-                    "resolved on a TRAIN pool); each pool's requested_k is the K actually ranked there "
-                    "(k_rule explains how it follows from the pool's GT positives), and in_mean says whether the "
-                    "pool counts toward the mean. macro_precision combines the counted cells of each kind by the "
-                    "k_rule's aggregation (positive-weighted: hits summed over brains / K summed over brains; "
-                    "equal-brain: mean of the cells) and then averages the kinds. When holdout_cells are listed, "
+                    "resolved on a TRAIN pool); requested_k is the requested budget and effective_k is the "
+                    "number of GT-labeled rows selected (k_rule explains the budget); in_mean says whether the "
+                    "pool counts toward the objective. per_kind_precision combines the counted cells separately for each kind by the "
+                    "k_rule's aggregation (positive-weighted: hits summed over brains / effective K summed over brains; "
+                    "equal-brain: mean of the cells). Optimize the target kind's selection precision. When holdout_cells are listed, "
                     "those selection brains were held out whole (a model that never saw the brain scored them) and "
-                    "holdout_precision pools only those cells: a gain that appears in macro_precision but not in "
-                    "holdout_precision does not transfer across brains. "
+                    "holdout_precision summarizes only those cells under the same aggregation; use it to diagnose "
+                    "whether selection gains transfer across brains. "
                     "The scorer contract is in the system prompt and rules.md."
-                    + (" Examples, ranking_delta and the official selection score come from "
-                       "selection_protocol (out-of-fold on selection brains, not in-sample). "
-                       f"{report_role}_train lists in-sample TRAIN metrics as diagnostics only; "
-                       "they do not rank branches." if selection is not None else "")
+                    + (" Examples, ranking_delta and the official selection score follow selection_protocol. "
+                       "grouped_oof uses out-of-fold scores on selection brains; in_sample uses full-TRAIN scores. "
+                       f"Branch ranking uses {report_role}_selection's metric; {report_role}_train records "
+                       "the separate full-TRAIN measurement." if selection is not None else "")
                     + (" Examples and ranking_delta describe the assigned search branch (search_branch); "
                        f"{report_role}_selection/{report_role}_train describe the accepted scorer, and ranking_delta "
                        "is the branch minus the accepted scorer." if branch is not None else "")

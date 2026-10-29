@@ -48,11 +48,11 @@ def collect(run_dir):
     version = records.run_objective(run_dir, rows)
     accepted = [r for r in rows if r.get("accepted")]
     seed = records.read_json(run_dir / "seed.json", {})
-    baseline = records.measurement_value(seed.get("validation"))
+    baseline = records.measurement_values(seed.get("validation"))
     final_record = records.read_json(run_dir / "final.json", {})
-    final = records.measurement_value(final_record.get("validation"))
+    final = records.measurement_values(final_record.get("validation"))
     if final is None:
-        final = records.validation_value(accepted[-1]) if accepted else baseline
+        final = records.measurement_values(accepted[-1].get('validation')) if accepted else baseline
     policy = run_dir / "best_scorer.py"
     rules = run_dir / f"gen{accepted[-1]['generation']:03d}" / "rules.md" if accepted else None
     costs = records.cumulative_accounting(rows)
@@ -63,12 +63,15 @@ def collect(run_dir):
         "n_generations": len(rows), "n_accepted": len(accepted),
         "accepted_generations": [r["generation"] for r in accepted],
         "baseline_validation": baseline, "final_accepted_validation": final,
-        "net_validation_gain": final - baseline if final is not None and baseline is not None else None,
+        "net_validation_gain": {kind: (value - baseline[kind] if value is not None
+                                       and (baseline or {}).get(kind) is not None else None)
+                                for kind, value in (final or {}).items()},
         "total_cost_usd": costs[-1] if costs else 0.0,
         "accounting_note": "Per-generation session costs are summed; missing amounts stay null.",
         "generations": [
             {"generation": r["generation"], "accepted": r.get("accepted"),
-             "validation": records.validation_value(r), "reason": records.decision_reason(r)}
+             "target_kind": r.get('target_kind'),
+             "validation": records.measurement_values(r.get('validation')), "reason": records.decision_reason(r)}
             for r in rows
         ],
         "final_policy": str(policy) if policy.exists() else None,

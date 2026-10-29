@@ -25,20 +25,22 @@ def _outcome_reason(row):
 def make_figure(rows, run_name, out_path, run_dir=None):
     records.run_objective(run_dir, rows)
     pairs = records.paired_measurements(rows, run_dir)
-    fig, axes = plt.subplots(2, 1, figsize=(11, 9))
-    plot_candidates(axes[0], rows, records.METRIC_NAME)
-    if pairs:
-        gens = [p["generation"] for p in pairs]
-        axes[1].plot(gens, _floats([p["train"] for p in pairs]), "-o", label="TRAIN, same policy")
-        axes[1].plot(gens, _floats([p["validation"] for p in pairs]), "-s", label="validation, same policy")
-        axes[1].legend()
-    else:
-        axes[1].text(.5, .5, "No policy-matched train/validation measurements",
-                     ha="center", transform=axes[1].transAxes)
-    axes[1].set_ylabel(records.METRIC_NAME)
-    axes[1].set_xlabel("policy generation")
-    axes[1].set_title("Different data scopes: raw differences are not proof of generalization")
-    axes[1].grid(alpha=.3)
+    kinds = records.kinds(rows)
+    fig, axes = plt.subplots(max(1, len(kinds)), 2, figsize=(15, 5 * max(1, len(kinds))), squeeze=False)
+    for (candidate_ax, pair_ax), kind in zip(axes, kinds):
+        plot_candidates(candidate_ax, rows, kind)
+        matched = [p for p in pairs if p['kind'] == kind]
+        if matched:
+            gens = [p['generation'] for p in matched]
+            pair_ax.plot(gens, _floats([p['train'] for p in matched]), '-o', label='TRAIN, same policy')
+            pair_ax.plot(gens, _floats([p['validation'] for p in matched]), '-s', label='validation, same policy')
+            pair_ax.legend()
+        else:
+            pair_ax.text(.5, .5, 'No policy-matched train/validation measurements', ha='center', transform=pair_ax.transAxes)
+        pair_ax.set_ylabel(f'{kind} Precision@K')
+        pair_ax.set_xlabel('policy generation')
+        pair_ax.set_title('Different data scopes: raw differences are not proof of generalization')
+        pair_ax.grid(alpha=.3)
     fig.suptitle(f"{run_name} — development search, not final testing")
     fig.tight_layout()
     out_path = Path(out_path)
@@ -52,12 +54,13 @@ def write_md(rows, run_name, run_dir, path):
     records.run_objective(run_dir, rows)
     lines = [f"# Search digest — {run_name}", "", f"Metric: {records.METRIC_NAME}", "",
              "Missing validation is not a zero score. Reasons are recorded, not inferred.", "",
-             "| Generation | Outcome | Validation | Reason |", "| --- | --- | --- | --- |"]
+             "| Generation | Target kind | Outcome | Validation | Reason |", "| --- | --- | --- | --- | --- |"]
     for row in rows:
         outcome, reason = _outcome_reason(row)
-        value = records.validation_value(row)
+        kind = row.get('target_kind')
+        value = records.validation_value(row, kind)
         reason = reason.replace("|", "\\|").replace("\n", " ")
-        lines.append(f"| {row['generation']} | {outcome} | {value if value is not None else 'not measured'} | {reason} |")
+        lines.append(f"| {row['generation']} | {kind} | {outcome} | {value if value is not None else 'not measured'} | {reason} |")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n")

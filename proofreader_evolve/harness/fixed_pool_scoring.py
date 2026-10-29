@@ -10,9 +10,9 @@ Since 2026-10-12 (v3) each pool's K is resolved from its own GT positives throug
 counts has the same attainable ceiling (1 / positive_ratio when the ratio binds), and
 pools with fewer than ``min_positives`` GT positives are scored and reported but
 excluded from the promotion mean, the bootstrap and kind headroom. Both inputs are
-label counts, so every K is fixed for a run. The mean is taken per kind over the
-counted brains and then over kinds; with every pool counted this equals the former
-equal-brain mean of per-brain kind means.
+label counts, so every K is fixed for a run. Since v6 the objective is independent
+for each kind across its counted brains. Selection, ablation and validation use
+the same aggregation; each generation promotes only its target kind.
 
 Since 2026-10-26 (v4) the ratio is per kind and a kind may have no cap. The defaults
 are merge 2.0 under a cap of 300 (unchanged) and split 1.0 with no cap, so a split pool
@@ -46,11 +46,10 @@ from .model_execution import DEFAULT_MEMORY_MB
 from .label_availability import labeled_rows, labels_digest
 
 
-SCORING_VERSION = "native-precision-at-k-v5-uniform-k"
+SCORING_VERSION = "native-precision-at-k-v6-per-kind-objective"
 AGGREGATIONS = ("equal-brain", "positive-weighted")
-AGGREGATION_LABELS = {"equal-brain": "equal-kind-mean-of-equal-brain-precision",
-                      "positive-weighted": "equal-kind-mean-of-positive-weighted-precision"}
-AGGREGATION = AGGREGATION_LABELS["equal-brain"]  # label of the historical rule (v1 to v5 runs before 2026-10-27)
+AGGREGATION_LABELS = {"equal-brain": "per-kind-equal-brain-precision",
+                      "positive-weighted": "per-kind-positive-weighted-precision"}
 
 
 def aggregation_mode(value):
@@ -63,8 +62,8 @@ def aggregation_mode(value):
         if value == label:
             return mode
     raise ValueError(f"Unknown aggregation {value!r}; use one of {AGGREGATIONS}")
-VALIDATION_GATE_VERSION = "mean-validation-precision-v5-uniform-k"
-BOOTSTRAP_GATE_VERSION = "mean-validation-bootstrap-v5-uniform-k"
+VALIDATION_GATE_VERSION = "target-kind-validation-precision-v6"
+BOOTSTRAP_GATE_VERSION = "target-kind-validation-bootstrap-v6"
 GATE_MODES = ("bootstrap", "margin")
 
 
@@ -166,13 +165,11 @@ class Budgets(Mapping):
                 "k_rule": ("K per pool = ceil(positive_ratio[kind] x GT positives), limited to caps[kind] "
                            "when the kind has a cap; a zero ratio keeps the cap (fixed K)"
                            if scaled else "K per pool = cap (fixed)"),
-                "mean_rule": ((f"pools with fewer than {self.min_positives} GT positives are scored and "
-                               "reported but excluded from the mean"
-                               if self.min_positives > 0 else "every pool counts toward the mean")
-                              + ("; within each kind the counted pools are pooled by GT positives (hits "
-                                 "summed over pools / K summed over pools), then the kinds are averaged"
-                                 if pooled else "; within each kind the counted pools are averaged with equal "
-                                 "weight, then the kinds are averaged"))}
+                "precision_rule": ((f"pools with fewer than {self.min_positives} GT positives are scored and "
+                                    "reported but excluded from the objective"
+                                    if self.min_positives > 0 else "every pool counts toward the objective")
+                                   + ("; separately for each kind: sum(TP) / sum(effective K) across counted pools"
+                                      if pooled else "; separately for each kind: equal-weight precision across counted pools"))}
 
     def resolve(self, tables_by_brain):
         """Per-pool K and mean membership for a bank mapping; depends on labels only."""
@@ -193,12 +190,12 @@ def gate_version(mode):
 
 
 def aggregate_precision(cells, aggregation="equal-brain"):
-    """Equal-kind mean of the per-kind precision over the pools that count.
+    """Independent per-kind precision over the pools that count.
 
     ``aggregation`` (a mode or a report label) sets the per-kind rule: ``equal-brain``
     averages the counted pools' precision with equal weight (the rule of every run before
-    2026-10-27); ``positive-weighted`` pools them by GT positives (hits summed over pools
-    divided by K summed over pools, i.e. the pooled recall at K = positives), so a pool
+    2026-10-27); ``positive-weighted`` pools hits divided by effective K summed over pools
+    (equivalent to GT-positive weighting and pooled recall when K = positives), so a pool
     with 41 positives no longer carries the weight of one with 144.
     Pools flagged ``in_mean: false`` (too few GT positives) are reported but skipped.
     Every evaluated brain must still carry the same kinds, so the grid stays complete.
@@ -235,14 +232,16 @@ def aggregate_precision(cells, aggregation="equal-brain"):
             per_kind[kind] = sum(tp for tp, _ in counts[kind]) / pooled_k if pooled_k else 0.
     else:
         per_kind = {kind: math.fsum(values.values()) / len(values) for kind, values in sorted(by_kind.items())}
-    per_brain = {}
-    for values in by_kind.values():
-        for brain, precision in values.items():
-            per_brain.setdefault(brain, []).append(precision)
-    per_brain = {brain: math.fsum(v) / len(v) for brain, v in sorted(per_brain.items())}
     return {"aggregation": AGGREGATION_LABELS[mode], "per_kind_precision": per_kind,
-            "per_brain_precision": per_brain, "excluded_cells": sorted(excluded),
-            "macro_precision": math.fsum(per_kind.values()) / len(per_kind)}
+            "excluded_cells": sorted(excluded)}
+
+
+def precision_for_kind(report, kind):
+    """The shared selection/promotion objective, recomputed from this kind's cells."""
+    cells = {name: cell for name, cell in report['cells'].items() if name.rsplit('/', 1)[-1] == kind}
+    if not cells:
+        raise ValueError(f"No candidate pools for target kind {kind!r}")
+    return aggregate_precision(cells, report.get('aggregation'))['per_kind_precision'][kind]
 
 
 def labeled_order(scores, truth, keys):
@@ -311,8 +310,8 @@ def evaluate(source, tables_by_brain, budgets, timeout=120, examples=False, *,
     return report
 
 
-def acceptance(parent, candidate, margin=0, *, require_no_cell_regression=True):
-    """Compare means at identical K/pools; optionally veto individual regressions."""
+def acceptance(parent, candidate, margin=0, *, target_kind, require_no_cell_regression=True):
+    """Compare the target kind at identical K/pools; optionally veto its cell regressions."""
     if not math.isfinite(margin) or margin < 0:
         raise ValueError("Precision margin must be finite and nonnegative")
     if parent["version"] != candidate["version"] or parent["cells"].keys() != candidate["cells"].keys():
@@ -328,20 +327,21 @@ def acceptance(parent, candidate, margin=0, *, require_no_cell_regression=True):
     mode = aggregation_mode(parent.get("aggregation"))
     if aggregation_mode(candidate.get("aggregation")) != mode:
         raise ValueError("Cannot compare evaluations with different aggregations")
-    before_mean = aggregate_precision(parent["cells"], mode)["macro_precision"]
-    after_mean = aggregate_precision(candidate["cells"], mode)["macro_precision"]
+    before_precision = precision_for_kind(parent, target_kind)
+    after_precision = precision_for_kind(candidate, target_kind)
     if require_no_cell_regression:
         for cell, before in parent["cells"].items():
-            if candidate["cells"][cell]["precision"] < before["precision"]:
+            if (cell.rsplit('/', 1)[-1] == target_kind and before.get('in_mean', True)
+                    and candidate["cells"][cell]["precision"] < before["precision"]):
                 return False, f"Precision regressed on {cell}"
-    gain = after_mean - before_mean
+    gain = after_precision - before_precision
     passed = gain > max(margin, 1e-12)
-    reason = "Mean Precision@K improved" if passed else "No sufficient mean Precision@K gain"
-    return passed, (f"{reason}: {before_mean:.6f} -> {after_mean:.6f}; "
+    reason = f"{target_kind} Precision@K improved" if passed else f"No sufficient {target_kind} Precision@K gain"
+    return passed, (f"{reason}: {before_precision:.6f} -> {after_precision:.6f}; "
                     f"delta={gain:+.6f}, margin={margin:g}")
 
 
-BOOTSTRAP_VERSION = "paired-poisson-bootstrap-v5-uniform-k"
+BOOTSTRAP_VERSION = "paired-poisson-bootstrap-v6-target-kind"
 
 
 def _prefix_hits(order, truth, counts, k):
@@ -356,14 +356,14 @@ def _prefix_hits(order, truth, counts, k):
     return hits, k
 
 
-def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *, draws=1000, seed=0, alpha=.05):
-    """Paired resampling of GT-labeled candidate rows for the promotion delta.
+def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *, target_kind, draws=1000, seed=0, alpha=.05):
+    """Paired resampling of GT-labeled candidate rows for the target-kind promotion delta.
 
     Both scorers are re-ranked on the same Poisson(1)-weighted multiset per cell,
     so the interval reflects row sampling noise, not scorer nondeterminism. The
     two-sided (1 - alpha) interval is what `bootstrap_acceptance` reads; the 95%
     interval is always recorded as well. Each cell uses its own resolved K; cells
-    below the GT-positive floor get a per-cell interval but never enter the mean
+    below the GT-positive floor get a per-cell interval but never enter the target-kind
     delta, matching `aggregate_precision`.
     """
     if type(draws) is not int or draws < 1:
@@ -376,6 +376,8 @@ def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *,
     cells = {}
     for brain, banks in tables_by_brain.items():
         for kind, table in banks.tables.items():
+            if kind != target_kind:
+                continue
             cell = f"{brain}/{kind}"
             truth = np.asarray(table.truth, dtype=float)
             before = np.asarray(parent_state[cell]["scores"], dtype=float)
@@ -406,27 +408,20 @@ def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *,
             precision_after = hits_after / k_after if k_after else 0.
             per_cell[cell][draw] = precision_after - precision_before
             sampled[cell] = (hits_before, k_before, hits_after, k_after, precision_after - precision_before)
-        by_kind = {}
-        for cell in counted:
-            _, kind = cell.rsplit("/", 1)
-            by_kind.setdefault(kind, []).append(sampled[cell])
+        values = [sampled[cell] for cell in sorted(counted)]
         if pooled:
-            kind_deltas = []
-            for values in by_kind.values():
-                k_before, k_after = sum(v[1] for v in values), sum(v[3] for v in values)
-                kind_deltas.append((sum(v[2] for v in values) / k_after if k_after else 0.)
-                                   - (sum(v[0] for v in values) / k_before if k_before else 0.))
-            deltas[draw] = math.fsum(kind_deltas) / len(by_kind)
+            k_before, k_after = sum(v[1] for v in values), sum(v[3] for v in values)
+            deltas[draw] = ((sum(v[2] for v in values) / k_after if k_after else 0.)
+                           - (sum(v[0] for v in values) / k_before if k_before else 0.))
         else:
-            deltas[draw] = math.fsum(math.fsum(v[4] for v in values) / len(values)
-                                     for values in by_kind.values()) / len(by_kind)
+            deltas[draw] = math.fsum(v[4] for v in values) / len(values)
     bounds = [100. * alpha / 2., 100. * (1. - alpha / 2.)]
     low, high = np.percentile(deltas, bounds)
-    return {"version": BOOTSTRAP_VERSION, "draws": draws, "seed": seed, "alpha": alpha,
+    return {"version": BOOTSTRAP_VERSION, "target_kind": target_kind, "draws": draws, "seed": seed, "alpha": alpha,
             "aggregation": AGGREGATION_LABELS[budgets.aggregation], "excluded_cells": sorted(set(cells) - counted),
-            "macro_delta_ci": [float(low), float(high)],
-            "macro_delta_ci95": [float(v) for v in np.percentile(deltas, [2.5, 97.5])],
-            "macro_delta_point": float(np.mean(deltas)),
+            "delta_ci": [float(low), float(high)],
+            "delta_ci95": [float(v) for v in np.percentile(deltas, [2.5, 97.5])],
+            "bootstrap_mean_delta": float(np.mean(deltas)),
             "p_delta_le_0": float(np.mean(deltas <= 0)), "p_delta_ge_0": float(np.mean(deltas >= 0)),
             "cells": {cell: {"delta_ci": [float(v) for v in np.percentile(values, bounds)],
                              "delta_ci95": [float(v) for v in np.percentile(values, [2.5, 97.5])]}
@@ -435,27 +430,32 @@ def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *,
                      "the configured promotion gate mode decides whether it is binding."}
 
 
-def bootstrap_acceptance(parent, candidate, bootstrap, margin=0, *, alpha=.05):
+def bootstrap_acceptance(parent, candidate, bootstrap, margin=0, *, target_kind, alpha=.05):
     """Promote only when the point gain clears the margin AND the lower bound of the
-    paired bootstrap interval of the mean delta is above zero.
+    paired bootstrap interval of the target-kind delta is above zero.
 
     A missing or failed bootstrap never promotes (fail closed). The point-estimate
     comparison reuses `acceptance`, so benchmark identity checks still apply.
     """
-    passed_point, point_reason = acceptance(parent, candidate, margin, require_no_cell_regression=False)
+    passed_point, point_reason = acceptance(parent, candidate, margin, target_kind=target_kind,
+                                               require_no_cell_regression=False)
     details = point_reason.split(": ", 1)[1]
     if not passed_point:
         return False, point_reason
     if not isinstance(bootstrap, dict) or bootstrap.get("status") == "unavailable" \
-            or "macro_delta_ci" not in bootstrap:
+            or "delta_ci" not in bootstrap:
         return False, f"Bootstrap interval unavailable; candidate not promoted: {details}"
+    if bootstrap.get('target_kind') != target_kind:
+        raise ValueError("Bootstrap target kind differs from the promotion target")
+    if aggregation_mode(bootstrap.get('aggregation')) != aggregation_mode(parent.get('aggregation')):
+        raise ValueError("Bootstrap aggregation differs from the promotion objective")
     if bootstrap.get("alpha") != alpha:
         raise ValueError("Bootstrap interval level differs from the gate alpha")
-    lower = float(bootstrap["macro_delta_ci"][0])
+    lower = float(bootstrap["delta_ci"][0])
     if not math.isfinite(lower):
         return False, f"Bootstrap interval not finite; candidate not promoted: {details}"
     detail = (f"{details}; bootstrap lower bound {lower:+.6f} at alpha={alpha:g} "
               f"({bootstrap['draws']} draws)")
     if lower > 0.:
-        return True, f"Mean Precision@K improved beyond resampling noise: {detail}"
-    return False, f"Mean Precision@K gain within resampling noise: {detail}"
+        return True, f"{target_kind} Precision@K improved beyond resampling noise: {detail}"
+    return False, f"{target_kind} Precision@K gain within resampling noise: {detail}"

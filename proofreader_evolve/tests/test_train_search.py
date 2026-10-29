@@ -304,7 +304,7 @@ class TrainingSearchTests(unittest.TestCase):
         self.assertEqual(self.session.evaluations_used, 2)
         winner, _ = self.session.submitted()
         self.assertEqual(winner['entry']['parameters'], {'weight': 2})
-        self.assertEqual(winner['report']['macro_precision'], 1)
+        self.assertEqual(winner['report']['per_kind_precision']['split'], 1)
         self.session.max_evaluations = 2
         with patch('proofreader_evolve.harness.train_experiments.scoring.evaluate') as evaluate:
             restored = self.session.restore('gen001/attempt001')
@@ -422,9 +422,11 @@ class SearchDriverTests(unittest.TestCase):
                     feedback = json.loads(report.read_text())
                     self.assertEqual(feedback['search_branch']['experiment'], 'gen001/attempt001')
                     self.assertFalse(feedback['search_branch']['same_as_accepted'])
-                    self.assertEqual(feedback['search_branch']['selection']['macro_precision'], 1)
-                    self.assertEqual(feedback['format'], 'stratified-train-v5')
-                    self.assertEqual(feedback['parent_selection']['macro_precision'], 0)
+                    self.assertEqual(feedback['search_branch']['selection']['per_kind_precision']['split'], 1)
+                    self.assertEqual(feedback['format'], 'stratified-train-v6-per-kind-objective')
+                    self.assertEqual(json.loads((run_dir / 'manifest.json').read_text())['feedback_format'],
+                                     feedback['format'])
+                    self.assertEqual(feedback['parent_selection']['per_kind_precision']['split'], 0)
                     self.assertIn('assigned search branch', feedback['reading_guide'])
                     cases = json.loads((policy.parent / 'failure_cases.json').read_text())
                     self.assertEqual(cases['branch'], {'experiment': 'gen001/attempt001', 'same_as_accepted': False})
@@ -523,7 +525,7 @@ class CandidatePoolTests(unittest.TestCase):
                 'component_sha256': str(number), 'target_precision': precision,
                 'top_k_sha256': ranking or str(number), 'formula_sha256': formula,
                 'family': formula, 'parameters': {'weight': 1}, 'status': 'evaluated',
-                'cached': cached, 'train': {'macro_precision': precision, 'cells': {}}}
+                'cached': cached, 'train': {'per_kind_precision': {'split': precision}, 'cells': {}}}
 
     def test_retains_diverse_near_best_branches_without_duplicate_top_k(self):
         with tempfile.TemporaryDirectory() as tmp:

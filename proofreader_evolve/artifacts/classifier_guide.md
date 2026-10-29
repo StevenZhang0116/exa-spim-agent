@@ -102,7 +102,7 @@ or custom predictor. The harness runs fit on TRAIN, snapshots the artifacts,
 runs label-free inference with the declared inputs, measures the selection score (see Evaluation
 below) alongside in-sample TRAIN Precision@K, and restores the best successful configuration by
 the selection score. Selection comparisons guide search;
-only the outer mean validation Precision@K, with its resampling-noise bound, controls
+only the outer target-kind validation Precision@K, with its resampling-noise bound, controls
 promotion. With no
 grid, it measures one fit. A grid stops at the first failed fit or execution error of
 the program; the reply's `stopped_early` lists the skipped configurations, which are not
@@ -151,16 +151,24 @@ Branch ranking uses the **selection protocol** reported in the feedback
 (`selection_protocol`). Under `grouped_oof`, `train_classifier({})` first refits
 your program in three fixed, fragment-purged folds on the selection brains, with
 auxiliary TRAIN brains fully included in every fitting set and never held out.
-Out-of-fold scores are ranked inside each fold with budgets that sum to K, and
-`target_precision` / `grouped_cv_precision` is the summed TP divided by K. The
+Whole-brain selection holdouts, when configured, are held out together in one fold;
+their predictions come from a model that never fitted that brain.
+Out-of-fold scores are ranked inside each fold using GT-labeled rows only, with
+budgets summing to each pool's effective K. `target_precision` / `grouped_cv_precision`
+combines the target kind's counted pools using the configured aggregation:
+sum(TP) / sum(effective K) by default, or equal-brain precision. Pools below the
+positive floor are reported but excluded. The
 full-TRAIN fit is then frozen as the candidate. `candidate_train` numbers remain
-**in-sample resubstitution** diagnostics and rank nothing. A model that memorizes
+**in-sample resubstitution** diagnostics and do not rank candidates under `grouped_oof`. A model that memorizes
 rows scores high in-sample and low out-of-fold. If `fit` declares a `groups`
 keyword it receives the label-free source brain of each training row (a pandas
 Series) so you can weight or block auxiliary rows. One configuration costs one
 evaluation unit, fold refits included. You may still print your own internal
-diagnostics. Final promotion uses the outer mean development gate (mean gain beyond
-paired-bootstrap noise) on the frozen candidate; the selection score is a repeatedly used development signal, not an
+diagnostics. Under `in_sample`, the selection score instead uses the full-TRAIN
+ranking with the same aggregation and positive floor. Final promotion requires
+the target kind's development-validation gain to exceed the configured margin and,
+by default, clear the paired-bootstrap noise gate on the frozen candidate;
+the selection score is a repeatedly used development signal, not an
 untouched final test.
 
 For a host-measured feature comparison, use `evaluate_feature_ablation({})` with
@@ -172,8 +180,11 @@ fragment-purged TRAIN folds; fitting workers receive only that fold's fitting
 rows and labels. Prediction receives held predictors, declared held-row patches
 and frozen artifacts. Removing image_available also withholds raw patches.
 This costs two shared evaluation units (one per arm) and uses the same fold
-partition as the selection protocol; only selection brains are scored, with the
-partitioned fold budgets. It preserves the feature schema and
+partition as the grouped selection protocol; only selection brains are scored,
+with the partitioned fold budgets. Under `in_sample`, this classifier diagnostic
+still uses grouped fold refits, while candidate selection uses in-sample scores.
+Both ablation arms use the configured target-kind aggregation and positive floor.
+It preserves the feature schema and
 does not force a model family. It seeds Python/NumPy per fold in this diagnostic;
 agent seed overrides or other random generators can still affect reproducibility.
 Afterward, call train_classifier({}) to fit the chosen program on all GT-labeled TRAIN rows.

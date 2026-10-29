@@ -106,8 +106,8 @@ class RepeatedSubmissionTests(unittest.TestCase):
         self.assertTrue(second['reason'].startswith('VALIDATION: Repeated submission: gen002/attempt001 has the same component'))
         self.assertIn('validated in generation 1, not promoted', second['reason'])
         gate = second['validation_gate']
-        self.assertEqual((gate['skipped'], gate['passed'], gate['candidate_mean']),
-                         ('repeated_submission', False, gate['parent_mean']))
+        self.assertEqual((gate['skipped'], gate['passed'], gate['candidate_precision']),
+                         ('repeated_submission', False, None))
         self.assertEqual(second['descriptor_inference'], [])
         self.assertIsNone(second.get('failure_stage'))
         self.assertEqual(generation_status(second, set()), 'repeated')
@@ -180,7 +180,7 @@ class PoolAndDigestTests(unittest.TestCase):
         return {'experiment': f'gen001/attempt{number:03d}', 'sequence': number, 'target_kind': 'split',
                 'component_sha256': f'c{number}', 'scores_sha256': scores, 'target_precision': precision,
                 'top_k_sha256': f'r{number}', 'formula_sha256': 'f', 'family': 'f', 'parameters': {'w': 1},
-                'status': 'evaluated', 'cached': False, 'train': {'macro_precision': precision, 'cells': {}}}
+                'status': 'evaluated', 'cached': False, 'train': {'per_kind_precision': {'split': precision}, 'cells': {}}}
 
     def test_scores_digest_is_exact_and_kind_scoped(self):
         import numpy as np

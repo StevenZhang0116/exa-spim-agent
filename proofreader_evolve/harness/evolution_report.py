@@ -36,9 +36,11 @@ def _number(value):
 def _metrics(value):
     if not isinstance(value, dict):
         return None
-    return {'macro_precision': _number(value.get('macro_precision')),
+    return {'per_kind_precision': {kind: _number(score) for kind, score in value.get('per_kind_precision', {}).items()},
+            'aggregation': value.get('aggregation'),
             'policy_sha256': value.get('policy_sha256'),
-            'cells': {name: {key: _number(cell.get(key)) for key in CELL_FIELDS}
+            'cells': {name: {key: (cell[key] if key == 'in_mean' and isinstance(cell.get(key), bool)
+                                  else _number(cell.get(key))) for key in CELL_FIELDS}
                       | ({'local_context': cell['local_context']} if isinstance(cell.get('local_context'), dict) else {})
                       | ({'image_context': cell['image_context']} if isinstance(cell.get('image_context'), dict) else {})
                       for name, cell in value.get('cells', {}).items()}}

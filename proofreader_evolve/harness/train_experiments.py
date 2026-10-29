@@ -48,9 +48,8 @@ def save_state(path, state):
 
 
 def in_sample_precision(report, kind):
-    """Mean in-sample TRAIN precision of this kind's cells; a diagnostic, not a rank."""
-    cells = [cell for name, cell in report['cells'].items() if name.endswith('/' + kind)]
-    return sum(cell['precision'] for cell in cells) / len(cells)
+    """In-sample TRAIN precision under the shared per-kind rule; diagnostic only."""
+    return scoring.precision_for_kind(report, kind)
 
 
 class ExperimentMemory:
@@ -340,8 +339,9 @@ class TrainingExperiments:
                              'restore_candidate("parent") recovers the assigned formula')
 
     def _selection_gate(self, selection_report):
-        before, after = self.parent_selection['macro_precision'], selection_report['macro_precision']
-        return {'metric': self.protocol_info['metric'], 'mode': self.protocol.mode,
+        before = scoring.precision_for_kind(self.parent_selection, self.target_kind)
+        after = scoring.precision_for_kind(selection_report, self.target_kind)
+        return {'metric': self.protocol_info['metric'], 'mode': self.protocol.mode, 'target_kind': self.target_kind,
                 'parent': before, 'candidate': after, 'delta': after - before,
                 'passed': after > before + 1e-12, 'required_for_promotion': False,
                 'scope': 'Development selection signal on selection brains; the outer promotion gate decides acceptance'}
@@ -516,7 +516,7 @@ class TrainingExperiments:
                 selection_feedback['cells'][cell].update(describe(
                     self.train[brain].tables[self.target_kind], values['scores'], values['chosen'],
                     self.generation, cell, self.parent_selection_state.get(cell), features=features_by_brain[brain]))
-            passed, reason = scoring.acceptance(self.parent_report, report, self.margin)
+            passed, reason = scoring.acceptance(self.parent_report, report, self.margin, target_kind=self.target_kind)
             entry.update(status='evaluated', train=metrics_only(report),
                          train_gate={'passed': passed, 'reason': reason, 'required_for_promotion': False},
                          ranking_delta={k: v['ranking_delta'] for k, v in report['cells'].items()},
@@ -547,8 +547,8 @@ class TrainingExperiments:
                                 **{k: known[k] for k in ('generation', 'experiment', 'promoted', 'by')})
             log_metrics(self.trace, f"TRAIN {entry['experiment']}", report, self.parent_report)
             self.trace.emit('selection_measurement', f"{entry['experiment']}: {self.protocol.mode} selection "
-                            f"precision={selection_report['macro_precision']:.6f} "
-                            f"(parent {self.parent_selection['macro_precision']:.6f}); "
+                            f"precision={scoring.precision_for_kind(selection_report, self.target_kind):.6f} "
+                            f"(parent {scoring.precision_for_kind(self.parent_selection, self.target_kind):.6f}); "
                             f"in-sample {entry['in_sample_precision']:.6f}",
                             selection=entry['selection'], selection_gate=entry['selection_gate'])
         except Exception as exc:
@@ -603,9 +603,9 @@ class TrainingExperiments:
         valid = [r for r in results if r['report'] is not None]
         if not valid:
             raise ValueError('No successfully measured candidate to restore')
-        # The official selection score ranks exploration candidates; in-sample TRAIN only
-        # breaks ties. Only the outer validation mean controls promotion.
-        return max(valid, key=lambda r: (r['entry']['target_precision'], r['report']['macro_precision'],
+        # Rank by official target-kind selection precision. Resolve exact ties by source
+        # length and sequence, without introducing a second data-dependent objective.
+        return max(valid, key=lambda r: (r['entry']['target_precision'],
                                         -len(r['component']), -r['entry']['sequence']))
 
     def _restore_result(self, result):
@@ -796,7 +796,7 @@ class TrainingExperiments:
                         save_selection(directory, selection_report, selection_state)
                         self.trace.emit('classifier_fold_fits', f"Program {digest(program)[:12]}: "
                                         f"{len(selection_report['fold_fits'])} fold fits; grouped_cv_precision="
-                                        f"{selection_report['macro_precision']:.6f}",
+                                        f"{scoring.precision_for_kind(selection_report, self.target_kind):.6f}",
                                         fold_fits=selection_report['fold_fits'])
                     component, summary = fit_classifier(self.train, self.target_kind, config, directory,
                                                         program=program, artifact_store=self.memory.artifact_store,
@@ -1101,7 +1101,7 @@ class TrainingExperiments:
                 config=config, timeout=self.classifier_timeout if classifier else self.timeout,
                 memory_mb=self.classifier_memory_mb,
                 partitions=(self.protocol.partitions.get(self.target_kind)
-                            or self.memory.internal_folds.get(self.target_kind)),
+                            or (self.memory.internal_folds.get(self.target_kind) if classifier else None)),
                 selection_brains=self.protocol.selection_brains)
             preparation_seconds = time.monotonic() - started
             identity.update(budgets=scoring.Budgets.coerce(self.budgets).describe(),
@@ -1449,7 +1449,8 @@ class TrainingExperiments:
               '(default all LOCAL_CONTEXT/LOCAL_IMAGE columns; image_available also removes raw patches). '
               'Classifiers refit the same program/parameters in '
               'three TRAIN-only grouped folds for full and constant-masked inputs: two evaluation units (one per arm). '
-              'Formulas use two descriptive full-TRAIN score evaluations. Empty parameter_grid; call with {}. '
+              'Formulas use two descriptive selection-brain evaluations with the selection ranking protocol. '
+              'Both arms use the configured per-kind aggregation and positive floor. Empty parameter_grid; call with {}. '
               'Diagnostic only: still fit/evaluate a normal candidate before submission.', {})
         async def evaluate_feature_ablation(arguments):
             return await invoke(self.evaluate_feature_ablation, arguments)

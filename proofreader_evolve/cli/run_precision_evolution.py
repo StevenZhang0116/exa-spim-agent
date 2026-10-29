@@ -5,7 +5,7 @@ Default TRAIN: 794495. Validation: all other eligible, prepared local datasets.
 TRAIN branches are ranked by the selection protocol: grouped out-of-fold precision on
 selection brains the detectors were not fitted on (auxiliary TRAIN brains only supply
 fitting rows), or the historical in-sample protocol for attribution runs.
-Promote on mean validation Precision@K whose paired-bootstrap lower bound is above zero
+Promote on target-kind validation Precision@K whose paired-bootstrap lower bound is above zero
 (`--promotion-gate bootstrap`, default); individual brain regressions are allowed.
 Generations go to one kind each, chosen by pending follow-up, a floor, recent gate-passing
 gain and remaining headroom (`--kind-schedule adaptive`, default) or by strict rotation.
@@ -33,11 +33,11 @@ from ..harness import detector_prior
 from ..harness.reviser_session import DEFAULT_MODEL, build_options, bind_session_options
 from ..harness.trajectory import Trajectory, log_metrics, save_diffs
 from ..harness.evolution_report import update_report
-from ..harness.train_feedback import write_train_feedback, render_compact_json, metrics_only, MAX_FEEDBACK_BYTES
+from ..harness.train_feedback import write_train_feedback, render_compact_json, metrics_only, MAX_FEEDBACK_BYTES, FEEDBACK_VERSION
 from ..harness.search_proposals import read_proposal
 from ..harness.hypothesis_memory import sanitize_handoff
 from ..harness.selection_protocol import SelectionProtocol, load_selection, PROTOCOL_VERSION
-from ..harness.feature_ablation import CLASSIFIER_UNITS, FORMULA_UNITS
+from ..harness.feature_ablation import CLASSIFIER_UNITS, FORMULA_UNITS, ABLATION_VERSION
 from ..harness.context_cache import ContextCache
 from ..harness.descriptor_runs import DescriptorRuns, CONTEXT_COLUMN, SCOPES as DESCRIPTOR_SCOPES
 from ..harness.descriptor_contract import descriptor_spec, referenced_columns, COLUMN_PREFIX
@@ -82,7 +82,7 @@ def _record_handoff(memory, gen_dir, target_kind, generation, record, trace):
         trace.emit('research_handoff', 'No handoff recorded: ' + '; '.join(notes))
         return None
     host = {'experiment': record.get('submitted_experiment'),
-            'selection_precision': (record.get('selection') or {}).get('macro_precision'),
+            'selection_precision': (record.get('selection') or {}).get('per_kind_precision', {}).get(target_kind),
             'promoted': bool(record.get('accepted')),
             'status': ('unchanged_submission' if record.get('submission_unchanged')
                        else 'repeated_submission' if record.get('submission_repeat')
@@ -439,7 +439,7 @@ def parse_args(argv=None):
                    help="Skip the one-time baseline diagnostic that refits the seed training template with "
                         "and without auxiliary TRAIN rows under the selection protocol")
     p.add_argument("--promotion-gate", choices=scoring.GATE_MODES, default="bootstrap",
-                   help="bootstrap (default): promote only when the mean validation gain exceeds --precision-margin "
+                   help="bootstrap (default): promote only when the target-kind validation gain exceeds --precision-margin "
                         "AND the lower bound of the paired bootstrap interval of that gain is above zero; "
                         "margin: point-estimate gain only (legacy behaviour)")
     p.add_argument("--bootstrap-draws", type=int, default=1000,
@@ -487,15 +487,14 @@ def parse_args(argv=None):
                         "merge=2,split=1 from 2026-10-26; 2.0 for both from 2026-10-12)")
     p.add_argument("--min-positives", type=int, default=20,
                    help="Pools with fewer GT positives are scored and reported but excluded from the promotion "
-                        "mean, the bootstrap and kind headroom; 0 counts every pool (default: 20, 2026-10-12)")
+                        "objective, the bootstrap and kind headroom; 0 counts every pool (default: 20, 2026-10-12)")
     p.add_argument("--aggregation", choices=scoring.AGGREGATIONS, default="positive-weighted",
-                   help="How the counted pools of one kind are combined before the kinds are averaged, in "
+                   help="How the counted pools are combined separately for each kind, in "
                         "selection, validation, the bootstrap and kind headroom: positive-weighted pools hits / K "
                         "over brains (default since 2026-10-27); equal-brain averages the pools with equal weight "
                         "(the rule of every run before)")
     p.add_argument("--precision-margin", type=float, default=0,
-                   help="Required absolute gain in the mean validation Precision@K (each kind over its counted "
-                        "pools, then over kinds) (default: 0)")
+                   help="Required absolute gain in target-kind validation Precision@K over its counted pools (default: 0)")
     p.add_argument("--policy-time-budget", type=float, default=300,
                    help="Scoring/feature worker budget and 3D analysis worker timeout, in seconds (default: 300; "
                         "120 before 2026-10-06, raised with the 16-case analysis limit)")
@@ -795,13 +794,13 @@ def _auxiliary_ablation(args, protocol, kinds, run_dir, fit_limits, trace):
         measured = all(v["status"] == "measured" for v in arms.values())
         results[kind] = {"program": "artifacts/training.py", "config": {"parameters": {}},
                          "metric": PROTOCOL_VERSION, "arms": arms,
-                         "delta_with_auxiliary": (arms["selection_plus_auxiliary"]["macro_precision"]
-                                                  - arms["selection_only"]["macro_precision"]) if measured else None,
+                         "delta_with_auxiliary": (arms["selection_plus_auxiliary"]["per_kind_precision"][kind]
+                                                  - arms["selection_only"]["per_kind_precision"][kind]) if measured else None,
                          "scope": "Host-only baseline diagnostic of the seed training template under the "
                                   "selection protocol; informs whether auxiliary rows help, ranks no branch"}
         trace.emit("auxiliary_ablation", f"{kind}: seed template grouped_cv_precision selection-only="
-                   f"{arms['selection_only'].get('macro_precision')} with-auxiliary="
-                   f"{arms['selection_plus_auxiliary'].get('macro_precision')}", **results[kind])
+                   f"{arms['selection_only'].get('per_kind_precision', {}).get(kind)} with-auxiliary="
+                   f"{arms['selection_plus_auxiliary'].get('per_kind_precision', {}).get(kind)}", **results[kind])
     _write(run_dir / "auxiliary_ablation.json", results)
     return results
 
@@ -812,7 +811,7 @@ def _contract(args):
 
 
 async def run(args, revise_fn=None):
-    """Budgeted TRAIN search followed by mean-validation promotion; by default the mean gain
+    """Budgeted TRAIN search followed by target-kind validation promotion; by default the gain
     must also clear paired-bootstrap resampling noise."""
     if revise_fn is None:
         revise_fn = partial(revise, max_turns=args.reviser_max_turns, contract=_contract(args))
@@ -849,13 +848,13 @@ async def _run(args, revise_fn, run_dir, trace):
     _write(run_dir / 'image_alignment.json', {'brains': image_store.reviews})
     selection["detector_prior"] = getattr(args, "detector_prior", "frozen")
     _write(run_dir / "dataset_split.json", selection)
-    trace.emit("promotion_rule", "Promotion uses the mean validation Precision@K only (each kind averaged over "
-               "the pools that count toward the mean, then kinds averaged; each pool at its own K); "
+    trace.emit("promotion_rule", "Promotion uses target-kind validation Precision@K over counted pools "
+               "under the configured aggregation; each pool at its own K. "
                "TRAIN improvement is diagnostic, and individual validation regressions are allowed"
-               + ("; the mean gain must also clear row-resampling noise (paired bootstrap lower bound above zero)"
+               + ("; the target-kind gain must also clear row-resampling noise (paired bootstrap lower bound above zero)"
                   if args.promotion_gate == "bootstrap" else ""),
                gate_version=scoring.gate_version(args.promotion_gate), gate_mode=args.promotion_gate,
-               aggregation=scoring.AGGREGATION)
+               aggregation=scoring.AGGREGATION_LABELS[args.aggregation])
     trace.emit("metric_definitions", "Labels are three-valued (1 error / 0 GT-confirmed no error / NaN not "
                "judgeable by GT); Top K is taken among GT-labeled rows (gt_labeled), NaN rows are never ranked. "
                "discoverable_pool_positives = GT-positive candidate rows in the fixed pool; "
@@ -867,10 +866,10 @@ async def _run(args, revise_fn, run_dir, trace):
                "so every pool's K is its GT positives; merge was capped at 300 before), or the fixed kind cap when "
                "the ratio is 0; pools with fewer than "
                "min_positives GT positives "
-               "are scored and reported but excluded from the promotion mean (in_mean=false). "
+               "are scored and reported but excluded from the objective (in_mean=false). "
                "Within each kind the counted pools are combined by the configured aggregation (positive-weighted: "
-               "hits / K pooled over brains, the default since 2026-10-27; equal-brain: equal-weight mean), then the "
-               "kinds are averaged. Evaluation datasets are logged as validation.")
+               "sum(hits) / sum(effective K) over brains; equal-brain: equal-weight mean). "
+               "Each kind has an independent score. Evaluation datasets are logged as validation.")
     train = {b: banks[b] for b in args.train_brains}
     validation = {b: banks[b] for b in args.validation_brains}
     budgets = scoring.Budgets({"merge": args.merge_k, "split": args.split_k},
@@ -1005,13 +1004,14 @@ async def _run(args, revise_fn, run_dir, trace):
                 "budgets": budgets.describe(), "pool_budgets": pool_budgets,
                 "promotion_gate": {"version": scoring.gate_version(args.promotion_gate),
                                    "mode": args.promotion_gate,
-                                   "aggregation": scoring.AGGREGATION, "split": "development_validation",
+                                   "aggregation": scoring.AGGREGATION_LABELS[budgets.aggregation],
+                                   "target": "generation.target_kind", "split": "development_validation",
                                    "require_train_improvement": False, "require_no_cell_regression": False,
                                    "precision_margin": args.precision_margin,
                                    "bootstrap": {"version": scoring.BOOTSTRAP_VERSION,
                                                  "draws": args.bootstrap_draws, "alpha": args.bootstrap_alpha,
                                                  "rule": "lower bound of the two-sided (1 - alpha) interval "
-                                                         "of the paired mean delta must exceed zero",
+                                                         "of the paired target-kind precision delta must exceed zero",
                                                  "affects_decision": args.promotion_gate == "bootstrap"}},
                 "dataset_selection": selection,
                 "detector_prior": detector_prior.describe(args, stripped_cells),
@@ -1022,8 +1022,8 @@ async def _run(args, revise_fn, run_dir, trace):
                            "tables": availability_summary},
                 "selection_protocol": protocol.describe(),
                 "reviser_max_turns": args.reviser_max_turns,
-                "feedback_format": "stratified-train-v5",
-                "search_version": "branch-feedback-handoff-v17", "target_kind": args.target_kind,
+                "feedback_format": FEEDBACK_VERSION,
+                "search_version": "per-kind-selection-objective-v18", "target_kind": args.target_kind,
                 "kind_schedule": {"mode": args.kind_schedule, "version": kind_schedule.SCHEDULE_VERSION,
                                   "floor_every": args.kind_floor_every,
                                   "momentum_window": kind_schedule.MOMENTUM_WINDOW,
@@ -1050,7 +1050,7 @@ async def _run(args, revise_fn, run_dir, trace):
                     "numeric_extraction": "bounded row/byte batches under a shared timeout",
                     "default_batch_rows": 32, "default_batch_mb": 256, "default_total_mb": 4096,
                     "format": "OME-Zarr v2 with explicit axes, units and transforms"},
-                "feature_discovery": {"version": "paired-train-feature-ablation-v2",
+                "feature_discovery": {"version": ABLATION_VERSION,
                     "internal_folds": 3, "split_spatial_block_um": 500,
                     "purge_shared_fragments": True, "classifier_evaluation_units": CLASSIFIER_UNITS,
                     "formula_evaluation_units": FORMULA_UNITS, "affects_promotion_gate": False,
@@ -1268,8 +1268,8 @@ async def _run(args, revise_fn, run_dir, trace):
                   "search_parent": branch['experiment'],
                   "objective": scoring.SCORING_VERSION, "accounting_semantics": "per_generation",
                   "selection_protocol": protocol.mode,
-                  "parent_selection_precision": parent_selection[target_kind][0]["macro_precision"],
-                  "parent_validation_precision": parent_validation["macro_precision"],
+                  "parent_selection_precision": scoring.precision_for_kind(parent_selection[target_kind][0], target_kind),
+                  "parent_validation_precision": dict(parent_validation['per_kind_precision']),
                   "descriptors_referenced": [], "descriptor_inference": [],
                   "parent_policy_sha256": hashlib.sha256(source.encode()).hexdigest(),
                   "candidate_policy_sha256": None, "train": None, "validation": None}
@@ -1306,7 +1306,8 @@ async def _run(args, revise_fn, run_dir, trace):
             candidate_train = submitted['report']
             record["train"] = candidate_train
             log_metrics(gen_trace, "Candidate train", candidate_train, parent_train)
-            improves_train, reason = scoring.acceptance(parent_train, candidate_train, args.precision_margin)
+            improves_train, reason = scoring.acceptance(parent_train, candidate_train, args.precision_margin,
+                                                         target_kind=target_kind)
             record["train_gate"] = {"passed": improves_train, "reason": reason,
                                     "required_for_promotion": False}
             stage = 'research_check'
@@ -1327,8 +1328,9 @@ async def _run(args, revise_fn, run_dir, trace):
                                              "mode": args.promotion_gate, "passed": False, "reason": reason,
                                              "skipped": "unchanged_submission",
                                              "brains": list(args.validation_brains),
-                                             "parent_mean": parent_validation["macro_precision"],
-                                             "candidate_mean": parent_validation["macro_precision"]}
+                                             "target_kind": target_kind,
+                                             "parent_precision": scoring.precision_for_kind(parent_validation, target_kind),
+                                             "candidate_precision": scoring.precision_for_kind(parent_validation, target_kind)}
                 record.update(accepted=False, reason="VALIDATION: " + reason)
                 gen_trace.emit(stage, reason, experiment=submitted['entry']['experiment'],
                                component_sha256=submitted['entry']['component_sha256'])
@@ -1347,8 +1349,9 @@ async def _run(args, revise_fn, run_dir, trace):
                                              "mode": args.promotion_gate, "passed": False, "reason": reason,
                                              "skipped": "repeated_submission",
                                              "brains": list(args.validation_brains),
-                                             "parent_mean": parent_validation["macro_precision"],
-                                             "candidate_mean": parent_validation["macro_precision"]}
+                                             "target_kind": target_kind,
+                                             "parent_precision": scoring.precision_for_kind(parent_validation, target_kind),
+                                             "candidate_precision": None}
                 record.update(accepted=False, reason="VALIDATION: " + reason)
                 gen_trace.emit(stage, reason, experiment=submitted['entry']['experiment'],
                                component_sha256=submitted['entry']['component_sha256'],
@@ -1370,12 +1373,13 @@ async def _run(args, revise_fn, run_dir, trace):
                 record["validation"] = candidate_validation
                 log_metrics(gen_trace, "Candidate validation", candidate_validation, parent_validation)
                 point_passed, point_reason = scoring.acceptance(parent_validation, candidate_validation,
-                                                                args.precision_margin, require_no_cell_regression=False)
+                                                                args.precision_margin, target_kind=target_kind,
+                                                                require_no_cell_regression=False)
                 bootstrap = None
                 if args.bootstrap_draws > 0:
                     try:
                         bootstrap = scoring.paired_bootstrap(parent_validation_state, candidate_validation_state,
-                                                             validation, budgets, draws=args.bootstrap_draws,
+                                                             validation, budgets, target_kind=target_kind, draws=args.bootstrap_draws,
                                                              seed=generation, alpha=args.bootstrap_alpha)
                     except Exception as exc:  # In bootstrap mode a failed interval rejects; it never promotes.
                         bootstrap = {"status": "unavailable", "error": f"{type(exc).__name__}: {exc}"}
@@ -1384,10 +1388,10 @@ async def _run(args, revise_fn, run_dir, trace):
                                       else "(does not affect the gate)"), paired_bootstrap=bootstrap)
                 if args.promotion_gate == "bootstrap":
                     accepted, reason = scoring.bootstrap_acceptance(parent_validation, candidate_validation, bootstrap,
-                                                                    args.precision_margin, alpha=args.bootstrap_alpha)
+                                                                    args.precision_margin, target_kind=target_kind, alpha=args.bootstrap_alpha)
                 else:
                     accepted, reason = point_passed, point_reason
-                interval = (bootstrap or {}).get("macro_delta_ci")
+                interval = (bootstrap or {}).get("delta_ci")
                 record["validation_gate"] = {"version": scoring.gate_version(args.promotion_gate),
                                              "mode": args.promotion_gate,
                                              "passed": accepted, "reason": reason,
@@ -1398,10 +1402,11 @@ async def _run(args, revise_fn, run_dir, trace):
                                                                  "passed": interval[0] > 0.,
                                                                  "binding": args.promotion_gate == "bootstrap"}
                                                                 if interval else None),
-                                             "aggregation": scoring.AGGREGATION,
+                                             "aggregation": scoring.AGGREGATION_LABELS[budgets.aggregation],
                                              "brains": list(args.validation_brains),
-                                             "parent_mean": parent_validation["macro_precision"],
-                                             "candidate_mean": candidate_validation["macro_precision"],
+                                             "target_kind": target_kind,
+                                             "parent_precision": scoring.precision_for_kind(parent_validation, target_kind),
+                                             "candidate_precision": scoring.precision_for_kind(candidate_validation, target_kind),
                                              "regressed_cells": [cell for cell, before in parent_validation["cells"].items()
                                                  if candidate_validation["cells"][cell]["precision"] < before["precision"]],
                                              "paired_bootstrap": bootstrap}

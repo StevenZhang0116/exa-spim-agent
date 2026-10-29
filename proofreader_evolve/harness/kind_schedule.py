@@ -17,19 +17,18 @@ Rules, in priority order:
 3. ``momentum``: among unsaturated kinds, the largest mean gate-passing
    validation gain over the kind's last ``MOMENTUM_WINDOW`` scheduled
    generations; rejected or failed generations count as zero.
-4. ``headroom``: the largest equal-brain mean of ``min(positives, K) / K -
-   precision`` over the validation cells of that kind, where K is each cell's
-   resolved ``requested_k``. Cells flagged ``in_mean: false`` (below the
-   GT-positive floor) are skipped, as in the promotion mean.
+4. ``headroom``: the largest remaining precision under the configured per-kind
+   aggregation, using each cell's effective K. Cells flagged ``in_mean: false``
+   (below the GT-positive floor) are skipped, as in the promotion objective.
 
-A kind whose headroom is below ``SATURATION_HITS / K`` (half a Top-K hit, with K
-the mean resolved K of its counted cells) is saturated: rules 3 and 4 skip it and
-it is revised only through rules 1 and 2.
+A kind is saturated when its headroom is below half the smallest one-hit gain
+under its configured aggregation and effective K. Rules 3 and 4 skip saturated
+kinds; rules 1 and 2 can still revise them.
 """
 
 import math
 
-SCHEDULE_VERSION = "adaptive-kind-allocation-v1"
+SCHEDULE_VERSION = "adaptive-kind-allocation-v3-objective-saturation"
 MODES = ("adaptive", "alternate")
 MOMENTUM_WINDOW = 2
 SATURATION_HITS = .5
@@ -37,7 +36,7 @@ DEFAULT_FLOOR_EVERY = 4
 
 
 def _counted(cells, kinds):
-    """Cells of the requested kinds that count toward the mean, keyed by kind."""
+    """Cells of the requested kinds that count toward the objective, keyed by kind."""
     per_kind = {kind: [] for kind in kinds}
     for name, cell in cells.items():
         kind = name.rsplit("/", 1)[-1]
@@ -51,39 +50,39 @@ def _counted(cells, kinds):
 
 def headroom(cells, budgets, kinds):
     """Remaining precision per kind on the counted validation pools, under the budgets'
-    aggregation (equal-brain mean, or pooled by GT positives when positive-weighted)."""
+    aggregation (equal-brain mean, or pooled hits / effective K when positive-weighted)."""
     pooled = getattr(budgets, "aggregation", "equal-brain") == "positive-weighted"
     result = {}
     for kind, counted in _counted(cells, kinds).items():
         if pooled and counted:
-            total_k = sum(int(cell["requested_k"]) for cell in counted)
-            attainable = sum(min(int(cell["positives"]), int(cell["requested_k"])) for cell in counted)
+            total_k = sum(int(cell.get('effective_k', cell['requested_k'])) for cell in counted)
+            attainable = sum(min(int(cell["positives"]), int(cell.get('effective_k', cell['requested_k']))) for cell in counted)
             result[kind] = (attainable - sum(int(cell["tp"]) for cell in counted)) / total_k
             continue
-        values = [min(int(cell["positives"]), int(cell["requested_k"])) / int(cell["requested_k"])
+        values = [min(int(cell["positives"]), int(cell.get('effective_k', cell['requested_k'])))
+                  / int(cell.get('effective_k', cell['requested_k']))
                   - float(cell["precision"]) for cell in counted]
         result[kind] = math.fsum(values) / len(values) if values else 0.
     return result
 
 
-def mean_k(cells, budgets, kinds):
-    """Mean resolved K of the counted cells per kind.
+def saturation_thresholds(cells, budgets, kinds):
+    """Half the smallest one-hit change in each kind's objective.
 
-    With no counted cell the kind cap stands in; a kind without a cap falls back to the
-    mean K of its uncounted cells, or infinity when it has no cells at all (then nothing
-    can be declared saturated).
+    Pooled precision changes by 1 / sum(effective K) per hit. Equal-brain
+    precision changes by 1 / (number of counted brains * that brain's K),
+    so its smallest step uses the largest K. No counted cells means no
+    evidence of saturation; a zero threshold keeps that kind unsaturated.
     """
+    pooled = getattr(budgets, "aggregation", "equal-brain") == "positive-weighted"
     result = {}
     for kind, counted in _counted(cells, kinds).items():
-        if counted:
-            result[kind] = math.fsum(int(cell["requested_k"]) for cell in counted) / len(counted)
+        if not counted:
+            result[kind] = 0.
             continue
-        cap = budgets[kind]
-        if cap is not None:
-            result[kind] = float(cap)
-            continue
-        every = [int(cell["requested_k"]) for name, cell in cells.items() if name.rsplit("/", 1)[-1] == kind]
-        result[kind] = math.fsum(every) / len(every) if every else math.inf
+        ks = [int(cell.get('effective_k', cell['requested_k'])) for cell in counted]
+        denominator = sum(ks) if pooled else len(ks) * max(ks)
+        result[kind] = SATURATION_HITS / denominator
     return result
 
 
@@ -96,9 +95,9 @@ def momentum(records, kinds, window=MOMENTUM_WINDOW):
         for row in rows:
             gate = row.get("validation_gate") or {}
             gain = 0.
-            if (row.get("accepted") and gate.get("candidate_mean") is not None
-                    and gate.get("parent_mean") is not None):
-                gain = max(0., float(gate["candidate_mean"]) - float(gate["parent_mean"]))
+            if (row.get("accepted") and gate.get("target_kind") == kind
+                    and gate.get("candidate_precision") is not None and gate.get("parent_precision") is not None):
+                gain = max(0., float(gate["candidate_precision"]) - float(gate["parent_precision"]))
             gains.append(gain)
         result[kind] = math.fsum(gains) / len(gains) if gains else 0.
     return result
@@ -125,8 +124,8 @@ def allocate(kinds, *, cells, budgets, records, paused, pending, floor_every=DEF
     room = headroom(cells, budgets, kinds)
     gain = momentum(records, kinds)
     since = generations_since(records, kinds)
-    scale = mean_k(cells, budgets, kinds)
-    saturated = {kind: room[kind] < SATURATION_HITS / scale[kind] for kind in kinds}
+    thresholds = saturation_thresholds(cells, budgets, kinds)
+    saturated = {kind: room[kind] < thresholds[kind] for kind in kinds}
     active = [kind for kind in kinds if not paused.get(kind)]
 
     def by_headroom(candidates):
@@ -151,6 +150,7 @@ def allocate(kinds, *, cells, budgets, records, paused, pending, floor_every=DEF
     return {"version": SCHEDULE_VERSION, "mode": "adaptive", "rule": rule, "chosen": lead, "order": order,
             "floor_every": floor_every, "momentum_window": MOMENTUM_WINDOW, "saturation_hits": SATURATION_HITS,
             "kinds": {kind: {"headroom": room[kind], "momentum": gain[kind], "generations_since": since[kind],
+                             "saturation_threshold": thresholds[kind],
                              "saturated": saturated[kind], "paused": bool(paused.get(kind)),
                              "pending": bool(pending.get(kind))} for kind in kinds},
             "scope": "Host-side allocation over development-validation cells and ledger rows; "

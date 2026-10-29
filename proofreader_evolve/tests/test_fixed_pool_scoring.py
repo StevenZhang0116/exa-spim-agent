@@ -51,7 +51,7 @@ class FixedScoringTests(unittest.TestCase):
                   "    features['evidence'] = 0\n"
                   "    return features['detector_score'].to_numpy()\n")
         report = scoring.evaluate(source, {"1": bank}, {"split": 1})
-        self.assertEqual(report["macro_precision"], 0)
+        self.assertEqual(report['per_kind_precision']['split'], 0)
         self.assertEqual(bank.tables["split"].features["evidence"].tolist(), [.1, .9, .2])
         self.assertNotIn("training_examples", report["cells"]["1/split"])
 
@@ -65,21 +65,21 @@ class FixedScoringTests(unittest.TestCase):
     def test_gate_same_pool_k_strict_gain_and_no_cell_regression(self):
         before = scoring.evaluate(BASELINE, {"1": fixture()}, {"split": 1})
         after = scoring.evaluate(IMPROVED, {"1": fixture()}, {"split": 1})
-        self.assertTrue(scoring.acceptance(before, after)[0])
-        self.assertFalse(scoring.acceptance(after, after)[0])
-        self.assertFalse(scoring.acceptance(after, before)[0])
+        self.assertTrue(scoring.acceptance(before, after, target_kind='split')[0])
+        self.assertFalse(scoring.acceptance(after, after, target_kind='split')[0])
+        self.assertFalse(scoring.acceptance(after, before, target_kind='split')[0])
         changed = deepcopy(after)
         changed["cells"]["1/split"]["pool_sha256"] = "other"
         with self.assertRaises(ValueError):
-            scoring.acceptance(before, changed)
+            scoring.acceptance(before, changed, target_kind='split')
         changed = deepcopy(after)
         changed["cells"]["1/split"]["labels_sha256"] = "different truth, same count"
         with self.assertRaises(ValueError):
-            scoring.acceptance(before, changed)
+            scoring.acceptance(before, changed, target_kind='split')
         changed = deepcopy(after)
         changed["cells"]["1/split"]["effective_k"] = 2
         with self.assertRaises(ValueError):
-            scoring.acceptance(before, changed)
+            scoring.acceptance(before, changed, target_kind='split')
 
     def test_stateful_scorer_rejected(self):
         source = "counter = 0\ndef score_candidates(features, ctx):\n    global counter\n    counter += 1\n    return features['evidence'].to_numpy() + counter\n"
@@ -115,7 +115,7 @@ class FixedScoringTests(unittest.TestCase):
             self.assertIsNone(records[2]["validation"])
             from proofreader_evolve.harness.scorer_components import components
             self.assertEqual(components((path / "best_scorer.py").read_text())['split'], IMPROVED)
-            self.assertEqual(json.loads((path / "final.json").read_text())["validation"]["macro_precision"], 1)
+            self.assertEqual(json.loads((path / "final.json").read_text())["validation"]['per_kind_precision']['split'], 1)
             self.assertEqual((path / "gen002/parent_scorer.py").read_text(), IMPROVED)
             self.assertEqual((path / "gen003/parent_scorer.py").read_text(), IMPROVED)
             self.assertIn("+    return features['evidence']", (path / "gen001/scorer.py.diff").read_text())

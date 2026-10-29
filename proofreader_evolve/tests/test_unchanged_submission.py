@@ -71,7 +71,7 @@ class UnchangedSubmissionTests(unittest.TestCase):
         gate = record['validation_gate']
         self.assertEqual(gate['skipped'], 'unchanged_submission')
         self.assertFalse(gate['passed'])
-        self.assertEqual(gate['candidate_mean'], gate['parent_mean'])
+        self.assertEqual(gate['candidate_precision'], gate['parent_precision'])
         self.assertIn(record['submitted_experiment'], trajectory)
         self.assertEqual(generation_status(record, set()), 'unchanged')
         self.assertIn('unchanged_submission', trajectory)
@@ -97,7 +97,7 @@ class UnchangedSubmissionTests(unittest.TestCase):
 
     def test_report_status_vocabulary(self):
         self.assertEqual(generation_status({'accepted': False, 'submission_unchanged': True, 'validation': None}, set()), 'unchanged')
-        self.assertEqual(generation_status({'accepted': False, 'validation': {'macro_precision': .1}}, set()), 'rejected')
+        self.assertEqual(generation_status({'accepted': False, 'validation': {'per_kind_precision': {'split': .1}}}, set()), 'rejected')
         self.assertEqual(generation_status({'accepted': True, 'submission_unchanged': False}, set()), 'accepted')
 
 

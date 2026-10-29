@@ -110,21 +110,21 @@ class WeightedAggregationTests(unittest.TestCase):
         self.assertAlmostEqual(equal["per_kind_precision"]["merge"], (0.25 + 0.75) / 2)
         self.assertAlmostEqual(pooled["per_kind_precision"]["merge"], 31 / 44)
         self.assertAlmostEqual(pooled["per_kind_precision"]["split"], 12 / 44)
-        self.assertAlmostEqual(pooled["macro_precision"], (31 / 44 + 12 / 44) / 2)
+        self.assertNotIn('macro_precision', pooled)
         # A label round-trips to its mode; unknown names are refused.
-        self.assertEqual(scoring.aggregate_precision(self.cells, pooled["aggregation"])["macro_precision"],
-                         pooled["macro_precision"])
+        self.assertEqual(scoring.aggregate_precision(self.cells, pooled["aggregation"])['per_kind_precision']['merge'],
+                         pooled['per_kind_precision']['merge'])
         with self.assertRaises(ValueError):
             scoring.aggregate_precision(self.cells, "median")
         excluded = {**self.cells, "c/merge": cell(0, 2, in_mean=False), "c/split": cell(1, 2, in_mean=False)}
-        self.assertEqual(scoring.aggregate_precision(excluded, "positive-weighted")["macro_precision"],
-                         pooled["macro_precision"])
+        self.assertEqual(scoring.aggregate_precision(excluded, "positive-weighted")['per_kind_precision']['merge'],
+                         pooled['per_kind_precision']['merge'])
 
     def test_budgets_carry_the_aggregation_and_acceptance_follows_the_report(self):
         budgets = scoring.Budgets({"merge": None, "split": None}, positive_ratio=1., aggregation="positive-weighted")
         self.assertEqual(budgets.aggregation, "positive-weighted")
         self.assertEqual(budgets.describe()["aggregation_label"], scoring.AGGREGATION_LABELS["positive-weighted"])
-        self.assertIn("pooled by GT positives", budgets.describe()["mean_rule"])
+        self.assertIn("sum(TP) / sum(effective K)", budgets.describe()["precision_rule"])
         self.assertEqual(scoring.Budgets({"merge": 4}).aggregation, "equal-brain")
         with self.assertRaises(ValueError):
             scoring.Budgets({"merge": 4}, aggregation="median")
@@ -134,12 +134,12 @@ class WeightedAggregationTests(unittest.TestCase):
                   "cells": {name: {**identity, **values} for name, values in self.cells.items()}}
         after = {**before, "cells": {name: dict(values) for name, values in before["cells"].items()}}
         after["cells"]["a/merge"].update(cell(2, 4))  # one more hit on the small pool
-        passed, reason = scoring.acceptance(before, after, 0, require_no_cell_regression=False)
+        passed, reason = scoring.acceptance(before, after, 0, require_no_cell_regression=False, target_kind='merge')
         self.assertTrue(passed)
-        self.assertIn(f"{(32 / 44 + 12 / 44) / 2:.6f}", reason)
+        self.assertIn(f"{32 / 44:.6f}", reason)
         mismatched = {**after, "aggregation": scoring.AGGREGATION_LABELS["equal-brain"]}
         with self.assertRaisesRegex(ValueError, "different aggregations"):
-            scoring.acceptance(before, mismatched, 0)
+            scoring.acceptance(before, mismatched, 0, target_kind='merge')
 
     def test_headroom_pools_when_positive_weighted(self):
         cells = {"a/merge": cell(1, 4), "b/merge": cell(30, 40)}
@@ -156,12 +156,12 @@ class WeightedAggregationTests(unittest.TestCase):
         state = {f'{b}/merge': {'scores': tables[b].tables['merge'].features['detector_score'].to_numpy()}
                  for b in tables}
         budgets = scoring.Budgets({"merge": 4}, aggregation="positive-weighted")
-        same = scoring.paired_bootstrap(state, state, tables, budgets, draws=40)
+        same = scoring.paired_bootstrap(state, state, tables, budgets, draws=40, target_kind='merge')
         self.assertEqual(same["aggregation"], scoring.AGGREGATION_LABELS["positive-weighted"])
-        self.assertEqual(same["macro_delta_ci"], [0., 0.])
+        self.assertEqual(same["delta_ci"], [0., 0.])
         better = {f'{b}/merge': {'scores': tables[b].tables['merge'].features['signal'].to_numpy()} for b in tables}
-        gain = scoring.paired_bootstrap(state, better, tables, budgets, draws=40)
-        self.assertGreater(gain["macro_delta_ci"][0], 0.)
+        gain = scoring.paired_bootstrap(state, better, tables, budgets, draws=40, target_kind='merge')
+        self.assertGreater(gain["delta_ci"][0], 0.)
 
 
 class DriverFlagTests(unittest.TestCase):

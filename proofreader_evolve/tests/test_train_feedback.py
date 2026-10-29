@@ -17,7 +17,7 @@ def report(n_features=100):
                  "features": {f"feature_{j}_descriptive_name": None if j == 0 else i * .137891234 + j
                               for j in range(n_features)}}
                 for label in (0, 1) for i in range(8)]
-    return {"macro_precision": .25, "policy_sha256": "parent", "cells": {
+    return {'per_kind_precision': {'merge': .25, 'split': .25}, "policy_sha256": "parent", "cells": {
         f"1/{kind}": {"precision": .25, "tp": 25, "fp": 75, "effective_k": 100,
                       "training_examples": deepcopy(examples)} for kind in ("merge", "split")}}
 

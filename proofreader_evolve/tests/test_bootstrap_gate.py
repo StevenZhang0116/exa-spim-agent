@@ -1,4 +1,4 @@
-"""Bootstrap promotion gate: the mean validation gain must clear the margin AND
+"""Bootstrap promotion gate: the target-kind validation gain must clear the margin AND
 the lower bound of the paired row-resampling interval must exceed zero.
 
 Synthetic fixtures only. A single extra Top-K hit (+1/K) on a 4,000-row pool is
@@ -65,17 +65,17 @@ class BootstrapAcceptanceTests(unittest.TestCase):
 
     def interval(self, before, after, draws=200, alpha=.05):
         return scoring.paired_bootstrap(self.states[before], self.states[after], self.banks, self.budgets,
-                                        draws=draws, seed=1, alpha=alpha)
+                                        draws=draws, seed=1, alpha=alpha, target_kind='merge')
 
     def test_one_extra_hit_passes_the_margin_gate_but_not_the_bootstrap_gate(self):
         before, after = self.reports['detector'], self.reports['tweak']
-        gain = after['macro_precision'] - before['macro_precision']
+        gain = after['per_kind_precision']['merge'] - before['per_kind_precision']['merge']
         self.assertAlmostEqual(gain, 1. / K)
-        self.assertTrue(scoring.acceptance(before, after, 0, require_no_cell_regression=False)[0])
+        self.assertTrue(scoring.acceptance(before, after, 0, require_no_cell_regression=False, target_kind='merge')[0])
         bootstrap = self.interval('detector', 'tweak')
-        self.assertLessEqual(bootstrap['macro_delta_ci'][0], 0.)
+        self.assertLessEqual(bootstrap['delta_ci'][0], 0.)
         self.assertEqual(bootstrap['alpha'], .05)
-        passed, reason = scoring.bootstrap_acceptance(before, after, bootstrap, 0, alpha=.05)
+        passed, reason = scoring.bootstrap_acceptance(before, after, bootstrap, 0, alpha=.05, target_kind='merge')
         self.assertFalse(passed)
         self.assertIn('within resampling noise', reason)
         self.assertIn(f'delta={gain:+.6f}', reason)
@@ -84,26 +84,26 @@ class BootstrapAcceptanceTests(unittest.TestCase):
     def test_clear_gain_passes_and_point_failures_keep_the_point_reason(self):
         before, after = self.reports['detector'], self.reports['signal']
         bootstrap = self.interval('detector', 'signal')
-        self.assertGreater(bootstrap['macro_delta_ci'][0], 0.)
-        passed, reason = scoring.bootstrap_acceptance(before, after, bootstrap, 0, alpha=.05)
+        self.assertGreater(bootstrap['delta_ci'][0], 0.)
+        passed, reason = scoring.bootstrap_acceptance(before, after, bootstrap, 0, alpha=.05, target_kind='merge')
         self.assertTrue(passed)
         self.assertIn('beyond resampling noise', reason)
         self.assertIn('bootstrap lower bound +', reason)
-        passed, reason = scoring.bootstrap_acceptance(after, before, self.interval('signal', 'detector'), 0)
+        passed, reason = scoring.bootstrap_acceptance(after, before, self.interval('signal', 'detector'), 0, target_kind='merge')
         self.assertFalse(passed)
-        self.assertIn('No sufficient mean Precision@K gain', reason)
+        self.assertIn('No sufficient merge Precision@K gain', reason)
         self.assertNotIn('bootstrap', reason)
 
     def test_missing_or_mismatched_interval_fails_closed(self):
         before, after = self.reports['detector'], self.reports['signal']
         for missing in (None, {'status': 'unavailable', 'error': 'boom'}, {}):
-            passed, reason = scoring.bootstrap_acceptance(before, after, missing, 0)
+            passed, reason = scoring.bootstrap_acceptance(before, after, missing, 0, target_kind='merge')
             self.assertFalse(passed)
             self.assertIn('unavailable', reason)
         bootstrap = self.interval('detector', 'signal', alpha=.1)
         self.assertEqual(bootstrap['alpha'], .1)
         with self.assertRaises(ValueError):
-            scoring.bootstrap_acceptance(before, after, bootstrap, 0, alpha=.05)
+            scoring.bootstrap_acceptance(before, after, bootstrap, 0, alpha=.05, target_kind='merge')
         with self.assertRaises(ValueError):
             self.interval('detector', 'signal', alpha=1.5)
         self.assertEqual(scoring.gate_version('bootstrap'), scoring.BOOTSTRAP_GATE_VERSION)
@@ -113,9 +113,9 @@ class BootstrapAcceptanceTests(unittest.TestCase):
 
     def test_interval_level_and_legacy_fields(self):
         bootstrap = self.interval('detector', 'signal', alpha=.2)
-        self.assertEqual(len(bootstrap['macro_delta_ci95']), 2)
-        self.assertGreaterEqual(bootstrap['macro_delta_ci'][0], bootstrap['macro_delta_ci95'][0])
-        self.assertLessEqual(bootstrap['macro_delta_ci'][1], bootstrap['macro_delta_ci95'][1])
+        self.assertEqual(len(bootstrap['delta_ci95']), 2)
+        self.assertGreaterEqual(bootstrap['delta_ci'][0], bootstrap['delta_ci95'][0])
+        self.assertLessEqual(bootstrap['delta_ci'][1], bootstrap['delta_ci95'][1])
         self.assertIn('delta_ci', bootstrap['cells']['2/merge'])
 
 

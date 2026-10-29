@@ -11,11 +11,11 @@ from proofreader_evolve.harness.collect_run import collect, resolve_run_dir
 
 
 def precision(gen=1, accepted=True, validation=.8, cost=1):
-    report = {"version": records.PRECISION, "macro_precision": validation,
+    report = {"version": records.PRECISION, 'per_kind_precision': {'split': validation},
               "policy_sha256": "child", "cells": {"1/split": {"precision": validation}}}
     return {"generation": gen, "objective": records.PRECISION,
             "accounting_semantics": "per_generation", "accepted": accepted,
-            "parent_validation_precision": .5, "train": report,
+            "parent_validation_precision": {'split': .5}, "target_kind": 'split', "train": report,
             "validation": report if validation is not None else None,
             "reviser": {"cost_usd": cost}, "wall_seconds": 1,
             "reason": "VALIDATION: improved" if accepted else "TRAIN: rejected"}
@@ -45,8 +45,8 @@ class RecordTests(unittest.TestCase):
 
     def test_missing_validation_is_not_zero(self):
         row = precision(accepted=False, validation=None)
-        self.assertIsNone(records.validation_value(row))
-        self.assertEqual(records.parent_values([row]), [.5])
+        self.assertIsNone(records.validation_value(row, 'split'))
+        self.assertEqual(records.parent_values([row], 'split'), [.5])
 
     def test_current_and_legacy_objectives_are_both_read(self):
         from proofreader_evolve.harness import fixed_pool_scoring
@@ -90,24 +90,24 @@ class RecordTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             save_run(root, [precision(), precision(2, cost=2)])
-            (root / "seed.json").write_text(json.dumps({"validation": {"macro_precision": .5}}))
+            (root / "seed.json").write_text(json.dumps({"validation": {'per_kind_precision': {'split': .5}}}))
             (root / "best_scorer.py").write_text("# accepted scorer")
             summary = collect(root)
             self.assertEqual(summary["total_cost_usd"], 3)
-            self.assertEqual(summary["final_accepted_validation"], .8)
+            self.assertEqual(summary["final_accepted_validation"], {'split': .8})
             self.assertEqual(summary["final_policy"], str(root / "best_scorer.py"))
             self.assertEqual(summary["brain_roles"]["train"], ["1"])
             self.assertEqual(summary["detector_prior"], "frozen")
             (root / "ledger.jsonl").unlink()
             summary = collect(root)
             self.assertEqual(summary["n_generations"], 0)
-            self.assertEqual(summary["final_accepted_validation"], .5)
+            self.assertEqual(summary["final_accepted_validation"], {'split': .5})
 
     def test_best_rejected_score_is_not_final_accepted_policy(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             save_run(root, [precision(), precision(2, accepted=False, validation=.99)])
-            self.assertEqual(collect(root)["final_accepted_validation"], .8)
+            self.assertEqual(collect(root)["final_accepted_validation"], {'split': .8})
 
     def test_brain_lookup_ignores_retired_runs(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -137,7 +137,7 @@ class RecordTests(unittest.TestCase):
             performance.make_figure(rows, "fixture", root / "performance.png")
             search.make_figure(rows, "fixture", root / "search.png", root)
             search.write_md(rows, "fixture", root, root / "search.md")
-            performance.write_csv(rows, records.parent_values(rows), root / "series.csv")
+            performance.write_csv(rows, root / "series.csv")
             self.assertGreater((root / "performance.png").stat().st_size, 100)
             self.assertIn("not measured", (root / "search.md").read_text())
             self.assertEqual(search._outcome_reason(rows[-1])[1], records.decision_reason(rows[-1]))

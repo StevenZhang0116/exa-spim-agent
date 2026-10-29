@@ -15,14 +15,16 @@ from pathlib import Path
 # and excludes pools below a positive floor from the mean; v4 (2026-10-26) makes the positive
 # ratio per kind and lets a kind run without a cap (split: K = its GT positives); v5 (2026-10-27)
 # drops the merge cap and ratio too, so every pool of either kind ranks K = its GT positives.
-# All five are read; their numbers are not comparable across versions.
-PRECISION = "native-precision-at-k-v5-uniform-k"
+# v6 removes cross-kind metrics and gives selection and promotion the same per-kind objective.
+# Objective versions are recorded explicitly; measurements are not comparable across versions.
+PRECISION = "native-precision-at-k-v6-per-kind-objective"
+PRECISION_V5 = "native-precision-at-k-v5-uniform-k"
 PRECISION_V4 = "native-precision-at-k-v4-per-kind-k"
 PRECISION_V3 = "native-precision-at-k-v3-positive-scaled-k"
 PRECISION_V2 = "native-precision-at-k-v2-three-valued"
 LEGACY_PRECISION = "native-precision-at-k-v1"
-PRECISION_VERSIONS = frozenset({LEGACY_PRECISION, PRECISION_V2, PRECISION_V3, PRECISION_V4, PRECISION})
-METRIC_NAME = "macro Precision@K"
+PRECISION_VERSIONS = frozenset({LEGACY_PRECISION, PRECISION_V2, PRECISION_V3, PRECISION_V4, PRECISION_V5, PRECISION})
+METRIC_NAME = "Precision@K per kind"
 
 
 def objective(row):
@@ -72,26 +74,37 @@ def number(value):
     return result if math.isfinite(result) else None
 
 
-def measurement_value(measurement):
-    return None if measurement is None else number(measurement.get("macro_precision"))
+def measurement_values(measurement):
+    return (None if measurement is None else
+            {kind: number(value) for kind, value in measurement.get('per_kind_precision', {}).items()})
 
 
-def validation_value(row):
+def measurement_value(measurement, kind):
+    return (measurement_values(measurement) or {}).get(kind)
+
+
+def validation_value(row, kind):
     objective(row)
-    return measurement_value(row.get("validation"))
+    return measurement_value(row.get("validation"), kind)
 
 
-def parent_values(rows, seed=None):
+def kinds(rows):
+    return sorted({kind for row in rows for kind in
+                   ((row.get('validation') or {}).get('per_kind_precision', {})
+                    | row.get('parent_validation_precision', {}))})
+
+
+def parent_values(rows, kind, seed=None):
     current = number(seed)
     result = []
     for row in rows:
         objective(row)
-        recorded = number(row.get("parent_validation_precision"))
+        recorded = number(row.get("parent_validation_precision", {}).get(kind))
         if recorded is not None:
             current = recorded
         result.append(current)
         if row.get("accepted"):
-            current = validation_value(row)
+            current = validation_value(row, kind)
     return result
 
 
@@ -109,9 +122,11 @@ def paired_measurements(rows, run_dir=None):
             continue
         if not train.get("policy_sha256") or train["policy_sha256"] != validation.get("policy_sha256"):
             raise ValueError("Mismatched policies in train/validation pair")
-        pairs.append({"generation": row["generation"], "policy_sha256": train["policy_sha256"],
-                      "train": measurement_value(train),
-                      "validation": measurement_value(validation)})
+        for kind in sorted(set(train.get('per_kind_precision', {})) | set(validation.get('per_kind_precision', {}))):
+            pairs.append({"generation": row["generation"], "kind": kind,
+                          "policy_sha256": train["policy_sha256"],
+                          "train": measurement_value(train, kind),
+                          "validation": measurement_value(validation, kind)})
     return pairs
 
 

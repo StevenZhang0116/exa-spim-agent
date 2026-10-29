@@ -7,6 +7,7 @@ import json
 import numpy as np
 
 from .search_proposals import formula_info
+from .fixed_pool_scoring import precision_for_kind
 
 
 REFERENCE_EVERY = 3
@@ -47,7 +48,7 @@ def candidate_metadata(component, kind, report, state, *, coverage=None):
     for name in sorted(cells):
         membership.update(name.encode())
         membership.update(np.sort(state[name]['chosen']).astype('<i8').tobytes())
-    metadata = {**info, 'target_precision': sum(c['precision'] for c in cells.values()) / len(cells),
+    metadata = {**info, 'target_precision': precision_for_kind(report, kind),
                 'top_k_sha256': membership.hexdigest()}
     if coverage is not None:
         metadata['specialist_profile'] = coverage.record(

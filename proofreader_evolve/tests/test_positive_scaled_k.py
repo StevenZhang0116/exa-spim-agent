@@ -119,9 +119,10 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual((a["requested_k"], a["effective_k"], a["tp"], a["in_mean"]), (6, 6, 3, True))
         self.assertEqual((b["requested_k"], b["effective_k"], b["tp"], b["in_mean"]), (2, 2, 0, False))
         self.assertEqual(report["excluded_cells"], ["b/merge"])
-        self.assertAlmostEqual(report["macro_precision"], .5)  # only a/merge counts: 3 / 6
+        self.assertAlmostEqual(report['per_kind_precision']['merge'], .5)  # only a/merge counts: 3 / 6
         self.assertEqual(report["per_kind_precision"], {"merge": .5})
-        self.assertEqual(report["per_brain_precision"], {"a": .5})
+        self.assertNotIn('per_brain_precision', report)
+        self.assertNotIn('macro_precision', report)
         self.assertEqual(report["budgets"]["caps"], {"merge": 8})
         self.assertEqual(report["version"], scoring.SCORING_VERSION)
         fixed = scoring.evaluate(BASELINE, banks, {"merge": 8})
@@ -129,16 +130,15 @@ class ScoringTests(unittest.TestCase):
         self.assertTrue(fixed["cells"]["b/merge"]["in_mean"])
         self.assertEqual(fixed["excluded_cells"], [])
 
-    def test_mean_is_kind_first_over_counted_cells_and_matches_the_legacy_mean_when_complete(self):
+    def test_each_kind_uses_only_its_counted_cells(self):
         cells = {"a/merge": cell(.8), "a/split": cell(.6), "b/merge": cell(.1), "b/split": cell(.2)}
-        legacy = ((.8 + .6) / 2 + (.1 + .2) / 2) / 2
-        self.assertAlmostEqual(scoring.aggregate_precision(cells)["macro_precision"], legacy)
+        self.assertEqual(scoring.aggregate_precision(cells)['per_kind_precision'], {'merge': .45, 'split': .4})
         cells["b/merge"] = cell(.9, positives=9, k=18, in_mean=False)
         result = scoring.aggregate_precision(cells)
-        self.assertAlmostEqual(result["macro_precision"], (.8 + (.6 + .2) / 2) / 2)
+        self.assertEqual(result['per_kind_precision'], {'merge': .8, 'split': .4})
         self.assertEqual(result["excluded_cells"], ["b/merge"])
         self.assertAlmostEqual(result["per_kind_precision"]["merge"], .8)
-        self.assertAlmostEqual(result["per_brain_precision"]["b"], .2)
+        self.assertNotIn('per_brain_precision', result)
         cells["a/merge"] = cell(.8, in_mean=False)
         with self.assertRaisesRegex(ValueError, "No merge pool counts"):
             scoring.aggregate_precision(cells)
@@ -152,7 +152,7 @@ class ScoringTests(unittest.TestCase):
         after["cells"]["b/merge"]["in_mean"] = False
         after.update(scoring.aggregate_precision(after["cells"]))
         with self.assertRaisesRegex(ValueError, "fixed benchmark: b/merge/in_mean"):
-            scoring.acceptance(before, after, require_no_cell_regression=False)
+            scoring.acceptance(before, after, require_no_cell_regression=False, target_kind='merge')
 
     def test_bootstrap_uses_resolved_k_and_skips_excluded_cells(self):
         truth_a = np.array([1, 0, 1, 0, 0, 0, 1, 0, 0, 0], dtype=float)
@@ -165,17 +165,17 @@ class ScoringTests(unittest.TestCase):
         parent = {"a/merge": {"scores": same}, "b/merge": {"scores": same}}
         candidate = {"a/merge": {"scores": same}, "b/merge": {"scores": improved_b}}
         budgets = scoring.Budgets({"merge": 8}, positive_ratio=2.0, min_positives=2)
-        result = scoring.paired_bootstrap(parent, candidate, banks, budgets, draws=50, seed=3)
+        result = scoring.paired_bootstrap(parent, candidate, banks, budgets, draws=50, seed=3, target_kind='merge')
         self.assertEqual(result["excluded_cells"], ["b/merge"])
-        self.assertEqual(result["macro_delta_ci"], [0., 0.])
+        self.assertEqual(result["delta_ci"], [0., 0.])
         self.assertGreater(result["cells"]["b/merge"]["delta_ci"][1], 0.)
         self.assertEqual(result["version"], scoring.BOOTSTRAP_VERSION)
-        counted = scoring.paired_bootstrap(parent, candidate, banks, {"merge": 8}, draws=50, seed=3)
+        counted = scoring.paired_bootstrap(parent, candidate, banks, {"merge": 8}, draws=50, seed=3, target_kind='merge')
         self.assertEqual(counted["excluded_cells"], [])
-        self.assertGreater(counted["macro_delta_ci"][1], 0.)
+        self.assertGreater(counted["delta_ci"][1], 0.)
         with self.assertRaisesRegex(ValueError, "counts toward the bootstrap mean"):
             scoring.paired_bootstrap(parent, candidate, banks,
-                                     scoring.Budgets({"merge": 8}, min_positives=50), draws=5)
+                                     scoring.Budgets({"merge": 8}, min_positives=50), draws=5, target_kind='merge')
 
 
 class ScheduleTests(unittest.TestCase):
@@ -188,13 +188,15 @@ class ScheduleTests(unittest.TestCase):
         room = ks.headroom(cells, budgets, kinds)
         self.assertAlmostEqual(room["merge"], .5 - .2)  # b/merge's full 0.5 of room is ignored
         self.assertAlmostEqual(room["split"], ((1 - .9) + (1 - .93)) / 2)
-        self.assertEqual(ks.mean_k(cells, budgets, kinds), {"merge": 162., "split": 500.})
-        self.assertEqual(ks.mean_k({}, budgets, kinds), {"merge": 300., "split": 500.})
+        self.assertEqual(ks.saturation_thresholds(cells, budgets, kinds),
+                         {"merge": .5 / 162, "split": .5 / 1000})
+        self.assertEqual(ks.saturation_thresholds({}, budgets, kinds), {"merge": 0., "split": 0.})
         uncapped = {"merge": 300, "split": None}
-        self.assertEqual(ks.mean_k(cells, uncapped, kinds), {"merge": 162., "split": 500.})
-        self.assertEqual(ks.mean_k({}, uncapped, kinds), {"merge": 300., "split": float("inf")})
+        self.assertEqual(ks.saturation_thresholds(cells, uncapped, kinds),
+                         {"merge": .5 / 162, "split": .5 / 1000})
+        self.assertEqual(ks.saturation_thresholds({}, uncapped, kinds), {"merge": 0., "split": 0.})
         below = {"a/split": {"positives": 9, "requested_k": 9, "precision": .5, "in_mean": False}}
-        self.assertEqual(ks.mean_k(below, uncapped, kinds), {"merge": 300., "split": 9.})
+        self.assertEqual(ks.saturation_thresholds(below, uncapped, kinds), {"merge": 0., "split": 0.})
         result = ks.allocate(kinds, cells={}, budgets=uncapped, records=[], paused={}, pending={})
         self.assertFalse(result["kinds"]["split"]["saturated"])
         saturated = {"a/merge": {"positives": 81, "requested_k": 162, "precision": .499, "in_mean": True},
@@ -233,16 +235,16 @@ class FeedbackAndRecordTests(unittest.TestCase):
         self.assertIsNone(feedback["k_rule"]["caps"]["split"])
         self.assertIn("one K per kind", feedback["reading_guide"])
 
-    def test_record_readers_accept_all_five_objective_versions(self):
+    def test_record_readers_accept_known_objective_versions(self):
         self.assertEqual(records.PRECISION, scoring.SCORING_VERSION)
         self.assertEqual(records.PRECISION_VERSIONS,
                          {records.LEGACY_PRECISION, records.PRECISION_V2, records.PRECISION_V3, records.PRECISION_V4,
-                          records.PRECISION})
+                          records.PRECISION_V5, records.PRECISION})
         self.assertEqual(records.objective({"objective": records.PRECISION_V2}), records.PRECISION_V2)
         self.assertEqual(records.objective({"objective": records.PRECISION_V3}), records.PRECISION_V3)
         self.assertEqual(records.PRECISION_V3, "native-precision-at-k-v3-positive-scaled-k")
         self.assertEqual(records.PRECISION_V4, "native-precision-at-k-v4-per-kind-k")
-        self.assertEqual(records.PRECISION, "native-precision-at-k-v5-uniform-k")
+        self.assertEqual(records.PRECISION, "native-precision-at-k-v6-per-kind-objective")
 
 
 class DriverTests(unittest.TestCase):

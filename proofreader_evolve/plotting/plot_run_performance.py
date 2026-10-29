@@ -33,11 +33,11 @@ def _floats(values):
     return np.asarray([np.nan if v is None else v for v in values], dtype=float)
 
 
-def plot_candidates(ax, rows, metric_name):
+def plot_candidates(ax, rows, kind):
     gens = [r["generation"] for r in rows]
-    values = _floats([records.validation_value(r) for r in rows])
+    values = _floats([records.validation_value(r, kind) for r in rows])
     ax.plot(gens, values, color="tab:blue", label="candidate validation")
-    ax.step(gens, _floats(records.parent_values(rows)), where="mid",
+    ax.step(gens, _floats(records.parent_values(rows, kind)), where="mid",
             linestyle="--", color="gray", label="recorded parent bar")
     for gen, value, row in zip(gens, values, rows):
         if np.isfinite(value):
@@ -45,7 +45,7 @@ def plot_candidates(ax, rows, metric_name):
                        marker="o" if row.get("accepted") else "x", zorder=3)
         else:
             ax.plot(gen, .04, "|", color="tab:red", transform=ax.get_xaxis_transform())
-    ax.set_ylabel(metric_name)
+    ax.set_ylabel(f"{kind} Precision@K")
     ax.set_title("Green: accepted; red: rejected; bottom tick: validation not measured")
     ax.legend(fontsize=8)
     ax.grid(alpha=.3)
@@ -53,29 +53,31 @@ def plot_candidates(ax, rows, metric_name):
 
 def make_figure(rows, run_name, out_path):
     version = records.run_objective(rows=rows)
-    fig, axes = plt.subplots(3, 1, figsize=(11, 11), sharex=True)
+    kinds = records.kinds(rows)
+    fig, axes = plt.subplots(len(kinds) + 2, 1, figsize=(11, 4 * (len(kinds) + 2)), sharex=True)
     gens = [r["generation"] for r in rows]
-    plot_candidates(axes[0], rows, records.METRIC_NAME)
+    for ax, kind in zip(axes, kinds):
+        plot_candidates(ax, rows, kind)
     fig.suptitle(f"{run_name} — {version}\nDevelopment validation, not an untouched final test")
     cells = sorted({k for r in rows for k in (r.get("validation") or {}).get("cells", {})})
     for cell in cells:
         values = [(r.get("validation") or {}).get("cells", {}).get(cell, {}).get("precision") for r in rows]
-        axes[1].plot(gens, _floats(values), "-o", label=cell)
-    axes[1].set_ylabel("Precision@K by brain/kind")
-    if axes[1].lines:
-        axes[1].legend(fontsize=8)
-    axes[1].grid(alpha=.3)
+        axes[-2].plot(gens, _floats(values), "-o", label=cell)
+    axes[-2].set_ylabel("Precision@K by brain/kind")
+    if axes[-2].lines:
+        axes[-2].legend(fontsize=8)
+    axes[-2].grid(alpha=.3)
     costs = records.cumulative_accounting(rows)
-    axes[2].plot(gens, _floats(costs), "-o")
+    axes[-1].plot(gens, _floats(costs), "-o")
     if any(v is None for v in costs):
-        axes[2].text(.02, .92, "Some costs unknown: missing recorded amount",
-                     transform=axes[2].transAxes, fontsize=8)
-    axes[2].set_ylabel("Cumulative agent cost ($)")
-    other = axes[2].twinx()
+        axes[-1].text(.02, .92, "Some costs unknown: missing recorded amount",
+                     transform=axes[-1].transAxes, fontsize=8)
+    axes[-1].set_ylabel("Cumulative agent cost ($)")
+    other = axes[-1].twinx()
     other.plot(gens, np.cumsum(_floats([r.get("wall_seconds") for r in rows])) / 60,
                "--", color="tab:orange")
     other.set_ylabel("Cumulative wall time (minutes)")
-    axes[2].set_xlabel("generation")
+    axes[-1].set_xlabel("generation")
     fig.tight_layout()
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -84,17 +86,18 @@ def make_figure(rows, run_name, out_path):
     return out_path
 
 
-def write_csv(rows, parent_bar, path):
+def write_csv(rows, path):
     version = records.run_objective(rows=rows)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as stream:
         writer = csv.writer(stream)
-        writer.writerow(["generation", "objective", "accepted", "validation_value",
+        writer.writerow(["generation", "objective", "kind", "accepted", "validation_value",
                          "parent_value", "decision_reason", "cost_usd_cumulative"])
-        for row, parent, cost in zip(rows, parent_bar, records.cumulative_accounting(rows)):
-            writer.writerow([row["generation"], version, row.get("accepted"),
-                             records.validation_value(row), parent, records.decision_reason(row), cost])
+        for kind in records.kinds(rows):
+            for row, parent, cost in zip(rows, records.parent_values(rows, kind), records.cumulative_accounting(rows)):
+                writer.writerow([row["generation"], version, kind, row.get("accepted"),
+                                 records.validation_value(row, kind), parent, records.decision_reason(row), cost])
     return path
 
 
@@ -102,12 +105,15 @@ def summarize(rows):
     if not rows:
         return "No generations recorded."
     records.run_objective(rows=rows)
-    accepted = [records.validation_value(r) for r in rows if r.get("accepted")]
-    parents = records.parent_values(rows)
-    final = accepted[-1] if accepted else parents[0]
+    accepted = [r for r in rows if r.get("accepted")]
+    metrics = []
+    for kind in records.kinds(rows):
+        parents = records.parent_values(rows, kind)
+        final = records.validation_value(accepted[-1], kind) if accepted else parents[0]
+        metrics.append(f"{kind} Precision@K: seed={parents[0]}, final accepted={final}")
     cost = records.cumulative_accounting(rows)[-1]
-    return (f"{len(rows)} generations, {len(accepted)} accepted; {records.METRIC_NAME}: "
-            f"seed={parents[0]}, final accepted={final}; total cost={cost if cost is not None else 'unknown'}")
+    return (f"{len(rows)} generations, {len(accepted)} accepted; " + "; ".join(metrics)
+            + f"; total cost={cost if cost is not None else 'unknown'}")
 
 
 def main(argv=None):
@@ -123,7 +129,7 @@ def main(argv=None):
         return 0
     make_figure(rows, run_dir.name, Path(args.out) if args.out else run_dir / "performance.png")
     if args.csv:
-        write_csv(rows, records.parent_values(rows), Path(args.csv))
+        write_csv(rows, Path(args.csv))
     print(summarize(rows))
     return 0
 

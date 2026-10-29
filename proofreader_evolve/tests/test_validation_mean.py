@@ -1,4 +1,4 @@
-"""Fixed multi-brain validation selection and mean-only promotion."""
+"""Fixed multi-brain validation selection and target-kind margin promotion."""
 
 import asyncio
 from contextlib import redirect_stdout
@@ -37,18 +37,19 @@ class MeanGateTests(unittest.TestCase):
                          "b": {"merge": .1, "split": .2}})
         after = report({"a": {"merge": .7, "split": .6},
                         "b": {"merge": .5, "split": .2}})
-        self.assertAlmostEqual(before["per_brain_precision"]["a"], .7)
-        self.assertAlmostEqual(after["macro_precision"], .5)
-        self.assertTrue(scoring.acceptance(before, after, require_no_cell_regression=False)[0])
-        self.assertFalse(scoring.acceptance(before, after)[0])
-        self.assertFalse(scoring.acceptance(before, after, .1, require_no_cell_regression=False)[0])
-        self.assertFalse(scoring.acceptance(after, after, require_no_cell_regression=False)[0])
+        self.assertAlmostEqual(before['per_kind_precision']['merge'], .45)
+        self.assertAlmostEqual(after['per_kind_precision']['merge'], .6)
+        self.assertAlmostEqual(after['per_kind_precision']['split'], .4)
+        self.assertTrue(scoring.acceptance(before, after, require_no_cell_regression=False, target_kind='merge')[0])
+        self.assertFalse(scoring.acceptance(before, after, target_kind='merge')[0])
+        self.assertFalse(scoring.acceptance(before, after, .2, require_no_cell_regression=False, target_kind='merge')[0])
+        self.assertFalse(scoring.acceptance(after, after, require_no_cell_regression=False, target_kind='merge')[0])
 
     def test_mean_does_not_weight_large_pools_more(self):
         value = report({"a": {"split": .8}, "b": {"split": .2}})
         value["cells"]["a/split"].update(pool_size=10, requested_k=1000, effective_k=10)
         value["cells"]["b/split"].update(pool_size=10000, requested_k=1000, effective_k=1000)
-        self.assertAlmostEqual(scoring.aggregate_precision(value["cells"])["macro_precision"], .5)
+        self.assertAlmostEqual(scoring.aggregate_precision(value["cells"])['per_kind_precision']['split'], .5)
 
     def test_changed_benchmark_still_fails_in_mean_mode(self):
         before = report({"a": {"split": .8}, "b": {"split": .1}})
@@ -59,10 +60,10 @@ class MeanGateTests(unittest.TestCase):
             changed = deepcopy(after)
             changed["cells"]["b/split"][key] = changed_value
             with self.subTest(key=key), self.assertRaisesRegex(ValueError, "fixed benchmark"):
-                scoring.acceptance(before, changed, require_no_cell_regression=False)
+                scoring.acceptance(before, changed, require_no_cell_regression=False, target_kind='split')
         del after["cells"]["b/split"]
         with self.assertRaisesRegex(ValueError, "different evaluation contracts"):
-            scoring.acceptance(before, after, require_no_cell_regression=False)
+            scoring.acceptance(before, after, require_no_cell_regression=False, target_kind='split')
 
     def test_partial_kind_coverage_is_not_averaged(self):
         with self.assertRaisesRegex(ValueError, "same candidate kinds"):
@@ -159,8 +160,8 @@ class PromotionTests(unittest.TestCase):
             self.assertTrue(result["accepted"])
             self.assertFalse(result["train_gate"]["passed"])
             self.assertFalse(result["train_gate"]["required_for_promotion"])
-            self.assertAlmostEqual(result["validation_gate"]["parent_mean"], 1 / 3)
-            self.assertAlmostEqual(result["validation_gate"]["candidate_mean"], 2 / 3)
+            self.assertAlmostEqual(result["validation_gate"]["parent_precision"], 1 / 3)
+            self.assertAlmostEqual(result["validation_gate"]["candidate_precision"], 2 / 3)
             self.assertEqual(result["validation_gate"]["regressed_cells"], ["2/split"])
             manifest = json.loads((directory / "manifest.json").read_text())
             self.assertFalse(manifest["promotion_gate"]["require_train_improvement"])

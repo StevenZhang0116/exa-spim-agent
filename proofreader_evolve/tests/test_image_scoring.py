@@ -262,7 +262,7 @@ class ImageScoringTests(unittest.TestCase):
         self.assertEqual(evidence['paired_diagnostics'],[])
         (self.root/'manifest.json').write_text(json.dumps({'objective': PRECISION}))
         (directory/'evaluation.json').write_text(json.dumps({'generation':1,'accepted':False,
-            'train':{'macro_precision':.1,'cells':{'794495/merge':cell}},'image_evidence':evidence}))
+            'train':{'per_kind_precision':{'merge': .1},'cells':{'794495/merge':cell}},'image_evidence':evidence}))
         report=build_report_data(self.root)
         saved=report['generations'][0]
         self.assertEqual(saved['image_evidence'],evidence)

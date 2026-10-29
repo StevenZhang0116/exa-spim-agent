@@ -399,7 +399,7 @@ class DriverDescriptorTests(unittest.TestCase):
             self.assertTrue(row['accepted'])
             manifest = json.loads((path / 'manifest.json').read_text())
             self.assertTrue(manifest['descriptor_compute']['enabled'])
-            self.assertEqual(manifest['search_version'], 'branch-feedback-handoff-v17')
+            self.assertEqual(manifest['search_version'], 'per-kind-selection-objective-v18')
             registry = json.loads((path / 'descriptors.json').read_text())
             self.assertEqual(list(registry['columns']), ['bank_agent_node_count'])
             # Statistics are written before the agent registers columns in gen 1; the context column is there.
@@ -413,7 +413,7 @@ class DriverDescriptorTests(unittest.TestCase):
                     patch.object(driver, 'attach_local_context', return_value=None), \
                     patch.object(dr, 'run_worker', side_effect=AssertionError('restore must hit the bank cache')):
                 resumed = asyncio.run(driver.run(args, revise_fn=revise))
-            self.assertEqual(json.loads((resumed / 'seed.json').read_text())['validation']['macro_precision'], 1.)
+            self.assertEqual(json.loads((resumed / 'seed.json').read_text())['validation']['per_kind_precision']['merge'], 1.)
             self.assertEqual(json.loads((resumed / 'manifest.json').read_text())['descriptor_compute']['restored_descriptors'],
                              ['bank_agent_node_count'])
             # Without --context-cache the same resume is refused before any evaluation.
@@ -481,7 +481,7 @@ class ModelColumnAndFeedbackTests(unittest.TestCase):
                      'features': {**{f'real_{j}': float(j + i) for j in range(5)},
                                   **{f'bank_agent_empty_{j}': None for j in range(300)}}}
                     for label in (0, 1) for i in range(4)]
-        report = {'macro_precision': .5, 'cells': {'1/merge': {'precision': .5, 'tp': 1, 'fp': 1,
+        report = {'per_kind_precision': {'merge': .5}, 'cells': {'1/merge': {'precision': .5, 'tp': 1, 'fp': 1,
                                                                 'training_examples': examples}}}
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / 'feedback.json'

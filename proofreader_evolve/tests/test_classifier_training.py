@@ -233,7 +233,7 @@ class ClassifierToolTests(unittest.TestCase):
         response = self.session.train_classifier()
         self.assertEqual(response['status'], 'trained')
         self.assertEqual(self.session.evaluations_used, 2)
-        self.assertEqual(self.session.submitted()[0]['report']['macro_precision'], 1)
+        self.assertEqual(self.session.submitted()[0]['report']['per_kind_precision']['split'], 1)
         with patch('proofreader_evolve.harness.train_experiments.fit_classifier') as fit:
             self.session.train_classifier()
             self.session.training_path.write_text('invalid pending edit')
@@ -335,7 +335,7 @@ class ClassifierDriverTests(unittest.TestCase):
                 resumed = asyncio.run(driver.run(args, revise_fn=revise))
                 self.assertEqual(fit.call_count, 1)
                 verify_artifacts(model, resumed / 'model_artifacts')
-                self.assertEqual(json.loads((resumed / 'final.json').read_text())['validation']['macro_precision'], 1)
+                self.assertEqual(json.loads((resumed / 'final.json').read_text())['validation']['per_kind_precision']['split'], 1)
                 args.train_brains, args.validation_brains = ['4'], ['1']
                 with patch.object(driver.scoring, 'evaluate') as evaluate:
                     with self.assertRaisesRegex(ValueError, 'fitted on a development-validation brain'):

@@ -107,17 +107,20 @@ or explicit generators in your program if used.
 
 If grouping/purging leaves too few groups or an unusable fitting class, the
 diagnostic is `unavailable`. There is no random-row fallback and no zero score
-substituted for failure. Every original candidate receives one OOF prediction;
-the host computes Top-K on the complete per-brain pool with the original K.
-Different fold models can have different calibration. These adaptively reused
+substituted for failure. Every selection candidate receives one OOF prediction;
+the host ranks within folds using the selection protocol's partitioned K budgets,
+which sum to the per-brain K. This avoids comparing scores across fold models with
+different calibration. These adaptively reused
 TRAIN diagnostics do not establish independent cross-brain performance.
 Frozen detector-derived base predictors are reused as supplied; that detector
 may already have been fitted on this TRAIN brain. Only the new model and its
 learned preprocessing are refitted within these diagnostic folds.
 
-For a hand-written formula, the same two input arms are scored on full TRAIN.
-The result is explicitly `TRAIN_formula_descriptive`, not cross-validation of
-the agent's formula-design process. Formula failures from the constant control
+For a hand-written formula, the same two input arms are scored on the selection
+brains, using the selection protocol's fold budgets when grouped OOF is configured.
+The result is explicitly descriptive (`TRAIN_formula_partitioned_k_descriptive` or
+`TRAIN_formula_descriptive`); it does not cross-validate the agent's formula-design
+process. Formula failures from the constant control
 produce no feature conclusion. The framework does not silently replace a failed
 control or switch the model.
 
@@ -125,16 +128,24 @@ A classifier comparison costs **two evaluation units**: one per arm, each arm
 being three fold refits plus prediction on the selection brains. A formula
 comparison also costs **two units**. Failures cost the units actually started.
 Exact successful repeats use the diagnostic cache without new evaluation units.
-The folds are the selection protocol's partition; auxiliary TRAIN brains are
-fitting-only and are not scored. Failed diagnostics do not grant additional
+Under `grouped_oof`, the folds are the selection protocol's partition; auxiliary
+TRAIN brains are fitting-only and are not scored. Under `in_sample`, classifier
+ablations remain grouped-fold diagnostics, while formula ablations use full-pool
+ranking. Both use the configured target-kind aggregation and positive floor.
+Failed diagnostics do not grant additional
 repair units.
 
 The tool does not change the current scorer or register fold models as candidates.
 After interpreting the comparison, call `train_classifier({})` or
 `evaluate_train({})` normally and submit an exactly measured snapshot. The outer
-promotion gate (each kind's mean over the pools that count) is separate from this
+promotion gate (target-kind precision on counted validation pools) is separate from this
 tool, and no other brain is made visible to it. Feature diagnostics are advisory,
 not a new promotion veto.
+
+The feature contribution is `P_kind(full) - P_kind(without_features)`. Both arms
+use the same configured aggregation and positive floor as candidate selection and
+promotion: by default sum(TP) / sum(effective K) across counted brains of this kind.
+The result records `precision_by_arm`, `aggregation`, and `excluded_cells`.
 
 ## Reuse evidence without repeating an entire conversation
 

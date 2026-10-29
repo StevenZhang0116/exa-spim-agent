@@ -46,8 +46,8 @@ measurements. Old records without explicit lineage show no invented edges.
 Each parameter/model grid shares its starting checkpoint until the best result
 is restored. A validation-rejected candidate may still be retained as a TRAIN
 specialist. Candidate and accepted-policy curves are distinguished; missing
-evaluations leave gaps. TRAIN champion precision is per kind and appears in the
-pool table, rather than being mixed with full-policy macro precision.
+evaluations leave gaps. Merge and split have separate TRAIN and validation curves.
+TRAIN champion selection precision is also shown per kind in the pool table.
 
 Only JSON and allowlisted text artifacts are read, never model files or source
 graphs. Partial JSONL records are skipped with warnings; missing evaluations leave

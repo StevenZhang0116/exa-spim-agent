@@ -13,7 +13,7 @@ from proofreader_evolve.harness.run_records import PRECISION
 
 
 def measurement(score, policy='seed'):
-    return {'policy_sha256': policy, 'macro_precision': score, 'cells': {
+    return {'policy_sha256': policy, 'per_kind_precision': {'split': score}, 'cells': {
         '794495/split': {'pool_size': 100, 'positives': 20, 'requested_k': 10,
                          'effective_k': 10, 'tp': int(score * 10), 'fp': 10 - int(score * 10),
                          'precision': score, 'recall': score / 2}}}
@@ -74,7 +74,7 @@ class EvolutionReportTests(unittest.TestCase):
         second = report['generations'][1]
         self.assertEqual(second['status'], 'interrupted')
         self.assertEqual(second['attempts'][0]['status'], 'incomplete')
-        self.assertEqual(second['parent']['validation']['macro_precision'], .5)
+        self.assertEqual(second['parent']['validation']['per_kind_precision']['split'], .5)
         self.assertTrue(any('incomplete/invalid' in w for w in report['warnings']))
 
     def test_protected_reference_and_scheduling_role_are_preserved(self):

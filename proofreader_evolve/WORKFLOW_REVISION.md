@@ -7,6 +7,14 @@ edit graphs, expand candidates, retrain detectors or deploy scorers automaticall
 
 ## Pipeline
 
+Current scoring contract (2026-10-29, scoring v6): merge and split have independent
+objectives. Selection, feature ablation and promotion share the configured
+per-kind aggregation and positive floor, while selection and outer validation
+use separate data. The current rules are summarized below and in
+[`docs/stage3_evolution.md`](../docs/stage3_evolution.md). Dated sections and
+illustrations retain the design and observations at the time they were written;
+their older metric fields and version numbers do not specify the current contract.
+
 ![Fixed-pool scorer evolution with TRAIN search and development-validation selection](workflow_diagram.png)
 
 A one-page visual overview (frozen inputs, the generation loop, outputs and the
@@ -37,7 +45,7 @@ flowchart TD
     U -->|Yes| G[Evaluate every fixed development-validation brain once]
     U -->|No, unchanged| H[Retain parent]
     F -->|No| H[Retain parent]
-    G --> I{Equal-weight mean Precision@K improves and the paired-bootstrap lower bound of the gain is above zero?}
+    G --> I{Target-kind Precision@K improves and the paired-bootstrap lower bound of its gain is above zero?}
     I -->|Yes| J[Promote candidate]
     I -->|No| H
     J --> R[Update parent; queue next same-kind follow-up]
@@ -81,8 +89,9 @@ flowchart TD
 6. Once required research/follow-up work is complete, evaluate the final measured
    candidate on every selected development-validation
    brain; a candidate byte-identical to the accepted combined scorer skips this step
-   and the generation ends as `unchanged` (2026-10-12). Average merge/split Precision@K within each brain, then average the
-   brains equally. Promote only if this mean exceeds the accepted parent's mean
+   and the generation ends as `unchanged` (2026-10-12). Compute Precision@K separately
+   for each kind over its counted brains: sum(TP) / sum(effective K) by default,
+   or equal-brain weighting when configured. Promote only if the target kind's score exceeds its accepted parent's score
    by more than `--precision-margin` and, in the default `--promotion-gate bootstrap`
    mode, the lower bound of the paired row-resampling interval of that gain is
    above zero (`--bootstrap-draws`, `--bootstrap-alpha`). Individual brain/kind
@@ -90,8 +99,8 @@ flowchart TD
    a failure on any selected brain rejects the candidate, not that brain.
 7. Independently retain up to 5 TRAIN branches per kind. Keep the overall TRAIN
    champion first. Prefer specialists that lead fixed geometry slices or recover
-   positive candidates missed by already retained branches, even if their mean
-   precision is more than 0.02 below the champion. Fill remaining slots with
+   positive candidates missed by already retained branches, even if their target-kind
+   selection precision is more than 0.02 below the champion. Fill remaining slots with
    near-best distinct Top-K alternatives, preferring different formula structures.
    Compare all successful trials in a generation together. A validation rejection
    does not remove an exploratory branch. Separately pin one reference per kind
@@ -1880,6 +1889,7 @@ records the motivating run and the original proposals.
 
 | Source / relationship | Mechanism and implementation | Differences and claim boundary | Evidence status |
 |---|---|---|---|
+| Per-kind objective consistency (2026-10-29); **project-specific correction**, primary source: this repository's scoring contract and implementation | `fixed_pool_scoring.precision_for_kind` and `aggregate_precision` define independent kind scores; candidate ranking, feature ablation, selection feedback and promotion share aggregation and eligibility. Bootstrap and scheduling gains use `target_kind`. Report and plotting code expose separate kind scores. | No new literature algorithm or claim of reproduced improvement. Grouped selection and outer validation retain separate data. Existing paired Poisson row resampling is scoped to the target kind; it does not estimate cross-brain or repeated-selection uncertainty. | Synthetic regression tests cover weighting, exclusions, candidate selection, ablation sign and kind-isolated gates; no new scientific trial results yet. |
 | R-precision, precision at the depth equal to the number of relevant items (Manning, Raghavan and Schütze, *Introduction to Information Retrieval*, Cambridge University Press, 2008, section 8.4), `manning2008`; **engineering reference** with **project-specific** per-kind budgets in objective v4 (2026-10-26) and uniform budgets in v5 (2026-10-27) | Every pool of either kind ranks K = its GT positives (`--merge-k none --split-k none --k-positive-ratio 1`, the v5 defaults), so Precision@K equals Recall@K in TRAIN, selection and validation alike; v4 had applied this to split only, with merge at K = min(300, 2 x positives). [fixed_pool_scoring.py](harness/fixed_pool_scoring.py) `Budgets`, [run_precision_evolution.py](cli/run_precision_evolution.py), [kind_schedule.py](harness/kind_schedule.py). | Defined over the GT-labeled rows of a fixed detector pool, not over all split errors of a brain: unlabeled rows are never ranked and the pool reaches about 95% of canonical splits. The per-kind ratio and the capless kind are our design; no claim that the metric change improves proofreading outcomes. | Detector-only curves measured on 2026-10-26 (`notebooks/split_rank_curves.py`); the next evolution run supplies the v4 seed and baseline. |
 | [OME-NGFF 0.4 coordinate specification](https://ngff.openmicroscopy.org/0.4/) and [TensorStore Zarr driver](https://google.github.io/tensorstore/driver/zarr/index.html); **engineering standard** | Explicit image axes, spatial units, composed scale/translation, voxel-center mapping and read-only chunk access. [image_coordinates.py](harness/image_coordinates.py), [image_context.py](harness/image_context.py). | Standards specify representation/IO, not biological registration. We additionally require a source/cache-bound sampled overlay review. This is not a new literature-derived discovery algorithm. | Coordinate/transport tests on n257; real level-0 image/fragment review across five brains. See the v9 evidence entry. |
 | FAMOSE/Crafter conceptual motivation above; **adapted idea**, with **project-specific** image access | Extend failure-driven information acquisition and paired feature diagnostics to raw fluorescence. [image_features.py](harness/image_features.py), [image_preview.py](harness/image_preview.py), [feature_ablation.py](harness/feature_ablation.py). | Arbitrary image encoders are allowed, not a prescribed pretrained vision model. Our raw-patch removal control, image request budgets and registration receipts are local design choices. No claim that these papers implement this microscopy interface or that viewing images improves our ranking. | Pixel access, isolation and ablation transport checked; no image-model fitting, live LLM image session or measured image-ranking gain yet. |
@@ -1902,6 +1912,8 @@ records the motivating run and the original proposals.
 
 | Date / version | Change and motivation | Verification / future evidence |
 |---|---|---|
+| 2026-10-29 / consistency audit (schedule v3, feedback v6) | Saturation now uses half the smallest one-hit change under the configured aggregation and effective K, replacing the mean-K heuristic that could mark a kind saturated with a hit still available. Selection descriptions count only labeled rows and match the actual fold budgets, including whole-brain holdouts. Repeated submissions record unmeasured candidate precision as null. Feedback and the manifest share one per-kind schema version; guides distinguish grouped and in-sample selection. Ablation cache identity now includes the ranking protocol implementation. The report labels raw, no-score and frozen modes separately; current documentation uses the target-kind gate and explicitly separates dated historical sections. | Three targeted cases reproduced the defects on n277 before fixes. The affected-module regression run passed 126 tests in 786 s ([log](log/objective_consistency_audit_20261029_tests.log)); the final focused recheck passed 27 tests ([log](log/objective_consistency_audit_20261029_recheck.log)), including two new objective regressions and the feature-diagnostic tests. JavaScript smoke checks rendered all three detector-prior modes with four kind/scope charts and exclusion labels ([log](log/objective_consistency_audit_20261029_report.log)); Python compilation, JavaScript syntax and whitespace checks passed. All code execution was on n277; no real trials or historical run artifacts were changed. |
+| 2026-10-29 / per-kind objective (scoring v6, search v18) | Remove cross-kind summary scores from new measurements, feedback, logs and reports. Fix candidate metadata and ablation deltas that independently averaged all brains, ignoring configured weighting and the positive floor. Restore/best and plateau ranking use the target-kind selection score; ablations use the same selection brains and partitioned K for formulas. Promotion, margin units, bootstrap intervals and scheduling momentum are target-kind quantities. Headroom uses effective K; manifest aggregation reflects the configured mode. Report serialization preserves exclusion flags. | All 407 synthetic tests covered and passing across grouped suite runs and targeted rechecks after fixes; includes 10 new regressions in `tests/test_per_kind_objective.py`. Report JavaScript syntax and synthetic DOM execution checks passed (four kind/scope charts, separate scores and exclusion labels), as did `git diff --check`. Existing run directories and artifacts are untouched. Fresh trials are needed to assess search performance. |
 | 2026-10-27 / feedback budget fallback (cells' examples dropped) | **Project-specific design** (engineering). The first frozen run on the eleven-brain partition (`precision_20261027_200932_hzqw_vi7`, stopped after two generations) lost every training experiment to `Compact TRAIN feedback exceeds the 128 KB read budget even with one example per group`: five selection merge cells x about 290 frozen `h<id>_` feature columns need 155 KB for one example per group of a candidate (the seed's feedback was already 124 KB), so each `evaluate_train` call failed and the agent resubmitted the parent. Raising the byte budget is not an option: the feedback tokenises at 1.75 to 1.9 bytes per token (count_tokens on run `precision_20261026_210812_yqeacq5s`), so 128 KB is already about 70,000 of the 100,000-token MCP-output and file-read caps. `write_train_feedback` now has one more fallback after the per-group reductions, memory and history: whole cells lose their examples, fewest GT positives first (`examples_omitted_cells` in the report and the `feedback_ready` event; metrics and `ranking_delta` stay), and the error is raised only when a single cell at one example per group still does not fit. The raw arm (`precision_20261027_200939_mgv5u5gy`, three raw columns, 26 KB feedback) was unaffected and was stopped with the frozen run to restart both on the fixed code. | `tests/test_train_feedback.py` (`test_cells_with_the_fewest_positives_lose_their_examples_before_failing`: the cell with fewer positives is dropped first, its metrics and ranking_delta remain, the reading guide names the field, a single cell that still does not fit raises, the target kind filters before any drop); `test_reviser_limits`, `test_descriptor_compute` unchanged; full suite on n242 the same evening: 397 tests OK in 2,251 s. |
 | 2026-10-27 / resource defaults | `--classifier-threads` 1 to 8 and `--descriptor-workers` auto to 24 (`cli/run_precision_evolution.py`), after the eleven-brain frozen seed baseline (`precision_20261027_153633_9hc964vy`, 38 auto workers, 16 threads, driver RSS 78 GB) peaked at the 200 GiB job limit on n280 (`memory.max` reached 1,305 times, no OOM kill). Documented command lines pass `--classifier-memory-mb 98304` on 200 GB nodes. | Argument defaults covered by the driver tests; the next evolution run records the resulting peak. |
 | 2026-10-27 / raw-candidate ablation (`--detector-prior raw`) | **Project-specific design** (ablation arm; `plans/raw_prior_ablation.md`). Withholds the frozen score and every discovered `h<digits>_` feature column; the frame is rebuilt from the label-blind candidate attributes (`raw_*`), descriptor contexts carry them, `check_source` refuses the discovered names, own bank `descriptor_bank_raw/`, constant seed, raw-heuristic baselines (split gap, merge degree) recorded beside the frozen baseline. Decomposes the final number into discovered features / fitted detector / evolution across the three arms. | `tests/test_raw_prior.py` (raw columns for both kinds, strip once per shared table, source checks, argument defaults and bank refusals, a tiny driver run recording both baselines and withholding the columns on TRAIN and validation) and `tests/test_detector_prior.py`; full suite 2026-10-27. Seed baselines of the three arms on the eleven-brain partition recorded in the section (frozen 0.4878, constant seed 0.2515, raw heuristics 0.4417; template fits merge 0.24 / 0.24 / 0.09, split 0.83 / 0.83 / 0.83); no evolution run yet. |
@@ -2020,10 +2032,10 @@ strict-rotation driver runs on a two-kind fixture; tiny-fixture driver tests
 pass `--kind-schedule alternate`. `tests/test_positive_scaled_k.py` (2026-10-12,
 objective v3) covers `Budgets` (ratio-bound and cap-bound K, the zero-ratio fixed K,
 coercion of plain mappings, label-only resolution), `evaluate` at per-pool K with
-membership flags, the kind-first mean equalling the legacy mean on a complete grid and
-skipping excluded cells, the pinned `in_mean` benchmark identity, bootstrap intervals
+membership flags, separate per-kind aggregation and exclusion of small pools,
+the pinned `in_mean` benchmark identity, bootstrap intervals
 that ignore excluded cells, headroom and saturation on counted cells only, feedback
-caps/`k_rule`/`in_mean` without validation text, the readable objective versions (v1 to v5 since 2026-10-27), the parsed
+caps/`k_rule`/`in_mean` without validation text, the recorded objective versions (through v6), the parsed
 default caps (none for either kind since 2026-10-27; merge 300 before, split 1000 from 2026-10-12 to 2026-10-26), and driver runs recording `pool_budgets`, keeping the crowding warning in fixed-K mode and
 refusing a kind whose every pool is below the floor. Tiny-fixture driver tests pass
 `--min-positives 0` because their pools hold one or two GT positives. `tests/test_reviser_limits.py` covers the MCP

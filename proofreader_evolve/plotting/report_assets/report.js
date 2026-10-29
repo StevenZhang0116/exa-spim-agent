@@ -38,9 +38,10 @@
   }
   function metricsView(box, report, title) {
     box.append(el("h4",title));if(!report){box.append(el("p","Not measured / not recorded","muted"));return;}
-    label(box,"Mean Precision@K",fmt(report.macro_precision));
+    for(const [kind,value] of Object.entries(report.per_kind_precision||{}))label(box,`${kind} Precision@K`,fmt(value));
+    label(box,"Aggregation within each kind",report.aggregation);
     // Labels are three-valued; Top-K and precision use GT-labeled rows only (older runs lack n_labeled).
-    const headers=["Brain / kind","Pool candidates","GT-labeled rows","Pool positives","Top-K hits","Effective K / requested K","Precision@K","Recall@K","In mean"];
+    const headers=["Brain / kind","Pool candidates","GT-labeled rows","Pool positives","Top-K hits","Effective K / requested K","Precision@K","Recall@K","Counts toward objective"];
     box.append(table(headers,Object.entries(report.cells||{}).map(([name,c])=>
       [name,count(c.pool_size),c.n_labeled==null?"N/A":count(c.n_labeled),count(c.positives),count(c.tp),`${count(c.effective_k)} / ${count(c.requested_k)}`,fmt(c.precision),c.positives===0?"N/A (no pool positives)":fmt(c.recall),c.in_mean==null?"Yes (fixed K)":c.in_mean?"Yes":"No (below positive floor)"])));
     for(const [name,c] of Object.entries(report.cells||{}))if(c.local_context){
@@ -84,8 +85,9 @@
     label(box,"Last measured / restored workspace checkpoint",a.lineage?.edit_base_experiment || "Not recorded (not inferred)");
     if(a.cached_from)label(box,"Cached measurement source",a.cached_from);
     if(a.lineage?.restored_from)label(box,"Most recent restore",a.lineage.restored_from);
-    label(box,"Selection score for this kind (grouped out-of-fold P@K; in-sample P@K in legacy runs)",fmt(a.target_precision));
-    if(finite(a.in_sample_precision))label(box,"In-sample TRAIN P@K for this kind (diagnostic, does not rank)",fmt(a.in_sample_precision));
+    label(box,"Selection P@K for this kind",fmt(a.target_precision));
+    label(box,"Selection protocol",data.manifest.selection_protocol?.mode);
+    if(finite(a.in_sample_precision))label(box,"In-sample TRAIN P@K for this kind",fmt(a.in_sample_precision));
     if(a.error)box.append(el("p",`${a.failure_stage || "Failure stage not recorded"}: ${a.error}`,"warning"));
     if(member){label(box,"Retention reason",reasonName(member.retention?.reason));
       label(box,"Compared with the TRAIN champion",`${count(member.vs_champion?.additional_positive_hits)} additional positives; ${count(member.vs_champion?.lost_positive_hits)} lost positives`);
@@ -119,7 +121,7 @@
   }
   const svgns="http://www.w3.org/2000/svg";
   function svgEl(tag,attrs={},text) {const n=document.createElementNS(svgns,tag);Object.entries(attrs).forEach(([k,v])=>n.setAttribute(k,String(v)));if(text!=null)n.textContent=String(text);return n;}
-  function chart(scope,title) {
+  function chart(scope,kind,title) {
     const panel=el("div",null,"panel");panel.append(el("h3",title));
     const s=svgEl("svg",{viewBox:"0 0 590 265",class:"chart",role:"img","aria-label":title});
     const generations=[0,...data.generations.map(g=>g.generation)],last=Math.max(1,...generations);
@@ -127,13 +129,13 @@
     [0,.25,.5,.75,1].forEach(v=>{s.append(svgEl("line",{x1:48,x2:570,y1:y(v),y2:y(v),stroke:"#e1e9ef"}),svgEl("text",{x:10,y:y(v)+4},v.toFixed(2)));});
     const ticks=generations.filter((n,i)=>i===0 || i===generations.length-1 || i%Math.max(1,Math.ceil(generations.length/8))===0);
     ticks.forEach(n=>s.append(svgEl("text",{x:x(n),y:249,"text-anchor":"middle"},n)));
-    let current=data.seed[scope]?.macro_precision ?? null;
+    let current=data.seed[scope]?.per_kind_precision?.[kind] ?? null;
     const submitted=[],accepted=[{n:0,v:current}];
-    for(const g of data.generations){submitted.push({n:g.generation,v:g.policy_match===false?null:g[scope]?.macro_precision ?? null});
-      current=g.parent?.[scope]?.macro_precision ?? null;
-      if(g.status==="accepted")current=g.policy_match===false?null:g[scope]?.macro_precision ?? null;
+    for(const g of data.generations){submitted.push({n:g.generation,v:g.policy_match===false?null:g[scope]?.per_kind_precision?.[kind] ?? null});
+      current=g.parent?.[scope]?.per_kind_precision?.[kind] ?? null;
+      if(g.status==="accepted")current=g.policy_match===false?null:g[scope]?.per_kind_precision?.[kind] ?? null;
       accepted.push({n:g.generation,v:current});}
-    const baseline=data.baseline[scope]?.macro_precision;
+    const baseline=data.baseline[scope]?.per_kind_precision?.[kind];
     if(finite(baseline))s.append(svgEl("line",{x1:48,x2:570,y1:y(baseline),y2:y(baseline),stroke:"#94a4b1","stroke-dasharray":"4 4"}));
     function draw(points,color,steps=false){let d="",previous=null;
       points.forEach(p=>{if(!finite(p.v)){previous=null;return;}d+=previous ? (steps?` H${x(p.n)} V${y(p.v)}`:` L${x(p.n)} ${y(p.v)}`):` M${x(p.n)} ${y(p.v)}`;previous=p;});
@@ -142,7 +144,7 @@
         c.append(svgEl("title",{},`Generation ${p.n}: ${fmt(p.v)}`));s.append(c);});}
     draw(accepted,"#157a53",true);draw(submitted,"#126dba");panel.append(s);
     const legend=el("div",null,"legend");[["Submitted candidate (gaps = not measured)","#126dba"],["Accepted policy","#157a53"],["Frozen detector baseline","#94a4b1"]].forEach(([name,color])=>{const n=el("span",name);n.style.setProperty("--color",color);legend.append(n);});panel.append(legend);
-    panel.append(el("p","Y: equally weighted mean Precision@K. X: generation. TRAIN and validation are shown separately.","muted"));return panel;
+    panel.append(el("p",`Y: ${kind} Precision@K (${data.manifest.budgets?.aggregation || "aggregation not recorded"}). X: generation. Only counted pools of this kind contribute.`,"muted"));return panel;
   }
   function branchGraph() {
     const box=$("branch-graph"),nodes=new Map();
@@ -178,9 +180,13 @@
     ["Recorded generations / promoted",`${data.generations.length} / ${data.generations.filter(g=>g.status==="accepted").length}`],
     ["TRAIN brains",(data.manifest.train_brains||[]).join(", ")||"Not recorded"],
     ["Validation brains",(data.manifest.development_validation_brains||[]).join(", ")||"Not recorded"],
-    ["K cap: merge / split",`${(data.manifest.budgets?.caps??data.manifest.budgets)?.merge??"?"} / ${(data.manifest.budgets?.caps??data.manifest.budgets)?.split??"?"}${data.manifest.budgets?.k_rule?` · ${data.manifest.budgets.k_rule}; ${data.manifest.budgets.mean_rule}`:""}`],
+    ["K cap: merge / split",`${(data.manifest.budgets?.caps??data.manifest.budgets)?.merge??"none"} / ${(data.manifest.budgets?.caps??data.manifest.budgets)?.split??"none"}${data.manifest.budgets?.k_rule?` · ${data.manifest.budgets.k_rule}; ${data.manifest.budgets.precision_rule}`:""}`],
     ["Promotion gate",data.manifest.promotion_gate?`${data.manifest.promotion_gate.mode||"margin"}${data.manifest.promotion_gate.bootstrap?.affects_decision?` (${data.manifest.promotion_gate.bootstrap.draws} draws, alpha ${data.manifest.promotion_gate.bootstrap.alpha})`:""}`:"Not recorded"],
-    ["Detector prior",data.manifest.detector_prior?.mode==="no-score"?"no-score ablation (detector_score withheld; frozen baseline is a host-only comparator)":"frozen (detector_score available; default seed)"],
+    ["Detector prior",({
+      frozen:"frozen (detector_score available; default seed)",
+      "no-score":"no-score ablation (detector_score withheld; frozen baseline is a host-only comparator)",
+      raw:"raw ablation (detector_score and discovered features withheld; raw candidate attributes only)"
+    })[data.manifest.detector_prior?.mode || "frozen"] || "Not recorded"],
     ["Kind schedule",data.manifest.kind_schedule?`${data.manifest.kind_schedule.mode}${data.manifest.kind_schedule.mode==="adaptive"?` (floor every ${data.manifest.kind_schedule.floor_every})`:""}`:"Not recorded"],
     [total.evaluations_complete?"Evaluation units used":"Recorded evaluation units (incomplete)",count(total.train_evaluations)],
     [total.cost_complete?"API cost":"Recorded API cost (incomplete)",`$${fmt(total.recorded_cost_usd,4)}`],
@@ -200,7 +206,9 @@
     $("stats").append(el("p",`Research assignments: ${countWhere(r=>r.investigation_required)} investigations; ${countWhere(r=>r.followup_required)} priority follow-ups; ${countWhere(r=>!r.complete)} incomplete. Negative measured findings count as evidence, not as ranking gains.`,"muted"));
   }
   if(data.warnings.length)$("warnings").append(disclosure(`${data.warnings.length} artifact reading notices`,b=>data.warnings.forEach(w=>b.append(el("p",w,"warning")))));
-  $("charts").append(chart("validation","Validation: submissions and accepted policies"),chart("train","TRAIN: submitted-policy performance"));
+  const kinds=[...new Set([data.seed,data.baseline,...data.generations].flatMap(r=>
+    ["train","validation"].flatMap(scope=>Object.keys(r?.[scope]?.per_kind_precision||{}))))].sort();
+  for(const kind of kinds)$("charts").append(chart("validation",kind,`${kind} validation: submissions and accepted policies`),chart("train",kind,`${kind} TRAIN: submitted-policy performance`));
   const reports=$("metric-reports"),sel=el("select"),area=el("div");sel.setAttribute("aria-label","Select a measurement snapshot");
   const snapshots=[["Seed",data.seed],["Frozen detector baseline",data.baseline],["Final accepted",data.final]];
   data.generations.forEach(g=>snapshots.push([`Generation ${g.generation} · Submitted candidate`,g]));snapshots.forEach(([name],i)=>{const o=el("option",name);o.value=i;sel.append(o);});

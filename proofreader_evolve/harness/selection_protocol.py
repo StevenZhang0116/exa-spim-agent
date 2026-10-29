@@ -27,7 +27,7 @@ from .local_features import augmented_features
 from .model_execution import predict_model, DEFAULT_MEMORY_MB
 
 
-PROTOCOL_VERSION = 'grouped-cv-precision-v5-uniform-k'
+PROTOCOL_VERSION = 'grouped-cv-precision-v6-per-kind-objective'
 MODES = ('grouped_oof', 'in_sample')
 
 
@@ -179,8 +179,9 @@ class SelectionProtocol:
                 'aggregation': self.budgets.aggregation,
                 'folds': FOLDS if grouped else None,
                 'metric': 'grouped_cv_precision' if grouped else 'in_sample_precision_at_k',
-                'ranking': ('Per-fold ranking of out-of-fold scores with largest-remainder fold budgets '
-                            'that sum to K; TP summed across folds and divided by K.' if grouped else
+                'ranking': ('Per-fold ranking of out-of-fold scores over GT-labeled rows with '
+                            'largest-remainder fold budgets that sum to each pool\'s effective K; '
+                            'target-kind pools share the configured aggregation and positive floor.' if grouped else
                             'Full-pool in-sample ranking at K (historical protocol).'),
                 'formulas': ('Non-fitted formulas use the same partition and budgets; their result is a '
                              'descriptive diagnostic because their constants were chosen with TRAIN feedback.'
@@ -188,8 +189,8 @@ class SelectionProtocol:
                 'auxiliary_role': ('Auxiliary brains join every fitting set and are never held out; their '
                                    'in-sample scores are diagnostics only.' if grouped else None),
                 'scope': ('Development selection signal for TRAIN branches, used repeatedly by the reviser; '
-                          'not an unbiased generalization estimate. The outer promotion gate (each '
-                          'kind averaged over the pools that count, then kinds averaged) is separate.')}
+                          'not an unbiased generalization estimate. The outer promotion gate uses the same '
+                          'target-kind aggregation and positive floor on separate held-out brains.')}
         if grouped:
             info['partitions'] = {}
             for name, (partitions, description) in self.partitions.items():
@@ -198,9 +199,12 @@ class SelectionProtocol:
                 budgets = {}
                 for brain in self.selection_brains:
                     ids = self.fold_ids(name, brain)
-                    counts = [int(np.count_nonzero(ids == fold)) for fold in range(FOLDS)]
+                    truth = self.train[brain].tables[name].truth
+                    labeled_ids = ids[labeled_rows(truth)]
+                    counts = [int(np.count_nonzero(labeled_ids == fold))
+                              for fold in range(int(ids.max()) + 1)]
                     budgets[f'{brain}/{name}'] = fold_budgets(
-                        counts, self.budgets.k_for(name, self.train[brain].tables[name].truth))
+                        counts, self.budgets.k_for(name, truth))
                 info['partitions'][name] = {'partition_sha256': description['partition_sha256'],
                                             'grouping': description['grouping'],
                                             'fold_details': description['fold_details'],
@@ -231,10 +235,10 @@ class SelectionProtocol:
         report.update(aggregate_precision(report['cells'], self.budgets.aggregation))
         holdout_cells = [f'{brain}/{kind}' for brain in self.holdout_brains]
         counted = [cell for cell in holdout_cells if report['cells'][cell].get('in_mean', True)]
-        pooled_k = sum(int(report['cells'][cell]['effective_k']) for cell in counted)
         report['holdout_cells'] = holdout_cells
-        report['holdout_precision'] = (sum(int(report['cells'][cell]['tp']) for cell in counted) / pooled_k
-                                       if pooled_k else None)
+        report['holdout_precision'] = (aggregate_precision({cell: report['cells'][cell] for cell in counted},
+                                                           self.budgets.aggregation)['per_kind_precision'][kind]
+                                       if counted else None)
         return report, state
 
     def measure_formula(self, kind, measured_state, policy_sha256=None):

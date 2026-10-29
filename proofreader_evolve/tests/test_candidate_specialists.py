@@ -31,7 +31,7 @@ class SpecialistPoolTests(unittest.TestCase):
         source = (f"PARAMS = {{'weight': {number}}}\n"
                   "def score_candidates(features, ctx):\n"
                   "    return features['detector_score'].to_numpy() * PARAMS['weight']\n")
-        report = {'macro_precision': tp / len(chosen), 'cells': {'TRAIN/split': {
+        report = {'per_kind_precision': {'split': tp / len(chosen)}, 'cells': {'TRAIN/split': {
             'pool_sha256': 'fixed-train-pool',
             'labels_sha256': hashlib.sha256(self.truth.tobytes()).hexdigest(),
             'pool_size': len(self.truth), 'positives': 6,

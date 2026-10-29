@@ -9,7 +9,7 @@ import numpy as np
 
 from .classifier_contract import config_identity, frozen_model
 from .classifier_training import fit_classifier
-from .fixed_pool_scoring import Budgets, rank_metrics
+from .fixed_pool_scoring import Budgets, rank_metrics, aggregate_precision
 from .internal_validation import FOLDS, fold_assignments, grouped_folds
 from .label_availability import labels_digest
 from .isolated_scoring import score
@@ -21,7 +21,7 @@ from .image_features import subset_features
 from .image_selection import scoring_coverage
 
 
-ABLATION_VERSION = 'paired-train-feature-ablation-v2'
+ABLATION_VERSION = 'paired-train-feature-ablation-v3-per-kind-objective'
 # One evaluation unit per arm: a fold triple is one measurement, like a candidate's fold fits.
 CLASSIFIER_UNITS = 2
 FORMULA_UNITS = 2
@@ -43,8 +43,8 @@ def prepare_ablation(train, kind, source, columns, *, classifier, config,
         absent = set(columns) - set(frame.columns)
         if absent:
             raise ValueError(f'Unknown ablation input columns on TRAIN {brain}: {sorted(absent)}')
-    split = ((partitions or grouped_folds(train, kind, selection_brains=selection_brains))
-             if classifier else (None, None))
+    split = partitions or (grouped_folds(train, kind, selection_brains=selection_brains)
+                           if classifier else (None, None))
     fingerprints = {}
     for brain, frame in frames.items():
         fingerprint = hashlib.sha256()
@@ -60,12 +60,13 @@ def prepare_ablation(train, kind, source, columns, *, classifier, config,
                 'program_sha256': hashlib.sha256(source.encode()).hexdigest(),
                 'parameters_sha256': config_identity(config), 'feature_columns': sorted(columns),
                 'split': split[1], 'tables': fingerprints,
+                'selection_brains': sorted(selection_brains if selection_brains is not None else train),
                 'implementation': {name: hashlib.sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
                     for name in ('feature_ablation.py', 'internal_validation.py', 'classifier_training.py',
                                  'classifier_train_worker.py', 'classifier_contract.py', 'model_execution.py',
                                  'model_sandbox.py', 'local_features.py', 'local_feature_contract.py',
                                  'image_context.py', 'image_features.py', 'image_contract.py', 'image_coordinates.py',
-                                 'image_selection.py',
+                                 'image_selection.py', 'selection_protocol.py',
                                  'isolated_scoring.py', 'scorer_worker.py', 'fixed_pool_scoring.py')},
                 'masking': 'constant_zero_in_fit_and_predict', 'fold_seeds': list(range(FOLDS)) if classifier else []}
     return frames, list(columns), split, identity
@@ -118,7 +119,8 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
                             timeout=score_timeout, memory_mb=memory_mb)
         else:
             charge()
-            predicted = {brain: score(source, frame, kind, score_timeout) for brain, frame in arm_frames.items()}
+            predicted = {brain: score(source, arm_frames[brain], kind, score_timeout)
+                         for brain in identity.get('selection_brains', sorted(frames))}
         if not predicted or any(not np.isfinite(values).all() for values in predicted.values()):
             raise ValueError('Ablation must score every scored TRAIN candidate exactly once per arm')
         predictions[arm] = predicted
@@ -127,7 +129,7 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
     for brain in sorted(predictions['full']):
         table = train[brain].tables[kind]
         k, in_mean = budgets.k_for(kind, table.truth), budgets.in_mean(table.truth)
-        if classifier:
+        if split[0] is not None:
             from .selection_protocol import partitioned_rank_metrics
             ids = fold_assignments(split[0], brain, len(table.truth))
             full, chosen = partitioned_rank_metrics(predictions['full'][brain], table.truth, table.keys, ids, k,
@@ -150,7 +152,9 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
             cells[f'{brain}/{kind}']['image_coverage'] = {
                 'selection': frames[brain].attrs['image_context'].get('selection_coverage'),
                 'full': scoring_coverage(frames[brain], chosen, table.truth, k)}
-    delta = sum(cell['delta_precision'] for cell in cells.values()) / len(cells)
+    arms = {arm: aggregate_precision({name: cell[arm] for name, cell in cells.items()}, budgets.aggregation)
+            for arm in ('full', 'without_features')}
+    delta = arms['full']['per_kind_precision'][kind] - arms['without_features']['per_kind_precision'][kind]
     arrays = {f'{arm}:{brain}': values for arm, brains in predictions.items() for brain, values in brains.items()}
     np.savez(directory / 'predictions.npz', **arrays)
     image_contract = image_spec(source)
@@ -159,7 +163,10 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
     # Mixing image removal with other inputs measures their joint contribution.
     image_only = removed_images and set(columns) == set(image_columns)
     return {'version': ABLATION_VERSION, 'status': 'measured', 'target_kind': kind,
-            'protocol': 'TRAIN_grouped_out_of_fold_partitioned_k' if classifier else 'TRAIN_formula_descriptive',
+            'aggregation': arms['full']['aggregation'], 'excluded_cells': arms['full']['excluded_cells'],
+            'precision_by_arm': {arm: report['per_kind_precision'][kind] for arm, report in arms.items()},
+            'protocol': ('TRAIN_grouped_out_of_fold_partitioned_k' if classifier else
+                         'TRAIN_formula_partitioned_k_descriptive' if split[0] is not None else 'TRAIN_formula_descriptive'),
             'scored_brains': sorted(predictions['full']),
             'program_sha256': identity['program_sha256'], 'parameters_sha256': identity['parameters_sha256'],
             'feature_columns': columns, 'signature': config_identity(identity),
@@ -178,7 +185,8 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
                            'no_precision_increment_on_this_internal_measurement'),
             'scope': ('Paired TRAIN-only diagnosis; the same program/parameters and fold seeds are used in both arms. '
                       'Agent overrides and non-NumPy RNGs can still affect fit reproducibility. '
-                      'Out-of-fold scores are ranked inside each fold with budgets summing to K, never pooled. '
+                      'With a fold partition, scores are ranked inside each fold with budgets summing to effective K. '
+                      'Without a fold partition, formulas use full-pool ranking. '
                       'Auxiliary TRAIN brains are fitting-only and are not scored. '
                       'Frozen base predictors are reused; under grouped_oof the scored selection brains are '
                       'detector-naive while auxiliary fitting rows may come from the detector\'s own brain. '

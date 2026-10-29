@@ -148,7 +148,7 @@ class ProtocolMeasurementTests(unittest.TestCase):
         scoring.evaluate(SIGNAL_FORMULA, self.train, {'merge': 3}, state=state)
         report, selection_state = self.protocol.measure_formula('merge', state)
         self.assertEqual(list(report['cells']), ['802449/merge'])
-        self.assertEqual(report['macro_precision'], 1.)
+        self.assertEqual(report['per_kind_precision']['merge'], 1.)
         self.assertEqual(report['cells']['802449/merge']['partition_sha256'], self.protocol.partition_sha256('merge'))
         self.assertEqual(len(selection_state['802449/merge']['chosen']), 3)
         legacy = sp.SelectionProtocol(self.train, {'merge': 3}, mode='in_sample')
@@ -176,7 +176,7 @@ class ProtocolMeasurementTests(unittest.TestCase):
                                                           frames={b: bank.tables['merge'].features
                                                                   for b, bank in self.train.items()},
                                                           include_auxiliary=False)
-        self.assertEqual(report['macro_precision'], 1.)
+        self.assertEqual(report['per_kind_precision']['merge'], 1.)
         self.assertEqual(len(report['fold_fits']), 3)
         self.assertEqual(report['fitting_brains'], ['794495', '802449'])
         self.assertEqual(reduced['fitting_brains'], ['802449'])
@@ -251,7 +251,7 @@ class SessionSelectionTests(unittest.TestCase):
         submitted, _ = self.session.submitted()
         self.assertEqual(list(submitted['selection_report']['cells']), ['802449/merge'])
         candidate_feedback = json.loads((Path(second['snapshot']) / 'feedback.json').read_text())
-        self.assertEqual(candidate_feedback['format'], 'stratified-train-v4')
+        self.assertEqual(candidate_feedback['format'], 'stratified-train-v6-per-kind-objective')
         self.assertEqual(list(candidate_feedback['examples']), ['802449/merge'])
         self.assertEqual(candidate_feedback['selection_protocol']['mode'], 'grouped_oof')
         self.assertIn('candidate_selection', candidate_feedback)
@@ -291,9 +291,9 @@ class GroupTransportTests(unittest.TestCase):
 
 class FeedbackAndBootstrapTests(unittest.TestCase):
     def test_feedback_examples_follow_selection_report(self):
-        train = {'1': {'macro_precision': .5, 'cells': {'1/merge': {'precision': .5, 'tp': 1, 'fp': 1,
+        train = {'1': {'per_kind_precision': {'merge': .5}, 'cells': {'1/merge': {'precision': .5, 'tp': 1, 'fp': 1,
                  'training_examples': [{'label': 1, 'score': .9, 'features': {'x': 1.}}]}}}}['1']
-        selection = {'macro_precision': .25, 'mode': 'grouped_oof', 'cells': {'2/merge': {
+        selection = {'per_kind_precision': {'merge': .25}, 'mode': 'grouped_oof', 'cells': {'2/merge': {
             'precision': .25, 'tp': 1, 'fp': 3, 'fold_budgets': [2, 2], 'fold_tp': [1, 0],
             'training_examples': [{'label': 0, 'score': .4, 'features': {'x': 2.}, 'group': 'selected_label0'}],
             'ranking_delta': {'net_tp': 0}}}}
@@ -302,12 +302,12 @@ class FeedbackAndBootstrapTests(unittest.TestCase):
             feedback.write_train_feedback(path, train, [], {'merge': 4}, target_kind='merge',
                                           selection=selection, protocol={'mode': 'grouped_oof'})
             data = json.loads(path.read_text())
-        self.assertEqual(data['format'], 'stratified-train-v4')
+        self.assertEqual(data['format'], 'stratified-train-v6-per-kind-objective')
         self.assertEqual(list(data['examples']), ['2/merge'])
         self.assertEqual(data['parent_selection']['cells']['2/merge']['fold_budgets'], [2, 2])
         self.assertEqual(data['parent_train']['cells']['1/merge']['precision'], .5)
         self.assertEqual(data['ranking_delta'], {'2/merge': {'net_tp': 0}})
-        self.assertIn('rank branches', data['reading_guide'])
+        self.assertIn("Branch ranking uses parent_selection's metric", data['reading_guide'])
 
     def test_paired_bootstrap_brackets_zero_for_identical_scorers_and_excludes_it_for_clear_gains(self):
         rng = np.random.default_rng(0)
@@ -319,12 +319,12 @@ class FeedbackAndBootstrapTests(unittest.TestCase):
                             {'pool_sha256': pool_digest('merge', rows)})
         banks = {'2': NativeTables('2', {'merge': table}, {})}
         same = {'2/merge': {'scores': table.features.detector_score.to_numpy()}}
-        result = scoring.paired_bootstrap(same, same, banks, {'merge': 200}, draws=50)
-        self.assertEqual(result['macro_delta_ci95'], [0., 0.])
+        result = scoring.paired_bootstrap(same, same, banks, {'merge': 200}, draws=50, target_kind='merge')
+        self.assertEqual(result['delta_ci95'], [0., 0.])
         self.assertEqual(result['p_delta_le_0'], 1.)
         better = {'2/merge': {'scores': good}}
-        result = scoring.paired_bootstrap(same, better, banks, {'merge': 200}, draws=50, seed=3)
-        self.assertGreater(result['macro_delta_ci95'][0], 0.)
+        result = scoring.paired_bootstrap(same, better, banks, {'merge': 200}, draws=50, seed=3, target_kind='merge')
+        self.assertGreater(result['delta_ci95'][0], 0.)
         self.assertEqual(result['p_delta_le_0'], 0.)
         self.assertEqual(result['draws'], 50)
 
@@ -383,16 +383,16 @@ class DriverRoleTests(unittest.TestCase):
             row = json.loads((path / 'ledger.jsonl').read_text().splitlines()[0])
             self.assertEqual(row['selection_protocol'], 'grouped_oof')
             self.assertEqual(list(row['selection']['cells']), ['802449/merge'])
-            self.assertEqual(row['selection']['macro_precision'], 1.)
+            self.assertEqual(row['selection']['per_kind_precision']['merge'], 1.)
             self.assertTrue(row['selection_gate']['passed'])
             self.assertFalse(row['selection_gate']['required_for_promotion'])
             self.assertIn('2/merge', row['validation']['cells'])
             bootstrap = row['validation_gate']['paired_bootstrap']
             self.assertEqual(bootstrap['draws'], 20)
-            self.assertEqual(len(bootstrap['macro_delta_ci95']), 2)
+            self.assertEqual(len(bootstrap['delta_ci95']), 2)
             self.assertTrue(row['accepted'])
             pool = json.loads((path / 'candidate_pool.json').read_text())['kinds']['merge']
-            self.assertEqual(pool['reference_branch']['selection']['macro_precision'], 1.)
+            self.assertEqual(pool['reference_branch']['selection']['per_kind_precision']['merge'], 1.)
             self.assertIn('in_sample_precision', pool['candidates'][0])
             seed_entry = json.loads((path / 'train_seed/merge/result.json').read_text())
             self.assertEqual(list(seed_entry['selection']['cells']), ['802449/merge'])
