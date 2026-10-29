@@ -196,8 +196,13 @@
   if(imageEvidence.length){
     const sum=f=>imageEvidence.reduce((n,e)=>n+f(e),0);
     const access=sum(e=>e.volume_analyses_succeeded||0), scored=sum(e=>(e.image_scored_attempts||[]).length);
+    const previews=sum(e=>e.preview_records||0), probes=sum(e=>e.descriptor_image_probes_succeeded||0);
+    const plans=sum(e=>e.descriptor_plans_attempted||0);
+    const descriptors=sum(e=>(e.descriptor_image_computations||[]).filter(d=>d.status==="registered").length);
     const isolated=sum(e=>(e.paired_diagnostics||[]).filter(d=>d.status==="measured"&&d.image_evidence?.image_only_control).length);
-    $("stats").append(el("p",`Image evidence (${imageEvidence.length}/${data.generations.length} generations recorded): ${access} successful 3D analyses; ${scored} image-scored attempts (including cached); ${isolated} image-only paired TRAIN diagnostics. Access and coverage do not establish gain.`,"muted"));
+    const groups=sum(e=>(e.paired_diagnostics||[]).filter(d=>d.status==="measured"&&Object.keys(d.image_evidence?.descriptor_columns||{}).length).length);
+    $("stats").append(el("p",`Recorded image evidence (${imageEvidence.length}/${data.generations.length} generations): ${previews} previews; ${access} successful 3D analyses; ${probes} successful image descriptor probes; ${plans} descriptor plans; ${descriptors} registered image descriptor computations; ${scored} image-scored attempts (computations/attempts include cached results); ${groups} descriptor-group and ${isolated} image-only paired TRAIN diagnostics. Older records may omit newer activity types. Access and group effects do not isolate pixel benefit.`,"muted"));
+    jsonDetails($("stats"),"Image descriptor computations",data.generations.filter(g=>g.image_evidence?.descriptor_image_computations?.length).map(g=>({generation:g.generation,computations:g.image_evidence.descriptor_image_computations})));
     jsonDetails($("stats"),"Image diagnostic outcomes",data.generations.filter(g=>g.image_evidence?.paired_diagnostics?.length).map(g=>({generation:g.generation,diagnostics:g.image_evidence.paired_diagnostics})));
   }
   if(data.state.reason)$("warnings").append(el("p",data.state.reason,"warning"));

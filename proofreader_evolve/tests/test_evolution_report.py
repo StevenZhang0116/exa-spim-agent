@@ -39,6 +39,20 @@ class EvolutionReportTests(unittest.TestCase):
         self.put(f'gen{number:03d}/evaluation.json', row)
         return row
 
+    def test_descriptor_requests_and_probe_evidence_survive_report_export(self):
+        request = {'level': 0, 'radius_um': 40., 'channel': 0, 'timepoint': 0}
+        run = {'run': 'gen001/descriptor001', 'status': 'registered', 'inputs': 'image',
+               'columns': ['bank_agent_signal'], 'scope': 'all_cached', 'image_tier': None,
+               'image': request, 'cached': False, 'wall_seconds': 1.}
+        evidence = {'version': 'image-evidence-v3', 'preview_records': 2,
+                    'descriptor_image_probes_succeeded': 1, 'descriptor_plans_attempted': 1,
+                    'descriptor_image_computations': [run]}
+        self.generation(1, descriptor_runs=[run], image_evidence=evidence)
+        row = build_report_data(self.root)['generations'][0]
+        self.assertEqual(row['descriptor_runs'][0]['image'], request)
+        self.assertIsNone(row['descriptor_runs'][0]['image_tier'])
+        self.assertEqual(row['image_evidence'], evidence)
+
     def test_rejected_submission_can_remain_in_pool_and_missing_scores_stay_null(self):
         attempt = {'experiment': 'gen001/attempt001', 'sequence': 1, 'status': 'evaluated',
                    'target_kind': 'split', 'component_sha256': 'specialist', 'target_precision': .2,

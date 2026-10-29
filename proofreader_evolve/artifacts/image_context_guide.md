@@ -1,14 +1,18 @@
 # Candidate images: 3D exploration, features and learned models
 
-With a context cache attached, `compute_descriptors` (see `descriptor_guide.md`) is
-the direct route from pixels to predictors at pool scale; the `LOCAL_IMAGE` path
-below remains available for rows outside the cache or custom patch sizes.
+With a context cache attached, use `probe_descriptor` to inspect and test the current
+`describe(context)`, then `compute_descriptors` to register predictors at pool scale
+(see `descriptor_guide.md`). `DESCRIPTOR.image` supports custom radius and pyramid
+level in both paths. `LOCAL_IMAGE` below remains available for rows outside the
+context cache, stateless feature extraction and models that consume raw patches.
 
 Image access uses reviewed, registered raw fused fluorescence volumes. For
-exploration, write `analysis.py` and `analysis_request.json`, then call
+separate local exploration, write `analysis.py` and `analysis_request.json`, then call
 `run_volume_analysis({})`: your code receives actual 3D TRAIN pixels and aligned
 fragment geometry, and returns concise results. See `volume_analysis_guide.md`
-for the primary exploration interface, independent of fitting or scoring.
+for this analysis interface, independent of fitting or scoring. Its crop/geometry
+configuration may differ from a descriptor's; use `probe_descriptor` when checking
+the exact descriptor inputs.
 No GT skeleton, GT overlay, segmentation label volume or heldout inspection is
 provided. Missing or unreviewed sources produce explicit errors, not dark images.
 
@@ -22,8 +26,9 @@ overlap unrelated structures; use volume computations to investigate connectivit
 
 Call `inspect_candidate_image` with a TRAIN candidate_ref, radius_um=40, level=0
 and occurrence_index=0. Call `inspect_failure_images({})` for up to two matched
-failure pairs in one call. Both share eight image requests per generation; failed
-IO also spends a request. Volume analysis and neighborhood inspection retain
+failure pairs in one call. These tools and descriptor probe previews share eight
+image requests per generation; failed IO in the inspection tools also spends a
+request. Probe preparation/execution uses descriptor wall time. Volume analysis and neighborhood inspection retain
 their separate budgets. Analysis results do not automatically become features:
 declare scoring inputs and measure the resulting policy as described below.
 

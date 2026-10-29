@@ -95,7 +95,7 @@ def _record_handoff(memory, gen_dir, target_kind, generation, record, trace):
     return {**item, 'adjustments': notes}
 
 
-TRAIN_ARTEFACT_DIRS = ('experiments', 'classifier_fits', 'descriptor_runs')
+TRAIN_ARTEFACT_DIRS = ('experiments', 'classifier_fits', 'descriptor_runs', 'descriptor_probes')
 # Agent-authored and TRAIN-only files of earlier generations; evaluation.json, reviser_result.json,
 # trajectories and image_evidence.json stay closed because they carry validation measurements.
 # The file guard also excludes legacy descriptor_runs/inference/ from these recursive trees.
@@ -155,11 +155,11 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
         prompt += (
             f" This generation changes ONLY the {experiments.target_kind} component; the harness freezes the other kind. "
             f"Whole-TRAIN feature statistics are at {policy_path.parent / 'feature_statistics.json'}. "
-            "Your measured attempts, classifier fits and descriptor runs in this generation directory "
-            "(experiments/, classifier_fits/, descriptor_runs/) are readable; a tool result the SDK parks on disk "
+            "Your measured attempts, classifier fits, descriptor runs and probes in this generation directory "
+            "(experiments/, classifier_fits/, descriptor_runs/, descriptor_probes/) are readable; a tool result the SDK parks on disk "
             "is also readable, or read the attempt's result.json instead. Earlier generations' scorer.py, "
             "training.py, descriptor.py, analysis.py, proposal.json, search_plan.json, train_feedback.json and "
-            "their experiments/, classifier_fits/ and TRAIN descriptor_runs/ trees are readable too: read a previous "
+            "their experiments/, classifier_fits/, TRAIN descriptor_runs/ and descriptor_probes/ trees are readable too: read a previous "
             "program before rewriting it from memory. Validation descriptor logs (validation_descriptor_runs/ "
             "and legacy descriptor_runs/inference/) are host-only in every generation. "
             "search_plan.search_parent.outer_measurement and the candidate pool's "
@@ -176,8 +176,9 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
             "outcomes; read it first. Before you finish, add proposal.json.handoff (open_questions, evidence with "
             "verdicts, next_experiment) so the next session can continue instead of restarting. "
             "Use direct 3D analysis to investigate image evidence on a few TRAIN candidates when no pool-scale "
-            "descriptor tools are offered; with a context cache attached, prefer compute_descriptors and keep "
-            "run_volume_analysis for debugging describe. "
+            "descriptor tools are offered; with a context cache attached, use probe_descriptor to debug "
+            "describe on exact inputs, then compute_descriptors for pool-scale measurements. "
+            "run_volume_analysis remains available for separate local investigations. "
             "Read volume_analysis_guide.md, edit analysis.py analyze(context) and analysis_request.json, "
             "then call run_volume_analysis({}). Your code receives full original 3D pixel arrays, "
             "valid masks, zyx voxel anchors/spacing and local fragment nodes in the same voxel frame. "
@@ -311,22 +312,30 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
         )
         if experiments.memory.descriptor_runs is not None:
             budget = experiments.descriptor_budget
+            runs = experiments.memory.descriptor_runs
+            scopes = list(getattr(runs, 'allowed_scopes', DESCRIPTOR_SCOPES))
+            context_hint = ('; bank_context_available marks the detector band'
+                            if runs.cache.expose_band else '')
             prompt += (
                 " POOL-SCALE DESCRIPTORS: the host has cached the raw context (fragment neighbourhood and image "
                 "patches) of the top detector-ranked band of every brain and, where the cache carries the labeled "
                 "extension, of the GT-labeled rows outside it. Write descriptor.py with a literal "
                 "DESCRIPTOR dict and describe(context) that returns the quantities you want measured; read "
-                f"{policy_path.parent / 'descriptor_guide.md'} once. Call plan_descriptor_run({{}}) to time it, then "
-                'compute_descriptors({"scope": "pilot" | "boundary" | "all_cached"}) to run it over every cached row '
+                f"{policy_path.parent / 'descriptor_guide.md'} once. Start with probe_descriptor on a few TRAIN "
+                "cases, optionally requesting previews of the exact inputs; sample uniformly across brains to check "
+                "feature distributions. The optional DESCRIPTOR.image specifies level and radius_um. "
+                "Call plan_descriptor_run({}) to estimate all TRAIN brains, then "
+                'compute_descriptors({"scope": "all_cached"}) to run it over every cached row '
                 f"of the TRAIN brains in {experiments.memory.descriptor_runs.workers} parallel sandboxed workers. "
+                f"Allowed production scopes in this run: {json.dumps(scopes)}. "
                 f"Budget: {budget['per_call_seconds']:.0f} s per call and {budget['generation_seconds']:.0f} s per "
-                "generation of wall time, plus one evaluation unit per uncached call; cached code hashes are free. "
-                "The reply returns label-conditional TRAIN quartiles and coverage per column, and registers "
-                "bank_agent_<name> predictor columns (NaN on rows outside the cache; bank_context_available marks "
-                "the detector band) "
-                "that scorer.py, training.py and evaluate_feature_ablation can use immediately. Prefer this over "
-                "four-site run_volume_analysis for any claim about pixels or local geometry; use run_volume_analysis "
-                "only to debug describe on a few rows. Examples of earlier descriptors are in the guide."
+                "generation of wall time, plus one evaluation unit per uncached call; valid cached results are free. "
+                "Probes and planning also consume descriptor wall time, without evaluation charges. "
+                "The reply returns TRAIN finite/nonzero counts, ranges, standard deviations, quartiles and coverage, and registers "
+                f"bank_agent_<name> predictor columns (NaN on rows outside the cache{context_hint}) "
+                "that scorer.py, training.py and evaluate_feature_ablation can use immediately. "
+                "Use probe_descriptor to debug the same describe code and inputs; run_volume_analysis remains "
+                "available for separate local investigations. Examples of earlier descriptors are in the guide."
             )
     (policy_path.parent / "reviser_prompt.txt").write_text(prompt)
     trace.emit("reviser_start", f"Starting {model}; max_turns={max_turns}; prompt saved to reviser_prompt.txt",
@@ -453,9 +462,9 @@ def parse_args(argv=None):
                         "promotion needs the lower bound above zero")
     p.add_argument("--context-cache", type=Path, default=None,
                    help="Directory built by cli.precompute_context_cache; enables pool-scale agent descriptors "
-                        "(plan_descriptor_run / compute_descriptors). Omit to run without them")
+                        "(probe_descriptor / plan_descriptor_run / compute_descriptors). Omit to run without them")
     p.add_argument("--descriptor-bank", type=Path, default=None,
-                   help="Persistent cache of computed descriptor values, keyed by descriptor code hash "
+                   help="Persistent descriptor values, validated by code, input and implementation identity "
                         "(default: proofreader_evolve/descriptor_bank; descriptor_bank_no_score with "
                         "--detector-prior no-score, descriptor_bank_raw with --detector-prior raw)")
     p.add_argument("--descriptor-workers", default=24, metavar="auto|N",
@@ -1036,7 +1045,8 @@ async def _run(args, revise_fn, run_dir, trace):
                     "descriptor_bank": str(args.descriptor_bank), "workers": descriptor_runs.workers,
                     "per_call_wall_seconds": args.descriptor_wall_seconds,
                     "per_generation_wall_seconds": args.descriptor_generation_wall_seconds,
-                    "evaluation_units_per_uncached_call": 1, "scopes": list(DESCRIPTOR_SCOPES),
+                    "evaluation_units_per_uncached_call": 1,
+                    "scopes": list(getattr(descriptor_runs, 'allowed_scopes', DESCRIPTOR_SCOPES)),
                     "entries": {f"{b}/{k}": cache.entry(bank.tables[k]).summary() for b, bank in banks.items() for k in kinds},
                     "restored_descriptors": sorted(restored_descriptors["columns"]) if restored_descriptors else []}
                     if descriptor_runs is not None else {"enabled": False}),
@@ -1139,10 +1149,15 @@ async def _run(args, revise_fn, run_dir, trace):
             'worker_memory_mb': args.classifier_memory_mb, 'threads_per_worker': 1,
             'per_call_wall_seconds': args.descriptor_wall_seconds,
             'per_generation_wall_seconds': args.descriptor_generation_wall_seconds,
-            'evaluation_units_per_uncached_call': 1, 'scopes': list(DESCRIPTOR_SCOPES),
+            'evaluation_units_per_uncached_call': 1,
+            'scopes': list(getattr(descriptor_runs, 'allowed_scopes', DESCRIPTOR_SCOPES)),
+            'probe': {'default_sample_per_brain': 128, 'max_explicit_cases': 16,
+                      'preview_allowance_shared': 8, 'evaluation_units': 0, 'charges_wall_time': True},
+            'image_request': {'level_range': [0, 6], 'radius_um_range': [4, 100],
+                              'max_batch_bytes': 128 * 1024**2},
             'cached_band': {f'{b}/{k}': cache.entry(bank.tables[k]).summary()
                             for b, bank in train.items() for k in kinds},
-            'column_prefix': COLUMN_PREFIX, 'context_column': CONTEXT_COLUMN}
+            'column_prefix': COLUMN_PREFIX, **({'context_column': CONTEXT_COLUMN} if not no_score else {})}
             if descriptor_runs is not None else {'enabled': False}),
     }
     (run_dir / "best_scorer.py").write_text(source)
@@ -1261,7 +1276,9 @@ async def _run(args, revise_fn, run_dir, trace):
             max_evaluations=args.train_evaluations_per_generation, generation=generation, search_plan=plan,
             classifier_timeout=args.classifier_time_budget, classifier_memory_mb=args.classifier_memory_mb,
             classifier_threads=args.classifier_threads, parent_selection=parent_selection[target_kind],
-            descriptor_budget=descriptor_budget,
+            descriptor_budget={**descriptor_budget, 'frozen_inference_rows':
+                [len(cache.entry(bank.tables[target_kind]).rows) for bank in validation.values()]
+                if descriptor_runs is not None else None},
             branch={**branch_meta, 'selection': branch_report, 'state': branch_state},
             validated=lambda entry, kind=target_kind: pool.validation_of(kind, entry))
         record = {"generation": generation, "accepted": False, "target_kind": target_kind,

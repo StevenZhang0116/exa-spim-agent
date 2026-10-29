@@ -27,6 +27,8 @@ from .isolated_scoring import preflight, ScorerExecutionError
 from .selection_protocol import SelectionProtocol, load_selection, save_selection
 from .descriptor_contract import descriptor_spec, referenced_columns, COLUMN_PREFIX
 from .descriptor_runs import SCOPES as DESCRIPTOR_SCOPES
+from . import descriptor_probe
+from .image_evidence import descriptor_ablation_evidence
 from .local_context import resolve_train_candidate
 from .local_features import augmented_features
 from .model_execution import ModelExecutionError, DEFAULT_MEMORY_MB
@@ -1135,6 +1137,7 @@ class TrainingExperiments:
         report.update(wall_seconds=time.monotonic() - started, preparation_seconds=preparation_seconds,
                       evaluations_used=self.evaluations_used - before,
                       evaluations_remaining=self.remaining)
+        report['image_evidence'] = descriptor_ablation_evidence(report, self.memory.descriptors)
         (directory / 'proposal.json').write_text(json.dumps(proposal, indent=2, allow_nan=False))
         (directory / 'result.json').write_text(json.dumps(report, indent=2, allow_nan=False))
         self.feature_diagnostics.append(report)
@@ -1147,7 +1150,7 @@ class TrainingExperiments:
             if 'input_sha256' in image_inputs:
                 values['image_inputs'] = image_inputs['input_sha256']
         image = report.get('image_evidence') or {}
-        evidence_source = ('raw_image' if image.get('all_image_inputs_removed_in_control')
+        evidence_source = ('raw_image' if image.get('all_image_inputs_removed_in_control') or image.get('descriptor_columns')
                            else 'feature_comparison')
         self._record_research('evaluate_feature_ablation', evidence_source, 'measurement', evidence_identity,
             report['status'] == 'measured', directory / 'result.json', cached=report.get('cached', False),
@@ -1167,7 +1170,7 @@ class TrainingExperiments:
     def descriptor_seconds_remaining(self):
         return max(0., self.descriptor_budget['generation_seconds'] - self.descriptor_seconds_used)
 
-    def _read_descriptor(self):
+    def _read_descriptor(self, *, check_registry=True):
         if self.memory.descriptor_runs is None:
             raise ValueError('Descriptor computation is unavailable: this run has no context cache (--context-cache)')
         path = self.descriptor_path
@@ -1178,7 +1181,7 @@ class TrainingExperiments:
             raise ValueError(f'DESCRIPTOR.kind must be {self.target_kind!r} in this generation')
         for column in spec['columns']:
             existing = self.memory.descriptors.get(column)
-            if existing is not None and existing['code_sha256'] != spec['code_sha256']:
+            if check_registry and existing is not None and existing['code_sha256'] != spec['code_sha256']:
                 raise ValueError(f'{column} is already registered by different code in this run; choose new names')
         return program, spec
 
@@ -1189,34 +1192,10 @@ class TrainingExperiments:
         return 'raw_image' if spec['inputs'] != 'geometry' else 'local_geometry'
 
     def plan_descriptor_run(self):
-        """Time describe on a small sample and extrapolate each scope; no evaluation charge."""
-        program, spec = self._read_descriptor()
-        runs = self.memory.descriptor_runs
-        brain = self.protocol.selection_brains[0]
-        table = self.train[brain].tables[self.target_kind]
-        per_call = self.descriptor_budget['per_call_seconds']
-        k = self._k(self.target_kind, table.truth)
-        plan = runs.plan(table, program, spec, k=k, timeout=min(600., per_call))
-        allowance = min(per_call, self.descriptor_seconds_remaining)
-        response = {'status': 'planned', 'code_sha256': spec['code_sha256'], 'columns': spec['columns'],
-                    'inputs': spec['inputs'], 'image_tier': spec['image_tier'] if spec['inputs'] != 'geometry' else None,
-                    'timed_on_brain': brain, **plan,
-                    'budget': {'per_call_seconds': per_call, 'generation_seconds_remaining': self.descriptor_seconds_remaining,
-                               'evaluations_remaining': self.remaining},
-                    'fits_budget': {scope: plan['estimates'][scope]['estimated_seconds'] <= allowance for scope in plan['estimates']},
-                    'cached': {scope: all(runs.cached(t, spec, scope, k) for t in self._descriptor_tables().values())
-                               for scope in DESCRIPTOR_SCOPES},
-                    'note': 'Estimates assume linear scaling across workers; an uncached compute_descriptors call costs one evaluation unit.'}
-        directory = self.gen_dir / 'descriptor_plans'
-        directory.mkdir(exist_ok=True)
-        path = directory / f'plan{len(list(directory.glob("plan*.json"))) + 1:03d}.json'
-        path.write_text(json.dumps(response, indent=2, allow_nan=False))
-        self._record_research('plan_descriptor_run', self._descriptor_source(spec), 'observation',
-            {'code_sha256': spec['code_sha256'], 'sample_rows': plan['sample_rows']}, True, path)
-        estimates = ', '.join('%s: %.0fs' % (scope, item['estimated_seconds']) for scope, item in plan['estimates'].items())
-        self.trace.emit('descriptor_plan', f"{spec['columns']}: {plan['seconds_per_row_single_worker']:.3f}s/row single worker; "
-                        f"estimates {{{estimates}}}", **{k: v for k, v in response.items() if k != 'note'})
-        return response
+        return descriptor_probe.plan(self)
+
+    def probe_descriptor(self, candidate_refs=None, sample_per_brain=128, seed=0, previews=False):
+        return descriptor_probe.probe(self, candidate_refs, sample_per_brain, seed, previews)
 
     def compute_descriptors(self, scope='pilot'):
         """Run describe over the cached rows of every TRAIN brain; register the columns."""
@@ -1243,7 +1222,7 @@ class TrainingExperiments:
         (directory / 'spec.json').write_text(json.dumps(spec, indent=2))
         started = time.monotonic()
         entry = {'run': f'{self.gen_dir.name}/descriptor{number:03d}', 'code_sha256': spec['code_sha256'],
-                 'columns': spec['columns'], 'inputs': spec['inputs'],
+                 'columns': spec['columns'], 'inputs': spec['inputs'], 'image': spec.get('image'),
                  'image_tier': spec['image_tier'] if spec['inputs'] != 'geometry' else None, 'scope': scope,
                  'target_kind': self.target_kind, 'status': 'running', 'cached': cached, 'charged': not cached,
                  'brains': sorted(tables)}
@@ -1252,8 +1231,10 @@ class TrainingExperiments:
         results = {}
         try:
             for brain, table in sorted(tables.items()):
-                allowance = per_call if cached else max(1., min(per_call, self.descriptor_seconds_remaining)
-                                                        - (time.monotonic() - started))
+                allowance = per_call if cached else (min(per_call, self.descriptor_seconds_remaining)
+                                                     - (time.monotonic() - started))
+                if allowance <= 0:
+                    raise ModelExecutionError('Descriptor wall budget exhausted before the next TRAIN brain')
                 results[brain] = runs.compute(table, program, spec, scope, k=self._k(self.target_kind, table.truth),
                                               wall_budget=allowance,
                                               log_dir=directory / brain)
@@ -1263,10 +1244,11 @@ class TrainingExperiments:
             for column in spec['columns']:
                 self.memory.descriptors[column] = {'code_sha256': spec['code_sha256'], 'scope': scope,
                     'kind': self.target_kind, 'inputs': spec['inputs'], 'image_tier': entry['image_tier'],
+                    'image': spec.get('image'),
                     'registered_in': self.gen_dir.name}
             self.memory.descriptor_generation += 1
             entry.update(status='registered',
-                         summaries={brain: runs.summarize(table, spec['columns'], results[brain]['rows'], results[brain]['values'])
+                         summaries={brain: descriptor_probe.diagnostics(runs, table, spec['columns'], results[brain]['rows'], results[brain]['values'], labels=True)
                                     for brain, table in tables.items()},
                          coverage={brain: {'computed_rows': int(len(r['rows'])), 'pool_rows': int(len(tables[brain].features)),
                                            'cached': r['cached'], 'wall_seconds': r['wall_seconds'],
@@ -1358,6 +1340,7 @@ class TrainingExperiments:
 
     def mcp_server(self):
         from claude_agent_sdk import create_sdk_mcp_server, tool
+        descriptor_scopes = list(getattr(self.memory.descriptor_runs, 'allowed_scopes', DESCRIPTOR_SCOPES))
 
         async def invoke(function, arguments):
             async with self.lock:
@@ -1416,7 +1399,7 @@ class TrainingExperiments:
             return await invoke(self.inspect_failure_cases, arguments)
 
         @tool('run_volume_analysis', 'Direct 3D exploration on a few TRAIN candidates; with a context cache attached, '
-              'prefer compute_descriptors and use this to debug describe. Execute analysis.py analyze(context) on '
+              'use probe_descriptor to debug describe with identical inputs. Execute analysis.py analyze(context) on '
               f'1..{MAX_CASES} TRAIN candidates selected in analysis_request.json (compare groups, e.g. missed '
               'positives vs selected label-0 rows). Full original 3D pixels, spacing, '
               'candidate anchors and aligned local fragments; arbitrary installed CPU analysis. '
@@ -1455,19 +1438,30 @@ class TrainingExperiments:
         async def evaluate_feature_ablation(arguments):
             return await invoke(self.evaluate_feature_ablation, arguments)
 
-        @tool('plan_descriptor_run', 'Time descriptor.py describe(context) on 64 cached rows with one worker and '
-              'extrapolate pilot/boundary/all_cached to the configured worker count and remaining wall budget. '
-              'No evaluation charge. Call with {}.', {})
+        @tool('probe_descriptor', 'Execute the current descriptor.py on explicit TRAIN candidate_refs or a '
+              'seeded uniform sample per TRAIN brain (default 128). Return input support, feature values, '
+              'sparse-feature diagnostics and optional previews of the exact descriptor inputs. '
+              'No registration or evaluation charge; preparation and execution use descriptor wall budget.',
+              {'type': 'object', 'properties': {'candidate_refs': {'type': 'array', 'items': {'type': 'string'}},
+               'sample_per_brain': {'type': 'integer'}, 'seed': {'type': 'integer'}, 'previews': {'type': 'boolean'}},
+               'additionalProperties': False})
+        async def probe_descriptor(arguments):
+            return await invoke(self.probe_descriptor, arguments)
+
+        @tool('plan_descriptor_run', 'Time descriptor.py on a uniform sample from every TRAIN brain and '
+              'estimate the entire TRAIN call, including input preparation, at the configured worker count. '
+              'Uses descriptor wall budget, no evaluation charge. Call with {}.', {})
         async def plan_descriptor_run(arguments):
             return await invoke(self.plan_descriptor_run, arguments)
 
         @tool('compute_descriptors', 'Run descriptor.py describe(context) over the cached candidates of every '
               'TRAIN brain in parallel sandboxed workers and register the results as bank_agent_<name> predictor '
-              'columns. scope: pilot (512 top-ranked rows), boundary (2000 band rows each side of K) or all_cached '
-              '(every cached row: the detector band plus the labeled extension where the cache carries one). '
-              'Returns label-conditional TRAIN quartiles, finite fractions and coverage. One uncached call costs '
-              'one evaluation unit plus wall time; results are cached by code hash across generations and runs.',
-              {'scope': str})
+              f'columns. Allowed scopes in this run: {descriptor_scopes}. all_cached covers every cached row; '
+              'other scopes, when available, select a detector-ranked subset. '
+              'Returns TRAIN finite/missing/nonzero counts, ranges, standard deviations, quartiles and coverage. One uncached call costs '
+              'one evaluation unit plus wall time; results are cached by code and input identity across generations and runs.',
+              {'type': 'object', 'properties': {'scope': {'type': 'string', 'enum': descriptor_scopes}},
+               'required': ['scope'], 'additionalProperties': False})
         async def compute_descriptors(arguments):
             return await invoke(self.compute_descriptors, arguments)
 
@@ -1498,5 +1492,5 @@ class TrainingExperiments:
             train_classifier, inspect_candidate, inspect_failure_cases, evaluate_feature_ablation,
             inspect_candidate_image, inspect_failure_images,
             run_volume_analysis, plan_image_scoring,
-            plan_descriptor_run, compute_descriptors,
+            probe_descriptor, plan_descriptor_run, compute_descriptors,
             restore_candidate, search_memory])

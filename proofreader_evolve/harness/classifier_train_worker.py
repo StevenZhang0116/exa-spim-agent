@@ -45,7 +45,10 @@ def extract_image(module, x, images, request, output, np):
             result = module.extract_image_features(context)
             if not isinstance(result, dict) or set(result) != set(names):
                 raise ValueError('extract_image_features must return exactly the declared feature_names')
-            row = np.asarray([result[name] for name in names], dtype=np.float64)
+            try:
+                row = np.asarray([result[name] for name in names], dtype=np.float64)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f'Descriptor row {index}: values must be numeric scalars or NaN') from exc
             if row.shape != (len(names),) or np.isinf(row).any():
                 raise ValueError('Image features must be scalars or NaN, not infinity')
             results.append(row)
@@ -118,15 +121,18 @@ def describe_rows(module, contexts, images, request, output, np):
             fragment[name] = array
         results = []
         for _ in range(2):
-            result = module.describe(copy.deepcopy(context))
+            try:
+                result = module.describe(copy.deepcopy(context))
+            except Exception as exc:
+                raise ValueError(f'Descriptor row {index}: {type(exc).__name__}: {exc}') from exc
             if not isinstance(result, dict) or set(result) != set(names):
-                raise ValueError('describe(context) must return a dict with exactly the declared feature_names')
+                raise ValueError(f'Descriptor row {index}: describe(context) must return a dict with exactly the declared feature_names')
             row = np.asarray([result[name] for name in names], dtype=np.float64)
             if row.shape != (len(names),) or np.isinf(row).any():
-                raise ValueError('Descriptor values must be finite scalars or NaN, never infinity')
+                raise ValueError(f'Descriptor row {index}: values must be finite scalars or NaN, never infinity')
             results.append(row)
         if not np.array_equal(*results, equal_nan=True):
-            raise ValueError('describe(context) must be deterministic')
+            raise ValueError(f'Descriptor row {index}: describe(context) must be deterministic')
         values[index] = results[0]
     np.save(output, values, allow_pickle=False)
     output.flush()

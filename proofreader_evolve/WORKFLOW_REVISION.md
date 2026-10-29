@@ -7,6 +7,28 @@ edit graphs, expand candidates, retrain detectors or deploy scorers automaticall
 
 ## Pipeline
 
+Image descriptor workflow (2026-10-29): `probe_descriptor` executes the current
+`describe(context)` on explicit TRAIN handles or reproducible uniform samples
+from each TRAIN brain. Optional previews use those exact inputs and share the
+existing eight-image allowance. The optional `DESCRIPTOR.image` selects radius
+and native pyramid level; legacy tiers remain supported. Probe, full TRAIN and
+frozen inference share input assembly and isolated execution. Custom full-run
+patches use byte-bounded temporary batches; only small probes persist patch misses.
+Diagnostics now include finite/missing/nonzero counts, min/max/std and example
+handles. Planning includes every TRAIN brain and reports a separate frozen
+`all_cached` cost extrapolated from workload sizes and TRAIN timings, without
+reading heldout images. Probe/planning time counts against descriptor wall budgets;
+probes do not register features or spend scoring units. Image-consuming descriptor
+ablations are recorded as group effects without assuming isolated pixel benefit.
+The current contract and examples are in [descriptor_guide.md](artifacts/descriptor_guide.md).
+The follow-up consistency audit aligns runtime prompts, tool schemas and environment
+metadata with the active production scopes, records probe charges separately from
+cumulative evaluation use, and makes budget-fit checks account for valid cached
+numeric outputs. The human report now displays descriptor probes, previews, plans,
+registered image descriptors and their group ablations separately from image-only
+comparisons. Shared execution deadlines include input identity preparation and do
+not grant additional time to later TRAIN brains after the call budget expires.
+
 Current scoring contract (2026-10-29, scoring v6): merge and split have independent
 objectives. Selection, feature ablation and promotion share the configured
 per-kind aggregation and positive floor, while selection and outer validation

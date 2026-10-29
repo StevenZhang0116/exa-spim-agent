@@ -180,6 +180,11 @@ class DriverTests(unittest.TestCase):
 
             async def revise(run_dir, policy, rules, report, model, *, experiments):
                 (policy.parent / 'descriptor.py').write_text(BLIND_DESCRIPTOR)
+                environment = json.loads((policy.parent / 'model_environment.json').read_text())['descriptor_compute']
+                manifest = json.loads((run_dir / 'manifest.json').read_text())['descriptor_compute']
+                self.assertEqual(environment['scopes'], ['all_cached'])
+                self.assertEqual(manifest['scopes'], ['all_cached'])
+                self.assertNotIn('context_column', environment)
                 for scope in ('pilot', 'boundary'):
                     with self.assertRaisesRegex(ValueError, r"scope must be one of \('all_cached',\)"):
                         experiments.compute_descriptors(scope)

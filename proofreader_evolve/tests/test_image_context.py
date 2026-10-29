@@ -97,7 +97,7 @@ class ImageContextTests(unittest.TestCase):
             def __getitem__(self, selection):
                 return SimpleNamespace(read=lambda: SimpleNamespace(result=lambda **kw: stored[selection]))
         source._arrays[0] = Array(); source.timeout = 1
-        source.level = lambda _: geometry
+        source.level = lambda _, **kw: geometry
         anchors = geometry.voxel_to_graph([[.5, 3, 3.5]])
         with patch.object(geometry, 'crop', return_value=(np.array([-1,2,3]), np.array([4,3,2]), np.array([[1.5,1.,.5]]))):
             result, metadata = source.read(anchors, channel=1)

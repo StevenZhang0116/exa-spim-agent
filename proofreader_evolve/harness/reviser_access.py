@@ -2,7 +2,7 @@
 
 Reads are limited to the bound generation artifacts, explicitly listed reports,
 current/earlier generations' TRAIN artefact directories (attempt snapshots, classifier
-fits, descriptor runs; regular files only) and the SDK's parked tool-result files for this
+fits, descriptor runs/probes; regular files only) and the SDK's parked tool-result files for this
 run; writes to the editable artifacts. Validation descriptor logs, including the
 legacy descriptor_runs/inference subtree, are always private to the host.
 """
@@ -64,7 +64,7 @@ def make_guard(cwd, editable_dir, readable_paths, audit_path, state=None, *,
     # directly inside <project>/<session>/tool-results/ are readable (never writable).
     parked_root = sdk_project_dir(cwd) if sdk_tool_results else None
     # Whole directories of this run's own TRAIN artefacts (attempt snapshots, classifier fits,
-    # descriptor runs) are readable recursively, except the private inference trees;
+    # descriptor runs/probes) are readable recursively, except the private inference trees;
     # regular files only, with the resolved path checked to prevent symlink escapes.
     directories = tuple((d if d.is_absolute() else cwd / d).resolve() for d in readable_dirs)
     if any(cwd not in d.parents for d in directories):

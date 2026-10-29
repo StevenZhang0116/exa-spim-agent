@@ -202,7 +202,8 @@ Each generation allows up to 60 SDK interaction turns by default (24 before
 100,000 tokens; a result the SDK parks on disk (above about 50 KB) stays readable
 through the session's file guard, and file reads allow 100,000 tokens instead of
 the SDK default of 25,000. The session may also read its own generation's
-`experiments/`, `classifier_fits/` and `descriptor_runs/` directories. Feature names
+`experiments/`, `classifier_fits/`, TRAIN `descriptor_runs/` and `descriptor_probes/`
+directories, including the corresponding trees in earlier generations. Feature names
 appear once per cell with aligned example vectors; values are rounded to six
 significant digits for display. It samples selected positives and label-0 rows,
 rows just below K, and missed positives. Each group keeps a fixed anchor and
@@ -316,11 +317,17 @@ the finest resolution), both for the whole band (level 0 covered only the first
 entries in place; `--labeled-extension` appends the GT-labeled rows outside the band
 so every ranked row has a context). Nothing in the cache is a feature. The agent writes
 `descriptor.py` (`DESCRIPTOR` plus `describe(context)`) and calls
-`plan_descriptor_run` / `compute_descriptors`; the host runs the code over the
-cached rows in parallel sandboxed workers, caches results by code hash in
-`descriptor_bank/`, registers them as `bank_agent_*` predictors with
-label-conditional TRAIN quartiles, and recomputes them on validation brains at
-submission. One uncached call costs one evaluation unit under wall-clock budgets
+`probe_descriptor` on selected TRAIN cases or uniform per-brain samples, optionally
+requesting previews of the exact inputs. `DESCRIPTOR.image = {'level': 0, 'radius_um': 40}`
+can replace the legacy `image_tier` field. Matching cached patches are reused; other
+registered image crops are read on demand with bounded temporary batches for full runs.
+`plan_descriptor_run` estimates all TRAIN brains, then `compute_descriptors` runs the
+same code and input path in parallel sandboxed workers. Results are cached by code,
+input and implementation identity in `descriptor_bank/` and registered as `bank_agent_*`
+predictors. Per-brain diagnostics include finite/missing/nonzero counts, min/max/std,
+quartiles and exceptional candidate handles. Frozen validation uses the same resolved
+image request. Probes and plans use descriptor wall time without evaluation units;
+one uncached full computation costs one evaluation unit under wall-clock budgets
 (`--descriptor-wall-seconds`, `--descriptor-generation-wall-seconds`). See the
 [descriptor guide](../proofreader_evolve/artifacts/descriptor_guide.md).
 

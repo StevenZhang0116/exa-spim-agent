@@ -30,9 +30,11 @@ in the current generation's `proposal.json`.
   worker, then appends your features. Handle NaN for rows outside the deterministic
   context selection. All candidates still receive scores. GT graphs are excluded.
   Validation uses the same frozen extractor outside the LLM.
-- Use direct 3D code analysis to investigate image evidence on a few candidates;
-  with a context cache attached, `compute_descriptors` over the cached candidates is the
-  primary path (descriptor_guide.md). Read
+- With a context cache attached, use `probe_descriptor` to inspect exact descriptor inputs
+  and test current `describe` code on TRAIN cases or uniform samples across brains.
+  Optional previews show those same inputs; `DESCRIPTOR.image` can vary radius and level.
+  Then compute descriptors, fit and measure paired ablations (descriptor_guide.md).
+  Separate local 3D investigations remain available: read
   volume_analysis_guide.md; edit analysis.py and analysis_request.json, then call
   run_volume_analysis({}). Your code receives actual TRAIN voxels, validity,
   spacing, anchors and aligned local fragments. Eight independent executions
@@ -40,7 +42,7 @@ in the current generation's `proposal.json`.
   Returned findings are exploration evidence; implement useful measurements in
   scoring code and evaluate them before claiming a gain. 2D previews through
   inspect_candidate_image or inspect_failure_images are optional, with a separate
-  eight-request allowance. Projections alone cannot establish 3D connectivity.
+  eight-request allowance shared with probe previews. Projections alone cannot establish 3D connectivity.
 - Read image_context_guide.md to use image observations in scoring.
   LOCAL_IMAGE enables stateless image features or raw
   patches for arbitrary fit/predict models via an images keyword argument.
@@ -167,7 +169,7 @@ in the current generation's `proposal.json`.
   comparison, not for submission, and `restore_candidate("best")` prefers a measured
   candidate the outer evaluator has not seen. Earlier generations' scorer.py,
   training.py, descriptor.py, proposal.json and their experiments/, classifier_fits/
-  and TRAIN descriptor_runs/ trees are readable: read a previous program before rewriting it
+  and TRAIN descriptor_runs/ and descriptor_probes/ trees are readable: read a previous program before rewriting it
   from memory. Validation descriptor logs in validation_descriptor_runs/ and the legacy
   descriptor_runs/inference/ subtree are host-only in every generation.
   Otherwise, every third scheduled generation of each

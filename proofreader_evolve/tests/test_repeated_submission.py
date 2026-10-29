@@ -249,7 +249,7 @@ class EarlierGenerationAccessTests(unittest.TestCase):
         paths, dirs = self.driver.earlier_generation_readables(self.run_dir, self.run_dir / 'gen001')
         self.assertEqual((paths, dirs), ([], []))
         paths, dirs = self.driver.earlier_generation_readables(self.run_dir, self.run_dir / 'gen003')
-        self.assertEqual([p.parent.name for p in dirs], ['gen001'] * 3 + ['gen002'] * 3)
+        self.assertEqual([p.parent.name for p in dirs], ['gen001'] * 4 + ['gen002'] * 4)
         self.assertEqual([d.name for d in dirs[:3]], ['experiments', 'classifier_fits', 'descriptor_runs'])
         names = {p.name for p in paths}
         self.assertTrue({'scorer.py', 'training.py', 'descriptor.py', 'proposal.json', 'search_plan.json',
@@ -284,6 +284,7 @@ class EarlierGenerationAccessTests(unittest.TestCase):
         # Create logs after binding, as workers do during and after a live session.
         for generation in ('gen001', 'gen003'):
             for tree, expected in (('descriptor_runs/run001', 'allow'),
+                                   ('descriptor_probes/probe001', 'allow'),
                                    ('descriptor_runs/inference', 'deny'),
                                    ('validation_descriptor_runs', 'deny')):
                 log = self.run_dir / generation / tree / 'brain' / 'program' / 'batch0000.log'

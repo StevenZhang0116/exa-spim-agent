@@ -63,7 +63,7 @@ def bind_session_options(options, policy_path, rules_path, report_path, *, reada
     """Bind generation files and TRAIN tools, including analysis and descriptor code; explicit reads only.
 
     `readable_dirs` are current/earlier generations' host-written TRAIN artefact trees
-    (attempt snapshots, classifier fits, descriptor runs): readable recursively, never
+    (attempt snapshots, classifier fits, descriptor runs/probes): readable recursively, never
     writable. The guard always excludes current and legacy validation descriptor logs.
     """
     from claude_agent_sdk import HookMatcher
@@ -82,7 +82,7 @@ def bind_session_options(options, policy_path, rules_path, report_path, *, reada
                        "mcp__training__inspect_failure_cases", "mcp__training__evaluate_feature_ablation",
                        "mcp__training__inspect_candidate_image", "mcp__training__inspect_failure_images",
                        "mcp__training__run_volume_analysis", "mcp__training__plan_image_scoring",
-                       "mcp__training__plan_descriptor_run", "mcp__training__compute_descriptors",
+                       "mcp__training__probe_descriptor", "mcp__training__plan_descriptor_run", "mcp__training__compute_descriptors",
                        "mcp__training__restore_candidate", "mcp__training__search_memory"]
                       if training_server is not None else [])
     guard, state = make_guard(

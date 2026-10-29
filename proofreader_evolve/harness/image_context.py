@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import threading
 import time
 from urllib.parse import urlsplit
 
@@ -68,27 +69,36 @@ class ImageSource:
         self.identity = {'root': self.root, 'attributes_sha256': digest_json(self.attributes),
                          'base_array_sha256': digest_json(self._levels[0][1])}
 
-    def _json(self, name):
-        value = self.kv.read(name).result(timeout=self.timeout)
+    def _json(self, name, *, timeout=None):
+        value = self.kv.read(name).result(timeout=self.timeout if timeout is None else timeout)
         if value.state != 'value':
             raise FileNotFoundError(f'Missing image metadata: {self.root}{name}')
         return json.loads(value.value)
 
-    def level(self, level):
+    def level(self, level, *, timeout=None):
         if type(level) is not int or not 0 <= level < len(self.datasets):
             raise ValueError('Requested image resolution level is unavailable')
         if level not in self._levels:
             dataset = self.datasets[level]
-            metadata = self._json(dataset + '/.zarray')
+            metadata = self._json(dataset + '/.zarray', timeout=timeout)
             if metadata.get('zarr_format') != 2:
                 raise ValueError('Unsupported image Zarr version')
             geometry = ImageGeometry.from_ngff(self.attributes, metadata, dataset, self.graph_to_world)
             self._levels[level] = geometry, metadata
         return self._levels[level][0]
 
-    def read(self, anchors_xyz, radius_um=40., level=0, channel=0, timepoint=0):
+    def read(self, anchors_xyz, radius_um=40., level=0, channel=0, timepoint=0, *, timeout=None):
         import tensorstore as ts
-        geometry = self.level(level)
+        timeout = self.timeout if timeout is None else min(self.timeout, float(timeout))
+        if timeout <= 0:
+            raise TimeoutError('Image preparation budget exhausted')
+        deadline = time.monotonic() + timeout
+        def remaining():
+            value = deadline - time.monotonic()
+            if value <= 0:
+                raise TimeoutError('Image preparation budget exhausted')
+            return value
+        geometry = self.level(level, timeout=remaining())
         origin, shape, anchors = geometry.crop(anchors_xyz, radius_um)
         selection, permutation, destination = geometry.selection(origin, shape, channel, timepoint)
         if level not in self._arrays:
@@ -98,11 +108,11 @@ class ImageSource:
                 'kvstore': kv_spec(self.root + geometry.dataset),
                 'context': {'cache_pool': {'total_bytes_limit': 128 * 1024**2},
                             'data_copy_concurrency': {'limit': 2}}},
-                read=True, write=False, open=True).result(timeout=self.timeout)
+                read=True, write=False, open=True).result(timeout=remaining())
         array = self._arrays[level]
         if tuple(array.shape) != geometry.shape or any(array.domain.inclusive_min):
             raise ValueError('Image storage domain differs from the declared OME array')
-        block = np.asarray(array[selection].read().result(timeout=self.timeout)).transpose(permutation)
+        block = np.asarray(array[selection].read().result(timeout=remaining())).transpose(permutation)
         pixels = np.zeros(tuple(shape), dtype=block.dtype.newbyteorder('='))
         valid = np.zeros(tuple(shape), dtype=bool)
         pixels[destination], valid[destination] = block, True
@@ -124,6 +134,9 @@ class CandidateImageStore:
         self.max_cache_bytes = max_cache_bytes
         self.cache_bytes = sum(p.stat().st_size for p in self.directory.glob('*/patch.npz')) if self.directory.exists() else 0
         self.sources = {}
+        self._source_lock = threading.Lock()
+        self.implementation = {name: file_hash(Path(__file__).with_name(name)) for name in
+                               ('image_context.py', 'image_coordinates.py', 'image_contract.py')}
 
     def source(self, table, *, reviewed=True):
         provider = getattr(table, 'local_context', None)
@@ -142,7 +155,9 @@ class CandidateImageStore:
         transform = review.get('graph_to_world_um')
         key = digest_json({'uri': uri, 'transform': transform})
         if key not in self.sources:
-            self.sources[key] = ImageSource(uri, graph_to_world=transform)
+            with self._source_lock:
+                if key not in self.sources:
+                    self.sources[key] = ImageSource(uri, graph_to_world=transform)
         source = self.sources[key]
         anisotropy = np.asarray(metadata.get('anisotropy'), dtype=float)
         if anisotropy.shape != (3,) or not np.allclose(anisotropy, graph.anisotropy):
@@ -154,39 +169,53 @@ class CandidateImageStore:
             raise ValueError('Image/cache identity changed since alignment review')
         return source, graph
 
-    def patch(self, table, index, spec, occurrence=0, *, reviewed=True):
+    def image_identity(self, table, spec, *, reviewed=True):
+        """Registered source and requested level identity, without reading image pixels."""
+        source, _ = self.source(table, reviewed=reviewed)
+        geometry = source.level(spec['level'])
+        return {'version': IMAGE_VERSION, 'image': source.identity, 'geometry': geometry.summary(),
+                    'level_metadata_sha256': digest_json(source._levels[spec['level']][1]),
+                    'implementation': self.implementation,
+                    'source_cache': table.meta['provenance']['source_cache'], 'kind': table.kind,
+                    'pool': table.meta['pool_sha256'],
+                    'request': {k: spec[k] for k in ('radius_um', 'level', 'channel', 'timepoint')}}
+
+    def patch(self, table, index, spec, occurrence=0, *, reviewed=True, persist=True,
+              directory=None, timeout=None):
+        """Reuse persistent hits; uncached full-run patches live in caller-owned scratch."""
+        if not persist and directory is None:
+            raise ValueError('Temporary image patches require a scratch directory')
         started = time.monotonic()
         source, graph = self.source(table, reviewed=reviewed)
         anchors, total = _anchors(table.kind, table.candidates[index], occurrence)
         xyz = np.asarray(graph.node_xyz[anchors], dtype=float)
-        geometry = source.level(spec['level'])
-        identity = {'version': IMAGE_VERSION, 'image': source.identity, 'geometry': geometry.summary(),
-                    'level_metadata_sha256': digest_json(source._levels[spec['level']][1]),
-                    'implementation': {name: file_hash(Path(__file__).with_name(name)) for name in
-                                       ('image_context.py', 'image_coordinates.py', 'image_contract.py')},
-                    'source_cache': table.meta['provenance']['source_cache'], 'kind': table.kind,
-                    'pool': table.meta['pool_sha256'], 'row': int(index), 'occurrence': occurrence,
-                    'anchors_xyz_um': xyz.tolist(),
-                    'request': {k: spec[k] for k in ('radius_um', 'level', 'channel', 'timepoint')}}
+        identity = {**self.image_identity(table, spec, reviewed=reviewed),
+                    'row': int(index), 'occurrence': occurrence, 'anchors_xyz_um': xyz.tolist()}
         key = digest_json(identity)
-        directory = self.directory / key
-        cached = directory.is_dir()
+        target = self.directory / key
+        cached = target.is_dir()
         if not cached:
-            data, metadata = source.read(xyz, **identity['request'])
-            self.directory.mkdir(parents=True, exist_ok=True)
-            if self.cache_bytes + sum(a.nbytes for a in data.values()) > self.max_cache_bytes:
+            remaining = {} if timeout is None else {'timeout': timeout - (time.monotonic() - started)}
+            if remaining and remaining['timeout'] <= 0:
+                raise TimeoutError('Image preparation budget exhausted')
+            data, metadata = source.read(xyz, **identity['request'], **remaining)
+            destination = self.directory if persist else Path(directory)
+            destination.mkdir(parents=True, exist_ok=True)
+            target = destination / key
+            if persist and self.cache_bytes + sum(a.nbytes for a in data.values()) > self.max_cache_bytes:
                 raise ValueError('Image cache byte budget exhausted')
-            with tempfile.TemporaryDirectory(prefix='.staging_', dir=self.directory) as tmp:
+            with tempfile.TemporaryDirectory(prefix='.staging_', dir=destination) as tmp:
                 staged = Path(tmp) / 'entry'
                 staged.mkdir()
                 np.savez(staged / 'patch.npz', **data)
                 metadata.update(identity=identity, occurrences_total=total,
                                 patch_sha256=file_hash(staged / 'patch.npz'))
                 (staged / 'metadata.json').write_text(json.dumps(metadata, indent=2, allow_nan=False))
-                staged.rename(directory)
-            self.cache_bytes += (directory / 'patch.npz').stat().st_size
-        metadata = json.loads((directory / 'metadata.json').read_text())
-        path = directory / 'patch.npz'
+                staged.rename(target)
+            if persist:
+                self.cache_bytes += (target / 'patch.npz').stat().st_size
+        metadata = json.loads((target / 'metadata.json').read_text())
+        path = target / 'patch.npz'
         if metadata['identity'] != identity or metadata['patch_sha256'] != file_hash(path):
             raise ValueError('Cached image patch identity/checksum mismatch')
         if self.trace:

@@ -1,8 +1,10 @@
 # Direct 3D exploration
 
-When a context cache is attached (`descriptor_guide.md` is present), measure
-quantities over every cached candidate with `compute_descriptors`; use this tool to
-debug `describe` on up to 16 rows or to look at cases outside the cache.
+When a context cache is attached (`descriptor_guide.md` is present), use
+`probe_descriptor` to debug the current `describe` code on exact production inputs,
+then `compute_descriptors` to measure cached candidates at pool scale. Use
+`run_volume_analysis` for separate local investigations or cases outside the cache;
+its crop and geometry settings are independent of the descriptor contract.
 
 Investigate image hypotheses by writing code against the real 3D volume, without
 viewing a projection or fitting a scorer first. You choose the algorithm, local

@@ -198,6 +198,11 @@ class DescriptorRunTests(unittest.TestCase):
         np.testing.assert_array_equal(repeated['values'], result['values'])
         self.table.truth = 1 - self.table.truth
         self.assertTrue(self.runs.cached(self.table, spec, 'all_cached', 3))
+        values_path = self.runs.directory(self.table, spec, 'all_cached') / 'values.npy'
+        saved = values_path.read_bytes()
+        values_path.write_bytes(saved + b'corrupted cache')
+        self.assertFalse(self.runs.cached(self.table, spec, 'all_cached', 3))
+        values_path.write_bytes(saved)
         pilot = self.runs.scope_rows(self.runs.cache.entry(self.table), 'pilot', 3)
         self.assertEqual(len(pilot), 12)
         boundary = self.runs.scope_rows(self.runs.cache.entry(self.table), 'boundary', 3)
@@ -299,7 +304,7 @@ class SessionDescriptorTests(unittest.TestCase):
         self.session.descriptor_path.write_text(GEOMETRY_DESCRIPTOR)
         plan = self.session.plan_descriptor_run()
         self.assertEqual(plan['status'], 'planned')
-        self.assertEqual(plan['timed_on_brain'], '802449')
+        self.assertEqual(plan['timed_on_brains'], ['794495', '802449'])
         self.assertEqual(self.session.evaluations_used, 0)
         result = self.session.compute_descriptors('all_cached')
         self.assertEqual(result['status'], 'registered')
