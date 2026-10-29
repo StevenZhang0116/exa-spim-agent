@@ -5,6 +5,192 @@ records the current behaviour, the measured cost of changing it, and what the
 change touches, so the decision can be revisited without re-deriving the facts.
 Dates are when the item was recorded.
 
+## Revision directions after the three detector-prior runs (2026-10-29, by priority)
+
+The three runs were stopped by the user on 2026-10-29 at 08:50 (SIGTERM to the driver
+process groups; `run_status.json` says `interrupted`): frozen
+`precision_20261027_220207_3zf4mz8t` in generation 12/20 (11 completed), no-score
+`precision_20261027_233027_6pgo4846` in generation 14/20 (13 completed, killed during that
+generation's outer validation), raw `precision_20261028_000623_cun4h9k0` in generation 20/20
+(19 completed). There is no `final.json`; the ledgers are the final record and the table below
+is final. The last five to eight generations of every arm were rejected inside the bootstrap
+interval, which is why the runs were not taken to 20. All three
+arms used the same partition (TRAIN 794495 auxiliary, 802449 within-brain folds, 747807 /
+754610 / 754612 / 754613 whole-brain holdouts; validation 789202 / 794493 / 794491 / 750318 /
+751473), uniform K = GT positives, positive-weighted aggregation and the bootstrap gate, so
+validation numbers are comparable across arms (merge: hits out of 524 slots; split: out of
+12,581).
+
+State so far (accepted / best measured on validation):
+
+| Arm | Accepted mean | Merge hits (accepted / best) | Split precision (accepted / best) | Accepted gens |
+|---|---|---|---|---|
+| frozen (detector_score + h*) | 0.4930 | 66 (seed detector) / 81 (gen 8) | 0.860 / 0.861 | 1 of 11 |
+| no-score (h* only) | 0.5375 | 113 (gen 9) / 113 | 0.859 / 0.862 | 4 of 13 |
+| raw (raw_* + agent descriptors) | 0.5358 | 112 (gen 9) / 119 (gen 17) | 0.858 / 0.858 | 4 of 19 |
+
+Observations the directions rest on: (i) the two arms without detector_score both beat the
+frozen detector's merge ranking by 46-53 hits, and both gains came from agent descriptors
+that are brain-scale free (no-score gen 8: 22 `geo_*` 50 um fragment-geometry columns such as
+the through-pair kink change between 5 and 45 um and the number of arms reaching 30 um; gen 9:
+dropping the 10% most brain-shifted h* columns, mostly absolute radii, 96 -> 113 hits; raw gen 1
+and gen 9: branch-intensity ratios and `w_*` columns normalised by patch percentiles). (ii)
+Every h* re-ranker in the frozen arm gained only on the detector's own microscope generation
+(789202 / 794493 / 794491: 18 -> 27-31 of 240) and lost on the older-microscope validation
+brains (750318 / 751473: 48 -> 39-44 of 284), while the accepted no-score and raw models gained
+on both (44-48 of 240 and 64-69 of 284). (iii) Absolute radius columns differ by brain
+(802449 about 2 um, 747807 / 754612 about 4-8 um); replacing them by ratios (no-score gen 13)
+raised TRAIN OOF 0.291 -> 0.304 but lowered validation 113 -> 101, so a TRAIN-side scale-free
+fix is not equivalent to the pruning that transferred. (iv) Split converged to 0.858-0.862 in
+all three arms from seeds of 0.850 / 0.478 / 0.830; the eleven split generations after each
+arm's first split model moved validation by -0.003..+0.0028 (one accepted, raw gen 5), and
+the agents' paired ablations of six descriptor families were +0.001..+0.003 each, the size of
+seed noise. (v) Twelve completed tune generations across the three runs accepted nothing;
+merge needs about +16 hits (+0.03 on the kind) to clear the gate, split about +0.002. (vi) The
+selection metric is 86-88% 802449 within-brain folds for merge (K 1038 of 1185 counted);
+agents repeatedly submitted the best-selection candidate over the best-holdout one, and
+raw's merge acceptance (gen 9) was the one time the agent chose by holdout (0.224 vs 0.197)
+against a lower pooled OOF (0.3055 vs 0.3105). (vii) Both h* arms found independently that
+dropping the detector-fitted brain 794495 from fitting raises split holdout precision
+(frozen gen 10: +0.006, 747807 +12 / 754610 +7 / 754612 +10 / 754613 +5 / 802449 -22 OOF hits;
+no-score gen 11: +0.003 on two seeds) while it hurts merge (no-score gen 12); the split
+validation gains were +0.0007 and +0.0013, the second missing the gate by 0.00008.
+
+### P1. Offline analyses on the finished artefacts (no compute beyond a login node; do first)
+
+- **Cross-arm paired bootstrap and overlap.** Run the harness's paired Poisson bootstrap on
+  the validation cells for no-score gen 9 (113), raw gen 9 (112) and raw gen 17 (119) against
+  the detector (66) and against each other, and measure the Top-K overlap of the two accepted
+  merge scorers (re-score the validation pools with the two accepted components from
+  `model_artifacts/`, as the outer evaluator does). They use different information (h* + `geo_*` vs raw + `g_/i_/w_`), so
+  low overlap would make an ensemble the cheapest next gain. Caveat for the write-up: the
+  five validation brains are development data (the gate has judged 40+ candidates on them)
+  and merge has no untouched test brain (754613 holds 9 positives), so the cross-arm claim is
+  "about 3 standard errors on development validation", not a held-out test result.
+- **Cross-brain screen of the 293 h* merge columns.** Reuse the brain-shift score from
+  no-score gen 9's `training.py` (label-0 distribution distance between TRAIN brains) plus a
+  six-brain sign-consistency test on the existing feature tables, and measure offline with
+  the harness grouped-OOF / holdout code whether "screened h* + `geo_*`" reproduces 113 and
+  whether "screened h* + the raw arm's descriptors" exceeds it. The result decides between
+  P4(a) (build-time filter) and P4(b) (re-discovery). Columns to watch beyond radii: the
+  gen 13 shift list still had raw intensities (h57 / h58 / h64), gradient magnitudes (h63)
+  and h41 near the top.
+- **Attribution of the accepted gains.** Per-column gain and paired masking for
+  `geo_pair_kink_change`, `geo_long_arms`, the pruned radius set (no-score gens 8-9) and
+  `w_pn_far_min`, `w_orient_dev_max`, `i_branch_med_ratio` (raw gens 1, 9); per-brain
+  medians by label are already in the descriptor plans. This is the material for P4(c).
+- **Record the final state.** Per-arm final validation, accepted components, per-generation
+  table, acceptance rate, API cost and wall time into WORKFLOW_REVISION; link the three run
+  ids. Keep the per-microscope-generation split of the merge hits (240 + 284 slots), it is the
+  clearest statement of the transfer effect.
+
+### P2. Selection protocol and scheduling (code + tests + WORKFLOW_REVISION, before the next runs)
+
+- **Holdout-first candidate selection for merge.** Make `holdout_precision` (whole-brain
+  out-of-fold cells) the primary key of `candidate_selection` and of the `restore_candidate("best")`
+  rule when the kind's selection pool is dominated by one within-brain cell (say > 70% of the
+  counted K), or switch selection-side aggregation to equal-brain while keeping
+  positive-weighted for validation. Evidence (vi) above and frozen gen 1 (submitted 0.282 /
+  0.197 over 0.272 / 0.224). Touches `train_experiments.py` candidate ranking,
+  `classifier_guide.md`, the feedback report, `test_candidate_specialists.py` and
+  `test_selection_protocol.py`.
+- **Per-kind default for the auxiliary brain weight.** Expose the host default that the
+  agents' `aux_weight` parameter reimplemented: split 0 (794495 excluded from fitting), merge
+  unchanged (0.5-1.0). Evidence (vii). The cleaner long-term fix is the open item "794495 as a
+  selection cell via detector OOF probabilities" (below, 2026-10-27 follow-ups); until then the
+  detector-fitted brain should not pull split models toward in-sample detector behaviour.
+- **Fewer tune rounds.** Twelve tune generations, none accepted, 40-464 min each (frozen gen 10
+  took 464 min for eight split fits). Either skip `tune` for a kind whose last two tune rounds
+  produced no validation gain, or charge tune rounds half the evaluation units, or drop tune
+  for merge outright while the noise floor is 16 hits. Touches `kind_schedule` /
+  `search_plan`, `docs/stage3_evolution.md`.
+- **Plateau detection on validation, not TRAIN novelty.** The existing item under
+  `precision_20261008_001127_bqp8vmtv` ("Plateau detection counts TRAIN novelty") now has the
+  numbers: eleven split generations after saturation. Stop allocating a kind after N
+  consecutive rejections whose validation delta lies inside the bootstrap interval, and send
+  the budget to the other kind or end the run early.
+- **Guide text.** Tell the agent in `classifier_guide.md` that promotion has correlated with
+  holdout_precision, not pooled selection, and that single-seed OOF differences below about
+  0.01 (merge) / 0.002 (split) have never cleared the gate; several agents rediscovered both
+  facts per run at 2-3 generations each.
+
+### P3. Harness fixes (small, independent)
+
+- **`search_memory` result size.** The tool returned 211,980 characters in raw gen 8 (five
+  entries, each with the full experiment record and a 3,000-character diff), above the MCP
+  output cap, so the SDK spilled it to a file the agent read in four chunks. Strip the
+  per-cell `train` block and cap `code_diff` at about 800 characters, or add a `limit` /
+  `fields` argument. `harness/train_experiments.py` `search_memory` and `ExperimentMemory.search`.
+- **Descriptor run budget.** All-cached runs took 1,220-1,509 s (raw), 1,278-1,339 s (frozen)
+  and 1,781 s of the 1,800 s cap (no-score gen 10, after one timeout at 16 s per row). Scale
+  the per-call wall budget with cached rows, or let a run resume per brain instead of
+  failing whole. `--descriptor-generation-wall-seconds` interacts; document the two.
+- **Charge evaluation units by wall time.** Split fits take 37-50 min each (three fold fits
+  plus a full fit of 500-tree LightGBM on about 34,000 rows x 310 columns); split generations
+  took 160-464 min and the validation phase alone 24-45 min when descriptors must be computed
+  on five brains. The existing "Per-attempt classifier time" item below should move up:
+  either a per-fit time budget for tune families or fewer units per split generation.
+- **Monitoring.** `run_status.json` is written once per generation; a `phase_started_at`
+  and `last_event_at` would make a stalled run distinguishable from a long split fit without
+  reading the trajectory. Also note for operators: node pid counters wrapped on n242 during
+  the frozen run, so `pgrep -f cli.run_evolution | head -1` can return the probe shell; match
+  the full command line.
+
+### P4. Detector build and AD specification (after P1's screen; days of work)
+
+- **(a) Build-time inclusion rule.** `detector_build/inputs.py` keeps 73 of 89 merge
+  hypotheses and excludes only ARTIFACT (OVERTURNED were kept by override); the generalisation
+  verdicts on 802449 (13 robust ids in the 2026-10-19 audit) do not filter anything. Add a hard
+  criterion: generalisation verdict plus the P1 brain-shift / sign-consistency screen, and
+  drop or convert absolute radius and raw-intensity columns (radius relative to the segment
+  median, intensity relative to patch percentiles). Only merge tables and sidecars need
+  re-preparation (`pool_sha256` is unchanged when rows are unchanged); no AD rerun.
+- **(b) Multi-brain discovery, only if (a) is insufficient.** Revise
+  `markdowns/merge_features_for_proofreader_evolve.md` from the single-brain form (files named
+  for 794495) to a two-brain Phase 1 with one older-microscope brain (747807, 125 merge
+  positives, the only older brain with enough) and 802449 as the confirmation brain whose
+  labels feed verdicts only, so it stays detector-naive for the selection protocol. The build
+  then fits on the union with the brain as a fold group. Cost: one AD run per kind (about 10 h
+  and 130 USD for the 2026-10-20 split run), the detector build, and merge tables for 11
+  brains; 747807 becomes an auxiliary brain and the cross-brain holdout signal shrinks to
+  754610 / 754612 / 754613 (22 counted positives). 802449 must not become a discovery brain:
+  Phase 1 reads its labels, and it is the only merge cell large enough to anchor selection.
+- **(c) Spec content.** Whatever (a) or (b) decides, the merge spec should ask for the three
+  families the agents found and the AD set lacks: fragment geometry at 30-50 um (the arm
+  walks stop at 10-25 um; `geo_pair_kink_change`, `geo_long_arms`, parallel-run length),
+  intensities as ratios to the patch's own percentiles, and radii as ratios. Leave the split
+  spec: split features transfer (holdout 0.84-0.85, validation 0.86).
+- **(d) Acceptance test for a rebuilt detector.** The frozen arm with the new detector must
+  reach the no-score / raw level on validation merge (about 110 of 524), not just a better AP
+  on 794495.
+
+### P5. Data and context (longer term; the current ceilings)
+
+- **Long-gap split positives.** About half of the missed split positives have gap > 25 um
+  (slice recall 0.05-0.29 in every arm); level-0 patches have a 16 um radius and level-1 30 um,
+  so paths longer than about 40 um are never in view. Options: a wider level-1 patch for split
+  rows with gap > 25 um, or path-following reads at descriptor time. Touches the context
+  cache builder and `image_context_guide.md`.
+- **Fragment-level context.** Agents in all arms asked for it: whether an anchor's fragment
+  already continues elsewhere, competing partner tips, and the tip's own direction continuing
+  past the shaft for tip_to_shaft merge rows (77 positives, recall about 0 in every arm). The
+  50 um neighbourhood is the limit of what `describe(context)` can see.
+- **Label review.** Short-gap collinear label-0 pairs (no-score gen 6 cites 754613 pair04:
+  17.7 um gap, equal radii) look geometrically identical to positives; a GT-side check of a
+  sample of such pairs would say whether the remaining 15% split FPs are label convention.
+- **Merge resolution.** 524 validation slots cap what the gate can see (the "Merge is invisible"
+  item and its 2026-10-28 update below). More GT merge positives, not a looser gate, is the
+  real fix; until then report merge hits per microscope generation alongside the mean.
+
+### P6. Replication under the revised protocol
+
+- One more seed of each arm after P2 and P3 land. Each arm is a single search trajectory:
+  the frozen arm's failure to promote any merge model may be the detector_score input
+  anchoring the GBM to the 794495 ranking, or search-path luck (its agent spent its merge
+  rounds on re-rankers and linear models and never tried 50 um geometry). API cost is 15-25
+  USD per run; the cost is 24-36 h of a 200 GB node per arm. Run the replicates with the same
+  partition so the two trajectories per arm are comparable.
+
 ## Three-valued labels: open items (2026-10-09)
 
 Done 2026-10-09 (WORKFLOW_REVISION "Three-valued labels throughout"): labels are
@@ -540,6 +726,23 @@ Two generations were lost to end-of-session checks and the search stayed in tuni
   (raise `--kind-floor-every` from 4 to 8 or more, or require a new
   `research.information_source`). Not started; touches `fixed_pool_scoring` aggregation,
   the gate record, `kind_schedule`, `docs/stage3_evolution.md` and the agent rules.
+  Update 2026-10-28 (runs `precision_20261027_220207_3zf4mz8t` frozen,
+  `precision_20261027_233027_6pgo4846` no-score and `precision_20261028_000623_cun4h9k0` raw:
+  uniform K = GT positives, positive-weighted aggregation, five validation brains with 524
+  merge slots in total). Proposals (1) and (2) are partly in place (each pool ranks its own
+  positives; a kind's pools are pooled by positives before gating), so merge is now visible to
+  the mean, but it is still hard to promote: the bootstrap gate (two-sided 95% interval of the
+  paired delta, lower bound above zero) rejected the raw run's generation 7 merge candidate at
+  +0.0134 on the mean (+14 of 524 merge hits; interval [-0.00002, +0.0229]; P(delta <= 0) =
+  0.038) and the frozen run's generation 3 at +0.0086 (interval [-0.0086, +0.0239]), while a
+  split gain of +0.005 passed with interval [+0.0034, +0.0067] because split has 12,581 slots.
+  A merge gain needs roughly +0.03 on the kind (about 16 hits) to clear the gate; split needs
+  about +0.002. If the gate proves too strict for merge, the three places to change are: a
+  one-sided test at alpha = 0.05 (the generation 7 candidate would have passed), a
+  merge-specific margin or per-kind gate, or more validation merge positives (more brains, or
+  pooled cells). These are methodological choices, not defects. Do not change the gate while
+  the three runs above are running; any change goes into WORKFLOW_REVISION with the runs it
+  applies to, and earlier runs stay comparable only under the gate they were judged by.
 
 ## Observed in run `precision_20261005_114814_zxsbw5pj` (2026-10-05; two of three resolved)
 
