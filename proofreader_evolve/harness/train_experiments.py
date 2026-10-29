@@ -1322,8 +1322,8 @@ class TrainingExperiments:
             raise ValueError(f'Unregistered descriptor columns referenced: {unknown[:5]}; call compute_descriptors first')
         return sorted(names)
 
-    def ensure_descriptors(self, tables_by_brain, columns, *, log_dir=None):
-        """Compute referenced descriptors on other brains for frozen inference; no summaries, no feedback."""
+    def ensure_descriptors(self, tables_by_brain, columns):
+        """Frozen inference with no feedback; worker stdout/stderr stay in a host-only tree."""
         if not columns:
             return []
         runs = self.memory.descriptor_runs
@@ -1341,7 +1341,7 @@ class TrainingExperiments:
                     continue
                 result = runs.compute(table, program, spec, scope, k=self._k(spec['kind'], table.truth),
                                       wall_budget=self.descriptor_budget['per_call_seconds'],
-                                      log_dir=(log_dir or self.gen_dir / 'descriptor_runs' / 'inference') / brain / code[:12])
+                                      log_dir=self.gen_dir / 'validation_descriptor_runs' / brain / code[:12])
                 runs.register(table, spec['columns'], result['rows'], result['values'])
                 reports.append({'brain': brain, 'code_sha256': code, 'scope': scope, 'rows': int(len(result['rows'])),
                                 'cached': result['cached'], 'wall_seconds': result['wall_seconds']})

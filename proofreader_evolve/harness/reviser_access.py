@@ -1,9 +1,10 @@
 """Deny-by-default file-tool boundary. Not a Python execution sandbox.
 
-Reads are limited to the bound generation artifacts, explicitly listed reports, the
-generation's own TRAIN artefact directories (attempt snapshots, classifier fits,
-descriptor runs; regular files only) and the SDK's parked tool-result files for this
-run; writes to the editable artifacts.
+Reads are limited to the bound generation artifacts, explicitly listed reports,
+current/earlier generations' TRAIN artefact directories (attempt snapshots, classifier
+fits, descriptor runs; regular files only) and the SDK's parked tool-result files for this
+run; writes to the editable artifacts. Validation descriptor logs, including the
+legacy descriptor_runs/inference subtree, are always private to the host.
 """
 
 from pathlib import Path
@@ -25,6 +26,17 @@ def canonical_file(path, cwd):
     path = Path(path)
     path = path if path.is_absolute() else Path(cwd) / path
     return path.parent.resolve() / path.name
+
+
+def _private_descriptor_log(path, run_dir):
+    """Reserve both current and legacy inference log trees in every generation."""
+    try:
+        parts = path.relative_to(run_dir).parts
+    except ValueError:
+        return False
+    return (len(parts) >= 2 and re.fullmatch(r"gen[0-9]+", parts[0]) is not None
+            and (parts[1] == "validation_descriptor_runs"
+                 or parts[1:3] == ("descriptor_runs", "inference")))
 
 
 def make_guard(cwd, editable_dir, readable_paths, audit_path, state=None, *,
@@ -52,8 +64,8 @@ def make_guard(cwd, editable_dir, readable_paths, audit_path, state=None, *,
     # directly inside <project>/<session>/tool-results/ are readable (never writable).
     parked_root = sdk_project_dir(cwd) if sdk_tool_results else None
     # Whole directories of this run's own TRAIN artefacts (attempt snapshots, classifier fits,
-    # descriptor runs) are readable recursively; regular files only, and a symlink that
-    # resolves outside the directory is denied because the resolved path is checked.
+    # descriptor runs) are readable recursively, except the private inference trees;
+    # regular files only, with the resolved path checked to prevent symlink escapes.
     directories = tuple((d if d.is_absolute() else cwd / d).resolve() for d in readable_dirs)
     if any(cwd not in d.parents for d in directories):
         raise ValueError("Readable directories must be inside this run")
@@ -82,6 +94,10 @@ def make_guard(cwd, editable_dir, readable_paths, audit_path, state=None, *,
                         and resolved.parent.parent.parent == parked_root
                         and resolved.is_file() and not path.is_symlink()):
                     allowed = True
+                # A recursive or explicit allowlist must never expose frozen-inference
+                # stdout/stderr. Check the target too, so aliases cannot reopen old logs.
+                if _private_descriptor_log(path, cwd) or _private_descriptor_log(resolved, cwd):
+                    allowed = False
             except (OSError, RuntimeError, ValueError):
                 allowed = False
         if allowed:

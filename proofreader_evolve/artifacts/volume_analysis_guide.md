@@ -96,7 +96,7 @@ Do not claim replicates are independent or reproducible without recording seeds.
 Return a dictionary with concise JSON-compatible findings, numerical measurements
 or short lists. NumPy scalars/small arrays are converted to JSON. Nonfinite values
 are rejected: report null and an explanation when a measurement is undefined.
-The entire result list must fit 24 KiB. Oversized/nonserializable output produces
+The entire result list must fit 64 KiB. Oversized/nonserializable output produces
 an error, not a truncated measurement. No PNG is rendered or returned by this tool.
 
 Eight executions are available per generation, at most 16 candidates each; the

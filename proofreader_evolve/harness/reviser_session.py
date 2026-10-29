@@ -62,8 +62,9 @@ def bind_session_options(options, policy_path, rules_path, report_path, *, reada
                          training_server=None):
     """Bind generation files and TRAIN tools, including analysis and descriptor code; explicit reads only.
 
-    `readable_dirs` are this generation's host-written TRAIN artefact trees (attempt snapshots,
-    classifier fits, descriptor runs): readable recursively, never writable.
+    `readable_dirs` are current/earlier generations' host-written TRAIN artefact trees
+    (attempt snapshots, classifier fits, descriptor runs): readable recursively, never
+    writable. The guard always excludes current and legacy validation descriptor logs.
     """
     from claude_agent_sdk import HookMatcher
 

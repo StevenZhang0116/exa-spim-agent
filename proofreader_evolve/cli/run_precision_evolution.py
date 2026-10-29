@@ -98,6 +98,7 @@ def _record_handoff(memory, gen_dir, target_kind, generation, record, trace):
 TRAIN_ARTEFACT_DIRS = ('experiments', 'classifier_fits', 'descriptor_runs')
 # Agent-authored and TRAIN-only files of earlier generations; evaluation.json, reviser_result.json,
 # trajectories and image_evidence.json stay closed because they carry validation measurements.
+# The file guard also excludes legacy descriptor_runs/inference/ from these recursive trees.
 EARLIER_GENERATION_FILES = ('scorer.py', 'training.py', 'descriptor.py', 'analysis.py', 'rules.md',
                             'proposal.json', 'search_plan.json', 'hypothesis_memory.json', 'train_feedback.json',
                             'feature_statistics.json', 'failure_cases.json')
@@ -158,8 +159,10 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
             "(experiments/, classifier_fits/, descriptor_runs/) are readable; a tool result the SDK parks on disk "
             "is also readable, or read the attempt's result.json instead. Earlier generations' scorer.py, "
             "training.py, descriptor.py, analysis.py, proposal.json, search_plan.json, train_feedback.json and "
-            "their experiments/, classifier_fits/ and descriptor_runs/ trees are readable too: read a previous "
-            "program before rewriting it from memory. search_plan.search_parent.outer_measurement and the candidate pool's "
+            "their experiments/, classifier_fits/ and TRAIN descriptor_runs/ trees are readable too: read a previous "
+            "program before rewriting it from memory. Validation descriptor logs (validation_descriptor_runs/ "
+            "and legacy descriptor_runs/inference/) are host-only in every generation. "
+            "search_plan.search_parent.outer_measurement and the candidate pool's "
             "outer_measurement fields say whether the outer evaluator already measured a candidate and whether it "
             "was promoted; a submission identical to one of those (same bytes or the same scores on every TRAIN and "
             "selection cell) ends the generation as repeated with no outer evaluation, so in a tuning round the control "

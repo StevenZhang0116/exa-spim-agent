@@ -270,6 +270,62 @@ class EarlierGenerationAccessTests(unittest.TestCase):
         self.assertEqual(self.decision(guard, 'Read', self.run_dir / 'gen002' / 'reviser_result.json'), 'deny')
         self.assertEqual(len(state['violations']), 4)
 
+    def test_bound_session_and_hook_deny_validation_descriptor_logs_in_every_generation(self):
+        from claude_agent_sdk import ClaudeAgentOptions
+        from proofreader_evolve.harness.reviser_session import bind_session_options
+
+        current = self.run_dir / 'gen003'
+        paths, dirs = self.driver.earlier_generation_readables(self.run_dir, current)
+        dirs.extend(current / name for name in self.driver.TRAIN_ARTEFACT_DIRS)
+        bound = bind_session_options(ClaudeAgentOptions(cwd=str(self.run_dir)),
+                                     current / 'scorer.py', current / 'rules.md', None,
+                                     readable_paths=paths, readable_dirs=dirs)
+        hook = bound.hooks['PreToolUse'][0].hooks[0]
+        # Create logs after binding, as workers do during and after a live session.
+        for generation in ('gen001', 'gen003'):
+            for tree, expected in (('descriptor_runs/run001', 'allow'),
+                                   ('descriptor_runs/inference', 'deny'),
+                                   ('validation_descriptor_runs', 'deny')):
+                log = self.run_dir / generation / tree / 'brain' / 'program' / 'batch0000.log'
+                log.parent.mkdir(parents=True)
+                log.write_text('SYNTHETIC WORKER OUTPUT\n')
+                for tool in ('Read', 'Write', 'Edit'):
+                    decision = expected if tool == 'Read' else 'deny'
+                    with self.subTest(generation=generation, tree=tree, tool=tool):
+                        self.assertEqual(self.decision(bound.can_use_tool, tool, log), decision)
+                        result = asyncio.run(hook({'tool_name': tool, 'tool_input':
+                                                   {'file_path': str(log)}}, None, None))
+                        self.assertEqual(result['hookSpecificOutput']['permissionDecision'], decision)
+
+    def test_explicit_allowlists_cannot_reopen_private_descriptor_logs(self):
+        for tree in ('descriptor_runs/inference', 'validation_descriptor_runs'):
+            log = self.run_dir / 'gen001' / tree / 'batch0000.log'
+            log.parent.mkdir(parents=True)
+            log.write_text('SYNTHETIC PRIVATE OUTPUT\n')
+            for files, dirs in (([log], []), ([], [log.parent])):
+                with self.subTest(tree=tree, explicit_file=bool(files)):
+                    guard, _ = access.make_guard(self.run_dir, self.run_dir / 'gen003', files,
+                                                 self.run_dir / 'audit.jsonl', readable_dirs=dirs)
+                    self.assertEqual(self.decision(guard, 'Read', log), 'deny')
+
+    def test_descriptor_log_aliases_do_not_bypass_private_paths(self):
+        paths, dirs = self.driver.earlier_generation_readables(self.run_dir, self.run_dir / 'gen003')
+        guard, _ = access.make_guard(self.run_dir, self.run_dir / 'gen003', paths,
+                                     self.run_dir / 'audit.jsonl', readable_dirs=dirs)
+        mount = self.run_dir.parent / 'mount_alias'
+        mount.symlink_to(self.run_dir, target_is_directory=True)
+        for index, tree in enumerate(('descriptor_runs/inference', 'validation_descriptor_runs')):
+            private = self.run_dir / 'gen001' / tree
+            private.mkdir(parents=True)
+            log = private / 'batch0000.log'
+            log.write_text('SYNTHETIC PRIVATE OUTPUT\n')
+            alias = self.run_dir / 'gen001' / 'descriptor_runs' / f'run{index:03d}'
+            alias.symlink_to(private, target_is_directory=True)
+            for path in (alias / log.name, mount / log.relative_to(self.run_dir),
+                         Path('gen001') / tree / log.name):
+                with self.subTest(path=path):
+                    self.assertEqual(self.decision(guard, 'Read', path), 'deny')
+
 
 if __name__ == '__main__':
     unittest.main()

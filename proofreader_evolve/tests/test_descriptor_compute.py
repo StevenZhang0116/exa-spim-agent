@@ -340,15 +340,30 @@ class SessionDescriptorTests(unittest.TestCase):
         self.assertEqual(self.session.descriptor_log[0]['status'], 'registered')
 
     def test_inference_side_computation_registers_without_feedback(self):
-        self.session.descriptor_path.write_text(GEOMETRY_DESCRIPTOR)
+        # Exercise real worker stdout/stderr with synthetic image data, not just empty logs.
+        source = IMAGE_DESCRIPTOR.replace("    image = context['image_zyx']", """    image = context['image_zyx']
+    print('SYNTHETIC_IMAGE_STDOUT', image[0, 0, 0])
+    import sys
+    print('SYNTHETIC_IMAGE_STDERR', image.shape, file=sys.stderr)""")
+        self.session.descriptor_path.write_text(source)
         self.session.compute_descriptors('pilot')
+        train_log = json.dumps(self.session.descriptor_log, sort_keys=True)
         other = {'2': brain_table('2', offset=5000.)}
         build_cache(self.root / 'cache', other['2'].tables['merge'], band_rows=12)
-        reports = self.session.ensure_descriptors(other, ['bank_agent_node_count'])
+        reports = self.session.ensure_descriptors(other, ['bank_agent_mean_intensity'])
         self.assertEqual(len(reports), 1)
-        self.assertIn('bank_agent_node_count', other['2'].tables['merge'].features.columns)
+        self.assertIn('bank_agent_mean_intensity', other['2'].tables['merge'].features.columns)
         self.assertEqual(self.session.evaluations_used, 1)
-        self.assertEqual(self.session.ensure_descriptors(other, ['bank_agent_node_count']), [])
+        self.assertEqual(self.session.ensure_descriptors(other, ['bank_agent_mean_intensity']), [])
+        logs = list((self.session.gen_dir / 'validation_descriptor_runs' / '2').rglob('batch*.log'))
+        self.assertTrue(logs)
+        for log in logs:
+            output = log.read_text()
+            self.assertIn('SYNTHETIC_IMAGE_STDOUT', output)
+            self.assertIn('SYNTHETIC_IMAGE_STDERR', output)
+        self.assertFalse((self.session.gen_dir / 'descriptor_runs' / 'inference').exists())
+        self.assertEqual(json.dumps(self.session.descriptor_log, sort_keys=True), train_log)
+        self.assertNotIn('SYNTHETIC_IMAGE_', json.dumps(reports))
 
 
 class DriverDescriptorTests(unittest.TestCase):

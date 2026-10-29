@@ -167,8 +167,10 @@ in the current generation's `proposal.json`.
   comparison, not for submission, and `restore_candidate("best")` prefers a measured
   candidate the outer evaluator has not seen. Earlier generations' scorer.py,
   training.py, descriptor.py, proposal.json and their experiments/, classifier_fits/
-  and descriptor_runs/ trees are readable: read a previous program before rewriting it
-  from memory. Otherwise, every third scheduled generation of each
+  and TRAIN descriptor_runs/ trees are readable: read a previous program before rewriting it
+  from memory. Validation descriptor logs in validation_descriptor_runs/ and the legacy
+  descriptor_runs/inference/ subtree are host-only in every generation.
+  Otherwise, every third scheduled generation of each
   kind explores the reference; `search_plan.branch_role`
   identifies the assigned role. In a reference round, develop the assigned
   method using its TRAIN diagnostics; do not discard it solely because another
