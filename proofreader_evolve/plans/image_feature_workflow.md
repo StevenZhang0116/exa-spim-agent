@@ -1,5 +1,8 @@
 # Image access and feature discovery: evidence and revision proposal
 
+Note (2026-10-30): `all_cached` below is today's `all_candidates`; the production default is `judgeable`
+since 2026-10-29 evening (`on_demand_contexts.md`).
+
 2026-10-29. Design proposal; production code has not been changed for this proposal.
 Target resource budget: 40 CPUs per evolution run. All executable audit work ran
 on n277. Historical run directories were read only; no new evolution trial or

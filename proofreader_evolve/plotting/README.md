@@ -11,7 +11,7 @@ python -m proofreader_evolve.cli.build_evolution_report <RUN_OR_PATH>
 ```
 
 `plot_error_contexts` is the exception: it loads one brain's frozen native
-tables (with evaluator labels), its context cache and its labelled `_add.pkl`
+tables (with evaluator labels), reads image crops on demand and loads its labelled `_add.pkl`
 (ground-truth graph, > 20 GB RAM), and reads the dense UNet segmentation from
 the private GCS store. It writes one figure per kind with three true errors as
 columns and four rows: on-demand image crop with the fragment skeleton, 50 um

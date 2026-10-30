@@ -7,7 +7,7 @@ Tables and companions enumerate with that module, never with a detector: a detec
 computes features and scores for the declared rows. The rule and the module's SHA-256 are
 part of the native-table provenance, so a changed rule or a changed module never matches old
 tables. ``pool_sha256`` hashes the rows themselves and changes only when the rows do, so
-companions and context caches survive a module edit that keeps the rows. Both kinds must be
+companions and descriptor-bank entries survive a module edit that keeps the rows. Both kinds must be
 declared explicitly (schema version 2, 2026-10-16); the earlier ``null`` ("use the detector's
 embedded rule") is gone.
 """

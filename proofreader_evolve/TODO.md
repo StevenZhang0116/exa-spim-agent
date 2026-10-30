@@ -125,6 +125,9 @@ validation gains were +0.0007 and +0.0013, the second missing the gate by 0.0000
   and 1,781 s of the 1,800 s cap (no-score gen 10, after one timeout at 16 s per row). Scale
   the per-call wall budget with cached rows, or let a run resume per brain instead of
   failing whole. `--descriptor-generation-wall-seconds` interacts; document the two.
+  Superseded 2026-10-30: contexts are on demand and production descriptors run on the judgeable
+  rows (49 k merge / 34 k split TRAIN rows; 802449 merge: geometry 177 s, level-1 image 854 s), see
+  `plans/on_demand_contexts.md`; the per-brain resume idea stays open.
 - **Charge evaluation units by wall time.** Split fits take 37-50 min each (three fold fits
   plus a full fit of 500-tree LightGBM on about 34,000 rows x 310 columns); split generations
   took 160-464 min and the validation phase alone 24-45 min when descriptors must be computed
@@ -169,8 +172,8 @@ validation gains were +0.0007 and +0.0013, the second missing the gate by 0.0000
 - **Long-gap split positives.** About half of the missed split positives have gap > 25 um
   (slice recall 0.05-0.29 in every arm); level-0 patches have a 16 um radius and level-1 30 um,
   so paths longer than about 40 um are never in view. Options: a wider level-1 patch for split
-  rows with gap > 25 um, or path-following reads at descriptor time. Touches the context
-  cache builder and `image_context_guide.md`.
+  rows with gap > 25 um, or path-following reads at descriptor time. Touches
+  `harness/descriptor_inputs.py` (`DESCRIPTOR.image`, on-demand crops since 2026-10-29) and `image_context_guide.md`.
 - **Fragment-level context.** Agents in all arms asked for it: whether an anchor's fragment
   already continues elsewhere, competing partner tips, and the tip's own direction continuing
   past the shaft for tip_to_shaft merge rows (77 positives, recall about 0 in every arm). The

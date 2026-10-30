@@ -1,5 +1,9 @@
 # Plan: ablation without the frozen detector score (`--detector-prior no-score`)
 
+Note (2026-10-30): the context-cache parts below (coverage rule, labeled extension, `all_cached` scope,
+`--context-cache`) are superseded by on-demand contexts and the `judgeable` production scope
+(`on_demand_contexts.md`); the mode itself is unchanged.
+
 Status (2026-10-13): implemented; full suite 348 tests OK on n268. No real run yet.
 
 ## Question

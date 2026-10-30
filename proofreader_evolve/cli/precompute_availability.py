@@ -8,8 +8,8 @@ Launcher mode runs one brain per fresh subprocess (single-brain mode, `--brain`)
 are loaded and validated exactly as evolution loads them, availability is computed from the
 cache's GT node labels (and GT node coordinates for the merge `near_gt_150` definition), every
 binding is checked (row identity, labels, source cache, positives available) and the sidecar
-is written beside the table directory (see harness/label_availability.py). Tables, caches and
-context caches are only read. Existing valid sidecars are reused unless `--force`.
+is written beside the table directory (see harness/label_availability.py). Tables and caches
+are only read. Existing valid sidecars are reused unless `--force`.
 No LLM is called.
 """
 import argparse

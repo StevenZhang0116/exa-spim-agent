@@ -13,8 +13,8 @@ by construction. For each scorer this script reports, per brain and kind:
 Scorers: the frozen ``detector_score`` and each run's ``best_scorer.py`` component,
 when it can be reproduced from the table alone. Code components run directly; v2
 trained models run their own ``predict`` against the run's ``model_artifacts``.
-Components that need columns absent from ``features.pkl`` (agent descriptors,
-context-cache columns) are skipped and reported, never imputed.
+Components that need columns absent from ``features.pkl`` (agent descriptor
+columns) are skipped and reported, never imputed.
 
 Read-only; imports nothing from proofreader_evolve. Run with panda on a compute node:
 

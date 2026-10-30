@@ -29,7 +29,6 @@ def table_identity(table):
 
 
 class DescriptorContextEntry:
-    expose_band = False
     chunk_loads = 0
 
     def __init__(self, table):
@@ -84,8 +83,6 @@ class DescriptorContextEntry:
 
 
 class DescriptorContexts:
-    expose_band = False
-
     def __init__(self):
         self._entries = {}
         self.implementation = {name: file_hash(Path(__file__).with_name(name))

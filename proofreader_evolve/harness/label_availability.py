@@ -6,7 +6,7 @@ row by row, whether the label is supported by GT. Together with the binary label
 gives a three-valued label: 1 = error, 0 = no error (GT available), unavailable = NaN.
 
 The sidecar is stored NEXT TO the table directory, never inside it, so the table
-digest, the tables themselves and every context cache built from them stay valid:
+digest and the tables themselves stay valid:
 
     feature_tables/<brain>/<table_digest>.availability/
         availability.npz   one boolean array per definition, in table row order

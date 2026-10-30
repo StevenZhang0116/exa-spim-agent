@@ -1,5 +1,9 @@
 # Plan: ablation from raw candidates (`--detector-prior raw`)
 
+Note (2026-10-30): the context-cache parts below (coverage rule, `all_cached` scope, `--context-cache`)
+are superseded by on-demand contexts and the `judgeable` production scope (`on_demand_contexts.md`);
+the mode itself is unchanged.
+
 Status (2026-10-27): implemented the same day (`harness/detector_prior.py`, driver, `context_cache.contexts`,
 `tests/test_raw_prior.py`; design record section "Raw-candidate ablation" in `WORKFLOW_REVISION.md`).
 Step 3 (preflight mode column) was dropped: the preflight does not take the mode. Decisions taken with the

@@ -9,8 +9,8 @@ training programs and descriptors can see:
 
 - ``detector_score`` is dropped from every loaded ``table.features`` (in memory; table
   files and digests are unchanged) after the host has measured the frozen baseline;
-- ``bank_context_available`` (1 inside the detector band) is not registered and
-  descriptor contexts omit ``row_in_band``;
+- the legacy band column ``bank_context_available`` and ``row_in_band`` are stripped if a
+  table still carries them (contexts are on demand since 2026-10-29, so new runs have neither);
 - production descriptor runs use ``judgeable`` (every GT-labeled row, the rows the outer
   measurement ranks) or ``all_candidates``, never a detector-rank window; diagnostic
   probes can sample uniformly from all TRAIN candidates;
@@ -69,9 +69,8 @@ NOTICE = """
 ## Detector-prior ablation (this run)
 
 This run measures evolution WITHOUT the frozen detector score. `detector_score` is not
-a column of `features`, of descriptor contexts or of any TRAIN data, and
-`bank_context_available` / `row_in_band` do not exist. Ignore every mention of them in
-the guides. All other predictor columns (the detector's computed features) remain.
+a column of `features`, of descriptor contexts or of any TRAIN data; ignore every mention
+of it in the guides. All other predictor columns (the detector's computed features) remain.
 Local and image specs must set `selection_feature` to one of the remaining base
 predictor columns. Descriptor runs accept `{"scope": "judgeable"}` (the default) or
 `{"scope": "all_candidates"}`. The starting
@@ -84,8 +83,8 @@ NOTICE_RAW = """
 ## Raw-candidate ablation (this run)
 
 This run measures evolution WITHOUT the frozen detector score AND WITHOUT the detector's
-discovered feature columns. `detector_score`, `bank_context_available`, `row_in_band` and
-every `h<number>_...` column do not exist: ignore every mention of them in the guides. The
+discovered feature columns. `detector_score` and every `h<number>_...` column do not
+exist: ignore every mention of them in the guides. The
 only base predictor columns are label-blind candidate attributes:
 
 - merge: `raw_degree` (junction arity), `raw_candidate_family` (junction = 0,
