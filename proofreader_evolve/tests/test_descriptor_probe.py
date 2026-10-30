@@ -287,7 +287,7 @@ class ProbeSessionTests(unittest.TestCase):
         with patch.object(runs, 'plan', return_value=plan), patch.object(runs, 'cached', return_value=False):
             estimated = self.session.plan_descriptor_run()['frozen_inference']
         self.assertEqual(estimated['estimated_seconds'], 300.)
-        self.assertEqual(estimated['scope'], 'all_candidates')
+        self.assertEqual(estimated['scope'], 'judgeable')
         with patch.object(runs, 'plan', return_value=plan), patch.object(runs, 'cached',
                 side_effect=lambda table, *args: table.meta['provenance']['brain'] == '794495'):
             partial = self.session.plan_descriptor_run()

@@ -34,17 +34,20 @@ Write `describe(context)` to define features. Parallel sandboxed workers compute
    and is extrapolated separately from workload sizes and TRAIN timings, without reading
    heldout images. Both tools charge elapsed descriptor wall time,
    including failed executions. These steps are guidance, not a mandatory gate.
-3. `compute_descriptors({"scope": "all_candidates"})` covers every native candidate.
-   `pilot` is a reproducible uniform sample of up to 512 rows; `boundary` explicitly
-   chooses up to 2,000 detector-rank neighbours on each side of K. The old
-   `all_cached` scope is accepted as an alias for `all_candidates`. One
+3. `compute_descriptors({"scope": "judgeable"})` (the default) covers the rows the outer
+   measurement can score: the GT-labeled rows, the same set every fit and ranking uses on
+   TRAIN, selection and validation brains, so no ranked row is NaN. `all_candidates` covers
+   every native candidate (far more rows; check `plan_descriptor_run` first). `pilot` is a
+   reproducible uniform sample of up to 512 rows; `boundary` explicitly chooses up to 2,000
+   detector-rank neighbours on each side of K. The old `all_cached` scope is an alias for
+   `all_candidates`. One
    uncached call costs one evaluation unit plus wall time from the per-call and
    per-generation descriptor budgets in `model_environment.json`. The reply
    gives, for each column on each TRAIN brain, the diagnostics above and quartiles conditional on labels
    1 and 0 (NaN-label rows are only counted, as `unlabeled_count`),
    finite fraction and coverage. Results are cached by code, inputs and implementation
    identity. An unchanged valid cache costs no evaluation unit or descriptor wall budget.
-   In no-score/raw modes, production calls must use `all_candidates`; sampled probes do
+   In no-score/raw modes, production calls use `judgeable` or `all_candidates`; sampled probes do
    not become sparse predictor columns.
 4. Use the columns like any predictor: in a formula (handle NaN on uncomputed rows), in `training.py`
    (classifiers see them automatically), or measure their increment with

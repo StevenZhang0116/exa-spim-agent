@@ -157,14 +157,14 @@ def plan(session):
         elapsed = time.monotonic() - started
         session.descriptor_seconds_used += elapsed
     available = min(session.descriptor_budget['per_call_seconds'], session.descriptor_seconds_remaining)
-    inference = {'scope': 'all_candidates', 'estimated_seconds': None,
+    inference = {'scope': 'judgeable', 'estimated_seconds': None,
                  'note': 'Additional frozen inference is outside the TRAIN estimate; no heldout images were read.'}
     sizes = session.descriptor_budget.get('frozen_inference_rows')
     if response['status'] == 'planned' and sizes is not None:
         rate = max(p['seconds_per_row_single_worker'] for p in measured.values())
         inference.update(estimated_seconds=sum(rate * count / max(1, min(runs.workers, -(-count // BATCH_ROWS)))
                                               for count in sizes),
-                         basis='Full candidate-pool workload sizes and slowest measured TRAIN seconds/row; '
+                         basis='Judgeable-row counts of the other brains and slowest measured TRAIN seconds/row; '
                                'extrapolation only, cold source IO can differ.')
     response.update(wall_seconds=elapsed,
         budget={'per_call_seconds': session.descriptor_budget['per_call_seconds'],

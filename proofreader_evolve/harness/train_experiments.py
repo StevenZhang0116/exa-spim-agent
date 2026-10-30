@@ -1197,12 +1197,16 @@ class TrainingExperiments:
     def probe_descriptor(self, candidate_refs=None, sample_per_brain=128, seed=0, previews=False):
         return descriptor_probe.probe(self, candidate_refs, sample_per_brain, seed, previews)
 
-    def compute_descriptors(self, scope='all_candidates'):
-        """Run describe over selected candidates of every TRAIN brain; register the columns."""
+    def compute_descriptors(self, scope='judgeable'):
+        """Run describe over the scope's rows of every TRAIN brain; register the columns.
+
+        `judgeable` (default) is the GT-labeled rows, the set every fit and ranking uses on TRAIN,
+        selection and validation brains alike, so the outer measurement sees no NaN.
+        """
         from .descriptor_runs import normalize_scope
         scope = normalize_scope(scope)
         runs = self.memory.descriptor_runs
-        allowed = getattr(runs, 'allowed_scopes', DESCRIPTOR_SCOPES)  # all_candidates only under --detector-prior no-score
+        allowed = getattr(runs, 'allowed_scopes', DESCRIPTOR_SCOPES)  # no detector-rank windows under --detector-prior no-score/raw
         if scope not in allowed:
             raise ValueError(f'scope must be one of {tuple(allowed)}')
         program, spec = self._read_descriptor()
@@ -1457,7 +1461,9 @@ class TrainingExperiments:
 
         @tool('compute_descriptors', 'Run descriptor.py describe(context) over the selected candidates of every '
               'TRAIN brain in parallel sandboxed workers and register the results as bank_agent_<name> predictor '
-              f'columns. Allowed scopes in this run: {descriptor_scopes}. all_candidates covers the complete native candidate pool; '
+              f'columns. Allowed scopes in this run: {descriptor_scopes}. judgeable (the default) covers the rows the outer '
+              'measurement can score: GT-labeled rows, the same set on TRAIN, selection and validation brains; '
+              'all_candidates covers the complete native candidate pool, far more rows, so plan first. '
               + ('pilot is a uniform sample; boundary explicitly selects detector-rank neighbours. '
                  if 'pilot' in descriptor_scopes else 'Diagnostic subsets use probe_descriptor only. ') +
               'Returns TRAIN finite/missing/nonzero counts, ranges, standard deviations, quartiles and coverage. One uncached call costs '

@@ -322,7 +322,7 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
                 "cases, optionally requesting previews of the exact inputs; sample uniformly across brains to check "
                 "feature distributions. The optional DESCRIPTOR.image specifies level and radius_um. "
                 "Call plan_descriptor_run({}) to estimate all TRAIN brains, then "
-                'compute_descriptors({"scope": "all_candidates"}) to run it over every native candidate '
+                'compute_descriptors({"scope": "judgeable"}) to run it over the rows the outer measurement can score '
                 f"of the TRAIN brains in {experiments.memory.descriptor_runs.workers} parallel sandboxed workers. "
                 f"Allowed production scopes in this run: {json.dumps(scopes)}. "
                 f"Budget: {budget['per_call_seconds']:.0f} s per call and {budget['generation_seconds']:.0f} s per "
@@ -763,7 +763,7 @@ def _restore_descriptors(args, banks, kinds, parent_sources, descriptor_runs, bu
         for column, record in columns.items():
             if record['scope'] not in detector_prior.NO_SCORE_DESCRIPTOR_SCOPES:
                 raise ValueError(f"Descriptor column {column} uses scope {record['scope']!r}, a detector-rank "
-                                 f"window; --detector-prior {args.detector_prior} accepts all_candidates only")
+                                 f"window; --detector-prior {args.detector_prior} accepts judgeable or all_candidates only")
             detector_prior.check_source(programs[record['code_sha256']]['program'], f'Descriptor column {column}',
                                         raw=detector_prior.raw_enabled(args))
     for code in {record['code_sha256'] for record in columns.values()}:
@@ -1273,7 +1273,7 @@ async def _run(args, revise_fn, run_dir, trace):
             classifier_timeout=args.classifier_time_budget, classifier_memory_mb=args.classifier_memory_mb,
             classifier_threads=args.classifier_threads, parent_selection=parent_selection[target_kind],
             descriptor_budget={**descriptor_budget, 'frozen_inference_rows':
-                [len(contexts.entry(bank.tables[target_kind]).rows) for bank in validation.values()]
+                [len(label_availability.labeled_rows(bank.tables[target_kind].truth)) for bank in validation.values()]
                 if descriptor_runs is not None else None},
             branch={**branch_meta, 'selection': branch_report, 'state': branch_state},
             validated=lambda entry, kind=target_kind: pool.validation_of(kind, entry))

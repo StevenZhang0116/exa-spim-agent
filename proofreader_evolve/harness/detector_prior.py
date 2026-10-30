@@ -11,8 +11,9 @@ training programs and descriptors can see:
   files and digests are unchanged) after the host has measured the frozen baseline;
 - ``bank_context_available`` (1 inside the detector band) is not registered and
   descriptor contexts omit ``row_in_band``;
-- production descriptor runs use ``all_candidates`` so their coverage does not encode
-  a selected subset; diagnostic probes can sample uniformly from all TRAIN candidates;
+- production descriptor runs use ``judgeable`` (every GT-labeled row, the rows the outer
+  measurement ranks) or ``all_candidates``, never a detector-rank window; diagnostic
+  probes can sample uniformly from all TRAIN candidates;
 - local and image row selection has no default column (the default is the score).
 
 ``--detector-prior raw`` (2026-10-27, ``plans/raw_prior_ablation.md``) withholds the
@@ -38,7 +39,7 @@ MODES = ('frozen', 'no-score', 'raw')
 SCORE_COLUMN = 'detector_score'
 BAND_COLUMN = 'bank_context_available'
 HIDDEN_NAMES = (SCORE_COLUMN, BAND_COLUMN, 'row_in_band')
-NO_SCORE_DESCRIPTOR_SCOPES = ('all_candidates',)
+NO_SCORE_DESCRIPTOR_SCOPES = ('judgeable', 'all_candidates')
 RAW_PREFIX = 'raw_'
 DETECTOR_FEATURE_NAME = re.compile(r'\bh\d+_[A-Za-z0-9_]+')
 RAW_COLUMNS = {
@@ -72,7 +73,8 @@ a column of `features`, of descriptor contexts or of any TRAIN data, and
 `bank_context_available` / `row_in_band` do not exist. Ignore every mention of them in
 the guides. All other predictor columns (the detector's computed features) remain.
 Local and image specs must set `selection_feature` to one of the remaining base
-predictor columns. Descriptor runs accept only `{"scope": "all_candidates"}`. The starting
+predictor columns. Descriptor runs accept `{"scope": "judgeable"}` (the default) or
+`{"scope": "all_candidates"}`. The starting
 scorer is a constant: rank from the remaining columns, your descriptors, or a
 TRAIN-fitted model.
 """
@@ -93,7 +95,7 @@ only base predictor columns are label-blind candidate attributes:
   `raw_occurrence_gap_min_um`, `raw_occurrence_gap_max_um`.
 
 Every other feature must be built by you with `compute_descriptors` from on-demand
-fragment neighbourhoods and image patches (scope `{"scope": "all_candidates"}` only), or
+fragment neighbourhoods and image patches (scope `judgeable`, the default, or `all_candidates`), or
 measured with `run_volume_analysis`. Local and image specs must set `selection_feature`
 to one of the raw columns. The starting scorer is a constant: rank from the raw columns,
 your descriptors, or a TRAIN-fitted model.
@@ -105,7 +107,7 @@ def mode(args):
 
 
 def enabled(args):
-    """True for both ablations (score withheld, band hidden, all_candidates descriptors only)."""
+    """True for both ablations (score withheld, band hidden, no detector-rank descriptor scopes)."""
     return mode(args) in ('no-score', 'raw')
 
 

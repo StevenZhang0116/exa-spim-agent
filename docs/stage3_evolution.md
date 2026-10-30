@@ -309,9 +309,11 @@ TRAIN pool, and can request previews of the exact inputs.
 `DESCRIPTOR.image = {'level': 0, 'radius_um': 40}` sets the physical crop.
 Legacy tier names resolve to physical requests too. Descriptor pixels use bounded
 temporary staging; numeric outputs remain reusable in the descriptor bank.
-`compute_descriptors({"scope": "all_candidates"})` covers the full pool; `pilot`
-is uniform and `boundary` explicitly selects detector-rank neighbours. The old
-`all_cached` scope maps to `all_candidates`.
+`compute_descriptors({"scope": "judgeable"})` (the default since 2026-10-29) covers the
+GT-labeled rows, the set every fit and ranking uses on TRAIN, selection and validation
+brains (about 49 k merge / 34 k split rows over the six TRAIN brains, against 2.3 M / 4.8 M
+in the full pools); `all_candidates` covers the full pool; `pilot` is uniform and `boundary`
+explicitly selects detector-rank neighbours. The old `all_cached` scope maps to `all_candidates`.
 `plan_descriptor_run` estimates all TRAIN brains, then `compute_descriptors` runs the
 same code and input path in parallel sandboxed workers. Results are cached by code,
 input and implementation identity in `descriptor_bank/` and registered as `bank_agent_*`

@@ -3,8 +3,9 @@
 The host fans batches of rows out to many single-threaded workers (the sandbox forbids
 child processes), enforces one wall-clock deadline, caches results by descriptor code,
 input and implementation identity across generations and runs, and registers the resulting
-columns as ordinary predictors. Labels are touched only by the summary the host builds
-for TRAIN brains after the computation.
+columns as ordinary predictors. Labels are touched only by the host: the `judgeable` scope
+selects the GT-labeled rows (the rows every fit and ranking uses), and the summary for
+TRAIN brains is built after the computation.
 """
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -22,11 +23,12 @@ import numpy as np
 from .descriptor_contract import DESCRIPTOR_VERSION
 from . import descriptor_inputs
 from .image_context import file_hash
+from .label_availability import labeled_rows
 from .model_execution import ModelExecutionError, run_worker, DEFAULT_MEMORY_MB
 
 
 RUN_VERSION = 'agent-descriptor-compute-v3-on-demand'
-SCOPES = ('pilot', 'boundary', 'all_candidates')
+SCOPES = ('judgeable', 'pilot', 'boundary', 'all_candidates')
 PILOT_ROWS = 512
 BOUNDARY_ROWS = 2000
 BATCH_ROWS = 256
@@ -72,10 +74,17 @@ class DescriptorRuns:
         self.memory_mb = memory_mb
         self.implementation = {name: file_hash(Path(__file__).with_name(name)) for name in IMPLEMENTATION_FILES}
 
-    def scope_rows(self, entry, scope, k):
+    def scope_rows(self, entry, scope, k, truth=None):
+        """Row subset of one scope; `judgeable` needs the table's three-valued labels (host-side)."""
         scope = normalize_scope(scope)
         if scope not in SCOPES:
             raise ValueError(f'scope must be one of {SCOPES}')
+        if scope == 'judgeable':
+            # The rows the outer measurement ranks (label 1 or 0), on TRAIN, selection and validation
+            # brains alike; the same truth Budgets.k_for reads. Unlabeled rows keep NaN.
+            if truth is None:
+                raise ValueError('The judgeable scope needs the table labels')
+            return labeled_rows(truth)
         if scope == 'pilot':
             rows = np.sort(entry.rows)
             return np.sort(np.random.default_rng(0).choice(rows, min(PILOT_ROWS, len(rows)), replace=False))
@@ -105,7 +114,7 @@ class DescriptorRuns:
 
     def cached(self, table, spec, scope, k):
         entry = self.contexts.entry(table)
-        rows = self.scope_rows(entry, scope, k)
+        rows = self.scope_rows(entry, scope, k, truth=table.truth)
         directory = self.directory(table, spec, scope)
         manifest = directory / 'manifest.json'
         if not manifest.is_file():
@@ -228,7 +237,7 @@ class DescriptorRuns:
         started = time.monotonic()
         deadline = started + float(wall_budget)
         entry = self.contexts.entry(table)
-        rows = np.asarray(self.scope_rows(entry, scope, k), dtype=np.int64)
+        rows = np.asarray(self.scope_rows(entry, scope, k, truth=table.truth), dtype=np.int64)
         identity = self.identity(table, spec, scope, rows)
         directory = self.directory(table, spec, scope)
         if directory.is_dir() and not force:
@@ -296,7 +305,7 @@ class DescriptorRuns:
         per_row = wall / max(1, len(rows))
         estimates = {}
         for scope in getattr(self, 'allowed_scopes', SCOPES):
-            count = len(self.scope_rows(entry, scope, k))
+            count = len(self.scope_rows(entry, scope, k, truth=table.truth))
             batches = -(-count // BATCH_ROWS)
             # Never claim parallelism from more workers than actual row batches.
             seconds = per_row * count / max(1, min(self.workers, batches))

@@ -179,13 +179,13 @@ class DriverTests(unittest.TestCase):
                 (policy.parent / 'descriptor.py').write_text(BLIND_DESCRIPTOR)
                 environment = json.loads((policy.parent / 'model_environment.json').read_text())['descriptor_compute']
                 manifest = json.loads((run_dir / 'manifest.json').read_text())['descriptor_compute']
-                self.assertEqual(environment['scopes'], ['all_candidates'])
-                self.assertEqual(manifest['scopes'], ['all_candidates'])
+                self.assertEqual(environment['scopes'], ['judgeable', 'all_candidates'])
+                self.assertEqual(manifest['scopes'], ['judgeable', 'all_candidates'])
                 self.assertNotIn('context_column', environment)
                 for scope in ('pilot', 'boundary'):
-                    with self.assertRaisesRegex(ValueError, r"scope must be one of \('all_candidates',\)"):
+                    with self.assertRaisesRegex(ValueError, r"scope must be one of \('judgeable', 'all_candidates'\)"):
                         experiments.compute_descriptors(scope)
-                seen['result'] = experiments.compute_descriptors('all_candidates')
+                seen['result'] = experiments.compute_descriptors()  # the judgeable default
                 seen['statistics'] = (policy.parent / 'feature_statistics.json').read_text()
                 experiments.restore('parent')
                 return {'summary': 'descriptor only', 'cost_usd': 0}

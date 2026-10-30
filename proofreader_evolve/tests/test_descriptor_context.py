@@ -153,6 +153,52 @@ class OnDemandContextTests(unittest.TestCase):
         self.assertEqual(before, after)
         self.assertEqual(self.store.cache_bytes, 0)
 
+    def test_judgeable_scope_is_the_labeled_rows_and_measures_like_the_full_pool(self):
+        from proofreader_evolve.harness.fixed_pool_scoring import rank_metrics
+        from proofreader_evolve.harness.label_availability import labeled_rows
+        truth = np.asarray(self.table.truth, dtype=float)
+        truth[[0, 5, 10]] = np.nan  # rows GT cannot judge
+        self.table.truth = truth
+        labeled = labeled_rows(truth)
+        unlabeled = np.setdiff1d(np.arange(len(truth)), labeled)
+        program, spec = descriptor_spec(GEOMETRY_DESCRIPTOR)
+        entry = self.runs.contexts.entry(self.table)
+        np.testing.assert_array_equal(self.runs.scope_rows(entry, 'judgeable', 3, truth=truth), labeled)
+        with self.assertRaisesRegex(ValueError, 'labels'):
+            self.runs.scope_rows(entry, 'judgeable', 3)
+        partial = self.runs.compute(self.table, program, spec, 'judgeable', k=3, wall_budget=120,
+                                    log_dir=self.root / 'judgeable')
+        full = self.runs.compute(self.table, program, spec, 'all_candidates', k=3, wall_budget=120,
+                                 log_dir=self.root / 'full')
+        np.testing.assert_array_equal(partial['rows'], labeled)
+        np.testing.assert_array_equal(partial['values'], full['values'][labeled])
+        probe = self.runs.probe(self.table, program, spec, labeled[:2], log_dir=self.root / 'probe')
+        np.testing.assert_array_equal(probe['values'], partial['values'][:2])
+        # Registered on the judgeable rows only: NaN elsewhere, and the ranking cannot tell the difference
+        # because rank_metrics drops unlabeled rows before ordering.
+        self.runs.register(self.table, spec['columns'], partial['rows'], partial['values'])
+        column = self.table.features['bank_agent_node_count'].to_numpy()
+        self.assertTrue(np.isfinite(column[labeled]).all())
+        self.assertTrue(np.isnan(column[unlabeled]).all())
+        from_partial, chosen_partial = rank_metrics(np.nan_to_num(column, nan=-1e9), truth, self.table.keys, 3)
+        from_full, chosen_full = rank_metrics(full['values'][:, 0], truth, self.table.keys, 3)
+        self.assertEqual(from_partial, from_full)
+        np.testing.assert_array_equal(chosen_partial, chosen_full)
+        # The bank entry is keyed by the labeled row set: one more judgeable row invalidates it.
+        self.assertTrue(self.runs.cached(self.table, spec, 'judgeable', 3))
+        truth[unlabeled[0]] = 0.
+        self.table.truth = truth
+        self.assertFalse(self.runs.cached(self.table, spec, 'judgeable', 3))
+        # Frozen inference on another brain computes that brain's own labeled rows.
+        heldout = brain_table('heldout').tables['merge']
+        heldout.local_context = FakeProvider()
+        other = np.asarray(heldout.truth, dtype=float)
+        other[[1, 2]] = np.nan
+        heldout.truth = other
+        frozen = self.runs.compute(heldout, program, spec, 'judgeable', k=3, wall_budget=120,
+                                   log_dir=self.root / 'validation_descriptor_runs')
+        np.testing.assert_array_equal(frozen['rows'], labeled_rows(other))
+
     def test_fragment_source_is_loaded_once_under_concurrency(self):
         from types import SimpleNamespace
         import threading
