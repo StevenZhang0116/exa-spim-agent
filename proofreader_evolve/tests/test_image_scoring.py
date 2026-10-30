@@ -203,7 +203,7 @@ class ImageScoringTests(unittest.TestCase):
         exp = object.__new__(TrainingExperiments)
         exp.gen_dir=self.root/'gen001'; exp.gen_dir.mkdir()
         exp.train,exp.target_kind,exp.budgets=self.train,'merge',{'merge':6}
-        exp.trace=Mock(); exp.lock=asyncio.Lock()
+        exp.trace=Mock(); exp.lock=asyncio.Lock(); exp.memory=SimpleNamespace(descriptor_runs=None)
         exp.research_status=Mock(return_value={'status': 'complete', 'complete': True})
         exp.policy_path=exp.gen_dir/'scorer.py'; exp.rules_path=exp.gen_dir/'rules.md'
         exp.proposal_path=exp.gen_dir/'proposal.json'

@@ -52,7 +52,7 @@ class VolumeAnalysisTests(unittest.TestCase):
         for name, value in {'gen_dir':self.gen, 'train':self.train, 'volume_analyses_used':0,
                            'timeout':20., 'classifier_memory_mb':2048, 'classifier_threads':1,
                            'max_evaluations':8, 'evaluations_used':0, 'repair_granted':False,
-                           'trace':Trajectory(self.gen)}.items():
+                           'trace':Trajectory(self.gen), 'memory':SimpleNamespace(descriptor_runs=None)}.items():
             setattr(self.experiments, name, value)
         self.write('def analyze(context):\n    return {"voxel": int(context["image_zyx"][2,3,4])}\n')
 
