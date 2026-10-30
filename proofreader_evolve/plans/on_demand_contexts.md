@@ -54,3 +54,8 @@ for split (34 k rows) plus six graph loads, close to the 1800 s per-call budget;
 `--descriptor-wall-seconds` to 3600 for image descriptors or accept the margin. Geometry-only
 calls take a few minutes. Frozen inference per validation brain stays well inside its budget
 (largest cell 751473 merge, 13,374 rows).
+
+The pre-2026-10-29 descriptor-bank entries (scope `all_cached`, 325 directories, 4.1 GB across
+`descriptor_bank`, `descriptor_bank_no_score` and `descriptor_bank_raw`) were unreachable under the new
+identity and were deleted on 2026-10-30; the per-generation `descriptor_runs/runNNN/result.json`
+summaries remain, and any historical descriptor can be recomputed from its generation's `descriptor.py`.

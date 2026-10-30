@@ -13,3 +13,6 @@ Evidence for `WORKFLOW_REVISION.md` "Uniform K = GT positives (2026-10-27, objec
   (per-brain hits); the per-candidate score dumps (`val_scores_*.npz`) are not kept.
 
 Both scripts read run directories under `proofreader_evolve/runs/`, which are not in git.
+`validation_k_variants.py` is kept as the record of this check only: it attached `bank_context_available`
+from the context cache, which was deleted on 2026-10-29 when evolution moved to on-demand contexts
+(commit 93fcb42), so it can no longer be rerun as written.
