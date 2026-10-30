@@ -1,4 +1,4 @@
-"""Pool-scale execution of agent descriptors over cached contexts in parallel sandboxed workers.
+"""Pool-scale execution of agent descriptors over host-provided contexts in parallel sandboxed workers.
 
 The host fans batches of rows out to many single-threaded workers (the sandbox forbids
 child processes), enforces one wall-clock deadline, caches results by descriptor code,
@@ -25,14 +25,18 @@ from .image_context import file_hash
 from .model_execution import ModelExecutionError, run_worker, DEFAULT_MEMORY_MB
 
 
-RUN_VERSION = 'agent-descriptor-compute-v2-probes'
-SCOPES = ('pilot', 'boundary', 'all_cached')
+RUN_VERSION = 'agent-descriptor-compute-v3-on-demand'
+SCOPES = ('pilot', 'boundary', 'all_candidates')
 PILOT_ROWS = 512
 BOUNDARY_ROWS = 2000
 BATCH_ROWS = 256
 CONTEXT_COLUMN = 'bank_context_available'
 IMPLEMENTATION_FILES = ('descriptor_runs.py', 'descriptor_inputs.py', 'descriptor_contract.py',
                         'classifier_train_worker.py', 'model_execution.py', 'model_sandbox.py')
+
+
+def normalize_scope(scope):
+    return 'all_candidates' if scope == 'all_cached' else scope
 
 
 def available_workers(reserve=2):
@@ -62,42 +66,45 @@ def stage_batch(root, contexts, patches):
 
 
 class DescriptorRuns:
-    def __init__(self, cache, bank_dir, *, workers='auto', memory_mb=DEFAULT_MEMORY_MB, trace=None):
-        self.cache, self.bank_dir, self.trace = cache, Path(bank_dir), trace
+    def __init__(self, contexts, bank_dir, *, workers='auto', memory_mb=DEFAULT_MEMORY_MB, trace=None):
+        self.contexts, self.bank_dir, self.trace = contexts, Path(bank_dir), trace
         self.workers = available_workers() if workers == 'auto' else max(1, int(workers))
         self.memory_mb = memory_mb
         self.implementation = {name: file_hash(Path(__file__).with_name(name)) for name in IMPLEMENTATION_FILES}
 
     def scope_rows(self, entry, scope, k):
+        scope = normalize_scope(scope)
         if scope not in SCOPES:
             raise ValueError(f'scope must be one of {SCOPES}')
-        # pilot and boundary read the detector-ranked band block; all_cached adds the labeled extension.
-        band = entry.band
         if scope == 'pilot':
-            return band[:PILOT_ROWS]
+            rows = np.sort(entry.rows)
+            return np.sort(np.random.default_rng(0).choice(rows, min(PILOT_ROWS, len(rows)), replace=False))
         if scope == 'boundary':
+            band = entry.band
             k = min(int(k), len(band))
             return band[max(0, k - BOUNDARY_ROWS):k + BOUNDARY_ROWS]
         return entry.rows
 
     def identity(self, table, spec, scope, rows):
-        inputs = descriptor_inputs.source_identity(table, self.cache.entry(table), spec)
+        scope = normalize_scope(scope)
+        inputs = descriptor_inputs.source_identity(table, self.contexts.entry(table), spec)
         return {'version': RUN_VERSION, 'descriptor_version': DESCRIPTOR_VERSION,
                 'code_sha256': spec['code_sha256'], 'inputs': spec['inputs'],
                 'image_tier': spec['image_tier'] if spec['inputs'] != 'geometry' else None,
                 'image_request': inputs, 'feature_names': list(spec['feature_names']), 'scope': scope,
                 'rows_sha256': hashlib.sha256(np.asarray(rows, dtype='<i8').tobytes()).hexdigest(),
-                'context_cache': self.cache.identity_key(
+                'context_source': self.contexts.identity_key(
                     table, tiers=(inputs['cached_tier'],) if inputs['cached_tier'] is not None else ()),
                 'implementation': self.implementation}
 
     def directory(self, table, spec, scope):
-        from .context_cache import table_identity
+        scope = normalize_scope(scope)
+        from .descriptor_context import table_identity
         identity = table_identity(table)
         return self.bank_dir / identity['brain'] / table.kind / identity['pool_sha256'] / spec['code_sha256'] / scope
 
     def cached(self, table, spec, scope, k):
-        entry = self.cache.entry(table)
+        entry = self.contexts.entry(table)
         rows = self.scope_rows(entry, scope, k)
         directory = self.directory(table, spec, scope)
         manifest = directory / 'manifest.json'
@@ -183,20 +190,20 @@ class DescriptorRuns:
         return values, worker_seconds
 
     def sample_rows(self, table, count=128, seed=0):
-        """Uniform over cached candidate IDs, independent of their detector-ranked order or labels."""
+        """Uniform over candidate IDs, independent of detector rank or labels."""
         if type(count) is not int or not 1 <= count <= 2048 or type(seed) is not int or not 0 <= seed < 2**32:
             raise ValueError('Use sample_per_brain 1..2048 and an integer seed in [0, 2**32)')
-        rows = np.sort(self.cache.entry(table).rows)
+        rows = np.sort(self.contexts.entry(table).rows)
         return np.sort(np.random.default_rng(seed).choice(rows, min(count, len(rows)), replace=False))
 
     def probe(self, table, program, spec, rows, *, timeout=600., log_dir, observe=None):
         """Run the real descriptor without registering columns or writing the descriptor bank."""
         if timeout <= 0:
             raise ModelExecutionError('Descriptor wall budget exhausted before probe started')
-        entry = self.cache.entry(table)
+        entry = self.contexts.entry(table)
         rows = np.asarray(rows, dtype=np.int64)
         if not entry.has_rows(rows).all():
-            raise ValueError('Probe candidates must have cached geometry')
+            raise ValueError('Probe candidates must belong to the candidate pool')
         started = time.monotonic()
         log_dir = Path(log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -207,7 +214,7 @@ class DescriptorRuns:
                 with tempfile.TemporaryDirectory(prefix='descriptor_probe_') as tmp:
                     values, _ = self._run_batch(Path(tmp), table, entry, program, spec,
                         rows[start:start + BATCH_ROWS], started + timeout, log_dir / f'batch{start // BATCH_ROWS:04d}.log',
-                        persist_images=True, observe=observe, timings=timing)
+                        persist_images=False, observe=observe, timings=timing)
                 chunks.append(values)
                 timings.append(timing)
         finally:
@@ -220,7 +227,7 @@ class DescriptorRuns:
         """Compute (or load) descriptor values for one table; returns rows, values and provenance."""
         started = time.monotonic()
         deadline = started + float(wall_budget)
-        entry = self.cache.entry(table)
+        entry = self.contexts.entry(table)
         rows = np.asarray(self.scope_rows(entry, scope, k), dtype=np.int64)
         identity = self.identity(table, spec, scope, rows)
         directory = self.directory(table, spec, scope)
@@ -281,7 +288,7 @@ class DescriptorRuns:
 
     def plan(self, table, program, spec, *, k, sample_rows=64, timeout=600):
         """Estimate this brain only; the session aggregates every TRAIN brain's measured cost."""
-        entry = self.cache.entry(table)
+        entry = self.contexts.entry(table)
         rows = self.sample_rows(table, sample_rows)
         with tempfile.TemporaryDirectory(prefix='descriptor_plan_') as tmp:
             measured = self.probe(table, program, spec, rows, timeout=timeout, log_dir=Path(tmp))
@@ -316,6 +323,7 @@ class DescriptorRuns:
 
     @staticmethod
     def register_context_column(table, entry):
+        """Legacy offline replay only; evolution never registers this band indicator."""
         if CONTEXT_COLUMN in table.features.columns:
             return
         available = np.zeros(len(table.features))  # 1 inside the detector band: a function of detector rank only

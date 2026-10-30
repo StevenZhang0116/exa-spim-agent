@@ -85,7 +85,7 @@ exa-spim-agent/
 ├── autodiscovery/              # AutoDiscovery exports (*.json) plus generated reports and scripts
 ├── autodiscovery-application/  # Stage 2 deliverables, one folder per originating run
 ├── proofreader_evolve/         # Stage 3: cli/, harness/, artifacts/, plotting/, tests/, feature_tables/,
-│                               #          context_cache/, descriptor_bank/, runs/, TODO.md
+│                               #          descriptor_bank/, runs/, TODO.md
 ├── markdowns/                  # task specifications and the cache schema for agents
 ├── cache/                      # dataset_cache_<brain>_mcl<N>[_add].pkl (gitignored, large)
 ├── notebooks/                  # cache building, verification, candidate-pool sweeps
@@ -104,7 +104,6 @@ exa-spim-agent/
 autodiscovery/<RUN>.summary.md                validated discovery report (Stage 1)
 autodiscovery-application/<RUN>/              frozen detector deliverables and runs (Stage 2)
 proofreader_evolve/feature_tables/<brain>/    detector-native candidate tables (Stage 3 input)
-proofreader_evolve/context_cache/<brain>/     cached fragment neighbourhoods and image patches (Stage 3 input)
 proofreader_evolve/runs/precision_*/          evolution runs: best_scorer.py, ledger, report.html
 cache/                                        base and labeled pickle files
 metrics_out/                                  official reference metrics

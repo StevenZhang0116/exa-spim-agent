@@ -95,7 +95,7 @@ def analyze_volume(module, contexts, images, request, output, np):
 
 
 def describe_rows(module, contexts, images, request, output, np):
-    """Agent descriptor over cached contexts: one finite-or-NaN row per context, deterministic."""
+    """Agent descriptor over host-provided contexts: one finite-or-NaN row per context, deterministic."""
     names = request['feature_names']
     values = np.empty((len(contexts), len(names)), dtype=np.float64)
     for index, description in enumerate(contexts):

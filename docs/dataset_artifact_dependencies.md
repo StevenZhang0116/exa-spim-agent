@@ -12,7 +12,7 @@ being comparable. Times are what the 794495 rebuild of 2026-10-13 took on n268 (
 |---|---|---|
 | GT tracings (one SWC per neuron, `voxel/` copy) | `gs://allen-nd-goog/ground_truth_tracings/<brain>/voxel` (`labeled_cache/io.py`, `GT_PATH_TEMPLATE`) | `gt_graph` and every GT-derived label in the cache |
 | Predicted segmentation (`label_mask`) and fragment SWCs | `configs/segmentation_paths.json` (new layout, takes precedence) or `configs/segmentation_datasets.rtf` + legacy template, resolved by `scripts/dataset_config.py` | `fragments_graph`; `label_gt_from_segmentation`. The two must be one segmentation run: `python -m labeled_cache.source_check --brains <b>` reads sampled fragment node voxels back from the segmentation and reports the id agreement (`docs/fragment_segmentation_match.md`; all eleven brains 97.9-100% on 2026-10-29) |
-| Fused image prefix | `configs/exaspim_image_prefixes.json` | `img_path` in the cache (written by the base stage; `python -m labeled_cache --brains <b> --refresh-image-path` rewrites it in both pkl files after a volume moves). Image reads use the URI reviewed in `configs/image_alignment.json` first: the context cache and companions through `image_context`, the plotting scripts through `scripts/dataset_config.get_reviewed_img_path` / `get_cache_img_path` |
+| Fused image prefix | `configs/exaspim_image_prefixes.json` | `img_path` in the cache (written by the base stage; `python -m labeled_cache --brains <b> --refresh-image-path` rewrites it in both pkl files after a volume moves). Image reads use the URI reviewed in `configs/image_alignment.json` first: on-demand descriptors and companions through `image_context`, the plotting scripts through `scripts/dataset_config.get_reviewed_img_path` / `get_cache_img_path` |
 | Benchmark candidate pools | `proofreader_evolve/candidate_pools.json` (schema 2: split `tip_to_any_node|r=80|k=2` since 2026-10-15; merge `junction+tip_to_shaft|nms=20|gap=20|k=2|r=150` since 2026-10-16), applied by `candidate_rules.py` at the repository root (also copied beside every detector built since 2026-10-16) | the candidate rows of every native table and companion of that kind. The rule and the module's SHA-256 are in the table provenance, so editing either gives new table directories: items 2 and 3 below are redone for that kind on every brain. `pool_sha256` hashes the rows only; when the rows change (the usual case for an edited entry), items 4, 6 and 7 are redone too, while a module edit that keeps the rows keeps them valid (check with a pool-only companion export, as on 2026-10-17 for split). The cache itself is untouched |
 
 `python -m labeled_cache` (2026-10-15; before it, `notebooks/generate_add_caches.py` and
@@ -43,34 +43,32 @@ Two kinds of change have different blast radii:
 | 3 | GT-availability sidecars | `feature_tables/<brain>/<table_digest>.availability/` | table rows, `pool_sha256`, candidate-key digest, labels digest, `source_cache` (`AvailabilityMismatch`) | yes | yes | written by step 2; alone: `python -u -m proofreader_evolve.cli.precompute_availability --brains <b> --mcl <N>` (valid sidecars are reused) | about 1.5 min |
 | 4 | AutoDiscovery companions | `markdowns/rerank_companion_<brain>_{merge,split}.{npz,json}` (gitignored); stale companions are deleted when they are regenerated (2026-10-17) | manifest `pool_sha256`, `labels_sha256`, `npz_sha256`, `source_cache` (file, size); `agentic/rerun_experiments.bind_companions` refuses a companion whose `source_cache.file` is not one of the run's pkls or whose npz differs from its digest | yes | yes | `python -u -m proofreader_evolve.cli.export_rerank_companion --brain <b> --mcl <N> --kinds <kind> --pool-only` (cache only; same rows, labels and `pool_sha256` as the tables built later), or without `--pool-only` from prepared tables and sidecars (needs 2 and 3) | a few minutes (cache load) |
 | 5 | Feature specifications | `markdowns/{merge,split}_features_for_proofreader_evolve.md` | label counts and baseline figures quoted from the 794495 companion | yes (figures) | yes (figures) | recompute with the specification's own scoring code (`../claude_scratch/merge_baselines_20261017.py` for merge) and edit the Baselines sections; the previous text stays in git history | minutes |
-| 6 | Context cache | `proofreader_evolve/context_cache/<brain>/<kind>/<pool_sha256>/` | `table_identity`: brain, kind, `pool_sha256`, `features_sha256`, `source_cache`; `ContextCache.entry` raises on mismatch; a changed pool hash is simply a new directory | yes | probably: `features.pkl` is rewritten by step 2, check whether `features_sha256` changed | `python -u -m proofreader_evolve.cli.precompute_context_cache --brains <b> --mcl <N> --readers 16 --band-rows 50000 --labeled-extension` (needs 1 and 3) | 2 h 7 min for 794495 (fresh 50,000-row band per kind plus the labeled extension) |
-| 7 | Descriptor bank | `proofreader_evolve/descriptor_bank/<brain>/<kind>/<pool_sha256>/<code_sha256>/<scope>/` | directory keyed by pool hash; manifest identity includes `ContextCache.identity_key` | orphaned; delete | recomputed on first use if the context-cache identity changed | nothing to run; the next evolution run recomputes what it needs (about 5 to 10 min per descriptor and brain) | lazy |
+| 6 | Descriptor contexts | Read on demand from the matching fragment graph and reviewed image source | Source identity, geometry settings, image request and implementation hashes | regenerated on demand | regenerated on demand | no precompute step or saved context directory | charged to descriptor wall budget |
+| 7 | Descriptor bank | `proofreader_evolve/descriptor_bank/<brain>/<kind>/<pool_sha256>/<code_sha256>/<scope>/` | pool, feature/source identities, geometry/image configuration, descriptor code and implementation hashes | recomputed on use | recomputed on use when identity changes | nothing to run; evolution reuses only matching numeric results | lazy; cold source IO can dominate |
 | 8 | Canonical metrics | `metrics_out/<brain>/<segmentation_id>/` (`results.csv`, `merge_sites.csv`) | nothing automatic; reads GT and segmentation from GCS itself, so it must simply be the same GT version as the cache | yes when GT changed (move the old run aside: the comparison scripts want exactly one run directory) | no | `python -u notebooks/evaluate_skeleton_metrics.py --brains <b>` | about 30 min for 794495 (2026-10-14); GCS credentials |
-| 9 | Alignment overlays and error-context figures | `figs/candidate_image_alignment_<date>/<brain>/`, `figs/error_context_*_<brain>_*.png` | produced from the cache and the context cache | regenerate when wanted (`plotting/plot_error_contexts.py --brain <b>`) | no | optional | minutes |
+| 9 | Alignment overlays and error-context figures | `figs/candidate_image_alignment_<date>/<brain>/`, `figs/error_context_*_<brain>_*.png` | produced from labeled graphs and on-demand image crops | regenerate when wanted (`plotting/plot_error_contexts.py --brain <b>`) | no | optional | minutes |
 
-Items 2, 3 and 6 are what `preflight` and the evolution driver check; item 4 is checked by the
+Preflight checks items 2 and 3; source loading and reviewed image access for item 6 are exercised when descriptors run; item 4 is checked by the
 AutoDiscovery audit (`bind_companions`); items 1 and 8 are the ones that surprised us.
 
 ## 3. Rebuild order after a graph reload
 
 ```bash
 conda activate panda            # compute node; one brain at a time; with srun always add -n1
-rm -rf proofreader_evolve/feature_tables/<b> proofreader_evolve/context_cache/<b> proofreader_evolve/descriptor_bank/<b>
+rm -rf proofreader_evolve/feature_tables/<b> proofreader_evolve/descriptor_bank/<b>
 python -u -m labeled_cache --brains <b> --mcl 100 --rebuild-base                      # deletes both pkl files, GCS load; 58 min (794495)
 python -u proofreader_evolve/prepare_feature_tables.py --brains <b> --mcl 100 --threads all --image-workers -1   # tables + sidecars, about 16 h (794495)
 python -u -m proofreader_evolve.cli.export_rerank_companion --brain <b> --mcl 100     # 1 min
 python -u scripts/check_image_alignment_from_cache.py --brains <b> --mcl 100 --out figs/candidate_image_alignment_<date>
 python -u scripts/check_image_alignment_from_cache.py --brains <b> --mcl 100 --out figs/candidate_image_alignment_<date> \
     --record-reviewed --review-note "<what you saw in the six overlays>"
-python -u -m proofreader_evolve.cli.precompute_context_cache --brains <b> --mcl 100 --readers 16 --band-rows 50000 --labeled-extension   # 2 h
-python -m proofreader_evolve.cli.preflight --brains <all brains> --train-brains 794495 802449 --mcl 100 --context-cache proofreader_evolve/context_cache
+python -m proofreader_evolve.cli.preflight --brains <all brains> --train-brains 794495 802449 --mcl 100
 mv metrics_out/<b> metrics_out/archive/<b>_<olddate>; python -u notebooks/evaluate_skeleton_metrics.py --brains <b>   # only if GT changed
 ```
 
 After a label-only refresh keep the pkl files and the directories: run
 `python -m labeled_cache --brains <b> --mcl 100 --policy length_v1 --check-reproduce` instead (the `policy` stage, no
-cloud reads apart from the GT check), then steps 2 to 4, then re-record the receipt, then
-check the context-cache identity before rebuilding it.
+cloud reads apart from the GT check), then steps 2 to 4, then re-record the receipt. Descriptor inputs are read on demand; there is no context-cache rebuild.
 
 ## 4. Not invalidated automatically, but no longer comparable
 
@@ -105,12 +103,12 @@ Before the build of a new brain, or after its `configs/segmentation_paths.json` 
 the dense segmentation are one segmentation run (close to 100% of sampled fragment node voxels
 carry the fragment's own segment id). After the build:
 
-1. `preflight --context-cache` passes for every brain (tables, sidecars, context cache).
+1. `preflight` passes for every brain (tables and sidecars).
 2. GT matches GCS: `../claude_scratch/compare_gt_794495_20261013.py <brain>` loads the cache
    and the current GCS tracings with the same resampling and prints per-neuron differences
    (0 changed, 0 added expected).
-3. Context cache: `../claude_scratch/verify_labeled_extension_20261013.py <brain>` (extension
-   equals labeled rows minus band, 100% of labeled rows cached, sampled contexts load).
+3. On-demand contexts: probe a few TRAIN candidates with the chosen geometry/image descriptor
+   on a compute node; verify source access, alignment and finite outputs before a full call.
 4. Pool identity: compare the new companion with the previous one (same segment pairs or
    junction coordinates; which labels changed) as done for 794495 in
    `cache/ground_truth_inventory_20261013.md` section 8.

@@ -1,10 +1,9 @@
 # Candidate images: 3D exploration, features and learned models
 
-With a context cache attached, use `probe_descriptor` to inspect and test the current
+With descriptor tools enabled, use `probe_descriptor` to inspect and test the current
 `describe(context)`, then `compute_descriptors` to register predictors at pool scale
 (see `descriptor_guide.md`). `DESCRIPTOR.image` supports custom radius and pyramid
-level in both paths. `LOCAL_IMAGE` below remains available for rows outside the
-context cache, stateless feature extraction and models that consume raw patches.
+level in both paths. `LOCAL_IMAGE` below remains available for stateless feature extraction and models that consume raw patches.
 
 Image access uses reviewed, registered raw fused fluorescence volumes. For
 separate local exploration, write `analysis.py` and `analysis_request.json`, then call

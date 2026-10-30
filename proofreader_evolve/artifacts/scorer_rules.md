@@ -30,7 +30,7 @@ in the current generation's `proposal.json`.
   worker, then appends your features. Handle NaN for rows outside the deterministic
   context selection. All candidates still receive scores. GT graphs are excluded.
   Validation uses the same frozen extractor outside the LLM.
-- With a context cache attached, use `probe_descriptor` to inspect exact descriptor inputs
+- With descriptor tools enabled, use `probe_descriptor` to inspect exact descriptor inputs
   and test current `describe` code on TRAIN cases or uniform samples across brains.
   Optional previews show those same inputs; `DESCRIPTOR.image` can vary radius and level.
   Then compute descriptors, fit and measure paired ablations (descriptor_guide.md).
@@ -127,9 +127,9 @@ in the current generation's `proposal.json`.
   A new fit plus TRAIN scoring costs one shared budget unit; failed fits also
   cost one and receive no metric. Exact code/parameter repeats are cached.
   Print diagnostics for the saved worker.log and returned output tail.
-- With a context cache attached, `descriptor.py` plus `compute_descriptors` measures
-  any label-free quantity over the cached candidates and registers it as
-  `bank_agent_*` predictors (NaN on rows outside the cache). See descriptor_guide.md.
+- With descriptor tools enabled, `descriptor.py` plus `compute_descriptors` measures
+  any label-free quantity over native candidates and registers it as
+  `bank_agent_*` predictors (NaN on uncomputed rows). See descriptor_guide.md.
 - Branches are ranked by the selection protocol named in the feedback: under
   grouped_oof, out-of-fold precision on selection brains from host-owned fold
   refits (one unit per configuration, folds included); in-sample TRAIN scores

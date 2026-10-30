@@ -3,16 +3,16 @@
 Simulates one AutoDiscovery submission: run inside a directory that holds only the
 four submitted files, in a fresh environment set up with the spec's install line.
 Executes the spec's code blocks as written, then compares them with evolve's
-context cache (geometry and image patches) and computes the baselines.
+on-demand geometry and image inputs and computes the baselines.
 
     python scripts/check_rerank_spec_code.py --kind merge --workdir <dir with the 4 files>
 """
 import argparse
-import glob
 import json
 import os
 from pathlib import Path
 import re
+import sys
 import time
 
 import numpy as np
@@ -56,20 +56,26 @@ def main():
     print(f"[{kind}] companion rows {len(lab)}, labels 1/0/NaN = {int((lab == 1).sum())}/{int((lab == 0).sum())}/"
           f"{int(np.isnan(lab).sum())}")
 
-    # 3. neighbourhood() vs evolve geometry cache.
-    entry = Path(glob.glob(str(REPO / f"proofreader_evolve/context_cache/794495/{kind}/*/manifest.json"))[0]).parent
-    g = np.load(sorted((entry / "geometry").glob("chunk_*.npz"))[0])
+    # 3. Independent specification neighbourhood() vs the live evolution implementation.
+    sys.path.insert(0, str(REPO))
+    from proofreader_evolve.harness.local_context import neighborhood
+    from proofreader_evolve.harness.image_context import ImageSource
+    def anchors(row):
+        keys = ('node_id',) if kind == 'merge' else ('node_id_a', 'node_id_b')
+        return [int(comp[key][row]) for key in keys]
+    selected = np.sort(np.random.default_rng(0).choice(len(lab), min(a.rows, len(lab)), replace=False))
     mismatch = 0
-    for i in range(a.rows):
-        row = int(g["rows"][i])
-        ctx = ns["make_context"](frag, comp, row)["fragment"]
-        lo, hi = g["node_offsets"][i], g["node_offsets"][i + 1]
-        if (ctx["xyz_um"].shape != g["xyz_um"][lo:hi].shape or not np.array_equal(g["segment"][lo:hi], ctx["segment"])
-                or np.abs(ctx["xyz_um"] - g["xyz_um"][lo:hi]).max() > 1e-9):
+    for row in selected:
+        ctx = ns['make_context'](frag, comp, int(row))['fragment']
+        expected, _ = neighborhood(frag, frag.kdtree, anchors(row), 50., 256)
+        if (np.asarray(ctx['xyz_um']).shape != np.asarray(expected['xyz_um']).shape
+                or not np.array_equal(expected['segment'], ctx['segment'])
+                or not np.allclose(ctx['xyz_um'], expected['xyz_um'], rtol=0, atol=1e-9)):
             mismatch += 1
-    print(f"[{kind}] neighbourhood vs evolve cache: {mismatch}/{a.rows} mismatched", flush=True)
+    print(f'[{kind}] neighbourhood vs live evolution: {mismatch}/{len(selected)} mismatched', flush=True)
+    assert mismatch == 0, 'Specification and evolution geometry differ'
 
-    # 4. Image: manifest geometry vs zarr metadata, then image_patch() vs evolve image cache.
+    # 4. Image: manifest geometry vs zarr metadata, then image_patch() vs live evolution images.
     import tensorstore as ts
     bucket, key = manifest["image"]["uri"][len("s3://"):].split("/", 1)
     kv = ts.KvStore.open({"driver": "s3", "bucket": bucket, "path": key.rstrip("/") + "/"}).result()
@@ -81,23 +87,22 @@ def main():
         assert np.allclose(t.get("translation", {"translation": [0] * 5})["translation"][-3:][::-1],
                            want["translation_xyz_um"]), ds
     print(f"[{kind}] manifest level geometry matches .zattrs", flush=True)
-    for tier, level in (("level0", 0), ("level1", 1)):
-        chunk = sorted((entry / "images" / tier).glob("chunk_*.npz"))
-        if not chunk:
-            print(f"[{kind}] no evolve image cache for {tier}; skipped")
-            continue
-        c = np.load(chunk[0])
-        array = ns["open_level"](manifest, level)
+    source = ImageSource(manifest['image']['uri'], graph_to_world=manifest['image'].get('graph_to_world'))
+    for tier, level in (('level0', 0), ('level1', 1)):
+        array = ns['open_level'](manifest, level)
         bad, checked, t0 = 0, 0, time.time()
-        for local in np.flatnonzero(c["available"])[:a.image_rows]:
-            ctx = ns["make_context"](frag, comp, int(c["rows"][local]), array, manifest, level)
-            same = (ctx["image_available"] and np.array_equal(ctx["image_zyx"], c[f"image_{local}"])
-                    and np.array_equal(ctx["valid_zyx"], c[f"valid_{local}"])
-                    and np.allclose(ctx["anchors_zyx"], c["anchors_zyx"][local], equal_nan=True))
+        for row in selected[:a.image_rows]:
+            ctx = ns['make_context'](frag, comp, int(row), array, manifest, level)
+            expected, _ = source.read(frag.node_xyz[anchors(row)], level=level,
+                                     radius_um={0:16., 1:30.}[level], channel=0, timepoint=0)
+            same = (ctx['image_available'] and np.array_equal(ctx['image_zyx'], expected['image_zyx'])
+                    and np.array_equal(ctx['valid_zyx'], expected['valid_zyx'])
+                    and np.allclose(ctx['anchors_zyx'], expected['anchors_zyx'], equal_nan=True))
             bad += not same
             checked += 1
-        print(f"[{kind}] image_patch {tier} vs evolve cache: {bad}/{checked} mismatched "
-              f"({(time.time() - t0) / max(checked, 1):.1f}s per patch)", flush=True)
+        print(f'[{kind}] image_patch {tier} vs live evolution: {bad}/{checked} mismatched '
+              f'({(time.time() - t0) / max(checked, 1):.1f}s per patch)', flush=True)
+        assert bad == 0, 'Specification and evolution image inputs differ'
 
     # 5. A toy feature module through the contract, then the scoring code and baselines.
     def describe(context):

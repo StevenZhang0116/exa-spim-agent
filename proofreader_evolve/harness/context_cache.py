@@ -1,4 +1,7 @@
-"""Persistent, label-free candidate contexts: fragment neighbourhoods and image patches.
+"""Legacy offline candidate contexts: fragment neighbourhoods and image patches.
+
+Evolution uses descriptor_context instead and never opens this offline directory.
+Retained for explicit offline diagnostics and historical consumers.
 
 Built once per brain and kind over a fixed detector-ranked band, so agent-written
 descriptor code can run over tens of thousands of rows inside a generation without
@@ -23,6 +26,7 @@ import time
 
 import numpy as np
 
+from .descriptor_context import COORDINATE_DOC, FRAGMENT_FIELDS, GEOMETRY_SPEC, table_identity
 from .image_context import digest_json, file_hash
 from .image_coordinates import ImageGeometry
 from .local_context import cache_identity
@@ -31,29 +35,14 @@ from .local_features import select_rows
 
 CACHE_VERSION = 'candidate-context-cache-v1'
 BAND_SPEC = {'selection_feature': 'detector_score', 'selection_largest': True, 'max_candidates': 20000}
-GEOMETRY_SPEC = {'radius_um': 50., 'max_nodes': 256}
 IMAGE_TIERS = {'level1': {'level': 1, 'radius_um': 30., 'channel': 0, 'timepoint': 0, 'max_rows': None},
                'level0': {'level': 0, 'radius_um': 16., 'channel': 0, 'timepoint': 0, 'max_rows': None}}
 CHUNK_ROWS = 1024
-FRAGMENT_FIELDS = ('xyz_um', 'radius_um', 'degree', 'segment', 'edges', 'anchor_nodes', 'outside_radius', 'truncated')
-IMPLEMENTATION_FILES = ('context_cache.py', 'local_context.py', 'image_context.py', 'image_coordinates.py')
-COORDINATE_DOC = {'array_axes': 'zyx', 'anchors_and_nodes': 'patch-relative voxel centers',
-                  'xyz_um': 'graph xyz microns relative to the candidate anchor midpoint',
-                  'spacing_zyx_um': 'physical image spacing in zyx order',
-                  'valid_zyx': 'in-domain mask, not proof of acquired signal in every chunk',
-                  'intensity': 'original fused-volume pixels; no preview normalization'}
+IMPLEMENTATION_FILES = ('context_cache.py', 'descriptor_context.py', 'local_context.py', 'image_context.py', 'image_coordinates.py')
 
 
 def implementation_hashes():
     return {name: file_hash(Path(__file__).with_name(name)) for name in IMPLEMENTATION_FILES}
-
-
-def table_identity(table):
-    provenance = table.meta.get('provenance', {})
-    return {'brain': str(provenance.get('brain', '')), 'kind': table.kind,
-            'pool_sha256': table.meta['pool_sha256'],
-            'features_sha256': table.meta.get('files', {}).get('features.pkl'),
-            'source_cache': provenance.get('source_cache')}
 
 
 def entry_directory(root, table):

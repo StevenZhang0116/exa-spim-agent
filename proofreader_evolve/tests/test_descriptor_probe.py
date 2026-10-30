@@ -82,9 +82,9 @@ class ProbeInputTests(unittest.TestCase):
         b = self.runs.probe(self.table, explicit, new_spec, [0, 7], log_dir=self.root / 'new')
         np.testing.assert_array_equal(a['values'], b['values'])
         self.assertIsNone(getattr(self.table, 'image_context', None))  # alias never needs cloud access
-        identity = self.runs.identity(self.table, old_spec, 'all_cached', a['rows'])
-        self.runs.cache.entry(self.table).manifest['image_tiers']['level1']['source'] = {'identity': 'changed-source'}
-        self.assertNotEqual(identity, self.runs.identity(self.table, old_spec, 'all_cached', a['rows']))
+        identity = self.runs.identity(self.table, old_spec, 'all_candidates', a['rows'])
+        self.runs.contexts.entry(self.table).manifest['image_tiers']['level1']['source'] = {'identity': 'changed-source'}
+        self.assertNotEqual(identity, self.runs.identity(self.table, old_spec, 'all_candidates', a['rows']))
 
     def test_custom_probe_full_parity_and_bounded_temporary_staging(self):
         store, source = attach_synthetic_store(self.table, self.root / 'patches')
@@ -96,11 +96,11 @@ class ProbeInputTests(unittest.TestCase):
         store.max_cache_bytes = size  # no further persistent patches can fit
         # Force multiple byte-bounded workers within the row batch.
         with patch.object(descriptor_inputs, 'MAX_BATCH_BYTES', 50000):
-            full = self.runs.compute(self.table, program, spec, 'all_cached', k=3, wall_budget=120,
+            full = self.runs.compute(self.table, program, spec, 'all_candidates', k=3, wall_budget=120,
                                      log_dir=self.root / 'full')
         np.testing.assert_array_equal(probe['values'], full['values'][[0, 3]])
         self.assertEqual(store.cache_bytes, size)
-        self.assertEqual(len(list(store.directory.glob('*/patch.npz'))), 2)
+        self.assertEqual(len(list(store.directory.glob('*/patch.npz'))), 0)
         self.assertGreater(len(list((self.root / 'full').glob('batch*.log'))), 1)
         context, pixels = observed[0]
         self.assertEqual(pixels['image_zyx'].shape, (20, 20, 20))
@@ -108,27 +108,27 @@ class ProbeInputTests(unittest.TestCase):
         self.assertNotIn('source_cache', context)
         np.testing.assert_allclose(np.asarray(context['fragment']['nodes_zyx'])[0], pixels['anchors_zyx'][0])
         _, larger = descriptor_spec(CUSTOM.replace("'radius_um': 10", "'radius_um': 12"))
-        self.assertNotEqual(self.runs.identity(self.table, spec, 'all_cached', full['rows']),
-                            self.runs.identity(self.table, larger, 'all_cached', full['rows']))
+        self.assertNotEqual(self.runs.identity(self.table, spec, 'all_candidates', full['rows']),
+                            self.runs.identity(self.table, larger, 'all_candidates', full['rows']))
         with tempfile.TemporaryDirectory() as tmp:
-            row, context, pixels = next(descriptor_inputs.iter_inputs(self.table, self.runs.cache.entry(self.table),
+            row, context, pixels = next(descriptor_inputs.iter_inputs(self.table, self.runs.contexts.entry(self.table),
                                        larger, [0], Path(tmp)))
             self.assertEqual(pixels['image_zyx'].shape, (24, 24, 24))
             self.assertFalse(list(Path(tmp).rglob('patch.npz')))
         _, coarser = descriptor_spec(CUSTOM.replace("'level': 0", "'level': 1"))
         with tempfile.TemporaryDirectory() as tmp:
-            _, context, pixels = next(descriptor_inputs.iter_inputs(self.table, self.runs.cache.entry(self.table),
+            _, context, pixels = next(descriptor_inputs.iter_inputs(self.table, self.runs.contexts.entry(self.table),
                                      coarser, [0], Path(tmp)))
             self.assertEqual(pixels['image_zyx'].shape, (10, 10, 10))
             np.testing.assert_array_equal(pixels['spacing_zyx_um'], [2., 2., 2.])
         source.identity = {**source.identity, 'attributes_sha256': 'changed-source'}
-        self.assertFalse(self.runs.cached(self.table, spec, 'all_cached', 3))
+        self.assertFalse(self.runs.cached(self.table, spec, 'all_candidates', 3))
 
     def test_uniform_samples_and_raw_allowlists(self):
         initial = self.runs.sample_rows(self.table, 4, 7)
         self.table.truth = 1 - self.table.truth
         self.table.features['detector_score'] *= -1
-        entry = self.runs.cache.entry(self.table)
+        entry = self.runs.contexts.entry(self.table)
         entry.rows = entry.rows[::-1]
         np.testing.assert_array_equal(initial, self.runs.sample_rows(self.table, 4, 7))
         self.assertFalse(np.array_equal(initial, np.arange(4)))
@@ -159,12 +159,12 @@ class ProbeInputTests(unittest.TestCase):
         self.assertNotIn('1', report)
 
     def test_empty_cache_plan_has_json_safe_missing_fractions(self):
-        self.runs.cache.entry(self.table).rows = np.array([], dtype=int)
+        self.runs.contexts.entry(self.table).rows = np.array([], dtype=int)
         program, spec = descriptor_spec(fixtures.GEOMETRY_DESCRIPTOR)
         report = self.runs.plan(self.table, program, spec, k=3)
         self.assertEqual(report['sample_rows'], 0)
         self.assertTrue(all(value is None for value in report['finite_fraction'].values()))
-        self.assertEqual(report['estimates']['all_cached']['estimated_seconds'], 0.)
+        self.assertEqual(report['estimates']['all_candidates']['estimated_seconds'], 0.)
         json.dumps(report, allow_nan=False)
 
 
@@ -184,7 +184,7 @@ class ProbeSessionTests(unittest.TestCase):
         with patch.object(runs, 'cached', return_value=False), \
                 patch.object(runs, 'compute', side_effect=overrun) as compute, \
                 patch('proofreader_evolve.harness.train_experiments.time.monotonic', side_effect=lambda: clock[0]):
-            result = self.session.compute_descriptors('all_cached')
+            result = self.session.compute_descriptors('all_candidates')
         self.assertEqual(compute.call_count, 1)
         self.assertEqual(result['status'], 'execution_error')
         self.assertIn('before the next TRAIN brain', result['error'])
@@ -222,7 +222,7 @@ class ProbeSessionTests(unittest.TestCase):
         self.assertEqual(evidence['preview_records'], 1)
         self.assertEqual(evidence['paired_diagnostics'], [])
         with self.assertRaisesRegex(ValueError, 'already registered'):
-            self.session.compute_descriptors('all_cached')
+            self.session.compute_descriptors('all_candidates')
 
     def test_worker_failure_has_case_ref_and_import_failure_is_not_success(self):
         table = self.train['802449'].tables['merge']
@@ -251,7 +251,7 @@ class ProbeSessionTests(unittest.TestCase):
             failed = self.session.probe_descriptor([reference])
         self.assertEqual(failed['status'], 'execution_error')
         self.assertEqual(failed['candidate_ref'], reference)
-        result = self.session.compute_descriptors('all_cached')
+        result = self.session.compute_descriptors('all_candidates')
         self.assertEqual(result['status'], 'registered', result)
         other = {'heldout': brain_table('heldout')}
         heldout = other['heldout'].tables['merge']
@@ -272,13 +272,13 @@ class ProbeSessionTests(unittest.TestCase):
                 self.session.probe_descriptor([candidate_ref(self.train['802449'].tables['merge'], 0),
                                                candidate_ref(heldout, 0)])
         plan = {'sample_rows': 64, 'seconds_per_row_single_worker': 1.,
-                'estimates': {'all_cached': {'rows': 100, 'batches': 2, 'estimated_seconds': 80.}}}
+                'estimates': {'all_candidates': {'rows': 100, 'batches': 2, 'estimated_seconds': 80.}}}
         runs = self.memory.descriptor_runs
         with patch.object(runs, 'plan', return_value=plan) as measured, patch.object(runs, 'cached', return_value=False):
             result = self.session.plan_descriptor_run()
         self.assertEqual(measured.call_count, 2)
-        self.assertEqual(result['estimates']['all_cached']['estimated_seconds'], 160.)
-        self.assertFalse(result['fits_budget']['all_cached'])
+        self.assertEqual(result['estimates']['all_candidates']['estimated_seconds'], 160.)
+        self.assertFalse(result['fits_budget']['all_candidates'])
         self.assertIsNone(result['frozen_inference']['estimated_seconds'])
         evidence = generation_image_evidence(self.session.gen_dir, {})
         self.assertEqual(evidence['descriptor_plans_attempted'], 1)
@@ -287,30 +287,30 @@ class ProbeSessionTests(unittest.TestCase):
         with patch.object(runs, 'plan', return_value=plan), patch.object(runs, 'cached', return_value=False):
             estimated = self.session.plan_descriptor_run()['frozen_inference']
         self.assertEqual(estimated['estimated_seconds'], 300.)
-        self.assertEqual(estimated['scope'], 'all_cached')
+        self.assertEqual(estimated['scope'], 'all_candidates')
         with patch.object(runs, 'plan', return_value=plan), patch.object(runs, 'cached',
                 side_effect=lambda table, *args: table.meta['provenance']['brain'] == '794495'):
             partial = self.session.plan_descriptor_run()
-        self.assertEqual(partial['estimates']['all_cached']['estimated_seconds'], 160.)
-        self.assertEqual(partial['estimates']['all_cached']['estimated_uncached_seconds'], 80.)
-        self.assertEqual(partial['estimates']['all_cached']['cached_brains'], ['794495'])
-        self.assertTrue(partial['fits_budget']['all_cached'])
+        self.assertEqual(partial['estimates']['all_candidates']['estimated_seconds'], 160.)
+        self.assertEqual(partial['estimates']['all_candidates']['estimated_uncached_seconds'], 80.)
+        self.assertEqual(partial['estimates']['all_candidates']['cached_brains'], ['794495'])
+        self.assertTrue(partial['fits_budget']['all_candidates'])
         with patch.object(runs, 'plan', return_value=plan), patch.object(runs, 'cached', return_value=True):
             reused = self.session.plan_descriptor_run()
-        self.assertEqual(reused['estimates']['all_cached']['estimated_uncached_seconds'], 0.)
-        self.assertTrue(reused['fits_budget']['all_cached'])
+        self.assertEqual(reused['estimates']['all_candidates']['estimated_uncached_seconds'], 0.)
+        self.assertTrue(reused['fits_budget']['all_candidates'])
 
     def test_sdk_accepts_optional_probe_arguments(self):
         import mcp.types as types
         self.session.descriptor_path.write_text(fixtures.GEOMETRY_DESCRIPTOR)
         self.session.evaluations_used = 2
-        self.memory.descriptor_runs.allowed_scopes = ('all_cached',)
+        self.memory.descriptor_runs.allowed_scopes = ('all_candidates',)
         server = self.session.mcp_server()['instance']
 
         async def invoke():
             listed = await server.request_handlers[types.ListToolsRequest](types.ListToolsRequest(method='tools/list'))
             compute = next(t for t in listed.root.tools if t.name == 'compute_descriptors')
-            self.assertEqual(compute.inputSchema['properties']['scope']['enum'], ['all_cached'])
+            self.assertEqual(compute.inputSchema['properties']['scope']['enum'], ['all_candidates', 'all_cached'])
             self.assertNotIn('pilot', compute.description)
             request = types.CallToolRequest(method='tools/call', params=types.CallToolRequestParams(
                 name='probe_descriptor', arguments={'sample_per_brain': 2, 'seed': 5}))

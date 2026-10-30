@@ -251,6 +251,7 @@ class ImageContextTests(unittest.TestCase):
         import mcp.types as types
         experiments=object.__new__(TrainingExperiments)
         experiments.lock=asyncio.Lock()
+        experiments.memory=SimpleNamespace(descriptor_runs=None)
         experiments.research_status = Mock(return_value={'status': 'complete', 'complete': True})
         payload={'content':[{'type':'text','text':'TRAIN preview'},
                             {'type':'image','mimeType':'image/png','data':'cGl4ZWxz'}]}

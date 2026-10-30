@@ -14,7 +14,7 @@ python -m proofreader_evolve.cli.build_evolution_report <RUN_OR_PATH>
 tables (with evaluator labels), its context cache and its labelled `_add.pkl`
 (ground-truth graph, > 20 GB RAM), and reads the dense UNet segmentation from
 the private GCS store. It writes one figure per kind with three true errors as
-columns and four rows: cached image patch with the fragment skeleton, 50 um
+columns and four rows: on-demand image crop with the fragment skeleton, 50 um
 fragment neighbourhood, ground-truth tracings in the same voxel box, and the
 segmentation in the same box. Run it on a compute node; the figures are for
 human review only and nothing in them is visible to the reviser.

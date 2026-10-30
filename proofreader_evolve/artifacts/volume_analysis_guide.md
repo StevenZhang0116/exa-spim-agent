@@ -1,9 +1,9 @@
 # Direct 3D exploration
 
-When a context cache is attached (`descriptor_guide.md` is present), use
+When descriptor tools are enabled (`descriptor_guide.md` is present), use
 `probe_descriptor` to debug the current `describe` code on exact production inputs,
-then `compute_descriptors` to measure cached candidates at pool scale. Use
-`run_volume_analysis` for separate local investigations or cases outside the cache;
+then `compute_descriptors` to measure native candidates at pool scale. Use
+`run_volume_analysis` for separate local investigations using an independent analysis program;
 its crop and geometry settings are independent of the descriptor contract.
 
 Investigate image hypotheses by writing code against the real 3D volume, without

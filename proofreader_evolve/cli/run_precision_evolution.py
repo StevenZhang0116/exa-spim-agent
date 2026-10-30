@@ -38,8 +38,8 @@ from ..harness.search_proposals import read_proposal
 from ..harness.hypothesis_memory import sanitize_handoff
 from ..harness.selection_protocol import SelectionProtocol, load_selection, PROTOCOL_VERSION
 from ..harness.feature_ablation import CLASSIFIER_UNITS, FORMULA_UNITS, ABLATION_VERSION
-from ..harness.context_cache import ContextCache
-from ..harness.descriptor_runs import DescriptorRuns, CONTEXT_COLUMN, SCOPES as DESCRIPTOR_SCOPES
+from ..harness.descriptor_context import DescriptorContexts
+from ..harness.descriptor_runs import DescriptorRuns, SCOPES as DESCRIPTOR_SCOPES
 from ..harness.descriptor_contract import descriptor_spec, referenced_columns, COLUMN_PREFIX
 from ..harness.scorer_components import components
 from ..harness.train_experiments import ExperimentMemory, TrainingExperiments
@@ -176,7 +176,7 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
             "outcomes; read it first. Before you finish, add proposal.json.handoff (open_questions, evidence with "
             "verdicts, next_experiment) so the next session can continue instead of restarting. "
             "Use direct 3D analysis to investigate image evidence on a few TRAIN candidates when no pool-scale "
-            "descriptor tools are offered; with a context cache attached, use probe_descriptor to debug "
+            "descriptor tools are offered; with descriptor tools enabled, use probe_descriptor to debug "
             "describe on exact inputs, then compute_descriptors for pool-scale measurements. "
             "run_volume_analysis remains available for separate local investigations. "
             "Read volume_analysis_guide.md, edit analysis.py analyze(context) and analysis_request.json, "
@@ -314,25 +314,22 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
             budget = experiments.descriptor_budget
             runs = experiments.memory.descriptor_runs
             scopes = list(getattr(runs, 'allowed_scopes', DESCRIPTOR_SCOPES))
-            context_hint = ('; bank_context_available marks the detector band'
-                            if runs.cache.expose_band else '')
             prompt += (
-                " POOL-SCALE DESCRIPTORS: the host has cached the raw context (fragment neighbourhood and image "
-                "patches) of the top detector-ranked band of every brain and, where the cache carries the labeled "
-                "extension, of the GT-labeled rows outside it. Write descriptor.py with a literal "
+                " POOL-SCALE DESCRIPTORS: the host reads fragment neighbourhoods and original image crops on demand "
+                "for any native candidate, without a precomputed context directory. Write descriptor.py with a literal "
                 "DESCRIPTOR dict and describe(context) that returns the quantities you want measured; read "
                 f"{policy_path.parent / 'descriptor_guide.md'} once. Start with probe_descriptor on a few TRAIN "
                 "cases, optionally requesting previews of the exact inputs; sample uniformly across brains to check "
                 "feature distributions. The optional DESCRIPTOR.image specifies level and radius_um. "
                 "Call plan_descriptor_run({}) to estimate all TRAIN brains, then "
-                'compute_descriptors({"scope": "all_cached"}) to run it over every cached row '
+                'compute_descriptors({"scope": "all_candidates"}) to run it over every native candidate '
                 f"of the TRAIN brains in {experiments.memory.descriptor_runs.workers} parallel sandboxed workers. "
                 f"Allowed production scopes in this run: {json.dumps(scopes)}. "
                 f"Budget: {budget['per_call_seconds']:.0f} s per call and {budget['generation_seconds']:.0f} s per "
                 "generation of wall time, plus one evaluation unit per uncached call; valid cached results are free. "
                 "Probes and planning also consume descriptor wall time, without evaluation charges. "
                 "The reply returns TRAIN finite/nonzero counts, ranges, standard deviations, quartiles and coverage, and registers "
-                f"bank_agent_<name> predictor columns (NaN on rows outside the cache{context_hint}) "
+                "bank_agent_<name> predictor columns (NaN on uncomputed rows) "
                 "that scorer.py, training.py and evaluate_feature_ablation can use immediately. "
                 "Use probe_descriptor to debug the same describe code and inputs; run_volume_analysis remains "
                 "available for separate local investigations. Examples of earlier descriptors are in the guide."
@@ -461,8 +458,9 @@ def parse_args(argv=None):
                    help="Two-sided interval level of the bootstrap gate (default: 0.05, a 95%% interval); "
                         "promotion needs the lower bound above zero")
     p.add_argument("--context-cache", type=Path, default=None,
-                   help="Directory built by cli.precompute_context_cache; enables pool-scale agent descriptors "
-                        "(probe_descriptor / plan_descriptor_run / compute_descriptors). Omit to run without them")
+                   help="Deprecated compatibility argument; ignored. Contexts are read on demand by default")
+    p.add_argument("--no-descriptors", action="store_true",
+                   help="Disable pool-scale descriptor tools (enabled by default)")
     p.add_argument("--descriptor-bank", type=Path, default=None,
                    help="Persistent descriptor values, validated by code, input and implementation identity "
                         "(default: proofreader_evolve/descriptor_bank; descriptor_bank_no_score with "
@@ -565,7 +563,7 @@ def parse_args(argv=None):
                         "ablation that withholds the frozen detector score from scorers, training programs, "
                         "descriptors and the reviser (same pools, detector feature columns, labels, K, brains); "
                         "raw (2026-10-27): also withholds every discovered h<n>_ feature column, leaving the "
-                        "label-blind raw candidate attributes (raw_*), the context cache and the agent's descriptors")
+                        "label-blind raw candidate attributes (raw_*), on-demand contexts and the agent's descriptors")
     p.add_argument("--runs-dir", type=Path, default=HERE / "runs")
     args = p.parse_args(argv)
     ablation = args.detector_prior != "frozen"
@@ -758,12 +756,14 @@ def _restore_descriptors(args, banks, kinds, parent_sources, descriptor_runs, bu
         if spec['code_sha256'] != code:
             raise ValueError('descriptors.json program hash mismatch')
         programs[code] = {'program': program, 'spec': spec}
-    columns = {c: registry['columns'][c] for c in required}
+    from ..harness.descriptor_runs import normalize_scope
+    columns = {c: {**registry['columns'][c], 'scope': normalize_scope(registry['columns'][c]['scope'])}
+               for c in required}
     if detector_prior.enabled(args):
         for column, record in columns.items():
             if record['scope'] not in detector_prior.NO_SCORE_DESCRIPTOR_SCOPES:
                 raise ValueError(f"Descriptor column {column} uses scope {record['scope']!r}, a detector-rank "
-                                 f"window; --detector-prior {args.detector_prior} accepts all_cached only")
+                                 f"window; --detector-prior {args.detector_prior} accepts all_candidates only")
             detector_prior.check_source(programs[record['code_sha256']]['program'], f'Descriptor column {column}',
                                         raw=detector_prior.raw_enabled(args))
     for code in {record['code_sha256'] for record in columns.values()}:
@@ -971,25 +971,21 @@ async def _run(args, revise_fn, run_dir, trace):
                **protocol.describe())
     descriptor_runs, restored_descriptors = None, None
     if args.context_cache is not None:
-        cache = ContextCache(args.context_cache, expose_band=not no_score)
-        if no_score:
-            detector_prior.check_context_coverage(cache, banks, kinds)
-        entries = {}
-        for brain, bank in banks.items():
-            for kind in kinds:
-                entries[f"{brain}/{kind}"] = cache.entry(bank.tables[kind]).summary()
-                if not no_score:
-                    DescriptorRuns.register_context_column(bank.tables[kind], cache.entry(bank.tables[kind]))
-        descriptor_runs = DescriptorRuns(cache, args.descriptor_bank, workers=args.descriptor_workers,
+        trace.emit("deprecated_context_cache", "--context-cache is ignored; context inputs are read on demand")
+    if not args.no_descriptors:
+        contexts = DescriptorContexts()
+        entries = {f"{brain}/{kind}": contexts.entry(bank.tables[kind]).summary()
+                   for brain, bank in banks.items() for kind in kinds}
+        descriptor_runs = DescriptorRuns(contexts, args.descriptor_bank, workers=args.descriptor_workers,
                                          memory_mb=args.classifier_memory_mb, trace=trace)
         if no_score:
             descriptor_runs.allowed_scopes = detector_prior.NO_SCORE_DESCRIPTOR_SCOPES
-        trace.emit("context_cache", f"Context cache attached for {len(entries)} brain/kind entries; "
+        trace.emit("descriptor_context", f"On-demand contexts for {len(entries)} brain/kind entries; "
                    f"{descriptor_runs.workers} descriptor workers", entries=entries,
                    workers=descriptor_runs.workers, bank=str(args.descriptor_bank))
         restored_descriptors = _restore_descriptors(args, banks, kinds, parent_sources, descriptor_runs, budgets, trace)
     elif any(referenced_columns(parent_sources[kind]) for kind in kinds):
-        raise ValueError("The starting scorer references bank_agent_* descriptor columns; pass --context-cache")
+        raise ValueError("The starting scorer references bank_agent_* columns; remove --no-descriptors")
     for kind in available:
         model = frozen_model(parent_sources[kind])
         if model is not None:
@@ -1041,13 +1037,13 @@ async def _run(args, revise_fn, run_dir, trace):
                                   "momentum_window": kind_schedule.MOMENTUM_WINDOW,
                                   "saturation_hits": kind_schedule.SATURATION_HITS,
                                   "scope": "Host-side; headroom and gains stay in the ledger and trajectory"},
-                "descriptor_compute": ({"enabled": True, "context_cache": str(args.context_cache),
+                "descriptor_compute": ({"enabled": True, "context_mode": "on_demand",
                     "descriptor_bank": str(args.descriptor_bank), "workers": descriptor_runs.workers,
                     "per_call_wall_seconds": args.descriptor_wall_seconds,
                     "per_generation_wall_seconds": args.descriptor_generation_wall_seconds,
                     "evaluation_units_per_uncached_call": 1,
                     "scopes": list(getattr(descriptor_runs, 'allowed_scopes', DESCRIPTOR_SCOPES)),
-                    "entries": {f"{b}/{k}": cache.entry(bank.tables[k]).summary() for b, bank in banks.items() for k in kinds},
+                    "entries": {f"{b}/{k}": contexts.entry(bank.tables[k]).summary() for b, bank in banks.items() for k in kinds},
                     "restored_descriptors": sorted(restored_descriptors["columns"]) if restored_descriptors else []}
                     if descriptor_runs is not None else {"enabled": False}),
                 "volume_analysis": {"version": VOLUME_ANALYSIS_VERSION,
@@ -1155,9 +1151,9 @@ async def _run(args, revise_fn, run_dir, trace):
                       'preview_allowance_shared': 8, 'evaluation_units': 0, 'charges_wall_time': True},
             'image_request': {'level_range': [0, 6], 'radius_um_range': [4, 100],
                               'max_batch_bytes': 128 * 1024**2},
-            'cached_band': {f'{b}/{k}': cache.entry(bank.tables[k]).summary()
+            'candidate_pools': {f'{b}/{k}': contexts.entry(bank.tables[k]).summary()
                             for b, bank in train.items() for k in kinds},
-            'column_prefix': COLUMN_PREFIX, **({'context_column': CONTEXT_COLUMN} if not no_score else {})}
+            'column_prefix': COLUMN_PREFIX}
             if descriptor_runs is not None else {'enabled': False}),
     }
     (run_dir / "best_scorer.py").write_text(source)
@@ -1277,7 +1273,7 @@ async def _run(args, revise_fn, run_dir, trace):
             classifier_timeout=args.classifier_time_budget, classifier_memory_mb=args.classifier_memory_mb,
             classifier_threads=args.classifier_threads, parent_selection=parent_selection[target_kind],
             descriptor_budget={**descriptor_budget, 'frozen_inference_rows':
-                [len(cache.entry(bank.tables[target_kind]).rows) for bank in validation.values()]
+                [len(contexts.entry(bank.tables[target_kind]).rows) for bank in validation.values()]
                 if descriptor_runs is not None else None},
             branch={**branch_meta, 'selection': branch_report, 'state': branch_state},
             validated=lambda entry, kind=target_kind: pool.validation_of(kind, entry))

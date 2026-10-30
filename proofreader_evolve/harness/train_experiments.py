@@ -65,7 +65,7 @@ class ExperimentMemory:
         self.protocol = protocol
         self.fit_limits = dict(fit_limits or {})
         self.oof_scores = {}
-        # Agent descriptors: pool-scale computations over the cached contexts. The registry
+        # Agent descriptors: pool-scale computations over on-demand contexts. The registry
         # maps registered columns to the code that produced them, for the whole run.
         self.descriptor_runs = descriptor_runs
         self.descriptors, self.descriptor_programs, self.descriptor_generation = {}, {}, 0
@@ -1165,14 +1165,14 @@ class TrainingExperiments:
                         f"evaluation units={report['evaluations_used']}; remaining={self.remaining}", **report)
         return report
 
-    # ---- Agent descriptors over the cached rows (band plus labeled extension) ----------------
+    # ---- Agent descriptors over on-demand candidate contexts ----------------
     @property
     def descriptor_seconds_remaining(self):
         return max(0., self.descriptor_budget['generation_seconds'] - self.descriptor_seconds_used)
 
     def _read_descriptor(self, *, check_registry=True):
         if self.memory.descriptor_runs is None:
-            raise ValueError('Descriptor computation is unavailable: this run has no context cache (--context-cache)')
+            raise ValueError('Descriptor computation is disabled in this run (--no-descriptors)')
         path = self.descriptor_path
         if not path.is_file() or path.is_symlink():
             raise ValueError('Write a regular descriptor.py in this generation')
@@ -1197,10 +1197,12 @@ class TrainingExperiments:
     def probe_descriptor(self, candidate_refs=None, sample_per_brain=128, seed=0, previews=False):
         return descriptor_probe.probe(self, candidate_refs, sample_per_brain, seed, previews)
 
-    def compute_descriptors(self, scope='pilot'):
-        """Run describe over the cached rows of every TRAIN brain; register the columns."""
+    def compute_descriptors(self, scope='all_candidates'):
+        """Run describe over selected candidates of every TRAIN brain; register the columns."""
+        from .descriptor_runs import normalize_scope
+        scope = normalize_scope(scope)
         runs = self.memory.descriptor_runs
-        allowed = getattr(runs, 'allowed_scopes', DESCRIPTOR_SCOPES)  # all_cached only under --detector-prior no-score
+        allowed = getattr(runs, 'allowed_scopes', DESCRIPTOR_SCOPES)  # all_candidates only under --detector-prior no-score
         if scope not in allowed:
             raise ValueError(f'scope must be one of {tuple(allowed)}')
         program, spec = self._read_descriptor()
@@ -1277,8 +1279,7 @@ class TrainingExperiments:
                         **{k: v for k, v in entry.items() if k != 'summaries'})
         public = {**entry, 'evaluations_used': self.evaluations_used, 'evaluations_remaining': self.remaining}
         if registered:
-            public['next'] = ('Use the columns in scorer.py or training.py (NaN on rows outside the cache; '
-                              'bank_context_available marks the detector band), or list them in research.feature_columns '
+            public['next'] = ('Use the columns in scorer.py or training.py (NaN on uncomputed rows), or list them in research.feature_columns '
                               'and call evaluate_feature_ablation for the out-of-fold increment.')
         return public
 
@@ -1398,7 +1399,7 @@ class TrainingExperiments:
         async def inspect_failure_cases(arguments):
             return await invoke(self.inspect_failure_cases, arguments)
 
-        @tool('run_volume_analysis', 'Direct 3D exploration on a few TRAIN candidates; with a context cache attached, '
+        @tool('run_volume_analysis', 'Direct 3D exploration on a few TRAIN candidates; with descriptor tools enabled, '
               'use probe_descriptor to debug describe with identical inputs. Execute analysis.py analyze(context) on '
               f'1..{MAX_CASES} TRAIN candidates selected in analysis_request.json (compare groups, e.g. missed '
               'positives vs selected label-0 rows). Full original 3D pixels, spacing, '
@@ -1454,13 +1455,15 @@ class TrainingExperiments:
         async def plan_descriptor_run(arguments):
             return await invoke(self.plan_descriptor_run, arguments)
 
-        @tool('compute_descriptors', 'Run descriptor.py describe(context) over the cached candidates of every '
+        @tool('compute_descriptors', 'Run descriptor.py describe(context) over the selected candidates of every '
               'TRAIN brain in parallel sandboxed workers and register the results as bank_agent_<name> predictor '
-              f'columns. Allowed scopes in this run: {descriptor_scopes}. all_cached covers every cached row; '
-              'other scopes, when available, select a detector-ranked subset. '
+              f'columns. Allowed scopes in this run: {descriptor_scopes}. all_candidates covers the complete native candidate pool; '
+              + ('pilot is a uniform sample; boundary explicitly selects detector-rank neighbours. '
+                 if 'pilot' in descriptor_scopes else 'Diagnostic subsets use probe_descriptor only. ') +
               'Returns TRAIN finite/missing/nonzero counts, ranges, standard deviations, quartiles and coverage. One uncached call costs '
               'one evaluation unit plus wall time; results are cached by code and input identity across generations and runs.',
-              {'type': 'object', 'properties': {'scope': {'type': 'string', 'enum': descriptor_scopes}},
+              {'type': 'object', 'properties': {'scope': {'type': 'string',
+                'enum': descriptor_scopes + (['all_cached'] if 'all_candidates' in descriptor_scopes else [])}},
                'required': ['scope'], 'additionalProperties': False})
         async def compute_descriptors(arguments):
             return await invoke(self.compute_descriptors, arguments)

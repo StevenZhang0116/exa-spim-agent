@@ -4,6 +4,7 @@ Only explicit geometry leaves the host. Cached graph attributes, GT, source path
 and persistent node/segment IDs are never sent to an agent-authored extractor.
 """
 import hashlib
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -51,8 +52,13 @@ class FragmentStore:
         self.trace = trace
         self._identity, self._graph, self._tree = None, None, None
         self.image_metadata = None
+        self._lock = threading.RLock()
 
     def graph(self, provenance):
+        with self._lock:
+            return self._graph_locked(provenance)
+
+    def _graph_locked(self, provenance):
         identity = provenance['source_cache']
         if cache_identity(identity['path']) != identity:
             raise ValueError('Fragment cache changed since native feature preparation')

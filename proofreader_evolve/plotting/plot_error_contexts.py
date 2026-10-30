@@ -2,7 +2,7 @@
 
 One figure per kind, one column per example, four rows:
 
-1. the cached image patch (XY maximum-intensity projection) with the cached
+1. the on-demand image patch (XY maximum-intensity projection) with the matching
    fragment skeleton drawn on top, coloured by segment;
 2. the wider 50 um fragment neighbourhood in graph coordinates, with the
    image footprint marked;
@@ -12,10 +12,10 @@ One figure per kind, one column per example, four rows:
    brightest voxel along z); the candidate's own segment(s) keep the skeleton
    colours, every other segment is muted.
 
-Rows 1-2 come from the context cache. Rows 3-4 need the brain's labelled
+Rows 1-2 use on-demand descriptor inputs. Rows 3-4 need the brain's labelled
 ``_add.pkl`` (ground-truth graph, > 20 GB RAM, compute node) and, for the
 segmentation, GCS credentials for the private segmentation store. Examples are
-chosen from evaluator-labelled errors inside the cached band, so this module
+chosen from evaluator-labelled errors across the full candidate pool, so this module
 reads labels and is for human review only. It is never copied into a
 generation directory and nothing here is visible to the reviser.
 
@@ -31,6 +31,7 @@ import argparse
 import os
 from pathlib import Path
 import sys
+import tempfile
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -43,12 +44,14 @@ from matplotlib.patches import Patch
 import numpy as np
 
 from proofreader_evolve.cli import precompute_error_scores as pc
-from proofreader_evolve.harness.context_cache import CHUNK_ROWS, ContextCache
+from proofreader_evolve.harness.descriptor_context import DescriptorContexts
+from proofreader_evolve.harness.descriptor_inputs import iter_inputs, image_request
+from proofreader_evolve.harness.local_context import attach_local_context
+from proofreader_evolve.harness.image_context import attach_image_context, DEFAULT_ALIGNMENT
 from proofreader_evolve.harness.dataset import load_cached_graphs
 from proofreader_evolve.harness.native_pool import cache_path, ensure_native_tables
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_CACHE = PROJECT_ROOT / "proofreader_evolve" / "context_cache"
 DEFAULT_FIGS = PROJECT_ROOT / "figs"
 # configs/zihan_gcs_token.json is rejected by Google (invalid_grant) since 2026-10-06.
 DEFAULT_CREDENTIALS = (PROJECT_ROOT / "configs" / "allen-nd-goog-f5d46dbfa2cd.json",)
@@ -71,8 +74,9 @@ def load_graphs(brain, mcl=100):
     fragments, gt, payload = load_cached_graphs(str(cache_path(str(brain), mcl)),
                                                 expect_brain=str(brain), expect_mcl=mcl)
     anisotropy = np.asarray(payload["anisotropy"], dtype=float)
+    metadata = {k: payload.get(k) for k in ('img_path', 'anisotropy', 'fragments_path')}
     del payload
-    return fragments, gt, anisotropy
+    return (fragments, gt, anisotropy), metadata
 
 
 def segmentation_path(brain):
@@ -107,15 +111,9 @@ def read_segmentation(store, origin, shape):
     return block
 
 
-def labelled_band_rows(table, entry, tier):
-    """True-error rows inside the detector band that have the requested image tier,
-    in detector-rank order. Rows of the labeled extension (cached after the band since
-    2026-10-12) are skipped: their cache position is not a detector rank."""
-    positives = np.flatnonzero(np.asarray(table.truth) == 1)
-    tier_rows = min(entry.manifest["image_tiers"].get(tier, {}).get("rows", 0), entry.band_rows)
-    chosen = sorted((entry.position[int(r)], int(r)) for r in positives
-                    if entry.position.get(int(r)) is not None and entry.position[int(r)] < tier_rows)
-    return [row for _, row in chosen]
+def labelled_rows(table, entry):
+    """Human-review errors across the full pool, ordered by detector rank."""
+    return [int(row) for row in entry.band if table.truth[int(row)] == 1]
 
 
 def pick_examples(rows, count):
@@ -136,18 +134,19 @@ def candidate_anchors(table, row):
             [int(candidate["segment_id_a"]), int(candidate["segment_id_b"])])
 
 
-def cached_patch_box(entry, row, tier):
-    """Level-0 voxel origin and shape of the cached patch (the cache keeps the
-    absolute origin host-side only; level-1 boxes are doubled to level 0)."""
-    info = entry.manifest["image_tiers"][tier]
-    chunk_rows = info.get("chunk_rows", CHUNK_ROWS)
-    index = entry.position[int(row)]
-    chunk = entry._chunk(tier, index // chunk_rows)
-    local = index % chunk_rows
-    origin = np.asarray(chunk["origin_zyx"][local], dtype=int)
-    shape = np.asarray(chunk["shape_zyx"][local], dtype=int)
-    factor = 2 if tier == "level1" else 1
-    return origin * factor, shape * factor
+def live_patch(table, entry, row, tier):
+    """Exact descriptor input plus its level-zero box for human-only GT overlays."""
+    spec = {'inputs': 'both', 'image_tier': tier}
+    with tempfile.TemporaryDirectory(prefix='plot_context_') as tmp:
+        _, context, pixels = next(iter_inputs(table, entry, spec, [row], Path(tmp)))
+    request, _ = image_request(entry, spec)
+    source, graph = table.image_context.source(table)
+    anchors, _ = candidate_anchors(table, row)
+    geometry = source.level(request['level'])
+    origin, shape, _ = geometry.crop(graph.node_xyz[anchors], request['radius_um'])
+    corners = source.level(0).graph_to_voxel(geometry.voxel_to_graph(np.array([origin, origin + shape])))
+    lower, upper = np.floor(corners.min(axis=0)).astype(int), np.ceil(corners.max(axis=0)).astype(int)
+    return context, pixels, lower, upper - lower
 
 
 # ----------------------------------------------------------------------------- drawing
@@ -281,7 +280,9 @@ def plot_kind(kind, table, entry, graphs, segmentation, brain, *, examples=3, ti
     """Four-row figure for one kind. Returns (figure, chosen_rows)."""
     fragments, gt, anisotropy = graphs
     spacing0 = anisotropy[::-1]  # zyx microns per level-0 voxel
-    eligible = labelled_band_rows(table, entry, tier)
+    eligible = labelled_rows(table, entry)
+    ranks = np.empty(len(entry.rows), dtype=int)
+    ranks[entry.band] = np.arange(1, len(entry.rows) + 1)
     picks = [int(r) for r in (rows or [])] or pick_examples(eligible, examples)
     scores = np.asarray(table.features["detector_score"], dtype=float)
     figure, axes = plt.subplots(4, examples, figsize=(4.6 * examples, 4.3 * 4), constrained_layout=True,
@@ -293,18 +294,14 @@ def plot_kind(kind, table, entry, graphs, segmentation, brain, *, examples=3, ti
             continue
         row = picks[column]
         used_tier = tier
-        contexts, patches = entry.contexts(table, [row], inputs="both", tier=tier)
-        if patches[0] is None and tier != "level1":
-            used_tier = "level1"
-            contexts, patches = entry.contexts(table, [row], inputs="both", tier=used_tier)
-        context, patch = contexts[0], patches[0]
+        context, patch, origin, shape = live_patch(table, entry, row, tier)
         fragment = context["fragment"]
         colours = segment_colours(fragment["segment"])
-        rank = entry.position[int(row)] + 1
-        header = (f"{kind} error, row {row}, detector rank {rank}/{entry.band_rows}, score {scores[row]:.3f}\n"
+        rank = ranks[int(row)]
+        header = (f"{kind} error, row {row}, detector rank {rank}/{len(entry.rows)}, score {scores[row]:.3f}\n"
                   f"{used_tier} patch, radius {context['image_radius_um']:.0f} um, XY max projection")
         if patch is None:
-            axes[0, column].text(0.5, 0.5, "no cached image", ha="center", va="center")
+            axes[0, column].text(0.5, 0.5, "no image", ha="center", va="center")
             axes[0, column].set_title(header, fontsize=9)
             axes[0, column].axis("off")
         else:
@@ -312,9 +309,8 @@ def plot_kind(kind, table, entry, graphs, segmentation, brain, *, examples=3, ti
         draw_fragment_panel(axes[1, column], fragment, colours, context["image_radius_um"], context["radius_um"],
                             f"{ROW_NAMES[1]} ({context['radius_um']:.0f} um); dashed box = image patch")
 
-        # Rows 3-4 use the absolute level-0 voxel box of the cached patch.
+        # Rows 3-4 use the absolute level-0 voxel box of the requested patch.
         anchor_nodes, candidate_segments = candidate_anchors(table, row)
-        origin, shape = cached_patch_box(entry, row, used_tier)
         anchors_zyx = (np.asarray(fragments.node_xyz[anchor_nodes], dtype=float) / anisotropy)[:, ::-1] - origin
         background = patch if (patch is not None and used_tier == "level0") else None
         draw_ground_truth_panel(axes[2, column], gt, origin, shape, spacing0, background, anchors_zyx, ROW_NAMES[2])
@@ -350,8 +346,8 @@ def parse_args(argv=None):
     parser.add_argument("--examples", type=int, default=3)
     parser.add_argument("--kinds", default="split,merge")
     parser.add_argument("--tier", choices=("level0", "level1"), default="level0",
-                        help="image tier to show; a row without a cached patch at that tier falls back to level1")
-    parser.add_argument("--context-cache", type=Path, default=DEFAULT_CACHE)
+                        help="physical image request: level0 / 16 um or level1 / 30 um")
+    parser.add_argument("--context-cache", type=Path, default=None, help="Deprecated and ignored")
     parser.add_argument("--feature-tables-dir", type=Path, default=pc.DEFAULT_OUT)
     parser.add_argument("--merge-dir", action="append")
     parser.add_argument("--split-dir", action="append")
@@ -369,9 +365,20 @@ def main(argv=None):
     args = parse_args(argv)
     kinds = [k.strip() for k in args.kinds.split(",") if k.strip()]
     bank = load_tables(args.brain, args.mcl, args.feature_tables_dir, args.merge_dir, args.split_dir)
-    cache = ContextCache(args.context_cache)
+    cache = DescriptorContexts()
     print("loading labelled graphs ...", flush=True)
-    graphs = load_graphs(args.brain, args.mcl)
+    graphs, metadata = load_graphs(args.brain, args.mcl)
+    # Reuse the graph just loaded for GT overlays instead of loading a second large copy.
+    store = attach_local_context({str(args.brain): bank}, args.out_dir / '.context')
+    fragments = graphs[0]
+    from scipy.spatial import cKDTree
+    store._graph = fragments
+    store._tree = getattr(fragments, 'kdtree', None)
+    if store._tree is None:
+        store._tree = cKDTree(fragments.node_xyz)
+    store._identity = dict(next(iter(bank.tables.values())).meta['provenance']['source_cache'])
+    store.image_metadata = metadata
+    attach_image_context({str(args.brain): bank}, args.out_dir / '.images', DEFAULT_ALIGNMENT)
     segmentation = None
     if not args.no_segmentation:
         path = args.segmentation_path or segmentation_path(args.brain)

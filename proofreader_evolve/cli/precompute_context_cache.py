@@ -1,4 +1,7 @@
-"""Build the persistent candidate context cache (fragment neighbourhoods and image patches).
+"""Legacy offline context-cache builder (not used by evolution).
+
+Evolution reads geometry and image crops on demand; this command is only for
+explicit offline diagnostics or historical consumers, and is not a preparation step.
 
 Run with panda on an allocated compute node, for example n257:
     python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802449 789202 794493 794491

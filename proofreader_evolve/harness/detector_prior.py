@@ -11,16 +11,15 @@ training programs and descriptors can see:
   files and digests are unchanged) after the host has measured the frozen baseline;
 - ``bank_context_available`` (1 inside the detector band) is not registered and
   descriptor contexts omit ``row_in_band``;
-- descriptor runs use the ``all_cached`` scope only (``pilot`` and ``boundary`` are
-  detector-rank windows), and every context-cache entry must cover all GT-labeled rows,
-  otherwise "descriptor is finite" would mark the detector band among ranked rows;
+- production descriptor runs use ``all_candidates`` so their coverage does not encode
+  a selected subset; diagnostic probes can sample uniformly from all TRAIN candidates;
 - local and image row selection has no default column (the default is the score).
 
 ``--detector-prior raw`` (2026-10-27, ``plans/raw_prior_ablation.md``) withholds the
 discovered feature columns too: every ``h<digits>_*`` column (the AutoDiscovery features the
 detector build computed) is dropped with the score, and the feature frame is rebuilt from
 the label-blind candidate attributes of ``candidate_rules`` (``RAW_COLUMNS``). The agent
-then starts from the pool definition, those columns, the context cache and its own
+then starts from the pool definition, those columns, on-demand contexts and its own
 descriptors. Coordinates and identifiers are never exposed. Everything the no-score mode
 withholds stays withheld, and ``check_source`` also refuses ``h<digits>_`` names.
 
@@ -33,14 +32,13 @@ import re
 import numpy as np
 import pandas as pd
 
-from .label_availability import labeled_rows
 from .scorer_components import compose
 
 MODES = ('frozen', 'no-score', 'raw')
 SCORE_COLUMN = 'detector_score'
 BAND_COLUMN = 'bank_context_available'
 HIDDEN_NAMES = (SCORE_COLUMN, BAND_COLUMN, 'row_in_band')
-NO_SCORE_DESCRIPTOR_SCOPES = ('all_cached',)
+NO_SCORE_DESCRIPTOR_SCOPES = ('all_candidates',)
 RAW_PREFIX = 'raw_'
 DETECTOR_FEATURE_NAME = re.compile(r'\bh\d+_[A-Za-z0-9_]+')
 RAW_COLUMNS = {
@@ -74,7 +72,7 @@ a column of `features`, of descriptor contexts or of any TRAIN data, and
 `bank_context_available` / `row_in_band` do not exist. Ignore every mention of them in
 the guides. All other predictor columns (the detector's computed features) remain.
 Local and image specs must set `selection_feature` to one of the remaining base
-predictor columns. Descriptor runs accept only `{"scope": "all_cached"}`. The starting
+predictor columns. Descriptor runs accept only `{"scope": "all_candidates"}`. The starting
 scorer is a constant: rank from the remaining columns, your descriptors, or a
 TRAIN-fitted model.
 """
@@ -94,8 +92,8 @@ only base predictor columns are label-blind candidate attributes:
   `raw_node_role_a` / `raw_node_role_b` (tip = 1), `raw_occurrence_count`,
   `raw_occurrence_gap_min_um`, `raw_occurrence_gap_max_um`.
 
-Every other feature must be built by you with `compute_descriptors` from the cached
-fragment neighbourhoods and image patches (scope `{"scope": "all_cached"}` only), or
+Every other feature must be built by you with `compute_descriptors` from on-demand
+fragment neighbourhoods and image patches (scope `{"scope": "all_candidates"}` only), or
 measured with `run_volume_analysis`. Local and image specs must set `selection_feature`
 to one of the raw columns. The starting scorer is a constant: rank from the raw columns,
 your descriptors, or a TRAIN-fitted model.
@@ -107,7 +105,7 @@ def mode(args):
 
 
 def enabled(args):
-    """True for both ablations (score withheld, band hidden, all_cached descriptors only)."""
+    """True for both ablations (score withheld, band hidden, all_candidates descriptors only)."""
     return mode(args) in ('no-score', 'raw')
 
 
@@ -226,25 +224,6 @@ def raw_heuristic_source():
         'split': ('import numpy as np\n\n\n'
                   'def score_candidates(features, ctx):\n'
                   '    return -features["raw_gap_um"].fillna(1e6).to_numpy(dtype=float)\n')})
-
-
-def check_context_coverage(cache, banks, kinds):
-    """Every entry must hold all GT-labeled rows (band plus labeled extension)."""
-    gaps = []
-    for brain, kind, table in _tables(banks):
-        if kind not in kinds:
-            continue
-        rows = labeled_rows(table.truth)
-        missing = int((~cache.entry(table).has_rows(rows)).sum()) if len(rows) else 0
-        if missing:
-            gaps.append(f'{brain}/{kind} ({missing} of {len(rows)} labeled rows uncached)')
-    if gaps:
-        brains = ' '.join(sorted({gap.split('/')[0] for gap in gaps}))
-        raise ValueError('--detector-prior no-score/raw with --context-cache needs every GT-labeled row cached, or '
-                         'descriptor coverage would mark the detector band: ' + '; '.join(gaps)
-                         + '. Build the labeled extension first (compute node, one brain at a time): '
-                         f'python -u -m proofreader_evolve.cli.precompute_context_cache --brains {brains} '
-                         '--labeled-extension; or run without --context-cache')
 
 
 def describe(args, cells=None):

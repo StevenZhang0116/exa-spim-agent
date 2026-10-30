@@ -38,8 +38,8 @@ def probe(session, candidate_refs=None, sample_per_brain=128, seed=0, previews=F
             raise ValueError('Use 1..16 explicit TRAIN candidate_refs, or omit them for uniform sampling')
         for reference in candidate_refs:
             brain, table, row = resolve_train_candidate(session.train, reference)
-            if table.kind != session.target_kind or not runs.cache.entry(table).has_rows([row]).all():
-                raise ValueError('Every probe candidate must have cached geometry for the current target kind')
+            if table.kind != session.target_kind or not runs.contexts.entry(table).has_rows([row]).all():
+                raise ValueError('Every probe candidate must belong to the current target-kind candidate pool')
             selected.setdefault(brain, []).append(row)
         selected = {brain: np.asarray(sorted(set(rows)), dtype=int) for brain, rows in selected.items()}
     else:
@@ -57,7 +57,7 @@ def probe(session, candidate_refs=None, sample_per_brain=128, seed=0, previews=F
                 'columns': spec['columns'], 'inputs': spec['inputs'], 'image': spec.get('image'),
                 'image_tier': spec['image_tier'] if spec['inputs'] != 'geometry' else None,
                 'code_sha256': spec['code_sha256'],
-                'sampling': 'explicit_train_cases' if candidate_refs is not None else 'uniform_cached_rows',
+                'sampling': 'explicit_train_cases' if candidate_refs is not None else 'uniform_candidate_pool',
                 'seed': seed if candidate_refs is None else None, 'brains': {}, 'previews': []}
     # At most one sample preview per brain; explicit cases share the existing eight-image allowance.
     preview_keys = [(brain, int(row)) for brain, rows in sorted(selected.items())
@@ -157,14 +157,14 @@ def plan(session):
         elapsed = time.monotonic() - started
         session.descriptor_seconds_used += elapsed
     available = min(session.descriptor_budget['per_call_seconds'], session.descriptor_seconds_remaining)
-    inference = {'scope': 'all_cached', 'estimated_seconds': None,
+    inference = {'scope': 'all_candidates', 'estimated_seconds': None,
                  'note': 'Additional frozen inference is outside the TRAIN estimate; no heldout images were read.'}
     sizes = session.descriptor_budget.get('frozen_inference_rows')
     if response['status'] == 'planned' and sizes is not None:
         rate = max(p['seconds_per_row_single_worker'] for p in measured.values())
         inference.update(estimated_seconds=sum(rate * count / max(1, min(runs.workers, -(-count // BATCH_ROWS)))
                                               for count in sizes),
-                         basis='Full cached workload sizes and slowest measured TRAIN seconds/row; '
+                         basis='Full candidate-pool workload sizes and slowest measured TRAIN seconds/row; '
                                'extrapolation only, cold source IO can differ.')
     response.update(wall_seconds=elapsed,
         budget={'per_call_seconds': session.descriptor_budget['per_call_seconds'],

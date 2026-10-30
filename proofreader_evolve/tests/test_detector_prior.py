@@ -13,11 +13,10 @@ from unittest.mock import patch
 
 import numpy as np
 
-from proofreader_evolve.harness import context_cache as cc
 from proofreader_evolve.harness.collect_run import collect
 from proofreader_evolve.harness import detector_prior
 from proofreader_evolve.harness.image_features import subset_features
-from proofreader_evolve.tests.test_descriptor_compute import GEOMETRY_DESCRIPTOR, build_cache
+from proofreader_evolve.tests.test_descriptor_compute import GEOMETRY_DESCRIPTOR, build_cache, FakeProvider
 from proofreader_evolve.tests.test_selection_protocol import brain_table, two_brains
 from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
 
@@ -33,6 +32,8 @@ BLIND_DESCRIPTOR = GEOMETRY_DESCRIPTOR.replace(
 def driver_banks():
     banks = {**two_brains(), '2': brain_table('2', offset=5000.)}
     banks['2'].tables['merge'].meta['training_brain'] = '794495'
+    for bank in banks.values():
+        bank.tables['merge'].local_context = FakeProvider()
     return banks
 
 
@@ -93,20 +94,20 @@ class HelperTests(unittest.TestCase):
         stripped = frame.drop(columns=['detector_score'])
         self.assertNotIn('detector_score', subset_features(stripped, [0], missing_row=True).columns)
 
-    def test_context_coverage_and_band_flag(self):
-        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
-            banks = two_brains()
-            for bank in banks.values():
-                build_cache(Path(tmp), bank.tables['merge'], band_rows=12, images=False)
-            cache = cc.ContextCache(tmp, expose_band=False)
-            with self.assertRaisesRegex(ValueError, r'794495/merge \(4 of 16 labeled rows uncached\).*--labeled-extension'):
-                detector_prior.check_context_coverage(cache, banks, ['merge'])
-            detector_prior.check_context_coverage(cache, banks, ['split'])  # other kinds are not checked
-            table = banks['802449'].tables['merge']
-            hidden, _ = cache.entry(table).contexts(table, [0])
-            shown, _ = cc.ContextCache(tmp).entry(table).contexts(table, [0])
-            self.assertNotIn('row_in_band', hidden[0])
-            self.assertTrue(shown[0]['row_in_band'])
+    def test_no_score_contexts_cover_the_full_pool_without_band_metadata(self):
+        from proofreader_evolve.harness.descriptor_context import DescriptorContexts
+        banks = two_brains()
+        detector_prior.strip(banks)
+        contexts = DescriptorContexts()
+        for bank in banks.values():
+            table = bank.tables['merge']
+            table.local_context = FakeProvider()
+            entry = contexts.entry(table)
+            self.assertEqual(entry.rows.tolist(), list(range(len(table.features))))
+            values, _ = entry.contexts(table, [0, len(table.features) - 1])
+            for value in values:
+                self.assertNotIn('row_in_band', value)
+                self.assertNotIn('detector_score', value['features'])
 
 
 class DriverTests(unittest.TestCase):
@@ -161,7 +162,7 @@ class DriverTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Starting scorer .* references detector_score'):
                 run_driver(driver, args, driver_banks(), None)
 
-    def test_context_cache_needs_full_labeled_coverage_and_hides_the_band(self):
+    def test_on_demand_ignores_incomplete_cache_and_hides_the_band(self):
         from proofreader_evolve.cli import run_precision_evolution as driver
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
             root = Path(tmp)
@@ -172,28 +173,24 @@ class DriverTests(unittest.TestCase):
                 build_cache(root / 'full', bank.tables['merge'], band_rows=16, images=False)
             common = ('--detector-prior', 'no-score', '--descriptor-bank', str(root / 'bank'),
                       '--descriptor-workers', '2', '--descriptor-wall-seconds', '120')
-            args = parse(driver, tmp, *common, '--context-cache', str(root / 'partial'))
-            with self.assertRaisesRegex(ValueError, 'needs every GT-labeled row cached'):
-                run_driver(driver, args, partial, None)
-
             seen = {}
 
             async def revise(run_dir, policy, rules, report, model, *, experiments):
                 (policy.parent / 'descriptor.py').write_text(BLIND_DESCRIPTOR)
                 environment = json.loads((policy.parent / 'model_environment.json').read_text())['descriptor_compute']
                 manifest = json.loads((run_dir / 'manifest.json').read_text())['descriptor_compute']
-                self.assertEqual(environment['scopes'], ['all_cached'])
-                self.assertEqual(manifest['scopes'], ['all_cached'])
+                self.assertEqual(environment['scopes'], ['all_candidates'])
+                self.assertEqual(manifest['scopes'], ['all_candidates'])
                 self.assertNotIn('context_column', environment)
                 for scope in ('pilot', 'boundary'):
-                    with self.assertRaisesRegex(ValueError, r"scope must be one of \('all_cached',\)"):
+                    with self.assertRaisesRegex(ValueError, r"scope must be one of \('all_candidates',\)"):
                         experiments.compute_descriptors(scope)
-                seen['result'] = experiments.compute_descriptors('all_cached')
+                seen['result'] = experiments.compute_descriptors('all_candidates')
                 seen['statistics'] = (policy.parent / 'feature_statistics.json').read_text()
                 experiments.restore('parent')
                 return {'summary': 'descriptor only', 'cost_usd': 0}
 
-            args = parse(driver, tmp, *common, '--context-cache', str(root / 'full'))
+            args = parse(driver, tmp, *common, '--context-cache', str(root / 'partial'))
             run_driver(driver, args, full, revise)
         self.assertEqual(seen['result']['status'], 'registered')
         self.assertNotIn('bank_context_available', seen['statistics'])

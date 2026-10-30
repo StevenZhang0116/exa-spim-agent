@@ -4,8 +4,8 @@ Optional --check-api sends one tiny tool-free request to the configured model th
 reviser's own SDK path (bundled Claude Code CLI, API env, model id); it does not exercise the
 tool workflow. Run `precision_20261009_235526_ispymdwn` lost every generation because the
 bundled CLI was too old for the model, which a direct API request cannot detect.
-Optional --context-cache verifies that every brain/kind has a complete, identity-matching
-context cache entry (no chunk is read).
+Contexts are read on demand during evolution. The legacy --context-cache argument is
+ignored; these offline checks do not exercise fragment loading or cloud image access.
 """
 
 import argparse
@@ -83,31 +83,6 @@ def selection_readiness(report, train_brains, selection_brains, protocol):
                     "for split folds is verified when the run starts"}
 
 
-def context_cache_readiness(banks, context_cache):
-    """Entries must exist and match each table identity; no chunk is read here."""
-    from ..harness.context_cache import ContextCache
-    report = {"directory": str(context_cache), "brains": {}}
-    try:
-        cache = ContextCache(context_cache)
-    except (FileNotFoundError, ValueError) as exc:
-        report.update(status="blocked", reason=str(exc))
-        return report
-    blocked = False
-    for brain, bank in banks.items():
-        cells = {}
-        for kind, table in (getattr(bank, "tables", None) or {}).items():
-            try:
-                entry = cache.entry(table)
-                cells[kind] = {"status": "passed", "band_rows": entry.band_rows,
-                               "extension_rows": entry.extension_rows, "image_tiers": entry.tiers()}
-            except (FileNotFoundError, ValueError) as exc:
-                cells[kind] = {"status": "blocked", "reason": str(exc)}
-                blocked = True
-        report["brains"][brain] = cells
-    report["status"] = "blocked" if blocked or not banks else "passed"
-    return report
-
-
 def inspect_readiness(brains, mcl=100, tables_dir=pc.DEFAULT_OUT,
                       merge_dirs=None, split_dirs=None, check_api=False, model=DEFAULT_MODEL,
                       train_brains=None, selection_brains=None, selection_protocol="grouped_oof",
@@ -124,13 +99,11 @@ def inspect_readiness(brains, mcl=100, tables_dir=pc.DEFAULT_OUT,
         report.update(status="blocked", detector_error=str(exc))
         return report
     report["detectors"] = selected
-    loaded = {}
     for brain in brains:
         brain = str(brain)
         try:
             bank = ensure_native_tables(brain, native_cache_path(brain, mcl), selected,
                                          tables_dir, prepare=False, mcl=mcl)
-            loaded[brain] = bank
             tables = getattr(bank, "tables", None) or {}
             # Evolution requires the three-valued labels; a missing/mismatched sidecar blocks.
             labels = label_availability.apply({brain: bank}) if tables else {}
@@ -144,11 +117,13 @@ def inspect_readiness(brains, mcl=100, tables_dir=pc.DEFAULT_OUT,
     if check_api:
         report["api"] = api_probe(model)
     report["selection"] = selection_readiness(report, train_brains, selection_brains, selection_protocol)
-    report["context_cache"] = (context_cache_readiness(loaded, context_cache) if context_cache else None)
+    report["descriptor_context"] = {"mode": "on_demand", "precomputed_context_required": False,
+                                    "source_access": "not_exercised"}
+    if context_cache is not None:
+        report["warnings"].append("--context-cache is deprecated and ignored")
     blocked = (not brains or any(v["status"] != "passed" for v in report["brains"].values())
                or (check_api and report["api"]["status"] != "passed")
-               or (report["selection"] is not None and report["selection"]["status"] != "passed")
-               or (report["context_cache"] is not None and report["context_cache"]["status"] != "passed"))
+               or (report["selection"] is not None and report["selection"]["status"] != "passed"))
     report["status"] = "blocked" if blocked else "checks_passed"
     return report
 
@@ -168,7 +143,7 @@ def main(argv=None):
                         help="Explicit selection brains (default: TRAIN brains the detectors were not fitted on)")
     parser.add_argument("--selection-protocol", choices=("grouped_oof", "in_sample"), default="grouped_oof")
     parser.add_argument("--context-cache", default=None,
-                        help="Verify that every brain/kind has a complete context cache entry in this directory")
+                        help="Deprecated compatibility argument; ignored (contexts are read on demand)")
     args = parser.parse_args(argv)
     report = inspect_readiness(args.brains, args.mcl, args.feature_tables_dir,
                                args.merge_dir, args.split_dir, args.check_api, args.model,

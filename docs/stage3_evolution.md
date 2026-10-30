@@ -37,17 +37,10 @@ On an allocated compute node in panda:
 ```bash
 # A full rebuild runs on the interactive node, one brain after the other and resumable:
 #   bash proofreader_evolve/rebuild_brains.sh [brain ...]
-# (tables, sidecars, companion check, context cache, preflight; rebuild plan section 4). The steps by hand
+# (tables, sidecars, companion check, preflight; rebuild plan section 4). The steps by hand
 # (prepare_feature_tables.py also writes the availability sidecars before its closing preflight):
 python -u proofreader_evolve/prepare_feature_tables.py --brains 794495 789202 794491 794493 802449 --mcl 100 --threads all --image-workers -1
-# Once per brain: fragment neighbourhoods plus level-1 and level-0 image patches for the
-# top detector-ranked candidates of each kind (default 20,000; S3 reads; roughly 30 min per brain and kind at 20,000).
-# --band-rows 50000 grows an existing complete entry in place, reading only the new rows; older-microscope
-# brains with feature tables (747807 750318 751473 754610 754612 754613) are cached the same way, one brain at a time.
-python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802449 789202 794493 794491 --mcl 100 --readers 16 --band-rows 50000
-# --labeled-extension (2026-10-12) additionally caches the GT-labeled rows outside the band (a few thousand per cell),
-# so every row Precision@K ranks has a context; it needs the availability sidecars below and reuses complete entries.
-python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802449 789202 794493 794491 --mcl 100 --readers 16 --band-rows 50000 --labeled-extension
+# Evolution reads fragment neighbourhoods and image crops on demand; no context precompute step.
 # When a dataset cache (_add.pkl) is rebuilt, every artifact below descends from it; the order, the identity
 # checks and the times are in docs/dataset_artifact_dependencies.md.
 # REQUIRED before evolution/preflight: label-availability sidecars (minutes per brain; prepare_feature_tables.py
@@ -56,8 +49,7 @@ python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802
 # fitting use GT-labeled rows only (see WORKFLOW_REVISION "Three-valued labels throughout").
 python -u -m proofreader_evolve.cli.precompute_availability --brains 794495 802449 789202 794493 794491 --mcl 100
 python -m proofreader_evolve.cli.preflight --brains 794495 789202 794491 794493 802449 \
-  --train-brains 794495 802449 --selection-brains 802449 --mcl 100 \
-  --context-cache proofreader_evolve/context_cache
+  --train-brains 794495 802449 --selection-brains 802449 --mcl 100
 # Full run (settings of the recorded 2026-10-05 trial except K, which that trial set to 2000; 20 generations):
 export ANTHROPIC_API_KEY=...  AWS_EC2_METADATA_DISABLED=true
 python -u -m proofreader_evolve.cli.run_evolution \
@@ -66,7 +58,6 @@ python -u -m proofreader_evolve.cli.run_evolution \
   --selection-holdout-brains 747807,754610,754612,754613 \
   --validation-brains 789202,794493,794491,750318,751473 \
   --generations 20 \
-  --context-cache proofreader_evolve/context_cache \
   --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400
 # Resource defaults since 2026-10-27: --classifier-threads 8, --descriptor-workers 24 ('auto' = granted CPUs
 # minus 2); the eleven-brain seed baseline with 38 workers peaked at the 200 GiB job limit on n280.
@@ -77,7 +68,7 @@ python -u -m proofreader_evolve.cli.run_evolution \
 # assigns equal weight to the counted brains within each kind.
 # Ablations: --detector-prior no-score withholds the frozen detector score (2026-10-12); --detector-prior raw
 # (2026-10-27) also withholds every discovered h<n>_ feature column, leaving the raw_* candidate attributes, the
-# context cache and the agent's descriptors (own descriptor bank; --descriptor-generation-wall-seconds 7200).
+# on-demand contexts and the agent's descriptors (own descriptor bank; --descriptor-generation-wall-seconds 7200).
 # --merge-k / --split-k are per-kind caps (an integer or none). Each pool ranks K = ceil(ratio x its GT
 # positives), limited to the cap when the kind has one; --k-positive-ratio takes one number or merge=R,split=R
 # (default since 2026-10-27: no caps and ratio 1 for both kinds, so every pool ranks exactly its GT positives;
@@ -85,9 +76,9 @@ python -u -m proofreader_evolve.cli.run_evolution \
 # --min-positives GT positives (default 20) are scored and reported but excluded from the objective
 # (2026-10-12).
 # Controls for attribution: --kind-schedule alternate (strict merge/split rotation),
-# --promotion-gate margin (point-estimate gate), omit --context-cache (no descriptors),
+# --promotion-gate margin (point-estimate gate), --no-descriptors (disable descriptor tools),
 # --detector-prior no-score (withhold the frozen detector score: constant seed, same pools and detector
-# feature columns; with --context-cache every GT-labeled row must be cached; 2026-10-12).
+# feature columns; descriptors cover the complete candidate pool).
 # Historical in-sample ranking with the detector-fitted TRAIN brain alone:
 python -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495 --validation-brains auto --selection-protocol in_sample \
@@ -308,19 +299,19 @@ existing prepared tables remain valid. See the
 [local context guide](../proofreader_evolve/artifacts/local_context_guide.md) for the
 schema, feature example, limits and logs. No new launch flag is required.
 
-With `--context-cache`, the primary image path is **pool-scale agent descriptors**.
-`precompute_context_cache` stores, once per brain and kind, the raw context of the
-top detector-ranked candidates (the band: 50,000 rows since 2026-10-08, 20,000 before): the fragment neighbourhood (50 um, up to
-256 nodes) and image patches at level 1 (30 um radius) and level 0 (16 um radius,
-the finest resolution), both for the whole band (level 0 covered only the first
-4,000 rows before 2026-10-05; `--extend-tier level0` grows a tier of existing
-entries in place; `--labeled-extension` appends the GT-labeled rows outside the band
-so every ranked row has a context). Nothing in the cache is a feature. The agent writes
-`descriptor.py` (`DESCRIPTOR` plus `describe(context)`) and calls
-`probe_descriptor` on selected TRAIN cases or uniform per-brain samples, optionally
-requesting previews of the exact inputs. `DESCRIPTOR.image = {'level': 0, 'radius_um': 40}`
-can replace the legacy `image_tier` field. Matching cached patches are reused; other
-registered image crops are read on demand with bounded temporary batches for full runs.
+Pool-scale descriptors are enabled by default. Geometry and original image crops are
+read on demand for any native candidate. No precomputed context directory, detector
+band or labeled extension is needed. `--context-cache` is a deprecated ignored argument;
+use `--no-descriptors` to disable descriptor tools.
+The agent writes `descriptor.py` (`DESCRIPTOR` plus `describe(context)`), uses
+`probe_descriptor` on explicit TRAIN cases or uniform samples from each complete
+TRAIN pool, and can request previews of the exact inputs.
+`DESCRIPTOR.image = {'level': 0, 'radius_um': 40}` sets the physical crop.
+Legacy tier names resolve to physical requests too. Descriptor pixels use bounded
+temporary staging; numeric outputs remain reusable in the descriptor bank.
+`compute_descriptors({"scope": "all_candidates"})` covers the full pool; `pilot`
+is uniform and `boundary` explicitly selects detector-rank neighbours. The old
+`all_cached` scope maps to `all_candidates`.
 `plan_descriptor_run` estimates all TRAIN brains, then `compute_descriptors` runs the
 same code and input path in parallel sandboxed workers. Results are cached by code,
 input and implementation identity in `descriptor_bank/` and registered as `bank_agent_*`
@@ -331,8 +322,7 @@ one uncached full computation costs one evaluation unit under wall-clock budgets
 (`--descriptor-wall-seconds`, `--descriptor-generation-wall-seconds`). See the
 [descriptor guide](../proofreader_evolve/artifacts/descriptor_guide.md).
 
-Without a context cache, the image exploration path is **agent-written analysis
-of actual 3D volumes**. Edit `analysis.py` and `analysis_request.json`, then call
+For independent local investigations, use **agent-written analysis of actual 3D volumes**. Edit `analysis.py` and `analysis_request.json`, then call
 `run_volume_analysis({})`. An isolated worker passes original pixels, validity
 masks, spacing, candidate anchors and aligned local fragments to `analyze(context)`.
 It returns concise JSON findings, without requiring model fitting or 2D previews.

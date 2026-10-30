@@ -4,6 +4,7 @@ import time
 import numpy as np
 
 from .image_coordinates import ImageGeometry
+from .descriptor_contract import TIER_IMAGES
 
 
 PATCH_FIELDS = ('image_zyx', 'valid_zyx', 'anchors_zyx', 'spacing_zyx_um')
@@ -18,7 +19,7 @@ def image_request(entry, spec):
     if 'image' not in spec:
         tier = spec['image_tier']
         if tier not in tiers:
-            raise ValueError(f'Image tier {tier!r} is not cached for {entry.brain}/{entry.kind}')
+            return {**TIER_IMAGES[tier], 'channel': 0, 'timepoint': 0}, None
         return {k: tiers[tier][k] for k in ('level', 'radius_um', 'channel', 'timepoint')}, tier
     request = spec['image']
     tier = next((name for name, data in tiers.items()
@@ -32,7 +33,7 @@ def source_identity(table, entry, spec):
     if request is not None and tier is None:
         provider = getattr(table, 'image_context', None)
         if provider is None:
-            raise ValueError('Custom descriptor images require registered host image access')
+            raise ValueError('Descriptor images require registered host image access')
         source = provider.image_identity(table, request)
     return {'image': request, 'cached_tier': tier, 'source': source}
 
@@ -43,7 +44,7 @@ def _image(table, entry, row, context, request, tier, root, persist, deadline):
         return patch, np.asarray(patch['nodes_zyx']) if patch is not None else None
     provider = getattr(table, 'image_context', None)
     if provider is None:
-        raise ValueError('Custom descriptor images require registered host image access')
+        raise ValueError('Descriptor images require registered host image access')
     remaining = None if deadline is None else deadline - time.monotonic()
     path, metadata = provider.patch(table, int(row), request, persist=persist,
                                     directory=root / 'inputs', timeout=remaining)
@@ -64,7 +65,7 @@ def _image(table, entry, row, context, request, tier, root, persist, deadline):
 
 
 def iter_inputs(table, entry, spec, rows, root, *, persist=False, deadline=None):
-    """Yield one context/patch at a time; feature and geometry allowlists come from the cache."""
+    """Yield one context/patch at a time; feature and geometry allowlists come from the host."""
     request, tier = image_request(entry, spec)
     contexts, _ = entry.contexts(table, rows, inputs='geometry')
     for row, context in zip(rows, contexts):

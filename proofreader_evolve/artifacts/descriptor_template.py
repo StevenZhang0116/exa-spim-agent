@@ -1,14 +1,14 @@
-"""Agent descriptor: one measurable quantity per cached candidate, computed over every cached row.
+"""Agent descriptor: one measurable quantity per candidate, with context read on demand.
 
 Edit DESCRIPTOR and describe(context), then probe_descriptor({"sample_per_brain": 128}).
 Use explicit candidate_refs and previews=true to inspect the exact inputs.
 For images, replace image_tier with image={'level': 0, 'radius_um': 40} to request
 a custom patch. Geometry radius and centering stay unchanged. Then plan_descriptor_run({}) and
-compute_descriptors({"scope": "pilot" | "boundary" | "all_cached"}). The host runs
-describe on every cached row in parallel isolated workers and registers the results
+compute_descriptors({"scope": "pilot" | "boundary" | "all_candidates"}). The host runs
+describe on the selected candidates in parallel isolated workers and registers the results
 as bank_agent_<name> predictor columns for scorers, classifiers and ablations.
 
-context keys (cached geometry; image support depends on the requested crop):
+context keys (on-demand geometry; image support depends on the requested crop):
   kind, features (base predictors of this row; NaN as None), radius_um,
   fragment: xyz_um (N,3) relative to the anchor midpoint, radius_um (N,), degree (N,),
             segment (N,) local ids, edges (E,2), anchor_nodes, outside_radius (N,), truncated,

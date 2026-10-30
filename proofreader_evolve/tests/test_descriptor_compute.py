@@ -170,7 +170,7 @@ class DescriptorRunTests(unittest.TestCase):
     def test_parallel_geometry_descriptor_registers_caches_and_summarizes(self):
         program, spec = descriptor_spec(GEOMETRY_DESCRIPTOR)
         with patch.object(dr, 'BATCH_ROWS', 4):
-            result = self.runs.compute(self.table, program, spec, 'all_cached', k=3, wall_budget=120,
+            result = self.runs.compute(self.table, program, spec, 'all_candidates', k=3, wall_budget=120,
                                        log_dir=self.root / 'logs')
         self.assertFalse(result['cached'])
         self.assertEqual(result['batches'], 3)
@@ -178,7 +178,7 @@ class DescriptorRunTests(unittest.TestCase):
         # Three workers race for the one geometry chunk: the entry lock loads it once, and the
         # decompressed window is released after the run (2026-10-12).
         self.assertEqual(result['manifest']['chunk_loads'], 1)
-        self.assertEqual(self.runs.cache.entry(self.table)._chunks, {})
+        self.assertEqual(self.runs.contexts.entry(self.table)._chunks, {})
         np.testing.assert_array_equal(result['values'][:, 0], [3 + r % 4 for r in range(12)])
         self.runs.register(self.table, spec['columns'], result['rows'], result['values'])
         column = self.table.features['bank_agent_node_count'].to_numpy()
@@ -192,20 +192,20 @@ class DescriptorRunTests(unittest.TestCase):
         self.assertEqual(summary['bank_agent_node_count']['1']['count'], 6)
         self.assertEqual(len(summary['bank_agent_mean_radius']['0']['q25_q50_q75']), 3)
         with patch.object(dr, 'run_worker', side_effect=AssertionError('cache miss')):
-            repeated = self.runs.compute(self.table, program, spec, 'all_cached', k=3, wall_budget=120,
+            repeated = self.runs.compute(self.table, program, spec, 'all_candidates', k=3, wall_budget=120,
                                          log_dir=self.root / 'logs')
         self.assertTrue(repeated['cached'])
         np.testing.assert_array_equal(repeated['values'], result['values'])
         self.table.truth = 1 - self.table.truth
-        self.assertTrue(self.runs.cached(self.table, spec, 'all_cached', 3))
-        values_path = self.runs.directory(self.table, spec, 'all_cached') / 'values.npy'
+        self.assertTrue(self.runs.cached(self.table, spec, 'all_candidates', 3))
+        values_path = self.runs.directory(self.table, spec, 'all_candidates') / 'values.npy'
         saved = values_path.read_bytes()
         values_path.write_bytes(saved + b'corrupted cache')
-        self.assertFalse(self.runs.cached(self.table, spec, 'all_cached', 3))
+        self.assertFalse(self.runs.cached(self.table, spec, 'all_candidates', 3))
         values_path.write_bytes(saved)
-        pilot = self.runs.scope_rows(self.runs.cache.entry(self.table), 'pilot', 3)
+        pilot = self.runs.scope_rows(self.runs.contexts.entry(self.table), 'pilot', 3)
         self.assertEqual(len(pilot), 12)
-        boundary = self.runs.scope_rows(self.runs.cache.entry(self.table), 'boundary', 3)
+        boundary = self.runs.scope_rows(self.runs.contexts.entry(self.table), 'boundary', 3)
         self.assertEqual(boundary.tolist(), list(range(12)))
 
     def test_image_descriptor_sees_pixels_and_missing_patches(self):
@@ -238,9 +238,9 @@ class DescriptorRunTests(unittest.TestCase):
         self.assertEqual(plan['sample_rows'], 4)
         self.assertEqual(plan['workers'], 3)
         self.assertEqual(set(plan['estimates']), set(dr.SCOPES))
-        self.assertGreater(plan['estimates']['all_cached']['estimated_seconds'], 0)
+        self.assertGreater(plan['estimates']['all_candidates']['estimated_seconds'], 0)
         self.assertEqual(plan['finite_fraction']['node_count'], 1.)
-        dr.DescriptorRuns.register_context_column(self.table, self.runs.cache.entry(self.table))
+        dr.DescriptorRuns.register_context_column(self.table, self.runs.contexts.entry(self.table))
         self.assertEqual(self.table.features[dr.CONTEXT_COLUMN].sum(), 12)
 
 
@@ -272,6 +272,7 @@ def three_brain_cache(root):
     banks['2'].tables['merge'].meta['training_brain'] = '794495'
     for bank in banks.values():
         build_cache(root, bank.tables['merge'], band_rows=12)
+        bank.tables['merge'].local_context = FakeProvider()
     return banks
 
 
@@ -306,7 +307,7 @@ class SessionDescriptorTests(unittest.TestCase):
         self.assertEqual(plan['status'], 'planned')
         self.assertEqual(plan['timed_on_brains'], ['794495', '802449'])
         self.assertEqual(self.session.evaluations_used, 0)
-        result = self.session.compute_descriptors('all_cached')
+        result = self.session.compute_descriptors('all_candidates')
         self.assertEqual(result['status'], 'registered')
         self.assertFalse(result['cached'])
         self.assertEqual(self.session.evaluations_used, 1)
@@ -315,7 +316,7 @@ class SessionDescriptorTests(unittest.TestCase):
         for bank in self.train.values():
             self.assertIn('bank_agent_node_count', bank.tables['merge'].features.columns)
         self.assertEqual(set(self.memory.descriptors), {'bank_agent_node_count', 'bank_agent_mean_radius'})
-        repeated = self.session.compute_descriptors('all_cached')
+        repeated = self.session.compute_descriptors('all_candidates')
         self.assertTrue(repeated['cached'])
         self.assertEqual(self.session.evaluations_used, 1)
         self.assertGreater(self.session.descriptor_seconds_remaining, 0)
@@ -372,7 +373,7 @@ class SessionDescriptorTests(unittest.TestCase):
 
 
 class DriverDescriptorTests(unittest.TestCase):
-    def test_run_with_context_cache_computes_registers_validates_and_resumes(self):
+    def test_on_demand_computes_registers_validates_and_resumes(self):
         from proofreader_evolve.cli import run_precision_evolution as driver
         with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
             root = Path(tmp)
@@ -390,12 +391,15 @@ class DriverDescriptorTests(unittest.TestCase):
                 seen['environment'] = environment['descriptor_compute']
                 self.assertTrue((policy.parent / 'descriptor.py').is_file())
                 self.assertTrue((policy.parent / 'descriptor_guide.md').is_file())
+                from proofreader_evolve.tests.test_descriptor_probe import attach_synthetic_store
+                for brain, bank in experiments.train.items():
+                    attach_synthetic_store(bank.tables['merge'], root / 'images' / brain)
                 # An image descriptor first, so the generation's image-evidence summary has a run to report.
                 (policy.parent / 'descriptor.py').write_text(IMAGE_DESCRIPTOR)
                 self.assertEqual(experiments.compute_descriptors('pilot')['status'], 'registered')
                 (policy.parent / 'descriptor.py').write_text(GEOMETRY_DESCRIPTOR)
                 experiments.plan_descriptor_run()
-                result = experiments.compute_descriptors('all_cached')
+                result = experiments.compute_descriptors('all_candidates')
                 self.assertEqual(result['status'], 'registered')
                 self.assertNotIn('validation', json.dumps(result).lower())
                 policy.write_text(BANK_FORMULA)
@@ -422,8 +426,8 @@ class DriverDescriptorTests(unittest.TestCase):
             self.assertEqual(manifest['search_version'], 'per-kind-selection-objective-v18')
             registry = json.loads((path / 'descriptors.json').read_text())
             self.assertEqual(list(registry['columns']), ['bank_agent_node_count'])
-            # Statistics are written before the agent registers columns in gen 1; the context column is there.
-            self.assertIn('bank_context_available', (path / 'gen001' / 'feature_statistics.json').read_text())
+            # Cache membership is no longer a predictor.
+            self.assertNotIn('bank_context_available', (path / 'gen001' / 'feature_statistics.json').read_text())
             self.assertFalse((path / 'gen001' / 'train_feedback.json').read_text().lower().count('validation'))
             # Resume from the accepted scorer in a new run: descriptors are restored before the seed evaluation.
             args.start_from, args.generations = path / 'best_scorer.py', 0
@@ -436,15 +440,22 @@ class DriverDescriptorTests(unittest.TestCase):
             self.assertEqual(json.loads((resumed / 'seed.json').read_text())['validation']['per_kind_precision']['merge'], 1.)
             self.assertEqual(json.loads((resumed / 'manifest.json').read_text())['descriptor_compute']['restored_descriptors'],
                              ['bank_agent_node_count'])
-            # Without --context-cache the same resume is refused before any evaluation.
+            # Resume also works after the obsolete context directory has been deleted.
+            import shutil
+            shutil.rmtree(root / 'cache')
             args.context_cache = None
+            fresh = {**two_brains(), '2': brain_table('2', offset=5000.)}
+            fresh['2'].tables['merge'].meta['training_brain'] = '794495'
+            for bank in fresh.values():
+                bank.tables['merge'].local_context = FakeProvider()
             with patch.object(driver.pc, 'resolve_detector_runs', return_value={}), \
-                    patch.object(driver, 'ensure_native_tables', side_effect=lambda brain, *a, **k: three_brain_cache(root / 'cache')[brain]), \
+                    patch.object(driver, 'ensure_native_tables', side_effect=lambda brain, *a, **k: fresh[brain]), \
                     patch.object(driver, 'attach_local_context', return_value=None), \
-                    self.assertRaisesRegex(ValueError, 'pass --context-cache'):
-                asyncio.run(driver.run(args, revise_fn=revise))
+                    patch.object(dr, 'run_worker', side_effect=AssertionError('restore must hit numeric results')):
+                resumed = asyncio.run(driver.run(args, revise_fn=revise))
+            self.assertTrue(json.loads((resumed / 'manifest.json').read_text())['descriptor_compute']['enabled'])
 
-    def test_run_without_context_cache_has_no_descriptor_surface(self):
+    def test_no_descriptors_disables_the_descriptor_surface(self):
         from proofreader_evolve.cli import run_precision_evolution as driver
         banks = {**two_brains(), '2': brain_table('2', offset=5000.)}
         banks['2'].tables['merge'].meta['training_brain'] = '794495'
@@ -452,13 +463,13 @@ class DriverDescriptorTests(unittest.TestCase):
             seed = Path(tmp) / 'seed.py'
             seed.write_text(FORMULA)
             args = driver.parse_args(['--min-positives', '0', '--train-brains', '794495,802449', '--validation-brains', '2', '--merge-k', '3',
-                                      '--generations', '1', '--runs-dir', tmp, '--start-from', str(seed),
+                                      '--no-descriptors', '--generations', '1', '--runs-dir', tmp, '--start-from', str(seed),
                                       '--skip-auxiliary-ablation', '--bootstrap-draws', '0', '--promotion-gate', 'margin'])
             async def revise(run_dir, policy, rules, report, model, *, experiments):
                 self.assertFalse((policy.parent / 'descriptor.py').exists())
                 self.assertEqual(json.loads((policy.parent / 'model_environment.json').read_text())['descriptor_compute'],
                                  {'enabled': False})
-                with self.assertRaisesRegex(ValueError, 'no context cache'):
+                with self.assertRaisesRegex(ValueError, 'disabled'):
                     experiments.compute_descriptors('pilot')
                 experiments.restore('parent')
                 return {'summary': 'no descriptors', 'cost_usd': 0}
@@ -515,8 +526,8 @@ class ModelColumnAndFeedbackTests(unittest.TestCase):
             self.assertEqual(sorted(data['examples']['1/merge']['features']), [f'real_{j}' for j in range(5)])
 
 
-class PreflightContextCacheTests(unittest.TestCase):
-    def test_context_cache_readiness(self):
+class PreflightOnDemandTests(unittest.TestCase):
+    def test_legacy_context_argument_does_not_require_precomputed_data(self):
         from proofreader_evolve.cli import preflight
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as tmp:
@@ -529,10 +540,10 @@ class PreflightContextCacheTests(unittest.TestCase):
                 missing = preflight.inspect_readiness(['802449'], context_cache=str(root / 'cache'))
                 build_cache(root / 'cache', table, band_rows=12)
                 ready = preflight.inspect_readiness(['802449'], context_cache=str(root / 'cache'))
-        self.assertEqual(missing['status'], 'blocked')
-        self.assertEqual(missing['context_cache']['brains']['802449']['merge']['status'], 'blocked')
+        self.assertEqual(missing['status'], 'checks_passed')
+        self.assertFalse(missing['descriptor_context']['precomputed_context_required'])
         self.assertEqual(ready['status'], 'checks_passed')
-        self.assertEqual(ready['context_cache']['brains']['802449']['merge']['band_rows'], 12)
+        self.assertEqual(ready['descriptor_context']['mode'], 'on_demand')
 
 
 
@@ -662,8 +673,8 @@ class ExtendTierTests(unittest.TestCase):
         _, geometry_spec = descriptor_spec(GEOMETRY_DESCRIPTOR)
         for spec, source in ((level1_spec, IMAGE_DESCRIPTOR), (level0_spec, level0_source),
                              (geometry_spec, GEOMETRY_DESCRIPTOR)):
-            runs.compute(self.table, source, spec, 'all_cached', k=4, wall_budget=120, log_dir=self.root / 'logs')
-            self.assertTrue(runs.cached(self.table, spec, 'all_cached', 4))
+            runs.compute(self.table, source, spec, 'all_candidates', k=4, wall_budget=120, log_dir=self.root / 'logs')
+            self.assertTrue(runs.cached(self.table, spec, 'all_candidates', 4))
         self.builder.extend_tier(self.table, fake_image_reader, 'level0', {**self.LEVEL0, 'max_rows': None})
         cache = cc.ContextCache(self.root / 'cache')
         self.assertEqual(cache.identity_key(self.table, tiers=('level1',)), keys[('level1',)])
@@ -671,9 +682,9 @@ class ExtendTierTests(unittest.TestCase):
         self.assertNotEqual(cache.identity_key(self.table, tiers=('level0',)), keys[('level0',)])
         self.assertNotEqual(cache.identity_key(self.table), keys[None])
         runs = dr.DescriptorRuns(cache, self.root / 'bank', workers=2, memory_mb=1024)
-        self.assertTrue(runs.cached(self.table, level1_spec, 'all_cached', 4))
-        self.assertTrue(runs.cached(self.table, geometry_spec, 'all_cached', 4))
-        self.assertFalse(runs.cached(self.table, level0_spec, 'all_cached', 4))
+        self.assertTrue(runs.cached(self.table, level1_spec, 'all_candidates', 4))
+        self.assertTrue(runs.cached(self.table, geometry_spec, 'all_candidates', 4))
+        self.assertFalse(runs.cached(self.table, level0_spec, 'all_candidates', 4))
 
     def test_cli_flag_is_validated_and_passed_through(self):
         from proofreader_evolve.cli import precompute_context_cache as cli
@@ -762,11 +773,11 @@ class LabeledExtensionTests(unittest.TestCase):
         self.assertEqual([p is None for p in patches], [False, True, False])  # row 7: the synthetic read failure
         self.assertNotEqual(cache.identity_key(self.table), key_before)
         self.assertEqual((entry.summary()['extension_rows'], entry.summary()['extension_definition']), (7, 'segment_on_gt'))
-        # pilot and boundary stay inside the band, all_cached adds the extension, the context column marks the band.
+        # Uniform pilot uses the entire eligible set; boundary and the legacy context marker retain band semantics.
         runs = dr.DescriptorRuns(cache, self.root / 'bank', workers=2, memory_mb=1024)
-        self.assertEqual(runs.scope_rows(entry, 'pilot', 4).tolist(), list(range(6)))
+        self.assertEqual(runs.scope_rows(entry, 'pilot', 4).tolist(), sorted(entry.rows.tolist()))
         self.assertEqual(runs.scope_rows(entry, 'boundary', 4).tolist(), list(range(6)))
-        self.assertEqual(runs.scope_rows(entry, 'all_cached', 4).tolist(), entry.rows.tolist())
+        self.assertEqual(runs.scope_rows(entry, 'all_candidates', 4).tolist(), entry.rows.tolist())
         dr.DescriptorRuns.register_context_column(self.table, entry)
         column = self.table.features[dr.CONTEXT_COLUMN].to_numpy()
         self.assertEqual((column[:6].tolist(), float(column[6:].sum())), ([1.] * 6, 0.))
@@ -807,15 +818,15 @@ class LabeledExtensionTests(unittest.TestCase):
         cache = cc.ContextCache(self.root / 'cache')
         runs = dr.DescriptorRuns(cache, self.root / 'bank', workers=2, memory_mb=1024)
         _, spec = descriptor_spec(GEOMETRY_DESCRIPTOR)
-        for scope in ('pilot', 'all_cached'):
+        for scope in ('pilot', 'all_candidates'):
             runs.compute(self.table, GEOMETRY_DESCRIPTOR, spec, scope, k=4, wall_budget=120, log_dir=self.root / 'logs')
             self.assertTrue(runs.cached(self.table, spec, scope, 4))
         self.extend()
         cache = cc.ContextCache(self.root / 'cache')
         runs = dr.DescriptorRuns(cache, self.root / 'bank', workers=2, memory_mb=1024)
-        for scope in ('pilot', 'all_cached'):  # the cached inputs changed: bank entries are recomputed once
+        for scope in ('pilot', 'all_candidates'):  # the cached inputs changed: bank entries are recomputed once
             self.assertFalse(runs.cached(self.table, spec, scope, 4))
-        result = runs.compute(self.table, GEOMETRY_DESCRIPTOR, spec, 'all_cached', k=4, wall_budget=120,
+        result = runs.compute(self.table, GEOMETRY_DESCRIPTOR, spec, 'all_candidates', k=4, wall_budget=120,
                               log_dir=self.root / 'logs')
         self.assertEqual(result['rows'].tolist(), [0, 1, 2, 3, 4, 5, 7, 8, 9, 11, 12, 13, 15])
         dr.DescriptorRuns.register(self.table, ['bank_agent_node_count', 'bank_agent_mean_radius'], result['rows'], result['values'])

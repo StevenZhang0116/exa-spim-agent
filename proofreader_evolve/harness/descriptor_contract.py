@@ -1,7 +1,7 @@
 """Static contract for agent-authored descriptors; never import or execute agent source here.
 
 `descriptor.py` declares one literal DESCRIPTOR dict and one describe(context) function.
-The host runs it over cached contexts in isolated workers; the agent chooses what to
+The host runs it over host-provided contexts in isolated workers; the agent chooses what to
 measure, the host only fixes names, limits and which inputs are transported.
 """
 import ast
