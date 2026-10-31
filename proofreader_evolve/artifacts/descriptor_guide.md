@@ -37,13 +37,17 @@ Write `describe(context)` to define features. Parallel sandboxed workers compute
    submission, with the scope you computed with). Both tools charge elapsed descriptor wall time,
    including failed executions. These steps are guidance, not a mandatory gate.
 3. `compute_descriptors({"scope": "judgeable"})` (the default) covers the rows the outer
-   measurement can score: the GT-labeled rows, the same set every fit and ranking uses on
-   TRAIN, selection and validation brains, so no ranked row is NaN. Rows outside the scope
-   stay NaN, which two paths do see: whole-column statistics in a formula (a rank, quantile,
-   mean or standard deviation of a `bank_agent_*` column is taken over the computed rows
-   only) and `X_unlabeled` in `training.py` (those rows carry NaN in these columns). Under
-   `all_candidates` both see every row, so such results differ between the scopes; row-wise
-   formulas and fits on the labeled rows do not. The scope you compute with is also the
+   measurement can score: the GT-labeled rows used for supervised fitting and metric ranking.
+   TRAIN, selection and validation use this rule, so every ranked row is selected for
+   descriptor computation. Rows outside the scope keep NaN. They do not directly participate
+   in metric ranking, but can affect scores indirectly through whole-column operations in
+   a formula or `predict`, or through `X_unlabeled` in `training.py`. Under `all_candidates`,
+   these paths also receive computed descriptor values for the otherwise uncomputed rows.
+   Row-wise formulas preserve the evaluated scores between these scopes. For classifiers,
+   equivalence additionally requires fitting only labeled rows, using preprocessing fitted
+   on TRAIN and frozen for inference, and making each `predict` result independent of other
+   input rows. The arbitrary Python prediction interface does not enforce these conditions;
+   fitting only labeled rows is insufficient. The scope you compute with is also the
    scope of frozen inference. `all_candidates` covers
    every native candidate (far more rows; check `plan_descriptor_run` first). `pilot` is a
    reproducible uniform sample of up to 512 rows; `boundary` explicitly chooses up to 2,000

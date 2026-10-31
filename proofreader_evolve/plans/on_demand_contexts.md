@@ -39,18 +39,22 @@ at 8 threads, 23 s per graph load. A geometry-only `all_candidates` call therefo
 42 to 89 minutes against the 1800 s per-call budget, image calls hours, and frozen
 inference on 751473 split (1.99 M rows) alone exceeds its per-brain budget.
 
-`judgeable` = `label_availability.labeled_rows(table.truth)`: the GT-labeled rows, exactly
-the rows `rank_metrics`, the bootstrap and every fit use, so every ranked row carries a
-value while unlabeled rows keep NaN (about 49 k merge / 34 k split rows over the TRAIN
-brains, 37 k / 27 k over validation). The measurement is self-consistent because TRAIN,
-selection and validation use one scope; it equals an `all_candidates` computation only for
-row-wise formulas and fits on the labeled rows (the section below lists the two paths that
-see the uncomputed rows). It is the default scope;
+`judgeable` = `label_availability.labeled_rows(table.truth)`: the GT-labeled rows used by
+`rank_metrics`, the bootstrap and supervised fitting. Every ranked row is selected for
+descriptor computation while unlabeled rows keep NaN (about 49 k merge / 34 k split rows
+over the TRAIN brains, 37 k / 27 k over validation). TRAIN, selection and validation use
+one scope. Equivalence to `all_candidates` holds for row-wise formulas; for classifiers it
+also requires fitting only labeled rows, frozen TRAIN-fitted preprocessing and row-wise
+independent `predict` outputs. The arbitrary Python prediction interface does not enforce
+these conditions. The section below describes paths that can see the uncomputed rows.
+It is the default scope;
 no-score/raw accept `judgeable` or `all_candidates`; `pilot`, `boundary` and the probes
 are unchanged. Which rows carry a value is label-availability-derived (as the 2026-10-12
-labeled extension already was); the values are not, no column marks the set, and the
-rows outside it never enter a measured number. Deployment on an unlabeled brain needs one
-offline full computation.
+labeled extension already was); the values are not. Rows outside the scope do not directly
+participate in metric ranking, but can affect the result indirectly through whole-column
+statistics or unlabeled-data training. Deployment on an unlabeled brain requires full
+descriptor computation; models with cross-row dependencies also need reevaluation under
+that coverage.
 
 Measured on n283 (2026-10-30 00:00, 24 workers, `../claude_scratch/time_judgeable_20261029.py`) on the
 largest merge cell, 802449 (27,934 judgeable of 553,193 rows): the geometry descriptor took 177 s wall
@@ -76,10 +80,13 @@ A review of the judgeable entry found two gaps, both corrected on 2026-10-31.
    formula's whole-column statistics (ranks, quantiles, means, standard deviations of a
    `bank_agent_*` column) are taken over the computed rows only, and
    `classifier_training.fit_classifier` stages up to 100,000 NaN-label rows per brain as
-   `X_unlabeled`, which carry NaN in those columns. Under `all_candidates` both paths see
-   every row, so their results differ between the scopes; row-wise formulas and fits on the
-   labeled rows do not. One historical best scorer (`precision_20261011_234710_sssj3jpw`)
-   uses `np.quantile`/`nanstd`, and generations 11/15/16/19/20 of
+   `X_unlabeled`, which carry NaN in those columns. Under `all_candidates` both paths receive
+   computed descriptor values for the otherwise uncomputed rows, so results can differ.
+   `predict` can also depend on other input rows even when fitting used only labeled rows.
+   Equivalence requires row-wise formulas, or classifiers fitted only on labeled rows with
+   frozen TRAIN-fitted preprocessing and row-wise independent predictions; the arbitrary
+   Python interface does not enforce those conditions. One historical best scorer
+   (`precision_20261011_234710_sssj3jpw`) uses `np.quantile`/`nanstd`, and generations 11/15/16/19/20 of
    `precision_20261025_193120_5to8nx13` declared `X_unlabeled` (their clustering keyed on a
    base `h11_` column, so they did not hit the gap). The measurement remains self-consistent
    because one scope is used on TRAIN, selection and validation; `descriptor_guide.md`,
