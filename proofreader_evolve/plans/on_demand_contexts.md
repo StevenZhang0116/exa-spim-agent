@@ -8,6 +8,10 @@ detector-rank neighbours. No-score/raw production accepts `judgeable` or `all_ca
 Legacy `all_cached` calls and registries normalize to `all_candidates`; `--context-cache` is
 ignored. `--no-descriptors` disables the tools.
 
+Since 2026-10-31, `--descriptor-wall-seconds` defaults to 3600 seconds per TRAIN
+compute call and per validation-brain descriptor computation. The per-generation
+descriptor budget remains 5400 seconds; probe and planning time also count toward it.
+
 Probe, batch computation and frozen inference share descriptor_inputs. Legacy image
 tier names resolve to physical requests when no offline tier exists. New descriptor
 patches are temporary, while numeric descriptor-bank results remain reusable under
@@ -50,8 +54,8 @@ largest merge cell, 802449 (27,934 judgeable of 553,193 rows): the geometry desc
 including the 4.7 GB graph load (worker time 427 s over 110 batches), the level-1 image descriptor
 854 s wall (worker time 329 s; about 0.03 s per row of host-side S3 reads, no faster than with
 8 threads). A whole-TRAIN level-1 call is therefore about 25 min for merge (49 k rows) and 17 min
-for split (34 k rows) plus six graph loads, close to the 1800 s per-call budget; raise
-`--descriptor-wall-seconds` to 3600 for image descriptors or accept the margin. Geometry-only
+for split (34 k rows) plus six graph loads, close to the then-default 1800 s per-call budget.
+The default was raised to 3600 seconds on 2026-10-31 for this loading margin. Geometry-only
 calls take a few minutes. Frozen inference per validation brain stays well inside its budget
 (largest cell 751473 merge, 13,374 rows).
 

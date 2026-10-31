@@ -469,8 +469,8 @@ def parse_args(argv=None):
                    help="Parallel sandboxed workers for descriptor computation (default: 24 since 2026-10-27, after "
                         "the eleven-brain seed baseline peaked at the 200 GiB job limit with 38 workers; 'auto' = "
                         "available CPUs minus 2)")
-    p.add_argument("--descriptor-wall-seconds", type=float, default=1800.,
-                   help="Wall-clock budget for one compute_descriptors call (default: 1800)")
+    p.add_argument("--descriptor-wall-seconds", type=float, default=3600.,
+                   help="Wall-clock budget for one compute_descriptors call (default: 3600)")
     p.add_argument("--descriptor-generation-wall-seconds", type=float, default=5400.,
                    help="Wall-clock budget for all uncached descriptor computations in one generation (default: 5400)")
     p.add_argument("--mcl", type=int, default=100)

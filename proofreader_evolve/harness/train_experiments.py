@@ -228,7 +228,7 @@ class TrainingExperiments:
         self.lock, self.trace = asyncio.Lock(), Trajectory(gen_dir)
         self.feature_diagnostics = []
         self.frame_cache = (None, None)
-        self.descriptor_budget = {'per_call_seconds': 1800., 'generation_seconds': 5400., **(descriptor_budget or {})}
+        self.descriptor_budget = {'per_call_seconds': 3600., 'generation_seconds': 5400., **(descriptor_budget or {})}
         self.descriptor_seconds_used, self.descriptor_log = 0., []
         self.descriptor_path = gen_dir / 'descriptor.py'
         if parent_selection is None:
