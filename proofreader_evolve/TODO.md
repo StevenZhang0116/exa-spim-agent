@@ -128,6 +128,13 @@ validation gains were +0.0007 and +0.0013, the second missing the gate by 0.0000
   Superseded 2026-10-30: contexts are on demand and production descriptors run on the judgeable
   rows (49 k merge / 34 k split TRAIN rows; 802449 merge: geometry 177 s, level-1 image 854 s), see
   `plans/on_demand_contexts.md`; the per-brain resume idea stays open.
+- **Descriptor values for `X_unlabeled`.** Under the judgeable scope the up to 100,000 NaN-label
+  rows per brain that `fit_classifier` stages for a `fit(..., X_unlabeled=...)` carry NaN in every
+  `bank_agent_*` column, and a formula's whole-column statistics over such a column run on the
+  computed rows only (2026-10-31, `plans/on_demand_contexts.md`). If semi-supervised use of
+  descriptors matters, add a scope that unions the judgeable rows with the deterministic
+  `_unlabeled_sample` rows (about 600 k TRAIN rows: geometry minutes, level-1 images hours), keyed
+  like `judgeable` by the row set; not implemented.
 - **Charge evaluation units by wall time.** Split fits take 37-50 min each (three fold fits
   plus a full fit of 500-tree LightGBM on about 34,000 rows x 310 columns); split generations
   took 160-464 min and the validation phase alone 24-45 min when descriptors must be computed

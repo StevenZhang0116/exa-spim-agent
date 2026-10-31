@@ -49,6 +49,7 @@ def fit(X_train, y_train, artifact_dir, params):
     # Optional: declare X_unlabeled=None to also receive predictors (no labels,
     #   no images) of a deterministic sample of NaN-label rows, up to 100,000
     #   per TRAIN brain, e.g. for semi-supervised or domain-aware preprocessing.
+    #   Descriptor columns computed under the judgeable scope are NaN on these rows.
     # Framework feature diagnostics supply only the fitting rows of each fold.
     # Fit any model/preprocessing and save whatever predict needs here.
     # fit's return value is ignored; persist the fitted state as files.

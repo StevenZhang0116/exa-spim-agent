@@ -30,13 +30,21 @@ Write `describe(context)` to define features. Parallel sandboxed workers compute
    estimates the entire TRAIN workload, including preparation. It also reports the
    uncached work remaining; only that work is compared with the remaining allowance.
    IO and worker scaling
-   make this approximate, especially on a cold cache; frozen inference is additional
-   and is extrapolated separately from workload sizes and TRAIN timings, without reading
-   heldout images. Both tools charge elapsed descriptor wall time,
+   make this approximate, especially on a cold cache; frozen inference is additional:
+   `frozen_inference` extrapolates it for every allowed scope from the other brains' row
+   counts and the TRAIN timings, without reading heldout images, and flags a scope whose
+   largest single brain exceeds the per-call budget (each brain has that budget at
+   submission, with the scope you computed with). Both tools charge elapsed descriptor wall time,
    including failed executions. These steps are guidance, not a mandatory gate.
 3. `compute_descriptors({"scope": "judgeable"})` (the default) covers the rows the outer
    measurement can score: the GT-labeled rows, the same set every fit and ranking uses on
-   TRAIN, selection and validation brains, so no ranked row is NaN. `all_candidates` covers
+   TRAIN, selection and validation brains, so no ranked row is NaN. Rows outside the scope
+   stay NaN, which two paths do see: whole-column statistics in a formula (a rank, quantile,
+   mean or standard deviation of a `bank_agent_*` column is taken over the computed rows
+   only) and `X_unlabeled` in `training.py` (those rows carry NaN in these columns). Under
+   `all_candidates` both see every row, so such results differ between the scopes; row-wise
+   formulas and fits on the labeled rows do not. The scope you compute with is also the
+   scope of frozen inference. `all_candidates` covers
    every native candidate (far more rows; check `plan_descriptor_run` first). `pilot` is a
    reproducible uniform sample of up to 512 rows; `boundary` explicitly chooses up to 2,000
    detector-rank neighbours on each side of K. The old `all_cached` scope is an alias for

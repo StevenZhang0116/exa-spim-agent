@@ -174,8 +174,9 @@ class OnDemandContextTests(unittest.TestCase):
         np.testing.assert_array_equal(partial['values'], full['values'][labeled])
         probe = self.runs.probe(self.table, program, spec, labeled[:2], log_dir=self.root / 'probe')
         np.testing.assert_array_equal(probe['values'], partial['values'][:2])
-        # Registered on the judgeable rows only: NaN elsewhere, and the ranking cannot tell the difference
-        # because rank_metrics drops unlabeled rows before ordering.
+        # Registered on the judgeable rows only: NaN elsewhere, and a row-wise ranking cannot tell the
+        # difference because rank_metrics drops unlabeled rows before ordering (the next test shows the
+        # two paths that can).
         self.runs.register(self.table, spec['columns'], partial['rows'], partial['values'])
         column = self.table.features['bank_agent_node_count'].to_numpy()
         self.assertTrue(np.isfinite(column[labeled]).all())
@@ -198,6 +199,60 @@ class OnDemandContextTests(unittest.TestCase):
         frozen = self.runs.compute(heldout, program, spec, 'judgeable', k=3, wall_budget=120,
                                    log_dir=self.root / 'validation_descriptor_runs')
         np.testing.assert_array_equal(frozen['rows'], labeled_rows(other))
+
+    def test_judgeable_rows_are_visible_to_whole_column_statistics_and_unlabeled_fits(self):
+        """What the judgeable scope does not guarantee: a formula's whole-column statistics and a fit's
+        X_unlabeled rows see NaN outside the labeled rows, so they differ from an all_candidates run."""
+        from proofreader_evolve.harness.classifier_contract import frozen_model
+        from proofreader_evolve.harness.classifier_training import fit_classifier, verify_artifacts
+        from proofreader_evolve.harness.isolated_scoring import score
+        from proofreader_evolve.harness.label_availability import labeled_rows
+        from proofreader_evolve.harness.native_pool import NativeTables
+        truth = np.asarray(self.table.truth, dtype=float)
+        truth[[0, 5, 10]] = np.nan
+        self.table.truth = truth
+        labeled = labeled_rows(truth)
+        program, spec = descriptor_spec(GEOMETRY_DESCRIPTOR)
+        partial = self.runs.compute(self.table, program, spec, 'judgeable', k=3, wall_budget=120,
+                                    log_dir=self.root / 'judgeable')
+        full = self.runs.compute(self.table, program, spec, 'all_candidates', k=3, wall_budget=120,
+                                 log_dir=self.root / 'full')
+        self.runs.register(self.table, spec['columns'], partial['rows'], partial['values'])
+        judgeable_frame = self.table.features
+        full_frame = judgeable_frame.copy()
+        for position, column in enumerate(spec['columns']):
+            full_frame[column] = full['values'][:, position]
+        # 1. The scorer receives the whole table: a z-score over the column uses the computed rows only.
+        formula = """import numpy as np
+
+def score_candidates(features, ctx):
+    column = features['bank_agent_node_count'].to_numpy(dtype=float)
+    centred = (column - np.nanmean(column)) / np.nanstd(column)
+    return features['signal'].to_numpy(dtype=float) + np.nan_to_num(centred, nan=0.)
+"""
+        from_judgeable = score(formula, judgeable_frame, 'merge', 60)
+        from_full = score(formula, full_frame, 'merge', 60)
+        self.assertTrue(np.isfinite(from_judgeable).all() and np.isfinite(from_full).all())
+        self.assertFalse(np.allclose(from_judgeable[labeled], from_full[labeled]))
+        # 2. A fit that declares X_unlabeled gets finite descriptor values on X_train and NaN on every
+        # unlabeled row it is handed.
+        training = """import numpy as np
+
+def fit(X_train, y_train, artifact_dir, params, X_unlabeled=None):
+    np.save(artifact_dir / 'seen.npy', np.array([
+        np.isfinite(X_train['bank_agent_node_count']).all(), len(X_unlabeled),
+        np.isnan(X_unlabeled['bank_agent_node_count']).all()]), allow_pickle=False)
+
+
+def predict(X, artifact_dir, params):
+    return X['signal'].fillna(0).to_numpy()
+"""
+        bank = NativeTables('802449', {'merge': self.table}, {})
+        source, summary = fit_classifier({'802449': bank}, 'merge', {'parameters': {}}, self.root / 'fit',
+                                         program=training, artifact_store=self.root / 'store')
+        seen = np.load(verify_artifacts(frozen_model(source), self.root / 'store') / 'seen.npy')
+        self.assertEqual(seen.tolist(), [1., 3., 1.])
+        self.assertEqual(summary['unlabeled_rows'], 3)
 
     def test_fragment_source_is_loaded_once_under_concurrency(self):
         from types import SimpleNamespace

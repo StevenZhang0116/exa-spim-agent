@@ -94,6 +94,17 @@ class DescriptorRuns:
             return band[max(0, k - BOUNDARY_ROWS):k + BOUNDARY_ROWS]
         return entry.rows
 
+    def inference_rows(self, tables, k_for):
+        """Rows frozen inference would compute per allowed scope on other brains' tables.
+
+        A registered descriptor is recomputed at submission with the scope it was computed
+        with on TRAIN, so the plan estimates every allowed scope. Labels and detector rank
+        stay host-side; only counts leave this method.
+        """
+        return {scope: [int(len(self.scope_rows(self.contexts.entry(table), scope, k_for(table), truth=table.truth)))
+                        for table in tables]
+                for scope in getattr(self, 'allowed_scopes', SCOPES)}
+
     def identity(self, table, spec, scope, rows):
         scope = normalize_scope(scope)
         inputs = descriptor_inputs.source_identity(table, self.contexts.entry(table), spec)

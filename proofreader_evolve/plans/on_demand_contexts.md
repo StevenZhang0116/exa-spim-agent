@@ -40,9 +40,12 @@ at 8 threads, 23 s per graph load. A geometry-only `all_candidates` call therefo
 inference on 751473 split (1.99 M rows) alone exceeds its per-brain budget.
 
 `judgeable` = `label_availability.labeled_rows(table.truth)`: the GT-labeled rows, exactly
-the rows `rank_metrics`, the bootstrap and every fit use, so the outer measurement is
-identical to a full computation while unlabeled rows keep NaN (about 49 k merge / 34 k
-split rows over the TRAIN brains, 37 k / 27 k over validation). It is the default scope;
+the rows `rank_metrics`, the bootstrap and every fit use, so every ranked row carries a
+value while unlabeled rows keep NaN (about 49 k merge / 34 k split rows over the TRAIN
+brains, 37 k / 27 k over validation). The measurement is self-consistent because TRAIN,
+selection and validation use one scope; it equals an `all_candidates` computation only for
+row-wise formulas and fits on the labeled rows (the section below lists the two paths that
+see the uncomputed rows). It is the default scope;
 no-score/raw accept `judgeable` or `all_candidates`; `pilot`, `boundary` and the probes
 are unchanged. Which rows carry a value is label-availability-derived (as the 2026-10-12
 labeled extension already was); the values are not, no column marks the set, and the
@@ -63,3 +66,32 @@ The pre-2026-10-29 descriptor-bank entries (scope `all_cached`, 325 directories,
 `descriptor_bank`, `descriptor_bank_no_score` and `descriptor_bank_raw`) were unreachable under the new
 identity and were deleted on 2026-10-30; the per-generation `descriptor_runs/runNNN/result.json`
 summaries remain, and any historical descriptor can be recomputed from its generation's `descriptor.py`.
+
+## Scope-dependent paths and the per-scope inference estimate (2026-10-31)
+
+A review of the judgeable entry found two gaps, both corrected on 2026-10-31.
+
+1. The claim that the judgeable scope measures identically to a full computation was too
+   strong. `fixed_pool_scoring.evaluate` hands the whole table to `score_candidates`, so a
+   formula's whole-column statistics (ranks, quantiles, means, standard deviations of a
+   `bank_agent_*` column) are taken over the computed rows only, and
+   `classifier_training.fit_classifier` stages up to 100,000 NaN-label rows per brain as
+   `X_unlabeled`, which carry NaN in those columns. Under `all_candidates` both paths see
+   every row, so their results differ between the scopes; row-wise formulas and fits on the
+   labeled rows do not. One historical best scorer (`precision_20261011_234710_sssj3jpw`)
+   uses `np.quantile`/`nanstd`, and generations 11/15/16/19/20 of
+   `precision_20261025_193120_5to8nx13` declared `X_unlabeled` (their clustering keyed on a
+   base `h11_` column, so they did not hit the gap). The measurement remains self-consistent
+   because one scope is used on TRAIN, selection and validation; `descriptor_guide.md`,
+   `classifier_guide.md` and WORKFLOW_REVISION now state the limitation, and
+   `tests/test_descriptor_context.py` pins both paths. A scope that adds the deterministic
+   `X_unlabeled` sample to the judgeable rows (about 600 k TRAIN rows: geometry minutes,
+   images hours) is a possible follow-up (TODO.md P3), not implemented.
+2. `plan_descriptor_run` reported one frozen-inference estimate labelled `judgeable`, while
+   `ensure_descriptors` reuses the scope of the registered descriptor at submission. An
+   `all_candidates` computation was therefore under-estimated by the pool-to-labeled ratio
+   (validation 2.13 M / 5.14 M rows against 37 k / 27 k) and would fail the per-brain budget
+   at submission. `DescriptorRuns.inference_rows` now counts every allowed scope on the
+   validation tables host-side, the driver passes the dict as `frozen_inference_rows`, and the
+   plan returns `frozen_inference[scope]` with the total rows, total and largest-brain seconds
+   and `fits_per_brain_budget` against the per-call budget.

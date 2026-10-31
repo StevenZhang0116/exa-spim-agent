@@ -321,7 +321,8 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
                 f"{policy_path.parent / 'descriptor_guide.md'} once. Start with probe_descriptor on a few TRAIN "
                 "cases, optionally requesting previews of the exact inputs; sample uniformly across brains to check "
                 "feature distributions. The optional DESCRIPTOR.image specifies level and radius_um. "
-                "Call plan_descriptor_run({}) to estimate all TRAIN brains, then "
+                "Call plan_descriptor_run({}) to estimate all TRAIN brains and, per allowed scope, the frozen "
+                "inference on the other brains at submission (it reuses the scope you compute with), then "
                 'compute_descriptors({"scope": "judgeable"}) to run it over the rows the outer measurement can score '
                 f"of the TRAIN brains in {experiments.memory.descriptor_runs.workers} parallel sandboxed workers. "
                 f"Allowed production scopes in this run: {json.dumps(scopes)}. "
@@ -1273,7 +1274,8 @@ async def _run(args, revise_fn, run_dir, trace):
             classifier_timeout=args.classifier_time_budget, classifier_memory_mb=args.classifier_memory_mb,
             classifier_threads=args.classifier_threads, parent_selection=parent_selection[target_kind],
             descriptor_budget={**descriptor_budget, 'frozen_inference_rows':
-                [len(label_availability.labeled_rows(bank.tables[target_kind].truth)) for bank in validation.values()]
+                descriptor_runs.inference_rows([bank.tables[target_kind] for bank in validation.values()],
+                                               lambda table: budgets.k_for(target_kind, table.truth))
                 if descriptor_runs is not None else None},
             branch={**branch_meta, 'selection': branch_report, 'state': branch_state},
             validated=lambda entry, kind=target_kind: pool.validation_of(kind, entry))

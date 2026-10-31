@@ -389,8 +389,10 @@ class DriverDescriptorTests(unittest.TestCase):
             async def revise(run_dir, policy, rules, report, model, *, experiments):
                 environment = json.loads((policy.parent / 'model_environment.json').read_text())
                 seen['environment'] = environment['descriptor_compute']
-                # Frozen inference cost is estimated from the validation brains' labeled rows (16 of 16 here).
-                self.assertEqual(experiments.descriptor_budget['frozen_inference_rows'], [16])
+                # Frozen inference cost is estimated per allowed scope from the validation brains' rows
+                # (16 rows, all GT-labeled here, so every scope counts the same 16).
+                self.assertEqual(experiments.descriptor_budget['frozen_inference_rows'],
+                                 {scope: [16] for scope in ('judgeable', 'pilot', 'boundary', 'all_candidates')})
                 self.assertTrue((policy.parent / 'descriptor.py').is_file())
                 self.assertTrue((policy.parent / 'descriptor_guide.md').is_file())
                 from proofreader_evolve.tests.test_descriptor_probe import attach_synthetic_store

@@ -279,15 +279,21 @@ class ProbeSessionTests(unittest.TestCase):
         self.assertEqual(measured.call_count, 2)
         self.assertEqual(result['estimates']['all_candidates']['estimated_seconds'], 160.)
         self.assertFalse(result['fits_budget']['all_candidates'])
-        self.assertIsNone(result['frozen_inference']['estimated_seconds'])
+        self.assertEqual(result['frozen_inference'], {})  # no heldout row counts in this fixture
         evidence = generation_image_evidence(self.session.gen_dir, {})
         self.assertEqual(evidence['descriptor_plans_attempted'], 1)
         self.assertEqual(evidence['preview_records'], 0)
-        self.session.descriptor_budget['frozen_inference_rows'] = [100, 200]
+        # Frozen inference reuses the computed scope, so every allowed scope is extrapolated (rate 1 s/row,
+        # 2 workers) and the largest single brain is compared with the per-call budget (120 s here).
+        self.session.descriptor_budget['frozen_inference_rows'] = {'judgeable': [100, 20],
+                                                                   'all_candidates': [100000, 200000]}
         with patch.object(runs, 'plan', return_value=plan), patch.object(runs, 'cached', return_value=False):
             estimated = self.session.plan_descriptor_run()['frozen_inference']
-        self.assertEqual(estimated['estimated_seconds'], 300.)
-        self.assertEqual(estimated['scope'], 'judgeable')
+        self.assertEqual(estimated['judgeable'], {'rows': 120, 'brains': 2, 'estimated_seconds': 120.,
+                                                 'largest_brain_seconds': 100., 'fits_per_brain_budget': True})
+        self.assertEqual(estimated['all_candidates']['rows'], 300000)
+        self.assertEqual(estimated['all_candidates']['largest_brain_seconds'], 100000.)
+        self.assertFalse(estimated['all_candidates']['fits_per_brain_budget'])
         with patch.object(runs, 'plan', return_value=plan), patch.object(runs, 'cached',
                 side_effect=lambda table, *args: table.meta['provenance']['brain'] == '794495'):
             partial = self.session.plan_descriptor_run()

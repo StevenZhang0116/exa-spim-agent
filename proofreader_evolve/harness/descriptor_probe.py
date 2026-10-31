@@ -157,15 +157,19 @@ def plan(session):
         elapsed = time.monotonic() - started
         session.descriptor_seconds_used += elapsed
     available = min(session.descriptor_budget['per_call_seconds'], session.descriptor_seconds_remaining)
-    inference = {'scope': 'judgeable', 'estimated_seconds': None,
-                 'note': 'Additional frozen inference is outside the TRAIN estimate; no heldout images were read.'}
+    # Frozen inference reuses the scope a descriptor was computed with, so every allowed scope is
+    # extrapolated from the other brains' row counts (host-side) and the slowest measured TRAIN rate.
+    inference = {}
     sizes = session.descriptor_budget.get('frozen_inference_rows')
-    if response['status'] == 'planned' and sizes is not None:
+    if response['status'] == 'planned' and sizes:
         rate = max(p['seconds_per_row_single_worker'] for p in measured.values())
-        inference.update(estimated_seconds=sum(rate * count / max(1, min(runs.workers, -(-count // BATCH_ROWS)))
-                                              for count in sizes),
-                         basis='Judgeable-row counts of the other brains and slowest measured TRAIN seconds/row; '
-                               'extrapolation only, cold source IO can differ.')
+        per_call = session.descriptor_budget['per_call_seconds']
+        for scope, counts in sizes.items():
+            seconds = [rate * count / max(1, min(runs.workers, -(-count // BATCH_ROWS))) for count in counts]
+            inference[scope] = {'rows': int(sum(counts)), 'brains': len(counts),
+                                'estimated_seconds': float(sum(seconds)),
+                                'largest_brain_seconds': float(max(seconds, default=0.)),
+                                'fits_per_brain_budget': bool(max(seconds, default=0.) <= per_call)}
     response.update(wall_seconds=elapsed,
         budget={'per_call_seconds': session.descriptor_budget['per_call_seconds'],
                 'generation_seconds_remaining': session.descriptor_seconds_remaining,
@@ -175,7 +179,10 @@ def plan(session):
         frozen_inference=inference,
         note='Full estimates include sampled preparation and execution on every TRAIN brain; '
              'fits_budget compares only uncached work with the remaining descriptor allowance. Worker scaling is approximate; '
-             'cold retrieval and shared IO can make full runs slower. Planning consumes descriptor wall time, no evaluation units.')
+             'cold retrieval and shared IO can make full runs slower. Planning consumes descriptor wall time, no evaluation units. '
+             'frozen_inference extrapolates, per allowed scope, the additional computation on the other brains at '
+             'submission (each brain has the per-call budget; the scope you compute with is reused there); '
+             'no heldout images were read.')
     directory = session.gen_dir / 'descriptor_plans'
     directory.mkdir(exist_ok=True)
     path = directory / f'plan{len(list(directory.glob("plan*.json"))) + 1:03d}.json'
