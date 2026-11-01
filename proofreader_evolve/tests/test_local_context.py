@@ -233,9 +233,19 @@ class FeatureTransportTests(unittest.TestCase):
             raise RuntimeError("Extraction accessed private input: " + name)
     return {"local_size": 1.0}
 ''')
-            run_worker(root, {'mode': 'extract', 'feature_names': ['local_size'], 'rows': 1,
-                              'timeout': 20, 'memory_mb': 8192, 'threads': 1})
+            request = {'mode': 'extract', 'feature_names': ['local_size'], 'rows': 1,
+                       'timeout': 20, 'memory_mb': 8192, 'threads': 1}
+            run_worker(root, request)
             np.testing.assert_array_equal(np.load(root / 'local_features.npy'), [[1.]])
+            self.assertFalse((root / 'worker.log').exists())  # success without output leaves no log file
+            failed = root / 'failed'
+            (failed / 'artifacts').mkdir(parents=True)
+            (failed / 'contexts.jsonl').write_text('{}\n')
+            (failed / 'training.py').write_text('def extract_local_features(context):\n    raise RuntimeError("boom")\n')
+            from proofreader_evolve.harness.model_execution import ModelExecutionError
+            with self.assertRaises(ModelExecutionError):
+                run_worker(failed, request)
+            self.assertTrue((failed / 'worker.log').exists())  # failures keep their log
 
     def test_outer_scoring_augments_train_and_validation_without_changing_k(self):
         with tempfile.TemporaryDirectory() as tmp:

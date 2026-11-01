@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -89,6 +89,25 @@ class ProbeInputTests(unittest.TestCase):
         self.runs.contexts.entry(self.table).manifest['image_tiers']['level1']['source'] = {'identity': 'changed-source'}
         self.assertNotEqual(identity, self.runs.identity(self.table, old_spec, 'all_candidates', a['rows']))
 
+    def test_batch_image_reads_are_summarised_not_traced_per_patch(self):
+        store, source = attach_synthetic_store(self.table, self.root / 'patches')
+        store.trace, self.runs.trace = Mock(), Mock()
+        program, spec = descriptor_spec(CUSTOM)
+        probe = self.runs.probe(self.table, program, spec, [0, 3], log_dir=self.root / 'probe')
+        self.assertEqual(probe['image_reads'], 2)
+        self.assertGreaterEqual(probe['image_seconds'], probe['image_seconds_max'])
+        full = self.runs.compute(self.table, program, spec, 'all_candidates', k=3, wall_budget=120,
+                                 log_dir=self.root / 'full')
+        self.assertEqual(full['manifest']['image_reads'], len(full['rows']))
+        store.trace.emit.assert_not_called()  # no per-patch events from the batch path
+        events = [call.args[0] for call in self.runs.trace.emit.call_args_list]
+        self.assertEqual(events, ['descriptor_images_read', 'descriptor_images_read'])
+        fields = self.runs.trace.emit.call_args.kwargs
+        self.assertEqual((fields['phase'], fields['reads'], fields['rows']), ('compute', len(full['rows']), len(full['rows'])))
+        self.assertNotIn('row', fields)
+        store.patch(self.table, 0, spec['image'])  # single-candidate access keeps its event
+        self.assertEqual(store.trace.emit.call_args.args[0], 'candidate_image_ready')
+
     def test_custom_probe_full_parity_and_bounded_temporary_staging(self):
         store, source = attach_synthetic_store(self.table, self.root / 'patches')
         program, spec = descriptor_spec(CUSTOM)
@@ -98,13 +117,14 @@ class ProbeInputTests(unittest.TestCase):
         size = store.cache_bytes
         store.max_cache_bytes = size  # no further persistent patches can fit
         # Force multiple byte-bounded workers within the row batch.
-        with patch.object(descriptor_inputs, 'MAX_BATCH_BYTES', 50000):
+        with patch.object(descriptor_inputs, 'MAX_BATCH_BYTES', 50000), \
+                patch.object(self.runs, '_execute_batch', wraps=self.runs._execute_batch) as executions:
             full = self.runs.compute(self.table, program, spec, 'all_candidates', k=3, wall_budget=120,
                                      log_dir=self.root / 'full')
         np.testing.assert_array_equal(probe['values'], full['values'][[0, 3]])
         self.assertEqual(store.cache_bytes, size)
         self.assertEqual(len(list(store.directory.glob('*/patch.npz'))), 0)
-        self.assertGreater(len(list((self.root / 'full').glob('batch*.log'))), 1)
+        self.assertGreater(executions.call_count, 1)  # several byte-bounded workers; silent workers leave no log
         context, pixels = observed[0]
         self.assertEqual(pixels['image_zyx'].shape, (20, 20, 20))
         self.assertEqual(context['radius_um'], 50.)
@@ -264,7 +284,7 @@ class ProbeSessionTests(unittest.TestCase):
         np.testing.assert_array_equal(table.features['bank_agent_mean_intensity'], heldout.features['bank_agent_mean_intensity'])
         self.assertEqual(set(source.requests), {(0, 10.)})
         self.assertEqual(store.cache_bytes, 0)
-        self.assertTrue(list((self.session.gen_dir / 'validation_descriptor_runs').rglob('batch*.log')))
+        self.assertTrue(any(p.is_dir() for p in (self.session.gen_dir / 'validation_descriptor_runs').rglob('*')))  # host-only tree; silent workers leave no file
         self.assertFalse((self.session.gen_dir / 'descriptor_runs' / 'inference').exists())
 
     def test_all_handles_validated_before_io_and_whole_train_estimate(self):

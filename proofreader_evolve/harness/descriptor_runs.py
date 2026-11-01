@@ -202,9 +202,10 @@ class DescriptorRuns:
             worker_seconds += seconds
             executions += 1
 
+        stats = {'image_reads': 0, 'image_seconds': 0., 'image_seconds_max': 0.}
         try:
             for row, context, patch in descriptor_inputs.iter_inputs(
-                    table, entry, spec, rows, root, persist=persist_images, deadline=deadline):
+                    table, entry, spec, rows, root, persist=persist_images, deadline=deadline, stats=stats):
                 size = sum(a.nbytes for a in patch.values()) if patch is not None else 0
                 if contexts and used_bytes + size > descriptor_inputs.MAX_BATCH_BYTES:
                     flush()
@@ -220,9 +221,24 @@ class DescriptorRuns:
         finally:
             if timings is not None:
                 timings.update(worker_seconds=worker_seconds, worker_batches=executions,
-                               preparation_seconds=max(0., time.monotonic() - started - worker_seconds))
+                               preparation_seconds=max(0., time.monotonic() - started - worker_seconds), **stats)
         values = np.concatenate(results) if results else np.zeros((0, len(spec['feature_names'])))
         return values, worker_seconds
+
+    @staticmethod
+    def _image_summary(timings):
+        return {'image_reads': int(sum(t.get('image_reads', 0) for t in timings)),
+                'image_seconds': float(sum(t.get('image_seconds', 0.) for t in timings)),
+                'image_seconds_max': float(max((t.get('image_seconds_max', 0.) for t in timings), default=0.))}
+
+    def _trace_images(self, phase, table, rows, summary):
+        """One host-only event per call: counts and seconds, no rows or labels."""
+        if self.trace is None or not summary['image_reads']:
+            return
+        self.trace.emit('descriptor_images_read', f"{phase}: {summary['image_reads']} image patches for {len(rows)} rows",
+                        phase=phase, brain=table.meta['provenance']['brain'], kind=table.kind, rows=int(len(rows)),
+                        reads=summary['image_reads'], seconds=round(summary['image_seconds'], 3),
+                        max_seconds=round(summary['image_seconds_max'], 3))
 
     def sample_rows(self, table, count=128, seed=0):
         """Uniform over candidate IDs, independent of detector rank or labels."""
@@ -255,9 +271,12 @@ class DescriptorRuns:
                 timings.append(timing)
         finally:
             entry.release()
+        images = self._image_summary(timings)
+        self._trace_images('probe', table, rows, images)
         return {'rows': rows, 'values': np.concatenate(chunks) if chunks else np.zeros((0, len(spec['columns']))),
                 'wall_seconds': time.monotonic() - started,
-                **{k: sum(t[k] for t in timings) for k in ('preparation_seconds', 'worker_seconds', 'worker_batches')}}
+                **{k: sum(t[k] for t in timings) for k in ('preparation_seconds', 'worker_seconds', 'worker_batches')},
+                **images}
 
     def compute(self, table, program, spec, scope, *, k, wall_budget, log_dir, force=False):
         """Compute (or load) descriptor values for one table; returns rows, values and provenance."""
@@ -275,6 +294,7 @@ class DescriptorRuns:
                         'worker_seconds': 0., 'batches': 0, 'workers': 0, 'manifest': manifest}
         batches = [rows[i:i + BATCH_ROWS] for i in range(0, len(rows), BATCH_ROWS)]
         results, errors, cancel = [None] * len(batches), [], threading.Event()
+        timings = [None] * len(batches)
         log_dir = Path(log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -283,8 +303,10 @@ class DescriptorRuns:
                 return
             with tempfile.TemporaryDirectory(prefix='descriptor_batch_') as tmp:
                 try:
+                    timing = {}
                     results[index] = self._run_batch(Path(tmp), table, entry, program, spec, batches[index],
-                                                     deadline, log_dir / f'batch{index:04d}.log')
+                                                     deadline, log_dir / f'batch{index:04d}.log', timings=timing)
+                    timings[index] = timing
                 except Exception as exc:
                     cancel.set()
                     errors.append((index, exc))
@@ -337,11 +359,13 @@ class DescriptorRuns:
             raise ModelExecutionError('Descriptor computation was cancelled before every batch completed')
         values = np.concatenate([result[0] for result in results]) if results else np.zeros((0, len(spec['feature_names'])))
         worker_seconds = float(sum(result[1] for result in results))
+        images = self._image_summary([timing for timing in timings if timing])
+        self._trace_images('compute', table, rows, images)
         manifest = {'identity': identity, 'rows': int(len(rows)), 'batches': len(batches), 'workers': peak_workers,
                     'worker_limit': self.workers, 'requested_workers': self.requested_workers,
                     'worker_memory_mb': self.memory_mb, 'memory_admission': admission_records,
                     'wall_seconds': time.monotonic() - started, 'worker_seconds_total': worker_seconds,
-                    'chunk_loads': entry.chunk_loads - loads_before,
+                    'chunk_loads': entry.chunk_loads - loads_before, **images,
                     'created_at': datetime.now().astimezone().isoformat(timespec='seconds')}
         directory.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix='.staging_', dir=directory.parent) as staging:

@@ -81,7 +81,8 @@ checks reduce risk; arbitrary host/worker allocation spikes can still exceed mem
    every other feature comes from descriptors like these.
 5. On submission the host computes every referenced descriptor on the other
    brains' on-demand contexts for frozen inference; you never see those values.
-   Worker stdout/stderr go to the host-only `validation_descriptor_runs/` tree.
+   Worker stdout/stderr go to the host-only `validation_descriptor_runs/` tree (a batch that
+   succeeds without printing leaves no file).
    That tree and legacy `descriptor_runs/inference/` logs are unreadable to agents
    in every generation; TRAIN `descriptor_runs/run*/` logs remain readable.
 

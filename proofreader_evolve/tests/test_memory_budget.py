@@ -87,7 +87,7 @@ class DescriptorAdmissionTests(unittest.TestCase):
     def test_serial_first_batch_bounded_concurrency_and_unchanged_values(self):
         active, observed = 0, []
         lock = threading.Lock()
-        def batch(root, table, entry, program, spec, rows, deadline, log):
+        def batch(root, table, entry, program, spec, rows, deadline, log, **kwargs):
             nonlocal active
             with lock:
                 active += 1
@@ -116,7 +116,7 @@ class DescriptorAdmissionTests(unittest.TestCase):
         self.assertFalse(self.runs.directory(self.table, self.spec, 'all_candidates').exists())
 
     def test_memory_wait_uses_call_deadline_and_writes_no_bank(self):
-        def batch(root, table, entry, program, spec, rows, deadline, log):
+        def batch(root, table, entry, program, spec, rows, deadline, log, **kwargs):
             if rows[0] != 0:
                 time.sleep(.08)
             return np.column_stack([rows, rows]).astype(float), 0.

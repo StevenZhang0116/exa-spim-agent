@@ -181,8 +181,13 @@ class CandidateImageStore:
                     'request': {k: spec[k] for k in ('radius_um', 'level', 'channel', 'timepoint')}}
 
     def patch(self, table, index, spec, occurrence=0, *, reviewed=True, persist=True,
-              directory=None, timeout=None):
-        """Reuse persistent hits; uncached full-run patches live in caller-owned scratch."""
+              directory=None, timeout=None, trace=True):
+        """Reuse persistent hits; uncached full-run patches live in caller-owned scratch.
+
+        Single-candidate callers keep the per-patch trace event; batch callers pass
+        ``trace=False`` and report one aggregate per call instead (2026-11-01: the two
+        10-31 raw runs wrote 185,524 per-patch events into the run trajectory).
+        """
         if not persist and directory is None:
             raise ValueError('Temporary image patches require a scratch directory')
         started = time.monotonic()
@@ -218,7 +223,7 @@ class CandidateImageStore:
         path = target / 'patch.npz'
         if metadata['identity'] != identity or metadata['patch_sha256'] != file_hash(path):
             raise ValueError('Cached image patch identity/checksum mismatch')
-        if self.trace:
+        if self.trace and trace:
             self.trace.emit('candidate_image_ready', 'Loaded candidate image patch',
                 brain=table.meta['provenance']['brain'], kind=table.kind, row=int(index), occurrence=occurrence,
                 cache_key=key, cached=cached, wall_seconds=time.monotonic() - started,

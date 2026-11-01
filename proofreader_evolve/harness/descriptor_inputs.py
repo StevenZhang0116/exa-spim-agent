@@ -47,7 +47,7 @@ def _image(table, entry, row, context, request, tier, root, persist, deadline):
         raise ValueError('Descriptor images require registered host image access')
     remaining = None if deadline is None else deadline - time.monotonic()
     path, metadata = provider.patch(table, int(row), request, persist=persist,
-                                    directory=root / 'inputs', timeout=remaining)
+                                    directory=root / 'inputs', timeout=remaining, trace=False)
     with np.load(path, allow_pickle=False) as data:
         patch = {k: data[k] for k in PATCH_FIELDS}
     geometry = ImageGeometry(tuple(metadata['source_axes']), tuple(metadata['source_shape']),
@@ -64,8 +64,12 @@ def _image(table, entry, row, context, request, tier, root, persist, deadline):
     return patch, nodes
 
 
-def iter_inputs(table, entry, spec, rows, root, *, persist=False, deadline=None):
-    """Yield one context/patch at a time; feature and geometry allowlists come from the host."""
+def iter_inputs(table, entry, spec, rows, root, *, persist=False, deadline=None, stats=None):
+    """Yield one context/patch at a time; feature and geometry allowlists come from the host.
+
+    `stats`, when given, accumulates `image_reads`, `image_seconds` and `image_seconds_max`
+    so the caller can report one aggregate per call instead of one event per patch.
+    """
     request, tier = image_request(entry, spec)
     contexts, _ = entry.contexts(table, rows, inputs='geometry')
     for row, context in zip(rows, contexts):
@@ -75,11 +79,17 @@ def iter_inputs(table, entry, spec, rows, root, *, persist=False, deadline=None)
             raise error
         patch = None
         if request is not None:
+            started = time.monotonic()
             try:
                 patch, nodes = _image(table, entry, row, context, request, tier, root, persist, deadline)
             except Exception as exc:
                 exc.row = int(row)
                 raise
+            if stats is not None:
+                seconds = time.monotonic() - started
+                stats['image_reads'] = stats.get('image_reads', 0) + 1
+                stats['image_seconds'] = stats.get('image_seconds', 0.) + seconds
+                stats['image_seconds_max'] = max(stats.get('image_seconds_max', 0.), seconds)
             context.update(level=request['level'], channel=request['channel'], timepoint=request['timepoint'],
                            image_radius_um=request['radius_um'], image_available=patch is not None)
             if patch is not None:

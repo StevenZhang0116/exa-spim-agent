@@ -82,6 +82,9 @@ def run_worker(root, request, *, log_path=None):
     with log_path.open('rb') as stream:
         stream.seek(max(0, log_path.stat().st_size - 8000))
         status['training_output_tail'] = stream.read(8000).decode(errors='replace')
+    if not status['training_output_tail']:
+        # Nothing to read later; failures keep their log, where even an empty file shows the worker ran.
+        log_path.unlink(missing_ok=True)
     return status
 
 
