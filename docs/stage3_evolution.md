@@ -253,7 +253,7 @@ full distribution. Candidate feedback adds gained/lost positives and Top-K overl
 Each generation edits one component. By default the kind is chosen adaptively:
 a pending promotion follow-up first, then a floor of one revision per
 `--kind-floor-every` generations (default 4), then the kind with the larger recent
-gate-passing validation gain, then the larger remaining headroom on the validation
+validation point gain (accepted or rejected; only gate-passing gains before 2026-11-01), then the larger remaining headroom on the validation
 cells. Both headroom and saturation use the configured per-kind aggregation and
 effective K; saturation means less than half the smallest one-hit gain remains.
 `--kind-schedule alternate` restores strict merge/split rotation and
@@ -308,7 +308,7 @@ Defaults are 300 seconds wall/CPU, 16384 MiB (8192 before 2026-10-08) and eight 
 the recorded full runs use 1800 to 3600 seconds, 4 to 16 threads and 98304 MiB.
 Artifact storage permits 128 MiB / 256 regular files per model. The agent chooses
 and records randomness seeds. `model_environment.json` lists installed packages
-and budgets; training stdout/stderr is saved and its last 8 KB returned to the agent.
+and budgets; training stdout/stderr is saved (a worker that prints nothing leaves no file) and its last 8 KB returned to the agent.
 
 Branches are ranked by the selection protocol: under the default `grouped_oof`,
 grouped out-of-fold precision on detector-naive selection brains from host-owned

@@ -7,8 +7,8 @@ selection brains the detectors were not fitted on (auxiliary TRAIN brains only s
 fitting rows), or the historical in-sample protocol for attribution runs.
 Promote on target-kind validation Precision@K whose paired-bootstrap lower bound is above zero
 (`--promotion-gate bootstrap`, default); individual brain regressions are allowed.
-Generations go to one kind each, chosen by pending follow-up, a floor, recent gate-passing
-gain and remaining headroom (`--kind-schedule adaptive`, default) or by strict rotation.
+Generations go to one kind each, chosen by pending follow-up, a floor, recent validation
+point gain (accepted or not) and remaining headroom (`--kind-schedule adaptive`, default) or by strict rotation.
 Validation is repeatedly queried development data, never an untouched final test.
 """
 
@@ -551,7 +551,7 @@ def parse_args(argv=None):
                         "merge or split fixes it")
     p.add_argument("--kind-schedule", choices=kind_schedule.MODES, default="adaptive",
                    help="adaptive (default): pick the kind per generation by pending follow-up, a floor, recent "
-                        "gate-passing validation gain and remaining headroom; alternate: strict merge/split rotation")
+                        "validation point gain (accepted or not) and remaining headroom; alternate: strict merge/split rotation")
     p.add_argument("--kind-floor-every", type=int, default=kind_schedule.DEFAULT_FLOOR_EVERY,
                    help="Adaptive schedule: every active kind is revised at least once per this many generations "
                         "(default: 4)")

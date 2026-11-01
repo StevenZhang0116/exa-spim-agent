@@ -86,6 +86,14 @@ validation gains were +0.0007 and +0.0013, the second missing the gate by 0.0000
 
 ### P2. Selection protocol and scheduling (code + tests + WORKFLOW_REVISION, before the next runs)
 
+- **Which statistic should rank candidates within the pool.** Since 2026-11-01 every selection
+  report carries precision at ceil(K/2), at 2K and tie-aware AP beside the official P@K
+  (`harness/rank_diagnostics.py`, diagnostic only). After one or two raw runs, compute the
+  Spearman correlation of P@K, AP and the three-depth mean with validation P@K over the ledger's
+  validated candidates (`experiments[*].selection.diagnostics` against the validation cells) and
+  switch the within-pool ranking to the best one if it beats P@K; the promotion gate stays P@K.
+  Motivation: in `precision_20261031_175627_2okbyg6b` the five validated merge candidates were
+  ordered oppositely by selection and validation.
 - **Holdout-first candidate selection for merge.** Make `holdout_precision` (whole-brain
   out-of-fold cells) the primary key of `candidate_selection` and of the `restore_candidate("best")`
   rule when the kind's selection pool is dominated by one within-brain cell (say > 70% of the

@@ -83,7 +83,7 @@ default.
 
 ```mermaid
 flowchart TD
-    K["Allocate the kind: pending follow-up › floor › recent gate-passing gain › headroom"] --> A
+    K["Allocate the kind: pending follow-up › floor › recent point gain › headroom"] --> A
     A[TRAIN branches + matched failures + observed evidence] --> S[Priority follow-up or regular branch; assign required research]
     S --> B[Write formula or fit/predict program + parameters]
     S --> V["Investigate TRAIN: probe exact inputs or uniform full-pool samples; optional previews and local 3D analysis"]
@@ -132,8 +132,8 @@ flowchart TD
    and `proposal.json`, plus `analysis.py` and `analysis_request.json` for direct
    TRAIN 3D investigation; the other kind stays at its accepted version. The kind
    is chosen per generation by the adaptive allocator (pending follow-up, a floor
-   of one revision per `--kind-floor-every` generations, recent gate-passing gain,
-   then remaining headroom; `--kind-schedule alternate` restores strict rotation)
+   of one revision per `--kind-floor-every` generations, recent validation point gain
+   (accepted or not since 2026-11-01), then remaining headroom; `--kind-schedule alternate` restores strict rotation)
    unless `--target-kind` is specified. Stratified TRAIN diagnostics
    and memory guide formula design. A literal numeric `PARAMS` dictionary separates
    constants from the formula. `evaluate_train({})` measures one candidate;

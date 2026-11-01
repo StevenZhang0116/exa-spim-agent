@@ -145,5 +145,5 @@ Inspection snapshots are saved under `genNNN/context_inspections/`; trajectory
 events record queries, locations in the tool response, truncation and budgets.
 Feature events and evaluation cells record selected/pool counts, cache hits,
 configuration and timing. Extractor stdout/stderr persists in
-`local_feature_cache/worker_logs/`. Inspect these alongside actual TRAIN changes
+`local_feature_cache/worker_logs/` when the extractor prints anything. Inspect these alongside actual TRAIN changes
 before claiming the extra context helped.

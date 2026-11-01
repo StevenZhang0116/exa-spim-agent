@@ -140,7 +140,8 @@ artifacts read-only. All agent imports, fit, predict and model deserialization
 occur after Linux Landlock + seccomp isolation; unavailable isolation fails closed.
 
 Print useful training diagnostics, internal CV results and convergence information.
-`worker.log` preserves stdout/stderr, and the tool returns its last 8 KB with the
+`worker.log` preserves stdout/stderr when there is any (a silent successful fit leaves
+no file), and the tool returns its last 8 KB with the
 training summary or failure. Logs are limited to 4 MiB. Each measured candidate
 records code, parameters, artifact hashes, library versions, TRAIN provenance,
 ranking changes, wall time and errors. These are observable execution records,
