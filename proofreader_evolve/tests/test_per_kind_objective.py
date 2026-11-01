@@ -232,9 +232,11 @@ class AblationObjectiveTests(unittest.TestCase):
         official, _ = protocol.score_report('merge', {'802449/merge': frames['802449'].signal.to_numpy()})
         self.assertEqual(measured['scored_brains'], ['802449'])
         self.assertEqual(measured['protocol'], 'TRAIN_formula_partitioned_k_descriptive')
+        # Ablation cells carry the official score only; the selection report adds rank diagnostics.
+        from proofreader_evolve.harness.rank_diagnostics import CELL_KEYS
         self.assertEqual(measured['cells']['802449/merge']['full'],
                          {k: v for k, v in official['cells']['802449/merge'].items()
-                          if k not in ('partition_sha256', 'pool_sha256', 'labels_sha256')})
+                          if k not in ('partition_sha256', 'pool_sha256', 'labels_sha256', *CELL_KEYS)})
 
 
 if __name__ == '__main__':

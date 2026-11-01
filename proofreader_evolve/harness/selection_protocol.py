@@ -25,6 +25,7 @@ from .internal_validation import FOLDS, fold_assignments, grouped_folds
 from .label_availability import labeled_rows, labels_digest
 from .local_features import augmented_features
 from .model_execution import predict_model, DEFAULT_MEMORY_MB
+from .rank_diagnostics import aggregate_diagnostics, cell_diagnostics
 
 
 PROTOCOL_VERSION = 'grouped-cv-precision-v6-per-kind-objective'
@@ -224,15 +225,19 @@ class SelectionProtocol:
             if self.mode == 'in_sample':
                 metrics, chosen = rank_metrics(scores, table.truth, table.keys, k, in_mean=in_mean)
                 metrics['protocol'] = 'in_sample'
+                fold_ids = np.zeros(len(scores), dtype=np.int64)
             else:
-                metrics, chosen = partitioned_rank_metrics(scores, table.truth, table.keys,
-                                                           self.fold_ids(kind, brain), k, in_mean=in_mean)
+                fold_ids = self.fold_ids(kind, brain)
+                metrics, chosen = partitioned_rank_metrics(scores, table.truth, table.keys, fold_ids, k, in_mean=in_mean)
                 metrics['partition_sha256'] = self.partition_sha256(kind)
+            # Diagnostics beside the official score: same labeled rows, same partition and fold rule.
+            metrics.update(cell_diagnostics(scores, table.truth, table.keys, fold_ids, k, fold_budgets=fold_budgets))
             metrics['pool_sha256'] = table.meta['pool_sha256']
             metrics['labels_sha256'] = labels_digest(table.truth)
             report['cells'][cell] = metrics
             state[cell] = {'scores': scores, 'chosen': chosen}
         report.update(aggregate_precision(report['cells'], self.budgets.aggregation))
+        report['diagnostics'] = aggregate_diagnostics(report['cells'], self.budgets.aggregation)
         holdout_cells = [f'{brain}/{kind}' for brain in self.holdout_brains]
         counted = [cell for cell in holdout_cells if report['cells'][cell].get('in_mean', True)]
         report['holdout_cells'] = holdout_cells

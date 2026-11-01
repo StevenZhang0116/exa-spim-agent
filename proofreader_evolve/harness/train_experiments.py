@@ -552,7 +552,8 @@ class TrainingExperiments:
                             f"precision={scoring.precision_for_kind(selection_report, self.target_kind):.6f} "
                             f"(parent {scoring.precision_for_kind(self.parent_selection, self.target_kind):.6f}); "
                             f"in-sample {entry['in_sample_precision']:.6f}",
-                            selection=entry['selection'], selection_gate=entry['selection_gate'])
+                            selection=entry['selection'], selection_gate=entry['selection_gate'],
+                            diagnostics=entry['selection'].get('diagnostics'))
         except Exception as exc:
             execution_error = stage in {'preflight', 'train_evaluation'} and isinstance(
                 exc, (ScorerExecutionError, ModelExecutionError, SyntaxError, ValueError))

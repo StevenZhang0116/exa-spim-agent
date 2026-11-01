@@ -2,6 +2,8 @@
 
 import json
 
+from .rank_diagnostics import CELL_KEYS as DIAGNOSTIC_METRICS
+
 
 FEEDBACK_VERSION = "stratified-train-v6-per-kind-objective"
 MAX_FEEDBACK_BYTES = 128_000  # 48 KB -> 96 KB (2026-10-05) -> 128 KB (2026-10-07, with the SDK file-read cap raised);
@@ -19,7 +21,9 @@ def metrics_only(report):
             **({"aggregation": report["aggregation"]} if "aggregation" in report else {}),
             **({"holdout_cells": report["holdout_cells"], "holdout_precision": report["holdout_precision"]}
                if report.get("holdout_cells") else {}),
-            "cells": {name: {key: cell[key] for key in (*METRICS, *SELECTION_METRICS) if key in cell}
+            # Selection reports carry rank diagnostics since 2026-11-01; older artifacts say so.
+            **({"diagnostics": report.get("diagnostics") or "not recorded"} if "mode" in report else {}),
+            "cells": {name: {key: cell[key] for key in (*METRICS, *SELECTION_METRICS, *DIAGNOSTIC_METRICS) if key in cell}
                       | ({'local_context': cell['local_context']} if 'local_context' in cell else {})
                       | ({'image_context': cell['image_context']} if 'image_context' in cell else {})
                       for name, cell in report["cells"].items()}}
@@ -100,7 +104,12 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                     + (" Examples, ranking_delta and the official selection score follow selection_protocol. "
                        "grouped_oof uses out-of-fold scores on selection brains; in_sample uses full-TRAIN scores. "
                        f"Branch ranking uses {report_role}_selection's metric; {report_role}_train records "
-                       "the separate full-TRAIN measurement." if selection is not None else "")
+                       "the separate full-TRAIN measurement. The selection report's diagnostics (per cell and per "
+                       "kind: precision_at_half_k, precision_at_double_k, average_precision; half_k and double_k are "
+                       "the labeled rows actually ranked) show head hits, deeper coverage and whole-ranking change "
+                       "on the same labeled rows and partition; they are diagnostic only, since candidate ranking, "
+                       "ablation and promotion use precision at K. 'not recorded' marks older artifacts."
+                       if selection is not None else "")
                     + (" Examples and ranking_delta describe the assigned search branch (search_branch); "
                        f"{report_role}_selection/{report_role}_train describe the accepted scorer, and ranking_delta "
                        "is the branch minus the accepted scorer." if branch is not None else "")
