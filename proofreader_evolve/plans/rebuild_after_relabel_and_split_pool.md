@@ -110,7 +110,11 @@ one group each, every node starting with an evolution brain, so all five finish 
 nohup bash proofreader_evolve/rebuild_brains.sh 794495 794493 789202 747807 >/dev/null 2>&1 &        # n283 (80 CPUs)
 nohup bash proofreader_evolve/rebuild_brains.sh 802449 751473 >/dev/null 2>&1 &                      # n280 (40 CPUs)
 nohup bash proofreader_evolve/rebuild_brains.sh 794491 750318 754610 754612 754613 >/dev/null 2>&1 & # n282 (40 CPUs)
-grep -H "# OK brain\|# OK after\|# FAILED" proofreader_evolve/log/rebuild_brains_*.log.txt
+for log_dir in proofreader_evolve/log proofreader_evolve/log_archive; do
+    [ -d "$log_dir" ] || continue
+    find "$log_dir" -type f -name 'rebuild_brains_*.log.txt' \
+        -exec grep -H "# OK brain\|# OK after\|# FAILED" {} +
+done
 ```
 
 `IMAGE_WORKERS` (default -1, one per CPU), `READERS` (32) and `BAND_ROWS` (50000) override the
@@ -136,7 +140,7 @@ python -u -m proofreader_evolve.cli.precompute_context_cache --brains <b> --mcl 
 Since 2026-10-23 `prepare_feature_tables.py` writes the availability sidecars itself (through
 `precompute_availability`) before its closing preflight. Before, that preflight required the
 sidecars the next step would write, so a fresh table build always ended `FAILED`
-(`log/prepare_feature_tables_20261013_151554_332376_313597.log.txt`) and a stop-at-first-failure
+(`../log_archive/prepare_feature_tables_20261013_151554_332376_313597.log.txt`) and a stop-at-first-failure
 driver would have halted after the first brain's tables.
 
 Budget. The detectors' image pass dominates now (the 2026-08 tables had no image features, so

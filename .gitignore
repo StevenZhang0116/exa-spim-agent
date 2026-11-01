@@ -28,6 +28,7 @@ metrics_merge_site_patches_794495/
 proofreader_evolve/runs/
 proofreader_evolve/image_audits/
 proofreader_evolve/log/*.log.txt
+proofreader_evolve/log_archive/
 
 # Autodiscovery runs and detector-build application outputs are local artifacts.
 /autodiscovery/

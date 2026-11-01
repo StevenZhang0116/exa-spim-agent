@@ -283,9 +283,9 @@ do not carry over. Labels: split 4,817 labeled (2,426 / 2,391; 985 rows changed)
 The image-alignment receipt had to be re-recorded first (`check_image_alignment`, then `--record-reviewed`):
 the receipt binds the dataset-cache identity, so a rebuilt cache fails `image_context.source` with
 `Image/cache identity changed since alignment review` until the review is redone. Verified the same
-evening (`log/labeled_extension_verify_794495_rebuilt_20261013.log`: all checks passed; 100% of labeled
+evening (`log_archive/labeled_extension_verify_794495_rebuilt_20261013.log`: all checks passed; 100% of labeled
 rows cached, 99.3% / 70.4% of them in the band before the extension) and `preflight --context-cache`
-passes for all eleven brains (`log/preflight_794495_rebuilt_20261013.log`).
+passes for all eleven brains (`log_archive/preflight_794495_rebuilt_20261013.log`).
 
 **Still open.** The frozen detectors remain fitted on the August snapshot (retraining is a separate
 decision); 794495 Precision@K from earlier runs is not comparable with the rebuilt tables. Consider a
@@ -302,7 +302,7 @@ block, so `extend_band` and `extend_labeled` share one in-place growth path; the
 changes only for entries that carry an extension (bank results of extended entries are
 recomputed once, which the changed `all_cached` rows force anyway); the extension uses
 `segment_on_gt` for both kinds so it does not depend on the label definition a run selects.
-**Built 2026-10-13** (user, n268, `log/context_cache_labeled_extension_20261012.log`): one launcher call over
+**Built 2026-10-13** (user, n268, `log_archive/context_cache_labeled_extension_20261012.log`): one launcher call over
 the eleven brains with `--readers 16`, 22 cells in 8,291 s (22:47 to 01:05); 18 entries extended by 40 to
 11,649 rows, the four whole-pool entries (754612 / 754613 / 789202 merge, 789202 split) confirmed with 0
 extension rows; common prefix = band everywhere, so no band chunk was re-read; 0 new image failures (the 15
@@ -311,14 +311,14 @@ recorded level-0 failures on 802449 and 794491 split are pre-existing band rows)
 entry (extension == `segment_on_gt` rows minus band, sorted and unique; band order equals `select_rows`;
 manifest digests and chunk counts; every labeled row under both definitions cached; sampled band and
 extension contexts load at both tiers with the right `row_in_band`), all checks passed
-(`log/labeled_extension_verify_20261013.log`); `preflight --context-cache` passed with `extension_rows`
-per cell (`log/preflight_labeled_extension_20261013.log`); two registered descriptors of run
+(`log_archive/labeled_extension_verify_20261013.log`); `preflight --context-cache` passed with `extension_rows`
+per cell (`log_archive/preflight_labeled_extension_20261013.log`); two registered descriptors of run
 `precision_20261011_235340_phg8xri5` recomputed on 802449 (merge geometry, 18 names; split level-0
 image, 7 names) are byte-identical to the band-only bank results on all 50,000 band rows and finite on
-the extension rows (`log/labeled_extension_descriptor_compare_20261013.log`; the band-only bank entries
+the extension rows (`log_archive/labeled_extension_descriptor_compare_20261013.log`; the band-only bank entries
 are backed up in `../claude_scratch/descriptor_bank_backup_20261013/`).
 
-**Measured after the build** (n268, 2026-10-13, `log/labeled_extension_verify_20261013.log`; labeled rows
+**Measured after the build** (n268, 2026-10-13, `log_archive/labeled_extension_verify_20261013.log`; labeled rows
 under the run definitions, `near_gt_150` for merge and `segment_on_gt` for split; every labeled row and
 every positive of every cell is now cached, so the "in cache" columns are 100% throughout and omitted):
 
@@ -485,7 +485,7 @@ order, commands and one-time follow-ups are in `plans/rebuild_after_relabel_and_
 Done 2026-10-15 for the AutoDiscovery rerun: split companions of 794495 and 802449 regenerated
 with `export_rerank_companion --kinds split --pool-only` (794495: 689,677 rows, labels
 2,497 / 3,579 / 683,601; the r=80 pool contains every r=50 pair with unchanged labels and gaps;
-log `proofreader_evolve/log/export_companion_split_r80_20261015.log`), r=50 companions archived
+log `proofreader_evolve/log_archive/export_companion_split_r80_20261015.log`), r=50 companions archived
 in `markdowns/archive/companions_20261014/` (deleted 2026-10-17), split specification rewritten (gap baseline AP
 0.825, folds 0.827 / 0.844 / 0.808). Merge companions and the merge specification follow once
 the merge pool is settled. Done 2026-10-17: merge companions regenerated for

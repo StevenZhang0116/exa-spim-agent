@@ -117,6 +117,13 @@ to `proofreader_evolve/log/prepare_feature_tables_<timestamp>_<pid>.log.txt`.
 Each run gets a separate log with invocation, timing and exit status. Use
 `--log-txt PATH` to append to a specific file; `--dry-run` creates no log.
 
+Keep active console logs in `proofreader_evolve/log/`. Completed console and
+test logs, together with their diagnostic JSON files, are retained in
+`proofreader_evolve/log_archive/` for troubleshooting and linked verification
+evidence; evolution does not read them as inputs. Archiving is manual: confirm
+that no process is writing a file before moving it, preserve its relative path,
+and update documentation references. New runs still write to `log/`.
+
 Evolution and preflight default to `claude-opus-5-5` (Claude Opus 5.5).
 Use `--model MODEL_ID` to override the model for a run. The Python SDK launches its own
 bundled Claude Code CLI, not the `claude` on `PATH`; Opus 5.5 needs CLI 2.1.280 or newer
