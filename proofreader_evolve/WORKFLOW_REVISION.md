@@ -12,8 +12,8 @@ Image descriptor workflow (2026-10-29): `probe_descriptor` executes the current
 from each TRAIN brain. Optional previews use those exact inputs and share the
 existing eight-image allowance. The optional `DESCRIPTOR.image` selects radius
 and native pyramid level; legacy tiers remain supported. Probe, full TRAIN and
-frozen inference share input assembly and isolated execution. Custom full-run
-patches use byte-bounded temporary batches; only small probes persist patch misses.
+frozen inference share input assembly and isolated execution. Descriptor probes and full
+computations stage crops temporarily; numeric descriptor results persist for reuse.
 Diagnostics now include finite/missing/nonzero counts, min/max/std and example
 handles. Planning includes every TRAIN brain and reports the frozen-inference cost of
 every allowed scope, extrapolated from the other brains' row counts and TRAIN timings
@@ -52,41 +52,49 @@ Current scoring contract (2026-10-29, scoring v6): merge and split have independ
 objectives. Selection, feature ablation and promotion share the configured
 per-kind aggregation and positive floor, while selection and outer validation
 use separate data. The current rules are summarized below and in
-[`docs/stage3_evolution.md`](../docs/stage3_evolution.md). Dated sections and
-illustrations retain the design and observations at the time they were written;
-their older metric fields and version numbers do not specify the current contract.
+[`docs/stage3_evolution.md`](../docs/stage3_evolution.md). The three figures below show the
+current contract as of 2026-10-31. Dated historical sections retain the design and observations
+at the time they were written; their older metric fields and version numbers do not specify
+the current contract.
 
 ![Fixed-pool scorer evolution with TRAIN search and development-validation selection](workflow_diagram.png)
 
-A one-page visual overview (frozen inputs, the generation loop, outputs and the
-blindness boundary) is in [workflow_overview.png](workflow_overview.png); the data
-model the search runs on (fixed candidate rows, growing columns, contexts attached to
-the top band, labels held apart, the five paths from contexts to a score, and who sees
-labels) is in [data_overview.png](data_overview.png).
+A one-page visual overview (fixed inputs, the generation loop, outputs and the
+data-access boundary) is in [workflow_overview.png](workflow_overview.png). The data model
+is in [data_overview.png](data_overview.png): fixed candidate rows, mode-dependent predictors,
+on-demand geometry and configurable image crops, three-valued labels, and the `judgeable`
+descriptor scope. Every row is scored; only labeled rows enter metric ranking, while
+uncomputed rows can still affect cross-row operations or unlabeled-data training.
+Merge and split have separate objectives, with pooled hits / K across counted brains by
+default.
 
 ```mermaid
 flowchart TD
     K["Allocate the kind: pending follow-up › floor › recent gate-passing gain › headroom"] --> A
     A[TRAIN branches + matched failures + observed evidence] --> S[Priority follow-up or regular branch; assign required research]
     S --> B[Write formula or fit/predict program + parameters]
-    S --> V["Investigate: compute_descriptors runs agent describe(context) over the cached candidates; 3D analysis on a few TRAIN patches"]
+    S --> V["Investigate TRAIN: probe exact inputs or uniform full-pool samples; optional previews and local 3D analysis"]
+    V --> W["Optional plan: all TRAIN brains plus validation cost per allowed descriptor scope"]
+    V --> Z["Compute descriptors on demand: judgeable by default; numerical bank persists; temporary image crops"]
+    W --> Z
+    Z -->|Use measured descriptor columns| B
     V -->|Revise investigation within its separate budget| V
     V -->|Implement useful observations| B
-    B --> C["Classifier: three host-owned fold refits on selection brains -> out-of-fold score; then full TRAIN fit, frozen. Formula: scored once under the same fold budgets"]
+    B --> C["Classifier: host-owned grouped OOF / configured whole-brain holdout refits; then frozen full TRAIN fit. Formula: same selection brains and partitioned K"]
     B --> X[Paired feature removal on TRAIN only]
     X --> Y[Grouped OOF refits or descriptive formula comparison]
     Y --> B
-    C --> D["Selection precision (grouped out-of-fold on detector-naive brains), positive coverage and geometry-slice hits; in-sample TRAIN is a diagnostic"]
+    C --> D["Selection precision on detector-naive brains, positive coverage and geometry-slice hits; in-sample TRAIN is a diagnostic"]
     D -->|Within compute budget| B
     P -->|Continue or force exploration| A
     P -->|All kinds paused| Q[Stop; export accepted scorer]
     D --> E[Submit an exactly measured snapshot]
     E --> F{Measured submission and required research complete?}
-    F -->|Yes| U{Component differs from the accepted one?}
-    U -->|Yes| G[Evaluate every fixed development-validation brain once]
-    U -->|No, unchanged| H[Retain parent]
+    F -->|Yes| U{Already measured component or TRAIN score vectors?}
+    U -->|No| G["Frozen validation: compute referenced descriptors with their registered scope on each brain, then predict; inputs and descriptor logs stay private"]
+    U -->|Yes, repeated| H[Retain parent]
     F -->|No| H[Retain parent]
-    G --> I{Target-kind Precision@K improves and the paired-bootstrap lower bound of its gain is above zero?}
+    G --> I{Target-kind Precision@K gain exceeds the margin and its paired-bootstrap lower bound is above zero?}
     I -->|Yes| J[Promote candidate]
     I -->|No| H
     J --> R[Update parent; queue next same-kind follow-up]
@@ -97,8 +105,9 @@ flowchart TD
 1. Select one frozen merge-junction detector and one split-site detector from
    `autodiscovery-application/`, with their matching fitted joblibs.
 2. Prepare tables from matching `cache/dataset_cache_<brain>_mcl<N>_add.pkl`
-   caches. Call each detector's original universe builder and feature extractor;
-   preserve candidate identity and split occurrences without extra enumeration caps.
+   caches. Enumerate rows with `candidate_rules.py` under `candidate_pools.json`,
+   then apply the selected detector's feature extractor; preserve candidate identity
+   and split occurrences without extra enumeration caps.
    Enable only the native analysis groups owning columns in that fitted model's
    `feature_order` (including definedness columns). Shared groups remain intact;
    unknown or ambiguous feature ownership fails instead of enabling all groups.
@@ -1960,6 +1969,7 @@ records the motivating run and the original proposals.
 
 | Date / version | Change and motivation | Verification / future evidence |
 |---|---|---|
+| 2026-10-31 / current workflow figures | **Project-specific documentation update**, based on `native_pool.py`, `descriptor_context.py`, `descriptor_runs.py`, `fixed_pool_scoring.py` and the evolution driver. Revise `data_overview.png`, `workflow_diagram.png` and `workflow_overview.png` for fixed candidate rules, on-demand geometry and configurable images, default judgeable coverage, three-valued labels and indirect missing-row effects, per-scope planning, 3600-second calls, separate per-kind objectives, and private validation inputs/logs. Replace the old trial curves with current objective and budget rules; synchronize adjacent captions and Mermaid. Keep only the PNG outputs in the repository. | Rendered from temporary SVG sources with `resvg-py` in `panda` on n277 (allocation 27512210); visually checked labels, fonts, layout and arrows, including a shorter-label pass. Illustrative table values and source tiles are explicitly schematic. Documentation and figure changes only; no new evolution run or performance claim. |
 | 2026-10-31 / judgeable equivalence conditions | **Project-specific documentation correction**, based on `fixed_pool_scoring.evaluate`, `classifier_training.fit_classifier` and `model_execution.predict_model`, not a paper-derived mechanism. Uncomputed rows do not directly participate in metric ranking but can indirectly change scores through whole-column operations or unlabeled-data training. Classifier equivalence requires labeled-only fitting, frozen TRAIN-fitted preprocessing and row-wise independent predictions; arbitrary Python prediction does not enforce these conditions. Synchronize the descriptor guide, on-demand plan and repeated workflow descriptions. | Documentation-only revision. The preceding n277 review passed four targeted regressions and reproduced Precision@1 of 1 for `all_candidates` versus 0 for `judgeable` with the same percentile-combination formula through the real scorer worker. This is a synthetic counterexample, not an evolution-run result. |
 | 2026-10-31 / judgeable scope: scope-dependent paths and per-scope inference estimate | **Project-specific correction** (review of the 2026-10-29 judgeable entry). (1) The claim that the judgeable scope measures identically to a full computation was too strong: `fixed_pool_scoring.evaluate` hands the whole table to `score_candidates`, whose whole-column statistics (ranks, quantiles, means) over a `bank_agent_*` column are taken over the computed rows only, and `classifier_training.fit_classifier` stages up to 100,000 NaN-label rows per brain as `X_unlabeled`, which carry NaN in those columns; one historical best scorer (`precision_20261011_234710_sssj3jpw`) uses `np.quantile`/`nanstd`, and `precision_20261025_193120_5to8nx13` generations 11/15/16/19/20 declared `X_unlabeled`. The measurement stays self-consistent (one scope on TRAIN, selection and validation); `descriptor_guide.md`, `classifier_guide.md`, `plans/on_demand_contexts.md` and this log now say so. (2) `plan_descriptor_run` reported one frozen-inference estimate labelled `judgeable` while `ensure_descriptors` reuses the scope of the registered descriptor, so an `all_candidates` computation was under-estimated by the pool-to-labeled ratio (validation 2.13 M / 5.14 M against 37 k / 27 k) and would then fail the per-brain budget at submission. `DescriptorRuns.inference_rows` counts every allowed scope on the validation tables (host-side), the driver passes the dict as `frozen_inference_rows`, and the plan returns `frozen_inference[scope]` with rows, total and largest-brain seconds and `fits_per_brain_budget` against the per-call budget. | `tests/test_descriptor_context.py::test_judgeable_rows_are_visible_to_whole_column_statistics_and_unlabeled_fits` (a z-scored formula gives different labeled-row scores from the judgeable and the full registration through the real scorer worker; a `fit` declaring `X_unlabeled` receives finite descriptor values on `X_train` and NaN on every unlabeled row), `test_descriptor_probe.py` (per-scope inference estimate, an `all_candidates` case flagged against the per-call budget), `test_descriptor_compute.py` (the driver passes every allowed scope). Module runs recorded in the commit message. No evolution run yet. |
 | 2026-10-31 / descriptor call budget | **Project-specific configuration change**, motivated by the on-demand timings in `plans/on_demand_contexts.md`, not a paper-derived mechanism. Raise the default per-call descriptor wall budget from 1800 to 3600 seconds in `cli/run_precision_evolution.py` and the `harness/train_experiments.py` fallback. This covers the complete TRAIN call and each frozen validation-brain descriptor computation; the generation default remains 5400 seconds and explicit CLI overrides remain supported. | Verified on n277 in `panda`: CLI parsing and help, session fallback expression, and explicit overrides; the generation default remains 5400 seconds. No new throughput or ranking result claimed. |
