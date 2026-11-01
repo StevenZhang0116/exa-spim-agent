@@ -14,9 +14,14 @@ Rules, in priority order:
 2. ``floor``: a kind not revised in the last ``floor_every - 1`` completed
    generations is revised now, so every active kind appears at least once in any
    window of ``floor_every`` generations.
-3. ``momentum``: among unsaturated kinds, the largest mean gate-passing
-   validation gain over the kind's last ``MOMENTUM_WINDOW`` scheduled
-   generations; rejected or failed generations count as zero.
+3. ``momentum``: among unsaturated kinds, the largest mean validation point
+   gain (candidate minus parent, clipped at zero) over the kind's last
+   ``MOMENTUM_WINDOW`` scheduled generations, whether or not the promotion gate
+   accepted the candidate; a failed generation without a validation measurement
+   counts as zero. Until 2026-11-01 only gate-passing gains counted, which starved
+   the kind with the coarser gate: merge needs about ten times the gain that
+   split needs to pass the bootstrap, so its rejected +0.02 gains counted as
+   nothing while split's accepted +0.006 kept it scheduled at the detector level.
 4. ``headroom``: the largest remaining precision under the configured per-kind
    aggregation, using each cell's effective K. Cells flagged ``in_mean: false``
    (below the GT-positive floor) are skipped, as in the promotion objective.
@@ -28,7 +33,7 @@ kinds; rules 1 and 2 can still revise them.
 
 import math
 
-SCHEDULE_VERSION = "adaptive-kind-allocation-v3-objective-saturation"
+SCHEDULE_VERSION = "adaptive-kind-allocation-v4-point-gain-momentum"
 MODES = ("adaptive", "alternate")
 MOMENTUM_WINDOW = 2
 SATURATION_HITS = .5
@@ -87,7 +92,8 @@ def saturation_thresholds(cells, budgets, kinds):
 
 
 def momentum(records, kinds, window=MOMENTUM_WINDOW):
-    """Mean gate-passing validation gain over each kind's last `window` generations."""
+    """Mean validation point gain (clipped at zero) over each kind's last `window` generations,
+    accepted or rejected; a generation without a gate measurement counts as zero."""
     result = {}
     for kind in kinds:
         rows = [row for row in records if row.get("target_kind") == kind][-window:]
@@ -95,7 +101,7 @@ def momentum(records, kinds, window=MOMENTUM_WINDOW):
         for row in rows:
             gate = row.get("validation_gate") or {}
             gain = 0.
-            if (row.get("accepted") and gate.get("target_kind") == kind
+            if (gate.get("target_kind") == kind
                     and gate.get("candidate_precision") is not None and gate.get("parent_precision") is not None):
                 gain = max(0., float(gate["candidate_precision"]) - float(gate["parent_precision"]))
             gains.append(gain)

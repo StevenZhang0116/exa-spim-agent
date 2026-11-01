@@ -60,15 +60,30 @@ class RuleTests(unittest.TestCase):
         self.assertAlmostEqual(room["split"], ((1. - .433) + (1813 / 2000 - .0885)) / 2)
         self.assertEqual(ks.headroom({}, self.BUDGETS, self.KINDS), {"merge": 0., "split": 0.})
 
-    def test_momentum_uses_gate_passing_gains_and_counts_rejections_as_zero(self):
+    def test_momentum_uses_point_gains_whether_or_not_the_gate_accepted(self):
         records = [row("split", True, .1, .13), row("merge", True, .13, .131), row("split", False, .131, .131),
-                   row("merge", False), row("split", True, .131, .14)]
+                   row("merge", False, .131, .156), row("split", True, .131, .14)]
         gain = ks.momentum(records, self.KINDS)
         self.assertAlmostEqual(gain["split"], (0. + (.14 - .131)) / 2)  # last two split rows
-        self.assertAlmostEqual(gain["merge"], ((.131 - .13) + 0.) / 2)
+        self.assertAlmostEqual(gain["merge"], ((.131 - .13) + (.156 - .131)) / 2)  # the rejected gain counts
         self.assertEqual(ks.momentum([], self.KINDS), {"merge": 0., "split": 0.})
         self.assertEqual(ks.generations_since(records, self.KINDS), {"merge": 1, "split": 0})
         self.assertEqual(ks.generations_since([], self.KINDS), {"merge": 0, "split": 0})
+        # Failed generations carry no measurement; losses are clipped at zero.
+        faded = records + [row("merge", False), row("split", False, .14, .139)]
+        gain = ks.momentum(faded, self.KINDS)
+        self.assertAlmostEqual(gain["merge"], ((.156 - .131) + 0.) / 2)
+        self.assertAlmostEqual(gain["split"], ((.14 - .131) + 0.) / 2)
+
+    def test_rejected_point_gain_outranks_a_smaller_accepted_gain(self):
+        # The 2026-10-31 raw run: split's accepted +0.006 kept it scheduled while merge's
+        # rejected +0.025 counted as nothing; point gains put merge first.
+        cells = {"a/merge": cell(2000, 2000, .2), "a/split": cell(2720, 2000, .85)}
+        history = [row("split", True, .843, .849), row("merge", False, .181, .206)]
+        result = self.allocate(cells, history)
+        self.assertEqual((result["chosen"], result["rule"]), ("merge", "momentum"))
+        self.assertAlmostEqual(result["kinds"]["merge"]["momentum"], .206 - .181)
+        self.assertEqual(result["version"], "adaptive-kind-allocation-v4-point-gain-momentum")
 
     def allocate(self, cells, records, **overrides):
         options = {"paused": {}, "pending": {}, "floor_every": 4}
