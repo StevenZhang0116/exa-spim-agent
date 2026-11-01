@@ -1016,7 +1016,7 @@ against 0.66 for split.
   own sake can lower `--kind-floor-every` or use `--target-kind merge`.
 
 Tests: `tests/test_kind_schedule.py`: rule-level cases (headroom, momentum with
-rejections as zero, floor, pending follow-up, saturation, pauses) and driver runs
+rejections as zero until 2026-11-01 and from point gains since, floor, pending follow-up, saturation, pauses) and driver runs
 on a two-kind fixture where merge is saturated at the seed: adaptive scheduling
 yields split, split, split, merge with rules headroom, pending_followup,
 momentum, floor; strict rotation alternates; agent-visible files contain no
