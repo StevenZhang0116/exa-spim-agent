@@ -9,6 +9,19 @@ physical-request aliases (`level1`: level 1 / 30 um; `level0`: level 0 / 16 um).
 Write `describe(context)` to define features. Parallel sandboxed workers compute
 `bank_agent_<name>` columns; only numeric descriptor results persist for reuse.
 
+Resource controls (2026-11-01): `model_environment.json` records the descriptor
+worker address-space cap (default 16384 MiB, independent of classifier memory).
+The configured worker count is a maximum, also capped by CPU affinity. Before
+preparing inputs, the host admits batches using current job cgroup memory,
+reserving max(8 GiB, 10% of its limit), plus the worker cap and 512 MiB of host
+preparation allowance per admitted batch. The first batch runs alone so subsequent
+admission includes the loaded fragment graph. Memory is checked again before
+worker staging. Planning reports measured memory capacity and includes the serial
+first batch; frozen-inference estimates use the lowest observed TRAIN concurrency,
+but another brain's graph may need more memory. Waiting consumes the existing wall
+budget. Insufficient room for even one batch fails explicitly. These conservative
+checks reduce risk; arbitrary host/worker allocation spikes can still exceed memory.
+
 ## Workflow
 
 1. Edit `descriptor.py`: a literal `DESCRIPTOR` dictionary with `kind`, `inputs`,

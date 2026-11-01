@@ -18,10 +18,10 @@ class ModelExecutionError(RuntimeError):
 
 
 def exit_detail(returncode, request, tail):
-    """Explain a worker that died without writing status; SIGKILL almost always means the memory cap."""
+    """SIGKILL alone does not identify OOM, cancellation or an administrator kill."""
     if returncode == -9:
-        return (f"killed by SIGKILL, most likely the {request.get('memory_mb')} MiB address-space cap "
-                f"(--classifier-memory-mb) or the job's memory limit; reduce model size, members or batch rows. "
+        return (f"killed by SIGKILL; cause unconfirmed (worker address-space cap: {request.get('memory_mb')} MiB). "
+                "Check Slurm accounting for OOM, timeout or cancellation. "
                 + tail)
     return tail
 

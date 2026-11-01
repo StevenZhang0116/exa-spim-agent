@@ -135,6 +135,22 @@ validation gains were +0.0007 and +0.0013, the second missing the gate by 0.0000
   descriptors matters, add a scope that unions the judgeable rows with the deterministic
   `_unlabeled_sample` rows (about 600 k TRAIN rows: geometry minutes, level-1 images hours), keyed
   like `judgeable` by the row set; not implemented.
+- **Transient image read timeout aborts a descriptor call.** Generation 5 of the raw run
+  `precision_20261031_175627_2okbyg6b` (2026-10-31) failed at frozen inference on 789202 with
+  `Descriptor batch 0 failed: ` and no further text: one tensorstore read of a level-0 patch hit
+  the 45 s `ImageSource` timeout (a `TimeoutError` with an empty message; 185,524 patch reads in
+  the run, one failure), so the whole generation was discarded (4,244 s; the 750318 and 751473
+  results stayed in the bank and gen 6 reused them). The message now carries the exception type
+  (2026-11-01). Still open: a bounded retry (two or three attempts within the call deadline) for
+  `TimeoutError` in `descriptor_inputs._image` / `ImageSource.read`, so that one stalled S3
+  request does not cost an image generation; an image submission reads about 27 k validation
+  plus 34 k TRAIN rows, so the exposure per generation is not negligible.
+- **Host-side failure diagnostics.** The driver records only `Failed: <type>: <message>` for a
+  generation that fails outside the agent's code (`run_precision_evolution.py`, the
+  `generation_error` event) and the console log holds no traceback either; add
+  `traceback.format_exc()` to the host-only trajectory event. `ensure_descriptors` returns its
+  per-brain reports only after every brain has finished, so a failure on the third brain leaves
+  `descriptor_inference` empty for the brains that did complete.
 - **Charge evaluation units by wall time.** Split fits take 37-50 min each (three fold fits
   plus a full fit of 500-tree LightGBM on about 34,000 rows x 310 columns); split generations
   took 160-464 min and the validation phase alone 24-45 min when descriptors must be computed
@@ -142,7 +158,9 @@ validation gains were +0.0007 and +0.0013, the second missing the gate by 0.0000
   either a per-fit time budget for tune families or fewer units per split generation.
 - **Monitoring.** `run_status.json` is written once per generation; a `phase_started_at`
   and `last_event_at` would make a stalled run distinguishable from a long split fit without
-  reading the trajectory. Also note for operators: node pid counters wrapped on n242 during
+  reading the trajectory. Since 2026-11-01, `execution.json`, the Slurm launcher and
+  `check_run_status` cover terminal-step reconciliation (including confirmed OOM);
+  continuous heartbeat/progress detection remains deferred. Also note for operators: node pid counters wrapped on n242 during
   the frozen run, so `pgrep -f cli.run_evolution | head -1` can return the probe shell; match
   the full command line.
 

@@ -1454,7 +1454,8 @@ class TrainingExperiments:
             return await invoke(self.probe_descriptor, arguments)
 
         @tool('plan_descriptor_run', 'Time descriptor.py on a uniform sample from every TRAIN brain and '
-              'estimate the entire TRAIN call, including input preparation, at the configured worker count. '
+              'estimate the entire TRAIN call, including serial startup and input preparation, with CPU- and '
+              'memory-limited worker concurrency. '
               'Uses descriptor wall budget, no evaluation charge. Call with {}.', {})
         async def plan_descriptor_run(arguments):
             return await invoke(self.plan_descriptor_run, arguments)

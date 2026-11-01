@@ -33,6 +33,7 @@ from ..harness import detector_prior
 from ..harness.reviser_session import DEFAULT_MODEL, build_options, bind_session_options
 from ..harness.trajectory import Trajectory, log_metrics, save_diffs
 from ..harness.evolution_report import update_report
+from ..harness.run_lifecycle import record_execution
 from ..harness.train_feedback import write_train_feedback, render_compact_json, metrics_only, MAX_FEEDBACK_BYTES, FEEDBACK_VERSION
 from ..harness.search_proposals import read_proposal
 from ..harness.hypothesis_memory import sanitize_handoff
@@ -324,7 +325,8 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
                 "Call plan_descriptor_run({}) to estimate all TRAIN brains and, per allowed scope, the frozen "
                 "inference on the other brains at submission (it reuses the scope you compute with), then "
                 'compute_descriptors({"scope": "judgeable"}) to run it over the rows the outer measurement can score '
-                f"of the TRAIN brains in {experiments.memory.descriptor_runs.workers} parallel sandboxed workers. "
+                f"of the TRAIN brains with up to {experiments.memory.descriptor_runs.workers} sandboxed workers; "
+                "actual concurrency is limited by CPU affinity and current job memory headroom. "
                 f"Allowed production scopes in this run: {json.dumps(scopes)}. "
                 f"Budget: {budget['per_call_seconds']:.0f} s per call and {budget['generation_seconds']:.0f} s per "
                 "generation of wall time, plus one evaluation unit per uncached call; valid cached results are free. "
@@ -467,9 +469,11 @@ def parse_args(argv=None):
                         "(default: proofreader_evolve/descriptor_bank; descriptor_bank_no_score with "
                         "--detector-prior no-score, descriptor_bank_raw with --detector-prior raw)")
     p.add_argument("--descriptor-workers", default=24, metavar="auto|N",
-                   help="Parallel sandboxed workers for descriptor computation (default: 24 since 2026-10-27, after "
-                        "the eleven-brain seed baseline peaked at the 200 GiB job limit with 38 workers; 'auto' = "
-                        "available CPUs minus 2)")
+                   help="Maximum descriptor concurrency (default: 24; 'auto' = available CPUs minus 2); "
+                        "both modes are capped by CPU affinity and current job memory headroom")
+    p.add_argument("--descriptor-memory-mb", type=int, default=16384,
+                   help="Per-descriptor-worker address-space cap, independent of classifier memory (default: 16384 MiB). "
+                        "Admission also reserves host preparation space and max(8 GiB, 10%% of cgroup limit)")
     p.add_argument("--descriptor-wall-seconds", type=float, default=3600.,
                    help="Wall-clock budget for one compute_descriptors call (default: 3600)")
     p.add_argument("--descriptor-generation-wall-seconds", type=float, default=5400.,
@@ -566,6 +570,7 @@ def parse_args(argv=None):
                         "raw (2026-10-27): also withholds every discovered h<n>_ feature column, leaving the "
                         "label-blind raw candidate attributes (raw_*), on-demand contexts and the agent's descriptors")
     p.add_argument("--runs-dir", type=Path, default=HERE / "runs")
+    p.add_argument("--run-dir", type=Path, help="Explicit new run directory, also used by the Slurm launcher")
     args = p.parse_args(argv)
     ablation = args.detector_prior != "frozen"
     if args.start_from is None:
@@ -594,6 +599,8 @@ def parse_args(argv=None):
         if not str(args.descriptor_workers).isdigit() or int(args.descriptor_workers) < 1:
             p.error("descriptor-workers must be 'auto' or a positive integer")
         args.descriptor_workers = int(args.descriptor_workers)
+    if args.descriptor_memory_mb < 512:
+        p.error("descriptor-memory-mb must be >= 512")
     if (not math.isfinite(args.descriptor_wall_seconds) or args.descriptor_wall_seconds <= 0
             or not math.isfinite(args.descriptor_generation_wall_seconds) or args.descriptor_generation_wall_seconds <= 0):
         p.error("Descriptor wall budgets must be positive and finite")
@@ -829,8 +836,15 @@ async def run(args, revise_fn=None):
     if revise_fn is None:
         revise_fn = partial(revise, max_turns=args.reviser_max_turns, contract=_contract(args))
     args.runs_dir.mkdir(parents=True, exist_ok=True)
-    run_dir = Path(tempfile.mkdtemp(prefix="precision_" + datetime.now().strftime("%Y%m%d_%H%M%S_"),
-                                   dir=args.runs_dir)).resolve()
+    if args.run_dir is None:
+        run_dir = Path(tempfile.mkdtemp(prefix="precision_" + datetime.now().strftime("%Y%m%d_%H%M%S_"),
+                                       dir=args.runs_dir)).resolve()
+    else:
+        run_dir = args.run_dir.resolve()
+        run_dir.mkdir(parents=True, exist_ok=True)
+        if any(p.name not in {'launch.json'} for p in run_dir.iterdir()):
+            raise ValueError('--run-dir must be new (only launch.json may already exist)')
+    record_execution(run_dir)
     trace = Trajectory(run_dir)
     trace.emit("run_start", f"Run directory: {run_dir}",
                config={key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()})
@@ -978,12 +992,13 @@ async def _run(args, revise_fn, run_dir, trace):
         entries = {f"{brain}/{kind}": contexts.entry(bank.tables[kind]).summary()
                    for brain, bank in banks.items() for kind in kinds}
         descriptor_runs = DescriptorRuns(contexts, args.descriptor_bank, workers=args.descriptor_workers,
-                                         memory_mb=args.classifier_memory_mb, trace=trace)
+                                         memory_mb=args.descriptor_memory_mb, trace=trace)
         if no_score:
             descriptor_runs.allowed_scopes = detector_prior.NO_SCORE_DESCRIPTOR_SCOPES
         trace.emit("descriptor_context", f"On-demand contexts for {len(entries)} brain/kind entries; "
-                   f"{descriptor_runs.workers} descriptor workers", entries=entries,
-                   workers=descriptor_runs.workers, bank=str(args.descriptor_bank))
+                   f"up to {descriptor_runs.workers} descriptor workers, memory-gated", entries=entries,
+                   workers=descriptor_runs.workers, worker_memory_mb=args.descriptor_memory_mb,
+                   bank=str(args.descriptor_bank))
         restored_descriptors = _restore_descriptors(args, banks, kinds, parent_sources, descriptor_runs, budgets, trace)
     elif any(referenced_columns(parent_sources[kind]) for kind in kinds):
         raise ValueError("The starting scorer references bank_agent_* columns; remove --no-descriptors")
@@ -1040,6 +1055,7 @@ async def _run(args, revise_fn, run_dir, trace):
                                   "scope": "Host-side; headroom and gains stay in the ledger and trajectory"},
                 "descriptor_compute": ({"enabled": True, "context_mode": "on_demand",
                     "descriptor_bank": str(args.descriptor_bank), "workers": descriptor_runs.workers,
+                    "worker_memory_mb": args.descriptor_memory_mb, "concurrency": "cpu_and_memory_gated",
                     "per_call_wall_seconds": args.descriptor_wall_seconds,
                     "per_generation_wall_seconds": args.descriptor_generation_wall_seconds,
                     "evaluation_units_per_uncached_call": 1,
@@ -1143,7 +1159,8 @@ async def _run(args, revise_fn, run_dir, trace):
         'numerical_threads': args.classifier_threads, 'max_artifact_bytes': 128 * 1024**2,
         'max_artifact_files': 256, 'sandbox': 'Linux Landlock ABI >= 3 and libseccomp; fail closed',
         'descriptor_compute': ({'enabled': True, 'workers': descriptor_runs.workers,
-            'worker_memory_mb': args.classifier_memory_mb, 'threads_per_worker': 1,
+            'worker_memory_mb': args.descriptor_memory_mb, 'threads_per_worker': 1,
+            'concurrency': 'cpu_and_memory_gated', 'reserve': 'max(8 GiB, 10% of cgroup limit)',
             'per_call_wall_seconds': args.descriptor_wall_seconds,
             'per_generation_wall_seconds': args.descriptor_generation_wall_seconds,
             'evaluation_units_per_uncached_call': 1,

@@ -6,7 +6,6 @@ import time
 import numpy as np
 
 from .descriptor_inputs import input_summary
-from .descriptor_runs import BATCH_ROWS
 from .local_context import candidate_ref, resolve_train_candidate
 
 
@@ -146,6 +145,8 @@ def plan(session):
         cached = {scope: {brain: runs.cached(t, spec, scope, session._k(session.target_kind, t.truth))
                           for brain, t in tables.items()} for scope in scopes}
         for scope, estimate in estimates.items():
+            estimate['memory_feasible'] = all(cached[scope][brain] or
+                p['estimates'][scope].get('memory_feasible', True) for brain, p in measured.items())
             estimate['cached_brains'] = sorted(brain for brain, hit in cached[scope].items() if hit)
             estimate['estimated_uncached_seconds'] = sum(p['estimates'][scope]['estimated_seconds']
                 for brain, p in measured.items() if not cached[scope][brain])
@@ -163,26 +164,28 @@ def plan(session):
     sizes = session.descriptor_budget.get('frozen_inference_rows')
     if response['status'] == 'planned' and sizes:
         rate = max(p['seconds_per_row_single_worker'] for p in measured.values())
+        workers = min(p.get('workers', runs.workers) for p in measured.values())
         per_call = session.descriptor_budget['per_call_seconds']
         for scope, counts in sizes.items():
-            seconds = [rate * count / max(1, min(runs.workers, -(-count // BATCH_ROWS))) for count in counts]
+            seconds = [runs.estimated_seconds(count, rate, workers) for count in counts]
             inference[scope] = {'rows': int(sum(counts)), 'brains': len(counts),
                                 'estimated_seconds': float(sum(seconds)),
                                 'largest_brain_seconds': float(max(seconds, default=0.)),
-                                'fits_per_brain_budget': bool(max(seconds, default=0.) <= per_call)}
+                                'fits_per_brain_budget': bool(workers > 0 and max(seconds, default=0.) <= per_call)}
     response.update(wall_seconds=elapsed,
         budget={'per_call_seconds': session.descriptor_budget['per_call_seconds'],
                 'generation_seconds_remaining': session.descriptor_seconds_remaining,
                 'evaluations_remaining': session.remaining},
-        fits_budget={scope: item['estimated_uncached_seconds'] <= available
+        fits_budget={scope: item['memory_feasible'] and item['estimated_uncached_seconds'] <= available
                      for scope, item in response.get('estimates', {}).items()},
         frozen_inference=inference,
         note='Full estimates include sampled preparation and execution on every TRAIN brain; '
-             'fits_budget compares only uncached work with the remaining descriptor allowance. Worker scaling is approximate; '
+             'fits_budget compares only uncached work with the remaining descriptor allowance and measured memory capacity. '
+             'The first batch is serial; subsequent concurrency uses observed TRAIN memory headroom. Worker scaling is approximate; '
              'cold retrieval and shared IO can make full runs slower. Planning consumes descriptor wall time, no evaluation units. '
              'frozen_inference extrapolates, per allowed scope, the additional computation on the other brains at '
              'submission (each brain has the per-call budget; the scope you compute with is reused there); '
-             'no heldout images were read.')
+             'no heldout images were read, and heldout graph memory may reduce concurrency further.')
     directory = session.gen_dir / 'descriptor_plans'
     directory.mkdir(exist_ok=True)
     path = directory / f'plan{len(list(directory.glob("plan*.json"))) + 1:03d}.json'

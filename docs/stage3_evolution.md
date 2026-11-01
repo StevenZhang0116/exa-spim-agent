@@ -59,8 +59,9 @@ python -u -m proofreader_evolve.cli.run_evolution \
   --validation-brains 789202,794493,794491,750318,751473 \
   --generations 20 \
   --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400
-# Resource defaults since 2026-10-27: --classifier-threads 8, --descriptor-workers 24 ('auto' = granted CPUs
-# minus 2); the eleven-brain seed baseline with 38 workers peaked at the 200 GiB job limit on n280.
+# Resource defaults: --classifier-threads 8, --descriptor-workers 24 (maximum; 'auto' = granted CPUs minus 2).
+# Since 2026-11-01 both worker modes are capped by CPU affinity and current job memory headroom;
+# --descriptor-memory-mb 16384 is independent of --classifier-memory-mb.
 # Partition since 2026-10-27: 794495 auxiliary TRAIN (detector-fitted); 802449 within-brain grouped folds; the
 # four holdout selection brains are scored whole by models that never saw them (holdout_precision, the
 # cross-brain signal); validation unchanged. --aggregation positive-weighted (default since 2026-10-27) pools
@@ -78,7 +79,7 @@ python -u -m proofreader_evolve.cli.run_evolution \
 # Controls for attribution: --kind-schedule alternate (strict merge/split rotation),
 # --promotion-gate margin (point-estimate gate), --no-descriptors (disable descriptor tools),
 # --detector-prior no-score (withhold the frozen detector score: constant seed, same pools and detector
-# feature columns; descriptors cover the complete candidate pool).
+# feature columns; descriptors cover judgeable rows by default, or explicitly all_candidates).
 # Historical in-sample ranking with the detector-fitted TRAIN brain alone:
 python -m proofreader_evolve.cli.run_evolution \
   --train-brains 794495 --validation-brains auto --selection-protocol in_sample \
@@ -98,6 +99,45 @@ above), or request the historical `--selection-protocol in_sample`. Evolution
 writes its log to the run directory (`runs/precision_<run>/trajectory.txt` and
 `.jsonl`, `run_status.json`, `report.html`), not to `proofreader_evolve/log/`;
 redirect stdout if you want a console log file.
+
+For a new Slurm run, use the lightweight launcher **from an allocated compute
+node**, outside the evolution step. Each evolution should have its own allocation.
+For example, replace `JOB_ID`, `NODE` and the CPU count with granted resources:
+
+```bash
+/home/zihan.zhang/.conda/envs/panda/bin/python -u -m proofreader_evolve.cli.launch_evolution \
+  --job-id JOB_ID --node NODE --cpus 40 -- \
+  --train-brains 794495,802449,747807,754610,754612,754613 \
+  --selection-brains 802449,747807,754610,754612,754613 \
+  --selection-holdout-brains 747807,754610,754612,754613 \
+  --validation-brains 789202,794493,794491,750318,751473 \
+  --detector-prior raw --generations 10 \
+  --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400
+```
+
+The launcher inherits the absolute panda interpreter, creates a unique directory,
+and launches one `srun --overlap --exact` step. Overlap permits coexistence with an
+interactive/Jupyter allocation's parent step; it is not a concurrency lock. The
+parent checks the child's return code and exact Slurm step after exit. Direct
+`run_evolution` remains supported, but cannot finalize its own status after SIGKILL.
+`--run-dir` accepts only a new directory (or one containing just `launch.json`).
+
+Descriptor admission uses the minimum headroom across finite cgroup v2 ancestors,
+without assuming file cache is immediately reclaimable. It reserves max(8 GiB,
+10% of the limit) and a worker cap plus 512 MiB of host preparation allowance per
+batch. Pending batches remain fully reserved, making admission conservative.
+The first batch runs alone before further concurrency is admitted; the graph's
+memory then appears in the job usage. Probes and frozen inference use the same
+checks. The host graph load itself is not bounded by the worker's address-space
+cap. Slurm execution fails explicitly if its cgroup limit cannot be read; outside
+Slurm the fallback is host MemAvailable. Admission and input preparation consume
+the original descriptor wall budget. Recorded numeric-bank manifests include
+actual peak worker count and bounded memory-admission observations. This is risk
+reduction, not a guarantee against arbitrary memory spikes. Lower concurrency may
+require a longer wall budget; planning reports the observed capacity. Measured on
+2026-11-01 on idle 200 GB allocations (n242, n221): the default 16384 MiB cap admits
+10 concurrent batches, 8192 MiB admits 19 to 21 and 4096 MiB admits 24; loaded graphs
+and classifier workers reduce this during a run.
 `--validation-brains auto`
 discovers other local MCL-matching `_add.pkl` caches and includes brains whose
 merge and split tables pass the existing provenance/integrity checks. TRAIN and
@@ -585,7 +625,20 @@ marked unrecorded; missing measurements remain unknown. Costs are summed once pe
 generation and incomplete totals are labelled. Raw files remain complete on disk;
 embedded code/tool previews are bounded and explicitly marked when truncated.
 `run_status.json` records the last known state, not a live process heartbeat.
-Abrupt process kills cannot write a final status. `report.html` and its validation
+`execution.json` records hostname, PID, Slurm job/step and start time. The launcher
+reconciles abnormal exits; if the launcher/allocation also dies or accounting is
+delayed, run this later **on a compute node**:
+
+```bash
+python -m proofreader_evolve.cli.check_run_status proofreader_evolve/runs/precision_<run>
+```
+
+Only a terminal record for that exact step, or an observed launcher exit, can mark
+a run stopped. Slurm OUT_OF_MEMORY confirms OOM; SIGKILL alone does not. Missing or
+active accounting without a known exit leaves the saved state unchanged. Completed
+runs are preserved. The check updates status/report only; it does not resume work.
+Older runs without `execution.json` cannot be reconciled automatically.
+`report.html` and its validation
 data remain outside the reviser's read allowlist. Report-generation failures emit
 a warning and do not alter scorer acceptance.
 

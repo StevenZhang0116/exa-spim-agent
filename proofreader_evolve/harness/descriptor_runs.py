@@ -7,7 +7,7 @@ columns as ordinary predictors. Labels are touched only by the host: the `judgea
 selects the GT-labeled rows (the rows every fit and ranking uses), and the summary for
 TRAIN brains is built after the computation.
 """
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 import hashlib
 import json
@@ -22,6 +22,7 @@ import numpy as np
 
 from .descriptor_contract import DESCRIPTOR_VERSION
 from . import descriptor_inputs
+from . import memory_budget
 from .image_context import file_hash
 from .label_availability import labeled_rows
 from .model_execution import ModelExecutionError, run_worker, DEFAULT_MEMORY_MB
@@ -34,7 +35,7 @@ BOUNDARY_ROWS = 2000
 BATCH_ROWS = 256
 CONTEXT_COLUMN = 'bank_context_available'
 IMPLEMENTATION_FILES = ('descriptor_runs.py', 'descriptor_inputs.py', 'descriptor_contract.py',
-                        'classifier_train_worker.py', 'model_execution.py', 'model_sandbox.py')
+                        'classifier_train_worker.py', 'model_execution.py', 'model_sandbox.py', 'memory_budget.py')
 
 
 def normalize_scope(scope):
@@ -70,9 +71,21 @@ def stage_batch(root, contexts, patches):
 class DescriptorRuns:
     def __init__(self, contexts, bank_dir, *, workers='auto', memory_mb=DEFAULT_MEMORY_MB, trace=None):
         self.contexts, self.bank_dir, self.trace = contexts, Path(bank_dir), trace
-        self.workers = available_workers() if workers == 'auto' else max(1, int(workers))
+        self.requested_workers = workers
+        cpu_limit = available_workers()
+        self.workers = cpu_limit if workers == 'auto' else min(cpu_limit, max(1, int(workers)))
         self.memory_mb = memory_mb
         self.implementation = {name: file_hash(Path(__file__).with_name(name)) for name in IMPLEMENTATION_FILES}
+
+    def capacity(self, pending=0):
+        return memory_budget.admission(self.memory_mb, self.workers, pending=pending)
+
+    @staticmethod
+    def estimated_seconds(rows, rate, workers):
+        # The first batch loads the graph alone; only subsequent batches overlap.
+        first = min(rows, BATCH_ROWS)
+        remaining_batches = -(-(rows - first) // BATCH_ROWS)
+        return float(rate * (first + (rows - first) / max(1, min(workers, remaining_batches))))
 
     def scope_rows(self, entry, scope, k, truth=None):
         """Row subset of one scope; `judgeable` needs the table's three-valued labels (host-side)."""
@@ -140,6 +153,8 @@ class DescriptorRuns:
             return False
 
     def _execute_batch(self, root, program, spec, rows, contexts, patches, deadline, log_path):
+        # Recheck after input preparation, especially the first lazy graph load.
+        memory_budget.require_capacity(self.capacity())
         root.mkdir(parents=True, exist_ok=True)
         has_images = stage_batch(root, contexts, patches)
         (root / 'training.py').write_text(program)
@@ -230,6 +245,7 @@ class DescriptorRuns:
         chunks, timings = [], []
         try:
             for start in range(0, len(rows), BATCH_ROWS):
+                memory_budget.require_capacity(self.capacity())
                 timing = {}
                 with tempfile.TemporaryDirectory(prefix='descriptor_probe_') as tmp:
                     values, _ = self._run_batch(Path(tmp), table, entry, program, spec,
@@ -274,19 +290,56 @@ class DescriptorRuns:
                     errors.append((index, exc))
 
         loads_before = entry.chunk_loads
+        peak_workers, admission_records = 0, []
+
+        def record(snapshot, active):
+            nonlocal peak_workers
+            peak_workers = max(peak_workers, active)
+            # Bounded summaries, not a per-batch log or any candidate/validation content.
+            if not admission_records or active != admission_records[-1]['active_workers']:
+                admission_records.append({**snapshot, 'active_workers': active})
+                if len(admission_records) > 32:
+                    del admission_records[1]
+            elif snapshot['headroom_bytes'] < admission_records[-1]['headroom_bytes']:
+                admission_records[-1] = {**snapshot, 'active_workers': active}
+
         try:
+            if batches:
+                snapshot = self.capacity()
+                memory_budget.require_capacity(snapshot)
+                record(snapshot, 1)
+                job(0)  # Load the host graph before admitting concurrent input preparation.
             with ThreadPoolExecutor(max_workers=self.workers) as pool:
-                list(pool.map(job, range(len(batches))))
+                pending, next_index = set(), 1
+                while not errors and (pending or next_index < len(batches)):
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        cancel.set()
+                        raise ModelExecutionError('Descriptor wall budget exhausted while waiting for batches/memory')
+                    snapshot = self.capacity(len(pending))
+                    count = min(snapshot['available_workers'], len(batches) - next_index)
+                    if count:
+                        record(snapshot, len(pending) + count)
+                        for _ in range(count):
+                            pending.add(pool.submit(job, next_index))
+                            next_index += 1
+                    elif not pending and next_index < len(batches):
+                        memory_budget.require_capacity(snapshot)
+                    if pending:
+                        _, pending = wait(pending, timeout=min(.2, remaining), return_when=FIRST_COMPLETED)
         finally:
+            cancel.set()
             entry.release()
         if errors:
             index, exc = sorted(errors, key=lambda item: item[0])[0]
-            raise ModelExecutionError(f'Descriptor batch {index} failed: {exc}') from exc
+            raise ModelExecutionError(f'Descriptor batch {index} failed: {type(exc).__name__}: {exc}') from exc
         if any(result is None for result in results):
             raise ModelExecutionError('Descriptor computation was cancelled before every batch completed')
         values = np.concatenate([result[0] for result in results]) if results else np.zeros((0, len(spec['feature_names'])))
         worker_seconds = float(sum(result[1] for result in results))
-        manifest = {'identity': identity, 'rows': int(len(rows)), 'batches': len(batches), 'workers': self.workers,
+        manifest = {'identity': identity, 'rows': int(len(rows)), 'batches': len(batches), 'workers': peak_workers,
+                    'worker_limit': self.workers, 'requested_workers': self.requested_workers,
+                    'worker_memory_mb': self.memory_mb, 'memory_admission': admission_records,
                     'wall_seconds': time.monotonic() - started, 'worker_seconds_total': worker_seconds,
                     'chunk_loads': entry.chunk_loads - loads_before,
                     'created_at': datetime.now().astimezone().isoformat(timespec='seconds')}
@@ -303,7 +356,7 @@ class DescriptorRuns:
                 shutil.rmtree(directory)
             staged.rename(directory)
         return {'rows': rows, 'values': values, 'cached': False, 'wall_seconds': manifest['wall_seconds'],
-                'worker_seconds': worker_seconds, 'batches': len(batches), 'workers': self.workers,
+                'worker_seconds': worker_seconds, 'batches': len(batches), 'workers': peak_workers,
                 'manifest': manifest}
 
     def plan(self, table, program, spec, *, k, sample_rows=64, timeout=600):
@@ -314,17 +367,20 @@ class DescriptorRuns:
             measured = self.probe(table, program, spec, rows, timeout=timeout, log_dir=Path(tmp))
         values, wall = measured['values'], measured['wall_seconds']
         per_row = wall / max(1, len(rows))
+        capacity = self.capacity()
+        effective_workers = capacity['available_workers']
         estimates = {}
         for scope in getattr(self, 'allowed_scopes', SCOPES):
             count = len(self.scope_rows(entry, scope, k, truth=table.truth))
             batches = -(-count // BATCH_ROWS)
             # Never claim parallelism from more workers than actual row batches.
-            seconds = per_row * count / max(1, min(self.workers, batches))
+            seconds = self.estimated_seconds(count, per_row, effective_workers)
             estimates[scope] = {'rows': int(count), 'batches': int(batches),
-                                'estimated_seconds': float(seconds)}
+                                'estimated_seconds': float(seconds), 'memory_feasible': effective_workers > 0}
         return {'sample_rows': int(len(rows)), 'sample_wall_seconds': wall, 'seconds_per_row_single_worker': per_row,
                 'preparation_seconds': measured['preparation_seconds'], 'worker_seconds': measured['worker_seconds'],
-                'workers': self.workers, 'estimates': estimates,
+                'workers': effective_workers, 'worker_limit': self.workers,
+                'requested_workers': self.requested_workers, 'memory': capacity, 'estimates': estimates,
                 'finite_fraction': {name: float(np.isfinite(values[:, j]).mean()) if len(rows) else None
                                     for j, name in enumerate(spec['feature_names'])}}
 

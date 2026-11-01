@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from proofreader_evolve.harness import descriptor_inputs, descriptor_probe, descriptor_runs as dr
+from proofreader_evolve.harness import descriptor_inputs, descriptor_probe
 from proofreader_evolve.harness import detector_prior
 from proofreader_evolve.harness.descriptor_contract import descriptor_spec
 from proofreader_evolve.harness.image_context import CandidateImageStore
@@ -19,7 +19,10 @@ from proofreader_evolve.harness.image_evidence import descriptor_ablation_eviden
 from proofreader_evolve.harness.local_context import candidate_ref
 from proofreader_evolve.tests import test_descriptor_compute as fixtures
 from proofreader_evolve.tests.test_selection_protocol import brain_table
-from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
+from proofreader_evolve.tests import label_fixture
+
+setUpModule = label_fixture.setUpModule
+tearDownModule = label_fixture.tearDownModule
 
 
 CUSTOM = fixtures.IMAGE_DESCRIPTOR.replace("'image_tier': 'level1'", "'image': {'level': 0, 'radius_um': 10}")
@@ -292,7 +295,8 @@ class ProbeSessionTests(unittest.TestCase):
         self.assertEqual(estimated['judgeable'], {'rows': 120, 'brains': 2, 'estimated_seconds': 120.,
                                                  'largest_brain_seconds': 100., 'fits_per_brain_budget': True})
         self.assertEqual(estimated['all_candidates']['rows'], 300000)
-        self.assertEqual(estimated['all_candidates']['largest_brain_seconds'], 100000.)
+        # First 256 rows run alone before memory-limited parallel admission.
+        self.assertEqual(estimated['all_candidates']['largest_brain_seconds'], 100128.)
         self.assertFalse(estimated['all_candidates']['fits_per_brain_budget'])
         with patch.object(runs, 'plan', return_value=plan), patch.object(runs, 'cached',
                 side_effect=lambda table, *args: table.meta['provenance']['brain'] == '794495'):
