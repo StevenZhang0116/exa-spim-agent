@@ -511,7 +511,7 @@ class TrainingExperiments:
                     oof_scores=selection_scores)
             stage = 'diagnostics'
             report, state = self._merge_measurement(measured, measured_state, combined)
-            from .training_diagnostics import describe
+            from .training_diagnostics import describe, selection_examples
             features_by_brain = {brain: augmented_features(component, bank.tables[self.target_kind], self.timeout)
                                  for brain, bank in self.train.items()}
             for brain, bank in self.train.items():
@@ -520,17 +520,9 @@ class TrainingExperiments:
                     features = features_by_brain[brain] if kind == self.target_kind else None
                     report['cells'][cell].update(describe(table, state[cell]['scores'], state[cell]['chosen'],
                                                          self.generation, cell, self.parent_state[cell], features=features))
-            selection_feedback = deepcopy(selection_report)
-            for cell, values in selection_state.items():
-                brain = cell.rsplit('/', 1)[0]
-                # Out-of-fold scores come from different models per fold, so the boundary and
-                # deep-positive panels rank inside each fold (the official ranking's rule).
-                fold_ids = (self.protocol.fold_ids(self.target_kind, brain)
-                            if self.protocol.requires_fold_fits else None)
-                selection_feedback['cells'][cell].update(describe(
-                    self.train[brain].tables[self.target_kind], values['scores'], values['chosen'],
-                    self.generation, cell, self.parent_selection_state.get(cell), features=features_by_brain[brain],
-                    fold_ids=fold_ids))
+            selection_feedback = selection_examples(selection_report, selection_state, self.protocol, self.train,
+                                                    self.target_kind, self.generation, self.parent_selection_state,
+                                                    features_by_brain=features_by_brain)
             passed, reason = scoring.acceptance(self.parent_report, report, self.margin, target_kind=self.target_kind)
             entry.update(status='evaluated', train=metrics_only(report),
                          train_gate={'passed': passed, 'reason': reason, 'required_for_promotion': False},

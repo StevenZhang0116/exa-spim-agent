@@ -21,7 +21,7 @@ from proofreader_evolve.harness.scorer_components import components, compose
 from proofreader_evolve.harness.train_experiments import TrainingExperiments, ExperimentMemory
 from proofreader_evolve.harness.search_proposals import formula_info, parameterize, parameter_candidates, read_proposal
 from proofreader_evolve.harness.candidate_pool import CandidatePool
-from proofreader_evolve.harness.training_diagnostics import describe, feature_statistics
+from proofreader_evolve.harness.training_diagnostics import describe, feature_statistics, selection_examples
 from proofreader_evolve.tests.test_fixed_pool_scoring import fixture, BASELINE, IMPROVED
 from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
 
@@ -85,6 +85,18 @@ class DiagnosticsTests(unittest.TestCase):
         folded = describe(table, scores, chosen, fold_ids=folds)['group_sizes']
         self.assertEqual((folded['deep_positive'], folded['boundary_positive'], folded['boundary_label0']), (0, 0, 4))
         self.assertEqual((folded['selected_positive'], folded['missed_positive']), (4, 0))
+        # The shared entry of the per-generation feedback and of candidate evaluations asks the
+        # protocol for the folds; an in-sample protocol keeps one ranking.
+        from types import SimpleNamespace
+        report = {'cells': {'1/split': {'precision': 1.}}}
+        state = {'1/split': {'scores': scores, 'chosen': chosen}}
+        banks = {'1': SimpleNamespace(tables={'split': table})}
+        grouped = SimpleNamespace(requires_fold_fits=True, fold_ids=lambda kind, brain: folds)
+        in_sample = SimpleNamespace(requires_fold_fits=False, fold_ids=None)
+        sizes = lambda protocol: selection_examples(report, state, protocol, banks, 'split', 1)['cells']['1/split']['group_sizes']
+        self.assertEqual(sizes(grouped)['deep_positive'], 0)
+        self.assertEqual(sizes(in_sample)['deep_positive'], 2)
+        self.assertEqual(report['cells']['1/split'], {'precision': 1.})  # the report itself is untouched
 
     def test_statistics_use_whole_pool_and_handle_missing_values(self):
         bank = fixture()

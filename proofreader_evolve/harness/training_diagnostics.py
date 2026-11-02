@@ -9,6 +9,7 @@ each fold's own ranking, as the official statistics are; pooling the folds would
 rows by the scale of their fold's model instead of by rank.
 """
 
+from copy import deepcopy
 import hashlib
 import numpy as np
 from .local_context import candidate_ref
@@ -77,6 +78,21 @@ def describe(table, scores, chosen, generation=0, cell='', parent=None, *, featu
         examples.extend(example(table, scores, i, group, features) for i in _sample(indices, seed))
     return {'training_examples': examples, 'group_sizes': {g: len(i) for g, i in groups.items()},
             'ranking_delta': delta}
+
+
+def selection_examples(report, state, protocol, tables_by_brain, kind, generation=0, parent_state=None, *,
+                       features_by_brain=None):
+    """The selection report with example panels per cell: the one entry for both the
+    per-generation feedback and candidate evaluations, so grouped out-of-fold scores are
+    always ranked inside their folds (``protocol.fold_ids``) and in-sample scores as one ranking."""
+    feedback = deepcopy(report)
+    for cell, values in state.items():
+        brain = cell.rsplit('/', 1)[0]
+        fold_ids = protocol.fold_ids(kind, brain) if protocol.requires_fold_fits else None
+        feedback['cells'][cell].update(describe(
+            tables_by_brain[brain].tables[kind], values['scores'], values['chosen'], generation, cell,
+            (parent_state or {}).get(cell), features=(features_by_brain or {}).get(brain), fold_ids=fold_ids))
+    return feedback
 
 
 def feature_statistics(tables_by_brain, target_kind):

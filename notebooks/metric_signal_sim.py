@@ -11,7 +11,6 @@ The paired bootstrap keeps each pool's K at its original positive count, as the 
 bootstrap does (until the 2026-11-02 review it recomputed K from the resampled positives;
 the z values moved by at most 0.4 and the ordering of the statistics did not change).
 """
-import sys
 import numpy as np
 rng = np.random.default_rng(1)
 

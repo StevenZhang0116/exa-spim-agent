@@ -49,7 +49,7 @@ from ..harness.candidate_pool import CandidatePool, POOL_TOLERANCES
 from ..harness import kind_schedule
 from ..harness import rank_statistics
 from ..harness.classifier_contract import frozen_model, MODEL_VERSION, copy_artifacts
-from ..harness.training_diagnostics import describe, feature_statistics
+from ..harness.training_diagnostics import feature_statistics, selection_examples
 from ..harness.local_context import attach_local_context, CONTEXT_VERSION
 from ..harness.local_features import augmented_features
 from ..harness.image_context import attach_image_context, DEFAULT_ALIGNMENT
@@ -1306,13 +1306,11 @@ async def _run(args, revise_fn, run_dir, trace):
         # on selection brains), compared against the accepted scorer; in-sample metrics stay diagnostic.
         selection_report, selection_state = parent_selection[target_kind]
         branch_report, branch_state = branch_pair
-        feedback_selection = deepcopy(selection_report)
-        for cell, values in branch_state.items():
-            brain = cell.rsplit('/', 1)[0]
-            table = train[brain].tables[target_kind]
-            feedback_selection['cells'][cell].update(describe(
-                table, values['scores'], values['chosen'], generation, cell, selection_state.get(cell),
-                features=augmented_features(policy_path.read_text(), table, args.policy_time_budget)))
+        features_by_brain = {cell.rsplit('/', 1)[0]: augmented_features(
+            policy_path.read_text(), train[cell.rsplit('/', 1)[0]].tables[target_kind], args.policy_time_budget)
+            for cell in branch_state}
+        feedback_selection = selection_examples(selection_report, branch_state, protocol, train, target_kind,
+                                                generation, selection_state, features_by_brain=features_by_brain)
         statistics_path = gen_dir / 'feature_statistics.json'
         if statistics_version.get(target_kind) != memory.descriptor_generation:
             # Registered descriptor columns join the whole-pool label-conditional statistics.
