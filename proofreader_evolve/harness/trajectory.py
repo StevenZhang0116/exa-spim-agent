@@ -91,11 +91,15 @@ class Trajectory:
 def metric_summary(report):
     """Keep progress logs small; detailed training examples live in feedback."""
     return {"aggregation": report.get("aggregation"),
+            "objective": report.get("objective") or "precision_at_k",
             "per_kind_precision": report.get("per_kind_precision", {}),
+            "per_kind_objective": report.get("per_kind_objective") or report.get("per_kind_precision", {}),
+            "per_kind_statistics": report.get("per_kind_statistics"),
             "excluded_cells": report.get("excluded_cells", []),
             "cells": {name: {k: cell[k] for k in (
                 "pool_size", "n_labeled", "positives", "requested_k", "effective_k",
-                "tp", "fp", "precision", "recall", "in_mean") if k in cell}
+                "tp", "fp", "precision", "recall", "in_mean", "precision_depth_mean",
+                "average_precision", "auroc", "pauc") if k in cell}
                       for name, cell in report["cells"].items()}}
 
 
@@ -107,9 +111,20 @@ def log_metrics(trace, label, report, parent=None):
     cell so console truncation cannot hide datasets when many brains are used.
     """
     summary = metric_summary(report)
+    objective = summary["objective"]
+    parent_objective = (parent.get("per_kind_objective") or parent.get("per_kind_precision", {})) if parent else {}
     lines = [label]
     for kind, value in summary['per_kind_precision'].items():
-        line = f"{kind} Precision@K={value:.4f}"
+        line = ""
+        if objective != "precision_at_k":
+            current = summary["per_kind_objective"][kind]
+            line = f"{kind} {objective}={current:.4f}"
+            if parent is not None and parent_objective.get(kind) is not None:
+                delta = current - parent_objective[kind]
+                summary.setdefault('delta_per_kind_objective', {})[kind] = delta
+                line += f" (delta={delta:+.4f})"
+            line += " "
+        line += f"{kind if objective == 'precision_at_k' else ''}{' ' if objective == 'precision_at_k' else ''}Precision@K={value:.4f}"
         if parent is not None:
             delta = value - parent['per_kind_precision'][kind]
             summary.setdefault('delta_per_kind_precision', {})[kind] = delta
@@ -119,6 +134,8 @@ def log_metrics(trace, label, report, parent=None):
         if parent is not None:
             cell["delta_precision"] = cell["precision"] - parent["cells"][name]["precision"]
             cell["delta_tp"] = cell["tp"] - parent["cells"][name]["tp"]
+            if cell.get(objective) is not None and parent["cells"][name].get(objective) is not None:
+                cell["delta_objective"] = cell[objective] - parent["cells"][name][objective]
     trace.emit("metrics", "; ".join(lines), label=label, metrics=summary)
     for name, cell in summary["cells"].items():
         brain, kind = name.rsplit("/", 1)
@@ -131,6 +148,10 @@ def log_metrics(trace, label, report, parent=None):
                 f"Recall@K={recall}")
         if parent is not None:
             line += f" delta={cell['delta_precision']:+.4f} delta_hits={cell['delta_tp']:+d}"
+        if cell.get("auroc") is not None:
+            line += f" | AUROC={cell['auroc']:.4f} pAUC={cell['pauc']:.4f} AP={cell['average_precision']:.4f}"
+            if cell.get("delta_objective") is not None and objective != "precision_at_k":
+                line += f" delta_{objective}={cell['delta_objective']:+.4f}"
         trace.emit("metrics_cell", line, label=label, brain=brain, kind=kind,
                    positive_scope="fixed_candidate_pool", metrics=cell)
 

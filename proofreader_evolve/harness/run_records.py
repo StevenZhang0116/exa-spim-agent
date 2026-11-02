@@ -16,14 +16,19 @@ from pathlib import Path
 # ratio per kind and lets a kind run without a cap (split: K = its GT positives); v5 (2026-10-27)
 # drops the merge cap and ratio too, so every pool of either kind ranks K = its GT positives.
 # v6 removes cross-kind metrics and gives selection and promotion the same per-kind objective.
+# v7 (2026-11-02) makes the objective a configurable rank statistic (manifest budgets.objective:
+# precision_at_k, auroc, pauc or average_precision) and records every statistic in every cell;
+# per_kind_precision stays in every report, so the precision series remains readable here.
 # Objective versions are recorded explicitly; measurements are not comparable across versions.
-PRECISION = "native-precision-at-k-v6-per-kind-objective"
+PRECISION = "native-rank-objective-v7-configurable-statistic"
+PRECISION_V6 = "native-precision-at-k-v6-per-kind-objective"
 PRECISION_V5 = "native-precision-at-k-v5-uniform-k"
 PRECISION_V4 = "native-precision-at-k-v4-per-kind-k"
 PRECISION_V3 = "native-precision-at-k-v3-positive-scaled-k"
 PRECISION_V2 = "native-precision-at-k-v2-three-valued"
 LEGACY_PRECISION = "native-precision-at-k-v1"
-PRECISION_VERSIONS = frozenset({LEGACY_PRECISION, PRECISION_V2, PRECISION_V3, PRECISION_V4, PRECISION_V5, PRECISION})
+PRECISION_VERSIONS = frozenset({LEGACY_PRECISION, PRECISION_V2, PRECISION_V3, PRECISION_V4, PRECISION_V5, PRECISION_V6,
+                                PRECISION})
 METRIC_NAME = "Precision@K per kind"
 
 
@@ -77,6 +82,14 @@ def number(value):
 def measurement_values(measurement):
     return (None if measurement is None else
             {kind: number(value) for kind, value in measurement.get('per_kind_precision', {}).items()})
+
+
+def objective_values(measurement):
+    """Per-kind objective of a measurement (its precision for reports before v7)."""
+    if measurement is None:
+        return None
+    values = measurement.get('per_kind_objective') or measurement.get('per_kind_precision', {})
+    return {kind: number(value) for kind, value in values.items()}
 
 
 def measurement_value(measurement, kind):

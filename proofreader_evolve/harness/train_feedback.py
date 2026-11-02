@@ -2,10 +2,10 @@
 
 import json
 
-from .rank_diagnostics import CELL_KEYS as DIAGNOSTIC_METRICS
+from .rank_statistics import CELL_KEYS as DIAGNOSTIC_METRICS
 
 
-FEEDBACK_VERSION = "stratified-train-v6-per-kind-objective"
+FEEDBACK_VERSION = "stratified-train-v7-rank-objective"
 MAX_FEEDBACK_BYTES = 128_000  # 48 KB -> 96 KB (2026-10-05) -> 128 KB (2026-10-07, with the SDK file-read cap raised);
 # in run precision_20261007_112554 six of ten generations were pruned to one or two examples per group at 96 KB.
 METRICS = ("precision", "tp", "fp", "requested_k", "effective_k", "pool_size", "n_labeled", "n_unlabeled",
@@ -17,12 +17,17 @@ def metrics_only(report):
     if report is None:
         return None
     return {"per_kind_precision": report["per_kind_precision"],
+            # Since v7 (2026-11-02) every report names its objective and carries every rank statistic
+            # per kind; older artifacts were precision at K and say "not recorded" for the rest.
+            "objective": report.get("objective") or "precision_at_k",
+            "per_kind_objective": report.get("per_kind_objective") or report["per_kind_precision"],
+            "per_kind_statistics": report.get("per_kind_statistics") or "not recorded",
+            **({"head_guard": report["head_guard"]} if report.get("head_guard") else {}),
             **({"mode": report["mode"]} if "mode" in report else {}),
             **({"aggregation": report["aggregation"]} if "aggregation" in report else {}),
-            **({"holdout_cells": report["holdout_cells"], "holdout_precision": report["holdout_precision"]}
+            **({"holdout_cells": report["holdout_cells"], "holdout_precision": report["holdout_precision"],
+                "holdout_objective": report.get("holdout_objective", report["holdout_precision"])}
                if report.get("holdout_cells") else {}),
-            # Selection reports carry rank diagnostics since 2026-11-01; older artifacts say so.
-            **({"diagnostics": report.get("diagnostics") or "not recorded"} if "mode" in report else {}),
             "cells": {name: {key: cell[key] for key in (*METRICS, *SELECTION_METRICS, *DIAGNOSTIC_METRICS) if key in cell}
                       | ({'local_context': cell['local_context']} if 'local_context' in cell else {})
                       | ({'image_context': cell['image_context']} if 'image_context' in cell else {})
@@ -96,19 +101,26 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                     "number of GT-labeled rows selected (k_rule explains the budget); in_mean says whether the "
                     "pool counts toward the objective. per_kind_precision combines the counted cells separately for each kind by the "
                     "k_rule's aggregation (positive-weighted: hits summed over brains / effective K summed over brains; "
-                    "equal-brain: mean of the cells). Optimize the target kind's selection precision. When holdout_cells are listed, "
-                    "those selection brains were held out whole (a model that never saw the brain scored them) and "
-                    "holdout_precision summarizes only those cells under the same aggregation; use it to diagnose "
-                    "whether selection gains transfer across brains. "
+                    "equal-brain: mean of the cells). objective names the statistic that candidate ranking, feature "
+                    "ablation and promotion compare, and per_kind_objective is its value: precision_at_k; auroc = the "
+                    "probability that a GT positive outranks a GT negative over the labeled rows (ties count one "
+                    "half); pauc = the same restricted to false-positive rates up to pauc_fpr; average_precision. "
+                    "Optimize the target kind's selection objective. head_guard, when present, is a point-estimate "
+                    "constraint the promotion gate also applies: the candidate's named head statistic over the "
+                    "counted cells must not fall more than the tolerance below the accepted scorer's. When "
+                    "holdout_cells are listed, those selection brains were held out whole (a model that never saw "
+                    "the brain scored them) and holdout_objective / holdout_precision summarize only those cells "
+                    "under the same aggregation; use them to diagnose whether selection gains transfer across brains. "
                     "The scorer contract is in the system prompt and rules.md."
                     + (" Examples, ranking_delta and the official selection score follow selection_protocol. "
                        "grouped_oof uses out-of-fold scores on selection brains; in_sample uses full-TRAIN scores. "
                        f"Branch ranking uses {report_role}_selection's metric; {report_role}_train records "
-                       "the separate full-TRAIN measurement. The selection report's diagnostics (per cell and per "
-                       "kind: precision_at_half_k, precision_at_double_k, average_precision; half_k and double_k are "
-                       "the labeled rows actually ranked) show head hits, deeper coverage and whole-ranking change "
-                       "on the same labeled rows and partition; they are diagnostic only, since candidate ranking, "
-                       "ablation and promotion use precision at K. 'not recorded' marks older artifacts."
+                       "the separate full-TRAIN measurement. per_kind_statistics, and the same fields per cell "
+                       "(precision, precision_at_half_k, precision_at_double_k, precision_depth_mean = their mean, "
+                       "average_precision, auroc, pauc; half_k and double_k are the labeled rows actually ranked), "
+                       "describe head hits, deeper coverage and the whole ranking on the same labeled rows and "
+                       "partition; only the objective decides, the rest is diagnostic. 'not recorded' marks older "
+                       "artifacts."
                        if selection is not None else "")
                     + (" Examples and ranking_delta describe the assigned search branch (search_branch); "
                        f"{report_role}_selection/{report_role}_train describe the accepted scorer, and ranking_delta "

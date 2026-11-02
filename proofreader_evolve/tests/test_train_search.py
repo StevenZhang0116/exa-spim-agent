@@ -423,7 +423,7 @@ class SearchDriverTests(unittest.TestCase):
                     self.assertEqual(feedback['search_branch']['experiment'], 'gen001/attempt001')
                     self.assertFalse(feedback['search_branch']['same_as_accepted'])
                     self.assertEqual(feedback['search_branch']['selection']['per_kind_precision']['split'], 1)
-                    self.assertEqual(feedback['format'], 'stratified-train-v6-per-kind-objective')
+                    self.assertEqual(feedback['format'], 'stratified-train-v7-rank-objective')
                     self.assertEqual(json.loads((run_dir / 'manifest.json').read_text())['feedback_format'],
                                      feedback['format'])
                     self.assertEqual(feedback['parent_selection']['per_kind_precision']['split'], 0)

@@ -83,7 +83,7 @@ class RuleTests(unittest.TestCase):
         result = self.allocate(cells, history)
         self.assertEqual((result["chosen"], result["rule"]), ("merge", "momentum"))
         self.assertAlmostEqual(result["kinds"]["merge"]["momentum"], .206 - .181)
-        self.assertEqual(result["version"], "adaptive-kind-allocation-v4-point-gain-momentum")
+        self.assertEqual(result["version"], "adaptive-kind-allocation-v5-objective-headroom")
 
     def allocate(self, cells, records, **overrides):
         options = {"paused": {}, "pending": {}, "floor_every": 4}

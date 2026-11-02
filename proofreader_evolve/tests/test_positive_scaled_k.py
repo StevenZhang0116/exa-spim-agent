@@ -239,12 +239,13 @@ class FeedbackAndRecordTests(unittest.TestCase):
         self.assertEqual(records.PRECISION, scoring.SCORING_VERSION)
         self.assertEqual(records.PRECISION_VERSIONS,
                          {records.LEGACY_PRECISION, records.PRECISION_V2, records.PRECISION_V3, records.PRECISION_V4,
-                          records.PRECISION_V5, records.PRECISION})
+                          records.PRECISION_V5, records.PRECISION_V6, records.PRECISION})
         self.assertEqual(records.objective({"objective": records.PRECISION_V2}), records.PRECISION_V2)
         self.assertEqual(records.objective({"objective": records.PRECISION_V3}), records.PRECISION_V3)
         self.assertEqual(records.PRECISION_V3, "native-precision-at-k-v3-positive-scaled-k")
         self.assertEqual(records.PRECISION_V4, "native-precision-at-k-v4-per-kind-k")
-        self.assertEqual(records.PRECISION, "native-precision-at-k-v6-per-kind-objective")
+        self.assertEqual(records.PRECISION, "native-rank-objective-v7-configurable-statistic")
+        self.assertEqual(records.PRECISION_V6, "native-precision-at-k-v6-per-kind-objective")
 
 
 class DriverTests(unittest.TestCase):

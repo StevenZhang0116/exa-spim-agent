@@ -36,7 +36,7 @@ def generation_image_evidence(directory, record):
         image = report.get('image_evidence', {})
         if image.get('image_inputs_present'):
             diagnostics.append({key: report.get(key) for key in (
-                'experiment', 'status', 'protocol', 'delta_precision', 'program_sha256',
+                'experiment', 'status', 'protocol', 'delta_precision', 'delta_objective', 'objective', 'program_sha256',
                 'parameters_sha256', 'feature_columns', 'signature', 'image_evidence')})
     probes, plans = [], []
     for pattern, records in (('descriptor_probes/probe*/result.json', probes), ('descriptor_plans/plan*.json', plans)):

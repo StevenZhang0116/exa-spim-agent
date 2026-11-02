@@ -1,7 +1,9 @@
 """Stratified TRAIN diagnostics and parent-relative top-K changes.
 
 Labels are three-valued (1 / 0 / NaN); every example group is drawn from GT-labeled
-rows, and the boundary panel follows the labeled-row ranking used by Precision@K.
+rows, and the boundary panel follows the labeled-row ranking used by Precision@K. The
+``deep_positive`` group (2026-11-02) samples positives in the lower half of the labeled
+ranking, the region a whole-ranking objective such as AUROC also scores.
 """
 
 import hashlib
@@ -40,6 +42,7 @@ def describe(table, scores, chosen, generation=0, cell='', parent=None, *, featu
         'boundary_positive': boundary[table.truth[boundary] == 1],
         'boundary_label0': boundary[table.truth[boundary] == 0],
         'missed_positive': np.flatnonzero((table.truth == 1) & ~mask),
+        'deep_positive': (lambda deep: deep[table.truth[deep] == 1])(order[len(order) // 2:]),
     }
     delta = None
     if parent is not None:

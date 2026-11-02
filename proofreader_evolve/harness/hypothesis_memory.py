@@ -289,8 +289,8 @@ class HypothesisMemory:
         record = self._record(entry)
         record['last_generation'] = max(record['last_generation'], report.get('generation', 0))
         fields = ('experiment', 'target_kind', 'status', 'protocol', 'feature_columns', 'signature',
-                  'program_sha256', 'parameters_sha256', 'delta_precision', 'cells',
-                  'conclusion', 'error', 'scope', 'wall_seconds', 'evaluations_used')
+                  'program_sha256', 'parameters_sha256', 'delta_precision', 'delta_objective', 'objective',
+                  'objective_by_arm', 'cells', 'conclusion', 'error', 'scope', 'wall_seconds', 'evaluations_used')
         evidence = {k: deepcopy(report[k]) for k in fields if k in report}
         record['feature_evidence'] = [*record['feature_evidence'], evidence][-3:]
         if report.get('status') == 'measured':
@@ -352,7 +352,8 @@ class HypothesisMemory:
         for evidence in reversed(record.get('feature_evidence', [])):
             if evidence.get('status') != 'measured' or evidence.get('protocol') != 'TRAIN_grouped_out_of_fold':
                 continue
-            if evidence['delta_precision'] > 1e-12:
+            delta = evidence.get('delta_objective', evidence.get('delta_precision'))
+            if delta is not None and delta > 1e-12:
                 break
             no_increment += 1
         return min(3, max(record.get('stalled_generations', 0), 2 if no_increment >= 2 else 0))
@@ -369,7 +370,8 @@ class HypothesisMemory:
                    if report.get('target_kind') == entry['target_kind']
                    and report.get('program_sha256') == program and report.get('parameters_sha256') == parameters]
         return [{k: deepcopy(report[k]) for k in ('experiment', 'protocol', 'feature_columns',
-                    'delta_precision', 'conclusion', 'signature')} for report in matches[-3:]]
+                    'delta_precision', 'delta_objective', 'objective', 'conclusion', 'signature') if k in report}
+                for report in matches[-3:]]
 
     def snapshot(self, kind, query='', limit=SNAPSHOT_RECORDS, parent=None):
         tokens = set(re.findall(r'\w+', query.lower()))
@@ -403,7 +405,7 @@ class HypothesisMemory:
                 'information_sources_omitted': max(0, len(sources) - 32),
                 'deprioritized_hypotheses': [r['hypothesis_id'] for r in stale],
                 'recent_feature_findings': [{k: e.get(k) for k in ('experiment', 'protocol', 'feature_columns',
-                                             'delta_precision', 'conclusion')}
+                                             'delta_precision', 'delta_objective', 'objective', 'conclusion')}
                     for record in sorted(records, key=lambda r: -r['last_generation'])[:3]
                     for e in record['feature_evidence'][-1:]],
                 'suggestion': ('Test a different failure mechanism or information source; local_geometry has not '

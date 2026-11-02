@@ -101,10 +101,11 @@ Call `train_classifier({})`. This tool name is retained for continuity; your
 program can fit a classifier, regression/ranking model, neural network, ensemble
 or custom predictor. The harness runs fit on TRAIN, snapshots the artifacts,
 runs label-free inference with the declared inputs, measures the selection score (see Evaluation
-below) alongside in-sample TRAIN Precision@K, and restores the best successful configuration by
-the selection score. Selection comparisons guide search;
-only the outer target-kind validation Precision@K, with its resampling-noise bound, controls
-promotion. With no
+below; the configured objective, AUROC by default, with Precision@K and the other rank statistics
+beside it) alongside in-sample TRAIN Precision@K, and restores the best successful configuration by
+the selection objective. Selection comparisons guide search;
+only the outer target-kind validation objective, with its resampling-noise bound and the head
+guard, controls promotion. With no
 grid, it measures one fit. A grid stops at the first failed fit or execution error of
 the program; the reply's `stopped_early` lists the skipped configurations, which are not
 charged, so fix the program or its memory use before resubmitting them. To try a

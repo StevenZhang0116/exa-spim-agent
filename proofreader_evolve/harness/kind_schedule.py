@@ -22,18 +22,24 @@ Rules, in priority order:
    the kind with the coarser gate: merge needs about ten times the gain that
    split needs to pass the bootstrap, so its rejected +0.02 gains counted as
    nothing while split's accepted +0.006 kept it scheduled at the detector level.
-4. ``headroom``: the largest remaining precision under the configured per-kind
-   aggregation, using each cell's effective K. Cells flagged ``in_mean: false``
-   (below the GT-positive floor) are skipped, as in the promotion objective.
+4. ``headroom``: the largest remaining objective under the configured per-kind
+   aggregation: remaining precision using each cell's effective K, or 1 minus the
+   kind's AUROC / partial AUROC / average precision when that is the objective (v5,
+   2026-11-02). Cells flagged ``in_mean: false`` (below the GT-positive floor) are
+   skipped, as in the promotion objective.
 
-A kind is saturated when its headroom is below half the smallest one-hit gain
-under its configured aggregation and effective K. Rules 3 and 4 skip saturated
-kinds; rules 1 and 2 can still revise them.
+A kind is saturated when its headroom is below half the smallest resolvable step of
+its objective: one hit under its aggregation and effective K for precision, one
+positive passing one negative (1 / sum over cells of positives x negatives) for the
+rank statistics, which in practice never trips. Rules 3 and 4 skip saturated kinds;
+rules 1 and 2 can still revise them. Momentum reads the gate's objective gain
+(``candidate_objective`` minus ``parent_objective``), falling back to the precision
+fields of ledgers written before v7.
 """
 
 import math
 
-SCHEDULE_VERSION = "adaptive-kind-allocation-v4-point-gain-momentum"
+SCHEDULE_VERSION = "adaptive-kind-allocation-v5-objective-headroom"
 MODES = ("adaptive", "alternate")
 MOMENTUM_WINDOW = 2
 SATURATION_HITS = .5
@@ -53,12 +59,29 @@ def _counted(cells, kinds):
     return per_kind
 
 
+def _objective(budgets):
+    return getattr(budgets, "objective", "precision_at_k") or "precision_at_k"
+
+
 def headroom(cells, budgets, kinds):
-    """Remaining precision per kind on the counted validation pools, under the budgets'
-    aggregation (equal-brain mean, or pooled hits / effective K when positive-weighted)."""
+    """Remaining objective per kind on the counted validation pools, under the budgets'
+    aggregation: for precision the equal-brain mean or pooled hits / effective K when
+    positive-weighted; for a rank statistic 1 minus its positive-weighted (or equal) mean."""
     pooled = getattr(budgets, "aggregation", "equal-brain") == "positive-weighted"
+    objective = _objective(budgets)
     result = {}
     for kind, counted in _counted(cells, kinds).items():
+        if objective != "precision_at_k":
+            values = [(float(cell[objective]), int(cell["positives"])) for cell in counted
+                      if cell.get(objective) is not None]
+            if not values:
+                result[kind] = 0.
+            elif pooled:
+                total = sum(weight for _, weight in values)
+                result[kind] = 1. - (sum(value * weight for value, weight in values) / total if total else 0.)
+            else:
+                result[kind] = 1. - math.fsum(value for value, _ in values) / len(values)
+            continue
         if pooled and counted:
             total_k = sum(int(cell.get('effective_k', cell['requested_k'])) for cell in counted)
             attainable = sum(min(int(cell["positives"]), int(cell.get('effective_k', cell['requested_k']))) for cell in counted)
@@ -80,10 +103,16 @@ def saturation_thresholds(cells, budgets, kinds):
     evidence of saturation; a zero threshold keeps that kind unsaturated.
     """
     pooled = getattr(budgets, "aggregation", "equal-brain") == "positive-weighted"
+    objective = _objective(budgets)
     result = {}
     for kind, counted in _counted(cells, kinds).items():
         if not counted:
             result[kind] = 0.
+            continue
+        if objective != "precision_at_k":
+            pairs = sum(int(cell["positives"]) * max(0, int(cell.get("n_labeled", cell["positives"])) - int(cell["positives"]))
+                        for cell in counted)
+            result[kind] = SATURATION_HITS / pairs if pairs else 0.
             continue
         ks = [int(cell.get('effective_k', cell['requested_k'])) for cell in counted]
         denominator = sum(ks) if pooled else len(ks) * max(ks)
@@ -92,8 +121,9 @@ def saturation_thresholds(cells, budgets, kinds):
 
 
 def momentum(records, kinds, window=MOMENTUM_WINDOW):
-    """Mean validation point gain (clipped at zero) over each kind's last `window` generations,
-    accepted or rejected; a generation without a gate measurement counts as zero."""
+    """Mean validation point gain of the objective (clipped at zero) over each kind's last
+    `window` generations, accepted or rejected; a generation without a gate measurement counts
+    as zero. Ledgers before v7 carry precision fields only."""
     result = {}
     for kind in kinds:
         rows = [row for row in records if row.get("target_kind") == kind][-window:]
@@ -101,9 +131,11 @@ def momentum(records, kinds, window=MOMENTUM_WINDOW):
         for row in rows:
             gate = row.get("validation_gate") or {}
             gain = 0.
-            if (gate.get("target_kind") == kind
-                    and gate.get("candidate_precision") is not None and gate.get("parent_precision") is not None):
-                gain = max(0., float(gate["candidate_precision"]) - float(gate["parent_precision"]))
+            after, before = gate.get("candidate_objective"), gate.get("parent_objective")
+            if after is None or before is None:
+                after, before = gate.get("candidate_precision"), gate.get("parent_precision")
+            if gate.get("target_kind") == kind and after is not None and before is not None:
+                gain = max(0., float(after) - float(before))
             gains.append(gain)
         result[kind] = math.fsum(gains) / len(gains) if gains else 0.
     return result

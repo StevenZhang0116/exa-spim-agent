@@ -39,6 +39,8 @@
   function metricsView(box, report, title) {
     box.append(el("h4",title));if(!report){box.append(el("p","Not measured / not recorded","muted"));return;}
     for(const [kind,value] of Object.entries(report.per_kind_precision||{}))label(box,`${kind} Precision@K`,fmt(value));
+    // Since objective v7 (2026-11-02) a report names its objective; AUROC is the driver default.
+    if(report.objective&&report.objective!=="precision_at_k")for(const [kind,value] of Object.entries(report.per_kind_objective||{}))label(box,`${kind} ${report.objective} (objective)`,fmt(value));
     label(box,"Aggregation within each kind",report.aggregation);
     // Labels are three-valued; Top-K and precision use GT-labeled rows only (older runs lack n_labeled).
     const headers=["Brain / kind","Pool candidates","GT-labeled rows","Pool positives","Top-K hits","Effective K / requested K","Precision@K","Recall@K","Counts toward objective"];
@@ -86,6 +88,7 @@
     if(a.cached_from)label(box,"Cached measurement source",a.cached_from);
     if(a.lineage?.restored_from)label(box,"Most recent restore",a.lineage.restored_from);
     label(box,"Selection P@K for this kind",fmt(a.target_precision));
+    if(finite(a.target_objective)&&data.manifest.objective_statistic&&data.manifest.objective_statistic!=="precision_at_k")label(box,`Selection ${data.manifest.objective_statistic} for this kind (objective)`,fmt(a.target_objective));
     label(box,"Selection protocol",data.manifest.selection_protocol?.mode);
     if(finite(a.in_sample_precision))label(box,"In-sample TRAIN P@K for this kind",fmt(a.in_sample_precision));
     if(a.error)box.append(el("p",`${a.failure_stage || "Failure stage not recorded"}: ${a.error}`,"warning"));

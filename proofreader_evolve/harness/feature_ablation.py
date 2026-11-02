@@ -9,7 +9,8 @@ import numpy as np
 
 from .classifier_contract import config_identity, frozen_model
 from .classifier_training import fit_classifier
-from .fixed_pool_scoring import Budgets, rank_metrics, aggregate_precision
+from .fixed_pool_scoring import Budgets, rank_metrics, aggregate_objective
+from .rank_statistics import cell_value
 from .internal_validation import FOLDS, fold_assignments, grouped_folds
 from .label_availability import labels_digest
 from .isolated_scoring import score
@@ -133,18 +134,22 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
             from .selection_protocol import partitioned_rank_metrics
             ids = fold_assignments(split[0], brain, len(table.truth))
             full, chosen = partitioned_rank_metrics(predictions['full'][brain], table.truth, table.keys, ids, k,
-                                                    in_mean=in_mean)
+                                                    in_mean=in_mean, pauc_fpr=budgets.pauc_fpr)
             removed, control = partitioned_rank_metrics(predictions['without_features'][brain], table.truth,
-                                                       table.keys, ids, k, in_mean=in_mean)
+                                                       table.keys, ids, k, in_mean=in_mean, pauc_fpr=budgets.pauc_fpr)
         else:
-            full, chosen = rank_metrics(predictions['full'][brain], table.truth, table.keys, k, in_mean=in_mean)
+            full, chosen = rank_metrics(predictions['full'][brain], table.truth, table.keys, k, in_mean=in_mean,
+                                        pauc_fpr=budgets.pauc_fpr)
             removed, control = rank_metrics(predictions['without_features'][brain], table.truth, table.keys, k,
-                                            in_mean=in_mean)
+                                            in_mean=in_mean, pauc_fpr=budgets.pauc_fpr)
         gained = np.setdiff1d(chosen, control)
         lost = np.setdiff1d(control, chosen)
+        full_value, removed_value = cell_value(full, budgets.objective), cell_value(removed, budgets.objective)
         cells[f'{brain}/{kind}'] = {
             'full': full, 'without_features': removed,
             'delta_precision': full['precision'] - removed['precision'],
+            'delta_objective': (full_value - removed_value if full_value is not None and removed_value is not None
+                                else None),
             'gained_positives': int(np.nansum(table.truth[gained])),
             'lost_positives': int(np.nansum(table.truth[lost])),
             'top_k_overlap': len(np.intersect1d(chosen, control))}
@@ -152,9 +157,12 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
             cells[f'{brain}/{kind}']['image_coverage'] = {
                 'selection': frames[brain].attrs['image_context'].get('selection_coverage'),
                 'full': scoring_coverage(frames[brain], chosen, table.truth, k)}
-    arms = {arm: aggregate_precision({name: cell[arm] for name, cell in cells.items()}, budgets.aggregation)
+    arms = {arm: aggregate_objective({name: cell[arm] for name, cell in cells.items()}, budgets.aggregation,
+                                     budgets.objective)
             for arm in ('full', 'without_features')}
-    delta = arms['full']['per_kind_precision'][kind] - arms['without_features']['per_kind_precision'][kind]
+    delta_precision = arms['full']['per_kind_precision'][kind] - arms['without_features']['per_kind_precision'][kind]
+    # The conclusion follows the objective; delta_precision stays for comparison with earlier runs.
+    delta = arms['full']['per_kind_objective'][kind] - arms['without_features']['per_kind_objective'][kind]
     arrays = {f'{arm}:{brain}': values for arm, brains in predictions.items() for brain, values in brains.items()}
     np.savez(directory / 'predictions.npz', **arrays)
     image_contract = image_spec(source)
@@ -164,6 +172,8 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
     image_only = removed_images and set(columns) == set(image_columns)
     return {'version': ABLATION_VERSION, 'status': 'measured', 'target_kind': kind,
             'aggregation': arms['full']['aggregation'], 'excluded_cells': arms['full']['excluded_cells'],
+            'objective': budgets.objective,
+            'objective_by_arm': {arm: report['per_kind_objective'][kind] for arm, report in arms.items()},
             'precision_by_arm': {arm: report['per_kind_precision'][kind] for arm, report in arms.items()},
             'protocol': ('TRAIN_grouped_out_of_fold_partitioned_k' if classifier else
                          'TRAIN_formula_partitioned_k_descriptive' if split[0] is not None else 'TRAIN_formula_descriptive'),
@@ -179,7 +189,7 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
                 'scope': 'Exact program, parameters, image coverage and TRAIN diagnostic only'},
             'removal_method': 'Set declared input columns to zero in both fit and predict; schema preserved',
             'raw_image_removal': 'image_available in the removed group makes all raw patch lists empty',
-            'split': split[1], 'cells': cells, 'delta_precision': delta,
+            'split': split[1], 'cells': cells, 'delta_precision': delta_precision, 'delta_objective': delta,
             'conclusion': ('positive_increment_on_this_internal_measurement' if delta > 1e-12 else
                            'negative_increment_on_this_internal_measurement' if delta < -1e-12 else
                            'no_precision_increment_on_this_internal_measurement'),

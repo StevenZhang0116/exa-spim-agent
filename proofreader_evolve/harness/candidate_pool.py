@@ -7,16 +7,22 @@ import json
 import numpy as np
 
 from .search_proposals import formula_info
-from .fixed_pool_scoring import precision_for_kind
+from .fixed_pool_scoring import objective_for_kind, precision_for_kind
+from .rank_statistics import check_objective
 
 
 REFERENCE_EVERY = 3
 EVIDENCE_PATIENCE = 2
 FOLLOWUP_ATTEMPTS = 2
+# Near-best tolerance per objective (2026-11-02): the selection-score gap below the champion within
+# which a non-specialist branch is kept. 0.02 is the historical Precision@K value; on pools shaped like
+# the validation merge cells the paired standard error of AUROC is about a quarter of Precision@K's,
+# so its tolerance is a quarter too; partial AUROC and average precision sit in between.
+POOL_TOLERANCES = {'precision_at_k': .02, 'auroc': .005, 'pauc': .01, 'average_precision': .01}
 REFERENCE_FIELDS = (
     'experiment', 'target_kind', 'sequence', 'component_sha256', 'scores_sha256', 'family',
     'hypothesis', 'strategy', 'parameter_grid', 'snapshot', 'status', 'train',
-    'cached', 'parameters', 'formula_sha256', 'target_precision', 'top_k_sha256',
+    'cached', 'parameters', 'formula_sha256', 'target_precision', 'target_objective', 'top_k_sha256',
     'specialist_profile', 'candidate_type', 'classifier', 'training',
     'research', 'feature_evidence', 'selection', 'in_sample_precision', 'selection_gate',
 )
@@ -49,6 +55,7 @@ def candidate_metadata(component, kind, report, state, *, coverage=None):
         membership.update(name.encode())
         membership.update(np.sort(state[name]['chosen']).astype('<i8').tobytes())
     metadata = {**info, 'target_precision': precision_for_kind(report, kind),
+                'target_objective': objective_for_kind(report, kind),
                 'top_k_sha256': membership.hexdigest()}
     if coverage is not None:
         metadata['specialist_profile'] = coverage.record(
@@ -57,11 +64,13 @@ def candidate_metadata(component, kind, report, state, *, coverage=None):
 
 
 class CandidatePool:
-    def __init__(self, path, kinds, *, size=5, score_tolerance=.02, plateau_patience=2,
+    def __init__(self, path, kinds, *, size=5, score_tolerance=None, plateau_patience=2,
                  exploration_patience=2, explore_every=3, early_stop=True, coverage=None, hypotheses=None,
-                 research=None, image_kinds=()):
+                 research=None, image_kinds=(), objective='precision_at_k'):
         self.path, self.kinds, self.cursor = path, list(kinds), 0
-        self.size, self.score_tolerance = size, score_tolerance
+        self.objective = check_objective(objective)
+        self.size = size
+        self.score_tolerance = POOL_TOLERANCES[self.objective] if score_tolerance is None else score_tolerance
         self.plateau_patience, self.exploration_patience = plateau_patience, exploration_patience
         self.explore_every, self.early_stop = explore_every, early_stop
         self.coverage = coverage
@@ -82,6 +91,12 @@ class CandidatePool:
                                 'no_evidence_rounds': 0, 'incomplete_investigations': 0,
                                 'execution_blocked_rounds': 0, 'pending_investigation': None,
                                 'pause_reason': None} for kind in kinds}
+
+    @staticmethod
+    def _objective(entry):
+        """The selection objective of a candidate; entries measured before v7 carry precision only."""
+        value = entry.get('target_objective')
+        return float(entry['target_precision'] if value is None else value)
 
     def add(self, entry):
         self._retain(entry['target_kind'], [entry])
@@ -140,10 +155,10 @@ class CandidatePool:
             if entry['target_kind'] != kind:
                 raise ValueError('Candidate kind differs from the exploration plan')
             candidates.setdefault(entry['component_sha256'], deepcopy(entry))
-        ranked = sorted(candidates.values(), key=lambda e: (-e['target_precision'], e['sequence']))
+        ranked = sorted(candidates.values(), key=lambda e: (-self._objective(e), e['sequence']))
         if not ranked:
             return
-        best = ranked[0]['target_precision']
+        best = self._objective(ranked[0])
         selected = [ranked[0]]
         selected[0]['retention'] = {'reason': 'train_champion'}
         rankings, formulas = {ranked[0]['top_k_sha256']}, {ranked[0]['formula_sha256']}
@@ -159,16 +174,16 @@ class CandidatePool:
             if specialists:
                 candidate, comparison = max(specialists, key=lambda item: (
                     len(item[1]['improved_slices']), item[1]['additional_macro_recall'],
-                    item[0]['target_precision'], item[0]['formula_sha256'] not in formulas,
+                    self._objective(item[0]), item[0]['formula_sha256'] not in formulas,
                     -item[0]['sequence']))
                 candidate['retention'] = {'reason': 'train_specialist', **comparison}
             else:
                 eligible = [e for e in remaining
-                            if e['target_precision'] >= best - self.score_tolerance - 1e-12]
+                            if self._objective(e) >= best - self.score_tolerance - 1e-12]
                 if not eligible:
                     break
                 candidate = min(eligible, key=lambda e: (
-                    e['formula_sha256'] in formulas, -e['target_precision'], e['sequence']))
+                    e['formula_sha256'] in formulas, -self._objective(e), e['sequence']))
                 candidate['retention'] = {'reason': 'near_best_alternative'}
             remaining = [e for e in remaining if e['component_sha256'] != candidate['component_sha256']]
             selected.append(candidate)
@@ -196,9 +211,10 @@ class CandidatePool:
             if comparison['additional_positive_hits'] or comparison['improved_slices']:
                 results.append({'experiment': entry['experiment'], 'family': entry['family'],
                                 'target_precision': entry['target_precision'],
+                                'target_objective': self._objective(entry),
                                 'outer_measurement': self.validation_of(kind, entry), **comparison})
         return sorted(results, key=lambda item: (
-            -len(item['improved_slices']), -item['additional_macro_recall'], -item['target_precision']))
+            -len(item['improved_slices']), -item['additional_macro_recall'], -item['target_objective']))
 
     def next_plan(self, order=None):
         """Plan the next generation for the first non-paused kind.
@@ -244,7 +260,7 @@ class CandidatePool:
             elif explore and len(self.members[kind]) > 1:
                 parent = min(self.members[kind][1:], key=lambda e: (
                     self.hypotheses.penalty(e) if self.hypotheses is not None else 0,
-                    progress['last_used'].get(e['experiment'], -1), -e['target_precision'], e['sequence']))
+                    progress['last_used'].get(e['experiment'], -1), -self._objective(e), e['sequence']))
             progress['last_used'][parent['experiment']] = progress['rounds']
             return {'target_kind': kind, 'mode': 'explore' if explore else 'tune',
                     'branch_role': ('reference' if followup or reference_due else 'train_champion'
@@ -259,6 +275,7 @@ class CandidatePool:
                     'followup_required': followup, 'investigation': investigation,
                     'observed_sources': self.research.sources(kind) if self.research is not None else None,
                     'search_parent': self._annotate(parent), 'best_precision_before': champion['target_precision'],
+                    'best_objective_before': self._objective(champion), 'objective': self.objective,
                     'complementary_candidates': self._complements(parent),
                     'research_focus': ('failure_driven_feature_discovery' if explore else 'controlled_parameter_tuning'),
                     'hypothesis_advice': self.hypotheses.advice(kind) if self.hypotheses is not None else None,
@@ -312,7 +329,8 @@ class CandidatePool:
             progress['new_positive_hits'] = len(self.covered_history[kind]) - previous_coverage
             progress['improved_slices'] = sorted(name for name, count in self.best_slice_hits[kind].items()
                                                  if count > previous_slices.get(name, 0))
-            improved = (self.members[kind][0]['target_precision'] > plan['best_precision_before'] + 1e-12
+            best_before = plan.get('best_objective_before', plan['best_precision_before'])
+            improved = (self._objective(self.members[kind][0]) > best_before + 1e-12
                         or progress['new_positive_hits'] > 0 or bool(progress['improved_slices']))
             if improved:
                 progress.update(stalled_rounds=0, stalled_explorations=0)
@@ -351,7 +369,7 @@ class CandidatePool:
                     'retained_positive_hits': len(self.coverage.union(self.members[kind])) if self.coverage else None,
                     'ever_retained_positive_hits': len(self.covered_history[kind]) if self.coverage else None,
                     'candidates': [self._candidate_summary(e) for e in self.members[kind]]} for kind in self.kinds},
-                'settings': {'size': self.size, 'score_tolerance': self.score_tolerance,
+                'settings': {'size': self.size, 'score_tolerance': self.score_tolerance, 'objective': self.objective,
                              'reference_every': REFERENCE_EVERY,
                              'evidence_patience': EVIDENCE_PATIENCE,
                              'followup_attempt_limit': FOLLOWUP_ATTEMPTS,
@@ -371,8 +389,8 @@ class CandidatePool:
     def _candidate_summary(self, entry):
         result = {key: deepcopy(entry.get(key)) for key in (
             'experiment', 'component_sha256', 'family', 'formula_sha256', 'parameters', 'candidate_type', 'classifier',
-            'target_precision', 'top_k_sha256', 'train', 'specialist_profile', 'retention', 'research', 'feature_evidence',
-            'selection', 'in_sample_precision', 'selection_gate')}
+            'target_precision', 'target_objective', 'top_k_sha256', 'train', 'specialist_profile', 'retention', 'research',
+            'feature_evidence', 'selection', 'in_sample_precision', 'selection_gate')}
         # Agent-visible name: the outer evaluator's measurement status (generation, promoted), no numbers.
         result['outer_measurement'] = self.validation_of(entry['target_kind'], entry)
         if self.coverage is not None:

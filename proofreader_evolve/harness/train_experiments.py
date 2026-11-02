@@ -341,11 +341,15 @@ class TrainingExperiments:
                              'restore_candidate("parent") recovers the assigned formula')
 
     def _selection_gate(self, selection_report):
-        before = scoring.precision_for_kind(self.parent_selection, self.target_kind)
-        after = scoring.precision_for_kind(selection_report, self.target_kind)
-        return {'metric': self.protocol_info['metric'], 'mode': self.protocol.mode, 'target_kind': self.target_kind,
+        details = scoring.gate_details(self.parent_selection, selection_report, self.target_kind)
+        before, after, guard = details['parent_objective'], details['candidate_objective'], details['head_guard']
+        return {'metric': self.protocol_info['metric'], 'objective': details['objective'],
+                'mode': self.protocol.mode, 'target_kind': self.target_kind,
                 'parent': before, 'candidate': after, 'delta': after - before,
-                'passed': after > before + 1e-12, 'required_for_promotion': False,
+                'parent_precision': details['parent_precision'], 'candidate_precision': details['candidate_precision'],
+                'head_guard': guard,
+                'passed': after > before + 1e-12 and (guard is None or guard['passed']),
+                'required_for_promotion': False,
                 'scope': 'Development selection signal on selection brains; the outer promotion gate decides acceptance'}
 
     def _k(self, kind, truth):
@@ -549,11 +553,11 @@ class TrainingExperiments:
                                 **{k: known[k] for k in ('generation', 'experiment', 'promoted', 'by')})
             log_metrics(self.trace, f"TRAIN {entry['experiment']}", report, self.parent_report)
             self.trace.emit('selection_measurement', f"{entry['experiment']}: {self.protocol.mode} selection "
-                            f"precision={scoring.precision_for_kind(selection_report, self.target_kind):.6f} "
-                            f"(parent {scoring.precision_for_kind(self.parent_selection, self.target_kind):.6f}); "
-                            f"in-sample {entry['in_sample_precision']:.6f}",
+                            f"{entry['selection_gate']['objective']}={entry['target_objective']:.6f} "
+                            f"(parent {entry['selection_gate']['parent']:.6f}); "
+                            f"precision={entry['target_precision']:.6f}; in-sample {entry['in_sample_precision']:.6f}",
                             selection=entry['selection'], selection_gate=entry['selection_gate'],
-                            diagnostics=entry['selection'].get('diagnostics'))
+                            statistics=entry['selection'].get('per_kind_statistics'))
         except Exception as exc:
             execution_error = stage in {'preflight', 'train_evaluation'} and isinstance(
                 exc, (ScorerExecutionError, ModelExecutionError, SyntaxError, ValueError))
@@ -581,7 +585,8 @@ class TrainingExperiments:
              'model_config': model['config'] if model else None,
              'train': self._train_identity(), 'budgets': scoring.Budgets.coerce(self.budgets).describe()},
             entry['status'] == 'evaluated', trial_dir / 'result.json', cached=bool(cached),
-            outcome={'precision': entry.get('target_precision'), 'in_sample_precision': entry.get('in_sample_precision'),
+            outcome={'precision': entry.get('target_precision'), 'objective': entry.get('target_objective'),
+                     'in_sample_precision': entry.get('in_sample_precision'),
                      'error': entry.get('error')})
         self._save_hypothesis_feedback()
         gate = entry.get('train_gate') or {}
@@ -606,9 +611,10 @@ class TrainingExperiments:
         valid = [r for r in results if r['report'] is not None]
         if not valid:
             raise ValueError('No successfully measured candidate to restore')
-        # Rank by official target-kind selection precision. Resolve exact ties by source
-        # length and sequence, without introducing a second data-dependent objective.
-        return max(valid, key=lambda r: (r['entry']['target_precision'],
+        # Rank by the official target-kind selection objective (entries measured before v7 carry
+        # precision only). Resolve exact ties by source length and sequence, without introducing
+        # a second data-dependent objective.
+        return max(valid, key=lambda r: (r['entry'].get('target_objective', r['entry']['target_precision']),
                                         -len(r['component']), -r['entry']['sequence']))
 
     def _restore_result(self, result):
@@ -691,7 +697,7 @@ class TrainingExperiments:
             if responses[-1].get('status') == 'execution_error':
                 stopped = self._grid_stop(responses[-1], len(candidates) - index - 1)
                 break
-        rows = [{k: r.get(k) for k in ('experiment', 'status', 'parameters', 'target_precision',
+        rows = [{k: r.get(k) for k in ('experiment', 'status', 'parameters', 'target_precision', 'target_objective',
                                        'train_gate', 'cached', 'error')} for r in responses]
         (batch / 'results.json').write_text(json.dumps(rows, indent=2, allow_nan=False))
         successful = [self.results[digest(c)] for c in candidates
@@ -798,8 +804,8 @@ class TrainingExperiments:
                         oof_scores = {cell: values['scores'] for cell, values in selection_state.items()}
                         save_selection(directory, selection_report, selection_state)
                         self.trace.emit('classifier_fold_fits', f"Program {digest(program)[:12]}: "
-                                        f"{len(selection_report['fold_fits'])} fold fits; grouped_cv_precision="
-                                        f"{scoring.precision_for_kind(selection_report, self.target_kind):.6f}",
+                                        f"{len(selection_report['fold_fits'])} fold fits; grouped_cv_{selection_report['objective']}="
+                                        f"{scoring.objective_for_kind(selection_report, self.target_kind):.6f}",
                                         fold_fits=selection_report['fold_fits'])
                     component, summary = fit_classifier(self.train, self.target_kind, config, directory,
                                                         program=program, artifact_store=self.memory.artifact_store,
@@ -835,7 +841,7 @@ class TrainingExperiments:
             if response.get('status') == 'execution_error':
                 stopped = self._grid_stop(response, len(configurations) - index - 1)
                 break
-        rows = [{key: response.get(key) for key in ('experiment', 'status', 'classifier', 'target_precision',
+        rows = [{key: response.get(key) for key in ('experiment', 'status', 'classifier', 'target_precision', 'target_objective',
                                                    'train_gate', 'cached', 'error', 'training_output_tail')} for response in responses]
         (batch / 'results.json').write_text(json.dumps(rows, indent=2, allow_nan=False))
         public_rows = [{**{key: value for key, value in row.items() if key != 'classifier'},
@@ -1160,8 +1166,8 @@ class TrainingExperiments:
         if not report.get('cached'):
             self.memory.hypotheses.observe_ablation({**proposal, 'target_kind': self.target_kind}, report)
         self._save_hypothesis_feedback()
-        delta = report.get('delta_precision')
-        detail = f'; delta Precision@K={delta:+.6f}' if delta is not None else ''
+        delta = report.get('delta_objective', report.get('delta_precision'))
+        detail = f"; delta {report.get('objective', 'precision_at_k')}={delta:+.6f}" if delta is not None else ''
         self.trace.emit('feature_ablation_result', f"{report['experiment']}: {report['status']}{detail}; "
                         f"evaluation units={report['evaluations_used']}; remaining={self.remaining}", **report)
         return report
@@ -1383,7 +1389,7 @@ class TrainingExperiments:
         @tool('train_classifier', 'Run agent-written training.py with proposal.json.classifier.parameters and optional parameter_grid. '
               'Call with {}. Harness uses TRAIN only, freezes preprocessing/weights, evaluates and restores '
               'the best successful model. Under grouped_oof selection each configuration is first refit in '
-              'three host-owned folds and ranked by out-of-fold precision on the selection brains; the full '
+              'three host-owned folds and ranked by the out-of-fold objective on the selection brains; the full '
               'fit is the frozen candidate. One configuration costs one evaluation unit, folds included. '
               'The grid stops at the first failed fit or execution error of the program; stopped_early lists '
               'the skipped, uncharged configurations. '

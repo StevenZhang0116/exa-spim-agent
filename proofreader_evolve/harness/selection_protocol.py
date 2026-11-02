@@ -1,7 +1,8 @@
 """Official TRAIN selection score for exploration branches.
 
-``grouped_oof``: candidates are ranked by grouped out-of-fold precision at a
-partitioned K on selection brains that the frozen detectors were not fitted on.
+``grouped_oof``: candidates are ranked by the grouped out-of-fold objective (precision at a
+partitioned K, or since v7 the configured rank statistic measured per fold and weighted by
+positives) on selection brains that the frozen detectors were not fitted on.
 Auxiliary TRAIN brains only supply fitting rows and are never held out.
 ``in_sample``: the historical protocol (full-pool in-sample TRAIN ranking),
 retained so attribution runs can compare the two selection signals.
@@ -19,47 +20,20 @@ import numpy as np
 
 from .classifier_contract import frozen_model
 from .classifier_training import fit_classifier
-from .fixed_pool_scoring import Budgets, aggregate_precision, rank_metrics
+from .fixed_pool_scoring import Budgets, aggregate_objective, rank_metrics
 from .image_features import subset_features
 from .internal_validation import FOLDS, fold_assignments, grouped_folds
 from .label_availability import labeled_rows, labels_digest
 from .local_features import augmented_features
 from .model_execution import predict_model, DEFAULT_MEMORY_MB
-from .rank_diagnostics import aggregate_diagnostics, cell_diagnostics
+from .rank_statistics import DEFAULT_PAUC_FPR, OBJECTIVE_LABELS, cell_statistics, fold_budgets  # noqa: F401 (re-exported)
 
 
-PROTOCOL_VERSION = 'grouped-cv-precision-v6-per-kind-objective'
+PROTOCOL_VERSION = 'grouped-cv-objective-v7-rank-statistics'
 MODES = ('grouped_oof', 'in_sample')
 
 
-def fold_budgets(held_counts, k):
-    """Largest-remainder split of K across folds, capped by each fold's held rows."""
-    counts = [int(c) for c in held_counts]
-    if any(c < 0 for c in counts) or type(k) is not int or k < 1:
-        raise ValueError('Fold sizes must be nonnegative and K a positive integer')
-    total = sum(counts)
-    if total == 0:
-        return [0] * len(counts)
-    k = min(k, total)
-    shares = [k * c / total for c in counts]
-    budgets = [min(math.floor(s), c) for s, c in zip(shares, counts)]
-    remaining = k - sum(budgets)
-    order = sorted(range(len(counts)), key=lambda i: (-(shares[i] - math.floor(shares[i])), i))
-    while remaining > 0:
-        progressed = False
-        for index in order:
-            if remaining == 0:
-                break
-            if budgets[index] < counts[index]:
-                budgets[index] += 1
-                remaining -= 1
-                progressed = True
-        if not progressed:
-            break
-    return budgets
-
-
-def partitioned_rank_metrics(scores, truth, keys, fold_ids, k, *, in_mean=True):
+def partitioned_rank_metrics(scores, truth, keys, fold_ids, k, *, in_mean=True, pauc_fpr=DEFAULT_PAUC_FPR):
     """Rank inside each fold with its own budget; fold budgets sum to K.
 
     Fold models can emit differently scaled scores, so out-of-fold scores are
@@ -68,7 +42,8 @@ def partitioned_rank_metrics(scores, truth, keys, fold_ids, k, *, in_mean=True):
     Only GT-labeled rows (label 1 or 0; NaN = not judgeable) are ranked, and fold
     budgets are proportional to each fold's labeled rows. ``k`` is this pool's
     resolved K (``Budgets.k_for``) and ``in_mean`` whether the pool counts toward
-    the mean (``Budgets.in_mean``).
+    the mean (``Budgets.in_mean``). The other rank statistics (``rank_statistics``) are
+    measured per fold under the same rule and added to the cell.
     """
     scores, truth = np.asarray(scores, dtype=float), np.asarray(truth, dtype=float)
     fold_ids = np.asarray(fold_ids)
@@ -96,13 +71,15 @@ def partitioned_rank_metrics(scores, truth, keys, fold_ids, k, *, in_mean=True):
         fold_tp.append(int(truth[picked].sum()))
     chosen = np.concatenate(parts) if parts else np.zeros(0, dtype=int)
     tp, positives, effective = int(sum(fold_tp)), int(np.nansum(truth)), len(chosen)
-    return {'requested_k': k, 'effective_k': effective, 'pool_size': len(scores),
+    metrics = {'requested_k': k, 'effective_k': effective, 'pool_size': len(scores),
             'n_labeled': int(labeled.sum()), 'n_unlabeled': int((~labeled).sum()),
             'tp': tp, 'fp': effective - tp, 'precision': tp / effective if effective else 0.,
             'recall': tp / positives if positives else None, 'positives': positives,
             'in_mean': bool(in_mean),
             'protocol': PROTOCOL_VERSION, 'fold_budgets': budgets, 'fold_tp': fold_tp,
-            'fold_held_rows': held_counts}, chosen
+            'fold_held_rows': held_counts}
+    metrics.update(cell_statistics(scores, truth, keys, k, fold_ids=fold_ids, pauc_fpr=pauc_fpr))
+    return metrics, chosen
 
 
 def save_selection(directory, report, state):
@@ -175,11 +152,16 @@ class SelectionProtocol:
                 'holdout_brains': list(self.holdout_brains),
                 'holdout_role': ('Holdout selection brains are held out whole in one fold each: their out-of-fold '
                                  'scores come from a model that never saw the brain (cross-brain measurement, '
-                                 'reported as holdout_precision per kind); they join the fitting rows of the '
+                                 'reported as holdout_objective and holdout_precision per kind); they join the fitting rows of the '
                                  'other folds.' if self.holdout_brains else None),
                 'aggregation': self.budgets.aggregation,
                 'folds': FOLDS if grouped else None,
-                'metric': 'grouped_cv_precision' if grouped else 'in_sample_precision_at_k',
+                'objective': self.budgets.objective, 'objective_label': OBJECTIVE_LABELS[self.budgets.objective],
+                'head_guard': self.budgets.head_guard,
+                'metric': (('grouped_cv_precision' if self.budgets.objective == 'precision_at_k'
+                            else f'grouped_cv_{self.budgets.objective}') if grouped else
+                           ('in_sample_precision_at_k' if self.budgets.objective == 'precision_at_k'
+                            else f'in_sample_{self.budgets.objective}')),
                 'ranking': ('Per-fold ranking of out-of-fold scores over GT-labeled rows with '
                             'largest-remainder fold budgets that sum to each pool\'s effective K; '
                             'target-kind pools share the configured aggregation and positive floor.' if grouped else
@@ -215,6 +197,7 @@ class SelectionProtocol:
     def score_report(self, kind, scores_by_cell, policy_sha256=None):
         """Apply the official ranking to one score vector per selection cell of this kind."""
         report = {'version': PROTOCOL_VERSION, 'mode': self.mode, 'target_kind': kind,
+                  'objective': self.budgets.objective, 'head_guard': self.budgets.head_guard,
                   'policy_sha256': policy_sha256, 'cells': {}}
         state = {}
         for brain in self.selection_brains:
@@ -223,27 +206,27 @@ class SelectionProtocol:
             scores = np.asarray(scores_by_cell[cell], dtype=float)
             k, in_mean = self.budgets.k_for(kind, table.truth), self.budgets.in_mean(table.truth)
             if self.mode == 'in_sample':
-                metrics, chosen = rank_metrics(scores, table.truth, table.keys, k, in_mean=in_mean)
+                metrics, chosen = rank_metrics(scores, table.truth, table.keys, k, in_mean=in_mean,
+                                               pauc_fpr=self.budgets.pauc_fpr)
                 metrics['protocol'] = 'in_sample'
-                fold_ids = np.zeros(len(scores), dtype=np.int64)
             else:
                 fold_ids = self.fold_ids(kind, brain)
-                metrics, chosen = partitioned_rank_metrics(scores, table.truth, table.keys, fold_ids, k, in_mean=in_mean)
+                metrics, chosen = partitioned_rank_metrics(scores, table.truth, table.keys, fold_ids, k, in_mean=in_mean,
+                                                           pauc_fpr=self.budgets.pauc_fpr)
                 metrics['partition_sha256'] = self.partition_sha256(kind)
-            # Diagnostics beside the official score: same labeled rows, same partition and fold rule.
-            metrics.update(cell_diagnostics(scores, table.truth, table.keys, fold_ids, k, fold_budgets=fold_budgets))
             metrics['pool_sha256'] = table.meta['pool_sha256']
             metrics['labels_sha256'] = labels_digest(table.truth)
             report['cells'][cell] = metrics
             state[cell] = {'scores': scores, 'chosen': chosen}
-        report.update(aggregate_precision(report['cells'], self.budgets.aggregation))
-        report['diagnostics'] = aggregate_diagnostics(report['cells'], self.budgets.aggregation)
+        report.update(aggregate_objective(report['cells'], self.budgets.aggregation, self.budgets.objective,
+                                          self.budgets.head_guard))
         holdout_cells = [f'{brain}/{kind}' for brain in self.holdout_brains]
         counted = [cell for cell in holdout_cells if report['cells'][cell].get('in_mean', True)]
         report['holdout_cells'] = holdout_cells
-        report['holdout_precision'] = (aggregate_precision({cell: report['cells'][cell] for cell in counted},
-                                                           self.budgets.aggregation)['per_kind_precision'][kind]
-                                       if counted else None)
+        holdout = (aggregate_objective({cell: report['cells'][cell] for cell in counted}, self.budgets.aggregation,
+                                       self.budgets.objective) if counted else None)
+        report['holdout_precision'] = holdout['per_kind_precision'][kind] if holdout else None
+        report['holdout_objective'] = holdout['per_kind_objective'][kind] if holdout else None
         return report, state
 
     def measure_formula(self, kind, measured_state, policy_sha256=None):

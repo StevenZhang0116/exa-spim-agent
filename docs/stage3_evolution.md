@@ -6,8 +6,14 @@ The evolution stage keeps everything the detectors decided and changes only the
 order in which their candidates are presented. It is an LLM-driven search: a
 fresh agent session is the mutation operator, a TRAIN-side selection score ranks
 exploration branches, and a held-out validation gate alone decides promotion: the
-target kind's Precision@K over its counted brains must rise by
-more than paired-bootstrap resampling noise. Each pool ranks its own
+target kind's objective over its counted brains must rise by more than
+paired-bootstrap resampling noise while the head of the ranking holds. The objective
+is a rank statistic over the GT-labeled rows (`--objective`, since 2026-11-02 AUROC by
+default; `pauc`, `average_precision` and the earlier `precision_at_k` are the alternatives,
+and every statistic is recorded whatever the objective); the head guard
+(`--head-guard-statistic precision_depth_mean --head-guard-tolerance 0.01`) rejects a
+candidate whose mean precision at ceil(K/2), K and 2K falls more than 0.01 below the
+accepted scorer's. Each pool ranks its own
 K = ceil(ratio x its GT positives), limited to the kind's cap when it has one. Since
 2026-10-27 no kind has a cap and both ratios are 1, so every pool ranks exactly its GT
 positives and Precision@K equals Recall@K (R-precision) for merge and split alike, in
@@ -23,7 +29,8 @@ maintained design record is
 
 ## 3.1 What is evolved and what stays fixed
 
-`proofreader_evolve` improves **Precision@K over GT-labeled rows on the
+`proofreader_evolve` improves **a rank objective (AUROC by default, Precision@K
+reported alongside) over GT-labeled rows on the
 same candidate pool** as the selected `merge_junction_detector.py` and
 `split_site_detector.py`. The pool is the rule declared in `candidate_pools.json`,
 enumerated by `candidate_rules.py` (split occurrences, junction NMS, tip-to-shaft
@@ -183,7 +190,8 @@ pool's GT positives), limited to the kind's cap when it has one (default: neithe
 fixed for the run because it depends on labels only. GT labels are
 stored separately and never passed to the scorer.
 Training feedback includes labeled examples with TRAIN-only inspection handles; validation feedback is
-not supplied to the reviser. Promotion uses **target-kind validation Precision@K**.
+not supplied to the reviser. Promotion uses the **target-kind validation objective**
+(AUROC by default; Precision@K until 2026-11-02) with the head guard.
 For each kind independently, `--aggregation positive-weighted` (default) computes
 `sum(TP) / sum(effective K)` over brains whose pool holds at least `--min-positives`
 GT positives. `equal-brain` assigns equal weight to those brains. Smaller pools are

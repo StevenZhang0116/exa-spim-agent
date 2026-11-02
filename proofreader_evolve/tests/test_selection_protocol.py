@@ -251,7 +251,7 @@ class SessionSelectionTests(unittest.TestCase):
         submitted, _ = self.session.submitted()
         self.assertEqual(list(submitted['selection_report']['cells']), ['802449/merge'])
         candidate_feedback = json.loads((Path(second['snapshot']) / 'feedback.json').read_text())
-        self.assertEqual(candidate_feedback['format'], 'stratified-train-v6-per-kind-objective')
+        self.assertEqual(candidate_feedback['format'], 'stratified-train-v7-rank-objective')
         self.assertEqual(list(candidate_feedback['examples']), ['802449/merge'])
         self.assertEqual(candidate_feedback['selection_protocol']['mode'], 'grouped_oof')
         self.assertIn('candidate_selection', candidate_feedback)
@@ -302,7 +302,7 @@ class FeedbackAndBootstrapTests(unittest.TestCase):
             feedback.write_train_feedback(path, train, [], {'merge': 4}, target_kind='merge',
                                           selection=selection, protocol={'mode': 'grouped_oof'})
             data = json.loads(path.read_text())
-        self.assertEqual(data['format'], 'stratified-train-v6-per-kind-objective')
+        self.assertEqual(data['format'], 'stratified-train-v7-rank-objective')
         self.assertEqual(list(data['examples']), ['2/merge'])
         self.assertEqual(data['parent_selection']['cells']['2/merge']['fold_budgets'], [2, 2])
         self.assertEqual(data['parent_train']['cells']['1/merge']['precision'], .5)

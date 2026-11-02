@@ -17,12 +17,13 @@ from .run_records import PRECISION, PRECISION_VERSIONS
 
 ASSETS = Path(__file__).resolve().parents[1] / 'plotting' / 'report_assets'
 CELL_FIELDS = ('pool_size', 'positives', 'requested_k', 'effective_k', 'tp', 'fp',
-               'precision', 'recall', 'n_labeled', 'n_unlabeled', 'in_mean')
+               'precision', 'recall', 'n_labeled', 'n_unlabeled', 'in_mean',
+               'precision_depth_mean', 'average_precision', 'auroc', 'pauc')
 ATTEMPT_FIELDS = ('experiment', 'sequence', 'target_kind', 'status', 'hypothesis', 'strategy',
                   'family', 'parameters', 'classifier', 'candidate_type', 'component_sha256',
                   'candidate_sha256', 'search_parent', 'search_mode', 'lineage', 'cached',
                   'cached_from', 'error', 'failure_stage', 'wall_seconds', 'evaluations_used',
-                  'target_precision', 'in_sample_precision', 'ranking_delta', 'specialist_profile',
+                  'target_precision', 'target_objective', 'in_sample_precision', 'ranking_delta', 'specialist_profile',
                   'selection_gate')
 TEXT_FILES = ('scorer.py.from_edit_base.diff', 'training.py.from_edit_base.diff',
               'scorer.py.diff', 'training.py.diff', 'scorer.py', 'training.py', 'rules.md',
@@ -37,6 +38,12 @@ def _metrics(value):
     if not isinstance(value, dict):
         return None
     return {'per_kind_precision': {kind: _number(score) for kind, score in value.get('per_kind_precision', {}).items()},
+            # v7 reports name their objective and carry every rank statistic per kind; earlier ones were precision.
+            'objective': value.get('objective') if isinstance(value.get('objective'), str) else None,
+            'per_kind_objective': {kind: _number(score) for kind, score in (value.get('per_kind_objective') or {}).items()},
+            'per_kind_statistics': ({kind: {name: _number(stat) for name, stat in stats.items()}
+                                     for kind, stats in value['per_kind_statistics'].items() if isinstance(stats, dict)}
+                                    if isinstance(value.get('per_kind_statistics'), dict) else None),
             'aggregation': value.get('aggregation'),
             'policy_sha256': value.get('policy_sha256'),
             'cells': {name: {key: (cell[key] if key == 'in_mean' and isinstance(cell.get(key), bool)
@@ -147,7 +154,7 @@ def _pool(value):
         return None
     def candidate(entry):
         return {key: entry.get(key) for key in (
-            'experiment', 'component_sha256', 'family', 'target_precision', 'in_sample_precision', 'retention',
+            'experiment', 'component_sha256', 'family', 'target_precision', 'target_objective', 'in_sample_precision', 'retention',
             'specialist_profile', 'vs_champion', 'vs_other_retained', 'outer_measurement')} \
             | {'selection': _metrics(entry.get('selection'))} \
             if isinstance(entry, dict) else None
@@ -276,6 +283,9 @@ def build_report_data(run_dir):
             'submitted_experiment': row.get('submitted_experiment'),
             'reason': row.get('reason'), 'failure_stage': row.get('failure_stage'),
             'parent_validation_precision': _number(row.get('parent_validation_precision')),
+            'parent_validation_objective': {kind: _number(score) for kind, score in
+                                            (row.get('parent_validation_objective') or {}).items()},
+            'objective_statistic': row.get('objective_statistic') if isinstance(row.get('objective_statistic'), str) else None,
             'train_evaluations_used': row.get('train_evaluations_used'),
             'descriptor_runs': [{key: run.get(key) for key in ('run', 'status', 'columns', 'scope', 'inputs',
                                                              'image_tier', 'image', 'cached', 'wall_seconds')}

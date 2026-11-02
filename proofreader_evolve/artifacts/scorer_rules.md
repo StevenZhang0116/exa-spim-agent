@@ -64,14 +64,22 @@ in the current generation's `proposal.json`.
   and the bootstrap use GT-labeled rows only; NaN rows are never hits or false
   positives. Fitted models receive only labeled rows (plus optional `X_unlabeled`,
   see `classifier_guide.md`).
-- Promotion gate: improve the target kind's Precision@K over GT-labeled rows on the fixed
-  development-validation brains. Each pool ranks its own K = ceil(this kind's ratio x the
+- Promotion gate: improve the target kind's objective over GT-labeled rows on the fixed
+  development-validation brains. The objective is the rank statistic named by the feedback's
+  `objective` (AUROC by default: the probability that a GT positive outranks a GT negative,
+  ties counting one half; `pauc`, `average_precision` or `precision_at_k` when configured);
+  `per_kind_objective` gives each kind's value and `per_kind_statistics` every statistic.
+  When the feedback lists a `head_guard`, the candidate's named head statistic (by default
+  the mean precision at ceil(K/2), K and 2K) must not fall more than the tolerance below the
+  accepted scorer's, so a whole-ranking gain cannot trade away the top of the list.
+  Each pool ranks its own K = ceil(this kind's ratio x the
   pool's GT positives), limited to the kind's cap when it has one (default: no cap and ratio 1
   for both kinds, so every pool ranks exactly its positives); pools below the GT-positive floor are scored
   and reported but excluded (`in_mean` in feedback). Within each kind the counted brains
   use sum(hits) / sum(effective K) by default; `equal-brain` gives counted brains equal
-  weight. The feedback's `aggregation` names the rule and `per_kind_precision` gives
-  each kind's score. Individual brain/kind
+  weight; a rank statistic is weighted by GT positives under the default rule. The
+  feedback's `aggregation` names the rule and `per_kind_precision` gives each kind's
+  Precision@K (reported in every run for comparison). Individual brain/kind
   regressions are allowed.
   The target-kind gain must exceed the configured precision margin. In the default
   bootstrap gate it must also clear row-resampling noise: the host requires the lower
