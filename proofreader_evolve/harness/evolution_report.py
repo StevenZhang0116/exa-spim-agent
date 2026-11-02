@@ -317,7 +317,7 @@ def build_report_data(run_dir):
             'state': state, 'manifest': {key: manifest.get(key) for key in (
                 'train_brains', 'development_validation_brains', 'budgets', 'promotion_gate',
                 'search_version', 'classifier_training_protocol', 'selection_protocol', 'kind_schedule',
-                'detector_prior')},
+                'detector_prior', 'objective_statistic', 'objective_label', 'head_guard')},
             'baseline': _pair(reader.json('baseline.json')), 'seed': seed,
             'final': _pair(final) if final else None,
             'pool': _pool(reader.json('candidate_pool.json')), 'seeds': seeds,

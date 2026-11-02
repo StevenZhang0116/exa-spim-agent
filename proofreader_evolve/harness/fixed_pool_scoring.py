@@ -592,6 +592,7 @@ def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *,
         raise ValueError(f"The {OBJECTIVE_LABELS[objective]} delta is undefined on every resample")
     bounds = [100. * alpha / 2., 100. * (1. - alpha / 2.)]
     low, high = np.nanpercentile(deltas, bounds)
+    defined_deltas = deltas[np.isfinite(deltas)]
 
     def interval(values, percentiles):
         return ([float(v) for v in np.nanpercentile(values, percentiles)] if np.isfinite(values).any()
@@ -602,8 +603,8 @@ def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *,
             "undefined_draws": int(np.count_nonzero(~np.isfinite(deltas))),
             "delta_ci": [float(low), float(high)],
             "delta_ci95": interval(deltas, [2.5, 97.5]),
-            "bootstrap_mean_delta": float(np.nanmean(deltas)),
-            "p_delta_le_0": float(np.nanmean(deltas <= 0)), "p_delta_ge_0": float(np.nanmean(deltas >= 0)),
+            "bootstrap_mean_delta": float(defined_deltas.mean()),
+            "p_delta_le_0": float(np.mean(defined_deltas <= 0)), "p_delta_ge_0": float(np.mean(defined_deltas >= 0)),
             "cells": {cell: {"delta_ci": interval(values, bounds), "delta_ci95": interval(values, [2.5, 97.5])}
                       for cell, values in per_cell.items()},
             "scope": f"Row-resampling uncertainty of the paired {OBJECTIVE_LABELS[objective]} delta over the fixed "

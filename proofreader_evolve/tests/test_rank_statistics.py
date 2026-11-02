@@ -16,6 +16,7 @@ from proofreader_evolve.harness import selection_protocol as sp
 from proofreader_evolve.harness.candidate_pool import CandidatePool, POOL_TOLERANCES
 from proofreader_evolve.harness.train_feedback import metrics_only
 from proofreader_evolve.tests.test_bootstrap_gate import DETECTOR, K, SIGNAL, TWEAK, pool
+from proofreader_evolve.tests.test_fixed_pool_scoring import BASELINE, IMPROVED, fixture
 from proofreader_evolve.tests.test_selection_protocol import two_brains
 from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
 
@@ -69,6 +70,17 @@ class StatisticDefinitionTests(unittest.TestCase):
         self.assertAlmostEqual(rs.pauc(labels, weights, starts, .4), rs.pauc(dup_labels, ones, dup_starts, .4))
         hits, depth = rs.prefix_hits(labels, weights, 3)
         self.assertEqual((hits, depth), (2., 3.))  # rows 1 (x2) and 2 (x1, weight 0 skipped) -> positives 2
+
+    def test_zero_weight_tie_groups_do_not_undefine_ap(self):
+        # A bootstrap draw that leaves out the top rows: those tie groups have zero weight and
+        # are no threshold. The weighted AP equals the AP of the rows that remain.
+        labels, starts = ordered([.9, .8, .7, .6], [0, 1, 0, 1])
+        remaining_labels, remaining_starts = ordered([.8, .7, .6], [1, 0, 1])
+        remaining = rs.average_precision(remaining_labels, np.ones(3), remaining_starts)
+        self.assertAlmostEqual(remaining, (1. + 2 / 3) / 2)
+        self.assertAlmostEqual(rs.average_precision(labels, np.array([0., 1., 1., 1.]), starts), remaining)
+        self.assertAlmostEqual(rs.average_precision(labels, np.array([0., 0., 1., 1.]), starts), .5)
+        self.assertAlmostEqual(rs.auroc(labels, np.array([0., 1., 1., 1.]), starts), .5)
 
     def test_undefined_without_both_classes(self):
         labels, starts = ordered([.3, .2], [0, 0])
@@ -242,6 +254,46 @@ class EvaluationUnderAurocTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'objective differs'):
             scoring.bootstrap_acceptance(self.reports['detector'], self.reports['signal'], precision_interval,
                                          target_kind='merge')
+
+    def test_bootstrap_under_average_precision_defines_every_draw(self):
+        budgets = scoring.Budgets({'merge': K}, objective='average_precision')
+        interval = scoring.paired_bootstrap(self.states['detector'], self.states['signal'], self.banks, budgets,
+                                            target_kind='merge', draws=100, seed=3)
+        self.assertEqual((interval['objective'], interval['undefined_draws']), ('average_precision', 0))
+        self.assertGreater(interval['delta_ci'][0], 0.)
+        self.assertEqual(interval['p_delta_ge_0'], 1.)
+
+    def test_bootstrap_probabilities_use_the_defined_draws(self):
+        # One positive among three rows: a Poisson draw that leaves it out has no AUROC.
+        banks, budgets = {'1': fixture()}, scoring.Budgets({'split': 1}, objective='auroc')
+        states = {}
+        for name, source in (('baseline', BASELINE), ('improved', IMPROVED)):
+            states[name] = {}
+            scoring.evaluate(source, banks, budgets, state=states[name])
+        interval = scoring.paired_bootstrap(states['baseline'], states['improved'], banks, budgets,
+                                            target_kind='split', draws=200, seed=0)
+        self.assertGreater(interval['undefined_draws'], 0)
+        self.assertLess(interval['undefined_draws'], 200)
+        self.assertEqual((interval['p_delta_ge_0'], interval['p_delta_le_0']), (1., 0.))
+        self.assertEqual((interval['bootstrap_mean_delta'], interval['delta_ci']), (1., [1., 1.]))
+
+    def test_merged_train_measurement_carries_the_candidate_objective(self):
+        from types import SimpleNamespace
+        from proofreader_evolve.harness.train_experiments import TrainingExperiments, digest
+        session = SimpleNamespace(parent_report=self.reports['detector'], parent_state=self.states['detector'],
+                                  target_kind='merge', budgets=self.budgets)
+        merged, state = TrainingExperiments._merge_measurement(session, self.reports['signal'],
+                                                               self.states['signal'], SIGNAL)
+        cell = self.reports['signal']['cells']['2/merge']
+        self.assertEqual(merged['policy_sha256'], digest(SIGNAL))
+        self.assertEqual(merged['objective'], 'auroc')
+        self.assertEqual(merged['per_kind_objective']['merge'], cell['auroc'])
+        self.assertEqual(merged['per_kind_statistics']['merge']['pauc'], cell['pauc'])
+        self.assertEqual(merged['per_kind_precision']['merge'], cell['precision'])
+        self.assertEqual(merged['head_guard'], self.budgets.head_guard)
+        self.assertEqual(scoring.objective_for_kind(merged, 'merge'), merged['per_kind_objective']['merge'])
+        self.assertIs(state['2/merge'], self.states['signal']['2/merge'])
+        self.assertNotEqual(merged['per_kind_objective']['merge'], self.reports['detector']['per_kind_objective']['merge'])
 
     def test_one_swapped_hit_moves_auroc_by_less_than_precision(self):
         detector, tweak = self.reports['detector']['cells']['2/merge'], self.reports['tweak']['cells']['2/merge']

@@ -3,7 +3,10 @@
 Labels are three-valued (1 / 0 / NaN); every example group is drawn from GT-labeled
 rows, and the boundary panel follows the labeled-row ranking used by Precision@K. The
 ``deep_positive`` group (2026-11-02) samples positives in the lower half of the labeled
-ranking, the region a whole-ranking objective such as AUROC also scores.
+ranking, the region a whole-ranking objective such as AUROC also scores. With ``fold_ids``
+(grouped out-of-fold selection scores, one model per fold) both panels are taken inside
+each fold's own ranking, as the official statistics are; pooling the folds would order
+rows by the scale of their fold's model instead of by rank.
 """
 
 import hashlib
@@ -29,20 +32,29 @@ def example(table, scores, index, group, features=None):
                          for name, value in features.iloc[index].items()}}
 
 
-def describe(table, scores, chosen, generation=0, cell='', parent=None, *, features=None):
+def describe(table, scores, chosen, generation=0, cell='', parent=None, *, features=None, fold_ids=None):
     from .fixed_pool_scoring import labeled_order
     order = labeled_order(scores, table.truth, table.keys)
     mask = np.zeros(len(scores), dtype=bool)
     mask[chosen] = True
-    # Boundary panel is outside top-K, distinct from currently selected rows.
-    boundary = order[len(chosen):min(len(order), len(chosen) + max(20, len(chosen) // 4))]
+    # One ranking, or one per fold: the pooled order restricted to a fold keeps the fold's
+    # own order (score descending, key ascending), the rule of the fold-wise statistics.
+    folds = np.unique(np.asarray(fold_ids)[order]) if fold_ids is not None else []
+    rankings = [order[np.asarray(fold_ids)[order] == fold] for fold in folds] or [order]
+    boundary, deep = [], []
+    for ranking in rankings:
+        selected = int(np.count_nonzero(mask[ranking]))
+        # Boundary panel is outside top-K, distinct from currently selected rows.
+        boundary.append(ranking[selected:min(len(ranking), selected + max(20, selected // 4))])
+        deep.append(ranking[len(ranking) // 2:])
+    boundary, deep = np.concatenate(boundary), np.concatenate(deep)
     groups = {
         'selected_positive': chosen[table.truth[chosen] == 1],
         'selected_label0': chosen[table.truth[chosen] == 0],
         'boundary_positive': boundary[table.truth[boundary] == 1],
         'boundary_label0': boundary[table.truth[boundary] == 0],
         'missed_positive': np.flatnonzero((table.truth == 1) & ~mask),
-        'deep_positive': (lambda deep: deep[table.truth[deep] == 1])(order[len(order) // 2:]),
+        'deep_positive': deep[table.truth[deep] == 1],
     }
     delta = None
     if parent is not None:

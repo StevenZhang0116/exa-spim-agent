@@ -127,7 +127,11 @@ def average_precision(labels, weights, starts):
     if total_p <= 0:
         return None
     cum_p, cum_n = np.cumsum(positives), np.cumsum(negatives)
-    return float((positives * cum_p / (cum_p + cum_n)).sum() / total_p)
+    depth = cum_p + cum_n
+    # Leading tie groups of zero weight (rows a bootstrap draw left out) are no threshold;
+    # their positives are zero, so any finite precision there contributes nothing.
+    precision = np.divide(cum_p, depth, out=np.zeros_like(cum_p), where=depth > 0)
+    return float((positives * precision).sum() / total_p)
 
 
 def pauc(labels, weights, starts, fpr_max=DEFAULT_PAUC_FPR):

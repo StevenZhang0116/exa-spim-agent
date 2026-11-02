@@ -72,6 +72,20 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(gain['ranking_delta']['net_tp'], 1)
         self.assertEqual(gain['group_sizes']['gained_positive'], 1)
 
+    def test_fold_wise_panels_do_not_mix_fold_score_scales(self):
+        # Two out-of-fold models, each ranking its fold perfectly, on different score scales.
+        rows = [{'segment_id_a': 1, 'segment_id_b': i + 2} for i in range(8)]
+        truth = np.array([1, 1, 0, 0, 1, 1, 0, 0])
+        table = NativeTable('split', pd.DataFrame({'x': np.arange(8)}), rows, truth,
+                            {'pool_sha256': pool_digest('split', rows)})
+        scores = np.array([10., 9., 8., 7., 1., .9, .8, .7])
+        folds, chosen = np.array([0, 0, 0, 0, 1, 1, 1, 1]), np.array([0, 1, 4, 5])
+        pooled = describe(table, scores, chosen)['group_sizes']
+        self.assertEqual((pooled['deep_positive'], pooled['boundary_positive']), (2, 2))  # fold 1's top rows
+        folded = describe(table, scores, chosen, fold_ids=folds)['group_sizes']
+        self.assertEqual((folded['deep_positive'], folded['boundary_positive'], folded['boundary_label0']), (0, 0, 4))
+        self.assertEqual((folded['selected_positive'], folded['missed_positive']), (4, 0))
+
     def test_statistics_use_whole_pool_and_handle_missing_values(self):
         bank = fixture()
         bank.tables['split'].features.loc[0, 'evidence'] = np.nan

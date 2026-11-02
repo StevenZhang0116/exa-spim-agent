@@ -385,7 +385,11 @@ class TrainingExperiments:
             if cell.endswith('/' + self.target_kind):
                 report['cells'][cell] = deepcopy(measured['cells'][cell])
                 state[cell] = measured_state[cell]
-        report.update(scoring.aggregate_precision(report['cells'], scoring.Budgets.coerce(self.budgets).aggregation))
+        budgets = scoring.Budgets.coerce(self.budgets)
+        # Objective, every rank statistic and precision are re-aggregated from the merged cells
+        # (until 2026-11-02 only precision was, leaving the parent's objective in the summary).
+        report.update(scoring.aggregate_objective(report['cells'], budgets.aggregation, budgets.objective,
+                                                  budgets.head_guard))
         return report, state
 
     def evaluate(self):
@@ -519,9 +523,14 @@ class TrainingExperiments:
             selection_feedback = deepcopy(selection_report)
             for cell, values in selection_state.items():
                 brain = cell.rsplit('/', 1)[0]
+                # Out-of-fold scores come from different models per fold, so the boundary and
+                # deep-positive panels rank inside each fold (the official ranking's rule).
+                fold_ids = (self.protocol.fold_ids(self.target_kind, brain)
+                            if self.protocol.requires_fold_fits else None)
                 selection_feedback['cells'][cell].update(describe(
                     self.train[brain].tables[self.target_kind], values['scores'], values['chosen'],
-                    self.generation, cell, self.parent_selection_state.get(cell), features=features_by_brain[brain]))
+                    self.generation, cell, self.parent_selection_state.get(cell), features=features_by_brain[brain],
+                    fold_ids=fold_ids))
             passed, reason = scoring.acceptance(self.parent_report, report, self.margin, target_kind=self.target_kind)
             entry.update(status='evaluated', train=metrics_only(report),
                          train_gate={'passed': passed, 'reason': reason, 'required_for_promotion': False},

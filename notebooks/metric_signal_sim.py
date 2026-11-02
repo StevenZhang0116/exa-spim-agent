@@ -7,6 +7,9 @@ new feature, a re-ranking confined to the top 3K, to ranks 3K..10K, to ranks bel
 (re-ranking inside a block reuses the block's score values, so nothing crosses its
 boundary), and label-independent jitter. The evidence behind the AUROC default objective
 (WORKFLOW_REVISION 2026-11-02). Run: python notebooks/metric_signal_sim.py
+The paired bootstrap keeps each pool's K at its original positive count, as the production
+bootstrap does (until the 2026-11-02 review it recomputed K from the resampled positives;
+the z values moved by at most 0.4 and the ordering of the statistics did not change).
 """
 import sys
 import numpy as np
@@ -21,9 +24,9 @@ def make(KS, prev, auc_target):
         cells.append((y, rng.normal(0, 1, y.size) + mu * y))
     return cells
 
-def metrics(y, s):
+def metrics(y, s, k=None):
     o = np.argsort(-s, kind='stable'); y = y[o]
-    npos = int(y.sum()); nneg = y.size - npos; k = npos
+    npos = int(y.sum()); nneg = y.size - npos; k = npos if k is None else k
     cum = np.cumsum(y); idx = np.flatnonzero(y); prec = cum[idx] / (idx + 1)
     ranks = np.arange(1, y.size + 1)
     fpr = np.cumsum(1 - y) / nneg; tpr = cum / npos
@@ -40,22 +43,22 @@ def metrics(y, s):
         auc=(np.sum(ranks[y == 0]) - nneg*(nneg+1)/2) / (npos*nneg))
 
 NAMES = ('pk', 'p3', 'ap2k', 'ap4k', 'ap', 'pauc02', 'pauc10', 'auc')
-def pooled(ys, ss):
+def pooled(ys, ss, ks=None):
     acc = {m: 0. for m in NAMES}; tp = kk = w = 0
-    for y, s in zip(ys, ss):
-        r = metrics(y, s); tp += r['tp']; kk += r['k']; w += r['npos']
+    for y, s, k in zip(ys, ss, ks or [None] * len(ys)):
+        r = metrics(y, s, k); tp += r['tp']; kk += r['k']; w += r['npos']
         for m in NAMES: acc[m] += r[m] * r['npos']
     out = {m: acc[m] / w for m in NAMES}; out['pk'] = tp / kk
     return out
 
 def paired_boot(cells, s0, s1, B=300):
-    diffs = []
+    diffs, ks = [], [int(y.sum()) for y, _ in cells]  # K fixed per pool, as in production
     for _ in range(B):
         ys, a0, a1 = [], [], []
         for (y, _), x0, x1 in zip(cells, s0, s1):
             idx = rng.integers(0, y.size, y.size)
             ys.append(y[idx]); a0.append(x0[idx]); a1.append(x1[idx])
-        m0, m1 = pooled(ys, a0), pooled(ys, a1)
+        m0, m1 = pooled(ys, a0, ks), pooled(ys, a1, ks)
         diffs.append({m: m1[m] - m0[m] for m in NAMES})
     return {m: np.std([d[m] for d in diffs]) for m in NAMES}
 

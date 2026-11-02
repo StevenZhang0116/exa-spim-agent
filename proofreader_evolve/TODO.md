@@ -92,9 +92,14 @@ validation gains were +0.0007 and +0.0013, the second missing the gate by 0.0000
   records P@K, the three depths, AP, AUROC and pAUC, so after one or two runs: (a) compare the
   paired-bootstrap interval widths of AUROC and P@K on the same candidates; (b) compute the
   Spearman correlation of each selection statistic (`experiments[*].selection.per_kind_statistics`)
-  with the validation objective and with validation P@K; (c) count head-guard vetoes and rejected
-  gens whose P@K rose. Revert to `--objective precision_at_k` if AUROC-driven acceptance does not
-  raise validation P@K over the run. Motivation: in `precision_20261031_175627_2okbyg6b` four merge
+  with the validation objective and with validation P@K; (c) count head-guard vetoes, rejected
+  gens whose P@K rose, and candidates whose three-depth mean held while P@K alone fell by more than
+  the tolerance (the mean lets depths compensate; `--head-guard-statistic precision_at_k` guards the
+  single cut, and such cases decide whether the default moves). Revert to `--objective
+  precision_at_k` if validation P@K falls over the run or the head guard vetoes most AUROC-accepted
+  candidates; AUROC rising while P@K stays flat is the expected low-power case, not a failure (the
+  2026-11-02 simulation, bootstrap K fixed as in production: broad-change z P@K 3.2 vs AUROC 12.1).
+  Motivation: in `precision_20261031_175627_2okbyg6b` four merge
   generations with P@K point gains of +0.010 to +0.027 were rejected by a gate that needs about
   +0.035, and the five validated merge candidates were ordered oppositely by selection and
   validation.

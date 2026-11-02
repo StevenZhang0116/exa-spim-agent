@@ -39,6 +39,18 @@ class EvolutionReportTests(unittest.TestCase):
         self.put(f'gen{number:03d}/evaluation.json', row)
         return row
 
+    def test_manifest_objective_fields_reach_the_page(self):
+        guard = {'statistic': 'precision_depth_mean', 'tolerance': .01}
+        self.put('manifest.json', {'objective': PRECISION, 'train_brains': ['794495'],
+                                  'development_validation_brains': ['794493'], 'budgets': {'split': 10},
+                                  'objective_statistic': 'auroc', 'objective_label': 'AUROC', 'head_guard': guard})
+        self.generation(1)
+        manifest = build_report_data(self.root)['manifest']
+        self.assertEqual((manifest['objective_statistic'], manifest['objective_label']), ('auroc', 'AUROC'))
+        self.assertEqual(manifest['head_guard'], guard)
+        self.assertIn('objective_statistic', Path(__file__).resolve().parents[1].joinpath(
+            'plotting', 'report_assets', 'report.js').read_text())
+
     def test_descriptor_requests_and_probe_evidence_survive_report_export(self):
         request = {'level': 0, 'radius_um': 40., 'channel': 0, 'timepoint': 0}
         run = {'run': 'gen001/descriptor001', 'status': 'registered', 'inputs': 'image',
