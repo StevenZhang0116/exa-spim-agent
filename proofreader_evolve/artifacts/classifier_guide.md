@@ -157,10 +157,12 @@ auxiliary TRAIN brains fully included in every fitting set and never held out.
 Whole-brain selection holdouts, when configured, are held out together in one fold;
 their predictions come from a model that never fitted that brain.
 Out-of-fold scores are ranked inside each fold using GT-labeled rows only, with
-budgets summing to each pool's effective K. `target_precision` / `grouped_cv_precision`
-combines the target kind's counted pools using the configured aggregation:
-sum(TP) / sum(effective K) by default, or equal-brain precision. Pools below the
-positive floor are reported but excluded. The
+budgets summing to each pool's effective K. `target_objective` (the feedback's
+`objective`, AUROC by default, measured per fold and weighted by GT positives) is the
+selection score; `target_precision` / `grouped_cv_precision` is Precision@K over the same
+rows, combining the target kind's counted pools by the configured aggregation
+(sum(TP) / sum(effective K) by default, or equal-brain precision) and is reported beside
+it. Pools below the positive floor are reported but excluded. The
 full-TRAIN fit is then frozen as the candidate. `candidate_train` numbers remain
 **in-sample resubstitution** diagnostics and do not rank candidates under `grouped_oof`. A model that memorizes
 rows scores high in-sample and low out-of-fold. If `fit` declares a `groups`

@@ -49,20 +49,26 @@ def collect(run_dir):
     accepted = [r for r in rows if r.get("accepted")]
     seed = records.read_json(run_dir / "seed.json", {})
     baseline = records.measurement_values(seed.get("validation"))
+    baseline_objective = records.objective_values(seed.get("validation"))
     final_record = records.read_json(run_dir / "final.json", {})
     final = records.measurement_values(final_record.get("validation"))
+    final_objective = records.objective_values(final_record.get("validation"))
     if final is None:
         final = records.measurement_values(accepted[-1].get('validation')) if accepted else baseline
+        final_objective = records.objective_values(accepted[-1].get('validation')) if accepted else baseline_objective
+    manifest = records.read_json(run_dir / "manifest.json", {})
+    objective_statistic = manifest.get("objective_statistic", "precision_at_k")  # runs before v7 were precision
     policy = run_dir / "best_scorer.py"
     rules = run_dir / f"gen{accepted[-1]['generation']:03d}" / "rules.md" if accepted else None
     costs = records.cumulative_accounting(rows)
     return {
         "run_id": run_dir.name, "run_dir": str(run_dir), "objective": version,
-        "metric": records.METRIC_NAME, "brain_roles": _roles(run_dir),
+        "metric": records.METRIC_NAME, "objective_statistic": objective_statistic, "brain_roles": _roles(run_dir),
         "detector_prior": _detector_prior(run_dir),
         "n_generations": len(rows), "n_accepted": len(accepted),
         "accepted_generations": [r["generation"] for r in accepted],
         "baseline_validation": baseline, "final_accepted_validation": final,
+        "baseline_validation_objective": baseline_objective, "final_accepted_validation_objective": final_objective,
         "net_validation_gain": {kind: (value - baseline[kind] if value is not None
                                        and (baseline or {}).get(kind) is not None else None)
                                 for kind, value in (final or {}).items()},

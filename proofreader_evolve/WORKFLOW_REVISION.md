@@ -153,10 +153,14 @@ flowchart TD
 6. Once required research/follow-up work is complete, evaluate the final measured
    candidate on every selected development-validation
    brain; a candidate byte-identical to the accepted combined scorer skips this step
-   and the generation ends as `unchanged` (2026-10-12). Compute Precision@K separately
-   for each kind over its counted brains: sum(TP) / sum(effective K) by default,
-   or equal-brain weighting when configured. Promote only if the target kind's score exceeds its accepted parent's score
-   by more than `--precision-margin` and, in the default `--promotion-gate bootstrap`
+   and the generation ends as `unchanged` (2026-10-12). Compute the objective separately
+   for each kind over its counted brains (since 2026-11-02 the configured rank statistic,
+   AUROC by default, weighted by GT positives; Precision@K as sum(TP) / sum(effective K)
+   before, and still reported beside it; equal-brain weighting when configured). Promote
+   only if the target kind's score exceeds its accepted parent's score
+   by more than `--precision-margin`, the head guard holds (the candidate's mean precision
+   at ceil(K/2), K and 2K is not more than `--head-guard-tolerance` below the parent's) and,
+   in the default `--promotion-gate bootstrap`
    mode, the lower bound of the paired row-resampling interval of that gain is
    above zero (`--bootstrap-draws`, `--bootstrap-alpha`). Individual brain/kind
    regressions and TRAIN regressions are allowed. Reject invalid, nondeterministic or timed-out scorers;
@@ -164,7 +168,8 @@ flowchart TD
 7. Independently retain up to 5 TRAIN branches per kind. Keep the overall TRAIN
    champion first. Prefer specialists that lead fixed geometry slices or recover
    positive candidates missed by already retained branches, even if their target-kind
-   selection precision is more than 0.02 below the champion. Fill remaining slots with
+   selection objective is more than the near-best tolerance below the champion (0.02
+   for Precision@K, 0.005 for AUROC; `POOL_TOLERANCES`). Fill remaining slots with
    near-best distinct Top-K alternatives, preferring different formula structures.
    Compare all successful trials in a generation together. A validation rejection
    does not remove an exploratory branch. Separately pin one reference per kind
@@ -1354,10 +1359,11 @@ configuration. Distinct code/family names alone do not establish new information
 ### Search controls and proposal example
 
 Defaults: `--train-evaluations-per-generation 8 --candidate-pool-size 5
---candidate-score-tolerance 0.02 --plateau-patience 2 --exploration-patience 2
+--candidate-score-tolerance <per objective> --plateau-patience 2 --exploration-patience 2
 --explore-every 3`. `--no-early-stop` continues searching until the generation limit.
-The tolerance is an absolute Precision@K difference for near-best fallback
-branches only; complementary-positive and slice specialists are exempt.
+The tolerance is an absolute difference of the selection objective for near-best
+fallback branches only (0.02 for Precision@K, 0.005 for AUROC, 0.01 for partial AUROC and
+average precision unless overridden); complementary-positive and slice specialists are exempt.
 
 ### TRAIN specialist coverage
 
@@ -1372,7 +1378,7 @@ slice's pool-positive count. It is not precision under a separate per-slice K.
 
 After keeping the champion, greedily prefer candidates improving more slice
 hit counts, then candidates adding greater equal-brain mean positive recall
-relative to the retained union; mean precision, formula diversity and experiment
+relative to the retained union; the selection objective, formula diversity and experiment
 order break ties. A candidate finding different positives can qualify even
 when its slice scores tie. Lower-scoring candidates with no complementary
 positive evidence remain subject to the existing near-best tolerance.

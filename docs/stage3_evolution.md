@@ -66,12 +66,16 @@ python -u -m proofreader_evolve.cli.run_evolution \
   --validation-brains 789202,794493,794491,750318,751473 \
   --generations 20 \
   --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400
+# Objective (2026-11-02): --objective auroc by default (pauc, average_precision or precision_at_k, the rule of
+# every run before); every statistic is recorded whatever the objective. Head guard: --head-guard-statistic
+# precision_depth_mean --head-guard-tolerance 0.01 (none disables it). --candidate-score-tolerance defaults per
+# objective (0.02 precision, 0.005 AUROC).
 # Resource defaults: --classifier-threads 8, --descriptor-workers 24 (maximum; 'auto' = granted CPUs minus 2).
 # Since 2026-11-01 both worker modes are capped by CPU affinity and current job memory headroom;
 # --descriptor-memory-mb 16384 is independent of --classifier-memory-mb.
 # Partition since 2026-10-27: 794495 auxiliary TRAIN (detector-fitted); 802449 within-brain grouped folds; the
-# four holdout selection brains are scored whole by models that never saw them (holdout_precision, the
-# cross-brain signal); validation unchanged. --aggregation positive-weighted (default since 2026-10-27) pools
+# four holdout selection brains are scored whole by models that never saw them (holdout_objective and
+# holdout_precision, the cross-brain signal); validation unchanged. --aggregation positive-weighted (default since 2026-10-27) pools
 # each kind's counted pools by GT positives in selection, validation, bootstrap and headroom; equal-brain
 # assigns equal weight to the counted brains within each kind.
 # Ablations: --detector-prior no-score withholds the frozen detector score (2026-10-12); --detector-prior raw
@@ -319,12 +323,13 @@ and records randomness seeds. `model_environment.json` lists installed packages
 and budgets; training stdout/stderr is saved (a worker that prints nothing leaves no file) and its last 8 KB returned to the agent.
 
 Branches are ranked by the selection protocol: under the default `grouped_oof`,
-grouped out-of-fold precision on detector-naive selection brains from host-owned
-fold refits, with auxiliary TRAIN brains as fitting-only data; in-sample TRAIN
-precision is a **resubstitution diagnostic**. The agent may still use TRAIN-only
-internal validation/CV during fitting. Final promotion requires
-improvement in target-kind development-validation precision that clears the paired-bootstrap
-noise gate (section 3.3). The outer evaluator calls
+the grouped out-of-fold objective (AUROC by default, measured per fold and weighted by
+positives; Precision@K at a partitioned K when that is the objective) on detector-naive
+selection brains from host-owned fold refits, with auxiliary TRAIN brains as fitting-only
+data; in-sample TRAIN precision is a **resubstitution diagnostic**. The agent may still use
+TRAIN-only internal validation/CV during fitting. Final promotion requires improvement in
+the target-kind development-validation objective that clears the paired-bootstrap noise
+gate and the head guard (section 3.3). The outer evaluator calls
 frozen feature extraction and predict on validation; it never supplies validation labels to a worker.
 `best_scorer.py` binds training source, parameters, provenance and artifact hashes.
 Keep its sibling `model_artifacts/` directory when moving/resuming a run; use
@@ -442,8 +447,9 @@ for mechanisms, source papers, adaptation limits, and verification status.
 
 Each kind retains up to **5 TRAIN exploration branches**: the selection-score champion,
 then specialists that recover different GT-positive candidates or lead geometry
-slices. Specialists may fall more than **0.02 absolute precision** below the
-champion. The tolerance applies only to near-best alternatives filling remaining
+slices. Specialists may fall more than the near-best tolerance below the champion
+(**0.02 absolute Precision@K, 0.005 AUROC** by default; `--candidate-score-tolerance`
+overrides). The tolerance applies only to near-best alternatives filling remaining
 slots; distinct Top-K membership and formula structures guide that fallback.
 Slice diagnostics use split gap <=25/>25 microns and merge degree 3/>=4, plus
 whole-pool coverage for each TRAIN brain. Hits always come from the same global
@@ -502,7 +508,7 @@ code must exactly match a successfully measured snapshot; when it does not (an
 untested last edit, or a session cut off at the turn cap), the host ignores the edit
 and submits the generation's best measured candidate, recorded as
 `submission_fallback` in the ledger (2026-10-08). Only that final candidate reaches one evaluation across the fixed
-validation brains, even if its TRAIN precision did not improve. A submission that is
+validation brains, even if its TRAIN selection score did not improve. A submission that is
 byte-identical to the accepted combined scorer is not evaluated at all: the generation
 ends as `unchanged` (ledger flag `submission_unchanged`, trajectory event
 `unchanged_submission`, handoff host status `unchanged_submission`), the parent is

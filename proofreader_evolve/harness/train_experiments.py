@@ -852,7 +852,7 @@ class TrainingExperiments:
                 if restored else None)
         return {'status': 'trained' if restored else 'no_successful_candidate', 'candidates': public_rows, 'best': best,
                 'stopped_early': stopped,
-                'training_metric_protocol': ('grouped_cv_precision' if self.protocol.requires_fold_fits
+                'training_metric_protocol': (self.protocol_info['metric'] if self.protocol.requires_fold_fits
                                              else 'in_sample_resubstitution'),
                 'selection_protocol': self.protocol.mode,
                 'evaluations_used': self.evaluations_used, 'evaluations_remaining': self.remaining}

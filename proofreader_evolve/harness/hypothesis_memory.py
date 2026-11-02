@@ -240,7 +240,8 @@ class HypothesisMemory:
             'information_source': research.get('information_source', 'unspecified'),
             'family': entry.get('family', 'unspecified'), 'fresh_measurements': 0,
             'cached_repeats': 0, 'execution_failures': 0, 'new_train_rankings': 0,
-            'best_train_precision': None, 'stalled_generations': 0, 'measured_generations': 0,
+            'best_train_precision': None, 'best_train_objective': None, 'stalled_generations': 0,
+            'measured_generations': 0,
             'recent_evidence': [], 'feature_evidence': [], 'last_generation': 0, 'handoffs': []})
         if research and research not in record['declarations']:
             record['declarations'].append(deepcopy(research))
@@ -253,10 +254,12 @@ class HypothesisMemory:
         self.seen_rankings.add((entry['target_kind'], entry['top_k_sha256']))
 
     def observe(self, entry):
-        """Record a measured candidate; `target_precision` is the run's official selection score.
+        """Record a measured candidate; `target_objective` (the configured selection statistic,
+        `target_precision` for entries measured before v7) is the run's official selection score.
 
-        Field names keep the `train_precision` schema of memory version v1; under the
-        grouped_oof protocol the value is out-of-fold precision on selection brains.
+        Field names keep the `train_precision` schema of memory version v1 for the precision
+        value; `train_objective` / `best_train_objective` carry the objective and decide
+        improvement. Under grouped_oof both are out-of-fold values on selection brains.
         """
         record = self._record(entry)
         component = (entry['target_kind'], entry['component_sha256'])
@@ -272,11 +275,15 @@ class HypothesisMemory:
             self.seen_rankings.add(ranking)
             record['new_train_rankings'] += int(novel)
             precision = entry['target_precision']
-            prior = record['best_train_precision']
-            improved = prior is None or precision > prior + 1e-12
+            objective = entry.get('target_objective')
+            objective = precision if objective is None else objective
+            prior = record.get('best_train_objective')
+            improved = prior is None or objective > prior + 1e-12
             self.pending_progress[record['key']] = self.pending_progress.get(record['key'], False) or improved
-            record['best_train_precision'] = max(precision, prior if prior is not None else precision)
-            evidence = {'experiment': entry['experiment'], 'train_precision': precision,
+            record['best_train_objective'] = max(objective, prior if prior is not None else objective)
+            best_precision = record['best_train_precision']
+            record['best_train_precision'] = max(precision, best_precision if best_precision is not None else precision)
+            evidence = {'experiment': entry['experiment'], 'train_precision': precision, 'train_objective': objective,
                         'improved_hypothesis_best': improved, 'new_train_ranking': novel,
                         'ranking_delta': {k: v for k, v in (entry.get('ranking_delta') or {}).items()
                                           if k.endswith('/' + entry['target_kind'])},

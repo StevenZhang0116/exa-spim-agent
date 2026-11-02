@@ -86,6 +86,8 @@ def _record_handoff(memory, gen_dir, target_kind, generation, record, trace):
         return None
     host = {'experiment': record.get('submitted_experiment'),
             'selection_precision': (record.get('selection') or {}).get('per_kind_precision', {}).get(target_kind),
+            'selection_objective': ((record.get('selection') or {}).get('per_kind_objective')
+                                    or (record.get('selection') or {}).get('per_kind_precision', {})).get(target_kind),
             'promoted': bool(record.get('accepted')),
             'status': ('unchanged_submission' if record.get('submission_unchanged')
                        else 'repeated_submission' if record.get('submission_repeat')
@@ -834,15 +836,18 @@ def _auxiliary_ablation(args, protocol, kinds, run_dir, fit_limits, trace):
             except Exception as exc:
                 arms[arm] = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
         measured = all(v["status"] == "measured" for v in arms.values())
+        objective = protocol.budgets.objective
         results[kind] = {"program": "artifacts/training.py", "config": {"parameters": {}},
-                         "metric": PROTOCOL_VERSION, "arms": arms,
-                         "delta_with_auxiliary": (arms["selection_plus_auxiliary"]["per_kind_precision"][kind]
-                                                  - arms["selection_only"]["per_kind_precision"][kind]) if measured else None,
+                         "metric": PROTOCOL_VERSION, "objective": objective, "arms": arms,
+                         "delta_with_auxiliary": (arms["selection_plus_auxiliary"]["per_kind_objective"][kind]
+                                                  - arms["selection_only"]["per_kind_objective"][kind]) if measured else None,
+                         "delta_precision_with_auxiliary": (arms["selection_plus_auxiliary"]["per_kind_precision"][kind]
+                                                            - arms["selection_only"]["per_kind_precision"][kind]) if measured else None,
                          "scope": "Host-only baseline diagnostic of the seed training template under the "
                                   "selection protocol; informs whether auxiliary rows help, ranks no branch"}
-        trace.emit("auxiliary_ablation", f"{kind}: seed template grouped_cv_precision selection-only="
-                   f"{arms['selection_only'].get('per_kind_precision', {}).get(kind)} with-auxiliary="
-                   f"{arms['selection_plus_auxiliary'].get('per_kind_precision', {}).get(kind)}", **results[kind])
+        trace.emit("auxiliary_ablation", f"{kind}: seed template grouped_cv_{objective} selection-only="
+                   f"{(arms['selection_only'].get('per_kind_objective') or {}).get(kind)} with-auxiliary="
+                   f"{(arms['selection_plus_auxiliary'].get('per_kind_objective') or {}).get(kind)}", **results[kind])
     _write(run_dir / "auxiliary_ablation.json", results)
     return results
 
@@ -1168,9 +1173,11 @@ async def _run(args, revise_fn, run_dir, trace):
         entry = memory.seed(kind, parent_sources[kind], rules[kind], parent_train, parent_state)
         pool.mark_validated(entry, 0, True)  # the accepted component is a known ranking from the start
         parent_selection[kind] = load_selection(entry['snapshot'])
-        trace.emit('seed_selection', f"Seed {kind}: {protocol.mode} selection precision "
-                   f"{entry['target_precision']:.6f}; in-sample {entry['in_sample_precision']:.6f}",
-                   target_kind=kind, selection=entry['selection'], in_sample_precision=entry['in_sample_precision'])
+        trace.emit('seed_selection', f"Seed {kind}: {protocol.mode} selection {budgets.objective} "
+                   f"{entry['target_objective']:.6f}; precision {entry['target_precision']:.6f}; "
+                   f"in-sample {entry['in_sample_precision']:.6f}",
+                   target_kind=kind, selection=entry['selection'], in_sample_precision=entry['in_sample_precision'],
+                   target_objective=entry['target_objective'], target_precision=entry['target_precision'])
         pool.add(entry)
         pool.set_reference(entry)
     pool.save()

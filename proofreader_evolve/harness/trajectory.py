@@ -115,21 +115,22 @@ def log_metrics(trace, label, report, parent=None):
     parent_objective = (parent.get("per_kind_objective") or parent.get("per_kind_precision", {})) if parent else {}
     lines = [label]
     for kind, value in summary['per_kind_precision'].items():
-        line = ""
+        parts = []
         if objective != "precision_at_k":
             current = summary["per_kind_objective"][kind]
-            line = f"{kind} {objective}={current:.4f}"
+            text = f"{objective}={current:.4f}"
             if parent is not None and parent_objective.get(kind) is not None:
                 delta = current - parent_objective[kind]
                 summary.setdefault('delta_per_kind_objective', {})[kind] = delta
-                line += f" (delta={delta:+.4f})"
-            line += " "
-        line += f"{kind if objective == 'precision_at_k' else ''}{' ' if objective == 'precision_at_k' else ''}Precision@K={value:.4f}"
+                text += f" (delta={delta:+.4f})"
+            parts.append(text)
+        text = f"Precision@K={value:.4f}"
         if parent is not None:
             delta = value - parent['per_kind_precision'][kind]
             summary.setdefault('delta_per_kind_precision', {})[kind] = delta
-            line += f" (delta={delta:+.4f})"
-        lines.append(line)
+            text += f" (delta={delta:+.4f})"
+        parts.append(text)
+        lines.append(f"{kind} " + " ".join(parts))
     for name, cell in summary["cells"].items():
         if parent is not None:
             cell["delta_precision"] = cell["precision"] - parent["cells"][name]["precision"]
