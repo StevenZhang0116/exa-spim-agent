@@ -33,6 +33,10 @@ SCOPES = ('judgeable', 'pilot', 'boundary', 'all_candidates')
 PILOT_ROWS = 512
 BOUNDARY_ROWS = 2000
 BATCH_ROWS = 256
+# S3 patch reads, not workers, bound image descriptors: 24 threads read like 8 before the shared
+# TensorStore context and like about 14 after it (plans/on_demand_contexts.md, 2026-11-03), so plans
+# credit image descriptors with at most this concurrency and stay on the conservative side.
+IMAGE_IO_PARALLELISM = 8
 CONTEXT_COLUMN = 'bank_context_available'
 IMPLEMENTATION_FILES = ('descriptor_runs.py', 'descriptor_inputs.py', 'descriptor_contract.py',
                         'classifier_train_worker.py', 'model_execution.py', 'model_sandbox.py', 'memory_budget.py')
@@ -76,13 +80,15 @@ class DescriptorRuns:
         self.workers = cpu_limit if workers == 'auto' else min(cpu_limit, max(1, int(workers)))
         self.memory_mb = memory_mb
         self.implementation = {name: file_hash(Path(__file__).with_name(name)) for name in IMPLEMENTATION_FILES}
+        self._graph_loads = {}
 
     def capacity(self, pending=0):
         return memory_budget.admission(self.memory_mb, self.workers, pending=pending)
 
     @staticmethod
     def estimated_seconds(rows, rate, workers):
-        # The first batch loads the graph alone; only subsequent batches overlap.
+        # The first batch runs alone (serial admission); only subsequent batches overlap. The
+        # fragment graph load is timed apart by plan() and charged once per brain.
         first = min(rows, BATCH_ROWS)
         remaining_batches = -(-(rows - first) // BATCH_ROWS)
         return float(rate * (first + (rows - first) / max(1, min(workers, remaining_batches))))
@@ -383,27 +389,71 @@ class DescriptorRuns:
                 'worker_seconds': worker_seconds, 'batches': len(batches), 'workers': peak_workers,
                 'manifest': manifest}
 
-    def plan(self, table, program, spec, *, k, sample_rows=64, timeout=600):
-        """Estimate this brain only; the session aggregates every TRAIN brain's measured cost."""
+    def plan_rows(self, table, count=64):
+        """A contiguous block of the rows compute would process: GT-labeled rows in table order
+        (the judgeable scope) from the middle of the pool. Uniform random rows scatter image reads
+        over the whole brain and overstated the per-row cost (2026-11-03)."""
         entry = self.contexts.entry(table)
-        rows = self.sample_rows(table, sample_rows)
+        candidates = np.sort(np.asarray(entry.rows, dtype=np.int64))
+        truth = getattr(table, 'truth', None)
+        if truth is not None:
+            labeled = candidates[np.isin(candidates, labeled_rows(truth))]
+            if len(labeled) >= count:
+                candidates = labeled
+        start = max(0, (len(candidates) - count) // 2)
+        return candidates[start:start + count]
+
+    def graph_load_seconds(self, table):
+        """Time the host fragment graph load a brain's first batch pays.
+
+        The load is charged once per brain, apart from the per-row rate: a 64-row sample that
+        includes a 100 s graph load reads as 1.5 s per row. A graph that is already resident
+        costs nothing now, so the last measured load of that brain is kept instead."""
+        store = getattr(getattr(table, 'local_context', None), 'store', None)
+        if store is None:
+            return 0.
+        key = str(table.meta.get('provenance', {}).get('brain', id(table)))
+        started = time.monotonic()
+        store.graph(table.meta['provenance'])
+        seconds = time.monotonic() - started
+        if seconds >= .5:
+            self._graph_loads[key] = seconds
+        return float(self._graph_loads.get(key, seconds))
+
+    def plan(self, table, program, spec, *, k, sample_rows=64, timeout=600):
+        """Estimate this brain only; the session aggregates every TRAIN brain's measured cost.
+
+        Image descriptors are credited with at most IMAGE_IO_PARALLELISM concurrent readers: the
+        S3 patch reads, not the workers, bound them (plans/on_demand_contexts.md).
+
+        One deadline covers the graph load and the probe: the caller's allowance is checked before
+        the load (an exhausted budget loads nothing) and the load's time is deducted from the probe."""
+        if timeout <= 0:
+            raise ModelExecutionError('Descriptor wall budget exhausted before plan started')
+        deadline = time.monotonic() + float(timeout)
+        entry = self.contexts.entry(table)
+        load = self.graph_load_seconds(table)
+        rows = self.plan_rows(table, sample_rows)
         with tempfile.TemporaryDirectory(prefix='descriptor_plan_') as tmp:
-            measured = self.probe(table, program, spec, rows, timeout=timeout, log_dir=Path(tmp))
+            measured = self.probe(table, program, spec, rows, timeout=deadline - time.monotonic(), log_dir=Path(tmp))
         values, wall = measured['values'], measured['wall_seconds']
         per_row = wall / max(1, len(rows))
         capacity = self.capacity()
         effective_workers = capacity['available_workers']
+        workers = effective_workers if spec['inputs'] == 'geometry' else min(effective_workers, IMAGE_IO_PARALLELISM)
         estimates = {}
         for scope in getattr(self, 'allowed_scopes', SCOPES):
             count = len(self.scope_rows(entry, scope, k, truth=table.truth))
             batches = -(-count // BATCH_ROWS)
             # Never claim parallelism from more workers than actual row batches.
-            seconds = self.estimated_seconds(count, per_row, effective_workers)
+            seconds = load + self.estimated_seconds(count, per_row, workers) if count else 0.
             estimates[scope] = {'rows': int(count), 'batches': int(batches),
                                 'estimated_seconds': float(seconds), 'memory_feasible': effective_workers > 0}
         return {'sample_rows': int(len(rows)), 'sample_wall_seconds': wall, 'seconds_per_row_single_worker': per_row,
+                'graph_load_seconds': float(load),
                 'preparation_seconds': measured['preparation_seconds'], 'worker_seconds': measured['worker_seconds'],
-                'workers': effective_workers, 'worker_limit': self.workers,
+                'image_reads': int(measured.get('image_reads', 0)), 'image_seconds': float(measured.get('image_seconds', 0.)),
+                'workers': workers, 'admitted_workers': effective_workers, 'worker_limit': self.workers,
                 'requested_workers': self.requested_workers, 'memory': capacity, 'estimates': estimates,
                 'finite_fraction': {name: float(np.isfinite(values[:, j]).mean()) if len(rows) else None
                                     for j, name in enumerate(spec['feature_names'])}}

@@ -57,6 +57,7 @@ class EvolutionReportTests(unittest.TestCase):
                'columns': ['bank_agent_signal'], 'scope': 'all_cached', 'image_tier': None,
                'image': request, 'cached': False, 'wall_seconds': 1.}
         evidence = {'version': 'image-evidence-v3', 'preview_records': 2,
+                    'preview_usage': {'limit': 32, 'used': 3, 'remaining': 29},
                     'descriptor_image_probes_succeeded': 1, 'descriptor_plans_attempted': 1,
                     'descriptor_image_computations': [run]}
         self.generation(1, descriptor_runs=[run], image_evidence=evidence)

@@ -237,11 +237,64 @@ class DescriptorRunTests(unittest.TestCase):
         plan = self.runs.plan(self.table, program, spec, k=3, sample_rows=4)
         self.assertEqual(plan['sample_rows'], 4)
         self.assertEqual(plan['workers'], 3)
+        self.assertEqual(plan['admitted_workers'], 3)
+        self.assertEqual(plan['graph_load_seconds'], 0.)  # the context-cache fixture has no host graph to load
         self.assertEqual(set(plan['estimates']), set(dr.SCOPES))
         self.assertGreater(plan['estimates']['all_candidates']['estimated_seconds'], 0)
         self.assertEqual(plan['finite_fraction']['node_count'], 1.)
+        # The timing sample is a contiguous block of pool rows from the middle of the table, not uniform draws.
+        rows = self.runs.plan_rows(self.table, 4)
+        self.assertEqual(len(rows), 4)
+        self.assertTrue(self.runs.contexts.entry(self.table).has_rows(rows).all())
+        self.assertEqual(rows.tolist(), sorted(rows.tolist()))
+        self.assertGreater(rows[0], 0)
+
+    def test_image_plans_credit_bounded_io_parallelism_and_charge_the_graph_load(self):
+        # A probe that reads images: 2 s per row, 12 pool rows in one-row batches, 12 admitted workers.
+        measured = {'values': np.zeros((4, 2)), 'wall_seconds': 8., 'preparation_seconds': 7., 'worker_seconds': 1.,
+                    'image_reads': 4, 'image_seconds': 6.}
+        capacity = {**self.runs.capacity(), 'available_workers': 12}
+        with patch.object(self.runs, 'probe', return_value=measured), patch.object(self.runs, 'capacity', return_value=capacity), \
+                patch.object(self.runs, 'graph_load_seconds', return_value=30.), patch.object(dr, 'BATCH_ROWS', 1):
+            image = self.runs.plan(self.table, *descriptor_spec(IMAGE_DESCRIPTOR), k=3, sample_rows=4)
+            geometry = self.runs.plan(self.table, *descriptor_spec(GEOMETRY_DESCRIPTOR), k=3, sample_rows=4)
+        self.assertEqual((image['workers'], image['admitted_workers']), (dr.IMAGE_IO_PARALLELISM, 12))
+        self.assertEqual(geometry['workers'], 12)
+        self.assertEqual(image['graph_load_seconds'], 30.)
+        self.assertEqual(image['image_reads'], 4)
+        # One serial first row, then 11 rows over 8 credited readers (geometry: over 11 workers), plus the load.
+        self.assertAlmostEqual(image['estimates']['all_candidates']['estimated_seconds'], 30. + 2. * (1 + 11 / 8))
+        self.assertAlmostEqual(geometry['estimates']['all_candidates']['estimated_seconds'], 30. + 2. * (1 + 11 / 11))
         dr.DescriptorRuns.register_context_column(self.table, self.runs.contexts.entry(self.table))
         self.assertEqual(self.table.features[dr.CONTEXT_COLUMN].sum(), 12)
+
+    def test_plan_deadline_covers_the_graph_load(self):
+        # A 10 s graph load on a fake clock: the probe gets the remainder, an exhausted budget loads nothing.
+        from types import SimpleNamespace
+        clock, loads, probes = [1000.], [], []
+        measured = {'values': np.zeros((4, 2)), 'wall_seconds': 8., 'preparation_seconds': 7., 'worker_seconds': 1.}
+
+        def slow_load(table):
+            loads.append(table); clock[0] += 10.
+            return 10.
+
+        def probe(table, program, spec, rows, *, timeout, log_dir, observe=None):
+            probes.append(timeout)
+            if timeout <= 0:  # what the real probe does at its entry
+                raise ModelExecutionError('Descriptor wall budget exhausted before probe started')
+            return measured
+
+        with patch.object(dr, 'time', SimpleNamespace(monotonic=lambda: clock[0])), \
+                patch.object(self.runs, 'graph_load_seconds', side_effect=slow_load), patch.object(self.runs, 'probe', side_effect=probe):
+            plan = self.runs.plan(self.table, *descriptor_spec(IMAGE_DESCRIPTOR), k=3, sample_rows=4, timeout=25.)
+            self.assertAlmostEqual(probes[-1], 15.)
+            self.assertEqual(plan['graph_load_seconds'], 10.)
+            with self.assertRaisesRegex(ModelExecutionError, 'before probe started'):
+                self.runs.plan(self.table, *descriptor_spec(IMAGE_DESCRIPTOR), k=3, sample_rows=4, timeout=5.)
+            self.assertAlmostEqual(probes[-1], -5.)
+            with self.assertRaisesRegex(ModelExecutionError, 'before plan started'):
+                self.runs.plan(self.table, *descriptor_spec(IMAGE_DESCRIPTOR), k=3, sample_rows=4, timeout=0.)
+        self.assertEqual(len(loads), 2)  # the exhausted call loaded no graph
 
 
 if __name__ == '__main__':

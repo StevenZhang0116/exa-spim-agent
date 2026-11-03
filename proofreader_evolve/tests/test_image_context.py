@@ -105,14 +105,29 @@ class ImageContextTests(unittest.TestCase):
         np.testing.assert_array_equal(result['valid_zyx'], valid)
         self.assertEqual(metadata['array_axes'], 'zyx')
 
+    def test_image_arrays_share_one_tensorstore_context(self):
+        from proofreader_evolve.harness import image_context as ic
+        first, second = ic.tensorstore_context(), ic.tensorstore_context()
+        self.assertIs(first, second)
+        spec = first.spec.to_json()
+        self.assertEqual(spec['cache_pool']['total_bytes_limit'], ic.TENSORSTORE_CACHE_BYTES)
+        self.assertGreaterEqual(spec['data_copy_concurrency']['limit'], 2)
+        self.assertEqual(spec['s3_request_concurrency']['limit'], 64)
+
     def test_crop_includes_both_anchors_and_preserves_physical_spacing(self):
         geometry = ImageGeometry.from_ngff(ngff('zyx'), {'shape': [1000]*3}, '0')
         origin, shape, anchors = geometry.crop(np.array([[100, 200, 300], [240, 200, 300]]), 40)
         self.assertTrue((anchors >= 0).all()); self.assertTrue((anchors < shape).all())
         self.assertTrue((shape * geometry.scale_xyz_um[::-1] >= 80).all())
         np.testing.assert_allclose(geometry.voxel_to_graph(anchors + origin), [[100,200,300], [240,200,300]])
-        with self.assertRaisesRegex(ValueError, 'coarser'):
+        with self.assertRaisesRegex(ValueError, '256 um'):
             geometry.crop(np.array([[0,0,0],[2000,0,0]]), 40)
+        # The bound is physical: a 256 um cube (radius 128) at any spacing, not 256 voxels.
+        _, shape, _ = geometry.crop(np.array([[500, 500, 500]]), 128)
+        self.assertTrue((shape * geometry.scale_xyz_um[::-1] >= 256).all())
+        self.assertEqual(shape[0], 128)
+        with self.assertRaisesRegex(ValueError, '256 um'):
+            geometry.crop(np.array([[500, 500, 500]]), 129)
 
     def test_ambiguous_axes_and_invalid_contracts_fail(self):
         attrs = ngff(); del attrs['multiscales'][0]['axes'][2]['unit']
@@ -209,16 +224,20 @@ class ImageContextTests(unittest.TestCase):
 
     def test_train_only_image_handle_and_budget(self):
         experiments=object.__new__(TrainingExperiments)
+        experiments.image_preview_budget=3
         experiments.image_inspections_used=0; experiments.train=training_fixture()
         with self.assertRaises(ValueError):
             experiments.inspect_candidate_image('heldout/merge/0')
+        with self.assertRaisesRegex(ValueError, 'slice_count'):
+            experiments.inspect_candidate_image('anything', preview={'slice_count': 100})
         self.assertEqual(experiments.image_inspections_used,0)
-        experiments.image_inspections_used=8
+        experiments.image_inspections_used=3
         with self.assertRaisesRegex(ValueError,'budget'):
             experiments.inspect_candidate_image('anything')
 
     def test_candidate_image_tool_returns_rendered_pixels_and_host_audit(self):
         experiments=object.__new__(TrainingExperiments)
+        experiments.image_preview_budget=2
         experiments.image_inspections_used=0; experiments.train=training_fixture()
         experiments.gen_dir=self.root; experiments.trace=Mock()
         table=experiments.train['794495'].tables['merge']
@@ -227,13 +246,39 @@ class ImageContextTests(unittest.TestCase):
             'source_path':'host-only-image-uri'})))
         with patch('proofreader_evolve.harness.image_preview.fragment_patch_geometry',
                    return_value=(np.array([[0.,0.,0.],[2.,3.,4.]]), [[0,1]], [0,0])):
-            result=experiments.inspect_candidate_image(candidate_ref(table,0))
+            result=experiments.inspect_candidate_image(candidate_ref(table,0),
+                preview={'plane': 'yz', 'anchor_index': 0, 'depth_range_um': [-5., 5.], 'slice_count': 3})
         self.assertEqual(result['content'][1]['type'],'image')
         self.assertGreater(len(result['content'][1]['data']),100)
         self.assertNotIn('host-only-image-uri',json.dumps(result))
         saved=json.loads((self.root/'image_inspections'/'inspection001.json').read_text())
         self.assertEqual(saved['metadata']['source_path'],'host-only-image-uri')
+        self.assertEqual(saved['response']['preview']['slice_indices'], [2, 3, 4])
+        self.assertEqual(saved['response']['preview']['plane'], 'yz')
         self.assertEqual(experiments.image_inspections_used,1)
+        self.assertEqual(saved['response']['image_inspections_remaining'], 1)
+        table.image_context.patch.side_effect = OSError('synthetic missing image')
+        with self.assertRaises(OSError):
+            experiments.inspect_candidate_image(candidate_ref(table, 0))
+        self.assertEqual(experiments.image_inspections_remaining, 0)
+        with self.assertRaisesRegex(ValueError, 'budget exhausted'):
+            experiments.inspect_candidate_image(candidate_ref(table, 0))
+        self.assertEqual(table.image_context.patch.call_count, 2)
+
+    def test_failure_images_respect_shared_budget_and_keep_pairs_together(self):
+        experiments=object.__new__(TrainingExperiments)
+        experiments.image_preview_budget=3
+        experiments.image_inspections_used=0
+        experiments.failure_cases={'pairs': [{'cases': [{'candidate_ref': str(i)} for i in range(2)]}] * 2}
+
+        def inspect(reference):
+            experiments.image_inspections_used += 1
+            return {'content': [{'type': 'text', 'text': reference}]}
+
+        experiments.inspect_candidate_image=Mock(side_effect=inspect)
+        experiments.inspect_failure_images()
+        self.assertEqual(experiments.inspect_candidate_image.call_count, 2)
+        self.assertEqual(experiments.image_inspections_remaining, 1)
 
     def test_preflight_samples_images_even_if_not_on_regular_stride(self):
         from proofreader_evolve.harness.isolated_scoring import preflight
@@ -250,6 +295,7 @@ class ImageContextTests(unittest.TestCase):
     def test_mcp_sdk_preserves_image_blocks_and_trace_omits_base64(self):
         import mcp.types as types
         experiments=object.__new__(TrainingExperiments)
+        experiments.image_preview_budget=32
         experiments.lock=asyncio.Lock()
         experiments.memory=SimpleNamespace(descriptor_runs=None)
         experiments.research_status = Mock(return_value={'status': 'complete', 'complete': True})
@@ -259,12 +305,13 @@ class ImageContextTests(unittest.TestCase):
         server=experiments.mcp_server()['instance']
         async def invoke():
             request=types.CallToolRequest(method='tools/call',params=types.CallToolRequestParams(
-                name='inspect_candidate_image',arguments={'candidate_ref':'train','radius_um':40.,'level':0,'occurrence_index':0}))
+                name='inspect_candidate_image',arguments={'candidate_ref':'train', 'preview': {'plane': 'xz', 'anchor_index': 1}}))
             return await server.request_handlers[types.CallToolRequest](request)
         result=asyncio.run(invoke()).root
         self.assertFalse(result.isError)
         images=[c for c in result.content if c.type=='image']
         self.assertEqual(len(images),1); self.assertEqual(images[0].data,'cGl4ZWxz')
+        self.assertEqual(experiments.inspect_candidate_image.call_args.kwargs['preview'], {'plane': 'xz', 'anchor_index': 1})
         self.assertTrue(json.loads(result.content[-1].text)['research_status']['complete'])
         cleaned=image_safe_content(payload)
         self.assertNotIn('cGl4ZWxz',json.dumps(cleaned)); self.assertIn('encoded_sha256',cleaned['content'][1])

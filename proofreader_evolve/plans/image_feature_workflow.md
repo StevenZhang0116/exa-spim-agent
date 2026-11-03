@@ -125,7 +125,9 @@ scores. Sampling may be used in frozen, no-score and raw modes.
 Return per-case feature values, errors and compact per-brain diagnostics. When
 requested, return a few PNG previews using `image_preview.render_preview`, drawn
 from the exact pixels and geometry supplied to the descriptor. Reuse the current
-image-preview allowance. Support the existing MIPs, thin slabs and skeleton overlays;
+image-preview allowance. Updated 2026-11-03: native slice sheets are the default, with
+selectable plane, endpoint and relative depth range and reported skipped planes.
+Keep MIPs, thin slabs and skeleton overlays as an explicit overview;
 there is no new viewer or custom visualization language.
 
 Probe and full computation must call the same input-assembly helper and isolated

@@ -365,12 +365,16 @@ class DriverDefaultsTests(unittest.TestCase):
     def test_cli_defaults_and_validation(self):
         from proofreader_evolve.cli.run_precision_evolution import parse_args
         args = parse_args([])
+        self.assertEqual(args.image_previews_per_generation, 32)
+        self.assertEqual(parse_args(['--image-previews-per-generation', '5']).image_previews_per_generation, 5)
+        self.assertEqual(parse_args(['--image-previews-per-generation', '0']).image_previews_per_generation, 0)
         self.assertEqual((args.objective, args.head_guard_statistic, args.head_guard_tolerance, args.pauc_fpr),
                          ('auroc', 'precision_depth_mean', .01, .1))
         self.assertIsNone(args.candidate_score_tolerance)
         self.assertEqual(parse_args(['--head-guard-statistic', 'none', '--objective', 'precision_at_k']).objective,
                          'precision_at_k')
-        for bad in (['--pauc-fpr', '0'], ['--head-guard-tolerance', '-1'], ['--objective', 'f1']):
+        for bad in (['--pauc-fpr', '0'], ['--head-guard-tolerance', '-1'], ['--objective', 'f1'],
+                    ['--image-previews-per-generation', '-1'], ['--image-previews-per-generation', '1.5']):
             with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 parse_args(bad)
 

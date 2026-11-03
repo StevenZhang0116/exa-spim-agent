@@ -34,9 +34,10 @@ label-0 rows, so a finding rests on more than a few sites):
 
 The host resolves handles only against TRAIN before reading any graph/image.
 Merge has occurrence 0; split supports its native occurrence indices. Radius is
-4..100 um; at most 256 voxels per patch axis. Both split anchors are included,
-expanding the crop if necessary. Request a coarser level when the voxel limit is
-exceeded. Levels/channels/timepoints must exist in the source metadata. Fragment
+4..128 um; a patch spans at most a 256 um cube at any level. Both split anchors are
+included, expanding the crop if necessary, within that cube. Larger patches cost
+bytes rather than read time (a 256 um cube is 60 MB at level 0, 7 MB at level 1).
+Levels/channels/timepoints must exist in the source metadata. Fragment
 neighborhoods have 2..512 nodes (default 256) in a sphere of radius_um, with anchors
 always retained; this is a bounded induced subgraph, not the full skeleton.
 
@@ -125,5 +126,8 @@ To use an observation in scoring, implement it in `extract_image_features`,
 `extract_local_features`, or a TRAIN-only fit/predict model as appropriate. Read
 image_context_guide.md, measure the resulting scorer normally and use feature
 ablation when useful. Validation remains outside exploration and uses frozen
-inference. Optional 2D preview tools are available for visual checks; projections
-cannot establish 3D connectivity by themselves.
+inference. Optional previews default to native slices, with selectable planes, endpoint
+anchors and depth ranges (image_context_guide.md). Projection overviews remain optional.
+Use these views to formulate a hypothesis, then test it on the full 3D volume: compare
+signal along a proposed path against background controls and check sensitivity to chosen
+thresholds. Neither a projection nor a sparse slice sheet establishes 3D connectivity.

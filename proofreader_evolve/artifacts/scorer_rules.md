@@ -42,7 +42,9 @@ in the current generation's `proposal.json`.
   Returned findings are exploration evidence; implement useful measurements in
   scoring code and evaluate them before claiming a gain. 2D previews through
   inspect_candidate_image or inspect_failure_images are optional, with a separate
-  eight-request allowance shared with probe previews. Projections alone cannot establish 3D connectivity.
+  configurable allowance shared with probe previews (default 32; model_environment.json).
+  Compare TRAIN feedback groups and brains, then expand promising numerical probes
+  within wall time as described in image_context_guide.md. Projections alone cannot establish 3D connectivity.
 - Read image_context_guide.md to use image observations in scoring.
   LOCAL_IMAGE enables stateless image features or raw
   patches for arbitrary fit/predict models via an images keyword argument.

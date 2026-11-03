@@ -144,7 +144,12 @@ validation gains were +0.0007 and +0.0013, the second missing the gate by 0.0000
   failing whole. `--descriptor-generation-wall-seconds` interacts; document the two.
   Superseded 2026-10-30: contexts are on demand and production descriptors run on the judgeable
   rows (49 k merge / 34 k split TRAIN rows; 802449 merge: geometry 177 s, level-1 image 854 s), see
-  `plans/on_demand_contexts.md`; the per-brain resume idea stays open.
+  `plans/on_demand_contexts.md`; the per-brain resume idea stays open. 2026-11-03: `plan_descriptor_run`
+  overstated an 802449 level-1 image call 4.7x (3,432 s estimated, 727 s measured) because the 64-row sample
+  charged the graph load per row; it now times the load apart, samples a contiguous labeled block and caps
+  the credited image concurrency at 8, and the shared TensorStore context cut the call to 299 s. Still open:
+  the sample amortizes the worker start-up over four times fewer rows than a batch (2.8x over under the new
+  context), and the per-brain resume.
 - **Descriptor values for `X_unlabeled`.** Under the judgeable scope the up to 100,000 NaN-label
   rows per brain that `fit_classifier` stages for a `fit(..., X_unlabeled=...)` carry NaN in every
   `bank_agent_*` column, and a formula's whole-column statistics over such a column run on the
@@ -162,6 +167,26 @@ validation gains were +0.0007 and +0.0013, the second missing the gate by 0.0000
   `TimeoutError` in `descriptor_inputs._image` / `ImageSource.read`, so that one stalled S3
   request does not cost an image generation; an image submission reads about 27 k validation
   plus 34 k TRAIN rows, so the exposure per generation is not negligible.
+- **Host faults before the agent runs end the run as `completed`.** Run
+  `precision_20261102_133644_rst004og` (2026-11-02) was launched from a JupyterLab terminal whose
+  `SLURM_EXPORT_ENV=NONE` left the srun step without `ANTHROPIC_API_KEY` (launcher fixed with
+  `--export=ALL`). The driver evaluated the baseline for 20 minutes, then every generation failed
+  in `reviser_session.anthropic_api_env()` before any agent call. The failure happens in the
+  `revision` stage, so the driver records a research `execution` failure event; `ResearchEvidence.status`
+  reports `execution_blocked` (a failure and no fresh measurement) and `CandidatePool.finish` counts
+  the round in `execution_blocked_rounds`; at `--exploration-patience 2` both kinds paused after two
+  failures each, and the run ended after four generations with `stop_reason all_kinds_paused` and
+  `run_status.json` `status completed`. That pause is meant for an agent program that cannot execute,
+  not for host or API faults (missing key, SDK transport error, network outage): an outage of a few
+  minutes would end a 15-generation run the same way, and `completed` hides it. Proposed: (1) check
+  `ANTHROPIC_API_KEY` and the SDK/model (what `preflight --check-api` does) in the driver before
+  loading tables, so a misconfigured step fails in seconds; (2) classify exceptions raised before
+  `run_reviser` hands control to the agent (session construction, SDK/transport errors) as host
+  faults: retry the generation after a bounded backoff, do not record a research execution failure,
+  and if the retries fail stop with `status failed` and a stop reason naming the fault.
+  `run_precision_evolution.py` (the `except Exception` branch recording `_record_research('execution',
+  'failure')`), `harness/research_evidence.py` (`status`), `harness/candidate_pool.py` (`finish`),
+  `harness/reviser_session.py`.
 - **Host-side failure diagnostics.** The driver records only `Failed: <type>: <message>` for a
   generation that fails outside the agent's code (`run_precision_evolution.py`, the
   `generation_error` event) and the console log holds no traceback either; add

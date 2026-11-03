@@ -207,6 +207,7 @@
     $("stats").append(el("p",`Recorded image evidence (${imageEvidence.length}/${data.generations.length} generations): ${previews} previews; ${access} successful 3D analyses; ${probes} successful image descriptor probes; ${plans} descriptor plans; ${descriptors} registered image descriptor computations; ${scored} image-scored attempts (computations/attempts include cached results); ${groups} descriptor-group and ${isolated} image-only paired TRAIN diagnostics. Older records may omit newer activity types. Access and group effects do not isolate pixel benefit.`,"muted"));
     jsonDetails($("stats"),"Image descriptor computations",data.generations.filter(g=>g.image_evidence?.descriptor_image_computations?.length).map(g=>({generation:g.generation,computations:g.image_evidence.descriptor_image_computations})));
     jsonDetails($("stats"),"Image diagnostic outcomes",data.generations.filter(g=>g.image_evidence?.paired_diagnostics?.length).map(g=>({generation:g.generation,diagnostics:g.image_evidence.paired_diagnostics})));
+    jsonDetails($("stats"),"Image preview usage (charged slots, including inspection IO failures)",data.generations.filter(g=>g.image_evidence?.preview_usage).map(g=>({generation:g.generation,...g.image_evidence.preview_usage,saved_previews:g.image_evidence.preview_records,generation_seconds:g.wall_seconds})));
   }
   if(data.state.reason)$("warnings").append(el("p",data.state.reason,"warning"));
   const research=data.generations.filter(g=>g.research_status);

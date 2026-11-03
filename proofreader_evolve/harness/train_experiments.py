@@ -22,6 +22,7 @@ from .failure_cases import matched_failure_cases, branch_comparison
 from .feature_ablation import (prepare_ablation, measure_ablation, ABLATION_VERSION,
                                CLASSIFIER_UNITS, FORMULA_UNITS)
 from .hypothesis_memory import HypothesisMemory
+from .image_coordinates import MAX_RADIUS_UM
 from .research_evidence import ResearchEvidence, program_identity, has_measurement, scoring_source
 from .isolated_scoring import preflight, ScorerExecutionError
 from .selection_protocol import SelectionProtocol, load_selection, save_selection
@@ -38,6 +39,9 @@ from .train_feedback import metrics_only, write_train_feedback
 from .train_coverage import TrainingCoverage
 from .trajectory import Trajectory, log_metrics
 from .volume_analysis import read_analysis, execute_analysis, MAX_ANALYSES, MAX_CASES
+
+
+DEFAULT_IMAGE_PREVIEWS = 32
 
 
 def digest(source):
@@ -195,7 +199,11 @@ class TrainingExperiments:
                  train, parent_report, parent_state, budgets, timeout, margin,
                  memory, max_evaluations=8, generation=0, search_plan=None,
                  classifier_timeout=300, classifier_memory_mb=DEFAULT_MEMORY_MB, classifier_threads=1,
-                 parent_selection=None, descriptor_budget=None, branch=None, validated=None):
+                 parent_selection=None, descriptor_budget=None, branch=None, validated=None,
+                 image_preview_budget=DEFAULT_IMAGE_PREVIEWS):
+        if type(image_preview_budget) is not int or image_preview_budget < 0:
+            raise ValueError('image_preview_budget must be a nonnegative integer')
+        self.image_preview_budget = image_preview_budget
         self.gen_dir, self.policy_path, self.rules_path = gen_dir, policy_path, rules_path
         # Host lookup (entry -> {generation, experiment, promoted, by} or None) of candidates the
         # outer evaluator already measured; status only, never a validation number.
@@ -228,7 +236,7 @@ class TrainingExperiments:
         self.lock, self.trace = asyncio.Lock(), Trajectory(gen_dir)
         self.feature_diagnostics = []
         self.frame_cache = (None, None)
-        self.descriptor_budget = {'per_call_seconds': 3600., 'generation_seconds': 5400., **(descriptor_budget or {})}
+        self.descriptor_budget = {'per_call_seconds': 7200., 'generation_seconds': 14400., **(descriptor_budget or {})}
         self.descriptor_seconds_used, self.descriptor_log = 0., []
         self.descriptor_path = gen_dir / 'descriptor.py'
         if parent_selection is None:
@@ -290,6 +298,10 @@ class TrainingExperiments:
     @property
     def remaining(self):
         return self.max_evaluations + int(self.repair_granted) - self.evaluations_used
+
+    @property
+    def image_inspections_remaining(self):
+        return max(0, self.image_preview_budget - self.image_inspections_used)
 
     def _check_editable_files(self):
         for path in (self.policy_path, self.rules_path):
@@ -1006,15 +1018,16 @@ class TrainingExperiments:
         self.trace.emit('image_scoring_plan', 'Planned label-free TRAIN image coverage', **report)
         return report
 
-    def inspect_candidate_image(self, candidate_ref, radius_um=40., level=0, occurrence_index=0):
+    def inspect_candidate_image(self, candidate_ref, radius_um=40., level=0, occurrence_index=0, preview=None):
         """Return an actual image content block for a TRAIN-only candidate."""
         import base64
-        from .image_preview import fragment_patch_geometry, render_preview
-        if self.image_inspections_used >= 8:
-            raise ValueError('Image inspection budget exhausted (eight requests per generation)')
-        if (type(radius_um) not in (int, float) or not np.isfinite(radius_um) or not 4 <= radius_um <= 100
+        from .image_preview import fragment_patch_geometry, render_preview, preview_request
+        preview_request(preview)
+        if not self.image_inspections_remaining:
+            raise ValueError(f'Image inspection budget exhausted ({self.image_preview_budget} requests per generation)')
+        if (type(radius_um) not in (int, float) or not np.isfinite(radius_um) or not 4 <= radius_um <= MAX_RADIUS_UM
                 or type(level) is not int or not 0 <= level <= 6 or type(occurrence_index) is not int):
-            raise ValueError('Use radius_um 4..100, integer level 0..6 and a valid occurrence_index')
+            raise ValueError(f'Use radius_um 4..{MAX_RADIUS_UM:.0f}, integer level 0..6 and a valid occurrence_index')
         brain, table, index = resolve_train_candidate(self.train, candidate_ref)
         provider = getattr(table, 'image_context', None)
         if provider is None:
@@ -1027,33 +1040,37 @@ class TrainingExperiments:
         nodes, edges, segments = fragment_patch_geometry(table, index, spec, metadata, occurrence_index)
         directory = self.gen_dir / 'image_inspections'
         directory.mkdir(exist_ok=True)
-        preview = directory / f'inspection{self.image_inspections_used:03d}.png'
-        render_preview(preview, patch, nodes, edges, segments, f'TRAIN {brain} / {table.kind} / occurrence {occurrence_index}')
+        preview_path = directory / f'inspection{self.image_inspections_used:03d}.png'
+        view = render_preview(preview_path, patch, nodes, edges, segments,
+                              f'TRAIN {brain} / {table.kind} / occurrence {occurrence_index}', preview=preview)
         # The host audit retains source identity. The tool exposes just the
         # local preview, registration facts and existing TRAIN inspection handle.
         response = {'candidate_ref': candidate_ref, 'brain': brain, 'kind': table.kind,
                     'radius_um': radius_um, 'level': level, 'occurrence': occurrence_index,
                     'shape_zyx': metadata['shape_zyx'], 'spacing_xyz_um': metadata['spacing_xyz_um'],
                     'anchors_zyx': patch['anchors_zyx'].tolist(), 'valid_fraction': metadata['valid_fraction'],
-                    'image_inspections_remaining': 8 - self.image_inspections_used,
-                    'note': 'Raw MIPs, fragment overlays and thin slabs. No GT overlay. '
-                            'Display intensity scaling is separate from model pixels. Sampled alignment review is not a whole-brain guarantee.'}
-        preview.with_suffix('.json').write_text(json.dumps({'response': response, 'metadata': metadata}, indent=2))
+                    'preview': view,
+                    'image_inspections_remaining': self.image_inspections_remaining,
+                    'note': 'Native slices with a separate raw row, or an explicitly requested projection overview. '
+                            'Depths are local to the patch; skipped planes are reported. No GT overlay. '
+                            'Display scaling does not change model pixels. Check visual hypotheses on full 3D data; '
+                            'a preview does not establish connectivity or whole-brain alignment.'}
+        preview_path.with_suffix('.json').write_text(json.dumps({'response': response, 'metadata': metadata}, indent=2))
         self._record_research('inspect_candidate_image', 'raw_image', 'observation',
-            {'candidate_ref': candidate_ref, 'spec': spec, 'occurrence': occurrence_index,
-             'metadata': metadata}, True, preview.with_suffix('.json'))
-        self.trace.emit('candidate_image_inspected', f'TRAIN {brain}/{table.kind}: saved {preview.name}',
-                        candidate_ref=candidate_ref, preview=str(preview), level=level,
-                        image_inspections_remaining=8 - self.image_inspections_used)
+            {'candidate_ref': candidate_ref, 'spec': spec, 'occurrence': occurrence_index, 'preview': view,
+             'metadata': metadata}, True, preview_path.with_suffix('.json'))
+        self.trace.emit('candidate_image_inspected', f'TRAIN {brain}/{table.kind}: saved {preview_path.name}',
+                        candidate_ref=candidate_ref, preview=str(preview_path), level=level,
+                        image_inspections_remaining=self.image_inspections_remaining)
         return {'content': [{'type': 'text', 'text': json.dumps(response, allow_nan=False)},
                             {'type': 'image', 'mimeType': 'image/png',
-                             'data': base64.b64encode(preview.read_bytes()).decode('ascii')}]}
+                             'data': base64.b64encode(preview_path.read_bytes()).decode('ascii')}]}
 
     def inspect_failure_images(self):
         """At most two matched pairs per call, within the shared image allowance."""
         content = []
         for pair in self.failure_cases['pairs'][:2]:
-            if self.image_inspections_used + 2 > 8:
+            if self.image_inspections_remaining < 2:
                 break
             content.append({'type': 'text', 'text': json.dumps(pair, allow_nan=False)})
             for case in pair['cases']:
@@ -1202,8 +1219,8 @@ class TrainingExperiments:
     def plan_descriptor_run(self):
         return descriptor_probe.plan(self)
 
-    def probe_descriptor(self, candidate_refs=None, sample_per_brain=128, seed=0, previews=False):
-        return descriptor_probe.probe(self, candidate_refs, sample_per_brain, seed, previews)
+    def probe_descriptor(self, candidate_refs=None, sample_per_brain=128, seed=0, previews=False, preview=None):
+        return descriptor_probe.probe(self, candidate_refs, sample_per_brain, seed, previews, preview)
 
     def compute_descriptors(self, scope='judgeable'):
         """Run describe over the scope's rows of every TRAIN brain; register the columns.
@@ -1428,16 +1445,25 @@ class TrainingExperiments:
         async def plan_image_scoring(arguments):
             return await invoke(self.plan_image_scoring, arguments)
 
-        @tool('inspect_candidate_image', 'Optional 2D preview of a TRAIN candidate with fragment overlays. '
-              'Use run_volume_analysis for direct 3D analysis. '
-              'Eight requests per generation; defaults radius_um=40, level=0, occurrence_index=0. '
+        from .image_preview import PREVIEW_SCHEMA
+
+        @tool('inspect_candidate_image', 'Inspect native TRAIN image slices (default five XY planes), with separate raw '
+              'and depth-clipped fragment rows. Optional preview: plane xy/xz/yz, anchor_index 0 or 1 (split endpoint), '
+              'depth_range_um [start,end] relative to that anchor or the midpoint, slice_count 1..9; actual depths '
+              'and skipped planes are reported. Without an anchor/range, separated split endpoints span the sheet. '
+              'Use preview {view: overview} for legacy maximum projections; these can hide depth relationships. '
+              'Test visual hypotheses with full 3D analysis or descriptor probes. '
+              f'{self.image_preview_budget} requests per generation, shared with failure images and probe previews; '
+              'defaults radius_um=40, level=0, occurrence_index=0. '
               'Actual image content, no GT or heldout access.',
-              {'candidate_ref': str, 'radius_um': float, 'level': int, 'occurrence_index': int})
+              {'type': 'object', 'properties': {'candidate_ref': {'type': 'string'},
+               'radius_um': {'type': 'number'}, 'level': {'type': 'integer'}, 'occurrence_index': {'type': 'integer'},
+               'preview': PREVIEW_SCHEMA}, 'required': ['candidate_ref'], 'additionalProperties': False})
         async def inspect_candidate_image(arguments):
             return await invoke(self.inspect_candidate_image, arguments)
 
         @tool('inspect_failure_images', 'Optional 2D previews of up to two matched TRAIN failure pairs with image/fragment '
-              'overlays in one call; shares the eight-image budget. Call with {}.', {})
+              'overlays in one call; shares the configured image-preview budget. Call with {}.', {})
         async def inspect_failure_images(arguments):
             return await invoke(self.inspect_failure_images, arguments)
 
@@ -1453,10 +1479,13 @@ class TrainingExperiments:
 
         @tool('probe_descriptor', 'Execute the current descriptor.py on explicit TRAIN candidate_refs or a '
               'seeded uniform sample per TRAIN brain (default 128). Return input support, feature values, '
-              'sparse-feature diagnostics and optional previews of the exact descriptor inputs. '
+              'sparse-feature diagnostics and optional native-slice previews of the exact descriptor inputs. '
+              'With previews=true, preview accepts the same plane/anchor_index/depth_range_um/slice_count or '
+              'view=overview options as inspect_candidate_image. '
               'No registration or evaluation charge; preparation and execution use descriptor wall budget.',
               {'type': 'object', 'properties': {'candidate_refs': {'type': 'array', 'items': {'type': 'string'}},
-               'sample_per_brain': {'type': 'integer'}, 'seed': {'type': 'integer'}, 'previews': {'type': 'boolean'}},
+               'sample_per_brain': {'type': 'integer'}, 'seed': {'type': 'integer'}, 'previews': {'type': 'boolean'},
+               'preview': PREVIEW_SCHEMA},
                'additionalProperties': False})
         async def probe_descriptor(arguments):
             return await invoke(self.probe_descriptor, arguments)

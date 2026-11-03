@@ -190,9 +190,43 @@ class ProbeInputTests(unittest.TestCase):
         self.assertEqual(report['estimates']['all_candidates']['estimated_seconds'], 0.)
         json.dumps(report, allow_nan=False)
 
+    def test_image_radius_allows_a_256_um_cube(self):
+        _, spec = descriptor_spec(CUSTOM.replace("'radius_um': 10", "'radius_um': 128"))
+        self.assertEqual(spec['image']['radius_um'], 128.)
+        with self.assertRaisesRegex(ValueError, r'4\.\.128'):
+            descriptor_spec(CUSTOM.replace("'radius_um': 10", "'radius_um': 129"))
+
 
 class ProbeSessionTests(unittest.TestCase):
     setUp = fixtures.SessionDescriptorTests.setUp
+
+    def test_inspection_and_probe_share_configured_allowance_without_limiting_numeric_rows(self):
+        self.assertEqual(self.session.image_preview_budget, 32)
+        self.session.image_preview_budget = 2
+        table = self.train['802449'].tables['merge']
+        attach_synthetic_store(table, self.root / 'shared_preview_patches')
+        self.session.descriptor_path.write_text(CUSTOM)
+        refs = [candidate_ref(table, i) for i in (0, 3)]
+        with patch('proofreader_evolve.harness.image_preview.fragment_patch_geometry',
+                   return_value=(np.empty((0, 3)), [], [])):
+            self.session.inspect_candidate_image(refs[0])
+        result = self.session.probe_descriptor(refs, previews=True)
+        report = json.loads(result['content'][0]['text'])
+        self.assertEqual(report['status'], 'probed', report)
+        self.assertEqual(report['brains']['802449']['rows'], 2)
+        self.assertEqual(len(report['previews']), 1)
+        self.assertEqual(report['image_inspections_remaining'], 0)
+        with self.assertRaisesRegex(ValueError, 'budget exhausted'):
+            self.session.inspect_candidate_image(refs[0])
+        # A new generation may disable previews entirely without disabling numerical probes.
+        self.session.image_preview_budget = 0
+        self.session.image_inspections_used = 0
+        result = self.session.probe_descriptor(refs, previews=True)
+        self.assertEqual(result['status'], 'probed', result)
+        self.assertEqual(result['brains']['802449']['rows'], 2)
+        self.assertEqual(result['previews'], [])
+        self.assertEqual(self.session.image_inspections_used, 0)
+        self.assertEqual(self.session.evaluations_used, 0)
 
     def test_full_computation_does_not_grant_extra_time_to_later_brains(self):
         self.session.descriptor_path.write_text(fixtures.GEOMETRY_DESCRIPTOR)
@@ -223,14 +257,17 @@ class ProbeSessionTests(unittest.TestCase):
         rendered = []
         from proofreader_evolve.harness.image_preview import render_preview
 
-        def capture(path, pixels, nodes, edges, segments, title):
+        def capture(path, pixels, nodes, edges, segments, title, **kwargs):
             rendered.append((pixels, nodes))
-            return render_preview(path, pixels, nodes, edges, segments, title)
+            return render_preview(path, pixels, nodes, edges, segments, title, **kwargs)
 
         with patch('proofreader_evolve.harness.image_preview.render_preview', side_effect=capture):
-            result = self.session.probe_descriptor([candidate_ref(table, 0)], previews=True)
+            result = self.session.probe_descriptor([candidate_ref(table, 0)], previews=True,
+                                                   preview={'plane': 'xz', 'anchor_index': 0, 'slice_count': 3})
         report = json.loads(result['content'][0]['text'])
         self.assertEqual(report['status'], 'probed', report)
+        self.assertEqual(report['previews'][0]['preview']['plane'], 'xz')
+        self.assertTrue(report['previews'][0]['preview']['consecutive'])
         self.assertTrue(base64.b64decode(result['content'][1]['data']).startswith(b'\x89PNG'))
         expected, _ = fixtures.fake_image_reader(0, {'level': 1})
         np.testing.assert_array_equal(rendered[0][0]['image_zyx'], expected['image_zyx'])
@@ -286,6 +323,25 @@ class ProbeSessionTests(unittest.TestCase):
         self.assertEqual(store.cache_bytes, 0)
         self.assertTrue(any(p.is_dir() for p in (self.session.gen_dir / 'validation_descriptor_runs').rglob('*')))  # host-only tree; silent workers leave no file
         self.assertFalse((self.session.gen_dir / 'descriptor_runs' / 'inference').exists())
+
+    def test_frozen_inference_uses_the_mean_train_rate_and_graph_load(self):
+        self.session.descriptor_path.write_text(fixtures.GEOMETRY_DESCRIPTOR)
+        self.session.descriptor_budget['frozen_inference_rows'] = {'judgeable': [100, 20]}
+
+        def plan(table, *args, **kwargs):
+            slow = table.meta['provenance']['brain'] == '802449'
+            return {'sample_rows': 64, 'seconds_per_row_single_worker': 3. if slow else 1.,
+                    'graph_load_seconds': 20. if slow else 10., 'workers': 2,
+                    'estimates': {'all_candidates': {'rows': 100, 'batches': 1, 'estimated_seconds': 80.}}}
+        runs = self.memory.descriptor_runs
+        with patch.object(runs, 'plan', side_effect=plan), patch.object(runs, 'cached', return_value=False):
+            result = self.session.plan_descriptor_run()
+        # Validation brains are not timed: the mean TRAIN rate (2 s/row) and mean graph load (15 s per brain)
+        # replace the slowest brain's rate; 215 s for the largest brain exceeds the 120 s per-call budget.
+        self.assertEqual(result['frozen_inference']['judgeable'],
+                         {'rows': 120, 'brains': 2, 'estimated_seconds': 270., 'largest_brain_seconds': 215.,
+                          'fits_per_brain_budget': False})
+        self.assertEqual(result['estimates']['all_candidates']['estimated_seconds'], 160.)
 
     def test_all_handles_validated_before_io_and_whole_train_estimate(self):
         self.session.descriptor_path.write_text(fixtures.GEOMETRY_DESCRIPTOR)

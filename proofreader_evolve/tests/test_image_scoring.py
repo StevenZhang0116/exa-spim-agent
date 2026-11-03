@@ -202,6 +202,7 @@ class ImageScoringTests(unittest.TestCase):
         from proofreader_evolve.harness.reviser_session import bind_session_options
         exp = object.__new__(TrainingExperiments)
         exp.gen_dir=self.root/'gen001'; exp.gen_dir.mkdir()
+        exp.image_preview_budget=32
         exp.train,exp.target_kind,exp.budgets=self.train,'merge',{'merge':6}
         exp.trace=Mock(); exp.lock=asyncio.Lock(); exp.memory=SimpleNamespace(descriptor_runs=None)
         exp.research_status=Mock(return_value={'status': 'complete', 'complete': True})

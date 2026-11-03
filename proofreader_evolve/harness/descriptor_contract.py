@@ -9,6 +9,8 @@ import hashlib
 import math
 import re
 
+from .image_coordinates import MAX_RADIUS_UM
+
 
 DESCRIPTOR_VERSION = 'agent-descriptor-v2-image-request'
 MAX_DESCRIPTOR_BYTES = 128_000
@@ -49,8 +51,9 @@ def descriptor_spec(source):
         if (not isinstance(image, dict) or set(image) != {'level', 'radius_um'}
                 or type(image['level']) is not int or not 0 <= image['level'] <= 6
                 or type(image['radius_um']) not in (int, float)
-                or not math.isfinite(image['radius_um']) or not 4 <= image['radius_um'] <= 100):
-            raise ValueError('DESCRIPTOR.image requires level (integer 0..6) and radius_um (4..100)')
+                or not math.isfinite(image['radius_um']) or not 4 <= image['radius_um'] <= MAX_RADIUS_UM):
+            raise ValueError(f'DESCRIPTOR.image requires level (integer 0..6) and radius_um (4..{MAX_RADIUS_UM:.0f}, '
+                             'a 256 um cube at most)')
         if spec['inputs'] == 'geometry':
             raise ValueError('DESCRIPTOR.image requires image or both inputs')
         if 'image_tier' in value and image != TIER_IMAGES[value['image_tier']]:

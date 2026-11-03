@@ -35,9 +35,11 @@ def main(argv=None):
                                       dir=args.runs_dir)).resolve()
     atomic_json(directory / 'launch.json', {'slurm_job_id': args.job_id, 'node': args.node,
                 'cpus': args.cpus, 'python': args.python, 'evolution_args': forwarded})
+    # Open OnDemand JupyterLab terminals carry SLURM_EXPORT_ENV=NONE, under which srun gives the step
+    # an empty environment (no PATH, no ANTHROPIC_API_KEY; 2026-11-02): export the caller's explicitly.
     command = ['srun', f'--jobid={args.job_id}', '--overlap', '--exact', '--nodes=1', '--ntasks=1',
                f'--cpus-per-task={args.cpus}', f'--nodelist={args.node}', '--kill-on-bad-exit=1',
-               args.python, '-u', '-m', 'proofreader_evolve.cli.run_evolution',
+               '--export=ALL', args.python, '-u', '-m', 'proofreader_evolve.cli.run_evolution',
                '--run-dir', str(directory), *forwarded]
     print(f'Run directory: {directory}', flush=True)
     try:

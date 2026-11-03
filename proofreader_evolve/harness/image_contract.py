@@ -4,6 +4,7 @@ import math
 import re
 
 from .classifier_contract import frozen_model
+from .image_coordinates import MAX_RADIUS_UM
 
 IMAGE_VERSION = 'candidate-image-v1'
 
@@ -29,8 +30,8 @@ def image_spec(source):
         raise ValueError('Unknown LOCAL_IMAGE setting; cloud paths and coordinate transforms are host-owned')
     spec = {**defaults, **value}
     radius = spec['radius_um']
-    if type(radius) not in (int, float) or not math.isfinite(radius) or not 4 <= radius <= 100:
-        raise ValueError('LOCAL_IMAGE.radius_um must be in [4, 100]')
+    if type(radius) not in (int, float) or not math.isfinite(radius) or not 4 <= radius <= MAX_RADIUS_UM:
+        raise ValueError(f'LOCAL_IMAGE.radius_um must be in [4, {MAX_RADIUS_UM:.0f}]')
     for name, low, high in [('level', 0, 6), ('channel', 0, 15), ('timepoint', 0, 15),
                            ('max_candidates', 1, 4096), ('max_occurrences', 1, 4),
                            ('batch_size', 1, 256), ('batch_max_mb', 1, 1024),

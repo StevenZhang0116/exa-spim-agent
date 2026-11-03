@@ -73,12 +73,12 @@ def main():
         directory = args.out / brain
         directory.mkdir(exist_ok=True)
         report = {'brain': brain, 'host': socket.gethostname(), 'status': 'unavailable', 'spec': spec, 'cases': []}
-        bank = fragment_store = store = source = graph = None
+        bank = store = source = graph = None
         try:
             trace.emit('alignment_brain', f'Loading fixed candidate tables and fragments for {brain}')
             bank = ensure_native_tables(brain, cache_path(brain, args.mcl), selected, pc.DEFAULT_OUT,
                                         prepare=False, mcl=args.mcl)
-            fragment_store = attach_local_context({brain: bank}, directory / 'geometry', trace)
+            attach_local_context({brain: bank}, directory / 'geometry', trace)
             store = attach_image_context({brain: bank}, directory / 'image_cache', args.alignment, trace)
             if args.image_uri:
                 store.reviews[brain] = {'image_uri': args.image_uri}
@@ -95,7 +95,8 @@ def main():
                             patch = {key: data[key] for key in data.files}
                         nodes, edges, segments = fragment_patch_geometry(table, int(index), spec, metadata)
                         preview = directory / f'{kind}_{index}.png'
-                        render_preview(preview, patch, nodes, edges, segments, f'{brain} / {kind} / candidate {index}')
+                        render_preview(preview, patch, nodes, edges, segments, f'{brain} / {kind} / candidate {index}',
+                                       preview={'view': 'overview'})
                         case.update(preview=str(preview.resolve()), metadata=metadata,
                                     statistics=alignment_statistics(patch, nodes, edges))
                         trace.emit('alignment_case', f'{brain}/{kind}/{index}: saved {preview}',
@@ -110,7 +111,7 @@ def main():
             report['error'] = f'{type(exc).__name__}: {exc}'
             trace.emit('alignment_error', report['error'], brain=brain)
         (directory / 'alignment.json').write_text(json.dumps(report, indent=2, allow_nan=False))
-        bank = fragment_store = store = source = graph = table = None
+        bank = store = source = graph = table = None
         gc.collect()
     trace.emit('alignment_audit_end', 'Saved raw measurements and overlays; visual review must be recorded separately')
 

@@ -50,6 +50,7 @@ def generation_image_evidence(directory, record):
                        for run in record.get('descriptor_runs') or [] if run.get('inputs') in ('image', 'both')]
     probe_previews = sum(len(p.get('previews', [])) for p in probes)
     return {'version': 'image-evidence-v3',
+            'preview_usage': record.get('image_preview_usage'),
             'volume_analyses_attempted': len(analyses) + unreadable,
             'volume_analyses_succeeded': sum(a.get('status') == 'analyzed' for a in analyses),
             'unreadable_analysis_records': unreadable,

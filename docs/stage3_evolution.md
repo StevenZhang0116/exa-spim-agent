@@ -80,7 +80,7 @@ python -u -m proofreader_evolve.cli.run_evolution \
 # assigns equal weight to the counted brains within each kind.
 # Ablations: --detector-prior no-score withholds the frozen detector score (2026-10-12); --detector-prior raw
 # (2026-10-27) also withholds every discovered h<n>_ feature column, leaving the raw_* candidate attributes, the
-# on-demand contexts and the agent's descriptors (own descriptor bank; --descriptor-generation-wall-seconds 7200).
+# on-demand contexts and the agent's descriptors (own descriptor bank).
 # --merge-k / --split-k are per-kind caps (an integer or none). Each pool ranks K = ceil(ratio x its GT
 # positives), limited to the cap when the kind has one; --k-positive-ratio takes one number or merge=R,split=R
 # (default since 2026-10-27: no caps and ratio 1 for both kinds, so every pool ranks exactly its GT positives;
@@ -126,9 +126,22 @@ For example, replace `JOB_ID`, `NODE` and the CPU count with granted resources:
   --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400
 ```
 
+The descriptor budgets default to 7200 s per `compute_descriptors` call (and per validation
+brain's frozen computation at submission) and 14400 s per generation since 2026-11-03
+(`--descriptor-wall-seconds`, `--descriptor-generation-wall-seconds`; 3600 / 5400 before), enough
+for a whole-TRAIN image descriptor call with its planning. Image-capable runs (an agent descriptor
+that reads patches) still need an allocation whose memory headroom admits the 24 descriptor
+workers: a 600 GB job does, a 200 GB job holding the 80-90 GB driver admits one to three
+(`proofreader_evolve/plans/on_demand_contexts.md`, 2026-11-03).
+
 The launcher inherits the absolute panda interpreter, creates a unique directory,
-and launches one `srun --overlap --exact` step. Overlap permits coexistence with an
+and launches one `srun --overlap --exact --export=ALL` step. Overlap permits coexistence with an
 interactive/Jupyter allocation's parent step; it is not a concurrency lock. The
+explicit `--export=ALL` matters in Open OnDemand JupyterLab terminals, whose environment
+carries `SLURM_EXPORT_ENV=NONE`: without it `srun` gives the step an empty environment
+(no `PATH`, no `ANTHROPIC_API_KEY`), the driver still spends about 20 minutes on the
+baseline evaluation and then fails every generation with `ANTHROPIC_API_KEY is not set`
+(2026-11-02). `preflight --check-api` runs in the calling shell and cannot detect this. The
 parent checks the child's return code and exact Slurm step after exit. Direct
 `run_evolution` remains supported, but cannot finalize its own status after SIGKILL.
 `--run-dir` accepts only a new directory (or one containing just `launch.json`).
@@ -366,7 +379,8 @@ use `--no-descriptors` to disable descriptor tools.
 The agent writes `descriptor.py` (`DESCRIPTOR` plus `describe(context)`), uses
 `probe_descriptor` on explicit TRAIN cases or uniform samples from each complete
 TRAIN pool, and can request previews of the exact inputs.
-`DESCRIPTOR.image = {'level': 0, 'radius_um': 40}` sets the physical crop.
+`DESCRIPTOR.image = {'level': 0, 'radius_um': 40}` sets the physical crop (radius 4..128 um,
+at most a 256 um cube per patch since 2026-11-03; `harness/image_coordinates.py`).
 Legacy tier names resolve to physical requests too. Descriptor pixels use bounded
 temporary staging; numeric outputs remain reusable in the descriptor bank.
 `compute_descriptors({"scope": "judgeable"})` (the default since 2026-10-29) covers the
@@ -394,7 +408,18 @@ from scoring. Code, input identities, results and logs are saved under
 `genNNN/volume_analyses/analysisNNN/`. See the
 [3D analysis guide](../proofreader_evolve/artifacts/volume_analysis_guide.md).
 Optional `inspect_candidate_image` and `inspect_failure_images({})` tools still
-return XY/XZ/YZ PNG previews, with a separate eight-image allowance.
+return PNG previews, sharing `--image-previews-per-generation` with descriptor probe
+previews (default 32; 0 disables previews). A slice sheet costs one slot; another view
+of the same candidate costs another. The default is a sheet
+of native slices with raw and depth-clipped fragment rows; `inspect_candidate_image`
+accepts a `preview` object selecting plane, split endpoint, relative depth range and
+slice count. Actual depths and skipped planes are reported. Projection overviews
+remain explicit options; confirm visual connectivity hypotheses with full 3D analysis.
+The agent guides recommend comparing TRAIN TP/FN/FP/TN groups across brains, then
+expanding useful numerical probes from 128 to 512 or 1024 rows per brain within the
+descriptor wall budget. No minimum usage is enforced. Each generation records
+`image_preview_usage` (including charged failures), saved previews in `image_evidence`,
+paired feature diagnostics and `wall_seconds` for the subsequent run comparison.
 
 To turn findings into a measured policy,
 `LOCAL_IMAGE` enables agent-written image features or raw patches for arbitrary

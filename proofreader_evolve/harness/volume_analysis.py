@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from .image_context import digest_json, file_hash
-from .image_coordinates import ImageGeometry
+from .image_coordinates import ImageGeometry, MAX_RADIUS_UM
 from .image_features import stage_images
 from .local_context import resolve_train_candidate
 from .model_execution import run_worker, DEFAULT_MEMORY_MB
@@ -47,8 +47,8 @@ def read_analysis(gen_dir, train):
         raise ValueError('Unknown analysis request field; image paths and registration are host-owned')
     request = {**defaults, **value}
     radius = request['radius_um']
-    if type(radius) not in (int, float) or not math.isfinite(radius) or not 4 <= radius <= 100:
-        raise ValueError('radius_um must be in [4, 100]')
+    if type(radius) not in (int, float) or not math.isfinite(radius) or not 4 <= radius <= MAX_RADIUS_UM:
+        raise ValueError(f'radius_um must be in [4, {MAX_RADIUS_UM:.0f}]')
     for name, lower, upper in (('level', 0, 6), ('channel', 0, 15), ('timepoint', 0, 15), ('max_nodes', 2, 512)):
         if type(request[name]) is not int or not lower <= request[name] <= upper:
             raise ValueError(f'{name} must be an integer in [{lower}, {upper}]')

@@ -5,6 +5,13 @@ import numpy as np
 
 UNITS_UM = {'micrometer': 1., 'micrometre': 1., 'um': 1., 'nanometer': .001,
             'nanometre': .001, 'nm': .001, 'millimeter': 1000., 'mm': 1000.}
+# One physical bound for every image request (descriptors, previews, volume analysis): a patch
+# spans at most a 256 um cube, so radius_um is at most 128 at any level (2026-11-03; before, 256
+# voxels per axis, which capped level 0 at a 95 um radius). Byte limits downstream still apply:
+# at level 0 (0.748 x 0.748 x 1 um) the cube is 30 M voxels, 60 MiB uint16, one patch per
+# 128 MiB descriptor batch.
+MAX_PATCH_EXTENT_UM = 256.
+MAX_RADIUS_UM = MAX_PATCH_EXTENT_UM / 2
 
 
 def affine_parts(transforms, rank):
@@ -88,9 +95,10 @@ class ImageGeometry:
         # requested minimum field of view would exclude one of the anchors.
         spacing = self.scale_xyz_um[::-1]
         extent = np.maximum(2 * radius_um / spacing, np.ptp(voxels, axis=0) + 16. / spacing)
+        if (extent * spacing > MAX_PATCH_EXTENT_UM + 1e-6).any():
+            raise ValueError(f'Image patch exceeds {MAX_PATCH_EXTENT_UM:.0f} um per axis; use radius_um at most '
+                             f'{MAX_RADIUS_UM:.0f} with the anchors inside that cube')
         shape = np.maximum(3, np.ceil(extent).astype(int))
-        if shape.max() > 256 or np.prod(shape) > 256**3:
-            raise ValueError('Image patch exceeds 256 voxels per axis; request a coarser image level')
         origin = np.floor(center - (shape - 1) / 2).astype(int)
         return origin, shape, voxels - origin
 

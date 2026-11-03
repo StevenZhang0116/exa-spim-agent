@@ -12,8 +12,9 @@ import io
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pandas as pd
@@ -22,6 +23,7 @@ from proofreader_evolve.harness import fixed_pool_scoring as scoring
 from proofreader_evolve.harness import selection_protocol as sp
 from proofreader_evolve.harness.classifier_training import fit_classifier
 from proofreader_evolve.harness.internal_validation import fold_assignments, grouped_folds
+from proofreader_evolve.harness.local_context import candidate_ref
 from proofreader_evolve.harness.native_pool import NativeTable, NativeTables, pool_digest
 from proofreader_evolve.harness.scorer_components import components
 from proofreader_evolve.harness.train_experiments import ExperimentMemory, TrainingExperiments
@@ -344,11 +346,21 @@ class DriverRoleTests(unittest.TestCase):
             seed.write_text(FORMULA)
             args = driver.parse_args(['--min-positives', '0', '--train-brains', '794495,802449', '--validation-brains', '2',
                                       '--merge-k', '3', '--split-k', '1', '--generations', '1', '--runs-dir', tmp,
-                                      '--start-from', str(seed), '--bootstrap-draws', '20', '--promotion-gate', 'margin'])
+                                      '--start-from', str(seed), '--bootstrap-draws', '20', '--promotion-gate', 'margin',
+                                      '--image-previews-per-generation', '5'])
             seen = {}
             async def revise(run_dir, policy, rules, report, model, *, experiments):
                 data = json.loads(report.read_text())
                 seen['feedback'] = data
+                self.assertEqual(experiments.image_preview_budget, 5)
+                environment = json.loads((policy.parent / 'model_environment.json').read_text())
+                self.assertEqual(environment['image_previews_per_generation'], 5)
+                self.assertEqual(environment['descriptor_compute']['probe']['preview_allowance_shared'], 5)
+                # Simulate one charged IO failure: usage must survive even without a saved PNG.
+                table = experiments.train['802449'].tables['merge']
+                table.image_context = SimpleNamespace(patch=Mock(side_effect=OSError('synthetic missing image')))
+                with self.assertRaises(OSError):
+                    experiments.inspect_candidate_image(candidate_ref(table, 0))
                 self.assertEqual(experiments.protocol.mode, 'grouped_oof')
                 self.assertEqual(experiments.protocol.selection_brains, ['802449'])
                 self.assertNotIn('validation', report.read_text().lower())
@@ -367,6 +379,7 @@ class DriverRoleTests(unittest.TestCase):
             self.assertEqual(split['validation_brains'], ['2'])
             self.assertIn('auxiliary', split['roles']['794495'])
             manifest = json.loads((path / 'manifest.json').read_text())
+            self.assertEqual(manifest['candidate_images']['inspections_per_generation'], 5)
             protocol = manifest['selection_protocol']
             self.assertEqual(protocol['mode'], 'grouped_oof')
             details = protocol['partitions']['merge']['fold_details']
@@ -381,6 +394,11 @@ class DriverRoleTests(unittest.TestCase):
             self.assertEqual(seen['feedback']['parent_selection']['mode'], 'grouped_oof')
             self.assertIn('794495/merge', seen['feedback']['parent_train']['cells'])
             row = json.loads((path / 'ledger.jsonl').read_text().splitlines()[0])
+            usage = {'limit': 5, 'used': 1, 'remaining': 4}
+            self.assertEqual(row['image_preview_usage'], usage)
+            self.assertEqual(row['image_evidence']['preview_usage'], usage)
+            self.assertEqual(row['image_evidence']['preview_records'], 0)
+            self.assertGreater(row['wall_seconds'], 0)
             self.assertEqual(row['selection_protocol'], 'grouped_oof')
             self.assertEqual(list(row['selection']['cells']), ['802449/merge'])
             self.assertEqual(row['selection']['per_kind_precision']['merge'], 1.)

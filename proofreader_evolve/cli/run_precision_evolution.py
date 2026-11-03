@@ -31,6 +31,7 @@ from ..harness import fixed_pool_scoring as scoring
 from ..harness.native_pool import cache_path, ensure_native_tables
 from ..harness import label_availability
 from ..harness import detector_prior
+from ..harness.image_coordinates import MAX_RADIUS_UM
 from ..harness.reviser_session import DEFAULT_MODEL, build_options, bind_session_options
 from ..harness.trajectory import Trajectory, log_metrics, save_diffs
 from ..harness.evolution_report import update_report
@@ -44,7 +45,7 @@ from ..harness.descriptor_context import DescriptorContexts
 from ..harness.descriptor_runs import DescriptorRuns, SCOPES as DESCRIPTOR_SCOPES
 from ..harness.descriptor_contract import descriptor_spec, referenced_columns, COLUMN_PREFIX
 from ..harness.scorer_components import components
-from ..harness.train_experiments import ExperimentMemory, TrainingExperiments
+from ..harness.train_experiments import ExperimentMemory, TrainingExperiments, DEFAULT_IMAGE_PREVIEWS
 from ..harness.candidate_pool import CandidatePool, POOL_TOLERANCES
 from ..harness import kind_schedule
 from ..harness import rank_statistics
@@ -211,8 +212,17 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
             "the base-predictor K boundary, and actual final Top-K image coverage are different quantities. "
             "At the final coverage, ablate exactly the image_* features plus image_available to isolate "
             "image contribution. A small-case analysis or pilot ablation does not establish gain at larger coverage. "
-            "Optional inspect_candidate_image/inspect_failure_images tools return 2D previews only, "
-            "with a separate eight-request allowance. They are not prerequisites for 3D analysis. "
+            "Optional inspect_candidate_image/inspect_failure_images tools return native slice sheets with "
+            "separate raw and depth-clipped overlays. inspect_candidate_image's preview object selects plane, "
+            "anchor_index (split endpoint), depth_range_um and slice_count; inspect actual depths and skipped "
+            "planes. The overview view retains maximum projections, which can hide depth relationships. "
+            "Use full 3D analysis/probes to test visual hypotheses with background controls and threshold checks. "
+            "Previews share the configured per-generation allowance in model_environment.json (default 32) "
+            "and are not prerequisites for 3D analysis. Compare TRAIN selected/missed positives and "
+            "selected/unselected negatives across brains using the official fold-wise feedback groups. "
+            "Start with a few matched cases; for promising descriptors expand numerical probes from "
+            "128 to 512 or 1024 rows per brain within the remaining wall budget. See image_context_guide.md "
+            "for comparison controls; neither more previews nor a larger probe establishes ranking gain. "
             "No GT graph or validation inspection is exposed through either route. "
             "In explore mode, start from a matched failure pair and an explicit, falsifiable distinction. "
             "If local geometry can test it, call inspect_failure_cases({}) once for the paired neighborhoods, "
@@ -468,6 +478,9 @@ def parse_args(argv=None):
                    help="Deprecated compatibility argument; ignored. Contexts are read on demand by default")
     p.add_argument("--no-descriptors", action="store_true",
                    help="Disable pool-scale descriptor tools (enabled by default)")
+    p.add_argument("--image-previews-per-generation", type=int, default=DEFAULT_IMAGE_PREVIEWS,
+                   help="Shared allowance for candidate/failure image inspections and descriptor probe previews "
+                        "(default: 32; 0 disables previews, not numerical 3D analysis)")
     p.add_argument("--descriptor-bank", type=Path, default=None,
                    help="Persistent descriptor values, validated by code, input and implementation identity "
                         "(default: proofreader_evolve/descriptor_bank; descriptor_bank_no_score with "
@@ -478,10 +491,14 @@ def parse_args(argv=None):
     p.add_argument("--descriptor-memory-mb", type=int, default=16384,
                    help="Per-descriptor-worker address-space cap, independent of classifier memory (default: 16384 MiB). "
                         "Admission also reserves host preparation space and max(8 GiB, 10%% of cgroup limit)")
-    p.add_argument("--descriptor-wall-seconds", type=float, default=3600.,
-                   help="Wall-clock budget for one compute_descriptors call (default: 3600)")
-    p.add_argument("--descriptor-generation-wall-seconds", type=float, default=5400.,
-                   help="Wall-clock budget for all uncached descriptor computations in one generation (default: 5400)")
+    # 7200 / 14400 since 2026-11-03 (3600 / 5400 before): the budgets must hold a whole-TRAIN image descriptor
+    # call plus its planning, and each validation brain's frozen computation at submission (plans/on_demand_contexts.md).
+    p.add_argument("--descriptor-wall-seconds", type=float, default=7200.,
+                   help="Wall-clock budget for one compute_descriptors call and for each validation brain's frozen "
+                        "descriptor computation at submission (default: 7200)")
+    p.add_argument("--descriptor-generation-wall-seconds", type=float, default=14400.,
+                   help="Wall-clock budget for all uncached descriptor computations, probes and plans in one generation "
+                        "(default: 14400)")
     p.add_argument("--mcl", type=int, default=100)
     p.add_argument("--generations", type=int, default=15)
     # Three-valued defaults (2026-10-09 K sweep, TODO.md): K must stay well below the GT-labeled rows per cell.
@@ -620,6 +637,8 @@ def parse_args(argv=None):
         args.descriptor_workers = int(args.descriptor_workers)
     if args.descriptor_memory_mb < 512:
         p.error("descriptor-memory-mb must be >= 512")
+    if args.image_previews_per_generation < 0:
+        p.error("image-previews-per-generation must be >= 0")
     if (not math.isfinite(args.descriptor_wall_seconds) or args.descriptor_wall_seconds <= 0
             or not math.isfinite(args.descriptor_generation_wall_seconds) or args.descriptor_generation_wall_seconds <= 0):
         p.error("Descriptor wall budgets must be positive and finite")
@@ -1110,7 +1129,9 @@ async def _run(args, revise_fn, run_dir, trace):
                     "max_result_bytes": MAX_RESULT_BYTES, "worker_timeout_seconds": args.policy_time_budget,
                     "memory_mb": args.classifier_memory_mb, "threads": args.classifier_threads,
                     "uses_scoring_budget": False, "preview_required": False},
-                "candidate_images": {"version": IMAGE_VERSION, "inspections_per_generation": 8,
+                "candidate_images": {"version": IMAGE_VERSION,
+                    "inspections_per_generation": args.image_previews_per_generation,
+                    "preview_default": "native_slice_sheet", "preview_max_slices": 9,
                     "alignment_receipts": "image_alignment.json", "worker_stage_bytes": 1024**3,
                     "cache_bytes": image_store.max_cache_bytes, "raw_patch_models": True,
                     "selection_modes": ["top", "top_k_boundary"], "max_candidates": 4096,
@@ -1201,6 +1222,7 @@ async def _run(args, revise_fn, run_dir, trace):
         'predict_timeout_seconds': args.policy_time_budget, 'predict_memory_mb': args.classifier_memory_mb,
         'volume_analysis_timeout_seconds': args.policy_time_budget,
         'volume_analysis_memory_mb': args.classifier_memory_mb,
+        'image_previews_per_generation': args.image_previews_per_generation,
         'numerical_threads': args.classifier_threads, 'max_artifact_bytes': 128 * 1024**2,
         'max_artifact_files': 256, 'sandbox': 'Linux Landlock ABI >= 3 and libseccomp; fail closed',
         'descriptor_compute': ({'enabled': True, 'workers': descriptor_runs.workers,
@@ -1211,8 +1233,9 @@ async def _run(args, revise_fn, run_dir, trace):
             'evaluation_units_per_uncached_call': 1,
             'scopes': list(getattr(descriptor_runs, 'allowed_scopes', DESCRIPTOR_SCOPES)),
             'probe': {'default_sample_per_brain': 128, 'max_explicit_cases': 16,
-                      'preview_allowance_shared': 8, 'evaluation_units': 0, 'charges_wall_time': True},
-            'image_request': {'level_range': [0, 6], 'radius_um_range': [4, 100],
+                      'preview_allowance_shared': args.image_previews_per_generation,
+                      'evaluation_units': 0, 'charges_wall_time': True},
+            'image_request': {'level_range': [0, 6], 'radius_um_range': [4, int(MAX_RADIUS_UM)],
                               'max_batch_bytes': 128 * 1024**2},
             'candidate_pools': {f'{b}/{k}': contexts.entry(bank.tables[k]).summary()
                             for b, bank in train.items() for k in kinds},
@@ -1338,7 +1361,8 @@ async def _run(args, revise_fn, run_dir, trace):
                                                lambda table: budgets.k_for(target_kind, table.truth))
                 if descriptor_runs is not None else None},
             branch={**branch_meta, 'selection': branch_report, 'state': branch_state},
-            validated=lambda entry, kind=target_kind: pool.validation_of(kind, entry))
+            validated=lambda entry, kind=target_kind: pool.validation_of(kind, entry),
+            image_preview_budget=args.image_previews_per_generation)
         record = {"generation": generation, "accepted": False, "target_kind": target_kind,
                   "kind_allocation": allocation,
                   "search_mode": plan['mode'], "search_reason": plan['reason'],
@@ -1531,6 +1555,8 @@ async def _run(args, revise_fn, run_dir, trace):
         record['train_evaluations_used'] = experiments.evaluations_used
         record['descriptor_runs'] = experiments.descriptor_log
         record['descriptor_seconds_used'] = experiments.descriptor_seconds_used
+        record['image_preview_usage'] = {'limit': experiments.image_preview_budget,
+            'used': experiments.image_inspections_used, 'remaining': experiments.image_inspections_remaining}
         # Descriptor runs must be on the record before the image-evidence summary reads them.
         record['image_evidence'] = generation_image_evidence(gen_dir, record)
         _write(gen_dir / 'image_evidence.json', record['image_evidence'])

@@ -50,6 +50,7 @@ class VolumeAnalysisTests(unittest.TestCase):
         self.table.image_context = SimpleNamespace(patch=Mock(return_value=(self.patch,self.metadata)))
         self.experiments = object.__new__(TrainingExperiments)
         for name, value in {'gen_dir':self.gen, 'train':self.train, 'volume_analyses_used':0,
+                           'image_preview_budget':32,
                            'timeout':20., 'classifier_memory_mb':2048, 'classifier_threads':1,
                            'max_evaluations':8, 'evaluations_used':0, 'repair_granted':False,
                            'trace':Trajectory(self.gen), 'memory':SimpleNamespace(descriptor_runs=None)}.items():
@@ -124,7 +125,7 @@ def analyze(context):
         self.assertEqual(self.experiments.volume_analyses_used,0)
 
     def test_request_limits_syntax_and_paths_fail_without_spending_budget(self):
-        invalid = [dict(self.request, image_uri='s3://other'), dict(self.request, radius_um=101),
+        invalid = [dict(self.request, image_uri='s3://other'), dict(self.request, radius_um=129),
                    dict(self.request, level=True), dict(self.request, max_nodes=513),
                    {'candidates':self.request['candidates']*5},
                    {'candidates':[{'candidate_ref':self.ref,'occurrence_index':-1}]}]
@@ -167,7 +168,7 @@ def analyze(context):
     def test_execution_budget_is_independent_and_no_scorer_is_modified(self):
         (self.gen/'scorer.py').write_text('unchanged policy')
         (self.gen/'training.py').write_text('unchanged model')
-        self.experiments.image_inspections_used = 8
+        self.experiments.image_inspections_used = self.experiments.image_preview_budget
         with patch('proofreader_evolve.harness.train_experiments.execute_analysis',
                    return_value={'status':'analyzed','cases':[]}):
             for _ in range(MAX_ANALYSES):

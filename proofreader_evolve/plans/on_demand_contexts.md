@@ -8,9 +8,11 @@ detector-rank neighbours. No-score/raw production accepts `judgeable` or `all_ca
 Legacy `all_cached` calls and registries normalize to `all_candidates`; `--context-cache` is
 ignored. `--no-descriptors` disables the tools.
 
-Since 2026-10-31, `--descriptor-wall-seconds` defaults to 3600 seconds per TRAIN
-compute call and per validation-brain descriptor computation. The per-generation
-descriptor budget remains 5400 seconds; probe and planning time also count toward it.
+Since 2026-11-03, `--descriptor-wall-seconds` defaults to 7200 seconds per TRAIN
+compute call and per validation-brain descriptor computation (3600 from 2026-10-31,
+1800 before), and the per-generation descriptor budget
+`--descriptor-generation-wall-seconds` to 14400 seconds (5400 before); probe and
+planning time also count toward it.
 
 Probe, batch computation and frozen inference share descriptor_inputs. Legacy image
 tier names resolve to physical requests when no offline tier exists. New descriptor
@@ -65,6 +67,43 @@ for split (34 k rows) plus six graph loads, close to the then-default 1800 s per
 The default was raised to 3600 seconds on 2026-10-31 for this loading margin. Geometry-only
 calls take a few minutes. Frozen inference per validation brain stays well inside its budget
 (largest cell 751473 merge, 13,374 rows).
+
+Re-measured on n266 (2026-11-03 01:00, 600 GB job, 24 workers admitted,
+`../claude_scratch/time_image_descriptor_20261103.py`) with the 12-column level-1 / 12 um intensity
+descriptor the agent wrote in gen 3 of `precision_20261102_140641_3f9z8t3v`, on the same 27,934 rows.
+(1) `plan_descriptor_run` had estimated 3,432 s for a call that took 727 s: the 64-row sample charged the
+110 s graph load as 1.7 s per row, and its uniform rows scattered the reads. The plan now times the graph
+load apart (`graph_load_seconds`, charged once per brain), samples a contiguous block of labeled rows and
+credits image descriptors with at most 8 concurrent readers (`IMAGE_IO_PARALLELISM`); with the old
+TensorStore settings it estimates 861 s for a 736 s call. The residual pessimism under the new settings
+(843 s estimated, 299 s measured) is the worker's fixed start-up cost, which a 64-row sample amortizes over
+four times fewer rows than a 256-row batch; it is left on the conservative side. (2) `ImageSource` opened
+every array with its own 128 MiB chunk cache and a decode concurrency of 2, which is why 24 threads read no
+faster than 8: one shared context (`image_context.tensorstore_context()`: 1 GiB cache, decode concurrency
+min(16, CPUs), 64 S3/GCS requests) cut the call from 727-736 s to 299 s (image thread-seconds 14,113 to
+4,098, 0.51 to 0.15 s per read, maximum about 1 s in both). A whole-TRAIN level-1 call is therefore about
+10 min plus six graph loads, and the largest validation cell about 5 min; level-0 or wide crops need
+the 7200 s per-call and 14400 s per-generation budgets, which are the defaults since 2026-11-03.
+
+Patch size (2026-11-03 10:00, `claude_scratch/time_image_reads_20261103.py`, 802449 merge, a contiguous
+block of judgeable rows, 8 reader threads through `CandidateImageStore.patch`): the read time is flat in
+the patch volume, because the zarr chunks are 128x256x256 voxels (32 MiB raw, zstd) and every allowed
+patch touches a few of them. On n266: 0.18 s per read for the gen-3 level-1 12 um patch (7 KB), 0.15 s
+for the level-1 30 um tier (0.1 MB), 0.20 s for the level-0 16 um tier (0.11 MB), 0.15 s at level 1 /
+60 um (0.75 MB), 0.25 s at level 1 / 100 um (3.4 MB). On n06 with the 256 um cube (radius 128): 0.22 s
+at level 2 (0.9 MB), 0.39 s at level 1 (7.2 MB), 1.4 s at level 0 (57 MB, max 2.4 s), all far under the
+45 s read timeout. What grows is bytes against the unchanged 128 MiB descriptor batch limit (a level-0
+cube runs one row per worker batch, so worker start-ups dominate; the planner measures this) and the
+agent's own `describe` cost on the larger array. End to end with the gen-3 descriptor on n266 (24
+workers, 27,934 rows; `claude_scratch/time_image_scaling_20261103/`): level 1 / 12 um 299 s (891
+worker-seconds), level 1 / 30 um 325 s (684), level 0 / 16 um 416 s (674), level 1 / 60 um 486 s
+(2,627; 1.1 MB per patch, about three worker executions per 256-row batch), level 1 / 100 um 1,189 s
+(12,012; 3.4 MB per patch, about eleven executions per batch, slowest single read 33 s against the 45 s
+timeout). The planner estimated 843 / 609 / 730 / 775 / 1,645 s for these, 1.4-2.8x pessimistic. The former cap of 256 voxels per axis (level 0 at most
+a 95 um radius) therefore bought nothing and was replaced by the physical bound
+`image_coordinates.MAX_PATCH_EXTENT_UM` = 256 um per patch (radius 4..128 at any level), shared by the
+descriptor contract, `LOCAL_IMAGE`, volume analysis and `inspect_candidate` (WORKFLOW_REVISION row
+"2026-11-03 / image patches up to a 256 um cube").
 
 The pre-2026-10-29 descriptor-bank entries (scope `all_cached`, 325 directories, 4.1 GB across
 `descriptor_bank`, `descriptor_bank_no_score` and `descriptor_bank_raw`) were unreachable under the new

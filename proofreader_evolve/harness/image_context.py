@@ -15,6 +15,27 @@ from .image_coordinates import ImageGeometry
 from .local_context import _anchors
 
 DEFAULT_ALIGNMENT = Path(__file__).resolve().parents[2] / 'configs' / 'image_alignment.json'
+TENSORSTORE_CACHE_BYTES = 1024**3
+_TENSORSTORE_CONTEXT, _CONTEXT_LOCK = None, threading.Lock()
+
+
+def tensorstore_context():
+    """One shared TensorStore context for every image array: a 1 GiB chunk cache and decode
+    concurrency sized to the job's CPUs. Until 2026-11-03 each array had its own 128 MiB cache and
+    two decode threads, and level-1 patch reads on 24 threads were no faster than on 8."""
+    global _TENSORSTORE_CONTEXT
+    with _CONTEXT_LOCK:
+        if _TENSORSTORE_CONTEXT is None:
+            import tensorstore as ts
+            try:
+                cpus = len(os.sched_getaffinity(0))
+            except (AttributeError, OSError):
+                cpus = os.cpu_count() or 1
+            _TENSORSTORE_CONTEXT = ts.Context({
+                'cache_pool': {'total_bytes_limit': TENSORSTORE_CACHE_BYTES},
+                'data_copy_concurrency': {'limit': max(2, min(16, cpus))},
+                's3_request_concurrency': {'limit': 64}, 'gcs_request_concurrency': {'limit': 64}})
+        return _TENSORSTORE_CONTEXT
 
 
 def digest_json(value):
@@ -104,11 +125,9 @@ class ImageSource:
         if level not in self._arrays:
             # TensorStore exposes array storage axes as-is; transpose only from
             # the axes declared in the OME metadata, never from a path heuristic.
-            self._arrays[level] = ts.open({'driver': 'zarr',
-                'kvstore': kv_spec(self.root + geometry.dataset),
-                'context': {'cache_pool': {'total_bytes_limit': 128 * 1024**2},
-                            'data_copy_concurrency': {'limit': 2}}},
-                read=True, write=False, open=True).result(timeout=remaining())
+            self._arrays[level] = ts.open({'driver': 'zarr', 'kvstore': kv_spec(self.root + geometry.dataset)},
+                                          context=tensorstore_context(),
+                                          read=True, write=False, open=True).result(timeout=remaining())
         array = self._arrays[level]
         if tuple(array.shape) != geometry.shape or any(array.domain.inclusive_min):
             raise ValueError('Image storage domain differs from the declared OME array')

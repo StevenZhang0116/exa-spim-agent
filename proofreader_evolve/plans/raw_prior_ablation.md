@@ -114,7 +114,7 @@ not exist (`raw_tip_gap_um` on junction rows).
 
 ## Budgets (decision 3)
 
-`--descriptor-generation-wall-seconds 7200` (default 5400) for raw runs, passed on the command
+`--descriptor-generation-wall-seconds 7200` (default 5400 at the time; 14400 since 2026-11-03) for raw runs, passed on the command
 line; the per-call wall (1800 s), the evaluation units per generation and the API turn limits
 stay. If the first raw run shows descriptor computation as the binding limit, raise the
 per-call wall for raw runs in a follow-up, not in this change.

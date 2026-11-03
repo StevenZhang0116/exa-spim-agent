@@ -25,10 +25,14 @@ def diagnostics(runs, table, columns, rows, values, *, labels=False):
     return result
 
 
-def probe(session, candidate_refs=None, sample_per_brain=128, seed=0, previews=False):
+def probe(session, candidate_refs=None, sample_per_brain=128, seed=0, previews=False, preview=None):
     """No registrations or scoring charges; elapsed time includes preparation and failures."""
     if type(previews) is not bool:
         raise ValueError('previews must be a boolean')
+    from .image_preview import preview_request
+    preview_request(preview)
+    if preview is not None and not previews:
+        raise ValueError('preview options require previews=true')
     program, spec = session._read_descriptor(check_registry=False)
     runs, tables = session.memory.descriptor_runs, session._descriptor_tables()
     selected = {}
@@ -58,10 +62,10 @@ def probe(session, candidate_refs=None, sample_per_brain=128, seed=0, previews=F
                 'code_sha256': spec['code_sha256'],
                 'sampling': 'explicit_train_cases' if candidate_refs is not None else 'uniform_candidate_pool',
                 'seed': seed if candidate_refs is None else None, 'brains': {}, 'previews': []}
-    # At most one sample preview per brain; explicit cases share the existing eight-image allowance.
+    # At most one sample preview per brain; explicit cases share the configured image allowance.
     preview_keys = [(brain, int(row)) for brain, rows in sorted(selected.items())
                     for row in (rows if candidate_refs is not None else rows[:1])]
-    preview_keys = set(preview_keys[:max(0, 8 - session.image_inspections_used)]) if previews else set()
+    preview_keys = set(preview_keys[:session.image_inspections_remaining]) if previews else set()
     images, started = [], time.monotonic()
     active_brain = None
     try:
@@ -79,9 +83,10 @@ def probe(session, candidate_refs=None, sample_per_brain=128, seed=0, previews=F
                 session.image_inspections_used += 1
                 path = directory / f'preview{session.image_inspections_used:03d}.png'
                 fragment = context['fragment']
-                render_preview(path, patch, np.asarray(fragment['nodes_zyx']), fragment['edges'],
-                               fragment['segment'], f'TRAIN {brain} / {table.kind} / descriptor input')
-                response['previews'].append({**detail, 'file': path.name})
+                view = render_preview(path, patch, np.asarray(fragment['nodes_zyx']), fragment['edges'],
+                                      fragment['segment'], f'TRAIN {brain} / {table.kind} / descriptor input',
+                                      preview=preview)
+                response['previews'].append({**detail, 'file': path.name, 'preview': view})
                 images.append({'type': 'image', 'mimeType': 'image/png',
                                'data': base64.b64encode(path.read_bytes()).decode('ascii')})
 
@@ -109,7 +114,7 @@ def probe(session, candidate_refs=None, sample_per_brain=128, seed=0, previews=F
         elapsed = time.monotonic() - started
         session.descriptor_seconds_used += elapsed
     response.update(wall_seconds=elapsed, descriptor_seconds_remaining=session.descriptor_seconds_remaining,
-                    image_inspections_remaining=8 - session.image_inspections_used,
+                    image_inspections_remaining=session.image_inspections_remaining,
                     evaluations_charged=0, evaluations_used=session.evaluations_used,
                     evaluations_remaining=session.remaining,
                     note='Diagnostic only; no predictor columns were registered. '
@@ -159,15 +164,17 @@ def plan(session):
         session.descriptor_seconds_used += elapsed
     available = min(session.descriptor_budget['per_call_seconds'], session.descriptor_seconds_remaining)
     # Frozen inference reuses the scope a descriptor was computed with, so every allowed scope is
-    # extrapolated from the other brains' row counts (host-side) and the slowest measured TRAIN rate.
+    # extrapolated from the other brains' row counts (host-side), the mean measured TRAIN rate and graph
+    # load (the slowest brain's rate was three times too pessimistic on 2026-11-02) at the credited concurrency.
     inference = {}
     sizes = session.descriptor_budget.get('frozen_inference_rows')
     if response['status'] == 'planned' and sizes:
-        rate = max(p['seconds_per_row_single_worker'] for p in measured.values())
+        rate = sum(p['seconds_per_row_single_worker'] for p in measured.values()) / len(measured)
+        load = sum(p.get('graph_load_seconds', 0.) for p in measured.values()) / len(measured)
         workers = min(p.get('workers', runs.workers) for p in measured.values())
         per_call = session.descriptor_budget['per_call_seconds']
         for scope, counts in sizes.items():
-            seconds = [runs.estimated_seconds(count, rate, workers) for count in counts]
+            seconds = [load + runs.estimated_seconds(count, rate, workers) if count else 0. for count in counts]
             inference[scope] = {'rows': int(sum(counts)), 'brains': len(counts),
                                 'estimated_seconds': float(sum(seconds)),
                                 'largest_brain_seconds': float(max(seconds, default=0.)),
@@ -181,10 +188,13 @@ def plan(session):
         frozen_inference=inference,
         note='Full estimates include sampled preparation and execution on every TRAIN brain; '
              'fits_budget compares only uncached work with the remaining descriptor allowance and measured memory capacity. '
-             'The first batch is serial; subsequent concurrency uses observed TRAIN memory headroom. Worker scaling is approximate; '
-             'cold retrieval and shared IO can make full runs slower. Planning consumes descriptor wall time, no evaluation units. '
-             'frozen_inference extrapolates, per allowed scope, the additional computation on the other brains at '
-             'submission (each brain has the per-call budget; the scope you compute with is reused there); '
+             'Each brain\'s fragment graph load is timed apart (graph_load_seconds) and charged once per brain; the per-row '
+             'rate comes from a contiguous block of labeled rows; the first batch is serial, later batches use the observed '
+             'TRAIN memory headroom, and image descriptors are credited with at most 8 concurrent readers (the measured S3 '
+             'ceiling). Cold retrieval and shared IO can still make full runs slower. Planning consumes descriptor wall time, '
+             'no evaluation units. frozen_inference extrapolates, per allowed scope, the additional computation on the other '
+             'brains at submission from the mean TRAIN rate and graph load (each brain has the per-call budget; the scope you '
+             'compute with is reused there); '
              'no heldout images were read, and heldout graph memory may reduce concurrency further.')
     directory = session.gen_dir / 'descriptor_plans'
     directory.mkdir(exist_ok=True)

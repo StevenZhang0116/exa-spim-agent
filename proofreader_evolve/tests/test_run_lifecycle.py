@@ -62,5 +62,7 @@ class RunLifecycleTests(unittest.TestCase):
         command = call.call_args.args[0]
         self.assertEqual(command[0], 'srun')
         self.assertIn('--jobid=123', command)
+        # JupyterLab terminals set SLURM_EXPORT_ENV=NONE; the step must still inherit ANTHROPIC_API_KEY.
+        self.assertIn('--export=ALL', command)
         self.assertEqual(command[-4:], ['--detector-prior', 'raw', '--generations', '10'])
         self.assertEqual(reconcile.call_args.kwargs['srun_exit'], 137)

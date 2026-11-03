@@ -32,16 +32,31 @@ checks reduce risk; arbitrary host/worker allocation spikes can still exceed mem
    for up to 16 explicit TRAIN cases, or `probe_descriptor({"sample_per_brain": 128, "seed": 0})`
    for a reproducible uniform sample from each TRAIN brain's complete candidate pool. Sampling
    does not use detector rank or labels. Optional previews use the exact input pixels
-   and matching geometry, sharing the eight-preview allowance; default probes return
+   and matching geometry, sharing the configurable per-generation preview allowance
+   (default 32; see `model_environment.json`); default probes return
    numerical diagnostics. Reports include input shape, spacing, validity, geometry
    coverage, finite/missing/nonzero counts, min/max/std, quartiles and example handles.
    Zero quartiles alone do not imply a constant column. Full sampled values are saved
    under `descriptor_probes/`; the tool returns a few representative cases per brain.
+   Previews default to native slice sheets with separate raw and depth-clipped overlay rows,
+   not maximum projections. With `previews: true`, pass `preview` to choose `plane`,
+   `anchor_index`, `depth_range_um` and `slice_count` (1..9), as in image_context_guide.md.
+   These view choices do not change descriptor inputs or the values being tested. Actual
+   slice depths and skipped planes are recorded; `preview: {"view": "overview"}` requests
+   the projection overview explicitly. Check apparent connections using full 3D pixels.
    Drafts may reuse registered names during probing; production registration still
    rejects name conflicts. Probes neither register features nor spend scoring units.
-   After revising, `plan_descriptor_run({})` times 64 uniform rows per TRAIN brain and
-   estimates the entire TRAIN workload, including preparation. It also reports the
-   uncached work remaining; only that work is compared with the remaining allowance.
+   Compare explicit cases across TRAIN TP/FN/FP/TN feedback groups and brains, then
+   expand promising numerical probes from 128 to 512 or 1024 rows per brain if wall
+   time permits (maximum 2048). Keep cases or the same sample size and seed fixed for
+   code comparisons; larger samples need not contain earlier samples. Previews are
+   optional and the allowance need not be exhausted. See image_context_guide.md for
+   the comparison strategy; probes do not replace OOF evaluation or paired ablations.
+   After revising, `plan_descriptor_run({})` times a contiguous block of 64 labeled rows per
+   TRAIN brain, times each brain's fragment graph load apart (`graph_load_seconds`, charged
+   once per brain) and estimates the entire TRAIN workload; image descriptors are credited
+   with at most 8 concurrent readers (`workers`), the measured S3 throughput ceiling. It also
+   reports the uncached work remaining; only that work is compared with the remaining allowance.
    IO and worker scaling
    make this approximate, especially on a cold cache; frozen inference is additional:
    `frozen_inference` extrapolates it for every allowed scope from the other brains' row
@@ -89,8 +104,12 @@ checks reduce risk; arbitrary host/worker allocation spikes can still exceed mem
 ## Rules
 
 - For image inputs, keep `image_tier: 'level1'` / `'level0'`, or replace that field with
-  `image: {'level': 0, 'radius_um': 40}`. Radius must be 4..100 um and level an integer
-  0..6 available in the source pyramid. Channel/timepoint remain zero; anchor/midpoint
+  `image: {'level': 0, 'radius_um': 40}`. Radius must be 4..128 um (a patch spans at most a
+  256 um cube at any level) and level an integer 0..6 available in the source pyramid. Reading a
+  patch costs about the same whatever its size (0.15-0.25 s, a few 128x256x256-voxel chunks), but
+  bytes grow with the voxel count: a 256 um cube is 0.9 MB at level 2, 7 MB at level 1 and 60 MB at
+  level 0, and a batch holds at most 128 MiB of patches, so level-0 cubes run one row per worker
+  batch; `plan_descriptor_run` measures the result. Channel/timepoint remain zero; anchor/midpoint
   centering, occurrence zero and the geometry neighborhood are unchanged. Conflicting
   explicit tier/image declarations fail. All requested crops use the reviewed registered image source. Probes, full TRAIN and frozen inference
   share this exact input path. Large patches are bounded by the existing pixel limits
