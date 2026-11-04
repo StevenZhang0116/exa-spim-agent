@@ -200,7 +200,7 @@ class TrainingExperiments:
                  memory, max_evaluations=8, generation=0, search_plan=None,
                  classifier_timeout=300, classifier_memory_mb=DEFAULT_MEMORY_MB, classifier_threads=1,
                  parent_selection=None, descriptor_budget=None, branch=None, validated=None,
-                 image_preview_budget=DEFAULT_IMAGE_PREVIEWS):
+                 image_preview_budget=DEFAULT_IMAGE_PREVIEWS, classifier_search_seconds=3600.):
         if type(image_preview_budget) is not int or image_preview_budget < 0:
             raise ValueError('image_preview_budget must be a nonnegative integer')
         self.image_preview_budget = image_preview_budget
@@ -228,10 +228,15 @@ class TrainingExperiments:
         self.restored_from = None
         self.classifier_timeout, self.classifier_memory_mb = classifier_timeout, classifier_memory_mb
         self.classifier_threads = classifier_threads
+        if not np.isfinite(classifier_search_seconds) or classifier_search_seconds <= 0:
+            raise ValueError('classifier_search_seconds must be finite and positive')
+        self.classifier_search_seconds = float(classifier_search_seconds)
+        self.classifier_seconds_used = 0.
         self.attempts, self.results = [], {}
         self.evaluations_used, self.repair_granted = 0, False
         self.inspections_used = 0
         self.image_inspections_used = 0
+        self.image_payload_used = 0
         self.volume_analyses_used = 0
         self.lock, self.trace = asyncio.Lock(), Trajectory(gen_dir)
         self.feature_diagnostics = []
@@ -379,9 +384,23 @@ class TrainingExperiments:
         return self.memory.selection_measurement(self.target_kind, component, measured_state, directory,
                                                  model=model, budgets=self.budgets)
 
+    def _classifier_input_identity(self):
+        """TRAIN pools are immutable except for append-only descriptor registrations.
+
+        Include each brain's schema, even after a partially failed registration, and
+        the registered descriptor identities. Never reuse an old fit or extracted
+        frame just because the program and hyperparameters stayed unchanged.
+        """
+        inputs = {brain: list(bank.tables[self.target_kind].features.columns)
+                  for brain, bank in self.train.items()}
+        descriptors = {name: {k: v for k, v in entry.items() if k != 'registered_in'}
+                       for name, entry in self.memory.descriptors.items()
+                       if entry['kind'] == self.target_kind}
+        return digest(json.dumps({'schemas': inputs, 'descriptors': descriptors}, sort_keys=True))
+
     def _classifier_frames(self, program):
-        """One feature extraction per program, shared by fold fits and the full fit."""
-        key = digest(program)
+        """One extraction per program and TRAIN feature identity, shared by all fits."""
+        key = (digest(program), self._classifier_input_identity())
         if self.frame_cache[0] != key:
             frames = {brain: augmented_features(program, bank.tables[self.target_kind],
                                                 self.classifier_timeout, self.classifier_memory_mb)
@@ -790,8 +809,9 @@ class TrainingExperiments:
                 raise ValueError('Tune mode fixes training.py and nonnumeric parameters; '
                                  'switching formula/model family requires an explore generation')
         required = 0
+        inputs = self._classifier_input_identity()
         for config in configurations:
-            cached = self.memory.fit_cache.get((self.target_kind, digest(program), config_identity(config)))
+            cached = self.memory.fit_cache.get((self.target_kind, digest(program), config_identity(config), inputs))
             if (cached is None or (cached['component_sha256'] not in self.results
                                   and (self.target_kind, cached['component_sha256']) not in self.memory.cache)):
                 required += 1
@@ -804,8 +824,15 @@ class TrainingExperiments:
         (batch / 'training.py').write_text(program)
         responses, successful, stopped = [], [], None
         for index, config in enumerate(configurations):
-            key = (self.target_kind, digest(program), config_identity(config))
+            key = (self.target_kind, digest(program), config_identity(config), inputs)
             cached = self.memory.fit_cache.get(key)
+            if cached is None and self.classifier_seconds_used >= self.classifier_search_seconds:
+                stopped = {'reason': 'classifier_wall_budget',
+                           'skipped_configurations': len(configurations) - index,
+                           'note': 'Generation classifier search wall budget exhausted. Restore a measured '
+                                   'candidate or use a later generation; no skipped configuration was charged.'}
+                break
+            candidate_started = time.monotonic()
             fit_timings = {'fit_reused': cached is not None}
             charged = False
             if cached is None:
@@ -856,6 +883,7 @@ class TrainingExperiments:
                                     training_summary=summary)
                 except Exception as exc:
                     responses.append(self._training_failure(directory, actual_proposal, config, program, exc, started))
+                    self.classifier_seconds_used += time.monotonic() - candidate_started
                     stopped = self._grid_stop(responses[-1], len(configurations) - index - 1)
                     break
             else:
@@ -867,6 +895,7 @@ class TrainingExperiments:
                     self.memory.oof_scores[digest(component)] = {cell: v['scores'] for cell, v in cached_state.items()}
             response = self._evaluate(component, rules, {**proposal, 'classifier': config}, charge=not charged,
                                       fit_timings=fit_timings)
+            self.classifier_seconds_used += time.monotonic() - candidate_started
             responses.append(response)
             result = self.results.get(digest(component))
             if result is not None and result['report'] is not None:
@@ -889,6 +918,8 @@ class TrainingExperiments:
                 'training_metric_protocol': (self.protocol_info['metric'] if self.protocol.requires_fold_fits
                                              else 'in_sample_resubstitution'),
                 'selection_protocol': self.protocol.mode,
+                'classifier_seconds_used': self.classifier_seconds_used,
+                'classifier_seconds_remaining': max(0., self.classifier_search_seconds - self.classifier_seconds_used),
                 'evaluations_used': self.evaluations_used, 'evaluations_remaining': self.remaining}
 
     def submitted(self):
@@ -1039,9 +1070,25 @@ class TrainingExperiments:
         self.trace.emit('image_scoring_plan', 'Planned label-free TRAIN image coverage', **report)
         return report
 
-    def inspect_candidate_image(self, candidate_ref, radius_um=40., level=0, occurrence_index=0, preview=None):
+    def inline_previews(self, paths, *, reply_bytes_remaining=None):
+        """Inline preview PNGs within one reply's and this generation's image payload limits.
+
+        Inlined images stay in the conversation. The generation ceiling bounds the image
+        payload added by TRAIN tools and leaves room for text (see reviser_session).
+        """
+        from .image_preview import inline_images
+        from .reviser_session import GENERATION_IMAGE_BYTES, TOOL_IMAGE_BYTES
+        limit = max(0, min(TOOL_IMAGE_BYTES, GENERATION_IMAGE_BYTES - self.image_payload_used))
+        if reply_bytes_remaining is not None:
+            limit = max(0, min(limit, reply_bytes_remaining))
+        blocks, omitted = inline_images(paths, limit)
+        self.image_payload_used += sum(len(block['data']) for block in blocks)
+        return blocks, omitted, {'inlined': len(blocks), 'omitted_files': omitted, 'limit_bytes': limit,
+                                 'generation_bytes_remaining': GENERATION_IMAGE_BYTES - self.image_payload_used}
+
+    def inspect_candidate_image(self, candidate_ref, radius_um=40., level=0, occurrence_index=0, preview=None,
+                                *, reply_bytes_remaining=None):
         """Return an actual image content block for a TRAIN-only candidate."""
-        import base64
         from .image_preview import fragment_patch_geometry, render_preview, preview_request
         preview_request(preview)
         if not self.image_inspections_remaining:
@@ -1066,11 +1113,14 @@ class TrainingExperiments:
                               f'TRAIN {brain} / {table.kind} / occurrence {occurrence_index}', preview=preview)
         # The host audit retains source identity. The tool exposes just the
         # local preview, registration facts and existing TRAIN inspection handle.
+        blocks, omitted, payload = self.inline_previews([preview_path], reply_bytes_remaining=reply_bytes_remaining)
         response = {'candidate_ref': candidate_ref, 'brain': brain, 'kind': table.kind,
                     'radius_um': radius_um, 'level': level, 'occurrence': occurrence_index,
                     'shape_zyx': metadata['shape_zyx'], 'spacing_xyz_um': metadata['spacing_xyz_um'],
                     'anchors_zyx': patch['anchors_zyx'].tolist(), 'valid_fraction': metadata['valid_fraction'],
-                    'preview': view,
+                    'preview': view, 'file': f'image_inspections/{preview_path.name}',
+                    'preview_inlined': not omitted,
+                    'preview_payload': payload,
                     'image_inspections_remaining': self.image_inspections_remaining,
                     'note': 'Native slices with a separate raw row, or an explicitly requested projection overview. '
                             'Depths are local to the patch; skipped planes are reported. No GT overlay. '
@@ -1083,20 +1133,22 @@ class TrainingExperiments:
         self.trace.emit('candidate_image_inspected', f'TRAIN {brain}/{table.kind}: saved {preview_path.name}',
                         candidate_ref=candidate_ref, preview=str(preview_path), level=level,
                         image_inspections_remaining=self.image_inspections_remaining)
-        return {'content': [{'type': 'text', 'text': json.dumps(response, allow_nan=False)},
-                            {'type': 'image', 'mimeType': 'image/png',
-                             'data': base64.b64encode(preview_path.read_bytes()).decode('ascii')}]}
+        return {'content': [{'type': 'text', 'text': json.dumps(response, allow_nan=False)}, *blocks]}
 
     def inspect_failure_images(self):
-        """At most two matched pairs per call, within the shared image allowance."""
-        content = []
+        """At most two matched pairs per call, within the shared image allowance and one reply's image payload."""
+        from .reviser_session import TOOL_IMAGE_BYTES
+        content, payload = [], 0
         for pair in self.failure_cases['pairs'][:2]:
             if self.image_inspections_remaining < 2:
                 break
             content.append({'type': 'text', 'text': json.dumps(pair, allow_nan=False)})
             for case in pair['cases']:
                 try:
-                    content.extend(self.inspect_candidate_image(case['candidate_ref'])['content'])
+                    blocks = self.inspect_candidate_image(case['candidate_ref'],
+                        reply_bytes_remaining=TOOL_IMAGE_BYTES - payload)['content']
+                    payload += sum(len(block['data']) for block in blocks if block['type'] == 'image')
+                    content.extend(blocks)
                 except Exception as exc:
                     content.append({'type': 'text', 'text': f'Image unavailable: {type(exc).__name__}: {exc}'})
                     self._record_research('inspect_candidate_image', 'raw_image', 'observation',
@@ -1445,6 +1497,9 @@ class TrainingExperiments:
               'the best successful model. Under grouped_oof selection each configuration is first refit in '
               'three host-owned folds and ranked by the out-of-fold objective on the selection brains; the full '
               'fit is the frozen candidate. One configuration costs one evaluation unit, folds included. '
+              'New descriptor inputs invalidate fit reuse. The grid also stops before a new uncached fit '
+              'once the generation classifier-search wall budget is exhausted; the current candidate completes. '
+              'Inspect classifier_seconds_remaining and timings before a costly ensemble. '
               'The grid stops at the first failed fit or execution error of the program; stopped_early lists '
               'the skipped, uncharged configurations. '
               'Validation is never supplied.', {})
@@ -1522,7 +1577,9 @@ class TrainingExperiments:
               'seeded uniform sample per TRAIN brain (default 128). Return input support, feature values, '
               'sparse-feature diagnostics and optional native-slice previews of the exact descriptor inputs. '
               'With previews=true, preview accepts the same plane/anchor_index/depth_range_um/slice_count or '
-              'view=overview options as inspect_candidate_image. '
+              'view=overview options as inspect_candidate_image. Inlined previews are bounded per reply and per '
+              'generation; preview_payload lists previews left on disk under descriptor_probes/ and the remaining '
+              'generation bytes. '
               'No registration or evaluation charge; preparation and execution use descriptor wall budget.',
               {'type': 'object', 'properties': {'candidate_refs': {'type': 'array', 'items': {'type': 'string'}},
                'sample_per_brain': {'type': 'integer'}, 'seed': {'type': 'integer'}, 'previews': {'type': 'boolean'},
@@ -1531,8 +1588,9 @@ class TrainingExperiments:
         async def probe_descriptor(arguments):
             return await invoke(self.probe_descriptor, arguments)
 
-        @tool('plan_descriptor_run', 'Time descriptor.py on a contiguous labeled block from every TRAIN brain and '
-              'estimate the entire TRAIN call, including serial startup and input preparation, with CPU- and '
+        @tool('plan_descriptor_run', 'Reuse valid preview-free uniform-probe or plan timings; otherwise time '
+              'descriptor.py on a contiguous labeled block from every TRAIN brain. Estimate the entire TRAIN call, '
+              'including cold graph loads, serial startup and input preparation, with current CPU- and '
               'memory-limited worker concurrency. '
               'Uses descriptor wall budget, no evaluation charge. Call with {}.', {})
         async def plan_descriptor_run(arguments):

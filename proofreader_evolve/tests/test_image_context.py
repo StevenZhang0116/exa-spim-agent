@@ -239,6 +239,7 @@ class ImageContextTests(unittest.TestCase):
         experiments=object.__new__(TrainingExperiments)
         experiments.image_preview_budget=2
         experiments.image_inspections_used=0; experiments.train=training_fixture()
+        experiments.image_payload_used=0
         experiments.gen_dir=self.root; experiments.trace=Mock()
         table=experiments.train['794495'].tables['merge']
         table.image_context=SimpleNamespace(patch=Mock(return_value=(self.pixels, {
@@ -250,6 +251,7 @@ class ImageContextTests(unittest.TestCase):
                 preview={'plane': 'yz', 'anchor_index': 0, 'depth_range_um': [-5., 5.], 'slice_count': 3})
         self.assertEqual(result['content'][1]['type'],'image')
         self.assertGreater(len(result['content'][1]['data']),100)
+        self.assertEqual(experiments.image_payload_used, len(result['content'][1]['data']))
         self.assertNotIn('host-only-image-uri',json.dumps(result))
         saved=json.loads((self.root/'image_inspections'/'inspection001.json').read_text())
         self.assertEqual(saved['metadata']['source_path'],'host-only-image-uri')
@@ -271,7 +273,7 @@ class ImageContextTests(unittest.TestCase):
         experiments.image_inspections_used=0
         experiments.failure_cases={'pairs': [{'cases': [{'candidate_ref': str(i)} for i in range(2)]}] * 2}
 
-        def inspect(reference):
+        def inspect(reference, **kwargs):
             experiments.image_inspections_used += 1
             return {'content': [{'type': 'text', 'text': reference}]}
 
@@ -279,6 +281,46 @@ class ImageContextTests(unittest.TestCase):
         experiments.inspect_failure_images()
         self.assertEqual(experiments.inspect_candidate_image.call_count, 2)
         self.assertEqual(experiments.image_inspections_remaining, 1)
+
+    def test_failure_images_bound_one_reply_to_the_inline_image_payload(self):
+        experiments=object.__new__(TrainingExperiments)
+        experiments.image_preview_budget=8
+        experiments.image_inspections_used=0
+        experiments.image_payload_used=0
+        experiments.train=training_fixture(); experiments.gen_dir=self.root; experiments.trace=Mock()
+        table=experiments.train['794495'].tables['merge']
+        table.image_context=SimpleNamespace(patch=Mock(return_value=(self.pixels, {
+            'shape_zyx':[3,4,5], 'spacing_xyz_um':[5.,3.,2.], 'valid_fraction':1.})))
+        reference=candidate_ref(table, 0)
+        experiments.failure_cases={'pairs': [{'cases': [{'candidate_ref': reference}] * 2}] * 2}
+
+        def render(path, *args, **kwargs):
+            path.write_bytes(b'\x89PNGxx')  # eight base64 bytes per preview
+            return {}
+
+        with patch('proofreader_evolve.harness.image_preview.fragment_patch_geometry', return_value=([], [], [])), \
+                patch('proofreader_evolve.harness.image_preview.render_preview', side_effect=render), \
+                patch('proofreader_evolve.harness.reviser_session.TOOL_IMAGE_BYTES', 25), \
+                patch('proofreader_evolve.harness.reviser_session.GENERATION_IMAGE_BYTES', 32):
+            content = experiments.inspect_failure_images()['content']
+            images = [block for block in content if block['type'] == 'image']
+            self.assertEqual(len(images), 3)
+            self.assertEqual(experiments.image_payload_used, sum(len(block['data']) for block in images))
+            saved = json.loads((self.root/'image_inspections'/'inspection004.json').read_text())['response']
+            self.assertFalse(saved['preview_inlined'])
+            self.assertEqual(saved['preview_payload']['omitted_files'], ['inspection004.png'])
+            self.assertEqual(saved['preview_payload']['generation_bytes_remaining'], 8)
+            self.assertIn(saved, [json.loads(b['text']) for b in content if b['type'] == 'text'])
+            # The image omitted by the reply cap did not spend generation bytes.
+            self.assertEqual(len(experiments.inspect_candidate_image(reference)['content']), 2)
+            self.assertEqual(experiments.image_payload_used, 32)
+            # The next reply obeys the generation cap independently of the reply cap.
+            final = experiments.inspect_candidate_image(reference)['content']
+            self.assertEqual(len(final), 1)
+            self.assertFalse(json.loads(final[0]['text'])['preview_inlined'])
+            self.assertEqual(experiments.image_payload_used, 32)
+        self.assertEqual(table.image_context.patch.call_count, 6)
+        self.assertEqual(experiments.image_inspections_used, 6)
 
     def test_preflight_samples_images_even_if_not_on_regular_stride(self):
         from proofreader_evolve.harness.isolated_scoring import preflight

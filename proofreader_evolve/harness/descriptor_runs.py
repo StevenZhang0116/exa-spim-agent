@@ -81,6 +81,7 @@ class DescriptorRuns:
         self.memory_mb = memory_mb
         self.implementation = {name: file_hash(Path(__file__).with_name(name)) for name in IMPLEMENTATION_FILES}
         self._graph_loads = {}
+        self._plan_measurements = {}
 
     def capacity(self, pending=0):
         return memory_budget.admission(self.memory_mb, self.workers, pending=pending)
@@ -253,7 +254,7 @@ class DescriptorRuns:
         rows = np.sort(self.contexts.entry(table).rows)
         return np.sort(np.random.default_rng(seed).choice(rows, min(count, len(rows)), replace=False))
 
-    def probe(self, table, program, spec, rows, *, timeout=600., log_dir, observe=None):
+    def probe(self, table, program, spec, rows, *, timeout=600., log_dir, observe=None, calibrate=False):
         """Run the real descriptor without registering columns or writing the descriptor bank."""
         if timeout <= 0:
             raise ModelExecutionError('Descriptor wall budget exhausted before probe started')
@@ -262,10 +263,15 @@ class DescriptorRuns:
         if not entry.has_rows(rows).all():
             raise ValueError('Probe candidates must belong to the candidate pool')
         started = time.monotonic()
+        load, sample_started = 0., started
         log_dir = Path(log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
         chunks, timings = [], []
         try:
+            if calibrate and len(rows):
+                memory_budget.require_capacity(self.capacity())
+                load = self.graph_load_seconds(table)
+                sample_started = time.monotonic()
             for start in range(0, len(rows), BATCH_ROWS):
                 memory_budget.require_capacity(self.capacity())
                 timing = {}
@@ -279,10 +285,14 @@ class DescriptorRuns:
             entry.release()
         images = self._image_summary(timings)
         self._trace_images('probe', table, rows, images)
-        return {'rows': rows, 'values': np.concatenate(chunks) if chunks else np.zeros((0, len(spec['columns']))),
+        result = {'rows': rows, 'values': np.concatenate(chunks) if chunks else np.zeros((0, len(spec['columns']))),
                 'wall_seconds': time.monotonic() - started,
                 **{k: sum(t[k] for t in timings) for k in ('preparation_seconds', 'worker_seconds', 'worker_batches')},
                 **images}
+        if calibrate:
+            self._remember_plan(table, spec, result, load, time.monotonic() - sample_started,
+                                source='uniform_probe')
+        return result
 
     def compute(self, table, program, spec, scope, *, k, wall_budget, log_dir, force=False):
         """Compute (or load) descriptor values for one table; returns rows, values and provenance."""
@@ -425,6 +435,22 @@ class DescriptorRuns:
             self._graph_loads[key] = seconds
         return float(self._graph_loads.get(key, seconds))
 
+    def _plan_key(self, table, spec):
+        # Same input/implementation invalidation as the numeric bank; no graphs,
+        # patches or descriptor values are retained by this small timing cache.
+        return json.dumps(self.identity(table, spec, 'pilot', []), sort_keys=True)
+
+    def _remember_plan(self, table, spec, measured, load, wall, *, source):
+        rows, values = measured['rows'], measured['values']
+        self._plan_measurements[self._plan_key(table, spec)] = {
+            'sample_rows': int(len(rows)), 'sample_wall_seconds': float(wall),
+            'seconds_per_row_single_worker': float(wall / max(1, len(rows))),
+            'graph_load_seconds': float(load), 'measurement_source': source,
+            **{key: measured.get(key, 0) for key in
+               ('preparation_seconds', 'worker_seconds', 'image_reads', 'image_seconds')},
+            'finite_fraction': {name: float(np.isfinite(values[:, j]).mean()) if len(rows) else None
+                                for j, name in enumerate(spec['feature_names'])}}
+
     def plan(self, table, program, spec, *, k, sample_rows=64, timeout=600):
         """Estimate this brain only; the session aggregates every TRAIN brain's measured cost.
 
@@ -437,12 +463,17 @@ class DescriptorRuns:
             raise ModelExecutionError('Descriptor wall budget exhausted before plan started')
         deadline = time.monotonic() + float(timeout)
         entry = self.contexts.entry(table)
-        load = self.graph_load_seconds(table)
-        rows = self.plan_rows(table, sample_rows)
-        with tempfile.TemporaryDirectory(prefix='descriptor_plan_') as tmp:
-            measured = self.probe(table, program, spec, rows, timeout=deadline - time.monotonic(), log_dir=Path(tmp))
-        values, wall = measured['values'], measured['wall_seconds']
-        per_row = wall / max(1, len(rows))
+        key = self._plan_key(table, spec)
+        measured = self._plan_measurements.get(key)
+        reused = measured is not None and measured['sample_rows'] >= min(sample_rows, len(entry.rows))
+        if not reused:
+            load = self.graph_load_seconds(table)
+            rows = self.plan_rows(table, sample_rows)
+            with tempfile.TemporaryDirectory(prefix='descriptor_plan_') as tmp:
+                sample = self.probe(table, program, spec, rows, timeout=deadline - time.monotonic(), log_dir=Path(tmp))
+            self._remember_plan(table, spec, sample, load, sample['wall_seconds'], source='contiguous_plan')
+            measured = self._plan_measurements[key]
+        load, per_row = measured['graph_load_seconds'], measured['seconds_per_row_single_worker']
         capacity = self.capacity()
         effective_workers = capacity['available_workers']
         workers = effective_workers if spec['inputs'] == 'geometry' else min(effective_workers, IMAGE_IO_PARALLELISM)
@@ -454,14 +485,11 @@ class DescriptorRuns:
             seconds = load + self.estimated_seconds(count, per_row, workers) if count else 0.
             estimates[scope] = {'rows': int(count), 'batches': int(batches),
                                 'estimated_seconds': float(seconds), 'memory_feasible': effective_workers > 0}
-        return {'sample_rows': int(len(rows)), 'sample_wall_seconds': wall, 'seconds_per_row_single_worker': per_row,
-                'graph_load_seconds': float(load),
-                'preparation_seconds': measured['preparation_seconds'], 'worker_seconds': measured['worker_seconds'],
-                'image_reads': int(measured.get('image_reads', 0)), 'image_seconds': float(measured.get('image_seconds', 0.)),
+        return {**measured, 'measurement_reused': bool(reused),
                 'workers': workers, 'admitted_workers': effective_workers, 'worker_limit': self.workers,
                 'requested_workers': self.requested_workers, 'memory': capacity, 'estimates': estimates,
-                'finite_fraction': {name: float(np.isfinite(values[:, j]).mean()) if len(rows) else None
-                                    for j, name in enumerate(spec['feature_names'])}}
+                'note': 'Uniform-probe timings may overestimate contiguous production IO; estimates always '
+                        'retain the cold graph load and use current memory admission.'}
 
     @staticmethod
     def register(table, columns, rows, values, *, replace=False):

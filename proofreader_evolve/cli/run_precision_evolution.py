@@ -8,7 +8,7 @@ fitting rows), or the historical in-sample protocol for attribution runs.
 Promote on the target-kind validation objective (AUROC by default since 2026-11-02, Precision@K before)
 whose paired-bootstrap lower bound is above zero, subject to a head guard on precision at K/2, K and 2K
 (`--promotion-gate bootstrap`, default); individual brain regressions are allowed.
-Generations go to one kind each, chosen by pending follow-up, a floor, recent validation
+Generations go to one kind each, chosen by a rotation floor, pending follow-up, recent validation
 point gain (accepted or not) and remaining headroom (`--kind-schedule adaptive`, default) or by strict rotation.
 Validation is repeatedly queried development data, never an untouched final test.
 """
@@ -318,6 +318,9 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
             "Cached repeats and proposal-format errors "
             "do not spend evaluation budget, but tool calls still consume SDK turns. Grid combinations must fit "
             "the remaining budget. Prefer one grid call to hand-editing constants across many calls. "
+            "Classifier search also has a generation wall budget (model_environment.json): after a configuration "
+            "exhausts it, further uncached fits stop, while cached fits and candidate restore remain available. "
+            "Check classifier_seconds_remaining before another costly grid. "
             "During feature exploration start with one fixed seed and a compact model. Reserve two units for "
             "a paired feature ablation before optional parameter or seed searches; an already measured controlled "
             "same-parameter with/without comparison need not be repeated. Try ensembles only after a feature "
@@ -539,9 +542,9 @@ def parse_args(argv=None):
                         "objective, the bootstrap and kind headroom; 0 counts every pool (default: 20, 2026-10-12)")
     p.add_argument("--aggregation", choices=scoring.AGGREGATIONS, default="positive-weighted",
                    help="How the counted pools are combined separately for each kind, in "
-                        "selection, validation, the bootstrap and kind headroom: positive-weighted pools hits / K "
-                        "over brains (default since 2026-10-27); equal-brain averages the pools with equal weight "
-                        "(the rule of every run before)")
+                        "selection, validation, the bootstrap and kind headroom: positive-weighted (default) "
+                        "weights rank statistics by positives and pools precision hits / K; equal-brain gives "
+                        "each eligible brain equal weight when explicitly selected")
     p.add_argument("--objective", choices=rank_statistics.OBJECTIVES, default="auroc",
                    help="Rank statistic that selection, feature ablation, the bootstrap and promotion compare over the "
                         "same GT-labeled rows and pools: auroc (default since 2026-11-02: the probability that a GT "
@@ -563,7 +566,11 @@ def parse_args(argv=None):
                    help="Scoring/feature worker budget and 3D analysis worker timeout, in seconds (default: 300; "
                         "120 before 2026-10-06, raised with the 16-case analysis limit)")
     p.add_argument("--classifier-time-budget", type=float, default=300,
-                   help="Wall/CPU fitting budget per classifier configuration, in seconds (default: 300)")
+                   help="Wall/CPU budget per fitting worker, in seconds (default: 300)")
+    p.add_argument("--classifier-search-seconds", type=float, default=3600.,
+                   help="Generation wall budget for train_classifier preparation, fits and evaluation (default: "
+                        "3600). Checked between configurations; the current candidate finishes under worker limits. "
+                        "Cache reuse and restoring measured candidates remain available after exhaustion")
     p.add_argument("--classifier-memory-mb", type=int, default=16384,
                    help="Address-space limit for fitting, fit-time extraction, diagnostics, 3D analysis and "
                         "fixed-pool scoring (default: 16384 MiB; 8192 before 2026-10-08)")
@@ -599,7 +606,7 @@ def parse_args(argv=None):
                    help="Component to revise; alternate lets --kind-schedule choose one kind per generation, "
                         "merge or split fixes it")
     p.add_argument("--kind-schedule", choices=kind_schedule.MODES, default="adaptive",
-                   help="adaptive (default): pick the kind per generation by pending follow-up, a floor, recent "
+                   help="adaptive (default): pick the kind per generation by a floor, pending follow-up, recent "
                         "validation point gain (accepted or not) and remaining headroom; alternate: strict merge/split rotation")
     p.add_argument("--kind-floor-every", type=int, default=kind_schedule.DEFAULT_FLOOR_EVERY,
                    help="Adaptive schedule: every active kind is revised at least once per this many generations "
@@ -682,6 +689,8 @@ def parse_args(argv=None):
         p.error("Classifier time budget must be positive and finite; classifier-memory-mb must be >= 512")
     if args.classifier_threads < 1:
         p.error("classifier-threads must be >= 1")
+    if not math.isfinite(args.classifier_search_seconds) or args.classifier_search_seconds <= 0:
+        p.error("classifier-search-seconds must be finite and positive")
     return args
 
 
@@ -963,7 +972,8 @@ async def _run(args, revise_fn, run_dir, trace):
                "min_positives GT positives "
                "are scored and reported but excluded from the objective (in_mean=false). "
                "Within each kind the counted pools are combined by the configured aggregation (positive-weighted: "
-               "sum(hits) / sum(effective K) over brains; equal-brain: equal-weight mean). "
+               "positive-count weights for rank statistics, sum(hits) / sum(effective K) for precision; "
+               "equal-brain: equal-weight mean). "
                "Each kind has an independent score. Evaluation datasets are logged as validation.")
     train = {b: banks[b] for b in args.train_brains}
     validation = {b: banks[b] for b in args.validation_brains}
@@ -1162,6 +1172,7 @@ async def _run(args, revise_fn, run_dir, trace):
                                   "classifier_feature_time_budget_per_brain": args.classifier_time_budget},
                 "candidate_selection": "train-champion-and-specialists-v1",
                 "classifier_time_budget": args.classifier_time_budget,
+                "classifier_search_seconds": args.classifier_search_seconds,
                 "classifier_memory_mb": args.classifier_memory_mb,
                 "classifier_threads": args.classifier_threads,
                 "classifier_training_protocol": (
@@ -1232,6 +1243,8 @@ async def _run(args, revise_fn, run_dir, trace):
                                for dist in importlib.metadata.distributions() if dist.metadata['Name'])),
         'device': 'cpu', 'network': False, 'child_processes': False,
         'fit_timeout_seconds': args.classifier_time_budget, 'fit_memory_mb': args.classifier_memory_mb,
+        'classifier_search_seconds_per_generation': args.classifier_search_seconds,
+        'classifier_search_budget_check': 'between configurations; current candidate completes under worker limits',
         'predict_timeout_seconds': args.policy_time_budget, 'predict_memory_mb': args.classifier_memory_mb,
         'volume_analysis_timeout_seconds': args.policy_time_budget,
         'volume_analysis_memory_mb': args.classifier_memory_mb,
@@ -1369,6 +1382,7 @@ async def _run(args, revise_fn, run_dir, trace):
             max_evaluations=args.train_evaluations_per_generation, generation=generation, search_plan=plan,
             classifier_timeout=args.classifier_time_budget, classifier_memory_mb=args.classifier_memory_mb,
             classifier_threads=args.classifier_threads, parent_selection=parent_selection[target_kind],
+            classifier_search_seconds=args.classifier_search_seconds,
             descriptor_budget={**descriptor_budget, 'frozen_inference_rows':
                 descriptor_runs.inference_rows([bank.tables[target_kind] for bank in validation.values()],
                                                lambda table: budgets.k_for(target_kind, table.truth))
@@ -1568,8 +1582,10 @@ async def _run(args, revise_fn, run_dir, trace):
         record['train_evaluations_used'] = experiments.evaluations_used
         record['descriptor_runs'] = experiments.descriptor_log
         record['descriptor_seconds_used'] = experiments.descriptor_seconds_used
+        record['classifier_seconds_used'] = experiments.classifier_seconds_used
         record['image_preview_usage'] = {'limit': experiments.image_preview_budget,
-            'used': experiments.image_inspections_used, 'remaining': experiments.image_inspections_remaining}
+            'used': experiments.image_inspections_used, 'remaining': experiments.image_inspections_remaining,
+            'inlined_bytes': experiments.image_payload_used}
         # Descriptor runs must be on the record before the image-evidence summary reads them.
         record['image_evidence'] = generation_image_evidence(gen_dir, record)
         _write(gen_dir / 'image_evidence.json', record['image_evidence'])

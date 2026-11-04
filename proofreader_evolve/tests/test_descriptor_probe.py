@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from proofreader_evolve.harness import descriptor_inputs, descriptor_probe
+from proofreader_evolve.harness import descriptor_inputs, descriptor_probe, reviser_session
 from proofreader_evolve.harness import detector_prior
 from proofreader_evolve.harness.descriptor_contract import descriptor_spec
 from proofreader_evolve.harness.image_context import CandidateImageStore
@@ -200,6 +200,25 @@ class ProbeInputTests(unittest.TestCase):
 class ProbeSessionTests(unittest.TestCase):
     setUp = fixtures.SessionDescriptorTests.setUp
 
+    def test_uniform_probe_supplies_all_brain_plans_but_matched_cases_do_not(self):
+        self.session.descriptor_path.write_text(fixtures.GEOMETRY_DESCRIPTOR)
+        runs = self.memory.descriptor_runs
+        reference = candidate_ref(self.train['802449'].tables['merge'], 0)
+        self.assertEqual(self.session.probe_descriptor([reference])['status'], 'probed')
+        self.assertEqual(runs._plan_measurements, {})
+        report = self.session.probe_descriptor(sample_per_brain=128)
+        self.assertEqual(report['status'], 'probed', report)
+        with patch.object(runs, 'probe') as probe, patch.object(runs, 'graph_load_seconds') as load:
+            plan = self.session.plan_descriptor_run()
+        self.assertEqual(plan['status'], 'planned', plan)
+        self.assertEqual(set(plan['per_brain']), set(self.train))
+        self.assertTrue(all(p['measurement_reused'] for p in plan['per_brain'].values()))
+        self.assertTrue(all(p['measurement_source'] == 'uniform_probe' for p in plan['per_brain'].values()))
+        probe.assert_not_called()
+        load.assert_not_called()
+        self.assertEqual(self.session.evaluations_used, 0)
+        self.assertEqual(self.memory.descriptors, {})
+
     def test_static_check_and_plan_reject_bad_contracts_before_graph_io(self):
         self.session.descriptor_path.write_text(fixtures.GEOMETRY_DESCRIPTOR)
         runs = self.memory.descriptor_runs
@@ -251,6 +270,46 @@ class ProbeSessionTests(unittest.TestCase):
         self.assertEqual(result['previews'], [])
         self.assertEqual(self.session.image_inspections_used, 0)
         self.assertEqual(self.session.evaluations_used, 0)
+
+    def test_previews_past_the_inline_payload_limit_stay_on_disk(self):
+        table = self.train['802449'].tables['merge']
+        attach_synthetic_store(table, self.root / 'payload_preview_patches')
+        self.session.descriptor_path.write_text(CUSTOM)
+        refs = [candidate_ref(table, i) for i in (0, 3)]
+        geometry = patch('proofreader_evolve.harness.image_preview.fragment_patch_geometry',
+                         return_value=(np.empty((0, 3)), [], []))
+        with geometry, patch('proofreader_evolve.harness.reviser_session.TOOL_IMAGE_BYTES', 1):
+            result = self.session.probe_descriptor(refs, previews=True)
+        report = json.loads(result['content'][0]['text'])
+        self.assertEqual(report['status'], 'probed', report)
+        self.assertEqual(len(report['previews']), 2)
+        payload = report['preview_payload']
+        self.assertEqual((payload['inlined'], payload['limit_bytes'], payload['omitted_files']),
+                         (0, 1, ['preview001.png', 'preview002.png']))
+        self.assertEqual(self.session.image_payload_used, 0)
+        self.assertEqual([block['type'] for block in result['content']], ['text'])
+        probe_dir = self.session.gen_dir / 'descriptor_probes' / 'probe001'
+        self.assertTrue((probe_dir / 'preview001.png').exists() and (probe_dir / 'preview002.png').exists())
+        self.assertEqual(json.loads((probe_dir / 'result.json').read_text())['preview_payload']['inlined'], 0)
+        # Saved previews still count as evidence and spend allowance; the limit changes the reply only.
+        self.assertEqual(self.session.image_inspections_used, 2)
+        self.assertEqual(generation_image_evidence(self.session.gen_dir, {})['preview_records'], 2)
+        with geometry:
+            result = self.session.probe_descriptor(refs, previews=True)
+        report = json.loads(result['content'][0]['text'])
+        self.assertEqual(report['preview_payload']['inlined'], 2)
+        self.assertEqual(report['preview_payload']['omitted_files'], [])
+        self.assertEqual([block['type'] for block in result['content']], ['text', 'image', 'image'])
+        used = self.session.image_payload_used
+        self.assertEqual(used, sum(len(block['data']) for block in result['content'][1:]))
+        self.assertEqual(report['preview_payload']['generation_bytes_remaining'],
+                         reviser_session.GENERATION_IMAGE_BYTES - used)
+        # The generation ceiling bounds later replies: one byte left omits the next previews.
+        with geometry, patch('proofreader_evolve.harness.reviser_session.GENERATION_IMAGE_BYTES', used + 1):
+            result = self.session.probe_descriptor(refs, previews=True)
+        report = json.loads(result['content'][0]['text'])
+        self.assertEqual((report['preview_payload']['inlined'], report['preview_payload']['limit_bytes']), (0, 1))
+        self.assertEqual(self.session.image_payload_used, used)
 
     def test_full_computation_does_not_grant_extra_time_to_later_brains(self):
         self.session.descriptor_path.write_text(fixtures.GEOMETRY_DESCRIPTOR)

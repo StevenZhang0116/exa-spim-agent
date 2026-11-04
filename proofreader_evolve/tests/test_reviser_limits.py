@@ -3,6 +3,7 @@ feedback budget, read access to SDK-parked tool results and to this generation's
 artefact directories."""
 
 import asyncio
+import importlib.util
 import os
 from pathlib import Path
 import tempfile
@@ -26,6 +27,24 @@ class LimitTests(unittest.TestCase):
 
     def test_feedback_budget(self):
         self.assertEqual(feedback.MAX_FEEDBACK_BYTES, 128_000)
+
+    def test_image_payload_limits_fit_the_transport_and_the_api(self):
+        # The CLI stream line carries a tool result in the message content and again in
+        # tool_use_result; the SDK default of 1 MiB ended two generations of lru62oga.
+        self.assertGreater(session.MESSAGE_BUFFER_BYTES, 1024 * 1024)
+        self.assertGreater(session.MESSAGE_BUFFER_BYTES,
+                           2 * (session.TOOL_IMAGE_BYTES + 4 * session.MCP_OUTPUT_TOKENS))
+        # Every inlined image stays in the generation's conversation: the generation ceiling
+        # plus text stays under the first-party API's 128 MB request limit (10 MB per image).
+        self.assertLessEqual(session.TOOL_IMAGE_BYTES, session.GENERATION_IMAGE_BYTES)
+        self.assertLess(session.GENERATION_IMAGE_BYTES + 16 * 1024 * 1024, 128_000_000)
+
+    def test_session_options_raise_the_sdk_line_limit(self):
+        if importlib.util.find_spec("claude_agent_sdk") is None:  # pragma: no cover - installed in panda
+            self.skipTest("claude_agent_sdk is not installed")
+        with tempfile.TemporaryDirectory() as root, patch.dict(os.environ, {"ANTHROPIC_API_KEY": "k"}):
+            options, _ = session.build_options(run_dir=root, system_prompt="s")
+        self.assertEqual(options.max_buffer_size, session.MESSAGE_BUFFER_BYTES)
 
 
 class ParkedToolResultTests(unittest.TestCase):

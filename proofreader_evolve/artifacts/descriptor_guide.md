@@ -45,6 +45,9 @@ checks reduce risk; arbitrary host/worker allocation spikes can still exceed mem
    coverage, finite/missing/nonzero counts, min/max/std, quartiles and example handles.
    Zero quartiles alone do not imply a constant column. Full sampled values are saved
    under `descriptor_probes/`; the tool returns a few representative cases per brain.
+   One reply inlines at most 64 MiB and one generation at most 96 MiB of base64-encoded
+   PNG data; `preview_payload` lists previews that stayed on disk in the probe directory
+   (readable one at a time) and the remaining generation bytes.
    Previews default to native slice sheets with separate raw and depth-clipped overlay rows,
    not maximum projections. With `previews: true`, pass `preview` to choose `plane`,
    `anchor_index`, `depth_range_um` and `slice_count` (1..9), as in image_context_guide.md.
@@ -63,10 +66,16 @@ checks reduce risk; arbitrary host/worker allocation spikes can still exceed mem
    code comparisons; larger samples need not contain earlier samples. Previews are
    optional and the allowance need not be exhausted. See image_context_guide.md for
    the comparison strategy; probes do not replace OOF evaluation or paired ablations.
-   After revising, `plan_descriptor_run({})` times a contiguous block of 64 labeled rows per
-   TRAIN brain, times each brain's fragment graph load apart (`graph_load_seconds`, charged
+   `plan_descriptor_run({})` reuses a valid timing sample from a preview-free uniform probe
+   of at least 64 rows per brain (or the entire smaller pool), or from an earlier plan.
+   Explicit matched cases and previews are not used for cost calibration. Changed descriptor
+   code, inputs or implementation invalidate reuse. Without a sufficient sample it times a
+   contiguous block of 64 labeled rows per TRAIN brain. Uniform timings can overestimate
+   contiguous production IO; `measurement_source` and `measurement_reused` make this visible.
+   Every plan refreshes memory admission, scope counts, bank hits and remaining budgets.
+   It retains each brain's cold fragment graph load (`graph_load_seconds`, charged
    once per brain) and estimates the entire TRAIN workload; image descriptors are credited
-   with at most 8 concurrent readers (`workers`), the measured S3 throughput ceiling. It also
+   with at most 8 concurrent readers (`workers`) as a conservative planning cap. It also
    reports the uncached work remaining; only that work is compared with the remaining allowance.
    IO and worker scaling
    make this approximate, especially on a cold cache; frozen inference is additional:

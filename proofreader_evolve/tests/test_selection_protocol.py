@@ -399,7 +399,7 @@ class DriverRoleTests(unittest.TestCase):
             self.assertEqual(seen['feedback']['parent_selection']['mode'], 'grouped_oof')
             self.assertIn('794495/merge', seen['feedback']['parent_train']['cells'])
             row = json.loads((path / 'ledger.jsonl').read_text().splitlines()[0])
-            usage = {'limit': 5, 'used': 1, 'remaining': 4}
+            usage = {'limit': 5, 'used': 1, 'remaining': 4, 'inlined_bytes': 0}
             self.assertEqual(row['image_preview_usage'], usage)
             self.assertEqual(row['image_evidence']['preview_usage'], usage)
             self.assertEqual(row['image_evidence']['preview_records'], 0)

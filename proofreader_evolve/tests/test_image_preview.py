@@ -1,4 +1,5 @@
 """Native slice evidence: depth, pixel identity, masks and bounded view controls."""
+import base64
 from pathlib import Path
 import tempfile
 import unittest
@@ -6,7 +7,34 @@ from unittest.mock import patch, Mock
 
 import numpy as np
 
-from proofreader_evolve.harness.image_preview import preview_request, slice_selection, render_preview, _overlay
+from proofreader_evolve.harness import reviser_session
+from proofreader_evolve.harness.image_preview import (
+    inline_images, preview_request, slice_selection, render_preview, _overlay)
+
+
+class InlineImageTests(unittest.TestCase):
+    def test_inline_images_stop_at_the_payload_limit_in_order(self):
+        with tempfile.TemporaryDirectory() as root:
+            paths = []
+            for name, size in (('a.png', 30), ('b.png', 30), ('c.png', 6)):
+                path = Path(root) / name
+                path.write_bytes(b'\x89PNG' + bytes(size - 4))
+                paths.append(path)
+            encoded = len(base64.b64encode(bytes(30)))
+            blocks, omitted = inline_images(paths, limit=2 * encoded)
+            self.assertEqual([block['type'] for block in blocks], ['image', 'image'])
+            self.assertEqual(omitted, ['c.png'])
+            self.assertEqual(blocks[0]['mimeType'], 'image/png')
+            self.assertEqual(base64.b64decode(blocks[0]['data'])[:4], b'\x89PNG')
+            # A later file that would fit alone is still left out: blocks match the leading records.
+            blocks, omitted = inline_images(paths, limit=encoded)
+            self.assertEqual(len(blocks), 1)
+            self.assertEqual(omitted, ['b.png', 'c.png'])
+            self.assertEqual(inline_images([], limit=0), ([], []))
+            # The default limit is the session transport constant, read at call time.
+            with patch.object(reviser_session, 'TOOL_IMAGE_BYTES', encoded):
+                self.assertEqual(inline_images(paths)[1], ['b.png', 'c.png'])
+            self.assertEqual(inline_images(paths)[1], [])
 
 
 class SlicePreviewTests(unittest.TestCase):

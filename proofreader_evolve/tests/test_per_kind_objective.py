@@ -48,6 +48,35 @@ def ranking(k, hits):
 
 
 class ObjectiveTests(unittest.TestCase):
+    def test_explicit_equal_brain_changes_selection_and_gate_consistently(self):
+        from proofreader_evolve.cli.run_precision_evolution import parse_args
+        mode = parse_args(['--aggregation', 'equal-brain']).aggregation
+        budgets = scoring.Budgets({'merge': None}, positive_ratio=1., aggregation=mode,
+                                  objective='auroc')
+        before = {'large/merge': {**cell(50, 1000), 'auroc': .7},
+                  'small/merge': {**cell(15, 20), 'auroc': .8}}
+        after = {'large/merge': {**cell(60, 1000), 'auroc': .72},
+                 'small/merge': {**cell(14, 20), 'auroc': .76}}
+        reports = [{'version': scoring.SCORING_VERSION,
+                    **scoring.aggregate_objective(cells, mode, budgets.objective), 'cells': cells}
+                   for cells in (before, after)]
+        results = []
+        for sequence, measured in enumerate(reports):
+            state = {name: {'chosen': np.arange(c['effective_k'])} for name, c in measured['cells'].items()}
+            entry = {**candidate_metadata(FORMULA, 'merge', measured, state), 'sequence': sequence}
+            results.append({'entry': entry, 'report': measured, 'component': FORMULA})
+        self.assertIs(TrainingExperiments._best(results), results[0])
+        self.assertFalse(scoring.acceptance(*reports, target_kind='merge', require_no_cell_regression=False)[0])
+        self.assertAlmostEqual(scoring.objective_for_kind(reports[1], 'merge') -
+                               scoring.objective_for_kind(reports[0], 'merge'), -.01)
+        # The restored positive-weighted default gives the opposite decision for the same cells.
+        default_mode = parse_args([]).aggregation
+        self.assertEqual(default_mode, 'positive-weighted')
+        old = [{'version': scoring.SCORING_VERSION, 'cells': cells,
+                **scoring.aggregate_objective(cells, default_mode, 'auroc')} for cells in (before, after)]
+        self.assertGreater(scoring.objective_for_kind(old[1], 'merge'), scoring.objective_for_kind(old[0], 'merge'))
+        self.assertTrue(scoring.acceptance(*old, target_kind='merge', require_no_cell_regression=False)[0])
+
     def test_one_remaining_hit_does_not_saturate_a_multi_brain_objective(self):
         cells = {'a/merge': cell(10, 10), 'b/merge': cell(100, 100),
                  'c/merge': cell(99, 100), 'excluded/merge': cell(0, 1, False)}

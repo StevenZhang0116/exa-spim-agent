@@ -18,7 +18,9 @@ from proofreader_evolve.harness import descriptor_runs as dr
 from proofreader_evolve.harness.descriptor_contract import descriptor_spec, referenced_columns
 from proofreader_evolve.harness.model_execution import ModelExecutionError
 from proofreader_evolve.tests.test_selection_protocol import brain_table
-from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
+from proofreader_evolve.tests import label_fixture
+
+setUpModule, tearDownModule = label_fixture.setUpModule, label_fixture.tearDownModule
 
 
 GEOMETRY_DESCRIPTOR = '''DESCRIPTOR = {'kind': 'merge', 'inputs': 'geometry', 'feature_names': ['node_count', 'mean_radius']}
@@ -251,7 +253,7 @@ class DescriptorRunTests(unittest.TestCase):
 
     def test_image_plans_credit_bounded_io_parallelism_and_charge_the_graph_load(self):
         # A probe that reads images: 2 s per row, 12 pool rows in one-row batches, 12 admitted workers.
-        measured = {'values': np.zeros((4, 2)), 'wall_seconds': 8., 'preparation_seconds': 7., 'worker_seconds': 1.,
+        measured = {'rows': np.arange(4), 'values': np.zeros((4, 2)), 'wall_seconds': 8., 'preparation_seconds': 7., 'worker_seconds': 1.,
                     'image_reads': 4, 'image_seconds': 6.}
         capacity = {**self.runs.capacity(), 'available_workers': 12}
         with patch.object(self.runs, 'probe', return_value=measured), patch.object(self.runs, 'capacity', return_value=capacity), \
@@ -272,7 +274,7 @@ class DescriptorRunTests(unittest.TestCase):
         # A 10 s graph load on a fake clock: the probe gets the remainder, an exhausted budget loads nothing.
         from types import SimpleNamespace
         clock, loads, probes = [1000.], [], []
-        measured = {'values': np.zeros((4, 2)), 'wall_seconds': 8., 'preparation_seconds': 7., 'worker_seconds': 1.}
+        measured = {'rows': np.arange(4), 'values': np.zeros((4, 2)), 'wall_seconds': 8., 'preparation_seconds': 7., 'worker_seconds': 1.}
 
         def slow_load(table):
             loads.append(table); clock[0] += 10.
@@ -289,12 +291,49 @@ class DescriptorRunTests(unittest.TestCase):
             plan = self.runs.plan(self.table, *descriptor_spec(IMAGE_DESCRIPTOR), k=3, sample_rows=4, timeout=25.)
             self.assertAlmostEqual(probes[-1], 15.)
             self.assertEqual(plan['graph_load_seconds'], 10.)
+            # A repeated plan reuses timing without loading; clear it to test a new cold measurement.
+            self.assertTrue(self.runs.plan(self.table, *descriptor_spec(IMAGE_DESCRIPTOR),
+                                         k=3, sample_rows=4, timeout=5.)['measurement_reused'])
+            self.runs._plan_measurements.clear()
             with self.assertRaisesRegex(ModelExecutionError, 'before probe started'):
                 self.runs.plan(self.table, *descriptor_spec(IMAGE_DESCRIPTOR), k=3, sample_rows=4, timeout=5.)
             self.assertAlmostEqual(probes[-1], -5.)
             with self.assertRaisesRegex(ModelExecutionError, 'before plan started'):
                 self.runs.plan(self.table, *descriptor_spec(IMAGE_DESCRIPTOR), k=3, sample_rows=4, timeout=0.)
         self.assertEqual(len(loads), 2)  # the exhausted call loaded no graph
+
+    def test_uniform_probe_reuses_timing_but_refreshes_admission_and_invalidates_changed_inputs(self):
+        program, spec = descriptor_spec(GEOMETRY_DESCRIPTOR)
+        rows = self.runs.sample_rows(self.table, 128)
+        with patch.object(self.runs, 'graph_load_seconds', return_value=30.):
+            self.runs.probe(self.table, program, spec, rows, log_dir=self.root / 'probe', calibrate=True)
+        capacity = {**self.runs.capacity(), 'available_workers': 1}
+        with patch.object(self.runs, 'probe') as probe, patch.object(self.runs, 'graph_load_seconds') as load, \
+                patch.object(self.runs, 'capacity', return_value=capacity):
+            plan = self.runs.plan(self.table, program, spec, k=3)
+        probe.assert_not_called()
+        load.assert_not_called()
+        self.assertTrue(plan['measurement_reused'])
+        self.assertEqual(plan['measurement_source'], 'uniform_probe')
+        self.assertEqual(plan['graph_load_seconds'], 30.)
+        self.assertEqual(plan['workers'], 1)
+        changed, changed_spec = descriptor_spec(GEOMETRY_DESCRIPTOR.replace('len(fragment', '2 * len(fragment'))
+        fresh = self.runs.plan(self.table, changed, changed_spec, k=3)
+        self.assertFalse(fresh['measurement_reused'])
+        with patch.object(self.runs, 'probe') as probe:
+            self.assertTrue(self.runs.plan(self.table, changed, changed_spec, k=2)['measurement_reused'])
+        probe.assert_not_called()
+        self.runs.implementation = {**self.runs.implementation, 'test_version': 'changed'}
+        self.assertFalse(self.runs.plan(self.table, changed, changed_spec, k=3)['measurement_reused'])
+
+    def test_calibrated_probe_checks_admission_before_graph_load(self):
+        program, spec = descriptor_spec(GEOMETRY_DESCRIPTOR)
+        with patch.object(dr.memory_budget, 'require_capacity', side_effect=RuntimeError('no headroom')), \
+                patch.object(self.runs, 'graph_load_seconds') as load:
+            with self.assertRaisesRegex(RuntimeError, 'no headroom'):
+                self.runs.probe(self.table, program, spec, [0], log_dir=self.root / 'probe', calibrate=True)
+        load.assert_not_called()
+        self.assertEqual(self.runs._plan_measurements, {})
 
 
 if __name__ == '__main__':
@@ -437,7 +476,8 @@ class DriverDescriptorTests(unittest.TestCase):
                                       '--merge-k', '3', '--split-k', '1', '--generations', '1', '--runs-dir', tmp,
                                       '--start-from', str(seed), '--bootstrap-draws', '5', '--promotion-gate', 'margin', '--kind-schedule', 'alternate', '--skip-auxiliary-ablation',
                                       '--context-cache', str(root / 'cache'), '--descriptor-bank', str(root / 'bank'),
-                                      '--descriptor-workers', '2', '--descriptor-wall-seconds', '120'])
+                                      '--descriptor-workers', '2', '--descriptor-wall-seconds', '120',
+                                      '--descriptor-memory-mb', '1024'])  # tiny synthetic workers, like DescriptorRunTests
             seen = {}
             async def revise(run_dir, policy, rules, report, model, *, experiments):
                 environment = json.loads((policy.parent / 'model_environment.json').read_text())
@@ -453,11 +493,12 @@ class DriverDescriptorTests(unittest.TestCase):
                     attach_synthetic_store(bank.tables['merge'], root / 'images' / brain)
                 # An image descriptor first, so the generation's image-evidence summary has a run to report.
                 (policy.parent / 'descriptor.py').write_text(IMAGE_DESCRIPTOR)
-                self.assertEqual(experiments.compute_descriptors('pilot')['status'], 'registered')
+                image_result = experiments.compute_descriptors('pilot')
+                self.assertEqual(image_result['status'], 'registered', image_result.get('error'))
                 (policy.parent / 'descriptor.py').write_text(GEOMETRY_DESCRIPTOR)
                 experiments.plan_descriptor_run()
                 result = experiments.compute_descriptors('all_candidates')
-                self.assertEqual(result['status'], 'registered')
+                self.assertEqual(result['status'], 'registered', result.get('error'))
                 self.assertNotIn('validation', json.dumps(result).lower())
                 policy.write_text(BANK_FORMULA)
                 experiments.proposal_path.write_text(json.dumps({'hypothesis': 'Even node counts mark positives',
@@ -471,7 +512,7 @@ class DriverDescriptorTests(unittest.TestCase):
             self.assertTrue(seen['environment']['enabled'])
             self.assertEqual(seen['environment']['workers'], 2)
             row = json.loads((path / 'ledger.jsonl').read_text().splitlines()[0])
-            self.assertEqual(row['descriptors_referenced'], ['bank_agent_node_count'])
+            self.assertEqual(row['descriptors_referenced'], ['bank_agent_node_count'], row.get('reason'))
             self.assertEqual(row['descriptor_inference'][0]['brain'], '2')
             self.assertEqual([run['status'] for run in row['descriptor_runs']], ['registered', 'registered'])
             # The image-evidence summary sees the generation's descriptor runs (ordering fixed 2026-10-06).

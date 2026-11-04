@@ -11,7 +11,6 @@ import asyncio
 from contextlib import redirect_stdout
 import io
 import json
-from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -21,7 +20,9 @@ import pandas as pd
 
 from proofreader_evolve.harness import kind_schedule as ks
 from proofreader_evolve.harness.native_pool import NativeTable, NativeTables, pool_digest
-from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
+from proofreader_evolve.tests import label_fixture
+
+setUpModule, tearDownModule = label_fixture.setUpModule, label_fixture.tearDownModule
 
 BASELINE = "def score_candidates(features, ctx):\n    return features['detector_score'].to_numpy()\n"
 IMPROVED = "def score_candidates(features, ctx):\n    return features['evidence'].fillna(0).to_numpy()\n"
@@ -83,7 +84,7 @@ class RuleTests(unittest.TestCase):
         result = self.allocate(cells, history)
         self.assertEqual((result["chosen"], result["rule"]), ("merge", "momentum"))
         self.assertAlmostEqual(result["kinds"]["merge"]["momentum"], .206 - .181)
-        self.assertEqual(result["version"], "adaptive-kind-allocation-v5-objective-headroom")
+        self.assertEqual(result["version"], "adaptive-kind-allocation-v6-floor-first")
 
     def allocate(self, cells, records, **overrides):
         options = {"paused": {}, "pending": {}, "floor_every": 4}
@@ -125,6 +126,19 @@ class RuleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.allocate(cells, [], floor_every=0)
         self.assertNotIn("validation", json.dumps(result).lower().replace("development-validation", ""))
+
+    def test_repeated_promotions_cannot_starve_the_other_kind(self):
+        cells = {"a/merge": cell(1000, 2000, .1), "a/split": cell(2720, 2000, .3)}
+        history, pending = [], {"split": True}
+        for _ in range(12):
+            result = self.allocate(cells, history, pending=pending)
+            history.append(row(result['chosen'], True, .1, .11))
+        kinds = [r['target_kind'] for r in history]
+        for start in range(len(kinds) - 3):
+            self.assertEqual(set(kinds[start:start + 4]), {'merge', 'split'})
+        self.assertEqual(pending, {'split': True})  # deferral never consumes the follow-up
+        result = self.allocate(cells, [row('split', True)] * 3, pending={'merge': True, 'split': True})
+        self.assertEqual((result['chosen'], result['rule']), ('merge', 'floor'))
 
 
 class DriverTests(unittest.TestCase):

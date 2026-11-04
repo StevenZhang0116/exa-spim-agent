@@ -22,7 +22,7 @@ TRAIN, selection and validation (merge was 2 x positives under a cap of 300 from
 positives are reported but excluded from the objective (`--k-positive-ratio`,
 `--merge-k` / `--split-k`, `--min-positives`).
 Generations are allocated between the merge and split components by
-pending follow-ups, a floor, recent validated gain and remaining headroom.
+a rotation floor, pending follow-ups, recent validated gain and remaining headroom.
 The subsections below follow one generation of the loop in the figure; the
 maintained design record is
 [`proofreader_evolve/WORKFLOW_REVISION.md`](../proofreader_evolve/WORKFLOW_REVISION.md).
@@ -75,9 +75,9 @@ python -u -m proofreader_evolve.cli.run_evolution \
 # --descriptor-memory-mb 16384 is independent of --classifier-memory-mb.
 # Partition since 2026-10-27: 794495 auxiliary TRAIN (detector-fitted); 802449 within-brain grouped folds; the
 # four holdout selection brains are scored whole by models that never saw them (holdout_objective and
-# holdout_precision, the cross-brain signal); validation unchanged. --aggregation positive-weighted (default since 2026-10-27) pools
-# each kind's counted pools by GT positives in selection, validation, bootstrap and headroom; equal-brain
-# assigns equal weight to the counted brains within each kind.
+# holdout_precision, the cross-brain signal). --aggregation positive-weighted (default) weights rank statistics
+# by each eligible brain's GT-positive count in selection, validation, bootstrap and headroom.
+# --aggregation equal-brain explicitly assigns equal weight; do not compare the two aggregates directly.
 # Ablations: --detector-prior no-score withholds the frozen detector score (2026-10-12); --detector-prior raw
 # (2026-10-27) also withholds every discovered h<n>_ feature column, leaving the raw_* candidate attributes, the
 # on-demand contexts and the agent's descriptors (own descriptor bank).
@@ -209,9 +209,10 @@ stored separately and never passed to the scorer.
 Training feedback includes labeled examples with TRAIN-only inspection handles; validation feedback is
 not supplied to the reviser. Promotion uses the **target-kind validation objective**
 (AUROC by default; Precision@K until 2026-11-02) with the head guard.
-For each kind independently, `--aggregation positive-weighted` (default) computes
-`sum(TP) / sum(effective K)` over brains whose pool holds at least `--min-positives`
-GT positives. `equal-brain` assigns equal weight to those brains. Smaller pools are
+For each kind independently, `--aggregation positive-weighted` (default) weights rank
+statistics by GT-positive counts over brains whose pool holds at least `--min-positives`
+GT positives, and computes precision as `sum(TP) / sum(effective K)`.
+`equal-brain` assigns equal weight when explicitly selected. Smaller pools are
 reported but excluded. The candidate must exceed the accepted parent's score for this kind
 by more than `--precision-margin` (default 0; ties fail) and, with the default
 `--promotion-gate bootstrap`, the lower bound of the paired row-resampling interval of
@@ -276,8 +277,8 @@ feature quartiles by label (1 / 0; NaN rows counted), so error samples are not m
 full distribution. Candidate feedback adds gained/lost positives and Top-K overlap.
 
 Each generation edits one component. By default the kind is chosen adaptively:
-a pending promotion follow-up first, then a floor of one revision per
-`--kind-floor-every` generations (default 4), then the kind with the larger recent
+a floor of one revision per `--kind-floor-every` generations (default 4) for each active kind,
+then a pending promotion follow-up (deferred intact when the floor takes priority), then the kind with the larger recent
 validation point gain (accepted or rejected; only gate-passing gains before 2026-11-01), then the larger remaining headroom on the validation
 cells. Both headroom and saturation use the configured per-kind aggregation and
 effective K; saturation means less than half the smallest one-hit gain remains.
@@ -331,6 +332,12 @@ fixes its AST and nonnumeric settings while refitting numeric parameters.
 Defaults are 300 seconds wall/CPU, 16384 MiB (8192 before 2026-10-08) and eight numerical-library threads
 (`--classifier-time-budget`, `--classifier-memory-mb`, `--classifier-threads`; one thread before 2026-10-27);
 the recorded full runs use 1800 to 3600 seconds, 4 to 16 threads and 98304 MiB.
+`--classifier-search-seconds 3600` additionally limits new classifier search within each
+generation, including preparation, OOF/full fitting and evaluation. It is checked between
+configurations; the current candidate completes under worker limits. Exhaustion stops further
+uncached fits, while completed candidates can still be restored and cached fits reused.
+New descriptor registrations invalidate fit/frame reuse for the affected kind, even when
+the same training program and parameters are submitted again.
 Artifact storage permits 128 MiB / 256 regular files per model. The agent chooses
 and records randomness seeds. `model_environment.json` lists installed packages
 and budgets; training stdout/stderr is saved (a worker that prints nothing leaves no file) and its last 8 KB returned to the agent.
@@ -488,7 +495,8 @@ It does not consume a TRAIN pool slot and cannot be evicted for a low selection 
 or redundant TRAIN coverage. The same snapshot can serve both reference and TRAIN
 roles without duplication. A newly promoted component gets the **next generation
 of the same kind** in explore mode, ahead of the TRAIN champion and normal cadence
-(the adaptive kind allocation of section 3.4 schedules pending follow-ups first).
+(the adaptive kind allocation of section 3.4 gives the active-kind rotation floor
+priority over pending follow-ups).
 One new measurement from that workspace branch completes the follow-up; cached
 restores do not. At most one retry is reserved. Seeds and unchanged references do
 not enqueue follow-ups. Otherwise, every **third scheduled generation of each kind**

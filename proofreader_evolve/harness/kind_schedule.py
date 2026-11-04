@@ -9,11 +9,11 @@ only carries the rule name.
 
 Rules, in priority order:
 
-1. ``pending_followup``: a kind with a pending promotion follow-up or a pending
-   investigation keeps its slot (unchanged semantics from the per-kind scheduler).
-2. ``floor``: a kind not revised in the last ``floor_every - 1`` completed
+1. ``floor``: a kind not revised in the last ``floor_every - 1`` completed
    generations is revised now, so every active kind appears at least once in any
    window of ``floor_every`` generations.
+2. ``pending_followup``: a pending promotion follow-up or investigation takes the
+   next available slot. A floor allocation defers it without discarding it.
 3. ``momentum``: among unsaturated kinds, the largest mean validation point
    gain (candidate minus parent, clipped at zero) over the kind's last
    ``MOMENTUM_WINDOW`` scheduled generations, whether or not the promotion gate
@@ -39,7 +39,7 @@ fields of ledgers written before v7.
 
 import math
 
-SCHEDULE_VERSION = "adaptive-kind-allocation-v5-objective-headroom"
+SCHEDULE_VERSION = "adaptive-kind-allocation-v6-floor-first"
 MODES = ("adaptive", "alternate")
 MOMENTUM_WINDOW = 2
 SATURATION_HITS = .5
@@ -170,15 +170,15 @@ def allocate(kinds, *, cells, budgets, records, paused, pending, floor_every=DEF
         return sorted(candidates, key=lambda kind: (-room[kind], kinds.index(kind)))
 
     pending_kinds = [kind for kind in active if pending.get(kind)]
-    starved = [kind for kind in active if since[kind] >= floor_every - 1 and kind not in pending_kinds]
+    starved = [kind for kind in active if since[kind] >= floor_every - 1]
     moving = [kind for kind in active if gain[kind] > 0. and not saturated[kind]
               and kind not in pending_kinds and kind not in starved]
     if not active:
         lead, rule = None, "all_paused"
-    elif pending_kinds:
-        lead, rule = pending_kinds[0], "pending_followup"
     elif starved:
         lead, rule = max(starved, key=lambda kind: (since[kind], room[kind], -kinds.index(kind))), "floor"
+    elif pending_kinds:
+        lead, rule = pending_kinds[0], "pending_followup"
     elif moving:
         lead, rule = max(moving, key=lambda kind: (gain[kind], room[kind], -kinds.index(kind))), "momentum"
     else:

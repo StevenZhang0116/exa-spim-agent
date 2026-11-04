@@ -1,5 +1,4 @@
 """TRAIN-only diagnostics around the same descriptor worker used for full computation."""
-import base64
 import json
 import time
 
@@ -66,7 +65,7 @@ def probe(session, candidate_refs=None, sample_per_brain=128, seed=0, previews=F
     preview_keys = [(brain, int(row)) for brain, rows in sorted(selected.items())
                     for row in (rows if candidate_refs is not None else rows[:1])]
     preview_keys = set(preview_keys[:session.image_inspections_remaining]) if previews else set()
-    images, started = [], time.monotonic()
+    preview_paths, started = [], time.monotonic()
     active_brain = None
     try:
         for brain, table in resident_first({b: tables[b] for b in selected}):
@@ -88,11 +87,11 @@ def probe(session, candidate_refs=None, sample_per_brain=128, seed=0, previews=F
                                       fragment['segment'], f'TRAIN {brain} / {table.kind} / descriptor input',
                                       preview=preview)
                 response['previews'].append({**detail, 'file': path.name, 'preview': view})
-                images.append({'type': 'image', 'mimeType': 'image/png',
-                               'data': base64.b64encode(path.read_bytes()).decode('ascii')})
+                preview_paths.append(path)
 
             try:
                 result = runs.probe(table, program, spec, rows, log_dir=directory / brain, observe=observe,
+                                    calibrate=candidate_refs is None and not previews,
                                     timeout=allowance - (time.monotonic() - started))
             finally:
                 (directory / f'{brain}_inputs.json').write_text(json.dumps(details, indent=2, allow_nan=False))
@@ -120,18 +119,25 @@ def probe(session, candidate_refs=None, sample_per_brain=128, seed=0, previews=F
                     evaluations_remaining=session.remaining,
                     note='Diagnostic only; no predictor columns were registered. '
                     'Input support does not identify which pixels arbitrary descriptor code uses.')
+    blocks, omitted, payload = session.inline_previews(preview_paths)
+    if previews:
+        response['preview_payload'] = {
+            **payload, 'note': 'Inlined preview PNG data is bounded per reply (limit_bytes) and per generation '
+                               '(generation_bytes_remaining); omitted previews are saved in this probe directory '
+                               '(Read them one at a time, or probe fewer cases per call).'}
     path = directory / 'result.json'
     path.write_text(json.dumps(response, indent=2, allow_nan=False))
     session._record_research('probe_descriptor', session._descriptor_source(spec), 'observation',
         {'code_sha256': spec['code_sha256'], 'cases': {b: r.tolist() for b, r in selected.items()}},
         response['status'] == 'probed', path, outcome={'status': response['status']})
     session.trace.emit('descriptor_probe', f"{response['probe']}: {response['status']}; {elapsed:.1f}s",
-                       status=response['status'], preview_count=len(images))
-    return {'content': [{'type': 'text', 'text': json.dumps(response, allow_nan=False)}, *images]} if images else response
+                       status=response['status'], preview_count=len(preview_paths), previews_inlined=len(blocks))
+    return ({'content': [{'type': 'text', 'text': json.dumps(response, allow_nan=False)}, *blocks]}
+            if preview_paths else response)
 
 
 def plan(session):
-    """Measure every TRAIN brain and compare the whole call with its wall allowance."""
+    """Reuse valid timings or measure TRAIN brains; refresh workload and budget estimates."""
     program, spec = session._read_descriptor()
     runs, tables = session.memory.descriptor_runs, session._descriptor_tables()
     allowance = min(600., session.descriptor_budget['per_call_seconds'], session.descriptor_seconds_remaining)
@@ -190,9 +196,11 @@ def plan(session):
         note='Full estimates include sampled preparation and execution on every TRAIN brain; '
              'fits_budget compares only uncached work with the remaining descriptor allowance and measured memory capacity. '
              'Each brain\'s fragment graph load is timed apart (graph_load_seconds) and charged once per brain; the per-row '
-             'rate comes from a contiguous block of labeled rows; the first batch is serial, later batches use the observed '
-             'TRAIN memory headroom, and image descriptors are credited with at most 8 concurrent readers (the measured S3 '
-             'ceiling). Cold retrieval and shared IO can still make full runs slower. Planning consumes descriptor wall time, '
+             'rate comes from a sufficient preview-free uniform probe or a contiguous labeled-block plan. '
+             'measurement_source and measurement_reused identify the timing basis; uniform IO may be conservative. '
+             'The first batch is serial, later batches use the current '
+             'TRAIN memory headroom, and image descriptors are credited with at most 8 concurrent readers '
+             'as a conservative planning cap. Cold retrieval and shared IO can still make full runs slower. Planning consumes descriptor wall time, '
              'no evaluation units. frozen_inference extrapolates, per allowed scope, the additional computation on the other '
              'brains at submission from the mean TRAIN rate and graph load (each brain has the per-call budget; the scope you '
              'compute with is reused there); '

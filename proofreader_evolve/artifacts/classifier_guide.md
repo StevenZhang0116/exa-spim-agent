@@ -158,6 +158,17 @@ edit training.py and refit. Model files are stored in the run's
 formats are allowed, up to 128 MiB total / 256 regular files; no symlinks.
 
 Default fitting limits are 300 seconds wall/CPU and 16384 MiB address space.
+`--classifier-search-seconds` (default 3600) bounds new classifier search per generation:
+preparation, OOF fits/predictions, full fit and evaluation all count, including failures.
+It is checked between configurations: a running candidate completes under its worker limits,
+so the total can exceed the budget by that candidate's duration. Further uncached fits stop;
+cached fits and restoring measured candidates remain available. Descriptor computation and
+paired ablations have their own budgets. Inspect `classifier_seconds_remaining` and stage
+`timings` before another grid. Compare features with one seed first; only try an ensemble
+after a useful paired comparison, with enough time left for its full-pool predictions.
+New registered descriptor inputs invalidate fitted-model and extracted-frame reuse even if
+training.py and parameters are unchanged. Restoring an older frozen model remains valid;
+it does not incorporate later features until you refit it.
 The host configures `--classifier-time-budget`, `--classifier-memory-mb` and
 `--classifier-threads` (default 8). Inference uses `--policy-time-budget` (300s
 by default) and the same 16384 MiB. The thread setting configures numerical libraries;

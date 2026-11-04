@@ -300,6 +300,74 @@ class ClassifierToolTests(unittest.TestCase):
         self.assertIn('16384 MiB', exit_detail(-9, {'memory_mb': 16384}, 'tail'))
         self.assertEqual(exit_detail(1, {'memory_mb': 16384}, 'tail'), 'tail')
 
+    def test_new_descriptor_refits_same_program_and_refreshes_extracted_frames(self):
+        from proofreader_evolve.harness.descriptor_runs import DescriptorRuns
+        program = '''def fit(X_train, y_train, artifact_dir, params):
+    columns = [c for c in X_train.columns if c.startswith('bank_agent_')]
+    (artifact_dir / 'column.txt').write_text(columns[-1] if columns else 'evidence')
+def predict(X, artifact_dir, params):
+    column = (artifact_dir / 'column.txt').read_text()
+    return X[column].fillna(0).to_numpy()
+'''
+        proposal(self.session, program=program)
+        self.session.train_classifier()
+        original = self.session.submitted()[0]['component']
+        table = self.train['1'].tables['split']
+        name = 'bank_agent_new_signal'
+        values = -table.features['evidence'].fillna(0).to_numpy()[:, None]
+        DescriptorRuns.register(table, [name], np.arange(len(table.features)), values)
+        self.memory.descriptors[name] = {'kind': 'split', 'code_sha256': 'new',
+                                         'scope': 'all_candidates', 'registered_in': 'gen001'}
+        # Validation recomputation is irrelevant here: the registered synthetic column
+        # is already present on TRAIN, and we are testing fitting, frames and cache keys.
+        with patch.object(self.session, 'ensure_descriptors'), \
+                patch('proofreader_evolve.harness.train_experiments.fit_classifier', wraps=fit_classifier) as fit:
+            response = self.session.train_classifier()
+        self.assertEqual(fit.call_count, 1)
+        self.assertFalse(response['candidates'][0]['cached'])
+        self.assertIn(name, self.session.frame_cache[1]['1'].columns)
+        model = frozen_model(self.session.submitted()[0]['component'])
+        artifacts = verify_artifacts(model, self.memory.artifact_store)
+        self.assertEqual((artifacts / 'column.txt').read_text(), name)
+        self.assertNotEqual(original, self.session.submitted()[0]['component'])
+        self.session = self.make_session(2)
+        proposal(self.session, program=program)
+        # The same feature set stays reusable across generations. Other-kind registrations
+        # and a repeat registration's bookkeeping must not invalidate this fit.
+        self.memory.descriptors[name]['registered_in'] = 'gen002'
+        self.memory.descriptors['bank_agent_merge'] = {'kind': 'merge', 'code_sha256': 'other'}
+        with patch('proofreader_evolve.harness.train_experiments.fit_classifier') as fit:
+            self.session.train_classifier()
+        fit.assert_not_called()
+        self.assertEqual(self.session.evaluations_used, 0)
+
+    def test_wall_budget_stops_grid_without_losing_candidate_or_charging_skipped_fits(self):
+        self.session.classifier_search_seconds = 1e-6  # one real candidate exhausts the soft wall budget
+        proposal(self.session, grid={'scale': [1, 2]})
+        response = self.session.train_classifier()
+        self.assertEqual(response['status'], 'trained')
+        self.assertEqual(len(response['candidates']), 1)
+        self.assertEqual(response['stopped_early']['reason'], 'classifier_wall_budget')
+        self.assertEqual(response['stopped_early']['skipped_configurations'], 1)
+        self.assertEqual(self.session.evaluations_used, 1)
+        self.assertGreater(response['classifier_seconds_used'], 0.)
+        self.assertEqual(response['classifier_seconds_remaining'], 0.)
+        proposal(self.session, parameters={'scale': 2})
+        with patch('proofreader_evolve.harness.train_experiments.fit_classifier') as fit:
+            blocked = self.session.train_classifier()
+            self.assertEqual(blocked['stopped_early']['reason'], 'classifier_wall_budget')
+            self.session.restore('gen001/attempt001')
+            self.assertEqual(self.session.train_classifier()['status'], 'trained')
+        fit.assert_not_called()
+        self.assertEqual(self.session.evaluations_used, 1)
+
+    def test_failed_fit_time_counts_against_wall_budget(self):
+        proposal(self.session)
+        with patch('proofreader_evolve.harness.train_experiments.fit_classifier',
+                   side_effect=ClassifierTrainingError('failed')):
+            self.session.train_classifier()
+        self.assertGreater(self.session.classifier_seconds_used, 0.)
+
     def test_invalid_requests_and_failed_fits(self):
         proposal(self.session, program='def fit(): pass')
         with self.assertRaisesRegex(ValueError, 'must define'):

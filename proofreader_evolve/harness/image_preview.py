@@ -1,8 +1,30 @@
 """Scientific image/fragment overlays and diagnostic registration measurements."""
+import base64
 from pathlib import Path
 import textwrap
 
 import numpy as np
+
+
+def inline_images(paths, limit=None):
+    """Base64 PNG blocks for `paths`, in order, while their payload stays within `limit`.
+
+    Claude Code returns a tool result to the SDK as one stream line holding the result
+    twice, bounded by reviser_session.MESSAGE_BUFFER_BYTES; files past the limit stay on
+    disk. Returns the blocks and the names of the files left out (every later file too,
+    so the inlined images match the leading preview records).
+    """
+    from .reviser_session import TOOL_IMAGE_BYTES
+    limit = TOOL_IMAGE_BYTES if limit is None else limit
+    blocks, omitted, total = [], [], 0
+    for path in paths:
+        data = base64.b64encode(Path(path).read_bytes()).decode('ascii')
+        if omitted or total + len(data) > limit:
+            omitted.append(Path(path).name)
+            continue
+        total += len(data)
+        blocks.append({'type': 'image', 'mimeType': 'image/png', 'data': data})
+    return blocks, omitted
 
 
 def fragment_patch_geometry(table, row, spec, metadata, occurrence=0):

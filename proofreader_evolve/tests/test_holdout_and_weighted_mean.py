@@ -214,10 +214,15 @@ class DriverFlagTests(unittest.TestCase):
         from proofreader_evolve.cli import run_precision_evolution as driver
         args = driver.parse_args([])
         self.assertEqual(args.aggregation, "positive-weighted")
+        self.assertEqual(args.classifier_search_seconds, 3600.)
         self.assertIsNone(args.selection_holdout_brains)
         args = driver.parse_args(["--aggregation", "equal-brain", "--selection-holdout-brains", "747807,754610"])
         self.assertEqual(args.aggregation, "equal-brain")
         self.assertEqual(args.selection_holdout_brains, ["747807", "754610"])
+        self.assertEqual(driver.parse_args(['--aggregation', 'positive-weighted']).aggregation, 'positive-weighted')
+        for value in ('0', '-1', 'nan', 'inf'):
+            with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                driver.parse_args(['--classifier-search-seconds', value])
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             driver.parse_args(["--aggregation", "median"])
 
