@@ -23,6 +23,62 @@ def report(n_features=100):
 
 
 class FeedbackTests(unittest.TestCase):
+    def test_selection_comparison_exposes_transfer_loss_without_changing_objective(self):
+        parent = {'objective': 'auroc', 'aggregation': 'positive-weighted',
+                  'per_kind_objective': {'merge': .8}, 'holdout_objective': .9, 'holdout_precision': .3,
+                  'cells': {'a/merge': {'auroc': .78, 'precision': .2, 'positives': 90, 'in_mean': True},
+                            'b/merge': {'auroc': .9, 'precision': .3, 'positives': 10, 'in_mean': True},
+                            'c/merge': {'auroc': .7, 'precision': .1, 'positives': 5, 'in_mean': False}},
+                  'holdout_cells': ['b/merge']}
+        candidate = deepcopy(parent)
+        candidate['per_kind_objective']['merge'] = .81
+        candidate['holdout_objective'] = .89
+        candidate['holdout_precision'] = .25
+        candidate['cells']['b/merge']['auroc'] = .89
+        comparison = feedback.selection_comparison(parent, candidate, 'merge')
+        self.assertAlmostEqual(comparison['overall']['delta'], .01)
+        self.assertAlmostEqual(comparison['holdout']['delta'], -.01)
+        self.assertAlmostEqual(comparison['holdout_precision']['delta'], -.05)
+        self.assertTrue(comparison['warnings'])
+        self.assertTrue(comparison['diagnostic_only'])
+        self.assertEqual(comparison['per_brain']['a/merge']['counted_positive_fraction'], .9)
+        self.assertEqual(comparison['per_brain']['c/merge']['counted_positive_fraction'], 0.)
+        self.assertTrue(comparison['per_brain']['b/merge']['whole_brain_holdout'])
+        from proofreader_evolve.harness.train_experiments import TrainingExperiments
+        def attempt(value, diagnostic):
+            return {'report': {}, 'component': 'code',
+                    'entry': {'target_objective': value, 'target_precision': .2, 'sequence': 1,
+                              'selection_comparison': diagnostic}}
+        worse_transfer = attempt(.81, comparison)
+        self.assertIs(TrainingExperiments._best([attempt(.8, {}), worse_transfer]), worse_transfer)
+
+    def test_scalar_holdout_zero_unknown_legacy_and_kind_mapping(self):
+        parent = report(1)
+        parent.update(holdout_objective=.4, holdout_precision=.2)
+        for value in (0., None):
+            with self.subTest(value=value):
+                candidate = {**parent, 'holdout_objective': value, 'holdout_precision': .1}
+                comparison = feedback.selection_comparison(parent, candidate, 'merge')
+                self.assertEqual(comparison['holdout']['candidate'], value)
+                self.assertEqual(comparison['holdout']['delta'], -.4 if value == 0. else None)
+        legacy = {**parent, 'holdout_precision': 0.}
+        del legacy['holdout_objective']
+        self.assertEqual(feedback.selection_comparison(parent, legacy, 'merge')['holdout']['candidate'], 0.)
+        mapped = {**parent, 'holdout_objective': {'merge': .5}, 'holdout_precision': {'merge': 0.}}
+        comparison = feedback.selection_comparison(parent, mapped, 'merge')
+        self.assertAlmostEqual(comparison['holdout']['delta'], .1)
+        self.assertEqual(comparison['holdout_precision']['candidate'], 0.)
+
+    def test_missing_holdout_stays_missing_and_comparison_is_written_to_feedback(self):
+        parent = report(1)
+        comparison = feedback.selection_comparison(parent, parent, 'merge')
+        self.assertIsNone(comparison['holdout']['delta'])
+        self.assertEqual(comparison['warnings'], [])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'feedback.json'
+            feedback.write_train_feedback(path, parent, [], {}, comparison=comparison)
+            self.assertEqual(json.loads(path.read_text())['selection_comparison'], comparison)
+
     def test_compact_feedback_preserves_columns_alignment_and_full_reports(self):
         parent = report()
         original = deepcopy(parent)

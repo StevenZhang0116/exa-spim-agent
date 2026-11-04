@@ -200,6 +200,30 @@ class ProbeInputTests(unittest.TestCase):
 class ProbeSessionTests(unittest.TestCase):
     setUp = fixtures.SessionDescriptorTests.setUp
 
+    def test_static_check_and_plan_reject_bad_contracts_before_graph_io(self):
+        self.session.descriptor_path.write_text(fixtures.GEOMETRY_DESCRIPTOR)
+        runs = self.memory.descriptor_runs
+        with patch.object(runs, 'plan') as plan, patch.object(runs, 'probe') as probe:
+            checked = self.session.check_descriptor()
+            self.assertEqual(checked['status'], 'ready')
+            column = checked['columns'][0]
+            self.memory.descriptors[column] = {'code_sha256': 'different'}
+            checked = self.session.check_descriptor()
+            self.assertEqual(checked['status'], 'name_conflict')
+            self.assertEqual(checked['registration_conflicts'], [column])
+            with self.assertRaisesRegex(ValueError, 'already registered'):
+                self.session.plan_descriptor_run()
+            self.session._read_descriptor(check_registry=False)  # Draft probes remain allowed.
+            for signature in ('def describe():', 'def describe(context, missing):',
+                              'def describe(context, *, required):'):
+                self.session.descriptor_path.write_text(fixtures.GEOMETRY_DESCRIPTOR.replace('def describe(context):', signature))
+                with self.assertRaisesRegex(ValueError, 'one positional context'):
+                    self.session.check_descriptor()
+            plan.assert_not_called()
+            probe.assert_not_called()
+        self.assertEqual(self.session.evaluations_used, 0)
+        self.assertEqual(self.session.descriptor_seconds_used, 0.)
+
     def test_inspection_and_probe_share_configured_allowance_without_limiting_numeric_rows(self):
         self.assertEqual(self.session.image_preview_budget, 32)
         self.session.image_preview_budget = 2
@@ -392,6 +416,10 @@ class ProbeSessionTests(unittest.TestCase):
         self.session.evaluations_used = 2
         self.memory.descriptor_runs.allowed_scopes = ('all_candidates',)
         server = self.session.mcp_server()['instance']
+        checked = asyncio.run(server.request_handlers[types.CallToolRequest](types.CallToolRequest(
+            method='tools/call', params=types.CallToolRequestParams(name='check_descriptor', arguments={}))))
+        self.assertEqual(json.loads(checked.root.content[0].text)['status'], 'ready')
+        self.assertEqual(self.session.evaluations_used, 2)
 
         async def invoke():
             listed = await server.request_handlers[types.ListToolsRequest](types.ListToolsRequest(method='tools/list'))

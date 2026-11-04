@@ -6,7 +6,7 @@ import time
 import numpy as np
 
 from .descriptor_inputs import input_summary
-from .local_context import candidate_ref, resolve_train_candidate
+from .local_context import candidate_ref, resolve_train_candidate, resident_first
 
 
 def diagnostics(runs, table, columns, rows, values, *, labels=False):
@@ -69,7 +69,8 @@ def probe(session, candidate_refs=None, sample_per_brain=128, seed=0, previews=F
     images, started = [], time.monotonic()
     active_brain = None
     try:
-        for brain, rows in sorted(selected.items()):
+        for brain, table in resident_first({b: tables[b] for b in selected}):
+            rows = selected[brain]
             active_brain = brain
             table = tables[brain]
             details = []
@@ -131,7 +132,7 @@ def probe(session, candidate_refs=None, sample_per_brain=128, seed=0, previews=F
 
 def plan(session):
     """Measure every TRAIN brain and compare the whole call with its wall allowance."""
-    program, spec = session._read_descriptor(check_registry=False)
+    program, spec = session._read_descriptor()
     runs, tables = session.memory.descriptor_runs, session._descriptor_tables()
     allowance = min(600., session.descriptor_budget['per_call_seconds'], session.descriptor_seconds_remaining)
     if allowance <= 0:
@@ -141,7 +142,7 @@ def plan(session):
                 'inputs': spec['inputs'], 'image': spec.get('image'),
                 'image_tier': spec['image_tier'] if spec['inputs'] != 'geometry' else None}
     try:
-        for brain, table in sorted(tables.items()):
+        for brain, table in resident_first(tables):
             measured[brain] = runs.plan(table, program, spec, k=session._k(session.target_kind, table.truth),
                                        timeout=allowance - (time.monotonic() - started))
         scopes = next(iter(measured.values()))['estimates']

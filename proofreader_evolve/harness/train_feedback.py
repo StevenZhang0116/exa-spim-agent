@@ -5,12 +5,54 @@ import json
 from .rank_statistics import CELL_KEYS as DIAGNOSTIC_METRICS
 
 
-FEEDBACK_VERSION = "stratified-train-v7-rank-objective"
+FEEDBACK_VERSION = "stratified-train-v8-selection-comparison"
 MAX_FEEDBACK_BYTES = 128_000  # 48 KB -> 96 KB (2026-10-05) -> 128 KB (2026-10-07, with the SDK file-read cap raised);
 # in run precision_20261007_112554 six of ten generations were pruned to one or two examples per group at 96 KB.
 METRICS = ("precision", "tp", "fp", "requested_k", "effective_k", "pool_size", "n_labeled", "n_unlabeled",
            "positives", "recall", "in_mean")
 SELECTION_METRICS = ("protocol", "fold_budgets", "fold_tp", "fold_held_rows")
+
+
+def selection_comparison(parent, candidate, kind):
+    """TRAIN-only transfer diagnostics; never change candidate selection or promotion."""
+    objective = candidate.get('objective') or 'precision_at_k'
+    metric = 'precision' if objective == 'precision_at_k' else objective
+
+    def pair(before, after):
+        return {'parent': before, 'candidate': after,
+                'delta': after - before if before is not None and after is not None else None}
+
+    def value(report, key, fallback=None):
+        # Overall metrics are keyed by kind; selection holdout metrics are scalars.
+        # Fall back only for an absent legacy field, preserving measured zero and unknown None.
+        metric_value = report.get(key, report.get(fallback) if fallback else None)
+        return metric_value.get(kind) if isinstance(metric_value, dict) else metric_value
+
+    overall = pair(value(parent, 'per_kind_objective', 'per_kind_precision'),
+                   value(candidate, 'per_kind_objective', 'per_kind_precision'))
+    holdout = pair(value(parent, 'holdout_objective', 'holdout_precision'),
+                   value(candidate, 'holdout_objective', 'holdout_precision'))
+    cells = {name: cell for name, cell in candidate['cells'].items() if name.endswith('/' + kind)}
+    positive_total = sum(c.get('positives', 0) for c in cells.values() if c.get('in_mean', True))
+    comparisons = {}
+    for name, cell in cells.items():
+        before = parent['cells'].get(name, {})
+        comparisons[name] = {
+            'objective': pair(before.get(metric), cell.get(metric)),
+            'precision': pair(before.get('precision'), cell.get('precision')),
+            'counted': cell.get('in_mean', True), 'positives': cell.get('positives'),
+            'counted_positive_fraction': (cell.get('positives', 0) / positive_total
+                if positive_total and cell.get('in_mean', True) else 0.),
+            'whole_brain_holdout': name in candidate.get('holdout_cells', [])}
+    warnings = []
+    if (overall['delta'] is not None and overall['delta'] > 0
+            and holdout['delta'] is not None and holdout['delta'] < 0):
+        warnings.append('Selection improves but whole-brain holdout declines; inspect the per-brain tradeoff before submitting.')
+    return {'diagnostic_only': True, 'reference': 'accepted_parent', 'objective': objective,
+            'aggregation': candidate.get('aggregation'), 'overall': overall, 'holdout': holdout,
+            'overall_precision': pair(value(parent, 'per_kind_precision'), value(candidate, 'per_kind_precision')),
+            'holdout_precision': pair(value(parent, 'holdout_precision'), value(candidate, 'holdout_precision')),
+            'per_brain': comparisons, 'warnings': warnings}
 
 
 def metrics_only(report):
@@ -50,7 +92,7 @@ def render_compact_json(value, depth=0):
 
 def write_train_feedback(path, parent_train, history, budgets, *, target_kind=None, memory=(),
                          statistics_file=None, report_role='parent', selection=None, protocol=None,
-                         branch=None):
+                         branch=None, comparison=None):
     """Bound the read size, retaining all feature names for the selected examples.
 
     Historical attempts carry metrics and diagnostic TRAIN comparisons, never repeated
@@ -113,6 +155,10 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                     "holdout_cells are listed, those selection brains were held out whole (a model that never saw "
                     "the brain scored them) and holdout_objective / holdout_precision summarize only those cells "
                     "under the same aggregation; use them to diagnose whether selection gains transfer across brains. "
+                    "selection_comparison, when present, puts candidate-minus-accepted-parent objective and precision "
+                    "changes side by side for the overall selection, whole-brain holdout and each brain. "
+                    "counted_positive_fraction shows concentration of labeled positives (the objective weight only "
+                    "under positive-weighted aggregation). Its warnings are diagnostic, not new gates. "
                     "The scorer contract is in the system prompt and rules.md."
                     + (" Examples, ranking_delta and the official selection score follow selection_protocol. "
                        "grouped_oof uses out-of-fold scores on selection brains; in_sample uses full-TRAIN scores. "
@@ -132,6 +178,7 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                 "budgets": caps,
                 "k_rule": k_rule,
                 "target_kind": target_kind,
+                **({'selection_comparison': comparison} if comparison is not None else {}),
                 f"{report_role}_train": metrics_only(parent_train),
                 **({f"{report_role}_selection": metrics_only(selection),
                     "selection_protocol": protocol} if selection is not None else {}),

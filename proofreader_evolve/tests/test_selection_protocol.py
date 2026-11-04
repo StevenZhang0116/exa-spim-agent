@@ -25,10 +25,11 @@ from proofreader_evolve.harness.classifier_training import fit_classifier
 from proofreader_evolve.harness.internal_validation import fold_assignments, grouped_folds
 from proofreader_evolve.harness.local_context import candidate_ref
 from proofreader_evolve.harness.native_pool import NativeTable, NativeTables, pool_digest
-from proofreader_evolve.harness.scorer_components import components
 from proofreader_evolve.harness.train_experiments import ExperimentMemory, TrainingExperiments
 from proofreader_evolve.harness import train_feedback as feedback
-from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
+from proofreader_evolve.tests import label_fixture
+
+setUpModule, tearDownModule = label_fixture.setUpModule, label_fixture.tearDownModule
 
 
 FORMULA = 'def score_candidates(features, ctx):\n    return features["detector_score"].to_numpy(dtype=float)\n'
@@ -180,6 +181,10 @@ class ProtocolMeasurementTests(unittest.TestCase):
                                                           include_auxiliary=False)
         self.assertEqual(report['per_kind_precision']['merge'], 1.)
         self.assertEqual(len(report['fold_fits']), 3)
+        timing = report['timings']
+        self.assertGreaterEqual(timing['total_seconds'], timing['fit_seconds'] + timing['predict_seconds'])
+        self.assertAlmostEqual(timing['fit_seconds'], sum(f['fit_seconds'] for f in report['fold_fits']))
+        self.assertAlmostEqual(timing['predict_seconds'], sum(f['predict_seconds'] for f in report['fold_fits']))
         self.assertEqual(report['fitting_brains'], ['794495', '802449'])
         self.assertEqual(reduced['fitting_brains'], ['802449'])
         folds = self.protocol.partitions['merge'][0]
@@ -242,7 +247,7 @@ class SessionSelectionTests(unittest.TestCase):
         self.assertTrue((Path(first['snapshot']) / 'selection_state.npz').is_file())
         self.assertFalse((self.memory.artifact_store / 'selection_folds').exists())
         self.proposal(GENERALIZER)
-        generalized = self.session.train_classifier()
+        self.session.train_classifier()
         second = self.session.attempts[1]['entry']
         self.assertEqual(second['target_precision'], 1.)
         self.assertEqual(second['selection_gate']['metric'], 'grouped_cv_precision')
@@ -253,7 +258,7 @@ class SessionSelectionTests(unittest.TestCase):
         submitted, _ = self.session.submitted()
         self.assertEqual(list(submitted['selection_report']['cells']), ['802449/merge'])
         candidate_feedback = json.loads((Path(second['snapshot']) / 'feedback.json').read_text())
-        self.assertEqual(candidate_feedback['format'], 'stratified-train-v7-rank-objective')
+        self.assertEqual(candidate_feedback['format'], feedback.FEEDBACK_VERSION)
         self.assertEqual(list(candidate_feedback['examples']), ['802449/merge'])
         self.assertEqual(candidate_feedback['selection_protocol']['mode'], 'grouped_oof')
         self.assertIn('candidate_selection', candidate_feedback)
@@ -304,7 +309,7 @@ class FeedbackAndBootstrapTests(unittest.TestCase):
             feedback.write_train_feedback(path, train, [], {'merge': 4}, target_kind='merge',
                                           selection=selection, protocol={'mode': 'grouped_oof'})
             data = json.loads(path.read_text())
-        self.assertEqual(data['format'], 'stratified-train-v7-rank-objective')
+        self.assertEqual(data['format'], feedback.FEEDBACK_VERSION)
         self.assertEqual(list(data['examples']), ['2/merge'])
         self.assertEqual(data['parent_selection']['cells']['2/merge']['fold_budgets'], [2, 2])
         self.assertEqual(data['parent_train']['cells']['1/merge']['precision'], .5)

@@ -22,8 +22,11 @@ from proofreader_evolve.harness.train_experiments import TrainingExperiments, Ex
 from proofreader_evolve.harness.search_proposals import formula_info, parameterize, parameter_candidates, read_proposal
 from proofreader_evolve.harness.candidate_pool import CandidatePool
 from proofreader_evolve.harness.training_diagnostics import describe, feature_statistics, selection_examples
+from proofreader_evolve.harness.train_feedback import FEEDBACK_VERSION
 from proofreader_evolve.tests.test_fixed_pool_scoring import fixture, BASELINE, IMPROVED
-from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
+from proofreader_evolve.tests import label_fixture
+
+setUpModule, tearDownModule = label_fixture.setUpModule, label_fixture.tearDownModule
 
 
 PARAMETERIZED = ("PARAMS = {'weight': 0.0}\n"
@@ -449,7 +452,7 @@ class SearchDriverTests(unittest.TestCase):
                     self.assertEqual(feedback['search_branch']['experiment'], 'gen001/attempt001')
                     self.assertFalse(feedback['search_branch']['same_as_accepted'])
                     self.assertEqual(feedback['search_branch']['selection']['per_kind_precision']['split'], 1)
-                    self.assertEqual(feedback['format'], 'stratified-train-v7-rank-objective')
+                    self.assertEqual(feedback['format'], FEEDBACK_VERSION)
                     self.assertEqual(json.loads((run_dir / 'manifest.json').read_text())['feedback_format'],
                                      feedback['format'])
                     self.assertEqual(feedback['parent_selection']['per_kind_precision']['split'], 0)

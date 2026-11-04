@@ -28,6 +28,13 @@ checks reduce risk; arbitrary host/worker allocation spikes can still exceed mem
    `feature_names` and optional `image` or `image_tier`, plus `describe(context) -> dict`. `inputs` is `geometry`,
    `image` or `both`; `kind` must be this generation's kind; at most 32 names
    matching `[a-z][a-z0-9_]{1,48}`.
+   Call `check_descriptor({})` before loading any graph: it checks syntax, the
+   `describe(context)` signature, declaration and registered-name conflicts without
+   running the program or charging a budget. Use names prefixed by kind and mechanism,
+   e.g. `split_path_dark_fraction`, and new names when changing registered code.
+   `ready` means the static contract passes, not that imports or numerical code work.
+   `plan_descriptor_run` and production computation reject conflicts before graph IO;
+   probes still allow conflicting draft names for exploratory comparisons.
 2. Probe the current code with `probe_descriptor({"candidate_refs": ["ctx:..."], "previews": true})`
    for up to 16 explicit TRAIN cases, or `probe_descriptor({"sample_per_brain": 128, "seed": 0})`
    for a reproducible uniform sample from each TRAIN brain's complete candidate pool. Sampling
@@ -46,9 +53,13 @@ checks reduce risk; arbitrary host/worker allocation spikes can still exceed mem
    the projection overview explicitly. Check apparent connections using full 3D pixels.
    Drafts may reuse registered names during probing; production registration still
    rejects name conflicts. Probes neither register features nor spend scoring units.
-   Compare explicit cases across TRAIN TP/FN/FP/TN feedback groups and brains, then
-   expand promising numerical probes from 128 to 512 or 1024 rows per brain if wall
-   time permits (maximum 2048). Keep cases or the same sample size and seed fixed for
+   For a new image hypothesis, inspect 2-4 matched cases across at least two TRAIN
+   brains when available, including positive and negative controls. Request native
+   slice previews of the exact inputs and check the hypothesis numerically in 3D.
+   If previews are disabled/unavailable, record that limitation and use numerical
+   controls. Then probe uniformly across TRAIN brains (default 128 per brain).
+   Expand to 512 or 1024 only to resolve a stated uncertainty within wall time
+   (maximum 2048). Keep cases or the same sample size and seed fixed for
    code comparisons; larger samples need not contain earlier samples. Previews are
    optional and the allowance need not be exhausted. See image_context_guide.md for
    the comparison strategy; probes do not replace OOF evaluation or paired ablations.
@@ -64,6 +75,10 @@ checks reduce risk; arbitrary host/worker allocation spikes can still exceed mem
    largest single brain exceeds the per-call budget (each brain has that budget at
    submission, with the scope you computed with). Both tools charge elapsed descriptor wall time,
    including failed executions. These steps are guidance, not a mandatory gate.
+   Calls process an already resident TRAIN fragment graph first when possible;
+   the host still retains only one graph, without a saved context/image cache.
+   This saves a boundary reload, not all six graph loads. Graph identities are
+   still verified on access, and every requested brain/row is processed.
 3. `compute_descriptors({"scope": "judgeable"})` (the default) covers the rows the outer
    measurement can score: the GT-labeled rows used for supervised fitting and metric ranking.
    TRAIN, selection and validation use this rule, so every ranked row is selected for
@@ -103,6 +118,10 @@ checks reduce risk; arbitrary host/worker allocation spikes can still exceed mem
 
 ## Rules
 
+- Context geometry and image fields can be NumPy arrays. Check `value is None`,
+  `len(value)` or `value.size` explicitly; `if value` and `value or []` fail for
+  multi-element arrays. Static checks do not execute numerical code: use a small
+  probe to verify these paths before production computation.
 - For image inputs, keep `image_tier: 'level1'` / `'level0'`, or replace that field with
   `image: {'level': 0, 'radius_um': 40}`. Radius must be 4..128 um (a patch spans at most a
   256 um cube at any level) and level an integer 0..6 available in the source pyramid. Reading a

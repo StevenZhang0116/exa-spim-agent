@@ -13,7 +13,7 @@ signal, not an unbiased estimate of generalization.
 """
 
 import json
-import math
+import time
 from pathlib import Path
 
 import numpy as np
@@ -241,6 +241,8 @@ class SelectionProtocol:
         Fold models stay under ``directory`` and never enter the resumable artifact
         store. Only out-of-fold scores of selection rows are returned.
         """
+        started = time.monotonic()
+        fit_seconds, predict_seconds = 0., 0.
         if self.mode != 'grouped_oof':
             raise ValueError('Fold fits are only defined for the grouped_oof protocol')
         partitions, description = self.partitions[kind]
@@ -259,25 +261,34 @@ class SelectionProtocol:
                     fit_rows[brain] = np.zeros(0, dtype=int)
             fold_dir = directory / f'fold{fold}'
             store = fold_dir / 'models'
+            fit_started = time.monotonic()
             component, summary = fit_classifier(self.train, kind, config, fold_dir, program=program,
                                                 artifact_store=store, timeout=fit_timeout, memory_mb=memory_mb,
                                                 threads=threads, feature_frames=frames, fit_rows=fit_rows,
                                                 random_seed=fold)
+            fold_fit_seconds = time.monotonic() - fit_started
+            fit_seconds += fold_fit_seconds
             model = frozen_model(component)
+            predict_started = time.monotonic()
             for brain in self.selection_brains:
                 rows = np.asarray(held[brain], dtype=int)
                 if len(rows):
                     scores[f'{brain}/{kind}'][rows] = predict_model(
                         model, store, subset_features(frames[brain], rows), kind,
                         timeout=score_timeout, memory_mb=memory_mb)
+            fold_predict_seconds = time.monotonic() - predict_started
+            predict_seconds += fold_predict_seconds
             folds.append({'fold': fold, 'training_rows': summary['training_rows'],
                           'class_counts': summary.get('class_counts'), 'wall_seconds': summary.get('wall_seconds'),
+                          'fit_seconds': fold_fit_seconds, 'predict_seconds': fold_predict_seconds,
                           'held_rows': {brain: int(len(held[brain])) for brain in self.selection_brains}})
         for cell, values in scores.items():
             if not np.isfinite(values).all():
                 raise ValueError(f'Out-of-fold scores must cover every selection row of {cell} exactly once')
         report, state = self.score_report(kind, scores)
         report.update(fold_fits=folds, include_auxiliary=include_auxiliary,
+                      timings={'fit_seconds': fit_seconds, 'predict_seconds': predict_seconds,
+                               'total_seconds': time.monotonic() - started},
                       partition_sha256=description['partition_sha256'],
                       fitting_brains=sorted(set(self.train) if include_auxiliary else set(self.selection_brains)))
         return report, state

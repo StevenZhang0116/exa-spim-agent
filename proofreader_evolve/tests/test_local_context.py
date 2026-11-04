@@ -19,7 +19,7 @@ from proofreader_evolve.harness.classifier_train_worker import extract
 from proofreader_evolve.harness.classifier_training import fit_classifier
 from proofreader_evolve.harness.local_context import (
     FragmentStore, LocalContextProvider, attach_local_context, cache_identity,
-    candidate_ref, neighborhood, resolve_train_candidate,
+    candidate_ref, neighborhood, resolve_train_candidate, resident_first,
 )
 from proofreader_evolve.harness.local_feature_contract import local_feature_spec
 from proofreader_evolve.harness.model_execution import run_worker
@@ -76,6 +76,37 @@ def manifest(program):
 
 
 class GeometryTests(unittest.TestCase):
+    def test_resident_first_reuses_one_graph_and_preserves_identity_checks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            store = FragmentStore(root)
+            tables = {}
+            for brain in ('a', 'b'):
+                path = root / brain
+                path.write_bytes(brain.encode())
+                provenance = {'brain': brain, 'mcl': 100, 'source_cache': cache_identity(path)}
+                tables[brain] = SimpleNamespace(meta={'provenance': provenance},
+                                               local_context=SimpleNamespace(store=store))
+            def load(path, **kwargs):
+                return graph_fixture(), None, {'img_path': Path(path).name}
+            with patch('proofreader_evolve.harness.local_context.load_cached_graphs', side_effect=load) as loader:
+                store.graph(tables['b'].meta['provenance'])
+                first = resident_first(tables)
+                self.assertEqual([b for b, _ in first], ['b', 'a'])
+                for _, table in first:
+                    graph, _ = store.graph(table.meta['provenance'])
+                    np.testing.assert_array_equal(graph.node_xyz, graph_fixture().node_xyz)
+                self.assertEqual(loader.call_count, 2)  # Warm b was not loaded twice.
+                self.assertEqual([b for b, _ in resident_first(tables)], ['a', 'b'])
+                self.assertEqual(store.image_metadata['img_path'], 'a')
+                from proofreader_evolve.harness.descriptor_runs import DescriptorRuns
+                store.load_seconds = 123.
+                runs = DescriptorRuns(None, root / 'bank', workers=1)
+                self.assertEqual(runs.graph_load_seconds(tables['a']), 123.)
+                (root / 'a').write_bytes(b'changed')
+                with self.assertRaisesRegex(ValueError, 'changed'):
+                    store.graph(tables['a'].meta['provenance'])
+
     def test_relative_coordinates_and_whitelisted_fields(self):
         graph = graph_fixture()
         data, center = neighborhood(graph, cKDTree(graph.node_xyz), [2, 3], 50, 128)

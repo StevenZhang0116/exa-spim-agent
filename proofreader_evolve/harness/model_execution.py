@@ -27,6 +27,12 @@ def exit_detail(returncode, request, tail):
 
 
 def run_worker(root, request, *, log_path=None):
+    request = dict(request)
+    try:
+        cpus = len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        cpus = os.cpu_count() or 1
+    request['threads'] = min(max(1, int(request.get('threads', 1))), max(1, cpus))
     root = Path(root).resolve()
     scratch = root / 'scratch'
     scratch.mkdir()

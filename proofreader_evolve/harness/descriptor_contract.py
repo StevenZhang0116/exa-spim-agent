@@ -32,6 +32,12 @@ def descriptor_spec(source):
     functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'describe']
     if len(assignments) != 1 or len(functions) != 1:
         raise ValueError('descriptor.py must define one literal DESCRIPTOR dict and one describe(context) function')
+    compile(tree, 'descriptor.py', 'exec')  # Syntax check only; no imports or graph reads.
+    args = functions[0].args
+    positional = [*args.posonlyargs, *args.args]
+    if ((not positional and args.vararg is None) or len(positional) - len(args.defaults) > 1
+            or any(default is None for default in args.kw_defaults)):
+        raise ValueError('describe must accept one positional context and no other required arguments')
     try:
         value = ast.literal_eval(assignments[0].value)
     except (ValueError, SyntaxError) as exc:

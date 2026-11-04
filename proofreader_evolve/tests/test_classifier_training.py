@@ -25,7 +25,9 @@ from proofreader_evolve.harness.isolated_scoring import score
 from proofreader_evolve.harness.scorer_components import components
 from proofreader_evolve.harness.train_experiments import ExperimentMemory, TrainingExperiments
 from proofreader_evolve.tests.test_fixed_pool_scoring import fixture, BASELINE
-from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
+from proofreader_evolve.tests import label_fixture
+
+setUpModule, tearDownModule = label_fixture.setUpModule, label_fixture.tearDownModule
 
 # A custom learner with its own persistence format, not a framework-selected classifier.
 PROGRAM = '''import numpy as np
@@ -52,6 +54,30 @@ def proposal(session, *, parameters=None, grid=None, program=PROGRAM):
 
 
 class ProgramContractTests(unittest.TestCase):
+    def test_optional_thread_budget_reaches_fit_and_prediction_and_is_capped(self):
+        program = '''import numpy as np
+import os
+def fit(X_train, y_train, artifact_dir, params, *, threads=1):
+    assert os.environ['OMP_NUM_THREADS'] == str(threads)
+    np.save(artifact_dir / 'threads.npy', np.array([threads]))
+def predict(X, artifact_dir, params, *, threads=1):
+    assert os.environ['OMP_NUM_THREADS'] == str(threads)
+    return np.full(len(X), threads, dtype=float)
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with patch('proofreader_evolve.harness.model_execution.os.sched_getaffinity', return_value={0, 1}):
+                source, summary = fit_classifier({'1': fixture()}, 'split', {'parameters': {}}, root / 'fit',
+                    program=program, artifact_store=root / 'store', threads=8)
+            model = frozen_model(source)
+            self.assertEqual(model['threads'], 2)
+            self.assertEqual(summary['threads'], 2)
+            seen = np.load(verify_artifacts(model, root / 'store') / 'threads.npy')
+            np.testing.assert_array_equal(seen, [2])
+            with patch('proofreader_evolve.harness.model_execution.os.sched_getaffinity', return_value={0}):
+                scores = score(source, fixture().tables['split'].features, 'split', artifact_store=root / 'store')
+            np.testing.assert_array_equal(scores, np.ones(len(scores)))
+
     def test_legacy_numpy_exports_still_validate_and_predict(self):
         from proofreader_evolve.harness import legacy_classifier as legacy
         # Historical exports embed this exact template, including comments.
@@ -232,10 +258,18 @@ class ClassifierToolTests(unittest.TestCase):
         proposal(self.session, grid={'scale': [1, 2]})
         response = self.session.train_classifier()
         self.assertEqual(response['status'], 'trained')
+        row = response['candidates'][0]
+        self.assertIn('selection_comparison', row)
+        for key in ('full_fit_seconds', 'preflight_seconds', 'train_scoring_seconds', 'evaluation_seconds'):
+            self.assertGreaterEqual(row['timings'][key], 0.)
+        self.assertFalse(row['timings']['fit_reused'])
+        ledger = [json.loads(line) for line in self.memory.path.read_text().splitlines()]
+        self.assertEqual(ledger[0]['timings'], row['timings'])
         self.assertEqual(self.session.evaluations_used, 2)
         self.assertEqual(self.session.submitted()[0]['report']['per_kind_precision']['split'], 1)
         with patch('proofreader_evolve.harness.train_experiments.fit_classifier') as fit:
-            self.session.train_classifier()
+            reused = self.session.train_classifier()
+            self.assertTrue(reused['candidates'][0]['timings_reused'])
             self.session.training_path.write_text('invalid pending edit')
             self.session.restore('gen001/attempt001')
         fit.assert_not_called()

@@ -32,7 +32,12 @@ endpoint tangent consistency across path lengths distinguishes otherwise similar
 split candidates. This is an example hypothesis, not an established result.
 Expose new geometry measurements using `LOCAL_CONTEXT` and
 `extract_local_features`; see `local_context_guide.md`.
-For new image information, write `analysis.py` and `analysis_request.json` and
+For a new image hypothesis, inspect 2-4 matched cases across at least two TRAIN brains
+when available, with positive and negative controls and native slices. Follow with
+numerical 3D checks; if previews are unavailable, record that limitation. When descriptor
+tools are enabled, use `check_descriptor({})` before the exact-input probe, then sample
+uniformly across TRAIN brains. Expand samples only to resolve a specific uncertainty.
+For a separate local investigation, write `analysis.py` and `analysis_request.json` and
 call `run_volume_analysis({})`. Analyze up to 16 TRAIN 3D patches per call (compare
 groups, e.g. missed positives vs selected label-0 rows),
 using aligned fragment nodes and original pixels; see `volume_analysis_guide.md`.
@@ -77,6 +82,14 @@ treated as absent. Legacy proposals without `research` still
 work but receive text-derived IDs with weaker cross-variant grouping.
 
 ## Measure incremental value
+
+Start feature comparisons with one fixed seed and a compact model. Reserve two
+evaluation units for a paired ablation before optional tuning/ensembles. A controlled
+same-parameter with/without comparison already measured need not be repeated.
+Read `selection_comparison` in candidate tool results before submission: an overall
+gain can coexist with a whole-brain holdout loss or be dominated by one brain. Inspect
+the per-brain changes and `timings`, and explain the tradeoff in the handoff. These
+diagnostics introduce no new selection objective or promotion gate.
 
 Call `evaluate_feature_ablation({})` with a single fixed parameter configuration
 and an empty grid. `research.feature_columns` names input columns visible to

@@ -1,6 +1,7 @@
 """Fit, predict, extract features, analyze 3D volumes or run agent descriptors after OS isolation."""
 import copy
 import importlib.util
+import inspect
 import json
 import math
 from pathlib import Path
@@ -235,10 +236,11 @@ def main():
             if y.shape != (len(x),) or not np.isin(y, [0, 1]).all():
                 raise ValueError('Invalid TRAIN label alignment')
             extra = {'images': images} if images is not None else {}
+            if 'threads' in inspect.signature(module.fit).parameters:
+                extra['threads'] = request['threads']
             # Optional, label-free source-brain codes: passed only to programs that
             # declare a `groups` parameter, so existing fit signatures keep working.
             if 'group_names' in request and (root / 'groups.npy').exists():
-                import inspect
                 parameters = inspect.signature(module.fit).parameters
                 if 'groups' in parameters or any(p.kind == p.VAR_KEYWORD for p in parameters.values()):
                     codes = np.load(root / 'groups.npy', allow_pickle=False)
@@ -253,10 +255,13 @@ def main():
                                                     columns=request['columns'])
             module.fit(x, y, artifacts, copy.deepcopy(params), **extra)
         else:
+            extra = {'images': images} if images is not None else {}
+            if 'threads' in inspect.signature(module.predict).parameters:
+                extra['threads'] = request['threads']
             values = []
             for _ in range(2):
                 prediction = np.asarray(module.predict(x.copy(deep=True), artifacts,
-                    copy.deepcopy(params), **({'images': images} if images is not None else {})), dtype=float).copy()
+                    copy.deepcopy(params), **extra), dtype=float).copy()
                 if prediction.shape != (len(x),) or not np.isfinite(prediction).all():
                     raise ValueError('predict must return one finite score per row in original order')
                 values.append(prediction)
@@ -264,7 +269,7 @@ def main():
                 raise ValueError('predict must be deterministic with frozen artifacts')
             np.save(output, values[0], allow_pickle=False)
             output.flush()
-        result = {'status': 'ok', 'wall_seconds': time.monotonic() - started,
+        result = {'status': 'ok', 'wall_seconds': time.monotonic() - started, 'threads': request['threads'],
                   'versions': {name: str(getattr(mod, '__version__', 'unknown'))[:100]
                                for name, mod in list(sys.modules.items())
                                if name in ('numpy', 'pandas', 'sklearn', 'torch', 'xgboost', 'lightgbm', 'scipy')}}

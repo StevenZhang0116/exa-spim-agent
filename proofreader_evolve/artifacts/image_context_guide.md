@@ -70,7 +70,10 @@ declare scoring inputs and measure the resulting policy as described below.
 
 ## Compare groups, then expand only useful investigations
 
-Start with a few matched TRAIN cases of the current kind. Use the official selection
+For each new image hypothesis, first inspect 2-4 matched TRAIN cases of the current
+kind across at least two brains when available, using native slices and numerical
+3D controls. If previews are disabled or fail, record the limitation and continue
+with numerical controls. Use the official selection
 feedback groups to compare selected positives (TP), missed positives (FN), selected
 negatives (FP), and unselected negatives (TN), where available. The corresponding
 feedback groups are `selected_positive`, `missed_positive`, `selected_label0`, and
@@ -83,8 +86,8 @@ striking errors. A group absent from the feedback is not evidence that it does n
 exist. No validation cases belong in this exploration.
 
 Once a numerical descriptor expresses the hypothesis, start with the default uniform
-probe of 128 candidates per TRAIN brain. If it shows usable variation and appropriate
-input support, expand to 512, then 1024 when remaining descriptor wall time permits
+probe of 128 candidates per TRAIN brain. Expand to 512, then 1024 only when the first
+probe leaves a specific uncertainty to resolve and remaining descriptor wall time permits
 (the existing maximum is 2048 per brain). Keep explicit cases or the same sample size
 and seed fixed when comparing code revisions; a larger sample is not guaranteed to
 contain the smaller one. Uniform probes sample the complete candidate pool without

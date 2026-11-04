@@ -79,6 +79,33 @@ the worker calls predict twice and checks exact equality. Set and record seeds
 in your program/parameters when fitting uses randomness. The framework does not
 force a particular seed or training algorithm.
 
+For feature exploration, start with one fixed seed and a compact model. First compare
+with/without the proposed feature at identical parameters and folds; reserve two
+evaluation units for `evaluate_feature_ablation` before optional tuning. An equivalent
+controlled comparison already measured need not be repeated. Try multi-seed ensembles
+only after establishing the feature increment, and assess their extra scoring cost.
+This is a research default, not a restriction on model families or a new admission gate.
+
+Both functions may explicitly declare the optional keyword `threads`, for example
+`def predict(X, artifact_dir, params, *, threads=1):`. The host supplies the worker's
+CPU-affinity-capped budget, also used for BLAS/OpenMP environment limits. Existing
+signatures remain valid. Use this value for library-specific controls, for example
+`LGBMClassifier(n_jobs=threads, ...)` and `booster.predict(M, num_threads=threads)`;
+do not hardcode 1 or use unbounded `n_jobs=-1`. The host does not rewrite arbitrary
+model code, so explicit library settings can override its environment defaults.
+Frozen models record the fitted worker's thread budget; prediction caps it again
+against the current allocation. Deterministic prediction is still checked twice.
+
+Candidate rows expose `selection_comparison`: overall, whole-brain holdout and per-brain
+changes against the accepted parent, with positive-count fractions to reveal dominance
+by one brain. These are diagnostics; the configured objective still selects candidates.
+`timings` records current-call feature preparation, full fit, OOF fit/predict/total,
+preflight, TRAIN scoring and diagnostics in seconds, including transport/startup.
+`evaluation_seconds` includes preflight/scoring/selection/diagnostics, and OOF
+`total_seconds` includes its fit/predict subtotals; do not sum nested totals twice.
+Reused fits have `fit_reused=true`; a reused complete attempt has `timings_reused=true`
+and retains its original timing record. No validation timing or cases enter this feedback.
+
 Do not rely on module globals surviving a fit: inference starts in a fresh
 process. Top-level code must work without TRAIN labels. `predict` must only load
 and apply fitted state; the outer evaluator never calls `fit` on validation.

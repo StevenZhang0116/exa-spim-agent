@@ -5,6 +5,7 @@ and persistent node/segment IDs are never sent to an agent-authored extractor.
 """
 import hashlib
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -52,7 +53,13 @@ class FragmentStore:
         self.trace = trace
         self._identity, self._graph, self._tree = None, None, None
         self.image_metadata = None
+        self.load_seconds = 0.
         self._lock = threading.RLock()
+
+    def is_loaded(self, provenance):
+        """Cheap scheduling hint only; graph() still checks source integrity before use."""
+        with self._lock:
+            return self._graph is not None and self._identity == provenance.get('source_cache')
 
     def graph(self, provenance):
         with self._lock:
@@ -63,6 +70,7 @@ class FragmentStore:
         if cache_identity(identity['path']) != identity:
             raise ValueError('Fragment cache changed since native feature preparation')
         if identity != self._identity:
+            started = time.monotonic()
             # Release the previous graph before loading another large brain.
             self._identity, self._graph, self._tree = None, None, None
             try:
@@ -79,9 +87,10 @@ class FragmentStore:
             if tree is None:
                 tree = cKDTree(graph.node_xyz)
             self._identity, self._graph, self._tree = dict(identity), graph, tree
+            self.load_seconds = time.monotonic() - started
             if self.trace:
                 self.trace.emit('fragment_context_loaded', 'Loaded cached fragment geometry',
-                                brain=provenance['brain'], nodes=len(graph.node_xyz))
+                                brain=provenance['brain'], nodes=len(graph.node_xyz), seconds=self.load_seconds)
         return self._graph, self._tree
 
 
@@ -174,3 +183,14 @@ def attach_local_context(banks, directory, trace=None):
         for table in bank.tables.values():
             table.local_context = LocalContextProvider(store, table)
     return store
+
+
+def resident_first(tables):
+    """Reuse the one resident graph across tool calls, without retaining more brains."""
+    def key(item):
+        brain, table = item
+        provider = getattr(table, 'local_context', None)
+        store = getattr(provider, 'store', None)
+        loaded = isinstance(store, FragmentStore) and store.is_loaded(table.meta['provenance'])
+        return (not loaded, brain)
+    return sorted(tables.items(), key=key)

@@ -3,8 +3,11 @@
 Tiny fixtures from test_selection_protocol; no brain caches, no API calls.
 """
 import io
+import json
+from pathlib import Path
+import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 
 import numpy as np
 
@@ -12,7 +15,7 @@ from proofreader_evolve.harness import fixed_pool_scoring as scoring, kind_sched
 from proofreader_evolve.harness.internal_validation import FOLDS, fold_assignments, grouped_folds
 from proofreader_evolve.harness.selection_protocol import SelectionProtocol
 from proofreader_evolve.harness.train_feedback import metrics_only
-from proofreader_evolve.tests.test_selection_protocol import brain_table
+from proofreader_evolve.tests.test_selection_protocol import brain_table, FORMULA, SIGNAL_FORMULA, GENERALIZER
 
 
 def three_brains():
@@ -74,6 +77,48 @@ class HoldoutFoldTests(unittest.TestCase):
 
 
 class HoldoutProtocolTests(unittest.TestCase):
+    def test_training_tools_accept_real_protocol_scalar_holdout_metrics(self):
+        from proofreader_evolve.harness.train_experiments import ExperimentMemory, TrainingExperiments
+        train = three_brains()
+        budgets = scoring.Budgets({'merge': 4}, objective='auroc', aggregation='positive-weighted')
+        protocol = SelectionProtocol(train, budgets, selection_brains=['802449', '747807'],
+                                     holdout_brains=['747807'])
+        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()):
+            root = Path(tmp)
+            state = {}
+            parent = scoring.evaluate(FORMULA, train, budgets, state=state)
+            memory = ExperimentMemory(root, train=train, protocol=protocol)
+            gen = root / 'gen001'
+            gen.mkdir()
+            policy, rules = gen / 'scorer.py', gen / 'rules.md'
+            policy.write_text(FORMULA)
+            rules.write_text('Whole-brain holdout regression fixture')
+            session = TrainingExperiments(gen, policy, rules, 'merge', {'merge': FORMULA}, train,
+                parent, state, budgets, 120, 0, memory, max_evaluations=4, generation=1)
+            self.assertIsInstance(session.parent_selection['holdout_objective'], float)
+            proposal = {'hypothesis': 'Signal transfers across brains', 'strategy': 'Compare TRAIN folds',
+                        'family': 'signal', 'parameter_grid': {}}
+            session.proposal_path.write_text(json.dumps(proposal))
+            policy.write_text(SIGNAL_FORMULA)
+            formula = session.evaluate()
+            self.assertEqual(formula['status'], 'evaluated', formula)
+            session.training_path.write_text(GENERALIZER)
+            session.proposal_path.write_text(json.dumps({**proposal, 'classifier': {'parameters': {'scale': 1.}}}))
+            fitted = session.train_classifier()
+            self.assertEqual(fitted['status'], 'trained', fitted)
+            for candidate in (formula, fitted['candidates'][0]):
+                comparison = candidate['selection_comparison']
+                self.assertGreater(comparison['holdout']['delta'], 0.)
+                self.assertTrue(comparison['per_brain']['747807/merge']['whole_brain_holdout'])
+            entries = [json.loads(line) for line in memory.path.read_text().splitlines()]
+            self.assertEqual(len(entries), 2)
+            for entry in entries:
+                self.assertEqual(entry['status'], 'evaluated', entry)
+                comparison = entry['selection_comparison']
+                self.assertEqual(comparison['holdout']['candidate'], entry['selection']['holdout_objective'])
+                feedback = json.loads((Path(entry['snapshot']) / 'feedback.json').read_text())
+                self.assertEqual(feedback['selection_comparison'], comparison)
+
     def test_protocol_reports_holdout_cells_and_pooled_holdout_precision(self):
         train = three_brains()
         protocol = SelectionProtocol(train, {'merge': 4}, selection_brains=['802449', '747807'],

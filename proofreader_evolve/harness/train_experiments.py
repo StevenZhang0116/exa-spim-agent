@@ -30,12 +30,12 @@ from .descriptor_contract import descriptor_spec, referenced_columns, COLUMN_PRE
 from .descriptor_runs import SCOPES as DESCRIPTOR_SCOPES
 from . import descriptor_probe
 from .image_evidence import descriptor_ablation_evidence
-from .local_context import resolve_train_candidate
+from .local_context import resolve_train_candidate, resident_first
 from .local_features import augmented_features
 from .model_execution import ModelExecutionError, DEFAULT_MEMORY_MB
 from .scorer_components import compose, components
 from .search_proposals import read_proposal, formula_info, parameter_candidates
-from .train_feedback import metrics_only, write_train_feedback
+from .train_feedback import metrics_only, write_train_feedback, selection_comparison
 from .train_coverage import TrainingCoverage
 from .trajectory import Trajectory, log_metrics
 from .volume_analysis import read_analysis, execute_analysis, MAX_ANALYSES, MAX_CASES
@@ -436,13 +436,13 @@ class TrainingExperiments:
                     after.splitlines(keepends=True), fromfile='workspace_checkpoint/' + name, tofile=name)
                 (directory / (name + '.from_edit_base.diff')).write_text(''.join(difference))
 
-    def _evaluate(self, component, rules, proposal, *, charge=True, selection_scores=None):
+    def _evaluate(self, component, rules, proposal, *, charge=True, selection_scores=None, fit_timings=None):
         self._verify_model(component)
         component_hash = digest(component)
         if component_hash in self.results:
             self.trace.emit('candidate_cache_hit', 'Reusing this generation\'s measured snapshot',
                             experiment=self.results[component_hash]['entry']['experiment'])
-            return {**self.results[component_hash]['public'], 'cached': True,
+            return {**self.results[component_hash]['public'], 'cached': True, 'timings_reused': True,
                     'evaluations_used': self.evaluations_used,
                     'evaluations_remaining': self.remaining}
         cached = self.memory.cache.get((self.target_kind, component_hash))
@@ -483,6 +483,7 @@ class TrainingExperiments:
             entry['training'] = deepcopy(self.memory.fitted_sources[component_hash])
             (trial_dir / 'training_summary.json').write_text(json.dumps(entry['training'], indent=2, allow_nan=False))
         started = time.monotonic()
+        timings = dict(fit_timings or {})
         result = {'source': combined, 'component': component, 'rules': rules, 'report': None,
                   'state': None, 'entry': entry}
         self.trace.emit('train_experiment', f"{entry['experiment']}: {proposal['hypothesis'][:300]}",
@@ -504,24 +505,31 @@ class TrainingExperiments:
                     measured_state = {cell: {key: data[f'{cell}:{key}'] for key in ('scores', 'chosen')}
                                       for cell in measured['cells'] if cell.endswith('/' + self.target_kind)}
             else:
+                phase_started = time.monotonic()
                 for bank in self.train.values():
                     features = augmented_features(component, bank.tables[self.target_kind], self.timeout)
                     preflight(component, features, self.target_kind, self.timeout,
                               artifact_store=self.memory.artifact_store)
+                timings['preflight_seconds'] = time.monotonic() - phase_started
                 stage = 'train_evaluation'
+                phase_started = time.monotonic()
                 measured_state = {}
                 target_tables = {brain: SimpleNamespace(tables={self.target_kind: bank.tables[self.target_kind]})
                                  for brain, bank in self.train.items()}
                 measured = scoring.evaluate(component, target_tables, self.budgets, self.timeout,
                                             state=measured_state, artifact_store=self.memory.artifact_store, memory_mb=self.classifier_memory_mb)
+                timings['train_scoring_seconds'] = time.monotonic() - phase_started
             stage = 'selection'
+            phase_started = time.monotonic()
             if cached:
                 selection_report, selection_state = self._cached_selection(cached, component, model, measured_state)
             else:
                 selection_report, selection_state = self.memory.selection_measurement(
                     self.target_kind, component, measured_state, trial_dir, model=model, budgets=self.budgets,
                     oof_scores=selection_scores)
+            timings['selection_report_seconds'] = time.monotonic() - phase_started
             stage = 'diagnostics'
+            phase_started = time.monotonic()
             report, state = self._merge_measurement(measured, measured_state, combined)
             from .training_diagnostics import describe, selection_examples
             features_by_brain = {brain: augmented_features(component, bank.tables[self.target_kind], self.timeout)
@@ -541,6 +549,7 @@ class TrainingExperiments:
                          ranking_delta={k: v['ranking_delta'] for k, v in report['cells'].items()},
                          in_sample_precision=in_sample_precision(report, self.target_kind),
                          selection=metrics_only(selection_report),
+                         selection_comparison=selection_comparison(self.parent_selection, selection_report, self.target_kind),
                          selection_gate=self._selection_gate(selection_report),
                          selection_ranking_delta={k: v['ranking_delta'] for k, v in selection_feedback['cells'].items()},
                          scores_sha256=scores_digest(self.target_kind, ('train', measured_state),
@@ -555,7 +564,8 @@ class TrainingExperiments:
             save_selection(trial_dir, selection_report, selection_state)
             feedback_path = trial_dir / 'feedback.json'
             write_train_feedback(feedback_path, report, [], self.budgets, target_kind=self.target_kind,
-                                 report_role='candidate', selection=selection_feedback, protocol=self.protocol_info)
+                                 report_role='candidate', selection=selection_feedback, protocol=self.protocol_info,
+                                 comparison=entry['selection_comparison'])
             public = {**entry, 'feedback': json.loads(feedback_path.read_text())}
             known = self._already_validated(entry)
             if known is not None:
@@ -571,6 +581,7 @@ class TrainingExperiments:
                             f"precision={entry['target_precision']:.6f}; in-sample {entry['in_sample_precision']:.6f}",
                             selection=entry['selection'], selection_gate=entry['selection_gate'],
                             statistics=entry['selection'].get('per_kind_statistics'))
+            timings['diagnostics_seconds'] = time.monotonic() - phase_started
         except Exception as exc:
             execution_error = stage in {'preflight', 'train_evaluation'} and isinstance(
                 exc, (ScorerExecutionError, ModelExecutionError, SyntaxError, ValueError))
@@ -584,8 +595,10 @@ class TrainingExperiments:
                       'message': ('Fix the execution error and evaluate again; no metric was assigned.'
                                   if execution_error else 'Evaluation infrastructure failed; no metric was assigned.')}
         entry['wall_seconds'] = time.monotonic() - started
+        timings['evaluation_seconds'] = entry['wall_seconds']
+        entry['timings'] = timings
         entry['evaluations_used'] = self.evaluations_used
-        public.update(wall_seconds=entry['wall_seconds'], evaluations_used=self.evaluations_used,
+        public.update(wall_seconds=entry['wall_seconds'], timings=timings, evaluations_used=self.evaluations_used,
                       evaluations_remaining=self.remaining)
         result['public'] = public
         (trial_dir / 'result.json').write_text(json.dumps(entry, indent=2, allow_nan=False))
@@ -711,7 +724,7 @@ class TrainingExperiments:
                 stopped = self._grid_stop(responses[-1], len(candidates) - index - 1)
                 break
         rows = [{k: r.get(k) for k in ('experiment', 'status', 'parameters', 'target_precision', 'target_objective',
-                                       'train_gate', 'cached', 'error')} for r in responses]
+                                       'train_gate', 'selection_comparison', 'timings', 'timings_reused', 'cached', 'error')} for r in responses]
         (batch / 'results.json').write_text(json.dumps(rows, indent=2, allow_nan=False))
         successful = [self.results[digest(c)] for c in candidates
                       if digest(c) in self.results and self.results[digest(c)]['report'] is not None]
@@ -793,6 +806,7 @@ class TrainingExperiments:
         for index, config in enumerate(configurations):
             key = (self.target_kind, digest(program), config_identity(config))
             cached = self.memory.fit_cache.get(key)
+            fit_timings = {'fit_reused': cached is not None}
             charged = False
             if cached is None:
                 fit_root = self.gen_dir / 'classifier_fits'
@@ -807,24 +821,29 @@ class TrainingExperiments:
                                 config=config, fit_snapshot=str(directory))
                 oof_scores = None
                 try:
+                    phase_started = time.monotonic()
                     frames = self._classifier_frames(program)
+                    fit_timings['feature_preparation_seconds'] = time.monotonic() - phase_started
                     if self.protocol.requires_fold_fits:
                         # Fold fits come first; the official score never sees the full-fit model.
                         selection_report, selection_state = self.protocol.measure_classifier(
                             self.target_kind, program, config, directory / 'selection_folds', frames=frames,
                             fit_timeout=self.classifier_timeout, score_timeout=self.timeout,
                             memory_mb=self.classifier_memory_mb, threads=self.classifier_threads)
+                        fit_timings['oof'] = selection_report.get('timings', {})
                         oof_scores = {cell: values['scores'] for cell, values in selection_state.items()}
                         save_selection(directory, selection_report, selection_state)
                         self.trace.emit('classifier_fold_fits', f"Program {digest(program)[:12]}: "
                                         f"{len(selection_report['fold_fits'])} fold fits; grouped_cv_{selection_report['objective']}="
                                         f"{scoring.objective_for_kind(selection_report, self.target_kind):.6f}",
                                         fold_fits=selection_report['fold_fits'])
+                    phase_started = time.monotonic()
                     component, summary = fit_classifier(self.train, self.target_kind, config, directory,
                                                         program=program, artifact_store=self.memory.artifact_store,
                                                         timeout=self.classifier_timeout,
                                                         memory_mb=self.classifier_memory_mb,
                                                         threads=self.classifier_threads, feature_frames=frames)
+                    fit_timings['full_fit_seconds'] = time.monotonic() - phase_started
                     summary['selection_protocol'] = self.protocol.mode
                     if oof_scores is not None:
                         self.memory.oof_scores[digest(component)] = oof_scores
@@ -846,7 +865,8 @@ class TrainingExperiments:
                 if self.protocol.requires_fold_fits and digest(component) not in self.memory.oof_scores:
                     _, cached_state = load_selection(cached['snapshot'])
                     self.memory.oof_scores[digest(component)] = {cell: v['scores'] for cell, v in cached_state.items()}
-            response = self._evaluate(component, rules, {**proposal, 'classifier': config}, charge=not charged)
+            response = self._evaluate(component, rules, {**proposal, 'classifier': config}, charge=not charged,
+                                      fit_timings=fit_timings)
             responses.append(response)
             result = self.results.get(digest(component))
             if result is not None and result['report'] is not None:
@@ -855,7 +875,8 @@ class TrainingExperiments:
                 stopped = self._grid_stop(response, len(configurations) - index - 1)
                 break
         rows = [{key: response.get(key) for key in ('experiment', 'status', 'classifier', 'target_precision', 'target_objective',
-                                                   'train_gate', 'cached', 'error', 'training_output_tail')} for response in responses]
+                                                   'train_gate', 'selection_comparison', 'timings', 'timings_reused',
+                                                   'cached', 'error', 'training_output_tail')} for response in responses]
         (batch / 'results.json').write_text(json.dumps(rows, indent=2, allow_nan=False))
         public_rows = [{**{key: value for key, value in row.items() if key != 'classifier'},
                         'program_sha256': digest(program),
@@ -1213,6 +1234,19 @@ class TrainingExperiments:
     def _descriptor_tables(self):
         return {brain: bank.tables[self.target_kind] for brain, bank in self.train.items()}
 
+    def check_descriptor(self):
+        """Static preflight; no agent code execution, graph/image reads or budget charge."""
+        _, spec = self._read_descriptor(check_registry=False)
+        conflicts = [column for column in spec['columns']
+                     if column in self.memory.descriptors
+                     and self.memory.descriptors[column]['code_sha256'] != spec['code_sha256']]
+        return {'status': 'name_conflict' if conflicts else 'ready',
+                'columns': spec['columns'], 'inputs': spec['inputs'], 'image': spec.get('image'),
+                'code_sha256': spec['code_sha256'], 'registration_conflicts': conflicts,
+                'evaluations_charged': 0,
+                'note': 'Static contract only; numerical validity needs a probe. Use kind/mechanism-prefixed '
+                        'names for new code. Conflicting draft names may be probed but cannot be registered.'}
+
     def _descriptor_source(self, spec):
         return 'raw_image' if spec['inputs'] != 'geometry' else 'local_geometry'
 
@@ -1261,7 +1295,7 @@ class TrainingExperiments:
                         f"on {', '.join(sorted(tables))}; cached={cached}", **{k: v for k, v in entry.items()})
         results = {}
         try:
-            for brain, table in sorted(tables.items()):
+            for brain, table in resident_first(tables):
                 allowance = per_call if cached else (min(per_call, self.descriptor_seconds_remaining)
                                                      - (time.monotonic() - started))
                 if allowance <= 0:
@@ -1309,7 +1343,9 @@ class TrainingExperiments:
         public = {**entry, 'evaluations_used': self.evaluations_used, 'evaluations_remaining': self.remaining}
         if registered:
             public['next'] = ('Use the columns in scorer.py or training.py (NaN on uncomputed rows), or list them in research.feature_columns '
-                              'and call evaluate_feature_ablation for the out-of-fold increment.')
+                              'and call evaluate_feature_ablation for the out-of-fold increment. Reserve two evaluation units '
+                              'for that paired comparison before optional parameter/seed searches; a controlled same-parameter '
+                              'with/without comparison already measured need not be repeated.')
         return public
 
     def required_descriptors(self, source):
@@ -1477,6 +1513,11 @@ class TrainingExperiments:
         async def evaluate_feature_ablation(arguments):
             return await invoke(self.evaluate_feature_ablation, arguments)
 
+        @tool('check_descriptor', 'Check descriptor.py syntax, signature, declaration and registered-name '
+              'conflicts before loading any graphs or images. No execution or budget charge. Call with {}.', {})
+        async def check_descriptor(arguments):
+            return await invoke(self.check_descriptor, arguments)
+
         @tool('probe_descriptor', 'Execute the current descriptor.py on explicit TRAIN candidate_refs or a '
               'seeded uniform sample per TRAIN brain (default 128). Return input support, feature values, '
               'sparse-feature diagnostics and optional native-slice previews of the exact descriptor inputs. '
@@ -1490,7 +1531,7 @@ class TrainingExperiments:
         async def probe_descriptor(arguments):
             return await invoke(self.probe_descriptor, arguments)
 
-        @tool('plan_descriptor_run', 'Time descriptor.py on a uniform sample from every TRAIN brain and '
+        @tool('plan_descriptor_run', 'Time descriptor.py on a contiguous labeled block from every TRAIN brain and '
               'estimate the entire TRAIN call, including serial startup and input preparation, with CPU- and '
               'memory-limited worker concurrency. '
               'Uses descriptor wall budget, no evaluation charge. Call with {}.', {})
@@ -1539,5 +1580,5 @@ class TrainingExperiments:
             train_classifier, inspect_candidate, inspect_failure_cases, evaluate_feature_ablation,
             inspect_candidate_image, inspect_failure_images,
             run_volume_analysis, plan_image_scoring,
-            probe_descriptor, plan_descriptor_run, compute_descriptors,
+            check_descriptor, probe_descriptor, plan_descriptor_run, compute_descriptors,
             restore_candidate, search_memory])

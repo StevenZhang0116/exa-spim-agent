@@ -416,6 +416,11 @@ class DescriptorRuns:
         started = time.monotonic()
         store.graph(table.meta['provenance'])
         seconds = time.monotonic() - started
+        # A preceding probe/compute may have loaded it; retain that cold cost for
+        # planning and frozen inference, even when resident-first ordering saves IO now.
+        from .local_context import FragmentStore
+        if isinstance(store, FragmentStore):
+            seconds = max(seconds, store.load_seconds)
         if seconds >= .5:
             self._graph_loads[key] = seconds
         return float(self._graph_loads.get(key, seconds))
