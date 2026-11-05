@@ -5,8 +5,9 @@ There is no precomputed context prerequisite. The default probe samples the full
 pool uniformly; `judgeable` (the production default, see below) covers the GT-labeled rows,
 `all_candidates` covers the full pool, `pilot` is uniform, and `boundary` explicitly selects
 detector-rank neighbours. No-score/raw production accepts `judgeable` or `all_candidates`.
-Legacy `all_cached` calls and registries normalize to `all_candidates`; `--context-cache` is
-ignored. `--no-descriptors` disables the tools.
+Legacy `all_cached` calls and registries normalize to `all_candidates`. The ignored
+`--context-cache` evolution/preflight option was removed on 2026-11-04.
+`--no-descriptors` disables the tools.
 
 Since 2026-11-03, `--descriptor-wall-seconds` defaults to 7200 seconds per TRAIN
 compute call and per validation-brain descriptor computation (3600 from 2026-10-31,

@@ -45,9 +45,8 @@ checks reduce risk; arbitrary host/worker allocation spikes can still exceed mem
    coverage, finite/missing/nonzero counts, min/max/std, quartiles and example handles.
    Zero quartiles alone do not imply a constant column. Full sampled values are saved
    under `descriptor_probes/`; the tool returns a few representative cases per brain.
-   One reply inlines at most 64 MiB and one generation at most 96 MiB of base64-encoded
-   PNG data; `preview_payload` lists previews that stayed on disk in the probe directory
-   (readable one at a time) and the remaining generation bytes.
+   Each preview reports `preview_inlined`; oversized PNGs stay on disk unchanged.
+   See image_context_guide.md for display limits and controls.
    Previews default to native slice sheets with separate raw and depth-clipped overlay rows,
    not maximum projections. With `previews: true`, pass `preview` to choose `plane`,
    `anchor_index`, `depth_range_um` and `slice_count` (1..9), as in image_context_guide.md.

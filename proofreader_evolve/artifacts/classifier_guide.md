@@ -154,11 +154,15 @@ different method, edit training.py and explain the change in proposal.json/rules
 `scorer.py` becomes a framework-owned manifest binding program, parameters, TRAIN
 provenance and every model file's hash. Do not edit it to change a trained model;
 edit training.py and refit. Model files are stored in the run's
-`model_artifacts/<digest>/` directory and verified before reuse. Arbitrary file
+`model_artifacts/<digest>/` directory and verified before reuse. Temporary OOF and
+ablation fold models are discarded after their scores are saved; fold source, requests,
+metadata and logs remain. Final fitted models remain available for restore and inference.
+Fit and attempt selection arrays share storage; TRAIN snapshots contain only the target
+kind, with the other kind supplied by the current accepted parent on restore. Arbitrary file
 formats are allowed, up to 128 MiB total / 256 regular files; no symlinks.
 
-Default fitting limits are 300 seconds wall/CPU and 16384 MiB address space.
-`--classifier-search-seconds` (default 3600) bounds new classifier search per generation:
+Actual fit/predict, memory, thread and search limits are in `model_environment.json`.
+The classifier search clock counts new configurations per generation:
 preparation, OOF fits/predictions, full fit and evaluation all count, including failures.
 It is checked between configurations: a running candidate completes under its worker limits,
 so the total can exceed the budget by that candidate's duration. Further uncached fits stop;
@@ -169,10 +173,7 @@ after a useful paired comparison, with enough time left for its full-pool predic
 New registered descriptor inputs invalidate fitted-model and extracted-frame reuse even if
 training.py and parameters are unchanged. Restoring an older frozen model remains valid;
 it does not incorporate later features until you refit it.
-The host configures `--classifier-time-budget`, `--classifier-memory-mb` and
-`--classifier-threads` (default 8). Inference uses `--policy-time-budget` (300s
-by default) and the same 16384 MiB. The thread setting configures numerical libraries;
-the CPU/wall limits bound total work. Scratch plus artifacts are monitored with
+The thread setting configures numerical libraries; CPU/wall limits bound total work. Scratch plus artifacts are monitored with
 a 256-MiB limit; temporary/output files may briefly exceed it between checks.
 Libraries and inputs are readable, fit artifacts/scratch writable, and prediction
 artifacts read-only. All agent imports, fit, predict and model deserialization

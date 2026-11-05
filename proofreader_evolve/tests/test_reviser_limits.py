@@ -28,16 +28,13 @@ class LimitTests(unittest.TestCase):
     def test_feedback_budget(self):
         self.assertEqual(feedback.MAX_FEEDBACK_BYTES, 128_000)
 
-    def test_image_payload_limits_fit_the_transport_and_the_api(self):
-        # The CLI stream line carries a tool result in the message content and again in
-        # tool_use_result; the SDK default of 1 MiB ended two generations of lru62oga.
-        self.assertGreater(session.MESSAGE_BUFFER_BYTES, 1024 * 1024)
+    def test_static_image_limits_fit_transport_for_configurable_counts(self):
+        from proofreader_evolve.harness.image_preview import inline_image_limit, INLINE_IMAGES_ALLOWANCE_BYTES
+        for count in (1, 16, 32, 64, 1024):
+            self.assertLessEqual(inline_image_limit(count), 2 * 1024**2)
+            self.assertLessEqual(count * inline_image_limit(count), INLINE_IMAGES_ALLOWANCE_BYTES)
         self.assertGreater(session.MESSAGE_BUFFER_BYTES,
-                           2 * (session.TOOL_IMAGE_BYTES + 4 * session.MCP_OUTPUT_TOKENS))
-        # Every inlined image stays in the generation's conversation: the generation ceiling
-        # plus text stays under the first-party API's 128 MB request limit (10 MB per image).
-        self.assertLessEqual(session.TOOL_IMAGE_BYTES, session.GENERATION_IMAGE_BYTES)
-        self.assertLess(session.GENERATION_IMAGE_BYTES + 16 * 1024 * 1024, 128_000_000)
+                           2 * (INLINE_IMAGES_ALLOWANCE_BYTES + 4 * session.MCP_OUTPUT_TOKENS))
 
     def test_session_options_raise_the_sdk_line_limit(self):
         if importlib.util.find_spec("claude_agent_sdk") is None:  # pragma: no cover - installed in panda

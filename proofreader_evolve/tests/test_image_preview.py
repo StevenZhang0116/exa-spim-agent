@@ -7,34 +7,33 @@ from unittest.mock import patch, Mock
 
 import numpy as np
 
-from proofreader_evolve.harness import reviser_session
 from proofreader_evolve.harness.image_preview import (
     inline_images, preview_request, slice_selection, render_preview, _overlay)
 
 
 class InlineImageTests(unittest.TestCase):
-    def test_inline_images_stop_at_the_payload_limit_in_order(self):
+    def test_inline_images_bound_each_file_and_preserve_disk_pixels(self):
+        from PIL import Image
+        from proofreader_evolve.harness import image_preview
         with tempfile.TemporaryDirectory() as root:
-            paths = []
-            for name, size in (('a.png', 30), ('b.png', 30), ('c.png', 6)):
-                path = Path(root) / name
-                path.write_bytes(b'\x89PNG' + bytes(size - 4))
-                paths.append(path)
-            encoded = len(base64.b64encode(bytes(30)))
-            blocks, omitted = inline_images(paths, limit=2 * encoded)
-            self.assertEqual([block['type'] for block in blocks], ['image', 'image'])
-            self.assertEqual(omitted, ['c.png'])
-            self.assertEqual(blocks[0]['mimeType'], 'image/png')
-            self.assertEqual(base64.b64decode(blocks[0]['data'])[:4], b'\x89PNG')
-            # A later file that would fit alone is still left out: blocks match the leading records.
-            blocks, omitted = inline_images(paths, limit=encoded)
-            self.assertEqual(len(blocks), 1)
-            self.assertEqual(omitted, ['b.png', 'c.png'])
-            self.assertEqual(inline_images([], limit=0), ([], []))
-            # The default limit is the session transport constant, read at call time.
-            with patch.object(reviser_session, 'TOOL_IMAGE_BYTES', encoded):
-                self.assertEqual(inline_images(paths)[1], ['b.png', 'c.png'])
-            self.assertEqual(inline_images(paths)[1], [])
+            paths = [Path(root) / name for name in ('a.png', 'wide.png', 'c.png')]
+            for path, size in zip(paths, ((10, 10), (3001, 1), (8, 8))):
+                Image.new('L', size, 17).save(path)
+            original = [p.read_bytes() for p in paths]
+            blocks, omitted = inline_images(paths)
+            self.assertEqual(omitted, ['wide.png'])
+            self.assertEqual([base64.b64decode(b['data']) for b in blocks], [original[0], original[2]])
+            with patch.object(image_preview, 'MAX_INLINE_IMAGE_BYTES', 1):
+                self.assertEqual(inline_images(paths), ([], [p.name for p in paths]))
+            self.assertEqual([p.read_bytes() for p in paths], original)
+            self.assertEqual(inline_images(paths, preview_budget=0)[0], [])
+            self.assertEqual(inline_images([]), ([], []))
+            # An unreadable file is omitted on its own; the readable ones are still inlined.
+            broken = Path(root) / 'broken.png'
+            broken.write_bytes(b'not a png')
+            blocks, omitted = inline_images([paths[0], broken, Path(root) / 'absent.png', paths[2]])
+            self.assertEqual(omitted, ['broken.png', 'absent.png'])
+            self.assertEqual([base64.b64decode(b['data']) for b in blocks], [original[0], original[2]])
 
 
 class SlicePreviewTests(unittest.TestCase):

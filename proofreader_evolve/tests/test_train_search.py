@@ -370,6 +370,10 @@ class TrainingSearchTests(unittest.TestCase):
         submitted, _ = self.session.submitted()
         self.assertEqual(components(submitted['source']), {'merge': IMPROVED, 'split': IMPROVED})
         self.assertEqual(submitted['report']['cells']['1/merge']['precision'], 1)
+        np.testing.assert_array_equal(submitted['state']['1/merge']['scores'],
+                                      self.session.parent_state['1/merge']['scores'])
+        with np.load(Path(submitted['entry']['snapshot']) / 'train_state.npz') as saved:
+            self.assertEqual(set(saved.files), {'1/split:scores', '1/split:chosen'})
 
 
 class SearchDriverTests(unittest.TestCase):

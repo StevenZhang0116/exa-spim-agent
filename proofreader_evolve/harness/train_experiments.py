@@ -48,8 +48,8 @@ def digest(source):
     return hashlib.sha256(source.encode()).hexdigest()
 
 
-def save_state(path, state):
-    np.savez(path, **{f'{cell}:{key}': values[key] for cell, values in state.items()
+def save_state(path, state, *, kind):
+    np.savez(path, **{f'{cell}:{key}': values[key] for cell, values in state.items() if cell.endswith('/' + kind)
                      for key in ('scores', 'chosen')})
 
 
@@ -130,7 +130,7 @@ class ExperimentMemory:
         (directory / 'scorer.py').write_text(component)
         (directory / 'rules.md').write_text(rules)
         (directory / 'train_evaluation.json').write_text(json.dumps(report, allow_nan=False))
-        save_state(directory / 'train_state.npz', state)
+        save_state(directory / 'train_state.npz', state, kind=kind)
         model = frozen_model(component)
         # The driver always supplies a protocol built from the run's Budgets, which
         # ensure_protocol keeps; these one-K-per-kind caps only serve sessions created
@@ -236,7 +236,6 @@ class TrainingExperiments:
         self.evaluations_used, self.repair_granted = 0, False
         self.inspections_used = 0
         self.image_inspections_used = 0
-        self.image_payload_used = 0
         self.volume_analyses_used = 0
         self.lock, self.trace = asyncio.Lock(), Trajectory(gen_dir)
         self.feature_diagnostics = []
@@ -579,8 +578,14 @@ class TrainingExperiments:
             result.update(report=report, state=state, selection_report=selection_report,
                           selection_state=selection_state)
             (trial_dir / 'train_evaluation.json').write_text(json.dumps(report, indent=2, allow_nan=False))
-            save_state(trial_dir / 'train_state.npz', state)
-            save_selection(trial_dir, selection_report, selection_state)
+            save_state(trial_dir / 'train_state.npz', measured_state, kind=self.target_kind)
+            # The selection arrays already saved with a cached attempt or this fit are the
+            # same bytes: share them instead of writing a second copy.
+            selection_source = (cached['snapshot'] if cached else
+                                entry.get('training', {}).get('fit_snapshot'))
+            if not selection_source or not (Path(selection_source) / 'selection_state.npz').is_file():
+                selection_source = None
+            save_selection(trial_dir, selection_report, selection_state, source=selection_source)
             feedback_path = trial_dir / 'feedback.json'
             write_train_feedback(feedback_path, report, [], self.budgets, target_kind=self.target_kind,
                                  report_role='candidate', selection=selection_feedback, protocol=self.protocol_info,
@@ -1070,24 +1075,11 @@ class TrainingExperiments:
         self.trace.emit('image_scoring_plan', 'Planned label-free TRAIN image coverage', **report)
         return report
 
-    def inline_previews(self, paths, *, reply_bytes_remaining=None):
-        """Inline preview PNGs within one reply's and this generation's image payload limits.
-
-        Inlined images stay in the conversation. The generation ceiling bounds the image
-        payload added by TRAIN tools and leaves room for text (see reviser_session).
-        """
+    def inline_previews(self, paths):
         from .image_preview import inline_images
-        from .reviser_session import GENERATION_IMAGE_BYTES, TOOL_IMAGE_BYTES
-        limit = max(0, min(TOOL_IMAGE_BYTES, GENERATION_IMAGE_BYTES - self.image_payload_used))
-        if reply_bytes_remaining is not None:
-            limit = max(0, min(limit, reply_bytes_remaining))
-        blocks, omitted = inline_images(paths, limit)
-        self.image_payload_used += sum(len(block['data']) for block in blocks)
-        return blocks, omitted, {'inlined': len(blocks), 'omitted_files': omitted, 'limit_bytes': limit,
-                                 'generation_bytes_remaining': GENERATION_IMAGE_BYTES - self.image_payload_used}
+        return inline_images(paths, preview_budget=self.image_preview_budget)
 
-    def inspect_candidate_image(self, candidate_ref, radius_um=40., level=0, occurrence_index=0, preview=None,
-                                *, reply_bytes_remaining=None):
+    def inspect_candidate_image(self, candidate_ref, radius_um=40., level=0, occurrence_index=0, preview=None):
         """Return an actual image content block for a TRAIN-only candidate."""
         from .image_preview import fragment_patch_geometry, render_preview, preview_request
         preview_request(preview)
@@ -1113,14 +1105,13 @@ class TrainingExperiments:
                               f'TRAIN {brain} / {table.kind} / occurrence {occurrence_index}', preview=preview)
         # The host audit retains source identity. The tool exposes just the
         # local preview, registration facts and existing TRAIN inspection handle.
-        blocks, omitted, payload = self.inline_previews([preview_path], reply_bytes_remaining=reply_bytes_remaining)
+        blocks, omitted = self.inline_previews([preview_path])
         response = {'candidate_ref': candidate_ref, 'brain': brain, 'kind': table.kind,
                     'radius_um': radius_um, 'level': level, 'occurrence': occurrence_index,
                     'shape_zyx': metadata['shape_zyx'], 'spacing_xyz_um': metadata['spacing_xyz_um'],
                     'anchors_zyx': patch['anchors_zyx'].tolist(), 'valid_fraction': metadata['valid_fraction'],
-                    'preview': view, 'file': f'image_inspections/{preview_path.name}',
+                    'preview': view, 'file': str(preview_path.resolve()),
                     'preview_inlined': not omitted,
-                    'preview_payload': payload,
                     'image_inspections_remaining': self.image_inspections_remaining,
                     'note': 'Native slices with a separate raw row, or an explicitly requested projection overview. '
                             'Depths are local to the patch; skipped planes are reported. No GT overlay. '
@@ -1136,18 +1127,15 @@ class TrainingExperiments:
         return {'content': [{'type': 'text', 'text': json.dumps(response, allow_nan=False)}, *blocks]}
 
     def inspect_failure_images(self):
-        """At most two matched pairs per call, within the shared image allowance and one reply's image payload."""
-        from .reviser_session import TOOL_IMAGE_BYTES
-        content, payload = [], 0
+        """At most two matched pairs per call, within the shared preview count."""
+        content = []
         for pair in self.failure_cases['pairs'][:2]:
             if self.image_inspections_remaining < 2:
                 break
             content.append({'type': 'text', 'text': json.dumps(pair, allow_nan=False)})
             for case in pair['cases']:
                 try:
-                    blocks = self.inspect_candidate_image(case['candidate_ref'],
-                        reply_bytes_remaining=TOOL_IMAGE_BYTES - payload)['content']
-                    payload += sum(len(block['data']) for block in blocks if block['type'] == 'image')
+                    blocks = self.inspect_candidate_image(case['candidate_ref'])['content']
                     content.extend(blocks)
                 except Exception as exc:
                     content.append({'type': 'text', 'text': f'Image unavailable: {type(exc).__name__}: {exc}'})
@@ -1577,9 +1565,8 @@ class TrainingExperiments:
               'seeded uniform sample per TRAIN brain (default 128). Return input support, feature values, '
               'sparse-feature diagnostics and optional native-slice previews of the exact descriptor inputs. '
               'With previews=true, preview accepts the same plane/anchor_index/depth_range_um/slice_count or '
-              'view=overview options as inspect_candidate_image. Inlined previews are bounded per reply and per '
-              'generation; preview_payload lists previews left on disk under descriptor_probes/ and the remaining '
-              'generation bytes. '
+              'view=overview options as inspect_candidate_image. Oversized previews stay on disk; '
+              'each preview record reports preview_inlined. '
               'No registration or evaluation charge; preparation and execution use descriptor wall budget.',
               {'type': 'object', 'properties': {'candidate_refs': {'type': 'array', 'items': {'type': 'string'}},
                'sample_per_brain': {'type': 'integer'}, 'seed': {'type': 'integer'}, 'previews': {'type': 'boolean'},

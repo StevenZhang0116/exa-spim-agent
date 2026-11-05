@@ -6,23 +6,41 @@ import textwrap
 import numpy as np
 
 
-def inline_images(paths, limit=None):
-    """Base64 PNG blocks for `paths`, in order, while their payload stays within `limit`.
+MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024  # Base64 bytes, not PNG bytes.
+INLINE_IMAGES_ALLOWANCE_BYTES = 64 * 1024 * 1024
+MAX_INLINE_IMAGE_EDGE = 3000
 
-    Claude Code returns a tool result to the SDK as one stream line holding the result
-    twice, bounded by reviser_session.MESSAGE_BUFFER_BYTES; files past the limit stay on
-    disk. Returns the blocks and the names of the files left out (every later file too,
-    so the inlined images match the leading preview records).
+
+def inline_image_limit(preview_budget):
+    """A static per-image bound; no per-reply or per-generation byte ledger."""
+    return min(MAX_INLINE_IMAGE_BYTES, INLINE_IMAGES_ALLOWANCE_BYTES // max(1, preview_budget))
+
+
+def inline_images(paths, *, preview_budget=32):
+    """Inline bounded PNGs in order, leaving original files unchanged on disk.
+
+    The configured preview count bounds host-tool image payload to 64 MiB; the
+    SDK buffer also needs room for two copies of a reply. Oversized or unreadable
+    previews are omitted individually and identified by filename, so one bad file
+    never fails the whole reply. Reading a saved PNG does not bypass the model
+    provider's image/request limits.
     """
-    from .reviser_session import TOOL_IMAGE_BYTES
-    limit = TOOL_IMAGE_BYTES if limit is None else limit
-    blocks, omitted, total = [], [], 0
+    from PIL import Image
+    limit = inline_image_limit(preview_budget)
+    blocks, omitted = [], []
     for path in paths:
-        data = base64.b64encode(Path(path).read_bytes()).decode('ascii')
-        if omitted or total + len(data) > limit:
-            omitted.append(Path(path).name)
+        path = Path(path)
+        try:
+            with Image.open(path) as image:
+                edge = max(image.size)
+            encoded = 4 * ((path.stat().st_size + 2) // 3)
+        except (OSError, ValueError):  # missing, truncated or non-PNG file
+            omitted.append(path.name)
             continue
-        total += len(data)
+        if preview_budget <= 0 or encoded > limit or edge > MAX_INLINE_IMAGE_EDGE:
+            omitted.append(path.name)
+            continue
+        data = base64.b64encode(path.read_bytes()).decode('ascii')
         blocks.append({'type': 'image', 'mimeType': 'image/png', 'data': data})
     return blocks, omitted
 

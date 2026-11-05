@@ -42,6 +42,7 @@ class TrajectoryTests(unittest.TestCase):
     def test_events_are_durable_ordered_and_tool_payloads_are_complete(self):
         trace = Trajectory(self.gen)
         trace.sdk_message(SystemMessage(subtype="init", data={"private_metadata": "excluded"}))
+        trace.sdk_message(SystemMessage(subtype="thinking_tokens", data={"tokens": 17}))
         trace.sdk_message(AssistantMessage(model="test", content=[
             TextBlock(text="I will adjust evidence weighting."),
             ThinkingBlock(thinking="excluded thinking", signature="excluded signature"),

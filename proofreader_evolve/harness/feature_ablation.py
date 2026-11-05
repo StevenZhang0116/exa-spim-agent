@@ -165,6 +165,9 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
     delta = arms['full']['per_kind_objective'][kind] - arms['without_features']['per_kind_objective'][kind]
     arrays = {f'{arm}:{brain}': values for arm, brains in predictions.items() for brain, values in brains.items()}
     np.savez(directory / 'predictions.npz', **arrays)
+    from .selection_protocol import discard_fold_models
+    for arm in ('full', 'without_features'):
+        discard_fold_models(directory / arm)
     image_contract = image_spec(source)
     image_columns = ([*image_contract[1]['feature_names'], 'image_available'] if image_contract else [])
     removed_images = bool(image_columns) and set(image_columns) <= set(columns)

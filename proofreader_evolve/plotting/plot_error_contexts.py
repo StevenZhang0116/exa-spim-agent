@@ -347,7 +347,6 @@ def parse_args(argv=None):
     parser.add_argument("--kinds", default="split,merge")
     parser.add_argument("--tier", choices=("level0", "level1"), default="level0",
                         help="physical image request: level0 / 16 um or level1 / 30 um")
-    parser.add_argument("--context-cache", type=Path, default=None, help="Deprecated and ignored")
     parser.add_argument("--feature-tables-dir", type=Path, default=pc.DEFAULT_OUT)
     parser.add_argument("--merge-dir", action="append")
     parser.add_argument("--split-dir", action="append")

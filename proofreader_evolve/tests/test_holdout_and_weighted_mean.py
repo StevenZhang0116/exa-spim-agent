@@ -76,6 +76,34 @@ class HoldoutFoldTests(unittest.TestCase):
         self.assertEqual(assigned, [0, 1, 2])
 
 
+    def test_every_selection_brain_can_be_held_out_whole(self):
+        # 2026-11-04: with no auxiliary and no within-brain folds, every brain is scored by a
+        # model that never saw it, two brains per fold, and the holdout summary is the objective.
+        train = {**three_brains(), '754610': brain_table('754610', offset=3000.),
+                 '754612': brain_table('754612', offset=4000.), '754613': brain_table('754613', offset=5000.)}
+        brains = sorted(train)
+        folds, description = grouped_folds(train, 'merge', selection_brains=brains, holdout_brains=brains)
+        self.assertEqual((description['auxiliary_brains'], description['holdout_brains']), ([], brains))
+        held_in = {b: int(fold_assignments(folds, b, 16)[0]) for b in brains}
+        self.assertEqual(sorted(held_in.values()), [0, 0, 1, 1, 2, 2])
+        for fold, (fitting, held) in enumerate(folds):
+            for brain in brains:
+                if held_in[brain] == fold:
+                    self.assertEqual((len(held[brain]), len(fitting[brain])), (16, 0))
+                else:
+                    self.assertEqual(len(held[brain]), 0)
+                    np.testing.assert_array_equal(fitting[brain], np.arange(16))
+            roles = {c['role'] for c in description['fold_details'][fold]['brains'].values()}
+            self.assertEqual(roles, {'selection_holdout'})
+        protocol = SelectionProtocol(train, {'merge': 4}, selection_brains=brains, holdout_brains=brains)
+        self.assertEqual(protocol.describe()['auxiliary_train_brains'], [])
+        scores = {f'{b}/merge': train[b].tables['merge'].features['signal'].to_numpy() for b in brains}
+        report, _ = protocol.score_report('merge', scores)
+        self.assertEqual(report['holdout_cells'], [f'{b}/merge' for b in brains])
+        self.assertEqual(report['holdout_objective'], report['per_kind_objective']['merge'])
+        self.assertEqual(report['holdout_precision'], report['per_kind_precision']['merge'])
+
+
 class HoldoutProtocolTests(unittest.TestCase):
     def test_training_tools_accept_real_protocol_scalar_holdout_metrics(self):
         from proofreader_evolve.harness.train_experiments import ExperimentMemory, TrainingExperiments

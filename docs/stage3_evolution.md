@@ -75,7 +75,10 @@ python -u -m proofreader_evolve.cli.run_evolution \
 # --descriptor-memory-mb 16384 is independent of --classifier-memory-mb.
 # Partition since 2026-10-27: 794495 auxiliary TRAIN (detector-fitted); 802449 within-brain grouped folds; the
 # four holdout selection brains are scored whole by models that never saw them (holdout_objective and
-# holdout_precision, the cross-brain signal). --aggregation positive-weighted (default) weights rank statistics
+# holdout_precision, the cross-brain signal). Raw runs since 2026-11-04 pass --selection-brains all
+# --selection-holdout-brains all instead: no detector-derived input remains, so all six TRAIN brains are
+# whole-brain holdouts (two per fold), with no auxiliary brain and no within-brain folds.
+# --aggregation positive-weighted (default) weights rank statistics
 # by each eligible brain's GT-positive count in selection, validation, bootstrap and headroom.
 # --aggregation equal-brain explicitly assigns equal weight; do not compare the two aggregates directly.
 # Ablations: --detector-prior no-score withholds the frozen detector score (2026-10-12); --detector-prior raw
@@ -119,8 +122,7 @@ For example, replace `JOB_ID`, `NODE` and the CPU count with granted resources:
 /home/zihan.zhang/.conda/envs/panda/bin/python -u -m proofreader_evolve.cli.launch_evolution \
   --job-id JOB_ID --node NODE --cpus 40 -- \
   --train-brains 794495,802449,747807,754610,754612,754613 \
-  --selection-brains 802449,747807,754610,754612,754613 \
-  --selection-holdout-brains 747807,754610,754612,754613 \
+  --selection-brains all --selection-holdout-brains all \
   --validation-brains 789202,794493,794491,750318,751473 \
   --detector-prior raw --generations 10 \
   --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400
@@ -259,15 +261,30 @@ Detector-fitted brains cannot be validation brains. The reviser requires
 
 ## 3.4 One generation: the reviser session
 
-Each generation allows up to 60 SDK interaction turns by default (24 before
-2026-10-07, 40 until 2026-10-08); use `--reviser-max-turns` to change this independently of
-`--generations`. The reviser reads a compact TRAIN feedback file capped at 128 KB
-(48 KB before 2026-10-05, 96 KB until 2026-10-07). Tool results may be up to
+Each generation allows up to 60 SDK interaction turns by default;
+use `--reviser-max-turns` to change this independently of
+`--generations`. The reviser reads a compact TRAIN feedback file capped at 128 KB.
+Tool results may be up to
 100,000 tokens; a result the SDK parks on disk (above about 50 KB) stays readable
 through the session's file guard, and file reads allow 100,000 tokens instead of
 the SDK default of 25,000. The session may also read its own generation's
 `experiments/`, `classifier_fits/`, TRAIN `descriptor_runs/` and `descriptor_probes/`
-directories, including the corresponding trees in earlier generations. Feature names
+directories, including the corresponding trees in earlier generations. PNG previews
+under current/earlier `image_inspections/` are also readable; adjacent host audit JSON
+is not. Inline previews have a static per-image base64 limit of min(2 MiB, 64 MiB /
+configured preview count), plus a 3000-pixel edge limit. Oversized files stay unchanged
+on disk and report `preview_inlined: false`. There is no cumulative byte budget;
+reading a saved image does not bypass provider limits. The SDK buffer remains 256 MiB.
+
+The system prompt keeps stable rules, while the task prompt keeps actual research
+assignments, completion conditions, measured-submission requirements and essential
+budget numbers. Interfaces live in guides and resource values in `model_environment.json`.
+`rules.md` starts as brief research notes. Only `thinking_tokens` SDK status noise is
+dropped; final usage/cost and other events remain in the normal result and trajectory.
+The next official run's first generation should be checked for guide use and research
+completion; synthetic tests cannot establish the behavioral effect of prompt changes.
+
+Feature names
 appear once per cell with aligned example vectors; values are rounded to six
 significant digits for display. It samples selected positives and label-0 rows,
 rows just below K, and missed positives. Each group keeps a fixed anchor and
@@ -346,7 +363,10 @@ Branches are ranked by the selection protocol: under the default `grouped_oof`,
 the grouped out-of-fold objective (AUROC by default, measured per fold and weighted by
 positives; Precision@K at a partitioned K when that is the objective) on detector-naive
 selection brains from host-owned fold refits, with auxiliary TRAIN brains as fitting-only
-data; in-sample TRAIN precision is a **resubstitution diagnostic**. The agent may still use
+data; in-sample TRAIN precision is a **resubstitution diagnostic**. Under
+`--detector-prior raw` nothing is detector-derived, so `--selection-brains all
+--selection-holdout-brains all` makes every TRAIN brain a whole-brain holdout (three folds
+of two brains, since 2026-11-04): one cross-brain out-of-fold score, no auxiliary role. The agent may still use
 TRAIN-only internal validation/CV during fitting. Final promotion requires improvement in
 the target-kind development-validation objective that clears the paired-bootstrap noise
 gate and the head guard (section 3.3). The outer evaluator calls
@@ -381,7 +401,7 @@ schema, feature example, limits and logs. No new launch flag is required.
 
 Pool-scale descriptors are enabled by default. Geometry and original image crops are
 read on demand for any native candidate. No precomputed context directory, detector
-band or labeled extension is needed. `--context-cache` is a deprecated ignored argument;
+band or labeled extension is needed. Evolution reads contexts on demand;
 use `--no-descriptors` to disable descriptor tools.
 The agent writes `descriptor.py` (`DESCRIPTOR` plus `describe(context)`), uses
 `probe_descriptor` on explicit TRAIN cases or uniform samples from each complete

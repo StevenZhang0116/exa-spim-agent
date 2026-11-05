@@ -245,6 +245,9 @@ class SessionSelectionTests(unittest.TestCase):
         fit_dir = Path(first['training']['fit_snapshot'])
         self.assertTrue(all((fit_dir / 'selection_folds' / f'fold{i}' / 'model.json').is_file() for i in range(3)))
         self.assertTrue((Path(first['snapshot']) / 'selection_state.npz').is_file())
+        self.assertTrue((Path(first['snapshot']) / 'selection_state.npz').samefile(fit_dir / 'selection_state.npz'))
+        self.assertFalse(list((fit_dir / 'selection_folds').glob('fold*/models')))
+        self.assertTrue(list(self.memory.artifact_store.iterdir()))  # Final model survives fold cleanup.
         self.assertFalse((self.memory.artifact_store / 'selection_folds').exists())
         self.proposal(GENERALIZER)
         self.session.train_classifier()
@@ -399,7 +402,7 @@ class DriverRoleTests(unittest.TestCase):
             self.assertEqual(seen['feedback']['parent_selection']['mode'], 'grouped_oof')
             self.assertIn('794495/merge', seen['feedback']['parent_train']['cells'])
             row = json.loads((path / 'ledger.jsonl').read_text().splitlines()[0])
-            usage = {'limit': 5, 'used': 1, 'remaining': 4, 'inlined_bytes': 0}
+            usage = {'limit': 5, 'used': 1, 'remaining': 4}
             self.assertEqual(row['image_preview_usage'], usage)
             self.assertEqual(row['image_evidence']['preview_usage'], usage)
             self.assertEqual(row['image_evidence']['preview_records'], 0)

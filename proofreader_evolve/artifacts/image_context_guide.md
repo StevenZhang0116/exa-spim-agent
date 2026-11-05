@@ -64,11 +64,14 @@ failure pairs in one call. These tools and descriptor probe previews share the
 configured by `--image-previews-per-generation`; 0 disables previews). A whole slice
 sheet costs one request, and requesting
 another view costs another. Failed IO in the inspection tools also spends a
-request. One reply inlines at most 64 MiB and one generation at most 96 MiB of base64-encoded
-PNG data: previews past a limit are saved and listed in `preview_payload` with the
-remaining generation bytes. Candidate inspections also report `preview_inlined`;
-failure pairs share one reply limit, and only returned image blocks spend generation bytes. Typical
-previews are 0.1-0.3 MB, so the request allowance is the practical ceiling.
+request. Each inline PNG is limited to 2 MiB of base64 data and 3000 pixels per edge.
+The byte limit decreases to `64 MiB / configured preview count` when that is smaller;
+there is no cumulative byte budget. Oversized PNGs are saved unchanged and marked
+`preview_inlined: false` (with an absolute file path) in both probe and inspection replies.
+Candidate previews under current/earlier `image_inspections/` are readable as PNGs;
+adjacent audit JSON remains host-only. Reading a saved PNG does not bypass provider
+limits; request fewer slices or a smaller view to obtain an inline preview. Typical
+previews are 0.1-0.3 MB, so the preview count is usually the practical limit.
 Probe preparation/execution uses descriptor wall time. Volume analysis and neighborhood inspection retain
 their separate budgets. Analysis results do not automatically become features:
 declare scoring inputs and measure the resulting policy as described below.

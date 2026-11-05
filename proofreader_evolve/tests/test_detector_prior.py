@@ -18,7 +18,10 @@ from proofreader_evolve.harness import detector_prior
 from proofreader_evolve.harness.image_features import subset_features
 from proofreader_evolve.tests.test_descriptor_compute import GEOMETRY_DESCRIPTOR, build_cache, FakeProvider
 from proofreader_evolve.tests.test_selection_protocol import brain_table, two_brains
-from proofreader_evolve.tests.label_fixture import setUpModule, tearDownModule  # noqa: F401
+from proofreader_evolve.tests import label_fixture
+
+setUpModule = label_fixture.setUpModule
+tearDownModule = label_fixture.tearDownModule
 
 HERE = Path(__file__).resolve().parents[1]
 SIGNAL = "def score_candidates(features, ctx):\n    return features['signal'].fillna(0).to_numpy()\n"
@@ -65,6 +68,14 @@ class ArgumentTests(unittest.TestCase):
         self.assertTrue(driver._contract(ablation).endswith(detector_prior.NOTICE))
         with redirect_stdout(io.StringIO()), patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit):
             driver.parse_args(['--detector-prior', 'no-score', '--descriptor-bank', str(HERE / 'descriptor_bank')])
+
+
+    def test_all_keyword_and_raw_mode_relax_the_fitted_brain_rule_at_parse_time(self):
+        from proofreader_evolve.cli import run_precision_evolution as driver
+        args = driver.parse_args(['--selection-brains', 'all', '--selection-holdout-brains', 'all'])
+        self.assertEqual((args.selection_brains, args.selection_holdout_brains), ('all', 'all'))
+        with redirect_stdout(io.StringIO()), patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit):
+            driver.parse_args(['--selection-holdout-brains', 'all', '--selection-protocol', 'in_sample'])
 
 
 class HelperTests(unittest.TestCase):
@@ -141,7 +152,9 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(manifest['detector_prior']['stripped_cells'], ['794495/merge', '802449/merge', '2/merge'])
         self.assertEqual(split['detector_prior'], 'no-score')
         self.assertEqual(summary['detector_prior'], 'no-score')
-        self.assertIn('Detector-prior ablation', seen['rules'])
+        self.assertIn('Detector-prior ablation', driver._contract(args))
+        self.assertIn('research notes', seen['rules'])
+        self.assertNotIn(driver.CONTRACT, seen['rules'])
         self.assertIn('np.zeros', seen['seed'])
         for name, text in seen['visible'].items():
             with self.subTest(file=name):
@@ -154,6 +167,45 @@ class DriverTests(unittest.TestCase):
         self.assertTrue(record['accepted'])
         for bank in banks.values():
             self.assertNotIn('detector_score', bank.tables['merge'].features.columns)
+
+    def test_raw_run_scores_every_train_brain_whole_including_the_detector_fitted_one(self):
+        from proofreader_evolve.cli import run_precision_evolution as driver
+        banks = {**driver_banks(), '3': brain_table('3', offset=6000.)}
+        banks['3'].tables['merge'].meta['training_brain'] = '794495'
+        banks['3'].tables['merge'].local_context = FakeProvider()
+        for bank in banks.values():  # the raw prior rebuilds the frame from the candidate rows
+            for row in bank.tables['merge'].candidates:
+                row.update(candidate_family='junction', tip_gap_um=None)
+        seen = {}
+
+        async def revise(run_dir, policy, rules, report, model, *, experiments):
+            seen['protocol'] = experiments.protocol
+            experiments.restore('parent')
+            return {'summary': 'parent', 'cost_usd': 0}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            args = driver.parse_args(['--min-positives', '0', '--train-brains', '794495,802449,2',
+                                      '--validation-brains', '3', '--merge-k', '3', '--split-k', '1',
+                                      '--generations', '1', '--runs-dir', tmp, '--bootstrap-draws', '0',
+                                      '--promotion-gate', 'margin', '--kind-schedule', 'alternate',
+                                      '--detector-prior', 'raw', '--no-descriptors',
+                                      '--descriptor-bank', str(Path(tmp) / 'bank'),
+                                      '--selection-brains', 'all', '--selection-holdout-brains', 'all'])
+            path = run_driver(driver, args, banks, revise)
+            split = json.loads((path / 'dataset_split.json').read_text())
+            self.assertEqual(split['selection_brains'], ['794495', '802449', '2'])
+            self.assertEqual(split['selection_holdout_brains'], ['794495', '802449', '2'])
+            self.assertEqual(split['auxiliary_train_brains'], [])
+            self.assertEqual(split['detector_fitted_selection_brains'], ['794495'])
+            self.assertIn('allowed', split['detector_fitted_selection_rule'])
+            self.assertIn('whole-brain', split['roles']['794495'])
+            self.assertFalse((path / 'auxiliary_ablation.json').exists())
+            self.assertEqual(seen['protocol'].holdout_brains, ['2', '794495', '802449'])
+            self.assertEqual(seen['protocol'].auxiliary_brains, [])
+            # The frozen prior still refuses the detector-fitted brain as a selection brain.
+            frozen = parse(driver, tmp, '--selection-brains', '794495,802449')
+            with self.assertRaisesRegex(ValueError, 'detector training brains'):
+                run_driver(driver, frozen, banks, revise)
 
     def test_a_seed_reading_the_score_is_refused_before_evaluation(self):
         from proofreader_evolve.cli import run_precision_evolution as driver
@@ -190,7 +242,7 @@ class DriverTests(unittest.TestCase):
                 experiments.restore('parent')
                 return {'summary': 'descriptor only', 'cost_usd': 0}
 
-            args = parse(driver, tmp, *common, '--context-cache', str(root / 'partial'))
+            args = parse(driver, tmp, *common)
             run_driver(driver, args, full, revise)
         self.assertEqual(seen['result']['status'], 'registered')
         self.assertNotIn('bank_context_available', seen['statistics'])

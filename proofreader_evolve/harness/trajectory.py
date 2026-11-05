@@ -78,7 +78,8 @@ class Trajectory:
             # Thinking/signature blocks are deliberately not serialized.
         elif isinstance(message, SystemMessage):
             # Do not dump arbitrary session metadata (environment, credentials).
-            self.emit("sdk_status", message.subtype)
+            if message.subtype != 'thinking_tokens':
+                self.emit("sdk_status", message.subtype)
         elif isinstance(message, ResultMessage):
             self.emit("agent_result", message.result or message.subtype,
                       is_error=message.is_error, subtype=message.subtype,

@@ -1,12 +1,17 @@
 # Plan: ablation from raw candidates (`--detector-prior raw`)
 
-Note (2026-10-30): the context-cache parts below (coverage rule, `all_cached` scope, `--context-cache`)
-are superseded by on-demand contexts and the `judgeable` production scope (`on_demand_contexts.md`);
-the mode itself is unchanged.
+This is the historical 2026-10-27 design record, except for the explicitly updated
+launch examples below. Use `../WORKFLOW_REVISION.md` and `../../docs/stage3_evolution.md`
+for the current workflow. The old context-cache coverage rule, `all_cached` scope and
+`--context-cache` option are superseded by on-demand contexts and the `judgeable`
+production scope (`on_demand_contexts.md`); the CLI no longer accepts that option.
+Since 2026-11-04 preflight accepts `--detector-prior`, and raw runs may include
+detector-fitted TRAIN brains in selection. Under raw, selection defaults to all TRAIN
+brains, but whole-brain holdouts still require `--selection-holdout-brains all`.
 
 Status (2026-10-27): implemented the same day (`harness/detector_prior.py`, driver, `context_cache.contexts`,
 `tests/test_raw_prior.py`; design record section "Raw-candidate ablation" in `WORKFLOW_REVISION.md`).
-Step 3 (preflight mode column) was dropped: the preflight does not take the mode. Decisions taken with the
+Step 3 (preflight mode column) was dropped at that time; preflight now accepts the mode as noted above. Decisions taken with the
 user the same day:
 (1) raw columns as listed below, no coordinates, occurrence aggregates included; (2) constant
 seed; (3) descriptor generation wall budget 7200 s for raw runs; (4) runs are sequential, one
@@ -150,28 +155,44 @@ per-call wall for raw runs in a follow-up, not in this change.
 
 Estimated effort: code half a day, tests and docs half a day, seed baselines under an hour.
 
-## Running the comparison (decision 4: sequential, one setup per run)
+## Current launch examples (2026-11-04; sequential, one setup per run)
+
+Run from an allocated compute node with the `panda` environment active. These examples
+use mode-specific selection roles: frozen/no-score retain the original roles, while raw
+holds out all six TRAIN brains whole. They therefore change both the input prior and
+the selection partition. For a controlled prior-only comparison, pass the same explicit
+selection and holdout lists to all three arms (use `EVOLUTION_DETECTOR_SELECTION` for raw
+as well). The remaining sections retain the original design assumptions.
 
 ```bash
-# common flags (objective v5, eleven-brain partition)
-COMMON="--train-brains 794495,802449,747807,754610,754612,754613 \
-  --selection-brains 802449,747807,754610,754612,754613 \
-  --selection-holdout-brains 747807,754610,754612,754613 \
-  --validation-brains 789202,794493,794491,750318,751473 \
-  --context-cache proofreader_evolve/context_cache --classifier-memory-mb 98304 \
-  --classifier-time-budget 3600 --policy-time-budget 2400"
-# --classifier-threads 8 and --descriptor-workers 24 are the defaults since 2026-10-27.
+# Bash arrays keep shared resource settings separate from mode-specific brain roles.
+EVOLUTION_COMMON=(
+  --train-brains 794495,802449,747807,754610,754612,754613
+  --validation-brains 789202,794493,794491,750318,751473
+  --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400
+  --generations 20
+)
+EVOLUTION_DETECTOR_SELECTION=(
+  --selection-brains 802449,747807,754610,754612,754613
+  --selection-holdout-brains 747807,754610,754612,754613
+)
+# Defaults: AUROC, positive-weighted aggregation, 8 classifier threads, up to 24
+# descriptor workers, descriptor walls 7200 s/call and 14400 s/generation.
 # 1. frozen (main result)
-python -u -m proofreader_evolve.cli.run_evolution $COMMON --generations 20
+python -u -m proofreader_evolve.cli.run_evolution \
+  "${EVOLUTION_COMMON[@]}" "${EVOLUTION_DETECTOR_SELECTION[@]}"
 # 2. no-score (fitted ranking withheld)
-python -u -m proofreader_evolve.cli.run_evolution $COMMON --detector-prior no-score --generations 20
+python -u -m proofreader_evolve.cli.run_evolution \
+  "${EVOLUTION_COMMON[@]}" "${EVOLUTION_DETECTOR_SELECTION[@]}" --detector-prior no-score
 # 3. raw (discovered features withheld too)
-python -u -m proofreader_evolve.cli.run_evolution $COMMON --detector-prior raw \
-  --descriptor-generation-wall-seconds 7200 --generations 20
+python -u -m proofreader_evolve.cli.run_evolution \
+  "${EVOLUTION_COMMON[@]}" --detector-prior raw \
+  --selection-brains all --selection-holdout-brains all
 ```
 
-Each run is preceded by its own `--generations 0` seed baseline. Runs share nothing but the
-tables and the context cache: each arm has its own descriptor bank. Stopping a run launched
+Each run can be preceded by its own seed check by replacing `--generations 20` with
+`--generations 0`. Contexts are read on demand; each arm has its own descriptor bank.
+Stopping a run launched
 with `nohup ... &` needs `kill -TERM -- -<driver pid>` (SIGINT is ignored in that setting).
 
 ## Not in scope

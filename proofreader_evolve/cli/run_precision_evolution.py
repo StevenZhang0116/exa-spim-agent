@@ -2,10 +2,13 @@
 
 No graph edits, candidate expansion, original detector retraining or table preparation.
 Default TRAIN: 794495. Validation: all other eligible, prepared local datasets.
-TRAIN branches are ranked by the selection protocol: grouped out-of-fold precision on
+TRAIN branches are ranked by the selection protocol: grouped out-of-fold objective on
 selection brains the detectors were not fitted on (auxiliary TRAIN brains only supply
-fitting rows), or the historical in-sample protocol for attribution runs.
-Promote on the target-kind validation objective (AUROC by default since 2026-11-02, Precision@K before)
+fitting rows), or the historical in-sample protocol for attribution runs. Under
+`--detector-prior raw` no detector-derived input remains, so every TRAIN brain may be a
+selection brain and `--selection-brains all --selection-holdout-brains all` scores each
+brain whole by a model that never saw it (2026-11-04).
+Promote on the target-kind validation objective (AUROC by default)
 whose paired-bootstrap lower bound is above zero, subject to a head guard on precision at K/2, K and 2K
 (`--promotion-gate bootstrap`, default); individual brain regressions are allowed.
 Generations go to one kind each, chosen by a rotation floor, pending follow-up, recent validation
@@ -36,7 +39,7 @@ from ..harness.reviser_session import DEFAULT_MODEL, build_options, bind_session
 from ..harness.trajectory import Trajectory, log_metrics, save_diffs
 from ..harness.evolution_report import update_report
 from ..harness.run_lifecycle import record_execution
-from ..harness.train_feedback import write_train_feedback, render_compact_json, metrics_only, MAX_FEEDBACK_BYTES, FEEDBACK_VERSION
+from ..harness.train_feedback import write_train_feedback, render_compact_json, metrics_only, FEEDBACK_VERSION
 from ..harness.search_proposals import read_proposal
 from ..harness.hypothesis_memory import sanitize_handoff
 from ..harness.selection_protocol import SelectionProtocol, load_selection, PROTOCOL_VERSION
@@ -144,229 +147,62 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
     options = bind_session_options(
         options, policy_path, rules_path, report_path,
         readable_paths=readable, readable_dirs=readable_dirs,
+        readable_png_dirs=([policy_path.parent / 'image_inspections',
+                            *(d.parent / 'image_inspections' for d in earlier_dirs
+                              if d.name == 'experiments')] if experiments is not None else []),
         training_server=experiments.mcp_server() if experiments else None)
     result = None
     prompt = (
-        f"Read TRAIN feedback at {report_path}. Improve {policy_path} and update {rules_path}. "
-        "Follow the fixed-pool scorer contract. Do not change the candidate pool, budgets or evaluator. "
-        f"You have at most {max_turns} SDK turns. The compact feedback is at most {MAX_FEEDBACK_BYTES // 1000} KB; read it once. "
-        "Feature vectors align with example labels/scores by index. Groups are diagnostic samples, not a dataset. "
-        "Reserve turns to write scorer.py and rules.md and return your summary; avoid repeated tiny reads. "
-        "Read a file before you Edit or Write it; the tools reject edits to files not read in this session. "
-        "Briefly describe the planned change before editing. "
-        "At the end, summarize what changed, the TRAIN evidence motivating it, "
-        "and the expected effect. Do not claim evaluation results you have not observed."
+        f"Read TRAIN feedback at {report_path}. Improve {policy_path}; record evidence and next steps in {rules_path}. "
+        f"You have at most {max_turns} SDK turns. Validation data and logs are unavailable. "
+        "Read a file before editing it. Do not change pools, labels, budgets or the evaluator. "
+        "Finish with scorer.py exactly matching a successfully evaluated snapshot; the host replaces untested "
+        "edits with this generation's best measured candidate. Report only results you observed. "
     )
     if experiments is not None:
+        plan = experiments.search_plan
         prompt += (
-            f" This generation changes ONLY the {experiments.target_kind} component; the harness freezes the other kind. "
-            f"Whole-TRAIN feature statistics are at {policy_path.parent / 'feature_statistics.json'}. "
-            "Your measured attempts, classifier fits, descriptor runs and probes in this generation directory "
-            "(experiments/, classifier_fits/, descriptor_runs/, descriptor_probes/) are readable; a tool result the SDK parks on disk "
-            "is also readable, or read the attempt's result.json instead. Earlier generations' scorer.py, "
-            "training.py, descriptor.py, analysis.py, proposal.json, search_plan.json, train_feedback.json and "
-            "their experiments/, classifier_fits/, TRAIN descriptor_runs/ and descriptor_probes/ trees are readable too: read a previous "
-            "program before rewriting it from memory. Validation descriptor logs (validation_descriptor_runs/ "
-            "and legacy descriptor_runs/inference/) are host-only in every generation. "
-            "search_plan.search_parent.outer_measurement and the candidate pool's "
-            "outer_measurement fields say whether the outer evaluator already measured a candidate and whether it "
-            "was promoted; a submission identical to one of those (same bytes or the same scores on every TRAIN and "
-            "selection cell) ends the generation as repeated with no outer evaluation, so in a tuning round the control "
-            "arm is for comparison, not for submission. "
-            "Use mcp__training__search_memory to look up related previous strategies before repeating them. "
-            "Read failure_cases.json, hypothesis_memory.json and feature_discovery_guide.md once. "
-            "The feedback examples and failure cases describe the search branch you start from (search_branch); "
-            "failure_cases.branch_vs_accepted lists positives it newly finds (keep them), positives it loses and "
-            "positives both it and the accepted scorer miss (the open gap). hypothesis_memory.handoff carries the "
-            "previous sessions' open questions, evidence verdicts and proposed next experiment with host-measured "
-            "outcomes; read it first. Before you finish, add proposal.json.handoff (open_questions, evidence with "
-            "verdicts, next_experiment) so the next session can continue instead of restarting. "
-            "Use direct 3D analysis to investigate image evidence on a few TRAIN candidates when no pool-scale "
-            "descriptor tools are offered; with descriptor tools enabled, use probe_descriptor to debug "
-            "describe on exact inputs, then compute_descriptors for pool-scale measurements. "
-            "run_volume_analysis remains available for separate local investigations. "
-            "For a new image hypothesis, first inspect 2-4 matched TRAIN cases across at least two brains when "
-            "available, using exact-input native-slice previews plus numerical 3D measurements. Include positive "
-            "and negative controls; then probe uniformly across TRAIN brains. If previews are disabled or fail, "
-            "use numerical 3D controls and record the limitation. Expand samples only when initial results leave "
-            "a concrete uncertainty; spending the full preview allowance is not a goal. "
-            "Read volume_analysis_guide.md, edit analysis.py analyze(context) and analysis_request.json, "
-            "then call run_volume_analysis({}). Your code receives full original 3D pixel arrays, "
-            "valid masks, zyx voxel anchors/spacing and local fragment nodes in the same voxel frame. "
-            "Choose your own analysis algorithm and return compact JSON findings; no fitting or "
-            f"2D viewing is required first. Select 1..{MAX_CASES} TRAIN candidate handles per call, for example "
-            "a group of missed positives against a group of selected label-0 rows; eight analysis "
-            "executions per generation have a separate budget. Repeated calls run the current code anew. "
-            "The request is initially populated with one matched failure pair when available. "
-            "These chosen cases need not be in the LOCAL_IMAGE scoring subset. A successful analysis "
-            "is exploratory evidence, not a measured ranking improvement or an automatically added feature. "
-            "Read image_context_guide.md to convert useful analyses into scoring inputs. LOCAL_IMAGE with "
-            "extract_image_features(context) adds image_* predictors; a training program can instead "
-            "request raw_patches and receive an images keyword argument in fit/predict. Choose any "
-            "installed CPU model within the budget. The host reads and registers images; no network "
-            "access or cloud credentials enter agent code. Image extraction uses a bounded subset of "
-            "candidates, with missing images explicitly represented. For raw-patch ablation, include "
-            "image_available in research.feature_columns to remove the patch input as well. "
-            "Bridge small investigations to ranking with LOCAL_IMAGE selection_mode='top_k_boundary', "
-            "a literal selection_k equal to feedback.budgets for this kind, and an explicit max_candidates. "
-            "Call plan_image_scoring({}) to preview label-free TRAIN coverage without IO. Start with a "
-            "bounded boundary pilot, then expand coverage up to 4096 rows if the evidence and IO budget justify it. "
-            "Numeric extraction is batched by rows/bytes under one shared timeout; raw-patch model inputs "
-            "still have a 1 GiB staging limit. Keep the same frozen selector on all brains. "
-            "Inspect image_context.selection_coverage and scoring_coverage: selected rows, rows inside/outside "
-            "the base-predictor K boundary, and actual final Top-K image coverage are different quantities. "
-            "At the final coverage, ablate exactly the image_* features plus image_available to isolate "
-            "image contribution. A small-case analysis or pilot ablation does not establish gain at larger coverage. "
-            "Optional inspect_candidate_image/inspect_failure_images tools return native slice sheets with "
-            "separate raw and depth-clipped overlays. inspect_candidate_image's preview object selects plane, "
-            "anchor_index (split endpoint), depth_range_um and slice_count; inspect actual depths and skipped "
-            "planes. The overview view retains maximum projections, which can hide depth relationships. "
-            "Use full 3D analysis/probes to test visual hypotheses with background controls and threshold checks. "
-            "Previews share the configured per-generation allowance in model_environment.json (default 32) "
-            "and are not prerequisites for 3D analysis. Compare TRAIN selected/missed positives and "
-            "selected/unselected negatives across brains using the official fold-wise feedback groups. "
-            "Start with a few matched cases; for promising descriptors expand numerical probes from "
-            "128 to 512 or 1024 rows per brain within the remaining wall budget. See image_context_guide.md "
-            "for comparison controls; neither more previews nor a larger probe establishes ranking gain. "
-            "No GT graph or validation inspection is exposed through either route. "
-            "In explore mode, start from a matched failure pair and an explicit, falsifiable distinction. "
-            "If local geometry can test it, call inspect_failure_cases({}) once for the paired neighborhoods, "
-            "rather than repeatedly opening individual examples. These cases are diagnostic, not a dataset. "
-            "Use hypothesis_advice in search_plan.json to avoid spending another round on a stagnant direction. "
-            "A new parameter value or family name alone is not new evidence. Consider a new information "
-            "source, feature mechanism or complementary failure slice when the existing direction stalls. "
-            f"For local morphology, read {policy_path.parent / 'local_context_guide.md'}. "
-            "Use mcp__training__inspect_candidate with a candidate_ref from TRAIN feedback, "
-            "radius_um=50 and occurrence_index=0 to examine location, fragments and nearby branches. "
-            "You have eight neighborhood inspections per generation. In explore mode you may add "
-            "LOCAL_CONTEXT and extract_local_features(context) to scorer.py or training.py. "
-            "The host computes your declared local_* columns in isolation for TRAIN and frozen validation inference. "
-            "Only TRAIN can be inspected; GT graphs and absolute IDs never enter feature extraction. "
-            f"Read {policy_path.parent / 'search_plan.json'} and {policy_path.parent / 'candidate_pool.json'}. "
-            "The TRAIN pool keeps the overall champion plus specialists that recover different positives "
-            "or lead a geometry slice, even outside the configured near-best precision tolerance. "
-            "A separate reference_branch is protected outside that pool. A newly supplied reference gets "
-            "the next same-kind round for one fresh follow-up, with at most one retry; otherwise it receives "
-            "every third scheduled round of this kind. Its supplied measurements are TRAIN-only. "
-            "When search_plan.branch_role is reference, develop the assigned reference using its TRAIN "
-            "diagnostics; do not abandon it solely because another archived method has a higher selection score. "
-            "Read search_plan.investigation and research_status.json. These are host-enforced assignments: "
-            "when followup_required is true, perform a new measurement from the assigned workspace branch. "
-            "Restoring an unrelated historical candidate does not complete that follow-up. After two "
-            "same-kind rounds without new measurements, or a performance plateau, an investigation requires "
-            "a NEW paired TRAIN feature ablation or numerical 3D analysis on at least two distinct TRAIN "
-            "candidates. When required_source is raw_image, compare 3D patches or ablate all image inputs. "
-            "Negative findings are valid. Previews, repeated observations, cached restores, changed comments "
-            "or deferred plans do not complete the assignment. A score-only parameter tweak is not a paired "
-            "comparison. If follow-up and investigation coincide, run that comparison on the assigned branch. "
-            "Tool replies include live completion feedback. Reserve budget for the comparison; incomplete "
-            "assignments retain the accepted policy and skip outer evaluation. "
-            "Inspect specialist_profile, retention, vs_champion and vs_other_retained in candidate_pool.json, "
-            "and complementary_candidates in search_plan.json. Slice recall counts positives under the SAME "
-            "global Top K, not a separate per-slice budget. In explore mode, use restore_candidate with "
-            "these experiment IDs to inspect complementary measured methods and develop a new combination "
-            "or improve a weak slice. State which missed-positive group your hypothesis targets. "
-            f"This is a {experiments.search_plan['mode']} generation. In tune mode ONLY change numeric values "
-            "in the top-level PARAMS dictionary, or refit numeric hyperparameters of the assigned classifier. "
-            "The formula or training program and nonnumeric parameters stay fixed. In explore mode "
-            "freely redesign the training program, model, preprocessing, loss, ensemble or feature selection. "
-            "Put a testable hypothesis, strategy, short family name and parameter_grid in proposal.json. "
-            "For a new investigation also include research with a stable hypothesis_id, failure_mode, "
-            "information_source (e.g. local_geometry), prediction, and optional feature_columns. "
-            "Reuse the ID across numeric variants of the same hypothesis; use a new ID for a different mechanism. "
-            "For a claimed feature improvement, call evaluate_feature_ablation({}) with an empty parameter_grid "
-            "before final full-TRAIN fitting. The same classifier program and parameters are refit in three "
-            "framework-owned TRAIN folds, with and without the declared input feature group. This costs TWO "
-            "evaluation units (one per arm). It does not restore or submit a scorer. "
-            "Formula ablation also costs TWO units and is descriptive, not a generalization estimate. "
-            "Features are constant-masked in both fit/predict to preserve arbitrary model input schemas. "
-            "An unavailable or failed diagnostic supplies no scientific conclusion. Treat measured feature "
-            "evidence as specific to its exact program, parameters, columns and split. "
-            'Example: {"hypothesis":"Geometry helps near K","strategy":"Blend geometry and detector",'
-            '"family":"geometry-blend","parameter_grid":{"weight":[0.5,1,2]}}. '
-            "A hand-written formula defines PARAMS = {'weight': 1.0} and references PARAMS['weight']. "
-            "Call mcp__training__evaluate_train({}) for a single measurement or "
-            "mcp__training__search_parameters({}) to evaluate the grid and automatically restore its best candidate. "
-            f"For genuine supervised fitting, read {policy_path.parent / 'classifier_guide.md'}, "
-            "write training.py with fit(X_train, y_train, artifact_dir, params) and predict(X, artifact_dir, params), "
-            "set proposal.json.classifier.parameters, and call mcp__training__train_classifier({}). "
-            "Read model_environment.json for installed packages and resource limits. "
-            "Choose any CPU model supported by installed packages and the resource budget. "
-            "The harness supplies TRAIN rows labeled 1 or 0 only (NaN-label rows are withheld; declare an X_unlabeled "
-            "keyword in fit to receive a sample of their predictors), saves your artifacts, and writes measured scorer.py. "
-            "Save fitted preprocessing with the model; predict receives read-only artifacts and no labels. "
-            "Do not edit the generated manifest. No network, package installation or child processes. "
-            f"Branch ranking, grid winners, specialists and stall counters use the official selection score "
-            f"described by selection_protocol in the feedback (mode={experiments.protocol.mode}). "
-            + ("Under grouped_oof it is grouped out-of-fold precision on the selection brains "
-               f"({', '.join(experiments.protocol.selection_brains)}): every classifier configuration is first "
-               "refit by the host in three fixed, fragment-purged folds and ranked by out-of-fold precision with "
-               "fold budgets summing to K; the full-TRAIN fit is the frozen candidate. Auxiliary TRAIN brains "
-               f"({', '.join(experiments.protocol.auxiliary_brains) or 'none'}) only supply fitting rows and are "
-               "never held out. Formulas are scored under the same partition. parent_train/candidate_train "
-               "in-sample numbers are diagnostics and rank nothing. A model that memorizes TRAIN rows will "
-               "score high in-sample and low out-of-fold. "
-               "If fit declares a `groups` keyword it receives the label-free source brain of each training "
-               "row, so you can weight or block auxiliary rows. "
-               if experiments.protocol.requires_fold_fits else
-               "In this run the selection score is the historical in-sample TRAIN ranking; it is not an "
-               "independent generalization estimate. ")
-            + f"Budget: {experiments.max_evaluations} evaluation units total across all evaluation and fitting tools; "
-            "one classifier configuration costs one unit (its fold refits plus the full-TRAIN fit and scoring), "
-            "including failed fits; a feature ablation costs one unit per arm. "
-            "One extra scorer attempt follows the first scorer execution error; failed ablations do not grant it. "
-            "Cached repeats and proposal-format errors "
-            "do not spend evaluation budget, but tool calls still consume SDK turns. Grid combinations must fit "
-            "the remaining budget. Prefer one grid call to hand-editing constants across many calls. "
-            "Classifier search also has a generation wall budget (model_environment.json): after a configuration "
-            "exhausts it, further uncached fits stop, while cached fits and candidate restore remain available. "
-            "Check classifier_seconds_remaining before another costly grid. "
-            "During feature exploration start with one fixed seed and a compact model. Reserve two units for "
-            "a paired feature ablation before optional parameter or seed searches; an already measured controlled "
-            "same-parameter with/without comparison need not be repeated. Try ensembles only after a feature "
-            "increment is supported. Candidate tool results expose selection_comparison and timings: compare "
-            "overall, whole-brain holdout and per-brain deltas, and weigh small gains against fit/OOF/scoring cost. "
-            "These diagnostics do not change the selection objective or promotion gate. fit and predict may "
-            "declare a threads keyword to use the host-granted CPU budget (see classifier_guide.md). "
-            "Inspect measured precision, gained/lost positives and top-K overlap before revising again. "
-            "The initial scorer is the selected exploration branch. The feedback examples, ranking_delta and "
-            "failure cases describe this branch; parent_train, parent_selection and the promotion gate refer to "
-            "the accepted scorer, which can differ from it. "
-            'Use mcp__training__restore_candidate({"candidate_id":"parent"}) to measure/recover the assigned '
-            'branch from cache, or {"candidate_id":"best"} to restore the best measured candidate of this generation. '
-            "IDs such as gen002/attempt001 restore earlier measured branches without rewriting their source. "
-            "Finish with scorer.py exactly matching a successfully evaluated snapshot; otherwise the host ignores the untested "
-            "edit and submits this generation's best measured candidate. "
-            "Summarize observed TRAIN evidence and "
-            "remaining uncertainty in rules.md. Validation is unavailable to this session."
+            f"\nAssignment: kind={experiments.target_kind}; mode={plan['mode']}; "
+            f"branch_role={plan.get('branch_role', 'search')}; "
+            f"search_parent={plan['search_parent'].get('experiment')}. The other kind is frozen. "
+            "Read search_plan.json, hypothesis_memory.json, failure_cases.json and candidate_pool.json. "
+            "The starting branch's examples can differ from the accepted parent used by the gate. "
+            "Tune mode permits numeric parameter changes only; explore mode permits new programs and features. "
+            "Repeated submissions with previously measured source or TRAIN/selection scores skip outer evaluation. "
+            f"\nHost-enforced research assignment: {json.dumps({'investigation': plan.get('investigation'), 'followup_required': plan.get('followup_required', False)})}. "
+            "Read research_status.json and the live status in tool replies. Required follow-ups need a NEW "
+            "measurement from the assigned branch. Required investigations need a NEW paired TRAIN feature "
+            "ablation or numerical 3D comparison on at least two distinct TRAIN candidates; raw_image "
+            "assignments need 3D patches or removal of all image inputs. If both apply, compare on the assigned "
+            "branch. Negative findings count; previews, cached restores and deferred plans do not. "
+            "Incomplete assignments retain the accepted policy and skip outer evaluation. "
+            f"\nEvaluation units: {experiments.remaining} remaining of {experiments.max_evaluations}. "
+            "model_environment.json is the resource-limit reference; tool replies report remaining budgets. "
+            "Use the configured TRAIN selection objective to compare attempts; selection_comparison shows "
+            "overall, holdout and per-brain changes, and timings show cost. Start with one fixed seed and a "
+            "compact model; reserve two units for paired ablation before optional grids or ensembles. "
+            "\nFor a new image hypothesis, start with 2-4 matched TRAIN cases across brains, native slices and "
+            "numerical 3D positive/negative controls; then a uniform probe (default 128/brain). Expand only to "
+            "resolve a concrete uncertainty. If previews fail or are disabled, record that and use numerical controls. "
+            "\nRead guides when using their interfaces: classifier_guide.md for training.py and train_classifier; "
+            "descriptor_guide.md for descriptor.py and check/probe/plan/compute_descriptors; "
+            "image_context_guide.md for previews and image features; volume_analysis_guide.md for independent "
+            "3D investigations; local_context_guide.md for geometry; feature_discovery_guide.md for proposals, "
+            "ablation and research handoff. Formula tools evaluate_train/search_parameters remain available. "
+            "Use search_memory before repeating work; restore_candidate restores measured snapshots. "
+            "Current/earlier TRAIN experiments, classifier fits, descriptor runs/probes and image_inspections "
+            "PNGs are readable; image inspection audit JSON and validation logs remain host-only. "
+            "Write proposal.json with hypothesis, strategy, family and parameter_grid, plus classifier.parameters "
+            "for fitting; include research for a feature hypothesis and handoff before finishing. Keep rules.md "
+            "to observed evidence, uncertainty and next steps, without copying the contract or guides. "
         )
         if experiments.memory.descriptor_runs is not None:
             budget = experiments.descriptor_budget
-            runs = experiments.memory.descriptor_runs
-            scopes = list(getattr(runs, 'allowed_scopes', DESCRIPTOR_SCOPES))
-            prompt += (
-                " POOL-SCALE DESCRIPTORS: the host reads fragment neighbourhoods and original image crops on demand "
-                "for any native candidate, without a precomputed context directory. Write descriptor.py with a literal "
-                "DESCRIPTOR dict and describe(context) that returns the quantities you want measured; read "
-                f"{policy_path.parent / 'descriptor_guide.md'} once. Call check_descriptor({{}}) before graph loading "
-                "to check syntax, the function signature and registered-name conflicts for free. Then use "
-                "probe_descriptor on a few matched TRAIN cases with previews of the exact inputs; sample uniformly across brains to check "
-                "feature distributions. The optional DESCRIPTOR.image specifies level and radius_um. "
-                "Call plan_descriptor_run({}) to estimate all TRAIN brains and, per allowed scope, the frozen "
-                "inference on the other brains at submission (it reuses the scope you compute with), then "
-                'compute_descriptors({"scope": "judgeable"}) to run it over the rows the outer measurement can score '
-                f"of the TRAIN brains with up to {experiments.memory.descriptor_runs.workers} sandboxed workers; "
-                "actual concurrency is limited by CPU affinity and current job memory headroom. "
-                f"Allowed production scopes in this run: {json.dumps(scopes)}. "
-                f"Budget: {budget['per_call_seconds']:.0f} s per call and {budget['generation_seconds']:.0f} s per "
-                "generation of wall time, plus one evaluation unit per uncached call; valid cached results are free. "
-                "Probes and planning also consume descriptor wall time, without evaluation charges. "
-                "The reply returns TRAIN finite/nonzero counts, ranges, standard deviations, quartiles and coverage, and registers "
-                "bank_agent_<name> predictor columns (NaN on uncomputed rows) "
-                "that scorer.py, training.py and evaluate_feature_ablation can use immediately. "
-                "Use probe_descriptor to debug the same describe code and inputs; run_volume_analysis remains "
-                "available for separate local investigations. Examples of earlier descriptors are in the guide."
-            )
+            prompt += (f"\nDescriptor wall limits: {budget['per_call_seconds']:.0f} s/call, "
+                       f"{budget['generation_seconds']:.0f} s/generation; "
+                       f"{experiments.descriptor_seconds_remaining:.0f} s remaining. "
+                       "Check descriptor syntax before preparation; plan before production computation. "
+                       "Default scope is judgeable; allowed scopes and charging rules are in the environment and guide.")
     (policy_path.parent / "reviser_prompt.txt").write_text(prompt)
     trace.emit("reviser_start", f"Starting {model}; max_turns={max_turns}; prompt saved to reviser_prompt.txt",
                model=model, max_turns=max_turns)
@@ -410,6 +246,10 @@ def _csv_brains(value):
     if any(not b.isascii() or not b.isdigit() for b in brains) or len(set(brains)) != len(brains):
         raise argparse.ArgumentTypeError("Use distinct comma-separated numeric brain IDs")
     return brains
+
+
+def _brains_or_all(value):
+    return "all" if value == "all" else _csv_brains(value)
 
 
 def _validation_brains(value):
@@ -465,18 +305,22 @@ def parse_args(argv=None):
                    type=_validation_brains, default=None, metavar="auto|ID,ID,...",
                    help="Other eligible brains with matching caches and prepared tables (default: auto); "
                         "or an explicit comma-separated list. Development validation, not final testing")
-    p.add_argument("--selection-brains", type=_csv_brains, default=None, metavar="ID,ID,...",
+    p.add_argument("--selection-brains", type=_brains_or_all, default=None, metavar="ID,ID,...|all",
                    help="TRAIN brains that provide the official grouped out-of-fold selection score "
-                        "(default: every TRAIN brain the frozen detectors were not fitted on). Remaining "
-                        "TRAIN brains are auxiliary fitting data; their in-sample scores are diagnostics")
+                        "(default: every TRAIN brain the frozen detectors were not fitted on; under "
+                        "--detector-prior raw every TRAIN brain, since no detector-derived input remains). "
+                        "'all' names every TRAIN brain. Remaining TRAIN brains are auxiliary fitting data; "
+                        "their in-sample scores are diagnostics")
     p.add_argument("--selection-protocol", choices=("grouped_oof", "in_sample"), default="grouped_oof",
-                   help="grouped_oof ranks TRAIN branches by out-of-fold precision on selection brains "
+                   help="grouped_oof ranks TRAIN branches by the configured out-of-fold objective on selection brains "
                         "(default); in_sample keeps the historical full-pool in-sample ranking for attribution")
-    p.add_argument("--selection-holdout-brains", type=_csv_brains, default=None, metavar="ID,ID,...",
-                   help="Selection brains held out whole (one fold each, grouped_oof only, 2026-10-27): their "
-                        "out-of-fold scores come from models that never saw the brain, a cross-brain selection "
-                        "signal reported as holdout_precision; the other selection brains keep their within-brain "
-                        "grouped folds (default: none)")
+    p.add_argument("--selection-holdout-brains", type=_brains_or_all, default=None, metavar="ID,ID,...|all",
+                   help="Selection brains held out whole (round-robin over the three folds, grouped_oof only, "
+                        "2026-10-27): their out-of-fold scores come from models that never saw the brain, a "
+                        "cross-brain selection signal reported as holdout_objective; the other selection brains "
+                        "keep their within-brain grouped folds (default: none). 'all' holds out every selection "
+                        "brain, so the selection score is a whole-brain out-of-fold measurement everywhere "
+                        "(at least three selection brains)")
     p.add_argument("--skip-auxiliary-ablation", action="store_true",
                    help="Skip the one-time baseline diagnostic that refits the seed training template with "
                         "and without auxiliary TRAIN rows under the selection protocol")
@@ -490,8 +334,6 @@ def parse_args(argv=None):
     p.add_argument("--bootstrap-alpha", type=float, default=.05,
                    help="Two-sided interval level of the bootstrap gate (default: 0.05, a 95%% interval); "
                         "promotion needs the lower bound above zero")
-    p.add_argument("--context-cache", type=Path, default=None,
-                   help="Deprecated compatibility argument; ignored. Contexts are read on demand by default")
     p.add_argument("--no-descriptors", action="store_true",
                    help="Disable pool-scale descriptor tools (enabled by default)")
     p.add_argument("--image-previews-per-generation", type=int, default=DEFAULT_IMAGE_PREVIEWS,
@@ -527,19 +369,17 @@ def parse_args(argv=None):
     # (WORKFLOW_REVISION "Uniform K = GT positives").
     p.add_argument("--merge-k", type=_cap_argument, default=None,
                    help="Top-K cap per merge cell over GT-labeled rows, or 'none' for no cap "
-                        "(default since 2026-10-27: no cap, K = ceil(ratio x GT positives); 300 from 2026-10-09, "
-                        "100 before)")
+                        "(default: no cap, K = ceil(ratio x GT positives))")
     p.add_argument("--split-k", type=_cap_argument, default=None,
-                   help="Top-K cap per split cell over GT-labeled rows, or 'none' (default since 2026-10-26: no cap, "
-                        "K = ceil(ratio x GT positives); 1000 from 2026-10-12, 500 from 2026-10-09, 100 before)")
+                   help="Top-K cap per split cell over GT-labeled rows, or 'none' (default: no cap, "
+                        "K = ceil(ratio x GT positives))")
     p.add_argument("--k-positive-ratio", type=_ratio_argument, default={"merge": 1.0, "split": 1.0},
                    help="Each pool ranks K = ceil(ratio x its GT positives), limited to the kind cap when there is "
                         "one; a single number applies to every kind, 'merge=R,split=R' sets each kind; 0 keeps the "
-                        "fixed kind cap (default: 1 for both kinds since 2026-10-27, i.e. K = GT positives; "
-                        "merge=2,split=1 from 2026-10-26; 2.0 for both from 2026-10-12)")
+                        "fixed kind cap (default: 1 for both kinds, i.e. K = GT positives)")
     p.add_argument("--min-positives", type=int, default=20,
                    help="Pools with fewer GT positives are scored and reported but excluded from the promotion "
-                        "objective, the bootstrap and kind headroom; 0 counts every pool (default: 20, 2026-10-12)")
+                        "objective, the bootstrap and kind headroom; 0 counts every pool (default: 20)")
     p.add_argument("--aggregation", choices=scoring.AGGREGATIONS, default="positive-weighted",
                    help="How the counted pools are combined separately for each kind, in "
                         "selection, validation, the bootstrap and kind headroom: positive-weighted (default) "
@@ -547,9 +387,9 @@ def parse_args(argv=None):
                         "each eligible brain equal weight when explicitly selected")
     p.add_argument("--objective", choices=rank_statistics.OBJECTIVES, default="auroc",
                    help="Rank statistic that selection, feature ablation, the bootstrap and promotion compare over the "
-                        "same GT-labeled rows and pools: auroc (default since 2026-11-02: the probability that a GT "
+                        "same GT-labeled rows and pools: auroc (default: the probability that a GT "
                         "positive outranks a GT negative, ties one half), pauc (partial AUROC up to --pauc-fpr), "
-                        "average_precision, or precision_at_k (the rule of every run before). Every statistic is "
+                        "average_precision, or precision_at_k. Every statistic is "
                         "recorded in every cell whatever the objective")
     p.add_argument("--pauc-fpr", type=float, default=rank_statistics.DEFAULT_PAUC_FPR,
                    help="False-positive-rate bound of the partial AUROC statistic (default: 0.1)")
@@ -563,8 +403,7 @@ def parse_args(argv=None):
     p.add_argument("--precision-margin", type=float, default=0,
                    help="Required absolute gain in the target-kind validation objective over its counted pools (default: 0)")
     p.add_argument("--policy-time-budget", type=float, default=300,
-                   help="Scoring/feature worker budget and 3D analysis worker timeout, in seconds (default: 300; "
-                        "120 before 2026-10-06, raised with the 16-case analysis limit)")
+                   help="Scoring/feature worker budget and 3D analysis worker timeout, in seconds (default: 300)")
     p.add_argument("--classifier-time-budget", type=float, default=300,
                    help="Wall/CPU budget per fitting worker, in seconds (default: 300)")
     p.add_argument("--classifier-search-seconds", type=float, default=3600.,
@@ -573,10 +412,9 @@ def parse_args(argv=None):
                         "Cache reuse and restoring measured candidates remain available after exhaustion")
     p.add_argument("--classifier-memory-mb", type=int, default=16384,
                    help="Address-space limit for fitting, fit-time extraction, diagnostics, 3D analysis and "
-                        "fixed-pool scoring (default: 16384 MiB; 8192 before 2026-10-08)")
+                        "fixed-pool scoring (default: 16384 MiB)")
     p.add_argument("--classifier-threads", type=int, default=8,
-                   help="Numerical library CPU threads for fit/predict and 3D analysis (default: 8 since "
-                        "2026-10-27; 1 before)")
+                   help="Numerical library CPU threads for fit/predict and 3D analysis (default: 8)")
     p.add_argument("--start-from-artifacts", type=Path,
                    help="Model artifact store for --start-from (default: sibling model_artifacts directory)")
     p.add_argument("--model", default=DEFAULT_MODEL)
@@ -623,7 +461,7 @@ def parse_args(argv=None):
                    help="frozen (default): detector_score is a predictor and the default seed; no-score: "
                         "ablation that withholds the frozen detector score from scorers, training programs, "
                         "descriptors and the reviser (same pools, detector feature columns, labels, K, brains); "
-                        "raw (2026-10-27): also withholds every discovered h<n>_ feature column, leaving the "
+                        "raw: also withholds every discovered h<n>_ feature column, leaving the "
                         "label-blind raw candidate attributes (raw_*), on-demand contexts and the agent's descriptors")
     p.add_argument("--runs-dir", type=Path, default=HERE / "runs")
     p.add_argument("--run-dir", type=Path, help="Explicit new run directory, also used by the Slurm launcher")
@@ -641,8 +479,10 @@ def parse_args(argv=None):
                 "mode's bank may have been computed from columns this mode withholds")
     if set(args.train_brains) & set(args.validation_brains or []):
         p.error("Train and validation brains must be disjoint")
-    if args.selection_brains is not None and set(args.selection_brains) - set(args.train_brains):
+    if args.selection_brains not in (None, "all") and set(args.selection_brains) - set(args.train_brains):
         p.error("Selection brains must be a subset of the TRAIN brains")
+    if args.selection_holdout_brains == "all" and args.selection_protocol != "grouped_oof":
+        p.error("--selection-holdout-brains needs the grouped_oof selection protocol")
     if args.bootstrap_draws < 0:
         p.error("bootstrap-draws must be >= 0")
     if not (math.isfinite(args.bootstrap_alpha) and 0. < args.bootstrap_alpha < 1.):
@@ -716,11 +556,20 @@ def _load_evaluation_banks(args, selected, trace):
             if any(table.meta.get("training_brain") is None for table in banks[brain].tables.values()):
                 raise ValueError("Detector training-brain provenance is required for the grouped_oof "
                                  "selection protocol; rebuild the tables or use --selection-protocol in_sample")
-        selection_brains = (list(args.selection_brains) if args.selection_brains
-                            else [b for b in args.train_brains if b not in fitted_brains])
+        # A detector-fitted brain is in-sample for the frozen score and the discovered
+        # feature columns; under --detector-prior raw both are withheld everywhere, so
+        # nothing on such a brain is detector-derived and it may be scored out of fold.
+        fitted_inputs_withheld = args.detector_prior == "raw"
+        if args.selection_brains == "all" or (args.selection_brains is None and fitted_inputs_withheld):
+            selection_brains = list(args.train_brains)
+        elif args.selection_brains:
+            selection_brains = list(args.selection_brains)
+        else:
+            selection_brains = [b for b in args.train_brains if b not in fitted_brains]
         conflict = sorted(set(selection_brains) & fitted_brains)
-        if conflict:
-            raise ValueError(f"Selection brains must not be detector training brains: {conflict}")
+        if conflict and not fitted_inputs_withheld:
+            raise ValueError(f"Selection brains must not be detector training brains: {conflict} "
+                             "(allowed only under --detector-prior raw, which withholds every detector-derived input)")
         if not selection_brains:
             raise ValueError("No eligible selection brain: every TRAIN brain is a detector-fitted brain. "
                              "Add a non-fitted TRAIN brain (e.g. --train-brains 794495,802449) or use "
@@ -728,7 +577,8 @@ def _load_evaluation_banks(args, selected, trace):
     else:
         selection_brains = list(args.train_brains)
     args.selection_brains = selection_brains
-    holdout_brains = list(args.selection_holdout_brains or [])
+    holdout_brains = (list(selection_brains) if args.selection_holdout_brains == "all"
+                      else list(args.selection_holdout_brains or []))
     if holdout_brains and args.selection_protocol != "grouped_oof":
         raise ValueError("--selection-holdout-brains needs the grouped_oof selection protocol")
     unknown = sorted(set(holdout_brains) - set(selection_brains))
@@ -742,6 +592,11 @@ def _load_evaluation_banks(args, selected, trace):
                  "selection_protocol": args.selection_protocol, "selection_brains": selection_brains,
                  "selection_holdout_brains": holdout_brains,
                  "auxiliary_train_brains": auxiliary_brains,
+                 "detector_fitted_selection_brains": sorted(set(selection_brains) & fitted_brains),
+                 "detector_fitted_selection_rule": ("allowed: --detector-prior raw withholds the frozen score and every "
+                                                    "discovered feature column, so no detector-derived input remains"
+                                                    if args.detector_prior == "raw" else
+                                                    "refused: detector-fitted brains are in-sample for detector-derived inputs"),
                  "roles": {**{b: ("selection TRAIN (whole-brain out-of-fold score)" if b in holdout_brains
                                   else "selection TRAIN (official out-of-fold score)") if args.selection_protocol == "grouped_oof"
                               else "TRAIN (in-sample selection)" for b in selection_brains},
@@ -894,7 +749,7 @@ def _auxiliary_ablation(args, protocol, kinds, run_dir, fit_limits, trace):
 
 
 def _contract(args):
-    """System prompt and seed rules; an ablation appends what is withheld."""
+    """System prompt; an ablation appends what is withheld from agent inputs."""
     return CONTRACT + detector_prior.notice(args)
 
 
@@ -1064,8 +919,6 @@ async def _run(args, revise_fn, run_dir, trace):
                f"{', '.join(protocol.auxiliary_brains) or 'none'}; aggregation {budgets.aggregation}",
                **protocol.describe())
     descriptor_runs, restored_descriptors = None, None
-    if args.context_cache is not None:
-        trace.emit("deprecated_context_cache", "--context-cache is ignored; context inputs are read on demand")
     if not args.no_descriptors:
         contexts = DescriptorContexts()
         entries = {f"{brain}/{kind}": contexts.entry(bank.tables[kind]).summary()
@@ -1197,7 +1050,7 @@ async def _run(args, revise_fn, run_dir, trace):
     _write(run_dir / "manifest.json", manifest)
     _write(run_dir / "baseline.json", baseline)
     _write(run_dir / "seed.json", {"train": parent_train, "validation": parent_validation})
-    rules = {kind: _contract(args) for kind in kinds}
+    rules = {kind: f"# {kind} research notes\n\nInitial measured scorer; no new feature evidence yet.\n" for kind in kinds}
     memory = ExperimentMemory(run_dir, train=train, protocol=protocol, fit_limits=fit_limits,
                               descriptor_runs=descriptor_runs)
     if restored_descriptors is not None:
@@ -1249,6 +1102,8 @@ async def _run(args, revise_fn, run_dir, trace):
         'volume_analysis_timeout_seconds': args.policy_time_budget,
         'volume_analysis_memory_mb': args.classifier_memory_mb,
         'image_previews_per_generation': args.image_previews_per_generation,
+        'evaluation_units_per_generation': args.train_evaluations_per_generation,
+        'volume_analyses_per_generation': MAX_ANALYSES, 'volume_cases_per_call': MAX_CASES,
         'numerical_threads': args.classifier_threads, 'max_artifact_bytes': 128 * 1024**2,
         'max_artifact_files': 256, 'sandbox': 'Linux Landlock ABI >= 3 and libseccomp; fail closed',
         'descriptor_compute': ({'enabled': True, 'workers': descriptor_runs.workers,
@@ -1584,8 +1439,7 @@ async def _run(args, revise_fn, run_dir, trace):
         record['descriptor_seconds_used'] = experiments.descriptor_seconds_used
         record['classifier_seconds_used'] = experiments.classifier_seconds_used
         record['image_preview_usage'] = {'limit': experiments.image_preview_budget,
-            'used': experiments.image_inspections_used, 'remaining': experiments.image_inspections_remaining,
-            'inlined_bytes': experiments.image_payload_used}
+            'used': experiments.image_inspections_used, 'remaining': experiments.image_inspections_remaining}
         # Descriptor runs must be on the record before the image-evidence summary reads them.
         record['image_evidence'] = generation_image_evidence(gen_dir, record)
         _write(gen_dir / 'image_evidence.json', record['image_evidence'])

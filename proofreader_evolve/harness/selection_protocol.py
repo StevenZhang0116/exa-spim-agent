@@ -2,7 +2,9 @@
 
 ``grouped_oof``: candidates are ranked by the grouped out-of-fold objective (precision at a
 partitioned K, or since v7 the configured rank statistic measured per fold and weighted by
-positives) on selection brains that the frozen detectors were not fitted on.
+positives) on the configured selection brains. Frozen and no-score runs exclude
+detector-fitted selection brains; raw runs may include them because all detector-derived
+predictors are withheld. Whole-brain holdouts require an explicit holdout-brain setting.
 Auxiliary TRAIN brains only supply fitting rows and are never held out.
 ``in_sample``: the historical protocol (full-pool in-sample TRAIN ranking),
 retained so attribution runs can compare the two selection signals.
@@ -13,6 +15,8 @@ signal, not an unbiased estimate of generalization.
 """
 
 import json
+import os
+import shutil
 import time
 from pathlib import Path
 
@@ -82,11 +86,29 @@ def partitioned_rank_metrics(scores, truth, keys, fold_ids, k, *, in_mean=True, 
     return metrics, chosen
 
 
-def save_selection(directory, report, state):
+def discard_fold_models(directory):
+    """Discard temporary fold models only after their predictions have been persisted.
+
+    Keep fold requests, model metadata, source and logs for attribution. Final fitted
+    models live in the run's model_artifacts tree and are never visited here.
+    """
+    for models in Path(directory).glob('fold*/models'):
+        shutil.rmtree(models)
+
+
+def save_selection(directory, report, state, *, source=None):
+    """Persist scores once; immutable attempt snapshots may share the fit's inode."""
     directory = Path(directory)
+    temporary = directory / 'selection_state.tmp.npz'
+    temporary.unlink(missing_ok=True)
+    if source is None:
+        np.savez(temporary, **{f'{cell}:{key}': values[key]
+                 for cell, values in state.items() for key in ('scores', 'chosen')})
+    else:
+        os.link(Path(source) / 'selection_state.npz', temporary)
+    temporary.replace(directory / 'selection_state.npz')
     (directory / 'selection_evaluation.json').write_text(json.dumps(report, indent=2, allow_nan=False))
-    np.savez(directory / 'selection_state.npz', **{f'{cell}:{key}': values[key]
-             for cell, values in state.items() for key in ('scores', 'chosen')})
+    discard_fold_models(directory / 'selection_folds')
 
 
 def load_selection(directory):

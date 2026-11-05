@@ -20,19 +20,8 @@ MCP_OUTPUT_TOKENS = 100_000
 # file-read default of 25,000 tokens then rejected 60-130 KB parked train_classifier results
 # (4 failed reads, 13 of 34 results parked) in run precision_20261007_112554_t33clknu.
 FILE_READ_TOKENS = 100_000
-# Claude Code hands each tool result back to the SDK as one stream line that carries the
-# result twice (the message content and `tool_use_result`), and the SDK ends the whole
-# session when a line exceeds ClaudeAgentOptions.max_buffer_size (1 MiB by default):
-# four 87-101 KB probe previews (gen 1) and six 159-176 KB previews (gen 8) ended two
-# generations of run precision_20261103_221646_lru62oga with CLIJSONDecodeError. Every
-# inlined image stays in the generation's conversation, and the first-party Messages API
-# accepts requests up to 128 MB with images up to 10 MB base64 each (platform.claude.com
-# docs/en/api/overview and docs/en/build-with-claude/vision, 2026-11-04). One tool result
-# therefore inlines at most TOOL_IMAGE_BYTES and one generation at most
-# GENERATION_IMAGE_BYTES of base64 PNG data (TrainingExperiments.inline_previews,
-# image_preview.inline_images); the line buffer holds two copies of a reply plus its text.
-TOOL_IMAGE_BYTES = 64 * 1024 * 1024
-GENERATION_IMAGE_BYTES = 96 * 1024 * 1024
+# A tool result can appear twice in a CLI stream line. Leave room for bounded
+# inline PNGs (image_preview.py) plus text; SDK overflow aborts the session.
 MESSAGE_BUFFER_BYTES = 256 * 1024 * 1024
 
 
@@ -74,12 +63,13 @@ def build_options(*, run_dir, system_prompt, model=DEFAULT_MODEL,
 
 
 def bind_session_options(options, policy_path, rules_path, report_path, *, readable_paths=(), readable_dirs=(),
-                         training_server=None):
+                         readable_png_dirs=(), training_server=None):
     """Bind generation files and TRAIN tools, including analysis and descriptor code; explicit reads only.
 
     `readable_dirs` are current/earlier generations' host-written TRAIN artefact trees
     (attempt snapshots, classifier fits, descriptor runs/probes): readable recursively, never
     writable. The guard always excludes current and legacy validation descriptor logs.
+    `readable_png_dirs` permit only PNG previews, never adjacent host audit JSON.
     """
     from claude_agent_sdk import HookMatcher
 
@@ -105,7 +95,7 @@ def bind_session_options(options, policy_path, rules_path, report_path, *, reada
         run_dir, policy.parent, readable, run_dir / "tool_audit.jsonl",
         state=getattr(options, "_isolation_state", None), policy_filename=policy.name,
         allowed_tools=training_tools, allow_proposal=training_server is not None,
-        readable_dirs=readable_dirs,
+        readable_dirs=readable_dirs, readable_png_dirs=readable_png_dirs,
     )
     bound = replace(options, can_use_tool=guard, permission_mode="default",
                     hooks={"PreToolUse": [HookMatcher(hooks=[pre_tool_hook(guard)])]},

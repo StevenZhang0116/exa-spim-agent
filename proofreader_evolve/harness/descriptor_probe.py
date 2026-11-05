@@ -1,5 +1,6 @@
 """TRAIN-only diagnostics around the same descriptor worker used for full computation."""
 import json
+from pathlib import Path
 import time
 
 import numpy as np
@@ -86,7 +87,7 @@ def probe(session, candidate_refs=None, sample_per_brain=128, seed=0, previews=F
                 view = render_preview(path, patch, np.asarray(fragment['nodes_zyx']), fragment['edges'],
                                       fragment['segment'], f'TRAIN {brain} / {table.kind} / descriptor input',
                                       preview=preview)
-                response['previews'].append({**detail, 'file': path.name, 'preview': view})
+                response['previews'].append({**detail, 'file': str(path.resolve()), 'preview': view})
                 preview_paths.append(path)
 
             try:
@@ -119,12 +120,9 @@ def probe(session, candidate_refs=None, sample_per_brain=128, seed=0, previews=F
                     evaluations_remaining=session.remaining,
                     note='Diagnostic only; no predictor columns were registered. '
                     'Input support does not identify which pixels arbitrary descriptor code uses.')
-    blocks, omitted, payload = session.inline_previews(preview_paths)
-    if previews:
-        response['preview_payload'] = {
-            **payload, 'note': 'Inlined preview PNG data is bounded per reply (limit_bytes) and per generation '
-                               '(generation_bytes_remaining); omitted previews are saved in this probe directory '
-                               '(Read them one at a time, or probe fewer cases per call).'}
+    blocks, omitted = session.inline_previews(preview_paths)
+    for record in response['previews']:
+        record['preview_inlined'] = Path(record['file']).name not in omitted
     path = directory / 'result.json'
     path.write_text(json.dumps(response, indent=2, allow_nan=False))
     session._record_research('probe_descriptor', session._descriptor_source(spec), 'observation',

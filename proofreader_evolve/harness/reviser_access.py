@@ -41,7 +41,7 @@ def _private_descriptor_log(path, run_dir):
 
 def make_guard(cwd, editable_dir, readable_paths, audit_path, state=None, *,
                policy_filename="scorer.py", allowed_tools=(), allow_proposal=False,
-               sdk_tool_results=True, readable_dirs=()):
+               sdk_tool_results=True, readable_dirs=(), readable_png_dirs=()):
     from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
 
     cwd = Path(cwd).resolve()
@@ -67,7 +67,8 @@ def make_guard(cwd, editable_dir, readable_paths, audit_path, state=None, *,
     # descriptor runs/probes) are readable recursively, except the private inference trees;
     # regular files only, with the resolved path checked to prevent symlink escapes.
     directories = tuple((d if d.is_absolute() else cwd / d).resolve() for d in readable_dirs)
-    if any(cwd not in d.parents for d in directories):
+    png_directories = tuple(canonical_file(d, cwd) for d in readable_png_dirs)
+    if any(cwd not in d.parents for d in (*directories, *png_directories)):
         raise ValueError("Readable directories must be inside this run")
     state = state if state is not None else {"violations": []}
     trusted_tools = frozenset(allowed_tools)
@@ -88,6 +89,11 @@ def make_guard(cwd, editable_dir, readable_paths, audit_path, state=None, *,
                 if (not allowed and tool_name == "Read" and directories
                         and any(d in resolved.parents for d in directories)
                         and resolved.is_file() and not path.is_symlink()):
+                    allowed = True
+                if (not allowed and tool_name == "Read" and path.suffix == resolved.suffix == '.png'
+                        and canonical_file(path, cwd) == resolved and not path.is_symlink()
+                        and any(resolved.parent == d and d.resolve() == d for d in png_directories)
+                        and resolved.is_file()):
                     allowed = True
                 if (not allowed and tool_name == "Read" and parked_root is not None
                         and resolved.parent.name == "tool-results"

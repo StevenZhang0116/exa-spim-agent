@@ -475,7 +475,7 @@ class DriverDescriptorTests(unittest.TestCase):
             args = driver.parse_args(['--min-positives', '0', '--train-brains', '794495,802449', '--validation-brains', '2',
                                       '--merge-k', '3', '--split-k', '1', '--generations', '1', '--runs-dir', tmp,
                                       '--start-from', str(seed), '--bootstrap-draws', '5', '--promotion-gate', 'margin', '--kind-schedule', 'alternate', '--skip-auxiliary-ablation',
-                                      '--context-cache', str(root / 'cache'), '--descriptor-bank', str(root / 'bank'),
+                                      '--descriptor-bank', str(root / 'bank'),
                                       '--descriptor-workers', '2', '--descriptor-wall-seconds', '120',
                                       '--descriptor-memory-mb', '1024'])  # tiny synthetic workers, like DescriptorRunTests
             seen = {}
@@ -541,7 +541,6 @@ class DriverDescriptorTests(unittest.TestCase):
             # Resume also works after the obsolete context directory has been deleted.
             import shutil
             shutil.rmtree(root / 'cache')
-            args.context_cache = None
             fresh = {**two_brains(), '2': brain_table('2', offset=5000.)}
             fresh['2'].tables['merge'].meta['training_brain'] = '794495'
             for bank in fresh.values():
@@ -635,9 +634,9 @@ class PreflightOnDemandTests(unittest.TestCase):
             with patch.object(preflight.pc, 'resolve_detector_runs', return_value={}), \
                     patch.object(preflight, 'ensure_native_tables', return_value=bank):
                 (root / 'cache').mkdir()
-                missing = preflight.inspect_readiness(['802449'], context_cache=str(root / 'cache'))
+                missing = preflight.inspect_readiness(['802449'])
                 build_cache(root / 'cache', table, band_rows=12)
-                ready = preflight.inspect_readiness(['802449'], context_cache=str(root / 'cache'))
+                ready = preflight.inspect_readiness(['802449'])
         self.assertEqual(missing['status'], 'checks_passed')
         self.assertFalse(missing['descriptor_context']['precomputed_context_required'])
         self.assertEqual(ready['status'], 'checks_passed')

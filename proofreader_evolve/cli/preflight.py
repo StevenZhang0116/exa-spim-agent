@@ -4,8 +4,8 @@ Optional --check-api sends one tiny tool-free request to the configured model th
 reviser's own SDK path (bundled Claude Code CLI, API env, model id); it does not exercise the
 tool workflow. Run `precision_20261009_235526_ispymdwn` lost every generation because the
 bundled CLI was too old for the model, which a direct API request cannot detect.
-Contexts are read on demand during evolution. The legacy --context-cache argument is
-ignored; these offline checks do not exercise fragment loading or cloud image access.
+Contexts are read on demand during evolution. These offline checks do not exercise
+fragment loading or cloud image access.
 """
 
 import argparse
@@ -52,7 +52,7 @@ def api_probe(model, timeout_s=120):
         return {"status": "failed", "model": model, "error_type": type(exc).__name__, "detail": str(exc)[:300]}
 
 
-def selection_readiness(report, train_brains, selection_brains, protocol):
+def selection_readiness(report, train_brains, selection_brains, protocol, detector_prior="frozen"):
     """Brain-role check for the selection protocol from table provenance only.
 
     The fragment graph needed for split spatial folds on a selection brain is
@@ -68,25 +68,31 @@ def selection_readiness(report, train_brains, selection_brains, protocol):
         if entry.get("status") == "passed" and not provenance:
             missing.append(brain)
         fitted.update(provenance or [])
-    if protocol == "grouped_oof":
-        chosen = [str(b) for b in selection_brains] if selection_brains else [b for b in train_brains if b not in fitted]
-    else:
+    # Under --detector-prior raw no detector-derived input remains, so fitted brains may be selection brains.
+    withheld = detector_prior == "raw"
+    if protocol != "grouped_oof" or list(selection_brains or []) == ["all"] or (not selection_brains and withheld):
         chosen = list(train_brains)
-    conflicts = sorted(set(chosen) & fitted) if protocol == "grouped_oof" else []
+    elif selection_brains:
+        chosen = [str(b) for b in selection_brains]
+    else:
+        chosen = [b for b in train_brains if b not in fitted]
+    conflicts = sorted(set(chosen) & fitted) if protocol == "grouped_oof" and not withheld else []
     outside = sorted(set(chosen) - set(train_brains))
     blocked = protocol == "grouped_oof" and (not chosen or conflicts or missing or outside)
     return {"protocol": protocol, "train_brains": train_brains, "detector_training_brains": sorted(fitted),
             "selection_brains": chosen, "auxiliary_train_brains": [b for b in train_brains if b not in chosen],
             "missing_provenance": missing, "conflicts": conflicts, "not_train": outside,
-            "status": "blocked" if blocked else "passed",
-            "note": "Selection brains must not be detector training brains; fragment-graph availability "
-                    "for split folds is verified when the run starts"}
+            "status": "blocked" if blocked else "passed", "detector_prior": detector_prior,
+            "note": ("Every detector-derived input is withheld under --detector-prior raw, so detector training "
+                     "brains may be selection brains" if withheld else
+                     "Selection brains must not be detector training brains") +
+                    "; fragment-graph availability for split folds is verified when the run starts"}
 
 
 def inspect_readiness(brains, mcl=100, tables_dir=pc.DEFAULT_OUT,
                       merge_dirs=None, split_dirs=None, check_api=False, model=DEFAULT_MODEL,
                       train_brains=None, selection_brains=None, selection_protocol="grouped_oof",
-                      context_cache=None):
+                      detector_prior="frozen"):
     report = {"host": socket.gethostname(), "mcl": mcl, "brains": {},
               "scope": "No brain-cache deserialization, table preparation, scoring or evolution",
               "api": {"status": "not_checked", "key_present": bool(os.environ.get("ANTHROPIC_API_KEY")),
@@ -116,11 +122,10 @@ def inspect_readiness(brains, mcl=100, tables_dir=pc.DEFAULT_OUT,
             report["brains"][brain] = {"status": "blocked", "reason": str(exc)}
     if check_api:
         report["api"] = api_probe(model)
-    report["selection"] = selection_readiness(report, train_brains, selection_brains, selection_protocol)
+    report["selection"] = selection_readiness(report, train_brains, selection_brains, selection_protocol,
+                                              detector_prior)
     report["descriptor_context"] = {"mode": "on_demand", "precomputed_context_required": False,
                                     "source_access": "not_exercised"}
-    if context_cache is not None:
-        report["warnings"].append("--context-cache is deprecated and ignored")
     blocked = (not brains or any(v["status"] != "passed" for v in report["brains"].values())
                or (check_api and report["api"]["status"] != "passed")
                or (report["selection"] is not None and report["selection"]["status"] != "passed"))
@@ -140,15 +145,18 @@ def main(argv=None):
     parser.add_argument("--train-brains", nargs="*", default=None,
                         help="TRAIN brains whose roles to check (must be among --brains)")
     parser.add_argument("--selection-brains", nargs="*", default=None,
-                        help="Explicit selection brains (default: TRAIN brains the detectors were not fitted on)")
+                        help="Explicit selection brains, or 'all' for every TRAIN brain (default: every TRAIN "
+                             "brain under --detector-prior raw; otherwise TRAIN brains the detectors were "
+                             "not fitted on). Detector-fitted selection brains require raw")
     parser.add_argument("--selection-protocol", choices=("grouped_oof", "in_sample"), default="grouped_oof")
-    parser.add_argument("--context-cache", default=None,
-                        help="Deprecated compatibility argument; ignored (contexts are read on demand)")
+    parser.add_argument("--detector-prior", choices=("frozen", "no-score", "raw"), default="frozen",
+                        help="raw withholds every detector-derived input, so detector training brains may be "
+                             "selection brains (--selection-brains all)")
     args = parser.parse_args(argv)
     report = inspect_readiness(args.brains, args.mcl, args.feature_tables_dir,
                                args.merge_dir, args.split_dir, args.check_api, args.model,
                                train_brains=args.train_brains, selection_brains=args.selection_brains,
-                               selection_protocol=args.selection_protocol, context_cache=args.context_cache)
+                               selection_protocol=args.selection_protocol, detector_prior=args.detector_prior)
     print(json.dumps(report, indent=2))
     return int(report["status"] != "checks_passed")
 

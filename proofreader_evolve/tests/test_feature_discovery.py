@@ -165,6 +165,10 @@ class FeatureDiscoveryTests(unittest.TestCase):
             calls.append({'rows': kwargs['fit_rows']['794495'].copy(), 'seed': kwargs['random_seed'],
                           'frame': kwargs['feature_frames']['794495'].copy()})
             self.assertIn('fold', str(kwargs['artifact_store']))
+            store = Path(kwargs['artifact_store'])
+            store.mkdir(parents=True)
+            (store / 'temporary.bin').write_bytes(b'fold model')
+            (store.parent / 'model.json').write_text('{}')
             return 'mock frozen model', {}
         def predict(model, store, frame, kind, **kwargs):
             self.assertEqual(list(frame.columns), list(table.features.columns))
@@ -187,6 +191,11 @@ class FeatureDiscoveryTests(unittest.TestCase):
             np.testing.assert_array_equal(removed['frame'].local_signal, 0.)
             np.testing.assert_array_equal(full['frame'].detector_score, removed['frame'].detector_score)
         pd.testing.assert_frame_equal(frames['794495'], table.features)
+        self.assertFalse(list((self.root / 'comparison').glob('*/fold*/models')))
+        self.assertEqual(len(list((self.root / 'comparison').glob('*/fold*/model.json'))), 6)
+        with np.load(self.root / 'comparison/predictions.npz') as predictions:
+            np.testing.assert_array_equal(predictions['full:794495'], table.features.local_signal)
+            np.testing.assert_array_equal(predictions['without_features:794495'], np.zeros(len(table.truth)))
 
     def test_insufficient_budget_never_starts_fold_fit_or_registers_candidate(self):
         train = training_fixture()
