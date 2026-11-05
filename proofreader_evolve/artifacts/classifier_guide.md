@@ -43,8 +43,8 @@ Write these functions in `training.py`:
 
 ```python
 def fit(X_train, y_train, artifact_dir, params):
-    # X_train: DataFrame of common TRAIN predictors, including detector_score,
-    #   for GT-labeled rows only (see "Three-valued labels" below).
+    # X_train: DataFrame of common TRAIN predictors for GT-labeled rows only.
+    #   detector_score is present only in frozen mode; raw also withholds h* columns.
     # y_train: aligned 0/1 labels of those rows (1 = error, 0 = GT-confirmed no error).
     # Optional: declare X_unlabeled=None to also receive predictors (no labels,
     #   no images) of a deterministic sample of NaN-label rows, up to 100,000
@@ -193,8 +193,10 @@ Branch ranking uses the **selection protocol** reported in the feedback
 (`selection_protocol`). Under `grouped_oof`, `train_classifier({})` first refits
 your program in three fixed, fragment-purged folds on the selection brains, with
 auxiliary TRAIN brains fully included in every fitting set and never held out.
-Whole-brain selection holdouts, when configured, are held out together in one fold;
-their predictions come from a model that never fitted that brain.
+Whole-brain selection holdouts, when configured, are assigned round-robin across
+the three folds in sorted brain order. Every row of a given brain is held out in
+one fold; its predictions come from a model that never fitted that brain. If every
+selection brain is a whole-brain holdout, there are no within-brain selection folds.
 Out-of-fold scores are ranked inside each fold using GT-labeled rows only, with
 budgets summing to each pool's effective K. `target_objective` (the feedback's
 `objective`, AUROC by default, measured per fold and weighted by GT positives) is the

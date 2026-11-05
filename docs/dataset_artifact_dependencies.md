@@ -1,5 +1,11 @@
 # What depends on a dataset cache, and what to rerun when it changes
 
+Current dataset reservation (2026-11-04): 794495 is excluded from new development
+training, selection, tuning, testing and evolution promotion. The 794495 rebuild
+measurements below are historical evidence, not instructions to rebuild or reuse
+that brain. Use the explicit [current split](stage3_evolution.md#32-prepare-tables-and-launch-a-run)
+for new runs; the independent validation protocol remains to be designed.
+
 Written 2026-10-14 after the 794495 rebuild. Every derived artifact of a brain descends from
 its labeled dataset cache `cache/dataset_cache_<brain>_mcl<N>_add.pkl`. This page lists those
 artifacts, what each one is bound to (the check that fails when the cache changes), the order
@@ -62,7 +68,7 @@ python -u -m proofreader_evolve.cli.export_rerank_companion --brain <b> --mcl 10
 python -u scripts/check_image_alignment_from_cache.py --brains <b> --mcl 100 --out figs/candidate_image_alignment_<date>
 python -u scripts/check_image_alignment_from_cache.py --brains <b> --mcl 100 --out figs/candidate_image_alignment_<date> \
     --record-reviewed --review-note "<what you saw in the six overlays>"
-python -m proofreader_evolve.cli.preflight --brains <all brains> --train-brains 794495 802449 --mcl 100
+python -m proofreader_evolve.cli.preflight --brains <development brains> --train-brains 802449 --selection-brains 802449 --mcl 100
 mv metrics_out/<b> metrics_out/archive/<b>_<olddate>; python -u notebooks/evaluate_skeleton_metrics.py --brains <b>   # only if GT changed
 ```
 

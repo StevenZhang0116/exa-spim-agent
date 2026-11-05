@@ -8,6 +8,9 @@ production scope (`on_demand_contexts.md`); the CLI no longer accepts that optio
 Since 2026-11-04 preflight accepts `--detector-prior`, and raw runs may include
 detector-fitted TRAIN brains in selection. Under raw, selection defaults to all TRAIN
 brains, but whole-brain holdouts still require `--selection-holdout-brains all`.
+The later user reservation excludes 794495 from every new development role,
+regardless of that generic capability. The current raw split adds 750318 to
+TRAIN and keeps four development-validation brains; see the launch example.
 
 Status (2026-10-27): implemented the same day (`harness/detector_prior.py`, driver, `context_cache.contexts`,
 `tests/test_raw_prior.py`; design record section "Raw-candidate ablation" in `WORKFLOW_REVISION.md`).
@@ -155,45 +158,33 @@ per-call wall for raw runs in a follow-up, not in this change.
 
 Estimated effort: code half a day, tests and docs half a day, seed baselines under an hour.
 
-## Current launch examples (2026-11-04; sequential, one setup per run)
+## Current launch example (2026-11-04; after reserving 794495)
 
-Run from an allocated compute node with the `panda` environment active. These examples
-use mode-specific selection roles: frozen/no-score retain the original roles, while raw
-holds out all six TRAIN brains whole. They therefore change both the input prior and
-the selection partition. For a controlled prior-only comparison, pass the same explicit
-selection and holdout lists to all three arms (use `EVOLUTION_DETECTOR_SELECTION` for raw
-as well). The remaining sections retain the original design assumptions.
+Run on an allocated compute node in the `panda` environment. This example uses
+the current six TRAIN / four development-validation split and excludes reserved
+794495 entirely. The [Stage 3 guide](../../docs/stage3_evolution.md#32-prepare-tables-and-launch-a-run)
+contains the preferred Slurm launcher with a console log.
 
 ```bash
-# Bash arrays keep shared resource settings separate from mode-specific brain roles.
-EVOLUTION_COMMON=(
-  --train-brains 794495,802449,747807,754610,754612,754613
-  --validation-brains 789202,794493,794491,750318,751473
+python -u -m proofreader_evolve.cli.run_evolution \
+  --detector-prior raw \
+  --train-brains 802449,747807,750318,754610,754612,754613 \
+  --selection-brains all --selection-holdout-brains all \
+  --validation-brains 789202,794493,794491,751473 \
+  --generations 5 --objective auroc --aggregation positive-weighted \
   --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400
-  --generations 20
-)
-EVOLUTION_DETECTOR_SELECTION=(
-  --selection-brains 802449,747807,754610,754612,754613
-  --selection-holdout-brains 747807,754610,754612,754613
-)
-# Defaults: AUROC, positive-weighted aggregation, 8 classifier threads, up to 24
-# descriptor workers, descriptor walls 7200 s/call and 14400 s/generation.
-# 1. frozen (main result)
-python -u -m proofreader_evolve.cli.run_evolution \
-  "${EVOLUTION_COMMON[@]}" "${EVOLUTION_DETECTOR_SELECTION[@]}"
-# 2. no-score (fitted ranking withheld)
-python -u -m proofreader_evolve.cli.run_evolution \
-  "${EVOLUTION_COMMON[@]}" "${EVOLUTION_DETECTOR_SELECTION[@]}" --detector-prior no-score
-# 3. raw (discovered features withheld too)
-python -u -m proofreader_evolve.cli.run_evolution \
-  "${EVOLUTION_COMMON[@]}" --detector-prior raw \
-  --selection-brains all --selection-holdout-brains all
 ```
 
-Each run can be preceded by its own seed check by replacing `--generations 20` with
-`--generations 0`. Contexts are read on demand; each arm has its own descriptor bank.
-Stopping a run launched
-with `nohup ... &` needs `kill -TERM -- -<driver pid>` (SIGINT is ignored in that setting).
+For a controlled prior-only comparison, keep these explicit brain roles, folds,
+objective, aggregation and budgets identical and change only `--detector-prior`
+to `frozen` or `no-score`. All six listed TRAIN brains are detector-naive under
+the current detector provenance; no auxiliary 794495 is needed. Each mode uses
+its own numeric descriptor bank. Descriptor walls default to 7200 s per call and
+14400 s per generation, with on-demand contexts and `judgeable` production scope.
+A seed-only check uses `--generations 0`. These runs have a different validation
+set from the historical eleven-brain experiments below and need their own baseline.
+
+The following original scope/risk notes are historical, not current launch guidance.
 
 ## Not in scope
 

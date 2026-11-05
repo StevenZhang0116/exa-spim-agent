@@ -1,6 +1,6 @@
 # Run analysis
 
-Use the panda environment. These commands read saved artifacts; performance and
+Use the panda environment on a compute node. These commands read saved artifacts; performance and
 search plots do not load brain caches, execute policies or call an LLM.
 
 ```bash
@@ -47,7 +47,7 @@ Each parameter/model grid shares its starting checkpoint until the best result
 is restored. A validation-rejected candidate may still be retained as a TRAIN
 specialist. Candidate and accepted-policy curves are distinguished; missing
 evaluations leave gaps. Merge and split have separate TRAIN and validation curves.
-TRAIN champion selection precision is also shown per kind in the pool table.
+TRAIN champion selection measurements are also shown per kind in the pool table.
 
 Only JSON and allowlisted text artifacts are read, never model files or source
 graphs. Partial JSONL records are skipped with warnings; missing evaluations leave
@@ -55,7 +55,8 @@ gaps in the curves. Source previews are bounded (32 KB per code file,
 12 MiB shared preview budget); full originals stay
 on disk. The report includes validation measurements and is for humans only.
 
-Only fixed-pool precision runs are supported. Missing/failed evaluations remain
+Only fixed-pool scorer-evolution runs are supported, including the current AUROC
+objective and earlier Precision@K runs. Missing/failed evaluations remain
 missing, not zero or the parent's retained score. TRAIN/validation curves require
 the same policy hash on both sides. Repeated validation is not final testing.
 

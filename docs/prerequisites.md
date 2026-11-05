@@ -12,8 +12,8 @@ which provides the `agentic_neuron_proofreader` package that defines
 conda activate panda
 ```
 
-Loading an `_add.pkl` cache needs more than 20 GB of RAM, so every step that
-touches a dataset runs on a compute node:
+Run all Python, tests and data analyses on a compute node, including small checks.
+Loading an `_add.pkl` cache can need more than 20 GB of RAM:
 
 ```bash
 #!/bin/bash
@@ -31,6 +31,13 @@ offline.
 
 ## Data: labeled caches
 
+Brain **794495** is reserved for a future independent validation protocol. Keep it
+out of new training, selection/OOF, tuning, testing and evolution promotion.
+Use explicit brain lists; legacy CLI defaults and all-cache scans do not enforce
+this reservation. See the [current split](stage3_evolution.md#32-prepare-tables-and-launch-a-run).
+The explicitly requested [source comparison](../evaluation/README.md) is a data
+audit, not a model evaluation or permission to reuse 794495 in evolution.
+
 Every stage reads `cache/dataset_cache_<brain>_mcl<N>_add.pkl`, a pickle holding
 the UNet fragment reconstruction (`fragments_graph`), the human ground-truth
 tracings (`gt_graph`) and baked-in error labels (`gt_node_canonical_label`,
@@ -44,7 +51,7 @@ the schema. Quick load:
 import pickle
 import agentic_neuron_proofreader  # noqa — registers SkeletonGraph
 
-with open("cache/dataset_cache_794495_mcl100_add.pkl", "rb") as f:
+with open("cache/dataset_cache_802449_mcl100_add.pkl", "rb") as f:
     payload = pickle.load(f)
 frag, gt = payload["fragments_graph"], payload["gt_graph"]
 ```

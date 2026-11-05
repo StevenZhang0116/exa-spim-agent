@@ -1,9 +1,31 @@
 # proofreader_evolve TODO
 
-Open items that are discussed but deliberately not implemented yet. Each entry
-records the current behaviour, the measured cost of changing it, and what the
-change touches, so the decision can be revisited without re-deriving the facts.
-Dates are when the item was recorded.
+Open items and dated design notes record behaviour and evidence at the time of
+writing. The current decisions below take precedence over older proposals;
+completed items are marked explicitly so historical costs are not read as current
+implementation gaps.
+
+## Current decisions overriding older proposals (2026-11-04)
+
+- Reserve 794495 for a future independent validation protocol; no new fitting,
+  selection/OOF, tuning, testing or evolution promotion on it. The current split
+  and launch recipe are in [Stage 3](../docs/stage3_evolution.md#32-prepare-tables-and-launch-a-run).
+- **Open implementation gap:** driver defaults still select 794495 and the tools
+  have no general reserved-brain guard. Documentation now uses explicit lists;
+  migrating defaults/enforcing the reservation requires a separate code change.
+- The old proposals for an auxiliary weight or detector-OOF selection on 794495
+  are superseded by its reservation. The current raw recipe already holds out all
+  six TRAIN brains whole. The old mixed within-brain/whole-brain recipe is historical.
+- Keep positive-weighted aggregation consistent for selection, ablation, validation
+  and bootstrap. Earlier suggestions for equal-brain selection alone are not the
+  current decision. No LLM selection/promotion judge has been implemented.
+- Fit/frame identities, rotation-floor priority, timing reuse, classifier search
+  budgets, prompt/transport simplification and artifact deduplication are implemented;
+  assess their effect in subsequent runs rather than treating the older proposals
+  below as pending patches. Run every Python analysis/test on a compute node.
+
+The dated run observations below remain historical evidence, not authorization to
+reuse their dataset partition. New independent validation remains undesigned.
 
 ## Revision directions after the three detector-prior runs (2026-10-29, by priority)
 
@@ -23,11 +45,11 @@ validation numbers are comparable across arms (merge: hits out of 524 slots; spl
 
 State so far (accepted / best measured on validation):
 
-| Arm | Accepted mean | Merge hits (accepted / best) | Split precision (accepted / best) | Accepted gens |
-|---|---|---|---|---|
-| frozen (detector_score + h*) | 0.4930 | 66 (seed detector) / 81 (gen 8) | 0.860 / 0.861 | 1 of 11 |
-| no-score (h* only) | 0.5375 | 113 (gen 9) / 113 | 0.859 / 0.862 | 4 of 13 |
-| raw (raw_* + agent descriptors) | 0.5358 | 112 (gen 9) / 119 (gen 17) | 0.858 / 0.858 | 4 of 19 |
+| Arm | Merge hits (accepted / best) | Split precision (accepted / best) | Accepted gens |
+|---|---|---|---|
+| frozen (detector_score + h*) | 66 (seed detector) / 81 (gen 8) | 0.860 / 0.861 | 1 of 11 |
+| no-score (h* only) | 113 (gen 9) / 113 | 0.859 / 0.862 | 4 of 13 |
+| raw (raw_* + agent descriptors) | 112 (gen 9) / 119 (gen 17) | 0.858 / 0.858 | 4 of 19 |
 
 Observations the directions rest on: (i) the two arms without detector_score both beat the
 frozen detector's merge ranking by 46-53 hits, and both gains came from agent descriptors
@@ -56,7 +78,7 @@ dropping the detector-fitted brain 794495 from fitting raises split holdout prec
 no-score gen 11: +0.003 on two seeds) while it hurts merge (no-score gen 12); the split
 validation gains were +0.0007 and +0.0013, the second missing the gate by 0.00008.
 
-### P1. Offline analyses on the finished artefacts (no compute beyond a login node; do first)
+### P1. Offline analyses on the finished artefacts (compute node; do first)
 
 - **Cross-arm paired bootstrap and overlap.** Run the harness's paired Poisson bootstrap on
   the validation cells for no-score gen 9 (113), raw gen 9 (112) and raw gen 17 (119) against

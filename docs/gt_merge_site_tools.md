@@ -6,6 +6,10 @@ These tools read cached GT merge sites and detector outputs to inspect labels an
 positives visually or in aggregate. They support Stage 2 result review and feed
 no training step.
 
+Run these analyses on compute nodes. Current examples use development brains;
+794495 is reserved for the future independent validation protocol, as described
+in [Stage 3](stage3_evolution.md#32-prepare-tables-and-launch-a-run).
+
 ## B1. Inspect cached GT merge sites
 
 [notebooks/plot_gt_merge_sites.py](../notebooks/plot_gt_merge_sites.py) samples K
@@ -18,7 +22,7 @@ clipping, and needs no detector CSV, scores or model.
 srun --partition=aibs_debug --constraint=cpu \
   --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=100G --time=00:15:00 \
   --chdir="$PWD" "$HOME/.conda/envs/panda/bin/python" -u \
-  notebooks/plot_gt_merge_sites.py --brain-id 794495 --k 10 --mcl 100
+  notebooks/plot_gt_merge_sites.py --brain-id 802449 --k 10 --mcl 100
 ```
 
 The image reader uses the URI reviewed in `configs/image_alignment.json`, else the cache's
@@ -69,8 +73,8 @@ APP=autodiscovery-application/<RUN>   # a merge-site detector result directory
 srun --partition=aibs_debug --constraint=cpu \
   --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=100G --time=00:15:00 \
   --chdir="$PWD" "$HOME/.conda/envs/panda/bin/python" -u \
-  notebooks/plot_positive_merge_sites.py --brain-id 794495 --mcl 100 \
-  --csv "$APP/merge_junction_detector_794495.csv" --cache-dir cache
+  notebooks/plot_positive_merge_sites.py --brain-id 802449 --mcl 100 \
+  --csv "$APP/merge_junction_detector_802449.csv" --cache-dir cache
 ```
 
 Only load trusted pickle files. `--brain-id`, `--mcl` and `--cache-dir` select
@@ -104,10 +108,11 @@ From the repository root, run on a compute node in panda:
 srun --partition=aibs_debug --constraint=cpu \
   --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=150G --time=00:20:00 \
   --chdir="$PWD" "$HOME/.conda/envs/panda/bin/python" -u \
-  notebooks/log_merge_site_counts.py --mcl 100
+  notebooks/log_merge_site_counts.py --mcl 100 --brains 802449 794493
 ```
 
-Change `--mcl` for another level, or add `--brains 794495 794493` to select datasets.
+Change `--mcl` for another level and use an explicit `--brains` list to select
+development datasets; omitting it discovers all caches, including reserved data.
 Defaults are `--nms-um 20 --tip-gap-um 20 --tip-partner-k 2 --positive-radius-um 20
 --claim-radius-um 150`, with 50 um snapping to each GT site's own segment: the merge
 rule declared in `proofreader_evolve/candidate_pools.json`, enumerated by

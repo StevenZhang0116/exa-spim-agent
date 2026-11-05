@@ -5,8 +5,8 @@ from labeled skeleton caches, the repository
 
 1. turns AutoDiscovery experiment exports into reproduced, audited discovery reports,
 2. compiles the surviving findings into frozen split- and merge-error detectors, and
-3. evolves a scorer that re-ranks each detector's own candidates behind a
-   held-out promotion gate.
+3. evolves a scorer on fixed candidate pools behind a development-validation
+   promotion gate. Raw mode withholds detector scores and discovered features.
 
 ![Discovery-to-evolution workflow](end_to_end_workflow_diagram.png)
 
@@ -31,6 +31,12 @@ Three rules hold in every stage:
 
 ## Quick start
 
+Brain **794495 is reserved for a future independent validation process**. Exclude
+it from new training, selection/OOF, tuning, testing and evolution promotion.
+The CLI still has legacy defaults that do not enforce this reservation; pass the
+explicit [current split](docs/stage3_evolution.md#32-prepare-tables-and-launch-a-run).
+Historical uses of 794495 remain part of the project's provenance.
+
 Every command runs in the `panda` conda environment; steps that load a dataset
 cache need a compute node with more than 20 GB of RAM, and agent steps need
 `ANTHROPIC_API_KEY` (see [docs/prerequisites.md](docs/prerequisites.md)).
@@ -48,10 +54,14 @@ python agentic/run_discovery_workflow.py autodiscovery/<RUN>.json \
 python agentic/run_detector_build_workflow.py autodiscovery/<RUN>.json
 python autodiscovery-application/<RUN>/merge_junction_detector.py cache/dataset_cache_<brain>_mcl<N>_add.pkl
 
-# Stage 3: evolve the scorer on the detectors' own candidate pools
+# Stage 3: current raw run, five generations (see Stage 3 for the Slurm launcher)
 python -m proofreader_evolve.cli.run_evolution \
-    --train-brains 794495,802449 --selection-brains 802449 \
-    --validation-brains 789202,794493,794491 --merge-k 300
+    --detector-prior raw \
+    --train-brains 802449,747807,750318,754610,754612,754613 \
+    --selection-brains all --selection-holdout-brains all \
+    --validation-brains 789202,794493,794491,751473 \
+    --generations 5 --objective auroc --aggregation positive-weighted \
+    --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400
 ```
 
 ## Documentation
@@ -76,6 +86,8 @@ Per-stage figures: [`agentic/discovery_workflow_diagram.png`](agentic/discovery_
 [`proofreader_evolve/workflow_diagram.png`](proofreader_evolve/workflow_diagram.png),
 [`proofreader_evolve/workflow_overview.png`](proofreader_evolve/workflow_overview.png) and
 [`proofreader_evolve/data_overview.png`](proofreader_evolve/data_overview.png).
+The three evolution figures are 2026-11-03 snapshots; the current dataset roles
+and launch settings are maintained in [Stage 3](docs/stage3_evolution.md#32-prepare-tables-and-launch-a-run).
 
 ## Repository layout
 

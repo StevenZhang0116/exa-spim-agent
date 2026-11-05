@@ -20,6 +20,10 @@ same source brain + segmentation
 
 Run the pipeline in the `panda` conda environment. Cloud-reading steps require
 GCS credentials in `configs/allen-nd-goog-f5d46dbfa2cd.json`.
+Run every Python command on a compute node. Use explicit development-brain lists:
+794495 is reserved for a future independent validation process, and legacy
+all-cache defaults do not enforce that reservation. See the
+[current split](stage3_evolution.md#32-prepare-tables-and-launch-a-run).
 
 ## A1. Generate the base cache
 
@@ -27,7 +31,7 @@ Run [`notebooks/load_skeletons.py`](../notebooks/load_skeletons.py), selecting t
 brain and minimum cable length with command-line arguments, for example:
 
 ```bash
-python notebooks/load_skeletons.py --brain-id 794495 --min-cable-length 10
+python notebooks/load_skeletons.py --brain-id 802449 --min-cable-length 10
 ```
 
 It reads the GT and UNet-fragment SWCs, constructs two `SkeletonGraph` objects,
@@ -46,7 +50,7 @@ Run
 for the same brain (panda env, compute node):
 
 ```bash
-python -u notebooks/evaluate_skeleton_metrics.py --brains 794495
+python -u notebooks/evaluate_skeleton_metrics.py --brains 802449
 ```
 
 It runs the official `segmentation-skeleton-metrics` package and writes:
@@ -64,7 +68,7 @@ to validate the labeled cache later.
 Run from the repository root (panda, compute node):
 
 ```bash
-python -m labeled_cache --brains 794495 --mcl 100 --policy length_v1
+python -m labeled_cache --brains 802449 --mcl 100 --policy length_v1
 ```
 
 One command covers every state: no cache yet (skeletons from GCS, then labels), a
@@ -98,7 +102,7 @@ The base stage loads the fragment SWCs (`fragments_path`) and the label stage re
 dense segmentation (`segmentation_path`); nothing in the build compares them, and a wrong
 pair (a re-exported segmentation with older skeletons, a mistyped folder in
 `configs/segmentation_paths.json`) would only surface later as near-zero GT label
-coverage. Before building a new brain, or after either entry changes, run (login node,
+coverage. Before building a new brain, or after either entry changes, run (compute node,
 seconds, GCS credentials):
 
 ```bash
@@ -117,17 +121,18 @@ current brains were recorded on 2026-10-29.
 ## A4. Verify the labeled cache
 
 Run [notebooks/verify_add_cache_metrics.py](../notebooks/verify_add_cache_metrics.py)
-from the repository root on a compute node. By default it processes every brain
-with an `_add.pkl` at the requested MCL, one cache at a time:
+from the repository root on a compute node. Its legacy default scans every brain
+with an `_add.pkl` at the requested MCL; pass `--brain` explicitly to keep reserved
+794495 out of routine development checks:
 
 ```bash
 srun --partition=aibs_debug --constraint=cpu \
   --nodes=1 --ntasks=1 --cpus-per-task=2 --mem=100G --time=01:00:00 \
   --chdir="$PWD" "$HOME/.conda/envs/panda/bin/python" -u \
-  notebooks/verify_add_cache_metrics.py --mcl 100
+  notebooks/verify_add_cache_metrics.py --mcl 100 --brain 802449
 ```
 
-Use `--mcl 10` for mcl10, or add `--brain 794495 794493` to select brains.
+Use `--mcl 10` for mcl10, or `--brain 802449 794493` to select several development brains.
 `--cache-dir`, `--metrics-dir` and `--output-dir` override the repository defaults.
 Memory and time requests may need increasing for larger caches or more brains.
 Brains missing a canonical `results.csv` are reported as skipped without loading

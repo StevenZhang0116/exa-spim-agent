@@ -4,6 +4,12 @@ Self-contained documents for agents: the cache schemas and the task specificatio
 handed to AutoDiscovery together with one labeled cache. `proofreader_evolve` does not
 read these files.
 
+The recorded 794495 submissions and baselines below describe historical discovery
+work. Since 2026-11-04 that brain is reserved for a future independent validation
+process; do not reuse those examples as new training or discovery instructions.
+Prepare new inputs from the explicitly selected development brains. See the
+[current dataset split](../docs/stage3_evolution.md#32-prepare-tables-and-launch-a-run).
+
 ## Current documents
 
 | File | Purpose |
@@ -12,7 +18,7 @@ read these files.
 | `dataset_cache.md` | Schema of the plain `dataset_cache_<brain>_mcl<N>.pkl` (GT and U-Net skeleton graphs only, no labels), for trials that receive a collection of plain caches. |
 | `merge_features_for_proofreader_evolve.md` | **Merge feature discovery for `proofreader_evolve`** (2026-10-12, revised 10-13, 10-15, 10-17 and 10-21). Submitted to AutoDiscovery with `dataset_cache_794495_mcl100_add.pkl` and `rerank_companion_794495_merge.{npz,json}`. Dataset only: discover GT-blind per-candidate features (whole fragment graph, label-free candidate columns, raw image) on the fixed merge candidates (junctions and, since 10-17, tip-to-shaft nodes), judged by out-of-fold top-of-ranking precision over GT-labeled rows (1 / 0; NaN excluded). No detector scores, earlier features or feature catalogue are provided. Results go through `agentic/run_discovery_workflow.py` and `agentic/run_detector_build_workflow.py` to a new frozen detector, whose score is `detector_score` (p_0) in `proofreader_evolve`. |
 | `split_features_for_proofreader_evolve.md` | **Split feature discovery for `proofreader_evolve`** (2026-10-12, revised 10-13, 10-15 twice and 10-21), the same task for the fixed split segment pairs. Submitted with the same pkl and `rerank_companion_794495_split.{npz,json}`. |
-| `rerank_companion_<brain>_{merge,split}.{npz,json}` | Companion files of the two specifications: candidates, three-valued labels, folds, manifest. Gitignored; regenerate on a compute node with `python -m proofreader_evolve.cli.export_rerank_companion --brain 794495 --kinds split --pool-only` (rows and labels straight from the cache with the pool declared in `proofreader_evolve/candidate_pools.json`, minutes; without `--pool-only` it needs prepared tables and sidecars). Pass them to `agentic/run_discovery_workflow.py` with `--companion` when auditing a run, always the files that run was given. Present for 794495 (the submission) and 802449 (audit confirmation). Split: regenerated 2026-10-15 for the `tip_to_any_node|r=80|k=2` pool; the r=50 files of 2026-10-13/14, which split runs 1 and 2 were given, were deleted on 2026-10-17 with those runs. Merge: regenerated 2026-10-17 for the `junction+tip_to_shaft|nms=20|gap=20|k=2|r=150` pool and the relabeled caches; the 2026-10-13/14 exports were deleted. |
+| `rerank_companion_<brain>_{merge,split}.{npz,json}` | Companion files of the two specifications: candidates, three-valued labels, folds, manifest. Gitignored; regenerate on a compute node with `python -m proofreader_evolve.cli.export_rerank_companion --brain 802449 --kinds split --pool-only` (rows and labels straight from the cache with the pool declared in `proofreader_evolve/candidate_pools.json`, minutes; without `--pool-only` it needs prepared tables and sidecars). Pass them to `agentic/run_discovery_workflow.py` with `--companion` when auditing a run, always the files that run was given. Present for 794495 (the submission) and 802449 (audit confirmation). Split: regenerated 2026-10-15 for the `tip_to_any_node|r=80|k=2` pool; the r=50 files of 2026-10-13/14, which split runs 1 and 2 were given, were deleted on 2026-10-17 with those runs. Merge: regenerated 2026-10-17 for the `junction+tip_to_shaft|nms=20|gap=20|k=2|r=150` pool and the relabeled caches; the 2026-10-13/14 exports were deleted. |
 
 Each error type is one AutoDiscovery submission: its specification, the pkl and its
 two companion files. Plan: `proofreader_evolve/plans/autodiscovery_rerank_spec.md`.

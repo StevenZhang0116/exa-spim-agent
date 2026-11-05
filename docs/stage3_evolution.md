@@ -2,8 +2,9 @@
 
 *Part of the [exa-spim-agent](../README.md) documentation.*
 
-The evolution stage keeps everything the detectors decided and changes only the
-order in which their candidates are presented. It is an LLM-driven search: a
+The evolution stage keeps the declared candidate pools fixed and learns their
+ranking. Available predictors depend on the detector prior: raw mode withholds both
+frozen scores and discovered feature columns. It is an LLM-driven search: a
 fresh agent session is the mutation operator, a TRAIN-side selection score ranks
 exploration branches, and a held-out validation gate alone decides promotion: the
 target kind's objective over its counted brains must rise by more than
@@ -39,99 +40,108 @@ Exactly one detector per kind is required.
 
 ## 3.2 Prepare tables and launch a run
 
-On an allocated compute node in panda:
+### Current dataset roles (user decision, 2026-11-04)
+
+| Role | Brains |
+|---|---|
+| TRAIN and selection | 802449, 747807, 750318, 754610, 754612, 754613 |
+| Whole-brain selection holdouts | All six TRAIN brains |
+| Development validation / promotion | 789202, 794493, 794491, 751473 |
+| Reserved for future independent validation | **794495**, excluded from the current loop |
+
+Do not use 794495 for new training (including auxiliary fitting), selection/OOF,
+tuning, ablations, testing or evolution promotion. Its independent validation
+protocol remains to be designed. The explicitly requested
+[GT/image source comparison](../evaluation/README.md) is a data audit, not model
+evaluation or feedback for evolution. Historical use of 794495 in discovery and
+detector fitting remains part of the provenance; it was not historically untouched.
+
+The current raw setup uses `--selection-brains all --selection-holdout-brains all`.
+The six whole-brain holdouts are assigned to the existing three folds in sorted
+brain order: {747807, 754612}, {750318, 754613}, {754610, 802449}. There is no
+auxiliary brain or within-brain selection fold. Each scored brain is absent from
+its fold's fit; the final candidate is fitted on all six TRAIN brains. This changes
+the development-validation set from earlier runs, so establish a new seed baseline
+and do not compare aggregate values directly with the old five-brain validation.
+
+**Legacy defaults are not the current dataset policy.** The parser still defaults
+to `--train-brains 794495`, `--detector-prior frozen` and automatic validation discovery;
+there is no general reserved-brain guard. Bare defaults fail the detector-naive
+selection check, but raw or legacy `in_sample` can bypass that particular check.
+Always provide explicit TRAIN and validation lists for new runs. Raw's generic
+ability to select a detector-fitted brain does not authorize using reserved 794495.
+
+### Prepare inputs only when needed
+
+Use the `panda` environment on an allocated compute node. Existing matching tables
+and availability sidecars can be reused; evolution does not prepare them itself.
 
 ```bash
-# A full rebuild runs on the interactive node, one brain after the other and resumable:
-#   bash proofreader_evolve/rebuild_brains.sh [brain ...]
-# (tables, sidecars, companion check, preflight; rebuild plan section 4). The steps by hand
-# (prepare_feature_tables.py also writes the availability sidecars before its closing preflight):
-python -u proofreader_evolve/prepare_feature_tables.py --brains 794495 789202 794491 794493 802449 --mcl 100 --threads all --image-workers -1
-# Evolution reads fragment neighbourhoods and image crops on demand; no context precompute step.
-# When a dataset cache (_add.pkl) is rebuilt, every artifact below descends from it; the order, the identity
-# checks and the times are in docs/dataset_artifact_dependencies.md.
-# REQUIRED before evolution/preflight: label-availability sidecars (minutes per brain; prepare_feature_tables.py
-# writes them, this command alone reuses valid ones). Labels become
-# three-valued (1 error / 0 GT-confirmed no error / NaN not judgeable); ranking, Precision@K, bootstrap and
-# fitting use GT-labeled rows only (see WORKFLOW_REVISION "Three-valued labels throughout").
-python -u -m proofreader_evolve.cli.precompute_availability --brains 794495 802449 789202 794493 794491 --mcl 100
-python -m proofreader_evolve.cli.preflight --brains 794495 789202 794491 794493 802449 \
-  --train-brains 794495 802449 --selection-brains 802449 --mcl 100
-# Full run (settings of the recorded 2026-10-05 trial except K, which that trial set to 2000; 20 generations):
-export ANTHROPIC_API_KEY=...  AWS_EC2_METADATA_DISABLED=true
-python -u -m proofreader_evolve.cli.run_evolution \
-  --train-brains 794495,802449,747807,754610,754612,754613 \
-  --selection-brains 802449,747807,754610,754612,754613 \
-  --selection-holdout-brains 747807,754610,754612,754613 \
-  --validation-brains 789202,794493,794491,750318,751473 \
-  --generations 20 \
-  --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400
-# Objective (2026-11-02): --objective auroc by default (pauc, average_precision or precision_at_k, the rule of
-# every run before); every statistic is recorded whatever the objective. Head guard: --head-guard-statistic
-# precision_depth_mean --head-guard-tolerance 0.01 (none disables it). --candidate-score-tolerance defaults per
-# objective (0.02 precision, 0.005 AUROC).
-# Resource defaults: --classifier-threads 8, --descriptor-workers 24 (maximum; 'auto' = granted CPUs minus 2).
-# Since 2026-11-01 both worker modes are capped by CPU affinity and current job memory headroom;
-# --descriptor-memory-mb 16384 is independent of --classifier-memory-mb.
-# Partition since 2026-10-27: 794495 auxiliary TRAIN (detector-fitted); 802449 within-brain grouped folds; the
-# four holdout selection brains are scored whole by models that never saw them (holdout_objective and
-# holdout_precision, the cross-brain signal). Raw runs since 2026-11-04 pass --selection-brains all
-# --selection-holdout-brains all instead: no detector-derived input remains, so all six TRAIN brains are
-# whole-brain holdouts (two per fold), with no auxiliary brain and no within-brain folds.
-# --aggregation positive-weighted (default) weights rank statistics
-# by each eligible brain's GT-positive count in selection, validation, bootstrap and headroom.
-# --aggregation equal-brain explicitly assigns equal weight; do not compare the two aggregates directly.
-# Ablations: --detector-prior no-score withholds the frozen detector score (2026-10-12); --detector-prior raw
-# (2026-10-27) also withholds every discovered h<n>_ feature column, leaving the raw_* candidate attributes, the
-# on-demand contexts and the agent's descriptors (own descriptor bank).
-# --merge-k / --split-k are per-kind caps (an integer or none). Each pool ranks K = ceil(ratio x its GT
-# positives), limited to the cap when the kind has one; --k-positive-ratio takes one number or merge=R,split=R
-# (default since 2026-10-27: no caps and ratio 1 for both kinds, so every pool ranks exactly its GT positives;
-# merge=2,split=1 with a merge cap of 300 from 2026-10-26; 0 keeps a fixed cap). Pools with fewer than
-# --min-positives GT positives (default 20) are scored and reported but excluded from the objective
-# (2026-10-12).
-# Controls for attribution: --kind-schedule alternate (strict merge/split rotation),
-# --promotion-gate margin (point-estimate gate), --no-descriptors (disable descriptor tools),
-# --detector-prior no-score (withhold the frozen detector score: constant seed, same pools and detector
-# feature columns; descriptors cover judgeable rows by default, or explicitly all_candidates).
-# Historical in-sample ranking with the detector-fitted TRAIN brain alone:
-python -m proofreader_evolve.cli.run_evolution \
-  --train-brains 794495 --validation-brains auto --selection-protocol in_sample \
-  --generations 1
+EVOLUTION_BRAINS=(802449 747807 750318 754610 754612 754613 789202 794493 794491 751473)
+python -u proofreader_evolve/prepare_feature_tables.py \
+  --brains "${EVOLUTION_BRAINS[@]}" --mcl 100 --threads all --image-workers -1
+# Preparation writes these sidecars too; this standalone command reuses valid ones.
+python -u -m proofreader_evolve.cli.precompute_availability \
+  --brains "${EVOLUTION_BRAINS[@]}" --mcl 100
+python -m proofreader_evolve.cli.preflight \
+  --brains "${EVOLUTION_BRAINS[@]}" \
+  --train-brains 802449 747807 750318 754610 754612 754613 \
+  --selection-brains all --detector-prior raw --mcl 100
 ```
 
-The CLI defaults are a single TRAIN brain **794495**, the `grouped_oof` selection
-protocol, the `bootstrap` promotion gate (1000 draws, alpha 0.05), `adaptive` kind
-allocation, 15 generations, and no Top-K cap for either kind. Each pool ranks
-GT-labeled rows at K equal to its GT positives; pools under 20 positives are
-reported but excluded from the objective. The bare defaults do **not** start
-a run: `grouped_oof` ranks TRAIN branches on a brain the detectors were not fitted
-on, and 794495 is the detectors' training brain, so the driver aborts with
-"No eligible selection brain". Add a detector-naive TRAIN brain and name it as the
-selection brain (`--train-brains 794495,802449 --selection-brains 802449`, as
-above), or request the historical `--selection-protocol in_sample`. Evolution
-writes its log to the run directory (`runs/precision_<run>/trajectory.txt` and
-`.jsonl`, `run_status.json`, `report.html`), not to `proofreader_evolve/log/`;
-redirect stdout if you want a console log file.
+Image crops and fragment neighborhoods are read on demand; no context precompute
+step is needed. Labels are 1 / 0 / NaN (not judgeable by GT). Supervised fitting and
+metric ranking use labeled rows. See [artifact dependencies](dataset_artifact_dependencies.md)
+for the rebuild order when a source cache changes. Pass explicit development-brain
+lists to preparation scripts; their historical defaults may include 794495.
 
-For a new Slurm run, use the lightweight launcher **from an allocated compute
-node**, outside the evolution step. Each evolution should have its own allocation.
-For example, replace `JOB_ID`, `NODE` and the CPU count with granted resources:
+### Launch with a console log
+
+Use the lightweight launcher from an allocated compute node, outside the evolution
+step, with a separate allocation for each run. Replace `JOB_ID`, `NODE` and the CPU
+count with granted resources. Configure `ANTHROPIC_API_KEY` in that environment.
+This example requests five generations; the CLI default remains 15.
 
 ```bash
-/home/zihan.zhang/.conda/envs/panda/bin/python -u -m proofreader_evolve.cli.launch_evolution \
+mkdir -p proofreader_evolve/log
+EVOLUTION_LOG="$PWD/proofreader_evolve/log/raw_5gen_$(date +%Y%m%d_%H%M%S).log.txt"
+nohup /home/zihan.zhang/.conda/envs/panda/bin/python -u \
+  -m proofreader_evolve.cli.launch_evolution \
   --job-id JOB_ID --node NODE --cpus 40 -- \
-  --train-brains 794495,802449,747807,754610,754612,754613 \
+  --detector-prior raw \
+  --train-brains 802449,747807,750318,754610,754612,754613 \
   --selection-brains all --selection-holdout-brains all \
-  --validation-brains 789202,794493,794491,750318,751473 \
-  --detector-prior raw --generations 10 \
-  --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400
+  --validation-brains 789202,794493,794491,751473 \
+  --generations 5 --objective auroc --aggregation positive-weighted \
+  --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400 \
+  > "$EVOLUTION_LOG" 2>&1 &
+printf 'Console log: %s\n' "$EVOLUTION_LOG"
+tail -f "$EVOLUTION_LOG"
 ```
+
+Ctrl+C stops `tail`, not the background run. The driver also writes `trajectory.txt`,
+`trajectory.jsonl`, `run_status.json` and `report.html` in its own run directory.
+Direct `python -m proofreader_evolve.cli.run_evolution` accepts the same arguments
+after the launcher's `--`, but the launcher additionally reconciles Slurm exits.
+
+Current defaults are grouped OOF selection, positive-weighted AUROC, the
+`precision_depth_mean` head guard (tolerance 0.01), paired-bootstrap promotion
+(1000 draws, two-sided alpha 0.05), adaptive kind allocation and 8 evaluation units
+per generation. K equals each pool's GT-positive count; there are no kind caps and
+pools below 20 positives are excluded from the objective. Metrics remain separate
+for merge and split. No LLM judge or equal-brain default was introduced.
+
+For a controlled frozen/no-score/raw comparison, use the same explicit brain roles,
+folds, objective, aggregation and budgets in all arms. With the current detector
+provenance, all six listed TRAIN brains are detector-naive, so the same selection
+lists are eligible in frozen and no-score modes. The old auxiliary-794495 examples
+are historical and must not be reused for new runs.
 
 The descriptor budgets default to 7200 s per `compute_descriptors` call (and per validation
 brain's frozen computation at submission) and 14400 s per generation since 2026-11-03
-(`--descriptor-wall-seconds`, `--descriptor-generation-wall-seconds`; 3600 / 5400 before), enough
-for a whole-TRAIN image descriptor call with its planning. Image-capable runs (an agent descriptor
+(`--descriptor-wall-seconds`, `--descriptor-generation-wall-seconds`; 3600 / 5400 before).
+These are limits, not a throughput guarantee; use the descriptor plan for the
+actual crop, scope and allocated resources. Image-capable runs (an agent descriptor
 that reads patches) still need an allocation whose memory headroom admits the 24 descriptor
 workers: a 600 GB job does, a 200 GB job holding the 80-90 GB driver admits one to three
 (`proofreader_evolve/plans/on_demand_contexts.md`, 2026-11-03).
@@ -202,7 +212,9 @@ fails there instead of failing every generation.
 The editable scorer is seeded from `proofreader_evolve/artifacts/scorer.py`:
 `score_candidates(features, ctx)` receives only predictor columns plus the frozen
 `detector_score` and optional custom local geometry features (under `--detector-prior no-score` the
-score column is withheld and the seed is the constant `artifacts/scorer_no_score.py`); `ctx` contains the candidate kind. It must return one finite
+score column is withheld and the seed is the constant `artifacts/scorer_no_score.py`).
+Under `raw`, detector-derived predictors are also withheld; the scorer receives
+`raw_*` geometry and registered agent descriptors. `ctx` contains the candidate kind. It must return one finite
 score per row. The harness selects exactly min(K, GT-labeled rows) with deterministic
 tie breaking, where K is the pool's own budget: ceil(the kind's `--k-positive-ratio` x the
 pool's GT positives), limited to the kind's cap when it has one (default: neither kind has a cap),
@@ -297,8 +309,10 @@ Each generation edits one component. By default the kind is chosen adaptively:
 a floor of one revision per `--kind-floor-every` generations (default 4) for each active kind,
 then a pending promotion follow-up (deferred intact when the floor takes priority), then the kind with the larger recent
 validation point gain (accepted or rejected; only gate-passing gains before 2026-11-01), then the larger remaining headroom on the validation
-cells. Both headroom and saturation use the configured per-kind aggregation and
-effective K; saturation means less than half the smallest one-hit gain remains.
+cells. Headroom uses the configured per-kind objective and aggregation. Saturation
+uses half a one-hit precision increment for Precision@K; for AUROC/AP/pAUC the
+implementation uses a conservative positive-negative-pair resolution heuristic
+(`0.5 / sum(positives * negatives)`), not the Precision@K hit increment.
 `--kind-schedule alternate` restores strict merge/split rotation and
 `--target-kind split` or `merge` focuses the search. The harness freezes the other
 component. The agent writes its hypothesis, strategy, formula family and numeric
@@ -343,8 +357,8 @@ that arbitrary prediction code implements frozen preprocessing correctly; that
 remains part of the model interface contract.
 
 One new fit plus TRAIN evaluation consumes one shared budget unit; failed fits
-also consume one with no metric. Exact training-source/parameter repeats reuse
-the fitted model. Explore generations can rewrite the whole program; tune
+also consume one with no metric. Exact repeats reuse the fitted model only when training source, parameters
+and current TRAIN feature/descriptor identities match. Explore generations can rewrite the whole program; tune
 fixes its AST and nonnumeric settings while refitting numeric parameters.
 Defaults are 300 seconds wall/CPU, 16384 MiB (8192 before 2026-10-08) and eight numerical-library threads
 (`--classifier-time-budget`, `--classifier-memory-mb`, `--classifier-threads`; one thread before 2026-10-27);
@@ -366,7 +380,7 @@ selection brains from host-owned fold refits, with auxiliary TRAIN brains as fit
 data; in-sample TRAIN precision is a **resubstitution diagnostic**. Under
 `--detector-prior raw` nothing is detector-derived, so `--selection-brains all
 --selection-holdout-brains all` makes every TRAIN brain a whole-brain holdout (three folds
-of two brains, since 2026-11-04): one cross-brain out-of-fold score, no auxiliary role. The agent may still use
+of two brains for the six-TRAIN setup in section 3.2): one cross-brain out-of-fold score, no auxiliary role. The agent may still use
 TRAIN-only internal validation/CV during fitting. Final promotion requires improvement in
 the target-kind development-validation objective that clears the paired-bootstrap noise
 gate and the head guard (section 3.3). The outer evaluator calls
@@ -412,8 +426,7 @@ Legacy tier names resolve to physical requests too. Descriptor pixels use bounde
 temporary staging; numeric outputs remain reusable in the descriptor bank.
 `compute_descriptors({"scope": "judgeable"})` (the default since 2026-10-29) covers the
 GT-labeled rows, the set every fit and ranking uses on TRAIN, selection and validation
-brains (about 49 k merge / 34 k split rows over the six TRAIN brains, against 2.3 M / 4.8 M
-in the full pools); `all_candidates` covers the full pool; `pilot` is uniform and `boundary`
+brains (row counts depend on the configured split and are reported by the planner); `all_candidates` covers the full pool; `pilot` is uniform and `boundary`
 explicitly selects detector-rank neighbours. The old `all_cached` scope maps to `all_candidates`.
 `plan_descriptor_run` estimates all TRAIN brains, then `compute_descriptors` runs the
 same code and input path in parallel sandboxed workers. Results are cached by code,
@@ -462,13 +475,13 @@ To connect small 3D investigations to ranking at larger K, `LOCAL_IMAGE` support
 cover its entire Top 2000 and the next 2000. The agent can call
 `plan_image_scoring({})` to preview TRAIN coverage without image IO. Stateless
 numeric extraction uses bounded batches with a shared timeout; raw-patch models
-retain the 1 GiB staging limit. Future reports distinguish 3D access, actual
+retain the 1 GiB staging limit. Reports distinguish 3D access, actual
 Top-K image coverage, and image-only paired TRAIN evidence. Neither access nor
 coverage alone demonstrates an image-ranking benefit; promotion uses the target-kind validation gate.
 
 Image access requires host registration receipts in `configs/image_alignment.json`
 (or `--image-alignment PATH`). The reader uses explicit OME-Zarr axes, units,
-scale/translation, channel and timepoint. To audit new/changed sources on n257,
+scale/translation, channel and timepoint. To audit new/changed sources on an allocated compute node,
 run `python -m proofreader_evolve.cli.check_image_alignment --brains BRAIN_IDS
 --out docs/image_alignment_review_<DATE>`; use `--image-uri` for an explicit
 single-brain source override. Inspect the saved overlays before recording a

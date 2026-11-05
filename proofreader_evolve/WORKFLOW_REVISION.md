@@ -8,13 +8,27 @@ edit graphs, expand candidates, retrain detectors or deploy scorers automaticall
 
 ## Pipeline
 
-Raw-prior selection roles (2026-11-04): under `--detector-prior raw` every detector-derived
-input is withheld, so a detector-fitted TRAIN brain is no longer in-sample for anything and
-may be a selection brain. `--selection-brains all --selection-holdout-brains all` then scores
-all six TRAIN brains whole (two per fold, round-robin in brain order), with no auxiliary brain
-and no within-brain folds; `holdout_objective` equals the selection objective. The frozen and
-no-score priors keep the 2026-10-27 roles. The final candidate is still fit on every TRAIN
-brain. Motivation: across the five AUROC runs the whole-brain holdouts tracked validation
+Current dataset reservation and run setup (user decision, 2026-11-04): **794495 is
+reserved for a future independent validation process**, whose protocol is not yet
+designed. Exclude it from new TRAIN/auxiliary fitting, selection/OOF, tuning,
+testing and evolution promotion. Current raw TRAIN/selection is
+802449,747807,750318,754610,754612,754613, with every brain held out whole;
+development validation is 789202,794493,794491,751473. The executable recipe is in
+[Stage 3](../docs/stage3_evolution.md#32-prepare-tables-and-launch-a-run).
+Legacy CLI defaults still name 794495 and no general reservation guard exists;
+explicit brain lists are required. Earlier eleven-brain partitions and results
+below remain historical. This reservation does not erase prior use in discovery
+or detector fitting. CodeOcean source is imported under `external/codeocean/`;
+`evaluation/` holds a user-requested source audit, not a model-validation protocol.
+
+Raw-prior selection capability (2026-11-04): under `--detector-prior raw` the
+frozen score and discovered feature columns are withheld, so the generic driver
+allows a detector-fitted TRAIN brain to supply out-of-fold selection scores. The
+reservation above takes precedence for 794495. Explicit `--selection-brains all
+--selection-holdout-brains all` scores every configured TRAIN brain whole (two per
+fold for six brains), without auxiliary or within-brain roles; `holdout_objective`
+equals the selection objective. Frozen/no-score modes still disallow detector-fitted
+selection brains. The final candidate is fitted on every configured TRAIN brain. Motivation: across the five AUROC runs the whole-brain holdouts tracked validation
 better than the 802449 within-brain folds, which carried 78% of the merge weight.
 
 Prompt and artifact simplification (2026-11-04): the system contract contains stable
@@ -107,8 +121,8 @@ On-demand descriptor contexts (2026-10-29, commit 93fcb42): `harness/descriptor_
 reads geometry through the host `FragmentStore` and image crops through
 `CandidateImageStore.patch(persist=False)` for any native candidate; the precomputed
 context cache, its detector band and labeled extension are no longer required
-(`--context-cache` is ignored, descriptors are on by default, `--no-descriptors` disables
-them) and `proofreader_evolve/context_cache/` was deleted. Production scope `judgeable`
+(descriptors are on by default, `--no-descriptors` disables them; the temporary
+ignored `--context-cache` compatibility flag was removed on 2026-11-04) and `proofreader_evolve/context_cache/` was deleted. Production scope `judgeable`
 (2026-10-29 evening): `compute_descriptors` defaults to the GT-labeled rows used for supervised
 fitting and metric ranking, because the full pools (2.3 M merge / 4.8 M split TRAIN rows) do not
 fit the per-call budget on demand; `all_candidates` stays an explicit option. Whole-column
@@ -126,7 +140,8 @@ per-kind aggregation and positive floor, while selection and outer validation
 use separate data. The current rules are summarized below and in
 [`docs/stage3_evolution.md`](../docs/stage3_evolution.md). The three figures below show the
 contract as refreshed on 2026-11-03 (commit d91e0e6); they predate the 2026-11-04
-scheduling and resource controls described above. Dated historical sections retain the design and observations
+scheduling, resource controls and dataset reservation described above; use the
+current Stage 3 text for dataset roles and launch settings. Dated historical sections retain the design and observations
 at the time they were written; their older metric fields and version numbers do not specify
 the current contract.
 
@@ -1515,7 +1530,7 @@ research assignments receives one outer evaluation across the fixed validation
 brains; TRAIN gain is not a prerequisite. TRAIN archive selection and progress use
 the official selection score; promotion also replaces a protected reference and
 resets stagnation.
-Promotion uses the validation mean only. Final submission and
+Promotion uses the target-kind validation objective, paired-bootstrap gate and head guard. Final submission and
 cache reuse check the code/configuration and artifact hashes. Resume requires
 `best_scorer.py` plus `model_artifacts/`, or `--start-from-artifacts` pointing to
 that store; no refit occurs. Models fitted on requested validation brains are
@@ -1523,75 +1538,33 @@ rejected. Legacy NumPy exports remain readable for resume.
 
 ## Commands
 
-Use panda on an allocated compute node for table preparation:
+The canonical preparation, preflight and five-generation raw launch commands are
+in [Stage 3](../docs/stage3_evolution.md#32-prepare-tables-and-launch-a-run).
+Run Python, tests and analyses in panda on allocated compute nodes. Use explicit
+TRAIN and development-validation lists: legacy parser defaults still name the
+reserved 794495 and do not enforce its exclusion.
 
-```bash
-python proofreader_evolve/prepare_feature_tables.py --brains 794495 789202 794491 794493 802449 --mcl 100
-python -m proofreader_evolve.cli.preflight --brains 794495 789202 794491 794493 802449 --mcl 100
-# Once per brain: cache the detector-ranked band's fragment neighbourhoods and image patches (hours; S3 reads);
-# --labeled-extension also caches the GT-labeled rows outside the band (needs the availability sidecars below).
-python -u -m proofreader_evolve.cli.precompute_context_cache --brains 794495 802449 789202 794493 794491 --mcl 100 --readers 16 --band-rows 50000 --labeled-extension
-python -m proofreader_evolve.cli.preflight --brains 794495 802449 789202 794493 794491 \
-  --train-brains 794495 802449 --mcl 100 --context-cache proofreader_evolve/context_cache
-python -m proofreader_evolve.cli.run_evolution \
-  --train-brains 794495,802449,747807,754610,754612,754613 \
-  --selection-brains 802449,747807,754610,754612,754613 \
-  --selection-holdout-brains 747807,754610,754612,754613 \
-  --validation-brains 789202,794493,794491,750318,751473 \
-  --generations 20 \
-  --context-cache proofreader_evolve/context_cache --classifier-memory-mb 98304
-# Resource defaults since 2026-10-27: --classifier-threads 8, --descriptor-workers 24 (38 'auto' workers peaked
-# at the 200 GiB job limit in the eleven-brain seed baseline on n280; no OOM kill, page-cache reclaim only).
-# Partition since 2026-10-27 (eleven rebuilt brains): 794495 auxiliary TRAIN (detector-fitted); 802449 keeps
-# within-brain grouped folds; the holdout selection brains are scored whole by models that never saw them
-# (holdout_precision = cross-brain signal). --aggregation positive-weighted is the default:
-# rank statistics use each eligible brain's positive count in selection and validation; equal-brain is optional.
-# K per pool (2026-10-27): every pool ranks exactly its GT positives, no cap for either kind
-# (--merge-k none --split-k none --k-positive-ratio 1 are the defaults; --merge-k 300 --k-positive-ratio
-# merge=2,split=1 restores the 2026-10-26 rule, --split-k 1000 the older split cap).
-# Kinds are allocated adaptively by default; add --kind-schedule alternate for strict rotation.
-# Ablation without the frozen detector score: add --detector-prior no-score (constant seed, own descriptor
-# bank; with --context-cache every GT-labeled row must be cached: the labeled extension, built 2026-10-13).
-# On a compute node, request the CPUs you want (e.g. srun/sbatch --cpus-per-task=32 --mem=200G);
-# --descriptor-workers defaults to 24 since 2026-10-27 ('auto' = the granted CPUs minus 2). Omit --context-cache
-# for the control run.
-# Historical in-sample ranking for attribution (single detector-fitted TRAIN brain):
-python -m proofreader_evolve.cli.run_evolution \
-  --train-brains 794495 --validation-brains auto --selection-protocol in_sample \
-  --generations 5
-```
+Preparation can scan whole graphs; it is not a smoke test. It loads one brain per
+subprocess, reuses matching tables and stops at the first failure. Evolution
+requires prepared tables and never builds them. `prepare_feature_tables.py
+--threads all` controls numerical-library threads within CPU affinity; it does
+not parallelize serial Python feature loops. For other detector directories,
+pass consistent `--merge-dir`/`--split-dir` selections to preparation, preflight
+and evolution.
 
-Defaults are TRAIN `794495`, the `grouped_oof` selection protocol and automatic
-validation discovery. Because 794495 is the detectors' training brain, the
-default protocol needs a second, detector-naive TRAIN brain (`802449` above) or
-the explicit `--selection-protocol in_sample` flag; otherwise the run aborts
-before loading validation data. `--skip-auxiliary-ablation` skips the baseline
-template diagnostic; `--bootstrap-draws 0` disables promotion-interval logging (only
-with `--promotion-gate margin`; the default bootstrap gate needs draws). At startup, scan
-local matching-MCL `_add.pkl` caches, exclude TRAIN and detector-fitted brains,
-and load each remaining brain's exact prepared merge/split tables. Missing inputs
-are logged and skipped; integrity errors or empty pools abort. At least one
-validation brain is required. Save candidates, exclusions and the resolved split
-to `dataset_split.json` and `manifest.json`, then freeze the selected banks for
-all generations. New tables arriving during a run only affect the next run.
-An explicit comma-separated `--validation-brains 789202,794491,794493,802449`
-requires every requested brain to be ready; nothing is silently excluded.
-
-Preparation can scan whole graphs; it is not a smoke test. One brain is loaded
-per subprocess, and the first failure stops the launcher. Matching tables are
-reused. Evolution itself requires prepared tables and never builds them.
-The preparation launcher accepts `--threads all` to use the process's available
-CPU count, respecting CPU affinity, for numerical-library threads. It logs the
-requested setting, resolved thread count and available CPUs. The default is 1;
-this setting does not parallelize serial Python feature loops.
-For other detector directories, use `cli.precompute_error_scores` and pass the
-same `--merge-dir`/`--split-dir` selections to preflight and evolution.
+Image and geometry contexts are read on demand. Do not precompute context caches
+for new evolution runs; the removed `--context-cache` flag is not accepted by
+evolution or preflight. `--no-descriptors` disables agent descriptor tools.
+The separate numeric descriptor bank reuses results only when their identities
+match; it is not a preloaded catalogue of features.
 
 `--generations 0` evaluates the seed/baseline without calling an LLM. Preflight
 does not test API access unless explicitly given `--check-api`; that probe sends
-one tool-free turn through the reviser's SDK path (bundled Claude Code CLI, API
-env, model id) but does not exercise the tool workflow. Live evolution requires
-`ANTHROPIC_API_KEY`.
+one tool-free turn through the reviser's SDK path, not the full tool workflow.
+Live evolution requires `ANTHROPIC_API_KEY`. Automatic validation discovery still
+exists, but the current recipe uses an explicit four-brain list; missing requested
+inputs fail rather than silently changing that split. Resolved roles and budgets
+are recorded before seed evaluation and remain fixed for the run.
 
 ## Scorer contract
 
@@ -1601,15 +1574,24 @@ the original order. No candidate IDs, GT labels or brain identifiers are supplie
 to the scorer. TRAIN feedback may contain bounded labeled examples with TRAIN-only inspection handles;
 validation examples and measurements are not provided to the reviser.
 
-The harness takes exactly `min(K, pool size)` per brain/kind, with stable
-candidate-ID tie breaking. Each brain must have the same candidate kinds. Average
-kind precision within each brain, then average brains equally, independent of
-pool size or positive counts. This equals the cell macro average for complete
-merge/split tables. Pool identity,
-labels, budgets, frozen weights and base feature definitions cannot change within a
-run. Returning fewer rows cannot improve precision. Ties do not pass the gate.
-Under `--detector-prior no-score` the `features` frame has no `detector_score` column and the
-seed is the constant `artifacts/scorer_no_score.py`; everything else in this contract holds.
+Metrics rank GT-judgeable rows only. Precision takes exactly
+`min(K, judgeable rows)` per brain/kind with candidate-ID tie breaking; the default
+K is that pool's positive count. Merge and split are scored separately, with no
+combined metric. The default objective is AUROC; positive-weighted aggregation
+weights each eligible brain by its positive count, while precision uses
+`sum(TP) / sum(effective K)`. Pools below the positive floor are reported but
+excluded. TRAIN selection, ablation and validation use the same configured
+objective and aggregation on their separate partitions. Promotion requires a
+target-kind gain, a positive paired-bootstrap lower bound under the default gate,
+and the configured head guard. Ties do not pass.
+
+Pool identity, labels, budgets, frozen detector weights and base feature
+definitions cannot change within a run. Under `no-score`, `detector_score` is
+withheld and the seed is constant; under `raw`, detector-derived predictors are
+also withheld, leaving raw geometry and registered agent descriptors. Unscored
+rows do not enter metric ranking directly but can affect arbitrary scorer code
+through whole-column operations; partial descriptor coverage is not universally
+equivalent to full-pool computation.
 
 ## Local fragment context
 
@@ -1792,8 +1774,8 @@ CodeAct relationship are recorded below; discovery benefit is still unmeasured.
 - `harness/dataset.py`: trusted cache loading and brain/MCL checks only.
 - `harness/fixed_pool_scoring.py`: ranking evaluation and acceptance.
 - `dataset_split.json`, manifest `promotion_gate`: resolved datasets, exclusions,
-  equal-weight aggregation, the versioned mean-validation-only promotion rule, its
-  mode (`bootstrap` or `margin`) and the bootstrap draws/alpha in force.
+  configured per-kind aggregation (positive-weighted by default), rank objective,
+  head guard, gate mode (`bootstrap` or `margin`) and bootstrap draws/alpha.
 - `harness/isolated_scoring.py`: dispatch to isolated formula or model inference,
   preserving declared raw image inputs. `scorer_worker.py` runs numeric formulas
   behind seccomp with bounded resources.
@@ -1813,18 +1795,19 @@ CodeAct relationship are recorded below; discovery benefit is still unmeasured.
 - `harness/internal_validation.py`, `feature_ablation.py`: host-owned grouped,
   fragment-purged TRAIN folds with selection/auxiliary brain roles, and paired
   constant-removal feature diagnostics scored on selection brains.
-- `harness/context_cache.py`, `cli/precompute_context_cache.py`: persistent, label-free
-  fragment-neighbourhood and image-patch contexts for the detector-ranked band and, with
-  `--labeled-extension`, for the GT-labeled rows outside it.
-- `harness/detector_prior.py`, `artifacts/scorer_no_score.py`: the `--detector-prior no-score`
-  ablation (withholds `detector_score`, `bank_context_available` and `row_in_band`, keeps a
-  host-only copy for the frozen baseline, refuses sources naming them, checks that the context
-  cache covers every GT-labeled row) and its constant seed.
+- `harness/descriptor_context.py`: on-demand fragment geometry and raw image
+  crops. `harness/context_cache.py` and `cli/precompute_context_cache.py` remain
+  offline compatibility utilities, not prerequisites or inputs to current evolution.
+- `harness/detector_prior.py`, `artifacts/scorer_no_score.py`: frozen/no-score/raw
+  predictor contracts and constant ablation seeds. No-score withholds the frozen
+  score; raw additionally withholds discovered predictors. Descriptor production
+  defaults to `judgeable`, with `all_candidates` available explicitly; no saved
+  context-cache coverage is required.
 - `harness/descriptor_contract.py`, `harness/descriptor_runs.py`: the `descriptor.py`
   contract, parallel sandboxed pool-scale computation, code-hash result caching,
   column registration and host-only label summaries.
 - `harness/selection_protocol.py`: the official TRAIN selection score
-  (`grouped_oof` partitioned out-of-fold precision or historical `in_sample`),
+  (`grouped_oof` partitioned out-of-fold rank objective or historical `in_sample`),
   fold budgets, fold refits with out-of-fold prediction, snapshot persistence
   and the protocol description exposed to the reviser.
 - `harness/hypothesis_memory.py`: bounded hypothesis evidence retrieval, exact
@@ -1845,8 +1828,9 @@ CodeAct relationship are recorded below; discovery benefit is still unmeasured.
   whole-pool statistics, parent-relative ranking changes and bounded feedback.
 - `harness/reviser_session.py`, `reviser_access.py`: SDK configuration, exact
   file-tool allowlists and explicit TRAIN tool permissions.
-- `harness/run_records.py`, `collect_run.py`, `plotting/`: precision-only
-  record reading, summaries and plots.
+- `harness/run_records.py`, `collect_run.py`, `plotting/`: fixed-pool ranking
+  records, summaries and plots using the recorded objective, including older
+  Precision@K runs and current AUROC runs.
 
 Runs save `manifest.json`, `baseline.json`, `seed.json`, `final.json`,
 `best_scorer.py`, `ledger.jsonl`, `tool_audit.jsonl`, `candidate_pool.json`,
@@ -1862,11 +1846,16 @@ selection measurement (`selection_evaluation.json`, `selection_state.npz`). Each
 `classifier_searches/batchNNN/` records model configurations and outcomes;
 `classifier_fits/fitNNN/` keeps requests, TRAIN fingerprints, worker logs, model.json,
 training.py, scorer manifest and training_summary.json, or a failed-fit result,
-plus `selection_folds/foldN/` fold models under the `grouped_oof` protocol.
+plus `selection_folds/foldN/` metadata under `grouped_oof`. Search fold models
+are removed after complete OOF predictions are persisted; final fitted model
+artifacts remain. Fit and experiment selection-state files share immutable
+hardlinks rather than duplicate arrays.
 `descriptor_plans/planNNN.json` and `descriptor_runs/runNNN/` keep each descriptor
 timing and computation (code, spec, per-brain worker logs, result); computed values
 live in the shared, code-hash-keyed `descriptor_bank/` outside the run directory
-(`descriptor_bank_no_score/` under `--detector-prior no-score`).
+(`descriptor_bank_no_score/` for no-score, `descriptor_bank_raw/` for raw).
+The identity also binds inputs, scope, labels where relevant, crop configuration
+and harness implementation; matching the source hash alone is insufficient.
 Frozen validation descriptor workers write stdout/stderr to
 `validation_descriptor_runs/<brain>/<code>/batchNNNN.log`, outside the TRAIN tree.
 The file guard reserves both this directory and legacy `descriptor_runs/inference/`
@@ -1919,8 +1908,9 @@ Regenerate old precision runs with
 The `--objective structural_repair` workflow and its compatibility exports,
 graph-edit scoring, repair-site enumeration, detector query adapter, image repair
 helpers, seeds, priors, structural tests and analysis notebooks were removed.
-The CLI no longer accepts `--objective`, `--candidate-mode`, repair enumeration
-flags or the old `--test-brains` alias. Use `--validation-brains`.
+The current `--objective` selects a rank statistic (AUROC by default), not
+structural repair. The CLI no longer accepts `--candidate-mode`, repair
+enumeration flags or the old `--test-brains` alias. Use `--validation-brains`.
 
 The unused `prepared_cache/` directory and its three historical graph-edit
 pickles have been deleted. The unreferenced `harness/policy_runtime.py` timeout
@@ -1929,8 +1919,8 @@ Current scoring and model workers retain their own timeout enforcement.
 
 Historical `runs/`, current feature tables and labeled source caches are retained.
 Surviving completed console/test logs moved from `log/` to `log_archive/` on
-2026-10-31; `log/` holds active output. Current summaries and plots accept precision runs only; old
-executable analysis requires its original code version. Six orphaned notebook
+2026-10-31; `log/` holds active output. Current summaries and plots support
+fixed-pool ranking runs; old graph-edit analysis requires its original code version. Six orphaned notebook
 checkpoints under `notebooks/.ipynb_checkpoints/` are retained as historical
 backups, not current workflow entrypoints.
 
@@ -2019,11 +2009,15 @@ invalidate native tables even when the candidate pool is unchanged. Rebuild if p
 requests it; do not rename table directories or bypass provenance checks.
 Source caches, detector scripts and joblibs are never rewritten by preparation.
 
-The default models were fitted on 794495. Training/validation brains must be
-disjoint, and a detector-fitted brain cannot serve as validation or as a
-selection brain; it can only be auxiliary TRAIN data, and the baseline
-auxiliary ablation reports whether its rows help the seed template out of fold. Repeated
-validation guides selection; it is not an untouched final test. Sparse native
+The default detectors were historically fitted on 794495. Since 2026-11-04,
+794495 is reserved for a future independent validation protocol and excluded
+from all new fitting, selection, tuning, testing and evolution promotion.
+This user restriction is stronger than the generic driver's mode rules and
+is not yet enforced by a general code guard. Frozen/no-score selection excludes
+detector-fitted brains; raw permits them generically because detector-derived
+predictors are withheld. Neither capability overrides the reservation.
+Training and development-validation brains must be disjoint. Repeated
+development validation guides promotion; it is not an untouched final test. Sparse native
 annotations are not exhaustive biological truth, and ranking gains do not prove
 safe graph repair. The SDK file guard controls revision tools; generated Python
 executes in a separate Linux worker. The formula worker receives numeric features and kind only,
@@ -2060,6 +2054,7 @@ records the motivating run and the original proposals.
 
 | Source / relationship | Mechanism and implementation | Differences and claim boundary | Evidence status |
 |---|---|---|---|
+| User dataset reservation and documentation audit, 2026-11-04; **project-specific protocol choice** | Current launch guides exclude 794495, use six whole-brain TRAIN holdouts and four development-validation brains, and link the imported CodeOcean snapshot and separate source audit. | Documentation alignment only; legacy parser defaults remain and no reserved-brain guard or independent model-validation protocol has been implemented. AUROC, positive weighting, bootstrap and the head guard are unchanged. Historical runs and upstream capsule files are preserved. | Current commands and claims checked against parser/selection/scheduler source; source-audit measurements and limits are in [evaluation/README.md](../evaluation/README.md). No new evolution trial. |
 | Raw-prior selection roles, 2026-11-04; **project-specific engineering** | `run_precision_evolution.py` and `preflight.py` allow detector-fitted selection brains only when raw withholds detector-derived predictors. Explicit `--selection-holdout-brains all` uses the existing whole-brain folds. Current examples in `plans/raw_prior_ablation.md` separate raw roles from frozen/no-score roles and document the defaults. | No new fold algorithm, aggregation or promotion rule. Mode-specific partitions change more than the input prior; a controlled prior-only comparison must use identical explicit selection roles across arms. The remaining plan text is a marked historical record. | [Four targeted regressions](../../codex_scratch/review_raw_roles_20261104.log) passed on n06, covering parsing, raw driver roles, whole-brain folds and preflight. Documentation alignment does not establish an evolutionary benefit; see the dated raw-role entry below. |
 | Workflow simplification, 2026-11-04; **project-specific engineering** | Short contract/task prompt with mandatory research and measured-submission rules; static per-image caps and PNG-only read access; thinking-status filtering; no-op CLI removal; hardlinked selection arrays, target-only TRAIN snapshots and post-persistence search OOF/ablation model cleanup. Code: `run_precision_evolution.py`, `reviser_access.py`, `image_preview.py`, `trajectory.py`, `selection_protocol.py`, `train_experiments.py`, `feature_ablation.py`. | No paper algorithm or scientific objective change; no merged execution clock, new cache manager or historical artifact migration. Byte caps bound host previews, not arbitrary file reads. | Compute-node regression evidence is recorded in the dated entry below; LLM behavior and end-to-end savings require a new run. |
 | Earlier post-revision consistency audit, 2026-11-04; **project-specific correction**, byte accounting superseded by simplification above | `train_experiments.py` applies the remaining reply allowance before inlining a matched-case preview; returned image blocks alone spend generation bytes, and saved/tool metadata agree. Guides name base64 bytes and the conservative eight-reader planning cap; scheduling and fit-cache descriptions match the implementation. | Positive-weighted aggregation remains the default. Transport allowances bound TRAIN-tool image payloads, not arbitrary later file reads or all conversation text. No metric or gate change. | Synthetic preview and descriptor regressions on compute nodes; see the dated audit entry below. |
@@ -2095,6 +2090,7 @@ previously recorded results, rather than evidence reverified in this audit.
 
 | Date / version | Change and motivation | Verification / future evidence |
 |---|---|---|
+| 2026-11-04 / dataset reservation and current-document consistency | Align CLAUDE.md, README, Stage 3, preparation docs and the raw launch recipe with the user-reserved 794495 and the new six-TRAIN/four-validation split. Clarify unchanged legacy defaults, mode-dependent predictors, whole-brain fold assignment, objective-dependent scheduling, and the separate CodeOcean/source-audit directories. Replace obsolete undated commands, combined-metric/equal-weight rules and module descriptions with the current contract. Mark conflicting TODO ideas, old partitions and figure snapshots as historical. | Documentation-only revision. [Checks on n06](../../codex_scratch/docs_workflow_audit_20261104.json) passed: four launch examples parsed by the real CLI, shell syntax, preflight argument parsing with readiness mocked, documented defaults, new relative links and diff whitespace. All 16 upstream capsule hashes unchanged. No model run, dataset rebuild, metric/gate change or automatic reservation enforcement. |
 | 2026-11-04 / raw-prior selection roles: every TRAIN brain a whole-brain holdout | **Project-specific engineering.** Under `--detector-prior raw` the frozen score and every discovered column are withheld on every brain, so the detector-fitted brain 794495 carries no detector-derived input; the driver and preflight now accept detector-fitted selection brains only under that prior (`dataset_split.detector_fitted_selection_rule`), `--selection-brains all` and `--selection-holdout-brains all` name every TRAIN / selection brain, and the recorded launch commands for raw runs use them: six whole-brain holdouts in three folds of two brains, no auxiliary brain, no within-brain folds, `holdout_objective` equal to the selection objective. Evidence from the ledgers of the five AUROC runs (3f9z8t3v, 5apxf4f5, 65xqh07d, o4qvj3ru, lru62oga; 20 merge and 13 split candidates): Spearman correlation with the validation objective was 0.85 (merge) / 0.51 (split) for `holdout_objective`, 0.54 / 0.43 for the weighted selection objective and 0.48 / 0.27 for the 802449 within-brain cells alone; candidate-vs-parent deltas tracked validation deltas similarly for all three (85-89% sign agreement, n = 13 / 9). No protocol, fold or aggregation code changed; frozen and no-score runs keep the 2026-10-27 roles. The fold holding out 802449 and 754612 fits merge on 299 of the 1,359 TRAIN merge positives, so merge selection levels will be lower than before and not comparable with earlier runs. | On n06, panda: `test_holdout_and_weighted_mean`, `test_preflight`, `test_selection_protocol` and `test_descriptor_compute` passed together with `test_detector_prior` (66 passed, 19 subtests, 879 s; the new raw driver test first failed because the borrowed fixture rows lacked `candidate_family`, which the raw prior needs to rebuild the frame; after adding it `test_detector_prior` passed alone, 10 passed, 13 subtests, 174 s). New cases: six fixture brains all held out whole (two per fold, no auxiliary role, `holdout_objective` equal to the objective), the `all` keyword at parse time, a raw driver run whose dataset_split lists the detector-fitted brain as a whole-brain holdout while the frozen prior still refuses it, and preflight readiness under both priors. pyflakes and `git diff --check` clean. No run launched; the first raw run with this partition sets the new merge selection baseline. |
 | 2026-11-04 / prompt, transport and artifact simplification | Keep mandatory research/completion, TRAIN isolation and measured-submission rules in the prompt; move interface details to guides and resource values to the environment, with short initial research notes. Replace cumulative image-byte accounting with static per-image bounds and a 3000-pixel edge limit (an unreadable preview file is omitted on its own instead of failing the reply); return absolute PNG paths, allow only inspection PNGs, retain the 256 MiB SDK buffer. Drop `thinking_tokens` noise and ignored context-cache CLI arguments. Share immutable fit/attempt selection arrays by hardlink, save target-kind TRAIN state only, and discard search OOF/paired-ablation fold models after prediction persistence. Preserve final model artifacts, failure diagnostics, all scientific rules and historical runs. | On n06/panda, **179 distinct scoped tests** ([inventory](../../codex_scratch/simplify_test_inventory_20261104.json)): [79-test sweep](../../codex_scratch/simplify_tests_first_20261104.log), [71-test integration](../../codex_scratch/simplify_integration_20261104.log), [20-test final checks](../../codex_scratch/simplify_final_20261104.log), [23 objective/weighting tests](../../codex_scratch/simplify_metrics_final_20261104.log), [preview paths](../../codex_scratch/simplify_preview_paths_20261104.log) and [no-score recheck](../../codex_scratch/simplify_no_score_final_20261104.log). The initial sweeps exposed two obsolete test expectations (byte ledger and contract copied into rules); both were updated and passed their rechecks. [Pyflakes](../../codex_scratch/simplify_pyflakes_final_20261104.log) and diff checks pass. [Shared-filesystem replay](../../codex_scratch/simplify_storage_shared_20261104.json) preserves arrays exactly: one gen011 split TRAIN state shrinks 54.6 to 37.0 MiB; two selection copies share 31.7 MiB. The system contract shrinks 16,743 to 3,289 bytes. A [read-only count](../../codex_scratch/simplify_fold_storage_20261104.json) finds 678.2 MiB of temporary fold models in that historical generation; this is storage evidence, not a new-run benchmark. No live trial; inspect guide use and research completion in the next official run's first generation. |
 | 2026-11-04 / post-revision consistency audit | Keep the restored positive-weighted default. Fix matched-case preview accounting: apply the remaining reply allowance before inlining, charge only returned image blocks and report the same `preview_inlined` / `preview_payload` in tool output and saved metadata. Update the remaining follow-up-first statement, feature-cache description and active selection-objective diagram; clarify base64 byte budgets and the conservative eight-reader planning cap. Correct the figure refresh date and duplicated evidence text. The ignored local `CLAUDE.md` also receives the row-independent prediction condition and current scheduling/budget notes. | On n06, panda: [53 tests passed in 278.7 s](../../codex_scratch/revision_consistency_n06_20261104.log) across image context, preview rendering, descriptor probes and reviser limits. Regression checks both reply and generation ceilings, correct saved metadata, and reuse of bytes not sent. The initial [n13 attempt](../../codex_scratch/revision_consistency_20261104.log) was blocked by live memory admission (4.6 GiB headroom below the 10 GiB reserve); n06 had about 176 GiB headroom. Production admission remains unchanged. All modified Python files passed [pyflakes on n06](../../codex_scratch/revision_consistency_pyflakes_20261104.log); `git diff --check` passed. No evolution trial was launched. |
