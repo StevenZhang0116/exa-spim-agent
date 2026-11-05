@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# PyTorch with CUDA 12.4 support (must stay here — requires custom --index-url)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# Accessible installs
+mkdir -p /opt/repos
+cd /opt/repos
+
+git clone https://github.com/AllenNeuralDynamics/segmentation-skeleton-metrics.git
+cd segmentation-skeleton-metrics && git checkout 478aede && pip install -e . && cd ..
+
+git clone https://github.com/AllenNeuralDynamics/neuron-proofreading-evaluation.git
+cd neuron-proofreading-evaluation && git checkout f15bd8d && pip install -e . && cd ..
+
+# Auto-write GCS credentials from GCS_TOKEN on every shell startup
+cat > /etc/profile.d/gcs_credentials.sh << 'CREDS'
+if [ -n "${GCS_TOKEN:-}" ]; then
+    mkdir -p /root/.config/gcloud
+    printf '%s' "$GCS_TOKEN" > /root/.config/gcloud/application_default_credentials.json
+fi
+CREDS
+chmod +x /etc/profile.d/gcs_credentials.sh
+echo 'source /etc/profile.d/gcs_credentials.sh' >> /etc/bash.bashrc
+
+# Install IDE tools (claude-code, code-server) — optional, Cloud Workstation only.
+# Wrapped in a subshell so failures here do NOT abort the build.
+(
+    set -e
+    apt-get update && apt-get install -y curl
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt-get install -y nodejs
+    npm install -g @anthropic-ai/claude-code
+
+    CODE_SERVER_VERSION="4.100.3"
+    curl -fsSL "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server_${CODE_SERVER_VERSION}_amd64.deb" \
+        -o /tmp/code-server.deb
+    dpkg -i /tmp/code-server.deb
+    rm /tmp/code-server.deb
+
+    mkdir -p /.vscode/extensions
+    code-server --extensions-dir="/.vscode/extensions" --install-extension ms-python.python@2025.14.0
+    code-server --extensions-dir="/.vscode/extensions" --install-extension ms-toolsai.jupyter@2025.4.1
+    code-server --extensions-dir="/.vscode/extensions" --install-extension reditorsupport.r@2.8.6
+    code-server --extensions-dir="/.vscode/extensions" --install-extension saoudrizwan.claude-dev@3.35.1
+) || echo "WARNING: IDE tool installation failed — skipping (not required for reproducible runs)."

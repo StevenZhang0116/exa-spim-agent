@@ -1,0 +1,13 @@
+{
+	"version": 1,
+	"attached_datasets": [
+		{
+			"id": "980c2a05-663a-4c55-b0b2-433b8b7f47d9",
+			"mount": "aggs08_old_pipeline"
+		},
+		{
+			"id": "d61fb056-c05b-4047-8fe7-edda160e7225",
+			"mount": "arborist_v2_agg08_eval"
+		}
+	]
+}

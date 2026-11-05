@@ -1,0 +1,33 @@
+{
+	"version": 1,
+	"named_parameters": true,
+	"parameters": [
+		{
+			"id": "PBxIEZTjo1eKNSDe",
+			"name": "Result Prefix",
+			"param_name": "result_prefix",
+			"type": "text",
+			"value_type": "string"
+		},
+		{
+			"id": "hDg2kEwD30WAczam",
+			"name": "Segmentation Path",
+			"param_name": "segmentation_path",
+			"type": "text",
+			"value_type": "string"
+		},
+		{
+			"id": "YXvFiAiYIad7EPvh",
+			"name": "Upload Results",
+			"param_name": "upload",
+			"description": "Upload evaluation results to S3 after completion (1=yes, 0=no)",
+			"type": "list",
+			"value_type": "string",
+			"default_value": "0",
+			"extra_data": [
+				"0",
+				"1"
+			]
+		}
+	]
+}

@@ -1,0 +1,6 @@
+# Keep only the two reviewed, non-secret CodeOcean metadata files.
+/.codeocean/*
+!/.codeocean/app-panel.json
+!/.codeocean/datasets.json
+/data/
+/results/

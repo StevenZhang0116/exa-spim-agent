@@ -1,0 +1,101 @@
+<title>Merge Detection Slide</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* One 16:9 slide, 1280x720, scaled to fit. Two line charts: recall and false positives vs prediction threshold. */
+:root{
+  --bg:#eef0f3; --surface:#ffffff; --ink:#15181c; --ink-2:#4e5661; --muted:#848c97;
+  --grid:#e4e7eb; --axis:#c3c8cf; --border:rgba(21,24,28,.12);
+  --c-it2:#2a78d6; --c-dt5k:#1baf7a; --c-dt20k:#eda100; --c-dt50k:#eb6834;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  color-scheme:light;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.45;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:20px 28px}
+.stage-wrap{max-width:1280px;margin:0 auto;min-width:0}
+.scaler{transform-origin:top left}
+.slide{width:1280px;height:720px;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:30px 40px 24px;display:flex;flex-direction:column;gap:14px;overflow:hidden}
+.head{display:flex;justify-content:space-between;align-items:baseline;gap:24px}
+.title{font-size:23px;font-weight:600;letter-spacing:-.01em}
+.legend{display:flex;gap:14px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:8px;font-size:14.5px;color:var(--ink)}
+.chip .sw{width:12px;height:12px;border-radius:50%;background:var(--c)}
+.bodyrow{display:grid;grid-template-columns:1fr 1fr;gap:34px;flex:1;min-height:0;align-content:center}
+.scard{min-width:0}
+.scard h3{font-size:16px;font-weight:500;margin:0 0 4px;color:var(--ink)}
+.scard h3 span{color:var(--muted);font-weight:400;font-size:13px}
+.foot{font-size:10.5px;color:var(--muted);padding-top:2px}
+svg{display:block;width:100%;height:auto;overflow:visible}
+svg text{font-family:var(--sans);fill:var(--ink-2)}
+svg .tick{font-size:12.5px;fill:var(--muted);font-variant-numeric:tabular-nums}
+svg .axl{font-size:12.5px;fill:var(--muted)}
+svg .grid{stroke:var(--grid);stroke-width:1} svg .axis{stroke:var(--axis);stroke-width:1}
+svg .ln{fill:none;stroke-width:2.4;stroke-linejoin:round;stroke-linecap:round}
+svg .mark{stroke:var(--ink-2);stroke-width:1.2;stroke-dasharray:4 4}
+svg .marklab{font-size:12.5px;fill:var(--ink-2);font-family:var(--mono)}
+svg .vallab{font-size:13px;fill:var(--ink);font-family:var(--mono);font-variant-numeric:tabular-nums}
+svg .mk{stroke:var(--surface);stroke-width:1.5}
+.hint{max-width:1280px;margin:10px auto 0;font-size:12px;color:var(--muted)}
+</style>
+
+<div class="stage-wrap"><div class="scaler" id="scaler">
+<div class="slide" id="slide">
+  <div class="head">
+    <div class="title">Merge-site detection on final SWCs · brain 794495</div>
+    <div class="legend" id="legend"></div>
+  </div>
+  <div class="bodyrow" id="grid"></div>
+  <div class="foot" id="foot"></div>
+</div>
+</div></div>
+<p class="hint">1280 × 720 slide. Screenshot the panel to paste into PowerPoint.</p>
+
+<script>
+const D = __DATA__;
+const CFG={it2:{label:"base (it2)",color:"var(--c-it2)"},dt5k:{label:"agg mt08_st08_dt5k",color:"var(--c-dt5k)"},dt20k:{label:"agg mt08_st08_dt20k",color:"var(--c-dt20k)"},dt50k:{label:"agg mt08_st08_dt50k",color:"var(--c-dt50k)"}};
+const ORDER=Object.keys(D.configs);const MARK=(D.mark_threshold!=null)?D.mark_threshold:0.1;const MI=D.thresholds.findIndex(t=>Math.abs(t-MARK)<1e-9);const PRM=D.params||{gt_filter_um:5,site_radius_um:10,match_um:10,soma_um:1000};
+const S="http://www.w3.org/2000/svg";
+const el=(n,a={},p)=>{const e=document.createElementNS(S,n);for(const k in a)e.setAttribute(k,a[k]);if(p)p.appendChild(e);return e;};
+document.getElementById("legend").innerHTML=
+  ORDER.map(c=>`<span class="chip" style="--c:${(CFG[c]||{}).color||"#555"}"><span class="sw"></span>${(CFG[c]||{label:c}).label}</span>`).join("");
+const fpmax=Math.max(...Object.values(D.configs).map(c=>c.fp[0]));const FPSTEP=fpmax>150?50:fpmax>60?20:fpmax>30?10:5;const FPMAX=Math.ceil(fpmax/FPSTEP)*FPSTEP;const FPTICKS=Array.from({length:FPMAX/FPSTEP+1},(_,i)=>i*FPSTEP);
+const rmax=Math.max(...Object.values(D.configs).map(c=>Math.max(...c.recall)));const RMAX=rmax<=0.5?0.5:1;const RTICKS=RMAX===0.5?[0,.1,.2,.3,.4,.5]:[0,.2,.4,.6,.8,1];
+const PANELS=[
+  {name:"Recall",unit:"fraction of reachable merge sites found",ymax:RMAX,yt:RTICKS,fmt:v=>v.toFixed(1),mfmt:v=>v.toFixed(2),series:c=>[{k:"recall",dash:false}]},
+  {name:"False positives",unit:"per ground-truth neuron",ymax:FPMAX,yt:FPTICKS,fmt:v=>String(v),mfmt:v=>v.toFixed(1),series:c=>[{k:"fp",dash:false}]},
+];
+const T=D.thresholds;
+const grid=document.getElementById("grid");
+PANELS.forEach(p=>{
+  const card=document.createElement("div");card.className="scard";card.innerHTML=`<h3>${p.name} <span>· ${p.unit}</span></h3>`;const host=document.createElement("div");card.appendChild(host);grid.appendChild(card);
+  const W=580,H=400,ML=52,MR=16,MT=12,MB=46;
+  const x=t=>ML+t*(W-ML-MR), y=v=>MT+(H-MT-MB)*(1-v/p.ymax);
+  const svg=el("svg",{viewBox:`0 0 ${W} ${H}`,width:W,height:H,role:"img","aria-label":`${p.name} vs prediction threshold`},host);
+  p.yt.forEach(t=>{el("line",{x1:ML,x2:W-MR,y1:y(t),y2:y(t),class:"grid"},svg);el("text",{x:ML-8,y:y(t)+4,"text-anchor":"end",class:"tick"},svg).textContent=p.fmt(t);});
+  el("line",{x1:ML,x2:W-MR,y1:H-MB,y2:H-MB,class:"axis"},svg);
+  [0,.2,.4,.6,.8,1].forEach(t=>{el("text",{x:x(t),y:H-MB+18,"text-anchor":"middle",class:"tick"},svg).textContent=t.toFixed(1);});
+  el("text",{x:(ML+W-MR)/2,y:H-6,"text-anchor":"middle",class:"axl"},svg).textContent="prediction threshold";
+  ORDER.forEach(c=>p.series(c).forEach(s=>{
+    const d=D.configs[c][s.k];
+    el("path",{d:T.map((t,i)=>(i?"L":"M")+x(t).toFixed(1)+" "+y(Math.min(d[i],p.ymax)).toFixed(1)).join(" "),class:"ln"+(s.dash?" dash":""),stroke:(CFG[c]||{}).color||"#555"},svg);
+  }));
+  if(MI>=0){
+    const xm=x(MARK);
+    el("line",{x1:xm,x2:xm,y1:MT,y2:H-MB,class:"mark"},svg);
+    const labs=ORDER.map(c=>{const v=D.configs[c][p.series(c)[0].k][MI];return {c,v,y:y(Math.min(v,p.ymax))};});
+    labs.forEach(l=>el("circle",{cx:xm,cy:l.y,r:4.5,fill:(CFG[l.c]||{}).color||"#555",class:"mk"},svg));
+    labs.sort((a,b)=>a.y-b.y);const LAB=17;for(let i=1;i<labs.length;i++)if(labs[i].y-labs[i-1].y<LAB)labs[i].y=labs[i-1].y+LAB;
+    const over=labs[labs.length-1].y-(H-MB-4);if(over>0)labs.forEach(l=>l.y-=over);
+    const under=MT+4-labs[0].y;if(under>0)labs.forEach(l=>l.y+=under);
+    labs.forEach(l=>{const t=el("text",{x:xm+12,y:l.y+4.5,class:"vallab"},svg);t.textContent=p.mfmt(l.v);});
+    const nearBottom=labs.some(l=>l.y>H-MB-24);
+    el("text",{x:xm+6,y:nearBottom?MT+10:H-MB-8,class:"marklab"},svg).textContent=`t = ${MARK}`;
+  }
+});
+const g=D.configs;
+document.getElementById("foot").textContent=`Branch-point sites within ${PRM.gt_filter_um} µm of ground truth. Ground truth = step-4 merge sites within ${PRM.site_radius_um} µm of a branch point (${ORDER.map(c=>`${g[c].n_gt} of ${g[c].n_gt_all}`).join(", ")}); a site counts as found within ${PRM.match_um} µm. False positives averaged over ${D.n_neurons} neurons.`;
+function fit(){const wrap=document.querySelector(".stage-wrap");const sc=Math.min(1,wrap.clientWidth/1280);const k=document.getElementById("scaler");k.style.transform=`scale(${sc})`;k.style.height=(720*sc)+"px";}
+fit();addEventListener("resize",fit);
+</script>

@@ -1,0 +1,598 @@
+<meta charset="utf-8">
+<title>Merge review</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<style>
+/*__FONTS__*/
+:root{
+  --bg:#0e1318; --panel:#151b22; --raise:#1c242d; --rule:#26303a;
+  --ink:#dde4ea; --muted:#8794a3; --accent:#7db4dc;
+  --fp:#6cc29c; --tm:#ec7a5c; --un:#e2b44a;
+  --c-frag:#ff4646; --c-gt:#28cde1; --c-ring:#ff0000;
+  --sans:'Review Sans',system-ui,sans-serif; --mono:'Review Mono',ui-monospace,Menlo,monospace;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:13px/1.45 var(--sans);overflow:auto;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+button,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+#app{height:100%;min-height:560px;display:grid;grid-template-rows:auto auto minmax(0,1fr)}
+
+.top{display:flex;flex-wrap:wrap;align-items:flex-end;gap:12px 22px;padding:12px 18px;background:var(--panel);border-bottom:1px solid var(--rule)}
+.brand{display:flex;flex-direction:column;min-width:150px}
+.brand h1{margin:0;font-size:15px;font-weight:700;letter-spacing:.01em}
+.brand span{font:12px var(--mono);color:var(--muted)}
+.controls{display:flex;flex-wrap:wrap;gap:10px 14px}
+.field{display:flex;flex-direction:column;gap:3px}
+.field label{font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+select{background:var(--raise);border:1px solid var(--rule);border-radius:3px;padding:5px 8px;min-width:128px;max-width:230px}
+.counts{margin-left:auto;display:flex;gap:16px;align-items:flex-end;font-variant-numeric:tabular-nums}
+.count{display:flex;flex-direction:column;align-items:flex-end;gap:1px}
+.count b{font:700 17px/1 var(--mono)}
+.count span{font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.count i{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;vertical-align:1px}
+
+.strip{display:flex;gap:1px;height:14px;padding:0 18px;margin:8px 0 0}
+.strip div{flex:1 1 0;min-width:1px;background:var(--rule);cursor:pointer}
+.strip div.fp{background:var(--fp)} .strip div.tm{background:var(--tm)} .strip div.un{background:var(--un)}
+.strip div.cur{outline:2px solid var(--ink);outline-offset:1px;position:relative;z-index:1}
+
+.work{display:grid;grid-template-columns:minmax(0,1fr) 348px;min-height:0;margin-top:8px;border-top:1px solid var(--rule)}
+.stage{display:flex;flex-direction:column;gap:10px;padding:14px 18px;min-height:0;min-width:0}
+.fit{flex:1;min-height:0;display:flex;justify-content:center;align-items:flex-start}
+.frame{position:relative;background:#080a0d;line-height:0}
+.frame img,.frame canvas{width:100%;display:block}
+.tune{display:flex;align-items:center;justify-content:center;gap:12px}
+.tune label{font-size:10px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+.tune input[type=range]{width:min(260px,45%);accent-color:var(--accent)}
+.tune output{font:12px var(--mono);min-width:3.4em;text-align:right;font-variant-numeric:tabular-nums}
+.tune .btn{padding:3px 10px;font-size:11px}
+.tag{position:absolute;font:10px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:#cfd8e0;background:rgba(8,10,13,.72);padding:3px 5px}
+.empty{align-self:center;text-align:center;color:var(--muted);display:flex;flex-direction:column;gap:10px;align-items:center}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12px;color:var(--muted);justify-content:center}
+.legend span{display:inline-flex;align-items:center;gap:6px}
+.sw{width:16px;height:3px;display:inline-block}
+.ring{width:11px;height:11px;border:2px solid var(--c-ring);border-radius:50%;display:inline-block}
+.bar{width:14px;height:2px;background:#ebeef2;display:inline-block}
+
+.side{background:var(--panel);border-left:1px solid var(--rule);overflow-y:auto;padding:16px 18px;display:flex;flex-direction:column;gap:18px;min-height:0}
+.hd{display:flex;align-items:flex-start;gap:12px}
+.hd .id{font:700 22px/1.1 var(--mono);overflow-wrap:anywhere}
+.hd .sub{color:var(--muted);font-size:12px;margin-top:4px}
+.pos{margin-left:auto;text-align:right;font:12px var(--mono);color:var(--muted);white-space:nowrap}
+.nav{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.btn{background:var(--raise);border:1px solid var(--rule);border-radius:3px;padding:7px 10px;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.btn:hover:not(:disabled){border-color:var(--muted)}
+.btn:disabled{opacity:.45;cursor:default}
+kbd{font:10px var(--mono);color:var(--muted);border:1px solid var(--rule);border-radius:2px;padding:1px 5px;background:var(--bg)}
+
+.labels{display:grid;grid-template-columns:1fr;gap:8px}
+.lab{--c:var(--muted);display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:3px;background:var(--raise);border:1px solid var(--rule);text-align:left}
+.lab i{width:10px;height:10px;border-radius:50%;background:var(--c);flex:none}
+.lab span{flex:1;font-weight:700}
+.lab:hover{border-color:var(--c)}
+.lab[aria-pressed="true"]{background:var(--c);border-color:var(--c);color:#0e1318}
+.lab[aria-pressed="true"] i{background:#0e1318}
+.lab[aria-pressed="true"] kbd{color:#0e1318;border-color:rgba(14,19,24,.4);background:transparent}
+.lab.fp{--c:var(--fp)} .lab.tm{--c:var(--tm)} .lab.un{--c:var(--un)}
+.clear{font-size:12px;color:var(--muted);background:none;border:0;padding:2px 0;text-align:left;text-decoration:underline;text-underline-offset:3px}
+
+.sec{display:flex;flex-direction:column;gap:8px}
+.sec h2{margin:0;font-size:10px;font-weight:400;letter-spacing:.09em;text-transform:uppercase;color:var(--muted)}
+dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:5px 14px}
+dt{color:var(--muted)}
+dd{margin:0;font-family:var(--mono);text-align:right;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.coord{display:flex;align-items:center;gap:8px;background:var(--bg);border:1px solid var(--rule);border-radius:3px;padding:6px 6px 6px 10px}
+.coord small{font-size:10px;letter-spacing:.09em;color:var(--muted);text-transform:uppercase;width:34px;flex:none}
+.coord code{flex:1;font:12px var(--mono);font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.coord button{background:var(--raise);border:1px solid var(--rule);border-radius:3px;padding:3px 8px;font-size:11px}
+.coord button:hover{border-color:var(--muted)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font:11px var(--mono);border:1px solid var(--rule);border-radius:10px;padding:2px 9px;background:var(--bg)}
+.chip.solo{color:var(--muted)}
+textarea{width:100%;min-height:76px;resize:vertical;background:var(--bg);border:1px solid var(--rule);border-radius:3px;padding:8px 10px}
+textarea::placeholder{color:#5d6a77}
+details summary{cursor:pointer;color:var(--muted);font-size:10px;letter-spacing:.09em;text-transform:uppercase}
+details[open] summary{margin-bottom:8px}
+.out{display:flex;flex-direction:column;gap:8px}
+.out textarea{min-height:96px;font:11px/1.4 var(--mono);white-space:pre}
+.swcrows{display:flex;flex-direction:column;gap:6px}
+.swcrow{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center}
+.swcrow b{font:700 12px var(--mono);font-variant-numeric:tabular-nums;color:var(--fp);min-width:2.2em;text-align:right}
+.swcrow .btn{padding:4px 10px;font-size:12px}
+.msg{font-size:12px;color:var(--muted);min-height:1.4em}
+.warn{font-size:12px;color:var(--un)}
+
+@media (max-width:860px){
+  #app{height:auto;min-height:100%;display:block}
+  .work{display:block}
+  .fit{display:block}
+  .side{border-left:0;border-top:1px solid var(--rule);overflow:visible}
+  .counts{margin-left:0;width:100%;display:grid;grid-template-columns:repeat(4,auto);justify-content:space-between}
+  .count{align-items:flex-start}
+  .count span{white-space:nowrap;letter-spacing:.05em}
+  select{min-width:110px}
+}
+@media (prefers-reduced-motion:no-preference){
+  .lab,.btn,select{transition:border-color .12s,background-color .12s}
+}
+</style>
+
+<div id="app">
+  <header class="top">
+    <div class="brand"><h1 id="title">Merge review</h1><span id="subtitle"></span></div>
+    <div class="controls" id="controls"></div>
+    <div class="counts" id="counts"></div>
+  </header>
+  <div class="strip" id="strip" aria-label="Progress, one tick per site"></div>
+  <div class="work">
+    <main class="stage">
+      <div class="fit" id="fit"></div>
+      <div class="tune">
+        <label for="contrast">Raw contrast</label>
+        <input type="range" id="contrast" min="1" max="3" step="0.1" value="1">
+        <output id="cval" for="contrast">1.0×</output>
+        <button class="btn" id="creset" type="button">Reset</button>
+      </div>
+      <div class="legend" id="legend"></div>
+    </main>
+    <aside class="side" id="side"></aside>
+  </div>
+</div>
+
+<script>
+const D = /*__DATA__*/;
+
+const LABELS = [
+  {k:'fp', key:'f', name:'False positive', csv:'false_positive'},
+  {k:'tm', key:'t', name:'True merge',     csv:'true_merge'},
+  {k:'un', key:'u', name:'Unsure',         csv:'unsure'},
+];
+const FILTERS = [
+  ['all','All sites'], ['unreviewed','Unreviewed'], ['hide_fp','Hide false positives'],
+  ['only_fp','Only false positives'], ['only_tm','Only true merges'], ['only_un','Only unsure'],
+];
+const SORTS = [['added','Added length'], ['recur','Recurrence across configs'], ['neuron','Neuron']];
+
+const FLAGS_KEY = D.dataset + '_flags_v1';
+const VIEW_KEY  = D.dataset + '_view_v1';
+const hasStep = D.steps.length > 1;
+const hasCfg  = D.cfgs.length > 1;
+
+let storageOK = true;
+let store = {};
+let view = {cfg:'all', step: D.steps[D.steps.length-1].id, gt:'all', filter:'all', sort:'added', cur:null, contrast:1};
+try{ store = JSON.parse(localStorage.getItem(FLAGS_KEY) || '{}'); }catch(e){ storageOK = false; }
+try{ Object.assign(view, JSON.parse(localStorage.getItem(VIEW_KEY) || '{}')); }catch(e){}
+view.contrast = Math.min(3, Math.max(1, +view.contrast || 1));
+if(!hasStep) view.step = 'all';
+if(!hasCfg) view.cfg = 'all';
+if(view.step !== 'all' && !D.steps.some(s => s.id === view.step)) view.step = 'all';
+
+const $ = id => document.getElementById(id);
+const skey = s => [s.cfg, s.step, s.id, s.seg].join('|');
+const labelOf = s => (store[skey(s)] || {}).l || '';
+const noteOf  = s => (store[skey(s)] || {}).n || '';
+const stepLabel = id => (D.steps.find(s => s.id === id) || {label:id}).label;
+const fmt = (v, d=2) => Number(v).toFixed(d);
+
+function persist(){
+  try{
+    localStorage.setItem(FLAGS_KEY, JSON.stringify(store));
+    localStorage.setItem(VIEW_KEY, JSON.stringify(view));
+  }catch(e){ storageOK = false; $('storewarn') && ($('storewarn').hidden = false); }
+}
+
+function scope(){
+  return D.sites.filter(s => (view.cfg === 'all' || s.cfg === view.cfg) && (view.step === 'all' || s.step === view.step));
+}
+function neuronNum(g){ const m = /^N(\d+)/.exec(g); return m ? +m[1] : 1e9; }
+function list(){
+  let L = scope().filter(s => view.gt === 'all' || s.gt === view.gt);
+  L = L.filter(s => {
+    const l = labelOf(s);
+    switch(view.filter){
+      case 'unreviewed': return !l;
+      case 'hide_fp': return l !== 'fp';
+      case 'only_fp': return l === 'fp';
+      case 'only_tm': return l === 'tm';
+      case 'only_un': return l === 'un';
+      default: return true;
+    }
+  });
+  const order = new Map(D.sites.map((s,i) => [s, i]));
+  const tie = (a,b) => order.get(a) - order.get(b);
+  const cmp = {
+    added: (a,b) => b.cable - a.cable || tie(a,b),
+    recur: (a,b) => b.also_in.length - a.also_in.length || b.cable - a.cable || tie(a,b),
+    neuron: (a,b) => neuronNum(a.gt) - neuronNum(b.gt) || a.gt.localeCompare(b.gt) || b.cable - a.cable || tie(a,b),
+  }[view.sort];
+  return L.sort(cmp);
+}
+
+function optionsHTML(opts, value){
+  return opts.map(([v,t]) => `<option value="${v}"${v === value ? ' selected' : ''}>${t}</option>`).join('');
+}
+function field(id, label, opts, value){
+  return `<div class="field"><label for="${id}">${label}</label><select id="${id}">${optionsHTML(opts, value)}</select></div>`;
+}
+
+function renderControls(){
+  const pool = scope();
+  const counts = {};
+  pool.forEach(s => counts[s.gt] = (counts[s.gt] || 0) + 1);
+  const gts = Object.keys(counts).sort((a,b) => neuronNum(a) - neuronNum(b) || a.localeCompare(b));
+  if(view.gt !== 'all' && !counts[view.gt]) view.gt = 'all';
+  let h = '';
+  if(hasCfg) h += field('f-cfg', 'Config', [['all','All configs'], ...D.cfgs.map(c => [c,c])], view.cfg);
+  if(hasStep) h += field('f-step', 'Step', [['all','All steps'], ...D.steps.map(s => [s.id, s.label])], view.step);
+  h += field('f-gt', 'Ground-truth neuron', [['all', `All neurons (${pool.length})`], ...gts.map(g => [g, `${g} (${counts[g]})`])], view.gt);
+  h += field('f-filter', 'Show', FILTERS, view.filter);
+  h += field('f-sort', 'Sort by', SORTS, view.sort);
+  $('controls').innerHTML = h;
+  [['f-cfg','cfg'],['f-step','step'],['f-gt','gt'],['f-filter','filter'],['f-sort','sort']].forEach(([id,k]) => {
+    const el = $(id); if(!el) return;
+    el.onchange = () => { view[k] = el.value; view.cur = null; render(); };
+  });
+}
+
+function renderCounts(){
+  const pool = scope();
+  const n = {fp:0, tm:0, un:0};
+  pool.forEach(s => { const l = labelOf(s); if(l) n[l]++; });
+  const done = n.fp + n.tm + n.un;
+  const cell = (num, name, color) =>
+    `<div class="count"><b>${num}</b><span>${color ? `<i style="background:${color}"></i>` : ''}${name}</span></div>`;
+  $('counts').innerHTML =
+    cell(`${done}<small style="color:var(--muted);font-weight:400"> / ${pool.length}</small>`, 'Reviewed') +
+    cell(n.tm, 'True merge', 'var(--tm)') + cell(n.fp, 'False positive', 'var(--fp)') + cell(n.un, 'Unsure', 'var(--un)');
+}
+
+function renderStrip(L){
+  const frag = document.createDocumentFragment();
+  L.forEach((s, i) => {
+    const d = document.createElement('div');
+    d.className = labelOf(s) + (skey(s) === view.cur ? ' cur' : '');
+    d.dataset.i = i;
+    d.title = `${s.id} · ${s.gt}`;
+    frag.appendChild(d);
+  });
+  const strip = $('strip');
+  strip.replaceChildren(frag);
+  strip.onclick = e => {
+    const i = e.target.dataset && e.target.dataset.i;
+    if(i !== undefined && L[i]){ view.cur = skey(L[i]); render(); }
+  };
+}
+
+function renderLegend(){
+  $('legend').innerHTML =
+    `<span><i class="sw" style="background:var(--c-frag)"></i>Fragment at site</span>` +
+    `<span><i class="sw" style="background:var(--c-gt)"></i>Ground-truth tracing</span>` +
+    `<span><i class="ring"></i>Site</span>` +
+    `<span><i class="bar"></i>${D.scale_bar_um} µm</span>` +
+    `<span>Patch ${D.patch_vox}³ vox · top raw MIP · bottom skeletons</span>`;
+}
+
+function fitFrame(){
+  const fit = $('fit'), fr = fit.firstElementChild;
+  if(!fr || !fr.classList.contains('frame')) return;
+  const r = D.img_w / D.img_h;
+  if(matchMedia('(max-width:860px)').matches){ fr.style.width = '100%'; return; }
+  const w = Math.min(fit.clientWidth, fit.clientHeight * r);
+  fr.style.width = Math.max(240, w) + 'px';
+}
+
+function tagsHTML(){
+  const pw = 100 * 240 / D.img_w, step = 100 * (240 + 4) / D.img_w, rowTop = 100 * 244 / D.img_h;
+  const names = ['XY','XZ','YZ'];
+  let h = '';
+  for(let r = 0; r < 2; r++) for(let c = 0; c < 3; c++){
+    h += `<span class="tag" style="left:${c*step + .6}%;top:${r ? rowTop + 1 : 1}%">${names[c]} · ${r ? 'skeleton' : 'raw'}</span>`;
+  }
+  return h;
+}
+
+let paintToken = 0, curImg = null;
+const imgCache = new Map();
+function getImg(ix, cb){
+  let im = imgCache.get(ix);
+  if(!im){
+    im = new Image(); im.src = D.imgs[ix]; imgCache.set(ix, im);
+    if(imgCache.size > 10) imgCache.delete(imgCache.keys().next().value);
+  }
+  if(cb){
+    if(im.complete && im.naturalWidth) cb(im);
+    else im.addEventListener('load', () => cb(im), {once:true});
+  }
+}
+
+function paint(){
+  const cv = $('cv');
+  if(!cv || !curImg) return;
+  const ctx = cv.getContext('2d', {willReadFrequently:true});
+  ctx.drawImage(curImg, 0, 0, D.img_w, D.img_h);
+  const k = view.contrast;
+  if(k <= 1.001) return;
+  const pivot = 0.15, lut = new Uint8ClampedArray(256);
+  for(let i = 0; i < 256; i++) lut[i] = ((i / 255 - pivot) * k + pivot) * 255;
+  const id = ctx.getImageData(0, 0, D.img_w, D.panel), d = id.data;
+  for(let i = 0; i < d.length; i += 4){ d[i] = lut[d[i]]; d[i+1] = lut[d[i+1]]; d[i+2] = lut[d[i+2]]; }
+  ctx.putImageData(id, 0, 0);
+}
+
+function renderStage(L, s){
+  const fit = $('fit');
+  if(!s){
+    paintToken++;
+    fit.innerHTML = `<div class="empty"><div>No sites match these filters.</div><button class="btn" id="reset">Reset filters</button></div>`;
+    $('reset').onclick = () => { Object.assign(view, {gt:'all', filter:'all', cur:null}); render(); };
+    return;
+  }
+  let fr = fit.querySelector('.frame');
+  if(!fr){
+    fit.innerHTML = `<div class="frame"><canvas id="cv" width="${D.img_w}" height="${D.img_h}" role="img"></canvas>${tagsHTML()}</div>`;
+    fr = fit.firstElementChild;
+    fr.style.aspectRatio = `${D.img_w} / ${D.img_h}`;
+  }
+  $('cv').setAttribute('aria-label', `Site ${s.id}: raw MIPs above, skeletons below`);
+  fitFrame();
+  const token = ++paintToken;
+  getImg(s.img, im => { if(token === paintToken){ curImg = im; paint(); } });
+  const i = L.indexOf(s);
+  [L[i-1], L[i+1]].forEach(n => { if(n) getImg(n.img); });
+}
+
+function renderSide(L, s){
+  const side = $('side');
+  if(!s){ side.innerHTML = `<div class="msg">Choose a different filter to continue.</div>`; return; }
+  const i = L.indexOf(s), l = labelOf(s);
+  const also = s.also_in.length
+    ? s.also_in.map(c => `<span class="chip">${c}</span>`).join('')
+    : `<span class="chip solo">Only this config</span>`;
+  side.innerHTML = `
+    <div class="hd">
+      <div><div class="id">${s.id}</div><div class="sub">${hasStep ? stepLabel(s.step) + ' · ' : ''}${s.cfg}</div></div>
+      <div class="pos">${i+1} of ${L.length}</div>
+    </div>
+    <div class="nav">
+      <button class="btn" id="prev"${i <= 0 ? ' disabled' : ''}><span>← Previous</span><kbd>a</kbd></button>
+      <button class="btn" id="next"${i >= L.length-1 ? ' disabled' : ''}><span>Next →</span><kbd>d</kbd></button>
+    </div>
+    <div class="sec">
+      <h2>Label</h2>
+      <div class="labels">
+        ${LABELS.map(x => `<button class="lab ${x.k}" data-l="${x.k}" aria-pressed="${l === x.k}"><i></i><span>${x.name}</span><kbd>${x.key}</kbd></button>`).join('')}
+      </div>
+      <button class="clear" id="clr"${l ? '' : ' disabled'}>Clear label (c)</button>
+    </div>
+    <div class="sec">
+      <h2>False positives as SWC</h2>
+      <div class="swcrows">
+        ${D.steps.map(st => { const n = fpSites(st.id).length;
+          return `<div class="swcrow"><span>${st.label}</span><b>${n}</b><button class="btn" data-swc="${st.id}"${n ? '' : ' disabled'}>${dl || !dlChecked ? 'Download SWC' : 'Show SWC'}</button></div>`; }).join('')}
+      </div>
+      <div class="msg" id="swcmsg"></div>
+    </div>
+    <div class="sec">
+      <h2>Site</h2>
+      <dl>
+        <dt>Segment</dt><dd>${s.seg}</dd>
+        <dt>Ground truth</dt><dd>${s.gt}</dd>
+        <dt>Added cable</dt><dd>${fmt(s.cable, 1)} µm</dd>
+      </dl>
+      <div class="coord"><small>zyx</small><code id="c-vox">${s.vox.join(', ')}</code><button data-copy="c-vox">Copy</button></div>
+      <div class="coord"><small>xyz</small><code id="c-wld">${s.wld.map(v => fmt(v)).join(', ')}</code><button data-copy="c-wld">Copy</button></div>
+    </div>
+    <div class="sec"><h2>Also flagged by</h2><div class="chips">${also}</div></div>
+    <div class="sec">
+      <h2>Note</h2>
+      <textarea id="note" placeholder="Optional. Esc to leave the box.">${noteOf(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')}</textarea>
+    </div>
+    <details class="sec" id="exp" open>
+      <summary>Export labels</summary>
+      <div class="out">
+        <div class="msg">Exports every site on this page; unreviewed sites have a blank label.</div>
+        <div class="nav">
+          <button class="btn" id="show"><span>Show CSV</span></button>
+          <button class="btn" id="dl"><span>Download CSV</span></button>
+        </div>
+        <div class="msg" id="dlmsg"></div>
+        <textarea id="csv" readonly spellcheck="false" aria-label="CSV text"></textarea>
+      </div>
+    </details>
+    <div class="warn" id="storewarn"${storageOK ? ' hidden' : ''}>This browser blocks saving, so labels will be lost on reload. Export before closing.</div>`;
+
+  $('prev').onclick = () => go(-1);
+  $('next').onclick = () => go(1);
+  side.querySelectorAll('.lab').forEach(b => b.onclick = () => setLabel(b.dataset.l));
+  $('clr').onclick = () => setLabel('');
+  side.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => copyText($(b.dataset.copy).textContent, b));
+  let t;
+  $('note').oninput = e => {
+    clearTimeout(t);
+    t = setTimeout(() => saveNote(s, e.target.value), 200);
+  };
+  $('note').onblur = e => saveNote(s, e.target.value);
+  $('show').onclick = showCSV;
+  $('dl').onclick = downloadCSV;
+  side.querySelectorAll('[data-swc]').forEach(b => b.onclick = () => downloadSWC(b.dataset.swc));
+  syncDownloadButton();
+}
+
+function saveNote(s, v){
+  const k = skey(s);
+  const e = store[k] || {};
+  if(v){ e.n = v; store[k] = e; }
+  else { delete e.n; if(e.l) store[k] = e; else delete store[k]; }
+  persist();
+}
+
+function ensureCur(L){
+  if(!L.length){ view.cur = null; return null; }
+  let s = L.find(x => skey(x) === view.cur);
+  if(!s){ s = L[0]; view.cur = skey(s); }
+  return s;
+}
+
+function render(){
+  renderControls();
+  const L = list();
+  const s = ensureCur(L);
+  renderCounts();
+  renderStrip(L);
+  renderStage(L, s);
+  renderSide(L, s);
+  persist();
+}
+
+function go(d){
+  const L = list();
+  const i = L.findIndex(x => skey(x) === view.cur);
+  const n = L[i + d];
+  if(n){ view.cur = skey(n); render(); }
+}
+
+function setLabel(k){
+  const L = list();
+  const i = L.findIndex(x => skey(x) === view.cur);
+  if(i < 0) return;
+  const s = L[i];
+  const nextKey = L[i+1] ? skey(L[i+1]) : null;
+  const key = skey(s);
+  const e = store[key] || {};
+  if(k) e.l = k; else delete e.l;
+  if(e.l || e.n) store[key] = e; else delete store[key];
+  if(k){
+    const L2 = list();
+    if(nextKey && L2.some(x => skey(x) === nextKey)) view.cur = nextKey;
+    else if(!L2.some(x => skey(x) === key) && L2.length) view.cur = skey(L2[Math.min(i, L2.length-1)]);
+  }
+  render();
+}
+
+function copyText(text, btn){
+  const done = () => { const o = btn.textContent; btn.textContent = 'Copied'; setTimeout(() => btn.textContent = o, 900); };
+  const fallback = () => {
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try{ document.execCommand('copy'); done(); }catch(e){}
+    ta.remove();
+  };
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(text).then(done, fallback);
+  } else fallback();
+}
+
+function csvCell(v){
+  v = String(v == null ? '' : v);
+  return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g,'""') + '"' : v;
+}
+function buildCSV(){
+  const head = ['config', ...(hasStep ? ['step'] : []), 'id','segment','gt','label','note','voxel_zyx','world_xyz','also_in'];
+  const rows = [head];
+  D.sites.forEach(s => {
+    const l = LABELS.find(x => x.k === labelOf(s));
+    rows.push([s.cfg, ...(hasStep ? [s.step] : []), s.id, s.seg, s.gt, l ? l.csv : '', noteOf(s),
+      s.vox.join(' '), s.wld.join(' '), s.also_in.join(';')]);
+  });
+  return rows.map(r => r.map(csvCell).join(',')).join('\n') + '\n';
+}
+
+let dl = null, dlChecked = false;
+async function loadDownloads(){
+  try{ dl = (typeof claude !== 'undefined' && claude.use) ? await claude.use('downloads') : null; }catch(e){ dl = null; }
+  dlChecked = true;
+  syncDownloadButton();
+}
+function syncDownloadButton(){
+  const b = $('dl'); if(!b || !dlChecked) return;
+  b.disabled = !dl;
+  document.querySelectorAll('[data-swc]').forEach(x => { if(!dl) x.textContent = 'Show SWC'; });
+  if(!dl) $('dlmsg').textContent = 'Downloads are not available here. Use "Show CSV" and copy the text from the box.';
+}
+function showCSV(){
+  const text = buildCSV();
+  const box = $('csv');
+  box.value = text;
+  box.focus({preventScroll:true}); box.select();
+  return text;
+}
+async function downloadCSV(){
+  const text = showCSV();
+  const msg = $('dlmsg');
+  if(!dl){ msg.textContent = 'Downloads are not available here. Copy the CSV from the box below.'; return; }
+  try{
+    await dl.save({filename: `${D.dataset}_labels.csv`, data: text});
+    msg.textContent = 'Saved.';
+  }catch(e){
+    const m = String((e && e.message) || e);
+    msg.textContent = /declin/i.test(m)
+      ? 'Download declined. The CSV is still in the box below.'
+      : `Download failed (${m}). Copy the CSV from the box below.`;
+  }
+}
+
+function fpSites(stepId){
+  return D.sites.filter(s => s.step === stepId && labelOf(s) === 'fp');
+}
+function buildSWC(stepId){
+  const L = fpSites(stepId);
+  const lines = [
+    '# COLOR 0.42 0.76 0.61',
+    `# false-positive merge sites | ${D.dataset} | ${stepId} | ${L.length} sites`,
+    '# world coordinates in um; one node per site',
+    '# id, type, x, y, z, r, pid',
+  ];
+  L.forEach((s, i) => lines.push(`${i+1} 2 ${s.wld[0]} ${s.wld[1]} ${s.wld[2]} 10 -1`));
+  return lines.join('\n') + '\n';
+}
+async function downloadSWC(stepId){
+  const text = buildSWC(stepId), msg = $('swcmsg');
+  const name = `${D.dataset}_${stepId}_false_positive_merges.swc`;
+  $('csv').value = text; $('exp').open = true;
+  if(!dl){
+    msg.textContent = 'Downloads are not available here. The SWC text is in the box below; copy it into a .swc file.';
+    return;
+  }
+  try{
+    await dl.save({filename: name, data: text});
+    msg.textContent = `Saved ${name}.`;
+  }catch(e){
+    const m = String((e && e.message) || e);
+    msg.textContent = /declin/i.test(m) ? 'Download declined. The SWC text is in the box below.' : `Download failed (${m}). The SWC text is in the box below.`;
+  }
+}
+
+document.addEventListener('keydown', e => {
+  if(e.ctrlKey || e.metaKey || e.altKey) return;
+  const tag = (e.target.tagName || '').toLowerCase();
+  if(e.key === 'Escape' && tag === 'textarea'){ e.target.blur(); return; }
+  const onRange = tag === 'input' && e.target.type === 'range';
+  if(onRange && e.key.startsWith('Arrow')) return;
+  if(!onRange && (tag === 'textarea' || tag === 'input' || tag === 'select')) return;
+  const k = e.key.toLowerCase();
+  const lab = LABELS.find(x => x.key === k);
+  if(lab){ e.preventDefault(); setLabel(lab.k); }
+  else if(k === 'c'){ e.preventDefault(); setLabel(''); }
+  else if(k === 'arrowleft' || k === 'a'){ e.preventDefault(); go(-1); }
+  else if(k === 'arrowright' || k === 'd'){ e.preventDefault(); go(1); }
+});
+addEventListener('resize', fitFrame);
+
+const cslider = $('contrast');
+function syncContrast(){ cslider.value = view.contrast; $('cval').textContent = view.contrast.toFixed(1) + '×'; }
+cslider.oninput = () => { view.contrast = +cslider.value; syncContrast(); paint(); };
+cslider.onchange = persist;
+$('creset').onclick = () => { view.contrast = 1; syncContrast(); paint(); persist(); };
+syncContrast();
+
+document.title = `Merge review · ${D.brain}${hasCfg ? '' : ' · ' + D.cfgs[0]}`;
+$('subtitle').textContent = `Brain ${D.brain}${hasCfg ? '' : ' · ' + D.cfgs[0]}`;
+renderLegend();
+render();
+loadDownloads();
+window.__review = {D, store, view, list, buildCSV};
+</script>

@@ -67,6 +67,8 @@ python -m proofreader_evolve.cli.run_evolution \
 | [docs/dataset_artifact_dependencies.md](docs/dataset_artifact_dependencies.md) | what to rebuild, in which order, after a cache changes |
 | [markdowns/README.md](markdowns/README.md) | the task specifications given to AutoDiscovery and the cache schema |
 | [proofreader_evolve/WORKFLOW_REVISION.md](proofreader_evolve/WORKFLOW_REVISION.md) | the maintained design record of Stage 3, with literature provenance |
+| [CodeOcean capsule 6960813](external/codeocean/capsule_6960813/README.md) | imported Arborist evaluation source, original attribution, data paths and known limitations; separate from the evolution workflow |
+| [evaluation/README.md](evaluation/README.md) | independent evaluation preparation; sampled comparison of repository and capsule GT/image sources for 794495 |
 
 Per-stage figures: [`agentic/discovery_workflow_diagram.png`](agentic/discovery_workflow_diagram.png),
 [`agentic/detector_build_workflow_diagram.png`](agentic/detector_build_workflow_diagram.png),
@@ -92,6 +94,8 @@ exa-spim-agent/
 ├── labeled_cache/              # python -m labeled_cache: build and relabel the _add.pkl caches
 ├── scripts/                    # one-off tools; diagrams/ renders the figures
 ├── docs/                       # the documents listed above, feature-scope contracts, literature notes
+├── external/codeocean/         # attributed upstream source snapshots; see each capsule's README
+├── evaluation/                # independent evaluation preparation and source-comparison tools
 ├── metrics_out/                # official reference metrics per brain
 ├── figs/                       # generated figures
 ├── .claude/agents/             # subagent definitions used by the drivers
