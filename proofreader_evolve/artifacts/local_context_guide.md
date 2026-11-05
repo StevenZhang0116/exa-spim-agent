@@ -54,7 +54,8 @@ remain available in diagnostic feedback and to classifier fitting, as before.
 For a formula, put a literal `LOCAL_CONTEXT` dictionary and
 `extract_local_features(context)` in **scorer.py**. For a fitted model, put them
 in **training.py** alongside fit/predict. Helpers and installed CPU libraries may
-be used inside the extractor. The entire program executes after OS isolation;
+be used inside the extractor; use `install_packages` for missing dependencies
+(see `classifier_guide.md`). The entire program executes after OS isolation;
 it must not load data at module scope. For formulas, place additional imports
 inside the extractor: the score worker still allows only its preloaded libraries.
 

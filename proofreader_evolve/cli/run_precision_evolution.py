@@ -22,7 +22,6 @@ from copy import deepcopy
 from datetime import datetime
 from functools import partial
 import hashlib
-import importlib.metadata
 import json
 import math
 from pathlib import Path
@@ -36,6 +35,7 @@ from ..harness import label_availability
 from ..harness import detector_prior
 from ..harness.image_coordinates import MAX_RADIUS_UM
 from ..harness.reviser_session import DEFAULT_MODEL, build_options, bind_session_options
+from ..harness.package_installation import installed_packages
 from ..harness.trajectory import Trajectory, log_metrics, save_diffs
 from ..harness.evolution_report import update_report
 from ..harness.run_lifecycle import record_execution
@@ -104,7 +104,7 @@ def _record_handoff(memory, gen_dir, target_kind, generation, record, trace):
     return {**item, 'adjustments': notes}
 
 
-TRAIN_ARTEFACT_DIRS = ('experiments', 'classifier_fits', 'descriptor_runs', 'descriptor_probes')
+TRAIN_ARTEFACT_DIRS = ('experiments', 'classifier_fits', 'descriptor_runs', 'descriptor_probes', 'package_installs')
 # Agent-authored and TRAIN-only files of earlier generations; evaluation.json, reviser_result.json,
 # trajectories and image_evidence.json stay closed because they carry validation measurements.
 # The file guard also excludes legacy descriptor_runs/inference/ from these recursive trees.
@@ -178,9 +178,12 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
             "Incomplete assignments retain the accepted policy and skip outer evaluation. "
             f"\nEvaluation units: {experiments.remaining} remaining of {experiments.max_evaluations}. "
             "model_environment.json is the resource-limit reference; tool replies report remaining budgets. "
+            "Choose methods for the problem, not just the installed package list; use install_packages for "
+            "additional Python dependencies in the current environment. "
             "Use the configured TRAIN selection objective to compare attempts; selection_comparison shows "
-            "overall, holdout and per-brain changes, and timings show cost. Start with one fixed seed and a "
-            "compact model; reserve two units for paired ablation before optional grids or ensembles. "
+            "overall, holdout and per-brain changes, and timings show cost. Choose the next experiment based "
+            "on observed results. If similar parameter variants yield little gain, consider a different "
+            "feature idea or model in explore mode; decide whether further experiments are worthwhile. "
             "\nFor a new image hypothesis, start with 2-4 matched TRAIN cases across brains, native slices and "
             "numerical 3D positive/negative controls; then a uniform probe (default 128/brain). Expand only to "
             "resolve a concrete uncertainty. If previews fail or are disabled, record that and use numerical controls. "
@@ -421,7 +424,7 @@ def parse_args(argv=None):
     p.add_argument("--reviser-max-turns", type=int, default=DEFAULT_REVISER_MAX_TURNS,
                    help=f"Maximum SDK interaction turns per generation (default: {DEFAULT_REVISER_MAX_TURNS})")
     p.add_argument("--train-evaluations-per-generation", type=int, default=8,
-                   help="Shared TRAIN evaluation units (default: 8); each ablation fold/arm costs one. "
+                   help="Shared TRAIN evaluation units (default: 8); paired ablation costs two (one per arm, folds included). "
                         "Cache hits are free; the first scorer execution error allows one extra repair")
     p.add_argument("--candidate-pool-size", type=int, default=5,
                    help="Maximum TRAIN exploration branches per kind, plus one protected reference (default: 5)")
@@ -1092,8 +1095,11 @@ async def _run(args, revise_fn, run_dir, trace):
     descriptor_budget = {'per_call_seconds': args.descriptor_wall_seconds,
                          'generation_seconds': args.descriptor_generation_wall_seconds}
     model_environment = {
-        'packages': dict(sorted((dist.metadata['Name'], dist.version)
-                               for dist in importlib.metadata.distributions() if dist.metadata['Name'])),
+        'packages': installed_packages(),
+        'package_installation': {'tool': 'install_packages', 'environment': 'current Python environment',
+                                 'execution': 'host pip process with package-index access',
+                                 'preserve_existing_versions': True, 'timeout_seconds': 600},
+        'execution_limits_scope': 'model workers; package installation is a separate host tool',
         'device': 'cpu', 'network': False, 'child_processes': False,
         'fit_timeout_seconds': args.classifier_time_budget, 'fit_memory_mb': args.classifier_memory_mb,
         'classifier_search_seconds_per_generation': args.classifier_search_seconds,
@@ -1181,6 +1187,7 @@ async def _run(args, revise_fn, run_dir, trace):
         if branch_model is not None and branch_model['version'] == MODEL_VERSION:
             initial_proposal['classifier'] = branch_model['config']
         _write(gen_dir / 'proposal.json', initial_proposal)
+        model_environment['packages'] = installed_packages()
         _write(gen_dir / 'model_environment.json', model_environment)
         (gen_dir / 'classifier_guide.md').write_text((HERE / 'artifacts' / 'classifier_guide.md').read_text())
         (gen_dir / 'local_context_guide.md').write_text((HERE / 'artifacts' / 'local_context_guide.md').read_text())

@@ -33,6 +33,7 @@ from .image_evidence import descriptor_ablation_evidence
 from .local_context import resolve_train_candidate, resident_first
 from .local_features import augmented_features
 from .model_execution import ModelExecutionError, DEFAULT_MEMORY_MB
+from .package_installation import install_packages
 from .scorer_components import compose, components
 from .search_proposals import read_proposal, formula_info, parameter_candidates
 from .train_feedback import metrics_only, write_train_feedback, selection_comparison
@@ -298,6 +299,15 @@ class TrainingExperiments:
 
     def _train_identity(self):
         return {brain: bank.tables[self.target_kind].meta for brain, bank in self.train.items()}
+
+    def install_packages(self, packages):
+        result = install_packages(self.gen_dir, packages)
+        if result['changed_packages']:
+            self.memory.fit_cache.clear()
+            self.frame_cache = (None, None)
+            self.memory.hypotheses.ablation_cache.clear()
+        self.trace.emit('package_installation', f"Package installation: {result['status']}", **result)
+        return result
 
     @property
     def remaining(self):
@@ -1468,6 +1478,16 @@ class TrainingExperiments:
             return response if isinstance(response, dict) and 'content' in response else {
                 'content': [{'type': 'text', 'text': json.dumps(response, allow_nan=False)}]}
 
+        @tool('install_packages', 'Install Python packages in the current run interpreter environment '
+              '(normally panda). Choose libraries for the experiment, not just those already installed. '
+              'Pass package names with optional version specifiers/extras. Existing package versions '
+              'are preserved; installation output reports dependency conflicts. No evaluation charge. '
+              'Model workers remain subject to their execution limits.',
+              {'type': 'object', 'properties': {'packages': {'type': 'array', 'items': {'type': 'string'}}},
+               'required': ['packages']})
+        async def install_python_packages(arguments):
+            return await invoke(self.install_packages, arguments)
+
         @tool('evaluate_train', 'Evaluate scorer.py using hypothesis/strategy in proposal.json. '
               'Call with {}. TRAIN only; cached scores cost no evaluation budget.', {})
         async def evaluate_train(arguments):
@@ -1511,7 +1531,8 @@ class TrainingExperiments:
               'use probe_descriptor to debug describe with identical inputs. Execute analysis.py analyze(context) on '
               f'1..{MAX_CASES} TRAIN candidates selected in analysis_request.json (compare groups, e.g. missed '
               'positives vs selected label-0 rows). Full original 3D pixels, spacing, '
-              'candidate anchors and aligned local fragments; arbitrary installed CPU analysis. '
+              'candidate anchors and aligned local fragments; arbitrary CPU analysis. '
+              'Use install_packages for missing Python dependencies. '
               'Returns compact JSON results, not projections. Eight executions per generation, separate '
               'from scoring; no GT or validation access. Edit the two files and call with {}.', {})
         async def run_volume_analysis(arguments):
@@ -1621,7 +1642,7 @@ class TrainingExperiments:
                     self.target_kind, entry.get('hypothesis', ''), limit=1)
             return {'content': [{'type': 'text', 'text': json.dumps(response, allow_nan=False)}]}
 
-        return create_sdk_mcp_server('training', tools=[evaluate_train, search_parameters,
+        return create_sdk_mcp_server('training', tools=[install_python_packages, evaluate_train, search_parameters,
             train_classifier, inspect_candidate, inspect_failure_cases, evaluate_feature_ablation,
             inspect_candidate_image, inspect_failure_images,
             run_volume_analysis, plan_image_scoring,

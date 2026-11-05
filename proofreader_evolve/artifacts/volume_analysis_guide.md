@@ -111,8 +111,9 @@ TRAIN scoring units or the optional preview allowance. Execution uses the policy
 time budget and classifier memory/thread limits; these constrain computation,
 not the chosen algorithm. Cloud reads keep their existing per-operation timeouts;
 large fragment-cache loading and input preparation happen before the worker timer.
-Installed CPU libraries are usable, with scratch space; network, child processes,
-validation data, GT and arbitrary host-file access are blocked by the sandbox.
+CPU libraries are usable, with scratch space; use the host's `install_packages` tool
+for missing dependencies (see `classifier_guide.md`). Inside the analysis worker,
+network, child processes, validation data, GT and arbitrary host-file access are blocked.
 
 Each call saves code, normalized request, input identities, returned results and
 worker logs under `volume_analyses/analysisNNN/`. The tool returns code/input hashes

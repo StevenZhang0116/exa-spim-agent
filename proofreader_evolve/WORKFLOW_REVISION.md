@@ -1494,7 +1494,7 @@ In tune mode restoration must preserve the assigned formula.
 
 The agent edits `training.py` with `fit(X_train, y_train, artifact_dir, params)`
 and `predict(X, artifact_dir, params)`, chooses any model and preprocessing
-supported by installed CPU libraries, and supplies arbitrary JSON settings in
+supported by CPU libraries, and supplies arbitrary JSON settings in
 `proposal.json.classifier.parameters`. There is no model whitelist, algorithm-
 specific hyperparameter bound or mandatory NumPy conversion. Custom classes,
 ensembles, neural models and TRAIN-only internal CV can live in the same program.
@@ -1519,8 +1519,15 @@ nonnumeric parameters stay fixed; numeric parameters are refitted. Explore mode
 permits any new program or a return to formulas. Default limits are 300 seconds,
 16384 MiB (8192 until 2026-10-08) and eight numerical threads (one until 2026-10-27), configured by `--classifier-time-budget`,
 `--classifier-memory-mb`, `--classifier-threads`. Model files are bounded to
-128 MiB / 256 regular files. No GPU, network, installation or child processes.
-`model_environment.json` lists installed packages and limits. The agent chooses
+128 MiB / 256 regular files. Model workers have no GPU, network, installation or child processes.
+The separate host tool `install_packages({"packages": ["package-name"]})` can add
+dependencies to the current Python environment (normally panda), holding existing
+package versions fixed. Installations persist across generations and runs, consume
+no evaluation units, and save pip output under `package_installs/`. The installed
+package list is environment information, not a restriction on method selection.
+`model_environment.json` refreshes its package inventory after installation and at
+each generation. New packages clear in-memory fit/frame and feature-ablation reuse.
+The agent chooses
 seeds and can print diagnostic/CV metrics; the last 8 KB of worker output is
 returned, and the full bounded log is preserved.
 

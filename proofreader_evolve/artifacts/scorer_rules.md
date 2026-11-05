@@ -32,10 +32,11 @@ candidate pool. Use English for code, diagnostics, proposals and research notes.
   constants; reference it without runtime mutation. No file/network access,
   randomness, persistent state, subprocesses or extra imports; NumPy, pandas
   and math are preloaded. Use `evaluate_train` or `search_parameters` to measure.
-  For fitted models, follow classifier_guide.md; any installed CPU method is
-  allowed within the limits in model_environment.json. Save fitted preprocessing
-  and explicit random seeds. Network, package installation and child processes
-  are unavailable; trained artifacts are read-only during prediction.
+  For fitted models, follow classifier_guide.md; choose a suitable CPU method and
+  use install_packages for missing dependencies, within the limits in model_environment.json.
+  Save fitted preprocessing and explicit random seeds. Model workers have no network,
+  package installation or child processes; the host installation tool is separate.
+  Trained artifacts are read-only during prediction.
 - Submit exactly a successfully measured snapshot. For fitted models, edit
   training.py and refit; do not edit the generated scorer manifest. Restore tools
   recover measured code, parameters and model together. Unmeasured edits are

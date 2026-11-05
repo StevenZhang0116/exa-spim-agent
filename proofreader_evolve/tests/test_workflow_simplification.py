@@ -160,7 +160,7 @@ class PromptTests(unittest.TestCase):
                              'Incomplete assignments', 'successfully evaluated snapshot',
                              'Validation data and logs are unavailable', '5 remaining of 8',
                              '700 s/call', '1500 s/generation', '900 s remaining',
-                             'classifier_guide.md', 'descriptor_guide.md'):
+                             'classifier_guide.md', 'descriptor_guide.md', 'install_packages'):
                 self.assertIn(required, prompt)
             self.assertLess(len(prompt.encode()), 7000)
             self.assertEqual(set(bind.call_args.kwargs['readable_png_dirs']),

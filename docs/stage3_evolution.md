@@ -320,7 +320,8 @@ grid to `proposal.json`, then calls `evaluate_train({})` or `search_parameters({
 These tools have no text arguments. The default budget is **8 evaluation units**
 per generation, configurable with `--train-evaluations-per-generation`; cache hits
 and proposal-format errors cost no scoring budget. New configurations and optional
-feature-diagnostic fold/arm fits share these units. Tool calls still consume SDK
+paired feature ablations share these units; an ablation costs two units, one per
+arm including its fold fits. Tool calls still consume SDK
 turns. `search_memory` searches earlier TRAIN experiments, including rejected and
 failed attempts. `restore_candidate` accepts an experiment ID, `parent`, or `best`,
 and restores measured code without another scorer execution.
@@ -340,7 +341,10 @@ the remaining budget; oversized grids fail before scoring.
 The agent can also author **its own training and prediction program** in
 `training.py`, defining `fit(X_train, y_train, artifact_dir, params)` and
 `predict(X, artifact_dir, params)`. There is no model whitelist or required
-NumPy export. Within installed CPU dependencies and resource limits, the agent
+NumPy export. The `install_packages` tool can add dependencies to the current Python
+environment (normally panda), preserving existing package versions. It records pip output,
+refreshes the installed-package inventory and consumes no evaluation units. The package
+list is environment information, not a model whitelist. Within CPU and resource limits, the agent
 chooses preprocessing, features, model architecture, loss, optimizer, ensembles,
 training schedule and file format. `proposal.json.classifier.parameters` supplies
 arbitrary JSON settings. `train_classifier({})` runs the program on **TRAIN only**,

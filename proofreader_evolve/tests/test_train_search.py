@@ -280,6 +280,14 @@ class TrainingSearchTests(unittest.TestCase):
         result = asyncio.run(handlers['evaluate_train']({}))
         self.assertEqual(json.loads(result['content'][0]['text'])['status'], 'evaluated')
         used = self.session.evaluations_used
+        self.memory.fit_cache['old'] = object()
+        with patch('proofreader_evolve.harness.train_experiments.install_packages', return_value={
+                'status': 'installed', 'changed_packages': {'new-model': '1.0'}}) as install:
+            result = asyncio.run(handlers['install_packages']({'packages': ['new-model']}))
+        install.assert_called_once_with(self.session.gen_dir, ['new-model'])
+        self.assertEqual(json.loads(result['content'][0]['text'])['status'], 'installed')
+        self.assertEqual(self.memory.fit_cache, {})
+        self.assertEqual(self.session.evaluations_used, used)
         result = asyncio.run(handlers['train_classifier']({}))
         self.assertIn('proposal.json.classifier', json.loads(result['content'][0]['text'])['error'])
         self.assertEqual(self.session.evaluations_used, used)
@@ -291,6 +299,7 @@ class TrainingSearchTests(unittest.TestCase):
                                      self.session.gen_dir / 'train_feedback.json', training_server={'type': 'sdk'})
         guard = bound.can_use_tool
         for tool, expected in [('mcp__training__evaluate_train', 'allow'),
+                               ('mcp__training__install_packages', 'allow'),
                                ('mcp__training__search_parameters', 'allow'),
                                ('mcp__training__train_classifier', 'allow'),
                                ('mcp__training__inspect_candidate', 'allow'),

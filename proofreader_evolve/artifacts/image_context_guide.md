@@ -238,7 +238,8 @@ It has no network access. Fit/predict receive only their own row subset; interna
 fold fitting cannot open held-row patches or labels. Save learned image encoders
 and preprocessing with the model; the outer evaluator freezes them on validation.
 The harness does not prescribe a classifier, convolutional architecture or loss.
-Installed CPU libraries and existing worker time/memory/artifact limits apply.
+Use `install_packages` for missing Python dependencies (see `classifier_guide.md`).
+CPU execution and existing worker time/memory/artifact limits apply.
 
 ## Incremental evidence and limits
 

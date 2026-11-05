@@ -82,7 +82,7 @@ def bind_session_options(options, policy_path, rules_path, report_path, *, reada
     readable = list(readable_paths)
     if report_path is not None:
         readable.append(report_path)
-    training_tools = (["mcp__training__evaluate_train", "mcp__training__search_parameters",
+    training_tools = (["mcp__training__install_packages", "mcp__training__evaluate_train", "mcp__training__search_parameters",
                        "mcp__training__train_classifier", "mcp__training__inspect_candidate",
                        "mcp__training__inspect_failure_cases", "mcp__training__evaluate_feature_ablation",
                        "mcp__training__inspect_candidate_image", "mcp__training__inspect_failure_images",

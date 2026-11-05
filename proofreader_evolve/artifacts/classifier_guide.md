@@ -5,7 +5,12 @@ training schedule and serialization format. There is **no model whitelist** and
 no requirement to translate a trained model to NumPy. Read
 `model_environment.json` for installed packages and resource settings. The
 editable `training.py` is only an example; replace it with your own method.
-CPU execution, installed dependencies and the stated budgets define what can run.
+Choose methods for the problem, not just the packages already installed. Use
+`install_packages({"packages": ["catboost>=1.2"]})` to add dependencies to the current
+Python environment (normally panda). Existing package versions stay fixed; a dependency
+conflict is returned with pip's output. Installations persist across generations and runs,
+refresh `model_environment.json`, and cost no evaluation units. CPU execution and the
+stated worker budgets still define what can run.
 For new local morphology features, read `local_context_guide.md`. You may define
 `LOCAL_CONTEXT` and `extract_local_features(context)` in training.py; the host
 appends these label-free features to TRAIN fit inputs and frozen validation inputs.
@@ -25,8 +30,9 @@ this kind's K budget (feedback.budgets) and call plan_image_scoring({}) before I
 uses bounded batches; raw-patch models retain a 1 GiB staging limit. Inspect actual
 Top-K image coverage, then measure an image-only ablation at the intended final
 coverage before attributing any improvement to pixels. See image_context_guide.md.
-GPU access, network, package installation and child processes are unavailable;
-use in-process training and threads rather than multiprocessing/joblib processes.
+Inside model workers, GPU access, network, package installation and child processes
+are unavailable; use the host's `install_packages` tool before fitting and use in-process
+training and threads rather than multiprocessing/joblib processes.
 
 ## Three-valued labels
 
