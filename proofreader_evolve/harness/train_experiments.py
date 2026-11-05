@@ -671,11 +671,14 @@ class TrainingExperiments:
         valid = [r for r in results if r['report'] is not None]
         if not valid:
             raise ValueError('No successfully measured candidate to restore')
-        # Rank by the official target-kind selection objective (entries measured before v7 carry
-        # precision only). Resolve exact ties by source length and sequence, without introducing
-        # a second data-dependent objective.
-        return max(valid, key=lambda r: (r['entry'].get('target_objective', r['entry']['target_precision']),
-                                        -len(r['component']), -r['entry']['sequence']))
+        # Prefer candidates satisfying the existing selection head guard. This is
+        # a default recommendation, not an admission gate: if none pass, still
+        # restore the highest objective, and explicit candidate IDs remain usable.
+        eligible = [r for r in valid
+                    if ((r['entry'].get('selection_gate') or {}).get('head_guard') or {}).get('passed', True)]
+        # Legacy entries carry precision only; exact ties use source length and sequence.
+        return max(eligible or valid, key=lambda r: (r['entry'].get('target_objective', r['entry']['target_precision']),
+                                                   -len(r['component']), -r['entry']['sequence']))
 
     def _restore_result(self, result):
         self._check_editable_files()  # Restore even malformed/oversized code, but never redirected paths.
@@ -758,13 +761,13 @@ class TrainingExperiments:
                 stopped = self._grid_stop(responses[-1], len(candidates) - index - 1)
                 break
         rows = [{k: r.get(k) for k in ('experiment', 'status', 'parameters', 'target_precision', 'target_objective',
-                                       'train_gate', 'selection_comparison', 'timings', 'timings_reused', 'cached', 'error')} for r in responses]
+                                       'train_gate', 'selection_gate', 'selection_comparison', 'timings', 'timings_reused', 'cached', 'error')} for r in responses]
         (batch / 'results.json').write_text(json.dumps(rows, indent=2, allow_nan=False))
         successful = [self.results[digest(c)] for c in candidates
                       if digest(c) in self.results and self.results[digest(c)]['report'] is not None]
         restored = self._restore_result(self._best(successful)) if successful else None
         # The full proposal and metrics already live in snapshots; avoid echoing them for every grid row.
-        best = ({key: restored[key] for key in ('restored', 'parameters', 'train_gate', 'feedback')}
+        best = ({key: restored[key] for key in ('restored', 'parameters', 'train_gate', 'selection_gate', 'feedback')}
                 if restored else None)
         return {'status': 'searched' if restored else 'no_successful_candidate', 'candidates': rows,
                 'best': best, 'stopped_early': stopped, 'evaluations_used': self.evaluations_used,
@@ -919,14 +922,14 @@ class TrainingExperiments:
                 stopped = self._grid_stop(response, len(configurations) - index - 1)
                 break
         rows = [{key: response.get(key) for key in ('experiment', 'status', 'classifier', 'target_precision', 'target_objective',
-                                                   'train_gate', 'selection_comparison', 'timings', 'timings_reused',
+                                                   'train_gate', 'selection_gate', 'selection_comparison', 'timings', 'timings_reused',
                                                    'cached', 'error', 'training_output_tail')} for response in responses]
         (batch / 'results.json').write_text(json.dumps(rows, indent=2, allow_nan=False))
         public_rows = [{**{key: value for key, value in row.items() if key != 'classifier'},
                         'program_sha256': digest(program),
                         'parameters': row['classifier']['parameters']} for row in rows]
         restored = self._restore_result(self._best(successful)) if successful else None
-        best = ({key: restored[key] for key in ('restored', 'classifier', 'train_gate', 'feedback', 'training')}
+        best = ({key: restored[key] for key in ('restored', 'classifier', 'train_gate', 'selection_gate', 'feedback', 'training')}
                 if restored else None)
         return {'status': 'trained' if restored else 'no_successful_candidate', 'candidates': public_rows, 'best': best,
                 'stopped_early': stopped,
@@ -1248,10 +1251,15 @@ class TrainingExperiments:
         image = report.get('image_evidence') or {}
         evidence_source = ('raw_image' if image.get('all_image_inputs_removed_in_control') or image.get('descriptor_columns')
                            else 'feature_comparison')
-        self._record_research('evaluate_feature_ablation', evidence_source, 'measurement', evidence_identity,
-            report['status'] == 'measured', directory / 'result.json', cached=report.get('cached', False),
+        # An ineffective removal is an observed input check, not a paired
+        # measurement and not an infrastructure failure.
+        inapplicable = report['status'] == 'not_applicable'
+        self._record_research('evaluate_feature_ablation', evidence_source,
+            'observation' if inapplicable else 'measurement', evidence_identity,
+            report['status'] == 'measured' or inapplicable, directory / 'result.json', cached=report.get('cached', False),
             comparison=report['status'] == 'measured',
-            outcome={'delta_precision': report.get('delta_precision'), 'error': report.get('error')})
+            outcome={'status': report['status'], 'reason': report.get('reason'),
+                     'delta_precision': report.get('delta_precision'), 'error': report.get('error')})
         if not report.get('cached'):
             self.memory.hypotheses.observe_ablation({**proposal, 'target_kind': self.target_kind}, report)
         self._save_hypothesis_feedback()
@@ -1494,7 +1502,8 @@ class TrainingExperiments:
             return await invoke(self.evaluate, arguments)
 
         @tool('search_parameters', 'Read proposal.json.parameter_grid and enumerate numeric PARAMS values '
-              'with the formula fixed. Call with {}. Automatically restore the best successful grid candidate. '
+              'with the formula fixed. Call with {}. Restore the highest selection objective, preferring '
+              'candidates passing the selection head guard; fall back to the highest objective if none pass. '
               'The grid stops at the first execution error of the formula; stopped_early lists the skipped, '
               'uncharged configurations.', {})
         async def search_parameters(arguments):
@@ -1502,7 +1511,8 @@ class TrainingExperiments:
 
         @tool('train_classifier', 'Run agent-written training.py with proposal.json.classifier.parameters and optional parameter_grid. '
               'Call with {}. Harness uses TRAIN only, freezes preprocessing/weights, evaluates and restores '
-              'the best successful model. Under grouped_oof selection each configuration is first refit in '
+              'the highest selection objective, preferring models passing the selection head guard '
+              '(highest objective if none pass). Under grouped_oof selection each configuration is first refit in '
               'three host-owned folds and ranked by the out-of-fold objective on the selection brains; the full '
               'fit is the frozen candidate. One configuration costs one evaluation unit, folds included. '
               'New descriptor inputs invalidate fit reuse. The grid also stops before a new uncached fit '
@@ -1571,6 +1581,8 @@ class TrainingExperiments:
               '(default all LOCAL_CONTEXT/LOCAL_IMAGE columns; image_available also removes raw patches). '
               'Classifiers refit the same program/parameters in '
               'three TRAIN-only grouped folds for full and constant-masked inputs: two evaluation units (one per arm). '
+              'If removal affects no full-arm model inputs or actual raw patches, return not_applicable '
+              'after one unit, with no control arm or paired evidence. '
               'Formulas use two descriptive selection-brain evaluations with the selection ranking protocol. '
               'Both arms use the configured per-kind aggregation and positive floor. Empty parameter_grid; call with {}. '
               'Diagnostic only: still fit/evaluate a normal candidate before submission.', {})
@@ -1621,7 +1633,9 @@ class TrainingExperiments:
 
         @tool('restore_candidate', 'Restore an immutable measured snapshot by short ID, e.g. '
               'gen002/attempt001, parent (assigned branch), or best (this generation\'s best measured candidate '
-              'the outer evaluator has not seen yet; the plain best when all were seen). No evaluation charge.',
+              'the outer evaluator has not seen yet; all candidates when all were seen). Best prefers the '
+              'highest selection objective passing the selection head guard, falling back to the highest '
+              'objective if none pass. Explicit IDs remain selectable. No evaluation charge.',
               {'candidate_id': str})
         async def restore_candidate(arguments):
             return await invoke(self.restore, arguments)

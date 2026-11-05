@@ -151,12 +151,17 @@ def fit_classifier(train, kind, config, output_dir, *, program, artifact_store,
         (output_dir / 'request.json').write_text(json.dumps({**request, 'training_tables': provenance,
                     'training_fingerprint': fingerprint, 'image_transport': image_transport}, indent=2, allow_nan=False))
         status = run_worker(root, request, log_path=output_dir / 'worker.log')
+        input_columns = status.get('input_columns', columns)
+        if (not isinstance(input_columns, list)
+                or any(not isinstance(c, str) or c not in columns for c in input_columns)
+                or len(set(input_columns)) != len(input_columns)):
+            raise ClassifierTrainingError('Worker returned invalid input columns')
         files = artifact_files(root / 'artifacts')
         model = {'version': MODEL_VERSION, 'kind': kind, 'config': config, 'program': program,
                  'training_brains': sorted(train), 'training_rows': count, 'training_fingerprint': fingerprint,
                  'files': files, 'artifact_sha256': config_identity(files), 'threads': status.get('threads', threads),
                  # Exact input columns, so inference can reindex and registered descriptors are explicit.
-                 'columns': list(columns)}
+                 'columns': input_columns}
         source = render_model(model)
         store = Path(artifact_store)
         destination = store / model['artifact_sha256']
@@ -171,7 +176,7 @@ def fit_classifier(train, kind, config, output_dir, *, program, artifact_store,
                        image_transport=image_transport,
                        image_context={brain: frame.attrs['image_context'] for brain, frame in frames.items()
                                       if 'image_context' in frame.attrs},
-                       input_columns=columns, artifact_files=files,
+                       input_columns=input_columns, artifact_files=files,
                        local_context={brain: frame.attrs['local_context'] for brain, frame in frames.items()
                                       if 'local_context' in frame.attrs},
                        program_sha256=hashlib.sha256(program.encode()).hexdigest(),

@@ -1,5 +1,8 @@
 # Agent descriptors: measure quantities over native candidates on demand
 
+Timed-out image patch reads are retried once within the caller's remaining wall
+budget. Other errors are returned immediately.
+
 The host reads fragment neighbourhoods and original image crops when requested.
 No precomputed context directory or detector-ranked cache band is required. Every
 native candidate is eligible, including candidates outside the former cache.

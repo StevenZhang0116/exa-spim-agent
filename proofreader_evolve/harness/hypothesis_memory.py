@@ -295,7 +295,7 @@ class HypothesisMemory:
     def observe_ablation(self, entry, report):
         record = self._record(entry)
         record['last_generation'] = max(record['last_generation'], report.get('generation', 0))
-        fields = ('experiment', 'target_kind', 'status', 'protocol', 'feature_columns', 'signature',
+        fields = ('experiment', 'target_kind', 'status', 'protocol', 'feature_columns', 'input_check', 'signature',
                   'program_sha256', 'parameters_sha256', 'delta_precision', 'delta_objective', 'objective',
                   'objective_by_arm', 'cells', 'conclusion', 'error', 'scope', 'wall_seconds', 'evaluations_used')
         evidence = {k: deepcopy(report[k]) for k in fields if k in report}
@@ -376,7 +376,7 @@ class HypothesisMemory:
         matches = [report for report in self.ablation_cache.values()
                    if report.get('target_kind') == entry['target_kind']
                    and report.get('program_sha256') == program and report.get('parameters_sha256') == parameters]
-        return [{k: deepcopy(report[k]) for k in ('experiment', 'protocol', 'feature_columns',
+        return [{k: deepcopy(report[k]) for k in ('experiment', 'protocol', 'feature_columns', 'input_check',
                     'delta_precision', 'delta_objective', 'objective', 'conclusion', 'signature') if k in report}
                 for report in matches[-3:]]
 

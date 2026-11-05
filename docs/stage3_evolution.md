@@ -22,8 +22,17 @@ TRAIN, selection and validation (merge was 2 x positives under a cap of 300 from
 2026-10-12 to 2026-10-27; split uncapped since 2026-10-26). Pools with fewer than 20 GT
 positives are reported but excluded from the objective (`--k-positive-ratio`,
 `--merge-k` / `--split-k`, `--min-positives`).
-Generations are allocated between the merge and split components by
-a rotation floor, pending follow-ups, recent validated gain and remaining headroom.
+Each active kind gets an initial generation before adaptive allocation returns to
+a previously scheduled kind. Allocation then uses a rotation floor, pending follow-ups,
+recent validation point gain and remaining headroom. Deferred follow-ups stay pending.
+Performance stagnation uses cumulative selection-objective improvement since the last
+progress checkpoint (0.0005 for AUROC; any positive gain for other objectives).
+New positive coverage and improved slices still retain specialist candidates, but
+do not alone reset performance stagnation. This tolerance is a scheduling heuristic,
+not a statistical test or a promotion threshold.
+Default candidate restoration prefers candidates satisfying the existing selection
+head guard, then ranks by selection objective; if none pass, it restores the highest
+objective with the failed guard reported. Explicit candidate IDs remain selectable.
 The subsections below follow one generation of the loop in the figure; the
 maintained design record is
 [`proofreader_evolve/WORKFLOW_REVISION.md`](../proofreader_evolve/WORKFLOW_REVISION.md).
@@ -306,8 +315,9 @@ feature quartiles by label (1 / 0; NaN rows counted), so error samples are not m
 full distribution. Candidate feedback adds gained/lost positives and Top-K overlap.
 
 Each generation edits one component. By default the kind is chosen adaptively:
-a floor of one revision per `--kind-floor-every` generations (default 4) for each active kind,
-then a pending promotion follow-up (deferred intact when the floor takes priority), then the kind with the larger recent
+one initial generation per active kind, then a floor of one revision per
+`--kind-floor-every` generations (default 4) for each active kind,
+then a pending promotion follow-up (deferred intact during initialization or a floor allocation), then the kind with the larger recent
 validation point gain (accepted or rejected; only gate-passing gains before 2026-11-01), then the larger remaining headroom on the validation
 cells. Headroom uses the configured per-kind objective and aggregation. Saturation
 uses half a one-hit precision increment for Precision@K; for AUROC/AP/pAUC the
@@ -332,7 +342,9 @@ from `tune` (change numeric values only). Formula scorers expose a literal
 reference its values. `search_parameters` enumerates the proposed grid while
 keeping the formula fixed, snapshots each configuration up to the first execution
 error of the formula (`stopped_early` lists the skipped, uncharged configurations)
-and restores the best successful one by the official selection score. In tune
+and restores the highest selection objective among candidates passing the selection
+head guard, falling back to the highest objective if none pass. The reply includes
+the guard status, and explicit IDs remain selectable. In tune
 generations an AST fingerprint enforces the assigned formula. Grid sizes must fit
 the remaining budget; oversized grids fail before scoring.
 
@@ -351,6 +363,11 @@ arbitrary JSON settings. `train_classifier({})` runs the program on **TRAIN only
 saves its artifacts and measures its ranking. See the
 [training guide](../proofreader_evolve/artifacts/classifier_guide.md) and
 [editable example](../proofreader_evolve/artifacts/training.py).
+
+An optional `select_columns(columns, params)` function selects the inputs passed to
+fit, including unlabeled rows. Its returned column list is frozen for prediction
+and descriptor dependencies, so excluded descriptor groups need no validation computation.
+Without it, models retain all supplied columns as dependencies.
 
 Agent code and model deserialization run after Linux Landlock + seccomp isolation.
 Installed libraries and supplied inputs are readable; fit can write model files
@@ -371,6 +388,8 @@ the recorded full runs use 1800 to 3600 seconds, 4 to 16 threads and 98304 MiB.
 generation, including preparation, OOF/full fitting and evaluation. It is checked between
 configurations; the current candidate completes under worker limits. Exhaustion stops further
 uncached fits, while completed candidates can still be restored and cached fits reused.
+The total can exceed the search limit by the current candidate's duration; evaluation
+units and individual worker time/memory limits remain separate constraints.
 New descriptor registrations invalidate fit/frame reuse for the affected kind, even when
 the same training program and parameters are submitted again.
 Artifact storage permits 128 MiB / 256 regular files per model. The agent chooses
@@ -395,6 +414,9 @@ Keep its sibling `model_artifacts/` directory when moving/resuming a run; use
 needed at inference time. Resuming a managed model fitted on a requested
 validation brain is rejected before seed evaluation. Legacy NumPy exports remain
 readable; newly trained models use the program/artifact interface.
+`--start-from` starts a new run with that scorer as its seed. It does not reload the
+old ledger, candidate pool, scheduling counters or cumulative-progress checkpoint;
+initial exploration and progress accounting restart for the new run.
 
 ## 3.6 Exploration tools: geometry, 3D volumes, images and feature discovery
 
@@ -505,6 +527,12 @@ measurements and shows to the next session of that kind in `hypothesis_memory.js
 feature group using the same program and parameters. Classifier diagnostics use
 the selection protocol's three grouped, fragment-purged folds (two evaluation
 units, one per arm); formulas use a descriptive two-arm comparison (two units).
+Classifier diagnostics check each full-arm model's frozen input list and report
+effective/ignored columns in `input_check`. If no requested removal affects any
+fold's inputs or actual raw patches, the result is `not_applicable`, the control is
+skipped, and only the completed full arm costs a unit. This observation supplies no
+paired evidence and cannot complete a research assignment. Partially effective
+groups still run; the check establishes supplied inputs, not internal learner use.
 A classifier configuration costs one unit, fold refits included. Evidence is
 saved separately from agent claims and
 guides soft stagnation scheduling, while the outer promotion gate stays the same.
@@ -532,8 +560,8 @@ It does not consume a TRAIN pool slot and cannot be evicted for a low selection 
 or redundant TRAIN coverage. The same snapshot can serve both reference and TRAIN
 roles without duplication. A newly promoted component gets the **next generation
 of the same kind** in explore mode, ahead of the TRAIN champion and normal cadence
-(the adaptive kind allocation of section 3.4 gives the active-kind rotation floor
-priority over pending follow-ups).
+(the adaptive kind allocation of section 3.4 gives initial opportunities and the
+active-kind rotation floor priority over pending follow-ups).
 One new measurement from that workspace branch completes the follow-up; cached
 restores do not. At most one retry is reserved. Seeds and unchanged references do
 not enqueue follow-ups. Otherwise, every **third scheduled generation of each kind**
@@ -543,15 +571,15 @@ Other generations use the TRAIN champion/specialist scheduler, with
 periodic exploration controlled by `--explore-every` on newly measured
 non-reference rounds, so protected rounds do not displace specialist exploration.
 The scheduler also explores whenever
-the champion lacks PARAMS. After **2 measured rounds** without
-a new selection-score best, previously uncovered retained positive, or historical
-slice-hit best, exploration is forced from an alternative branch if available.
+the champion lacks PARAMS. After **2 measured rounds** without sufficient cumulative
+selection-objective progress (0.0005 for AUROC; any positive gain for other objectives),
+exploration is forced from an alternative branch if available. Coverage and slice
+improvements retain specialists but do not reset these performance counters.
 After **2 unsuccessful forced explorations**, that kind can pause once a generation
 assigned to its current reference has produced a new successful TRAIN measurement.
 Cache-only or failed reference rounds do not satisfy that requirement. A promotion
 replaces the reference, resets that kind's stagnation counters and reopens it for
-exploration. When all target kinds pause the run ends. Rediscovered positive coverage
-does not reset counters. Cache-only rounds and execution/infrastructure failures
+exploration. When all target kinds pause the run ends. Cache-only rounds and execution/infrastructure failures
 do not advance measured-progress counters.
 Separately, two completed same-kind rounds without new measurements force an
 investigation. Performance plateaus also require a new paired TRAIN feature

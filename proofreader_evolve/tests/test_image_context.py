@@ -49,6 +49,34 @@ def ngff(axes='tczyx', units='micrometer'):
 
 
 class ImageContextTests(unittest.TestCase):
+    def test_timed_out_image_read_retries_once_with_remaining_budget(self):
+        source = object.__new__(ImageSource)
+        source.timeout = 45.
+        payload = ({'pixels': 'fixture'}, {'metadata': 'fixture'})
+        with patch.object(source, '_read', side_effect=[TimeoutError(), payload]) as read, \
+                patch('proofreader_evolve.harness.image_context.time.monotonic', side_effect=[0., 0., 45., 45.]):
+            self.assertEqual(source.read([[0., 0., 0.]], timeout=70.), payload)
+        self.assertEqual(read.call_count, 2)
+        self.assertEqual([call.kwargs['timeout'] for call in read.call_args_list], [70., 25.])
+
+    def test_image_read_retry_is_bounded_and_does_not_retry_other_errors(self):
+        source = object.__new__(ImageSource)
+        source.timeout = 45.
+        with patch.object(source, '_read', side_effect=TimeoutError('read stalled')) as read, \
+                patch('proofreader_evolve.harness.image_context.time.monotonic', return_value=0.):
+            with self.assertRaisesRegex(TimeoutError, 'read stalled'):
+                source.read([[0., 0., 0.]])
+            self.assertEqual(read.call_count, 2)
+        with patch.object(source, '_read', side_effect=TimeoutError('read stalled')) as read, \
+                patch('proofreader_evolve.harness.image_context.time.monotonic', side_effect=[0., 0., 20.]):
+            with self.assertRaisesRegex(TimeoutError, 'read stalled'):
+                source.read([[0., 0., 0.]], timeout=20.)
+            self.assertEqual(read.call_count, 1)
+        with patch.object(source, '_read', side_effect=ValueError('invalid image geometry')) as read:
+            with self.assertRaisesRegex(ValueError, 'invalid image geometry'):
+                source.read([[0., 0., 0.]])
+            self.assertEqual(read.call_count, 1)
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

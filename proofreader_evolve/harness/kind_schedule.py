@@ -9,11 +9,13 @@ only carries the rule name.
 
 Rules, in priority order:
 
+0. ``initial_exploration``: give each active kind one generation before returning
+   to a previously scheduled kind. Failed generations still count as an opportunity.
 1. ``floor``: a kind not revised in the last ``floor_every - 1`` completed
    generations is revised now, so every active kind appears at least once in any
    window of ``floor_every`` generations.
 2. ``pending_followup``: a pending promotion follow-up or investigation takes the
-   next available slot. A floor allocation defers it without discarding it.
+   next available slot. Initial exploration or a floor allocation defers it intact.
 3. ``momentum``: among unsaturated kinds, the largest mean validation point
    gain (candidate minus parent, clipped at zero) over the kind's last
    ``MOMENTUM_WINDOW`` scheduled generations, whether or not the promotion gate
@@ -39,7 +41,7 @@ fields of ledgers written before v7.
 
 import math
 
-SCHEDULE_VERSION = "adaptive-kind-allocation-v6-floor-first"
+SCHEDULE_VERSION = "adaptive-kind-allocation-v7-initial-exploration"
 MODES = ("adaptive", "alternate")
 MOMENTUM_WINDOW = 2
 SATURATION_HITS = .5
@@ -170,11 +172,15 @@ def allocate(kinds, *, cells, budgets, records, paused, pending, floor_every=DEF
         return sorted(candidates, key=lambda kind: (-room[kind], kinds.index(kind)))
 
     pending_kinds = [kind for kind in active if pending.get(kind)]
+    scheduled = {row.get('target_kind') for row in records}
+    untried = [kind for kind in active if kind not in scheduled]
     starved = [kind for kind in active if since[kind] >= floor_every - 1]
     moving = [kind for kind in active if gain[kind] > 0. and not saturated[kind]
               and kind not in pending_kinds and kind not in starved]
     if not active:
         lead, rule = None, "all_paused"
+    elif untried:
+        lead, rule = by_headroom(untried)[0], "initial_exploration"
     elif starved:
         lead, rule = max(starved, key=lambda kind: (since[kind], room[kind], -kinds.index(kind))), "floor"
     elif pending_kinds:

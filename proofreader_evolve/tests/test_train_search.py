@@ -657,6 +657,36 @@ class CandidatePoolTests(unittest.TestCase):
             self.assertFalse(pool.progress['split']['paused'])
             self.assertEqual(pool.next_plan()['reason'], 'plateau')
 
+    def test_small_auroc_gains_accumulate_until_meaningful_progress(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = CandidatePool(Path(tmp) / 'pool.json', ['split'], objective='auroc', early_stop=False)
+            pool.add({**self.entry(1), 'target_objective': .8})
+            for number, objective, stalled in ((2, .8002, 1), (3, .8004, 2), (4, .8005, 0), (5, .8006, 1)):
+                # Precision is unchanged: scheduling must use the configured objective.
+                progress = pool.finish(pool.next_plan(), [{**self.entry(number), 'target_objective': objective}])
+                self.assertEqual(progress['stalled_rounds'], stalled)
+                self.assertAlmostEqual(progress['progress_objective'], .8 if number < 4 else .8005)
+                if number == 4:
+                    self.assertEqual(progress['stalled_explorations'], 0)
+            self.assertEqual(pool.summary()['settings']['progress_tolerance'], .0005)
+
+    def test_tiny_auroc_gains_do_not_prevent_early_stop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = CandidatePool(Path(tmp) / 'pool.json', ['split'], objective='auroc',
+                                 plateau_patience=1, exploration_patience=1)
+            pool.add({**self.entry(1), 'target_objective': .8})
+            for number, objective in ((2, .8001), (3, .8002)):
+                pool.finish(pool.next_plan(), [{**self.entry(number), 'target_objective': objective}])
+            self.assertTrue(pool.progress['split']['paused'])
+            self.assertIsNone(pool.next_plan())
+
+    def test_precision_keeps_positive_gain_progress_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pool = CandidatePool(Path(tmp) / 'pool.json', ['split'])
+            pool.add(self.entry(1))
+            progress = pool.finish(pool.next_plan(), [self.entry(2, .5001)])
+            self.assertEqual(progress['stalled_rounds'], 0)
+
 
 if __name__ == '__main__':
     unittest.main()

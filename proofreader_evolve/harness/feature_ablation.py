@@ -22,7 +22,7 @@ from .image_features import subset_features
 from .image_selection import scoring_coverage
 
 
-ABLATION_VERSION = 'paired-train-feature-ablation-v3-per-kind-objective'
+ABLATION_VERSION = 'paired-train-feature-ablation-v4-effective-inputs'
 # One evaluation unit per arm: a fold triple is one measurement, like a candidate's fold fits.
 CLASSIFIER_UNITS = 2
 FORMULA_UNITS = 2
@@ -90,6 +90,9 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
     (directory / 'program.py').write_text(source)
     (directory / 'identity.json').write_text(json.dumps(identity, indent=2, allow_nan=False))
     predictions, timings = {}, {}
+    image_contract = image_spec(source)
+    remove_raw = bool(image_contract and image_contract[1]['raw_patches'] and 'image_available' in columns)
+    input_check = {'folds': [], 'scope': 'Inputs supplied to full-arm models; presence does not prove learner use.'}
     for arm in ('full', 'without_features'):
         arm_frames = frames if arm == 'full' else {brain: frame.copy() for brain, frame in frames.items()}
         if arm == 'without_features':
@@ -109,10 +112,23 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
                 fold_dir = directory / arm / f'fold{fold}'
                 # Keep internal models out of the resumable/final artifact store.
                 store = fold_dir / 'models'
-                component, _ = fit_classifier(train, kind, config, fold_dir, program=source,
+                component, training = fit_classifier(train, kind, config, fold_dir, program=source,
                     artifact_store=store, timeout=fit_timeout, memory_mb=memory_mb, threads=threads,
                     feature_frames=arm_frames, fit_rows=fitting, random_seed=fold)
                 model = frozen_model(component)
+                if arm == 'full':
+                    effective = set(columns) & set(model['columns'])
+                    # Patches are transported separately from the numeric columns.
+                    # Include both fitting and held rows, even when the selector
+                    # excludes the image_available marker itself.
+                    raw_removed = remove_raw and bool(
+                        (training.get('image_transport') or {}).get('rows_with_images', 0)
+                        or any(frames[brain].attrs.get('_image_rows', {}).get(int(index))
+                               for brain, indices in held.items() for index in indices))
+                    if raw_removed:
+                        effective.add('image_available')
+                    input_check['folds'].append({'fold': fold, 'effective_columns': sorted(effective),
+                                                  'raw_patches_removed': raw_removed})
                 for brain, indices in held.items():
                     if brain in predicted and len(indices):
                         predicted[brain][indices] = predict_model(model, store,
@@ -126,6 +142,25 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
             raise ValueError('Ablation must score every scored TRAIN candidate exactly once per arm')
         predictions[arm] = predicted
         timings[arm] = time.monotonic() - arm_started
+        if classifier and arm == 'full':
+            effective = {name for fold in input_check['folds'] for name in fold['effective_columns']}
+            input_check.update(effective_columns=sorted(effective), ignored_columns=sorted(set(columns) - effective))
+            if not effective:
+                # Keep completed predictions and metadata, but do not fit an
+                # identical-input control or invent an incremental-value result.
+                np.savez(directory / 'predictions.npz', **{f'full:{brain}': values
+                                                         for brain, values in predicted.items()})
+                from .selection_protocol import discard_fold_models
+                discard_fold_models(directory / 'full')
+                return {'version': ABLATION_VERSION, 'status': 'not_applicable', 'target_kind': kind,
+                        'program_sha256': identity['program_sha256'],
+                        'parameters_sha256': identity['parameters_sha256'],
+                        'feature_columns': columns, 'signature': config_identity(identity),
+                        'input_check': input_check, 'reason': 'no_effective_inputs',
+                        'conclusion': 'No feature conclusion: the requested removal affects no full-arm model inputs.',
+                        'scope': 'TRAIN input check only; no paired measurement or research completion.',
+                        'arm_seconds': timings, 'wall_seconds': time.monotonic() - started,
+                        'required_evaluations': 1}
     cells = {}
     for brain in sorted(predictions['full']):
         table = train[brain].tables[kind]
@@ -168,9 +203,9 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
     from .selection_protocol import discard_fold_models
     for arm in ('full', 'without_features'):
         discard_fold_models(directory / arm)
-    image_contract = image_spec(source)
     image_columns = ([*image_contract[1]['feature_names'], 'image_available'] if image_contract else [])
-    removed_images = bool(image_columns) and set(image_columns) <= set(columns)
+    removed_images = (bool(image_columns) and set(image_columns) <= set(columns)
+                      and (not classifier or bool(set(image_columns) & set(input_check['effective_columns']))))
     # Mixing image removal with other inputs measures their joint contribution.
     image_only = removed_images and set(columns) == set(image_columns)
     return {'version': ABLATION_VERSION, 'status': 'measured', 'target_kind': kind,
@@ -183,6 +218,7 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
             'scored_brains': sorted(predictions['full']),
             'program_sha256': identity['program_sha256'], 'parameters_sha256': identity['parameters_sha256'],
             'feature_columns': columns, 'signature': config_identity(identity),
+            **({'input_check': input_check} if classifier else {}),
             'image_evidence': {'image_inputs_present': bool(image_columns),
                 'all_image_inputs_removed_in_control': removed_images,
                 'image_only_control': image_only,

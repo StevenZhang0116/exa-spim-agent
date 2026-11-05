@@ -232,6 +232,13 @@ def main():
         elif request['mode'] == 'describe':
             describe_rows(module, contexts, images, request, output, np)
         elif request['mode'] == 'fit':
+            columns = list(x.columns)
+            if hasattr(module, 'select_columns'):
+                columns = module.select_columns(list(columns), copy.deepcopy(params))
+                if (not isinstance(columns, list) or any(not isinstance(c, str) or c not in x.columns for c in columns)
+                        or len(set(columns)) != len(columns)):
+                    raise ValueError('select_columns must return a list of unique available column names')
+                x = x.loc[:, columns]
             y = np.load(root / 'y.npy', allow_pickle=False)
             if y.shape != (len(x),) or not np.isin(y, [0, 1]).all():
                 raise ValueError('Invalid TRAIN label alignment')
@@ -252,7 +259,7 @@ def main():
             # them only for programs whose `fit` declares `X_unlabeled` explicitly.
             if request.get('unlabeled_inputs'):
                 extra['X_unlabeled'] = pd.DataFrame(np.load(root / 'X_unlabeled.npy', allow_pickle=False),
-                                                    columns=request['columns'])
+                                                    columns=request['columns']).loc[:, columns]
             module.fit(x, y, artifacts, copy.deepcopy(params), **extra)
         else:
             extra = {'images': images} if images is not None else {}
@@ -273,6 +280,8 @@ def main():
                   'versions': {name: str(getattr(mod, '__version__', 'unknown'))[:100]
                                for name, mod in list(sys.modules.items())
                                if name in ('numpy', 'pandas', 'sklearn', 'torch', 'xgboost', 'lightgbm', 'scipy')}}
+        if request['mode'] == 'fit':
+            result['input_columns'] = columns
     except BaseException as exc:
         frames = traceback.extract_tb(exc.__traceback__, limit=12)
         result = {'status': 'error', 'error': f'{type(exc).__name__}: {exc}'[:4000],

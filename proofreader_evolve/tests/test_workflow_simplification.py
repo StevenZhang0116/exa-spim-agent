@@ -86,7 +86,7 @@ class StorageTests(unittest.TestCase):
                         raise ValueError('prediction failed')
                     return frame.local_signal.to_numpy()
                 with patch.object(ablation, 'fit_classifier', side_effect=fit), \
-                        patch.object(ablation, 'frozen_model', return_value={}), \
+                        patch.object(ablation, 'frozen_model', return_value={'columns': ['local_signal']}), \
                         patch.object(ablation, 'predict_model', side_effect=predict), \
                         patch.object(ablation.np, 'savez', side_effect=OSError('save failed')):
                     with self.assertRaisesRegex((ValueError, OSError), 'failed'):
@@ -160,7 +160,8 @@ class PromptTests(unittest.TestCase):
                              'Incomplete assignments', 'successfully evaluated snapshot',
                              'Validation data and logs are unavailable', '5 remaining of 8',
                              '700 s/call', '1500 s/generation', '900 s remaining',
-                             'classifier_guide.md', 'descriptor_guide.md', 'install_packages'):
+                             'classifier_guide.md', 'descriptor_guide.md', 'install_packages',
+                             'mcp__training__search_memory'):
                 self.assertIn(required, prompt)
             self.assertLess(len(prompt.encode()), 7000)
             self.assertEqual(set(bind.call_args.kwargs['readable_png_dirs']),

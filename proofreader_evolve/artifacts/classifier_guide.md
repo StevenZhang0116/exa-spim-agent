@@ -85,12 +85,24 @@ the worker calls predict twice and checks exact equality. Set and record seeds
 in your program/parameters when fitting uses randomness. The framework does not
 force a particular seed or training algorithm.
 
-For feature exploration, start with one fixed seed and a compact model. First compare
-with/without the proposed feature at identical parameters and folds; reserve two
-evaluation units for `evaluate_feature_ablation` before optional tuning. An equivalent
-controlled comparison already measured need not be repeated. Try multi-seed ensembles
-only after establishing the feature increment, and assess their extra scoring cost.
-This is a research default, not a restriction on model families or a new admission gate.
+To exclude unused descriptors from inference, optionally define
+`select_columns(columns, params)` in `training.py`, returning a list of unique
+names from the available columns. It runs inside the fit worker before fitting;
+`X_train` and optional `X_unlabeled` receive only those columns. The harness freezes
+that list for prediction and descriptor dependencies. For example:
+
+```python
+def select_columns(columns, params):
+    return [c for c in columns if c not in params.get('drop_columns', [])]
+```
+
+Without this function, all input columns remain dependencies, even if `fit`
+internally ignores some of them. Prediction uses the frozen list without rerunning
+the selector.
+
+Choose experiments and model complexity based on the evidence and remaining resources.
+`evaluate_feature_ablation` is available when a controlled feature comparison would
+help decide the next step; it costs two evaluation units.
 
 Both functions may explicitly declare the optional keyword `threads`, for example
 `def predict(X, artifact_dir, params, *, threads=1):`. The host supplies the worker's
@@ -135,8 +147,13 @@ program can fit a classifier, regression/ranking model, neural network, ensemble
 or custom predictor. The harness runs fit on TRAIN, snapshots the artifacts,
 runs label-free inference with the declared inputs, measures the selection score (see Evaluation
 below; the configured objective, AUROC by default, with Precision@K and the other rank statistics
-beside it) alongside in-sample TRAIN Precision@K, and restores the best successful configuration by
-the selection objective. Selection comparisons guide search;
+beside it) alongside in-sample TRAIN Precision@K, and restores the highest selection
+objective among configurations satisfying the selection head guard. If none satisfy it,
+the highest objective is restored with the failed guard shown in `selection_gate`.
+An absent or disabled guard does not filter candidates. `restore_candidate("best")`
+uses the same preference among candidates not yet measured by the outer evaluator,
+falling back to all candidates when all have been measured. Explicit IDs remain
+selectable; a selection-objective gain over the parent is not required. Selection comparisons guide search;
 only the outer target-kind validation objective, with its resampling-noise bound and the head
 guard, controls promotion. With no
 grid, it measures one fit. A grid stops at the first failed fit or execution error of
@@ -174,8 +191,7 @@ It is checked between configurations: a running candidate completes under its wo
 so the total can exceed the budget by that candidate's duration. Further uncached fits stop;
 cached fits and restoring measured candidates remain available. Descriptor computation and
 paired ablations have their own budgets. Inspect `classifier_seconds_remaining` and stage
-`timings` before another grid. Compare features with one seed first; only try an ensemble
-after a useful paired comparison, with enough time left for its full-pool predictions.
+`timings` before another grid, including the cost of full-pool predictions.
 New registered descriptor inputs invalidate fitted-model and extracted-frame reuse even if
 training.py and parameters are unchanged. Restoring an older frozen model remains valid;
 it does not incorporate later features until you refit it.
@@ -236,6 +252,10 @@ partition as the grouped selection protocol; only selection brains are scored,
 with the partitioned fold budgets. Under `in_sample`, this classifier diagnostic
 still uses grouped fold refits, while candidate selection uses in-sample scores.
 Both ablation arms use the configured target-kind aggregation and positive floor.
+`input_check` reports effective and ignored removal columns from the full-arm fold
+models. If all requested inputs were excluded and no actual raw patches would be
+withdrawn, the result is `not_applicable`: only the full arm runs and costs one unit.
+This input check supplies no paired evidence and cannot complete a research assignment.
 It preserves the feature schema and
 does not force a model family. It seeds Python/NumPy per fold in this diagnostic;
 agent seed overrides or other random generators can still affect reproducibility.
@@ -247,5 +267,7 @@ To move or resume a run, keep `best_scorer.py` and its sibling `model_artifacts/
 together. `--start-from` reuses those artifacts without fitting. For another
 layout, pass `--start-from-artifacts /path/to/model_artifacts`. Installed model
 libraries must remain compatible; their recorded versions aid reproducibility.
+This seeds a new run; it does not restore the old ledger, scheduling history,
+candidate pool or cumulative-progress checkpoint.
 Legacy self-contained NumPy model exports remain readable for resume, but all
 new training uses this interface.

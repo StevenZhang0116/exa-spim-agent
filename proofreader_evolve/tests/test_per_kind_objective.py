@@ -138,6 +138,21 @@ class ObjectiveTests(unittest.TestCase):
              'report': report({'a/merge': cell(10, 10), 'a/split': cell(10, 10)})}
         self.assertIs(TrainingExperiments._best([b, a]), a)
 
+    def test_best_prefers_head_guard_without_requiring_objective_gain(self):
+        def result(score, guard, passed=False):
+            return {'report': {}, 'component': FORMULA,
+                    'entry': {'sequence': 1, 'target_precision': .5, 'target_objective': score,
+                              'selection_gate': {'passed': passed, 'head_guard': guard}}}
+
+        highest = result(.82, {'passed': False})
+        guarded = result(.81, {'passed': True})
+        lower = result(.80, {'passed': True}, passed=True)
+        self.assertIs(TrainingExperiments._best([highest, guarded, lower]), guarded)
+        self.assertFalse(guarded['entry']['selection_gate']['passed'])  # OOF gain is not required.
+        self.assertIs(TrainingExperiments._best([highest, result(.81, {'passed': False})]), highest)
+        disabled = result(.83, None)
+        self.assertIs(TrainingExperiments._best([highest, guarded, disabled]), disabled)
+
     def test_margin_is_in_target_kind_units_and_other_kind_cannot_compensate(self):
         before = report({'a/merge': cell(5, 20), 'a/split': cell(10, 20)})
         after = report({'a/merge': cell(7, 20), 'a/split': cell(0, 20)})

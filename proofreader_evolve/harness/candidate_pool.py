@@ -69,6 +69,9 @@ class CandidatePool:
                  research=None, image_kinds=(), objective='precision_at_k'):
         self.path, self.kinds, self.cursor = path, list(kinds), 0
         self.objective = check_objective(objective)
+        # Scheduling heuristic, not a significance test or a promotion threshold.
+        # Keep the historical positive-gain rule for the other objectives.
+        self.progress_tolerance = .0005 if self.objective == 'auroc' else 0.
         self.size = size
         self.score_tolerance = POOL_TOLERANCES[self.objective] if score_tolerance is None else score_tolerance
         self.plateau_patience, self.exploration_patience = plateau_patience, exploration_patience
@@ -90,7 +93,7 @@ class CandidatePool:
                                 'reference_measured': False, 'pending_followup': None,
                                 'no_evidence_rounds': 0, 'incomplete_investigations': 0,
                                 'execution_blocked_rounds': 0, 'pending_investigation': None,
-                                'pause_reason': None} for kind in kinds}
+                                'pause_reason': None, 'progress_objective': None} for kind in kinds}
 
     @staticmethod
     def _objective(entry):
@@ -330,10 +333,15 @@ class CandidatePool:
             progress['improved_slices'] = sorted(name for name, count in self.best_slice_hits[kind].items()
                                                  if count > previous_slices.get(name, 0))
             best_before = plan.get('best_objective_before', plan['best_precision_before'])
-            improved = (self._objective(self.members[kind][0]) > best_before + 1e-12
-                        or progress['new_positive_hits'] > 0 or bool(progress['improved_slices']))
+            if progress['progress_objective'] is None:
+                progress['progress_objective'] = best_before
+            best = self._objective(self.members[kind][0])
+            gain = best - progress['progress_objective']
+            # Accumulate small gains across generations. Coverage still retains
+            # specialists, but does not by itself reset performance stagnation.
+            improved = gain > 1e-12 and gain + 1e-12 >= self.progress_tolerance
             if improved:
-                progress.update(stalled_rounds=0, stalled_explorations=0)
+                progress.update(stalled_rounds=0, stalled_explorations=0, progress_objective=best)
             else:
                 progress['stalled_rounds'] += 1
                 forced = bool(investigation) or plan['reason'] in {'plateau', 'hypothesis_plateau'} or (
@@ -362,7 +370,7 @@ class CandidatePool:
         # outer_measurement status (generation, promoted) are supplied by the host; no heldout
         # scores, labels or decision reasons are included.
         return {'selection': 'train-champion-and-specialists-v1' if self.coverage else 'near-best-train',
-                'scheduling': 'measured-investigation-promotion-followup-v3',
+                'scheduling': 'cumulative-objective-progress-v4',
                 'coverage': self.coverage.definitions() if self.coverage else None,
                 'kinds': {kind: {'progress': deepcopy(self.progress[kind]),
                     'reference_branch': self._reference_summary(kind),
@@ -370,6 +378,7 @@ class CandidatePool:
                     'ever_retained_positive_hits': len(self.covered_history[kind]) if self.coverage else None,
                     'candidates': [self._candidate_summary(e) for e in self.members[kind]]} for kind in self.kinds},
                 'settings': {'size': self.size, 'score_tolerance': self.score_tolerance, 'objective': self.objective,
+                             'progress_tolerance': self.progress_tolerance,
                              'reference_every': REFERENCE_EVERY,
                              'evidence_patience': EVIDENCE_PATIENCE,
                              'followup_attempt_limit': FOLLOWUP_ATTEMPTS,

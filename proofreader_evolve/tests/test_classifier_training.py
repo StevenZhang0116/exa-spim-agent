@@ -11,6 +11,7 @@ import hashlib
 import json
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -21,6 +22,7 @@ from proofreader_evolve.harness import fixed_pool_scoring as scoring
 from proofreader_evolve.harness.classifier_contract import (
     classifier_info, classifier_configs, frozen_model, normalize_config, render_model, verify_artifacts)
 from proofreader_evolve.harness.classifier_training import fit_classifier, ClassifierTrainingError
+from proofreader_evolve.harness.model_execution import ModelExecutionError
 from proofreader_evolve.harness.isolated_scoring import score
 from proofreader_evolve.harness.scorer_components import components
 from proofreader_evolve.harness.train_experiments import ExperimentMemory, TrainingExperiments
@@ -54,6 +56,58 @@ def proposal(session, *, parameters=None, grid=None, program=PROGRAM):
 
 
 class ProgramContractTests(unittest.TestCase):
+    def test_selected_columns_control_fit_unlabeled_prediction_and_descriptor_dependencies(self):
+        program = '''import numpy as np
+def select_columns(columns, params):
+    assert 'bank_agent_unused' in columns
+    return params['columns']
+def fit(X_train, y_train, artifact_dir, params, X_unlabeled=None):
+    assert list(X_train.columns) == params['columns']
+    assert list(X_unlabeled.columns) == params['columns']
+    assert len(X_unlabeled) == 1
+    np.save(artifact_dir / 'seen.npy', X_train.to_numpy())
+def predict(X, artifact_dir, params):
+    assert list(X.columns) == params['columns']
+    return X['evidence'].to_numpy() + X['bank_agent_kept'].to_numpy()
+'''
+        bank = fixture()
+        table = bank.tables['split']
+        table.truth = np.array([0., 1., np.nan])
+        table.features['bank_agent_kept'] = [1., 2., 3.]
+        table.features['bank_agent_unused'] = [10., 20., 30.]
+        selected = ['bank_agent_kept', 'evidence']
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source, summary = fit_classifier({'1': bank}, 'split', {'parameters': {'columns': selected}},
+                root / 'fit', program=program, artifact_store=root / 'store')
+            model = frozen_model(source)
+            self.assertEqual(model['columns'], selected)
+            self.assertEqual(summary['input_columns'], selected)
+            seen = np.load(verify_artifacts(model, root / 'store') / 'seen.npy')
+            np.testing.assert_array_equal(seen, table.features.loc[:1, selected].to_numpy())
+            # The dropped descriptor is neither registered nor present on the validation frame.
+            session = SimpleNamespace(memory=SimpleNamespace(descriptors={'bank_agent_kept': {}}))
+            self.assertEqual(TrainingExperiments.required_descriptors(session, source), ['bank_agent_kept'])
+            values = score(source, table.features.drop(columns='bank_agent_unused'), 'split',
+                           artifact_store=root / 'store')
+            np.testing.assert_array_equal(values, table.features['evidence'] + table.features['bank_agent_kept'])
+
+    def test_invalid_selected_columns_fail_before_fitting(self):
+        program = '''def select_columns(columns, params):
+    return params['columns']
+def fit(X_train, y_train, artifact_dir, params):
+    raise AssertionError('Invalid columns must fail before fitting')
+def predict(X, artifact_dir, params):
+    return [0.] * len(X)
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for columns in ('evidence', ['absent'], ['evidence', 'evidence'], [1]):
+                with self.subTest(columns=columns), self.assertRaisesRegex(ModelExecutionError,
+                        'select_columns must return'):
+                    fit_classifier({'1': fixture()}, 'split', {'parameters': {'columns': columns}},
+                        root / 'fit', program=program, artifact_store=root / 'store')
+
     def test_optional_thread_budget_reaches_fit_and_prediction_and_is_capped(self):
         program = '''import numpy as np
 import os
@@ -135,6 +189,7 @@ def predict(X, artifact_dir, params, *, threads=1):
             self.assertEqual(set(model['files']), {'center.npy'})
             self.assertIn('custom positive center:', summary['training_output_tail'])
             frame = fixture().tables['split'].features
+            self.assertEqual(model['columns'], list(frame.columns))
             expected = -2 * np.abs(frame['evidence'].to_numpy() - .9)
             np.testing.assert_array_equal(score(source, frame, 'split', artifact_store=root / 'model_artifacts'), expected)
             extended = pd.concat([frame, frame.assign(evidence=10000)], ignore_index=True)

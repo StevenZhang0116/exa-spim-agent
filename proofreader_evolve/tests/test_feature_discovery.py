@@ -175,7 +175,8 @@ class FeatureDiscoveryTests(unittest.TestCase):
             self.assertEqual(list(frame.index), list(range(len(frame))))
             return frame.local_signal.to_numpy()
         with patch('proofreader_evolve.harness.feature_ablation.fit_classifier', side_effect=fit), \
-                patch('proofreader_evolve.harness.feature_ablation.frozen_model', return_value={}), \
+                patch('proofreader_evolve.harness.feature_ablation.frozen_model',
+                      return_value={'columns': list(table.features.columns)}), \
                 patch('proofreader_evolve.harness.feature_ablation.predict_model', side_effect=predict):
             report = measure_ablation(train, 'merge', PROGRAM, {'parameters': {}}, frames, ['local_signal'],
                 split, {'program_sha256': 'program', 'parameters_sha256': 'params'}, {'merge': 3},

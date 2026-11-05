@@ -5,7 +5,8 @@ import json
 def descriptor_ablation_evidence(report, registry):
     """Record image-consuming descriptor provenance without inferring pixel causality."""
     evidence = dict(report.get('image_evidence') or {})
-    columns = {column: registry[column] for column in report['feature_columns']
+    effective = (report.get('input_check') or {}).get('effective_columns', report['feature_columns'])
+    columns = {column: registry[column] for column in effective
                if column in registry and registry[column]['inputs'] in ('image', 'both')}
     if columns:
         evidence.update(image_inputs_present=True, descriptor_columns=columns,
@@ -37,7 +38,7 @@ def generation_image_evidence(directory, record):
         if image.get('image_inputs_present'):
             diagnostics.append({key: report.get(key) for key in (
                 'experiment', 'status', 'protocol', 'delta_precision', 'delta_objective', 'objective', 'program_sha256',
-                'parameters_sha256', 'feature_columns', 'signature', 'image_evidence')})
+                'parameters_sha256', 'feature_columns', 'input_check', 'signature', 'image_evidence')})
     probes, plans = [], []
     for pattern, records in (('descriptor_probes/probe*/result.json', probes), ('descriptor_plans/plan*.json', plans)):
         for path in sorted(directory.glob(pattern)):

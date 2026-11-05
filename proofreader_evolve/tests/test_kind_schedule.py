@@ -1,10 +1,10 @@
-"""Adaptive allocation of generations to kinds (v16): headroom, momentum, floor,
+"""Adaptive allocation of generations to kinds: initialization, headroom, momentum, floor,
 pending follow-up, saturation, and the driver wiring. Synthetic fixtures only.
 
 The driver fixture makes merge saturated at the seed (its only positive is
 already ranked first at K=1) while split has headroom, so adaptive scheduling
-spends the first three generations on split and the floor brings merge in at
-generation four; strict rotation on the same fixture alternates.
+starts with split, gives merge its initial opportunity, then returns to split's
+pending follow-up and momentum; strict rotation on the same fixture alternates.
 """
 
 import asyncio
@@ -84,23 +84,35 @@ class RuleTests(unittest.TestCase):
         result = self.allocate(cells, history)
         self.assertEqual((result["chosen"], result["rule"]), ("merge", "momentum"))
         self.assertAlmostEqual(result["kinds"]["merge"]["momentum"], .206 - .181)
-        self.assertEqual(result["version"], "adaptive-kind-allocation-v6-floor-first")
+        self.assertEqual(result["version"], "adaptive-kind-allocation-v7-initial-exploration")
 
     def allocate(self, cells, records, **overrides):
         options = {"paused": {}, "pending": {}, "floor_every": 4}
         options.update(overrides)
         return ks.allocate(self.KINDS, cells=cells, budgets=self.BUDGETS, records=records, **options)
 
-    def test_headroom_decides_without_history_and_saturated_kinds_wait_for_the_floor(self):
+    def test_initial_exploration_includes_saturated_kinds_then_floor_applies(self):
         cells = {"a/merge": cell(62, 2000, .031), "a/split": cell(2720, 2000, .3)}  # merge at its cap
         result = self.allocate(cells, [])
-        self.assertEqual((result["chosen"], result["rule"]), ("split", "headroom"))
+        self.assertEqual((result["chosen"], result["rule"]), ("split", "initial_exploration"))
         self.assertTrue(result["kinds"]["merge"]["saturated"])
         self.assertEqual(result["order"], ["split", "merge"])
-        history = [row("split", True, .1, .2), row("split", False), row("split", False)]
+        result = self.allocate(cells, [row("split", True, .1, .2)], pending={"split": True})
+        self.assertEqual((result["chosen"], result["rule"]), ("merge", "initial_exploration"))
+        history = [row("merge", False), row("split", True, .1, .2), row("split", False), row("split", False)]
         result = self.allocate(cells, history)
         self.assertEqual((result["chosen"], result["rule"]), ("merge", "floor"))
         self.assertEqual(result["kinds"]["merge"]["generations_since"], 3)
+
+    def test_initial_opportunity_precedes_followup_and_a_failure_still_counts(self):
+        cells = {"a/merge": cell(2000, 2000, .1), "a/split": cell(2000, 2000, .5)}
+        pending = {"merge": True}
+        history = [row("merge", True, 0., .1)]
+        result = self.allocate(cells, history, pending=pending)
+        self.assertEqual((result["chosen"], result["rule"]), ("split", "initial_exploration"))
+        self.assertEqual(pending, {"merge": True})
+        result = self.allocate(cells, history + [row("split", False)], pending=pending)
+        self.assertEqual((result["chosen"], result["rule"]), ("merge", "pending_followup"))
 
     def test_momentum_beats_headroom_until_it_fades(self):
         cells = {"a/merge": cell(2000, 2000, .1), "a/split": cell(2720, 2000, .3)}  # merge has more room (0.9 vs 0.7)
@@ -117,7 +129,7 @@ class RuleTests(unittest.TestCase):
 
     def test_pending_followup_paused_and_validation(self):
         cells = {"a/merge": cell(1000, 2000, .1), "a/split": cell(2720, 2000, .3)}
-        result = self.allocate(cells, [], pending={"split": True})
+        result = self.allocate(cells, [row("merge", False), row("split", False)], pending={"split": True})
         self.assertEqual((result["chosen"], result["rule"]), ("split", "pending_followup"))
         result = self.allocate(cells, [], paused={"merge": True})
         self.assertEqual(result["order"], ["split"])
@@ -137,7 +149,8 @@ class RuleTests(unittest.TestCase):
         for start in range(len(kinds) - 3):
             self.assertEqual(set(kinds[start:start + 4]), {'merge', 'split'})
         self.assertEqual(pending, {'split': True})  # deferral never consumes the follow-up
-        result = self.allocate(cells, [row('split', True)] * 3, pending={'merge': True, 'split': True})
+        result = self.allocate(cells, [row('merge', False)] + [row('split', True)] * 3,
+                               pending={'merge': True, 'split': True})
         self.assertEqual((result['chosen'], result['rule']), ('merge', 'floor'))
 
 
@@ -175,21 +188,22 @@ class DriverTests(unittest.TestCase):
             pools = [(path / f'gen{g:03d}/candidate_pool.json').read_text() for g in range(1, len(records) + 1)]
         return targets, records, manifest, plans, pools
 
-    def test_adaptive_schedule_favours_headroom_and_momentum_with_a_floor(self):
+    def test_adaptive_schedule_initializes_both_kinds_and_preserves_followup(self):
         targets, records, manifest, plans, pools = self.run_driver(['--kind-floor-every', '4'])
-        self.assertEqual(targets, ['split', 'split', 'split', 'merge'])
+        self.assertEqual(targets, ['split', 'merge', 'split', 'split'])
         self.assertEqual([r['kind_allocation']['rule'] for r in records],
-                         ['headroom', 'pending_followup', 'momentum', 'floor'])
+                         ['initial_exploration', 'initial_exploration', 'pending_followup', 'momentum'])
         first = records[0]['kind_allocation']['kinds']
         self.assertTrue(first['merge']['saturated'])
         self.assertAlmostEqual(first['split']['headroom'], 1.)
         self.assertTrue(records[0]['accepted'])
         self.assertGreater(records[2]['kind_allocation']['kinds']['split']['momentum'], 0.)
-        self.assertEqual(records[3]['kind_allocation']['kinds']['merge']['generations_since'], 3)
+        self.assertEqual(records[3]['kind_allocation']['kinds']['merge']['generations_since'], 1)
+        self.assertEqual(plans[2]['reason'], 'promotion_followup')
         self.assertEqual(manifest['kind_schedule']['mode'], 'adaptive')
         self.assertEqual(manifest['search_version'], 'per-kind-selection-objective-v18')
         self.assertEqual([plan['allocation_rule'] for plan in plans],
-                         ['headroom', 'pending_followup', 'momentum', 'floor'])
+                         ['initial_exploration', 'initial_exploration', 'pending_followup', 'momentum'])
         for text in [json.dumps(plan) for plan in plans] + pools:
             lowered = text.lower()
             self.assertNotIn('validation', lowered)

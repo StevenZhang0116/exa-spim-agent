@@ -83,9 +83,9 @@ work but receive text-derived IDs with weaker cross-variant grouping.
 
 ## Measure incremental value
 
-Start feature comparisons with one fixed seed and a compact model. Reserve two
-evaluation units for a paired ablation before optional tuning/ensembles. A controlled
-same-parameter with/without comparison already measured need not be repeated.
+Use a paired ablation when isolating a feature's contribution would help choose
+the next experiment. It costs two evaluation units; experiment order and model
+choice are yours.
 Read `selection_comparison` in candidate tool results before submission: an overall
 gain can coexist with a whole-brain holdout loss or be dominated by one brain. Inspect
 the per-brain changes and `timings`, and explain the tradeoff in the handoff. These
@@ -107,6 +107,19 @@ For raw-patch models, include `image_available` to make every patch list empty i
 the control arm, and include any `image_*` predictors to remove those too. The
 model must handle absent images or the diagnostic is unavailable. The host still
 fits the same program in both arms; it does not switch to a different learner.
+
+Classifier diagnostics report `input_check`: the requested columns supplied to each
+full-arm fold model, their union as `effective_columns`, and `ignored_columns` excluded
+by all fold models. This uses the frozen input lists from the existing fits; it adds
+no training and does not execute `select_columns` in the host. Input presence does
+not prove that the learner uses it internally. A partial overlap still runs the
+comparison. Removing `image_available` also counts when it withdraws actual raw
+patches, even if the model excluded that numeric marker.
+If no fold receives any affected input, the tool returns `not_applicable` with reason
+`no_effective_inputs`, skips the control arm, and charges only the completed full arm
+(one unit). It reports no feature increment and does not complete an investigation
+or promotion follow-up; the input check is an observation, not an execution failure.
+The usual two-unit budget check still applies before starting the diagnostic.
 
 For a classifier, both arms refit the exact same `training.py` and parameters in
 three fixed TRAIN-only folds. Merge rows group by fragment. Split rows group by
@@ -176,7 +189,7 @@ keyword search.
 `hypothesis_memory.json` is a bounded host-written view refreshed after measurements.
 It records declarations, fresh measurements, repeated rankings, execution failures,
 feature ablations and stagnation. Read the relevant evidence before repeating a
-direction; use `search_memory` to retrieve more related experiments and code diffs.
+direction; use `mcp__training__search_memory` to retrieve more related experiments and code diffs.
 Feature evidence binds to exact program/parameter/feature/split identities.
 
 Two measured generations without improving a hypothesis's TRAIN best, or two

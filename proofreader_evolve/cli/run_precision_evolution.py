@@ -11,8 +11,9 @@ brain whole by a model that never saw it (2026-11-04).
 Promote on the target-kind validation objective (AUROC by default)
 whose paired-bootstrap lower bound is above zero, subject to a head guard on precision at K/2, K and 2K
 (`--promotion-gate bootstrap`, default); individual brain regressions are allowed.
-Generations go to one kind each, chosen by a rotation floor, pending follow-up, recent validation
-point gain (accepted or not) and remaining headroom (`--kind-schedule adaptive`, default) or by strict rotation.
+Generations go to one kind each. Adaptive allocation first gives each active kind one opportunity,
+then uses a rotation floor, pending follow-up, recent validation point gain (accepted or not)
+and remaining headroom (`--kind-schedule adaptive`, default); strict rotation is also available.
 Validation is repeatedly queried development data, never an untouched final test.
 """
 
@@ -192,7 +193,8 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
             "image_context_guide.md for previews and image features; volume_analysis_guide.md for independent "
             "3D investigations; local_context_guide.md for geometry; feature_discovery_guide.md for proposals, "
             "ablation and research handoff. Formula tools evaluate_train/search_parameters remain available. "
-            "Use search_memory before repeating work; restore_candidate restores measured snapshots. "
+            "Use mcp__training__search_memory before repeating work; "
+            "mcp__training__restore_candidate restores measured snapshots. "
             "Current/earlier TRAIN experiments, classifier fits, descriptor runs/probes and image_inspections "
             "PNGs are readable; image inspection audit JSON and validation logs remain host-only. "
             "Write proposal.json with hypothesis, strategy, family and parameter_grid, plus classifier.parameters "
@@ -447,7 +449,7 @@ def parse_args(argv=None):
                    help="Component to revise; alternate lets --kind-schedule choose one kind per generation, "
                         "merge or split fixes it")
     p.add_argument("--kind-schedule", choices=kind_schedule.MODES, default="adaptive",
-                   help="adaptive (default): pick the kind per generation by a floor, pending follow-up, recent "
+                   help="adaptive (default): give each active kind one initial generation, then use a floor, pending follow-up, recent "
                         "validation point gain (accepted or not) and remaining headroom; alternate: strict merge/split rotation")
     p.add_argument("--kind-floor-every", type=int, default=kind_schedule.DEFAULT_FLOOR_EVERY,
                    help="Adaptive schedule: every active kind is revised at least once per this many generations "

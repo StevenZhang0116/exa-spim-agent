@@ -155,19 +155,21 @@ class SpecialistPoolTests(unittest.TestCase):
             self.assertNotIn(private_field, text)
         self.assertNotIn('validation', text.lower())
 
-    def test_new_coverage_resets_plateau_without_mean_gain(self):
-        pool = self.pool(size=2)
+    def test_new_coverage_retains_specialist_without_resetting_performance_stall(self):
+        pool = self.pool(size=2, early_stop=False)
         pool.add(self.entry(1, [0, 1, 2, 6]))
         pool.progress['split'].update(stalled_rounds=2, stalled_explorations=1)
         progress = pool.finish(pool.next_plan(), [self.entry(2, [3, 4, 5, 6])])
         self.assertEqual(progress['new_positive_hits'], 3)
-        self.assertEqual(progress['stalled_rounds'], 0)
-        self.assertEqual(progress['stalled_explorations'], 0)
+        self.assertTrue(progress['improved_slices'])
+        self.assertEqual([e['sequence'] for e in pool.members['split']], [1, 2])
+        self.assertEqual(progress['stalled_rounds'], 3)
+        self.assertEqual(progress['stalled_explorations'], 2)
         self.assertFalse(progress['paused'])
         progress = pool.finish(pool.next_plan(), [self.entry(3, [1, 2, 3, 6])])
         self.assertEqual(progress['new_positive_hits'], 0)
         self.assertEqual(progress['improved_slices'], [])
-        self.assertEqual(progress['stalled_rounds'], 1)
+        self.assertEqual(progress['stalled_rounds'], 4)
 
     def test_generation_selection_is_order_independent_and_bounded(self):
         entries = [self.entry(2, [3, 4, 6, 7]), self.entry(3, [4, 5, 6, 7]),

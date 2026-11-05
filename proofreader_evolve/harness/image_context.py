@@ -109,8 +109,22 @@ class ImageSource:
         return self._levels[level][0]
 
     def read(self, anchors_xyz, radius_um=40., level=0, channel=0, timepoint=0, *, timeout=None):
+        """Retry a timed-out patch once, within the caller's remaining wall budget."""
+        budget = 2 * self.timeout if timeout is None else float(timeout)
+        deadline = time.monotonic() + budget
+        for attempt in range(2):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('Image preparation budget exhausted')
+            try:
+                return self._read(anchors_xyz, radius_um, level, channel, timepoint, timeout=remaining)
+            except TimeoutError:
+                if attempt == 1 or time.monotonic() >= deadline:
+                    raise
+
+    def _read(self, anchors_xyz, radius_um, level, channel, timepoint, *, timeout):
         import tensorstore as ts
-        timeout = self.timeout if timeout is None else min(self.timeout, float(timeout))
+        timeout = min(self.timeout, float(timeout))
         if timeout <= 0:
             raise TimeoutError('Image preparation budget exhausted')
         deadline = time.monotonic() + timeout
