@@ -1,4 +1,5 @@
-"""Generate evolution-matching detector tables and their availability sidecars, then run read-only validation.
+"""Generate the candidate pool tables evolution loads (raw pools or detector-native tables) and their
+availability sidecars, then run read-only validation.
 
 Run with panda on an allocated compute node (e.g. n257):
     python -u proofreader_evolve/prepare_feature_tables.py --brains 794495 789202 794491 794493 802449
@@ -6,9 +7,9 @@ Run with panda on an allocated compute node (e.g. n257):
 Without --brains, the preparation default is 789202 and 794491; include 794495
 explicitly to prepare the current default evolution TRAIN brain. MCL defaults
 to 100, with labeled _add caches, the candidate pools declared in candidate_pools.json and
-the default frozen detectors. Precompute, preflight and evolution all resolve the detectors
-through precompute_error_scores (DEFAULT_MERGE_DIR / DEFAULT_SPLIT_DIR, the 2026-10 builds
-since 2026-10-23).
+the default frozen detectors. Under frozen / no-score, precompute, preflight and evolution all
+resolve the detectors through precompute_error_scores (DEFAULT_MERGE_DIR / DEFAULT_SPLIT_DIR,
+the 2026-10 builds since 2026-10-23).
 Each brain runs in a fresh subprocess to release memory before the next.
 After the tables, precompute_availability writes the label-availability sidecars, which
 the closing preflight (and evolution) require; without them a fresh table always failed it.

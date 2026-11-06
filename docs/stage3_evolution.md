@@ -44,8 +44,9 @@ reported alongside) over GT-labeled rows on the
 same candidate pool** as the selected `merge_junction_detector.py` and
 `split_site_detector.py`. The pool is the rule declared in `candidate_pools.json`,
 enumerated by `candidate_rules.py` (split occurrences, junction NMS, tip-to-shaft
-candidates); the detectors only score its rows and evolution cannot change it.
-Exactly one detector per kind is required.
+candidates); evolution cannot change it. Under `frozen` / `no-score` the detectors only score
+its rows and exactly one detector per kind is required; under `raw` the same rows come from the
+detector-free raw pools (section 3.2) and no detector is involved.
 
 ## 3.2 Prepare tables and launch a run
 

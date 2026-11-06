@@ -138,8 +138,8 @@ the host ranks within folds using the selection protocol's partitioned K budgets
 which sum to the per-brain K. This avoids comparing scores across fold models with
 different calibration. These adaptively reused
 TRAIN diagnostics do not establish independent cross-brain performance.
-Frozen detector-derived base predictors are reused as supplied; that detector
-may already have been fitted on this TRAIN brain. Only the new model and its
+Under the frozen prior, detector-derived base predictors are reused as supplied; that
+detector may already have been fitted on this TRAIN brain (raw runs have none). Only the new model and its
 learned preprocessing are refitted within these diagnostic folds.
 
 For a hand-written formula, the same two input arms are scored on the selection

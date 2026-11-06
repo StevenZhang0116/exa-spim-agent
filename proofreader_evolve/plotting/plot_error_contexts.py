@@ -19,6 +19,9 @@ chosen from evaluator-labelled errors across the full candidate pool, so this mo
 reads labels and is for human review only. It is never copied into a
 generation directory and nothing here is visible to the reviser.
 
+Loads the detector-native tables with the frozen detectors (`--merge-dir` / `--split-dir`);
+raw pools (2026-11-06) are not read here.
+
 Usage (panda environment, repository root, compute node):
 
     python -m proofreader_evolve.plotting.plot_error_contexts --brain 802449 \

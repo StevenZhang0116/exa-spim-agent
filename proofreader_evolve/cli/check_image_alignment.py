@@ -1,4 +1,8 @@
-"""Read a few real candidate patches and save registration evidence; never train."""
+"""Read a few real candidate patches and save registration evidence; never train.
+
+Loads the detector-native tables with the frozen detectors; for brains prepared as raw pools
+only (2026-11-06) use scripts/check_image_alignment_from_cache.py, which samples the cache.
+"""
 import argparse
 from datetime import datetime
 import gc
