@@ -199,7 +199,9 @@ systematic *topological* errors, both already identified in the `_add` cache:
   five original brains (794495, 802449, 789202, 794491, 794493). Caches also exist
   for six older-microscope brains (747807, 750318, 751473, 754610, 754612,
   754613); their merge-label bias was measured (above), the omit comparison was
-  not repeated in this document.
+  not repeated in this document. The denoised segmentations that replaced the
+  789202 and 802449 sources on 2026-11-05, and the new brain 841260 (caches rebuilt
+  2026-11-06), are outside these measurements.
 
 ---
 

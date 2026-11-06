@@ -109,6 +109,18 @@ seconds, GCS credentials):
 python -m labeled_cache.source_check --brains 751473 --record
 ```
 
+On 2026-11-05 the sources of 789202 and 802449 were replaced by the denoised Google
+segmentations and 841260 was added, all as explicit entries in `configs/segmentation_paths.json`;
+their receipts are the 2026-11-05 section of `docs/fragment_segmentation_match.md`. Their caches
+were rebuilt on 2026-11-06 (n252; `--rebuild-base` for the two replaced brains, 3 h for the pair,
+3.5 h for 841260; logs `notebooks/log/labeled_cache_20261106_*.log`). The GT graphs are unchanged;
+the denoised segmentations carry far fewer merges and more omissions than the sources they
+replace: merged GT edges 802449 36.7% -> 2.3% and 789202 17.7% -> 0.3%, omitted 2.8% -> 17.3% and
+3.2% -> 11.9%, split 0.6% -> 0.7% and 0.5% -> 3.5%; merge sites 1143 -> 121 and 84 -> 17; fragment
+nodes 36.9 M -> 12.2 M and 4.49 M -> 2.81 M. 841260: 13 GT neurons, split 2.6%, omit 9.5%, merged
+3.4%, 136 merge sites. Merge positives therefore shrink on both replaced brains, and earlier merge
+baselines on them are not comparable.
+
 It samples interior fragment nodes, converts them to voxels the way the builder does,
 reads the segmentation at those voxels and reports how many carry the fragment's own id.
 Matched sources give close to 100% (exact or within one voxel; the eleven current brains gave

@@ -6,6 +6,20 @@ measurements below are historical evidence, not instructions to rebuild or reuse
 that brain. Use the explicit [current split](stage3_evolution.md#32-prepare-tables-and-launch-a-run)
 for new runs; the independent validation protocol remains to be designed.
 
+Segmentation source update (2026-11-05): the Google "denoised" segmentations replace the
+sources of 789202 (`whole_brain_denoised/denoised_v2.unet_tri_denoised_2370000_move_09_segment_09_it2`)
+and 802449 (`whole_brain_denoised/denoised_v2.unet_tri_denoised_2370000_move_09_segment_09`), and
+841260 (`whole_brain_denoised/denoised.unet_tri_denoised_2370000_move_09_segment_09_it2`, 13 GT
+neurons, image `exaSPIM_841260_2026-07-07_15-13-51_processed_2026-07-26_09-25-11`) is a new brain.
+All three are explicit entries in `configs/segmentation_paths.json` (fragments in `<id>/swcs`; the
+formats are unchanged, 748 nm sharded precomputed and zip-sharded voxel SWCs). 820994 was not
+added: the shared folder did not exist and the brain has no GT tracings. For 789202 and 802449
+this is the graph reload of section 3 (`--rebuild-base`, tables, the 802449 companions, alignment
+receipts, preflight, then a new seed baseline; `metrics_out/<brain>/` gets a new segmentation-id
+directory, so move the old one aside before the comparison scripts). 841260 needs the full build,
+its image prefix (added) and an alignment review. The cache file name carries no segmentation id,
+so the old and new sources of one brain cannot coexist in `cache/`.
+
 Written 2026-10-14 after the 794495 rebuild. Every derived artifact of a brain descends from
 its labeled dataset cache `cache/dataset_cache_<brain>_mcl<N>_add.pkl`. This page lists those
 artifacts, what each one is bound to (the check that fails when the cache changes), the order
@@ -45,10 +59,10 @@ Two kinds of change have different blast radii:
 | # | Artifact | Path | Bound to (the check that fails) | Rerun after graph reload | Rerun after label-only refresh | Command | Time |
 |---|---|---|---|---|---|---|---|
 | 1 | Image-alignment receipt | `configs/image_alignment.json` (`brains.<brain>`) | cache identity (path, size, mtime, inode) and image identity; `image_context.source` raises `Image/cache identity changed since alignment review` | yes | yes (the pkl file changes) | `python -u scripts/check_image_alignment_from_cache.py --brains <b> --mcl <N> --out figs/candidate_image_alignment_<date>` (samples fragment nodes from the cache; no tables, no detector), inspect the six overlays, then the same command with `--record-reviewed --review-note "..."` (or `--review-notes <json>` for several brains; no cache load). `python -m proofreader_evolve.cli.check_image_alignment` writes the same receipt from table rows once tables and frozen detectors exist | about 1 min per brain (cache load) plus the visual review |
-| 2 | Native feature tables | `proofreader_evolve/feature_tables/<brain>/<table_digest>/` (digest of the table provenance: cache identity, detector, declared rule, implementation hashes including `candidate_rules.py`; `candidates.pkl`, `features.pkl`, `evaluator_labels.npy`, `meta.json`) | `meta.provenance.source_cache` (cache identity), `pool_sha256` (candidate identities), detector run ids | yes (new pool hash) | yes (labels inside) | `python -u proofreader_evolve/prepare_feature_tables.py --brains <b> --mcl <N> --threads all --image-workers -1` (also writes step 3 before its closing preflight, since 2026-10-23) | about 16 h for 794495 with the 2026-10 detectors, dominated by their image pass (merge 68 min at 47 rows/s with 40 workers; split 15 h for 689,677 rows on 2026-10-23/24 while three nodes read S3); 2 h 52 min with the 2026-08 detectors, which had no image features |
+| 2 | Candidate pool tables: raw pools (`--detector-prior raw`, since 2026-11-06) or detector-native tables (`frozen` / `no-score`) | `proofreader_evolve/feature_tables/<brain>/<table_digest>/` (digest of the table provenance: cache identity, declared rule, implementation hashes including `candidate_rules.py`, plus the detector for detector-native tables or the raw column version for raw pools; `candidates.pkl`, `features.pkl`, `evaluator_labels.npy`, `meta.json`; the two kinds of table share `pool_sha256`, which hashes the rows only) | `meta.provenance.source_cache` (cache identity), `pool_sha256` (candidate identities), detector run ids | yes (new pool hash) | yes (labels inside) | raw pools: `python -u proofreader_evolve/prepare_feature_tables.py --brains <b> --mcl <N> --threads all --detector-prior raw` (`cli/precompute_raw_pools.py` per brain, then step 3 and a raw preflight); detector-native tables: the same command without `--detector-prior raw` and with `--image-workers -1` (also writes step 3 before its closing preflight, since 2026-10-23) | raw pools: one cache load plus the enumeration, minutes per brain, no detector; detector-native tables: about 16 h for 794495 with the 2026-10 detectors, dominated by their image pass (merge 68 min at 47 rows/s with 40 workers; split 15 h for 689,677 rows on 2026-10-23/24 while three nodes read S3); 2 h 52 min with the 2026-08 detectors, which had no image features |
 | 3 | GT-availability sidecars | `feature_tables/<brain>/<table_digest>.availability/` | table rows, `pool_sha256`, candidate-key digest, labels digest, `source_cache` (`AvailabilityMismatch`) | yes | yes | written by step 2; alone: `python -u -m proofreader_evolve.cli.precompute_availability --brains <b> --mcl <N>` (valid sidecars are reused) | about 1.5 min |
 | 4 | AutoDiscovery companions | `markdowns/rerank_companion_<brain>_{merge,split}.{npz,json}` (gitignored); stale companions are deleted when they are regenerated (2026-10-17) | manifest `pool_sha256`, `labels_sha256`, `npz_sha256`, `source_cache` (file, size); `agentic/rerun_experiments.bind_companions` refuses a companion whose `source_cache.file` is not one of the run's pkls or whose npz differs from its digest | yes | yes | `python -u -m proofreader_evolve.cli.export_rerank_companion --brain <b> --mcl <N> --kinds <kind> --pool-only` (cache only; same rows, labels and `pool_sha256` as the tables built later), or without `--pool-only` from prepared tables and sidecars (needs 2 and 3) | a few minutes (cache load) |
-| 5 | Feature specifications | `markdowns/{merge,split}_features_for_proofreader_evolve.md` | label counts and baseline figures quoted from the 794495 companion | yes (figures) | yes (figures) | recompute with the specification's own scoring code (`../claude_scratch/merge_baselines_20261017.py` for merge) and edit the Baselines sections; the previous text stays in git history | minutes |
+| 5 | Feature specifications | `markdowns/{merge,split}_features_for_proofreader_evolve.md` | label counts and baseline figures quoted from the 794495 companion | yes (figures) | yes (figures) | recompute with the specification's own scoring code (`agentic/canonical_stats.py card` on the companion) and edit the Baselines sections; the previous text stays in git history | minutes |
 | 6 | Descriptor contexts | Read on demand from the matching fragment graph and reviewed image source | Source identity, geometry settings, image request and implementation hashes | regenerated on demand | regenerated on demand | no precompute step or saved context directory | charged to descriptor wall budget |
 | 7 | Descriptor bank | `proofreader_evolve/descriptor_bank/<brain>/<kind>/<pool_sha256>/<code_sha256>/<scope>/` | pool, feature/source identities, geometry/image configuration, descriptor code and implementation hashes | recomputed on use | recomputed on use when identity changes | nothing to run; evolution reuses only matching numeric results | lazy; cold source IO can dominate |
 | 8 | Canonical metrics | `metrics_out/<brain>/<segmentation_id>/` (`results.csv`, `merge_sites.csv`) | nothing automatic; reads GT and segmentation from GCS itself, so it must simply be the same GT version as the cache | yes when GT changed (move the old run aside: the comparison scripts want exactly one run directory) | no | `python -u notebooks/evaluate_skeleton_metrics.py --brains <b>` | about 30 min for 794495 (2026-10-14); GCS credentials |
@@ -63,12 +77,13 @@ AutoDiscovery audit (`bind_companions`); items 1 and 8 are the ones that surpris
 conda activate panda            # compute node; one brain at a time; with srun always add -n1
 rm -rf proofreader_evolve/feature_tables/<b> proofreader_evolve/descriptor_bank/<b>
 python -u -m labeled_cache --brains <b> --mcl 100 --rebuild-base                      # deletes both pkl files, GCS load; 58 min (794495)
-python -u proofreader_evolve/prepare_feature_tables.py --brains <b> --mcl 100 --threads all --image-workers -1   # tables + sidecars, about 16 h (794495)
+python -u proofreader_evolve/prepare_feature_tables.py --brains <b> --mcl 100 --threads all --detector-prior raw   # raw pools + sidecars, minutes (raw runs, since 2026-11-06)
+# frozen / no-score runs only: the same command without --detector-prior raw and with --image-workers -1 (detector image pass, about 16 h for 794495)
 python -u -m proofreader_evolve.cli.export_rerank_companion --brain <b> --mcl 100     # 1 min
 python -u scripts/check_image_alignment_from_cache.py --brains <b> --mcl 100 --out figs/candidate_image_alignment_<date>
 python -u scripts/check_image_alignment_from_cache.py --brains <b> --mcl 100 --out figs/candidate_image_alignment_<date> \
     --record-reviewed --review-note "<what you saw in the six overlays>"
-python -m proofreader_evolve.cli.preflight --brains <development brains> --train-brains 802449 --selection-brains 802449 --mcl 100
+python -m proofreader_evolve.cli.preflight --brains <development brains> --train-brains <TRAIN brains> --selection-brains all --detector-prior raw --mcl 100
 mv metrics_out/<b> metrics_out/archive/<b>_<olddate>; python -u notebooks/evaluate_skeleton_metrics.py --brains <b>   # only if GT changed
 ```
 
@@ -83,7 +98,10 @@ cloud reads apart from the GT check), then steps 2 to 4, then re-record the rece
   rebuilt cache changes their training labels only if they are refitted. Decide explicitly.
   The 2026-08 detectors and all AutoDiscovery results were deleted on 2026-10-17 (fitted
   before the relabel, on the old pools); no default detector is set until the new builds
-  exist. Companions and the candidate-pool sweeps do not need a detector.
+  exist. Companions and the candidate-pool sweeps do not need a detector. Since 2026-11-06
+  raw runs need no detector either: they load raw pools, so the detector-native table
+  directories (44 GB of `features.pkl` across the eleven brains on 2026-11-06) and the
+  detectors are kept only for `frozen` / `no-score` runs and can otherwise be deleted.
 - **Evolution runs** (`proofreader_evolve/runs/<run>/`): `best_scorer.py` and
   `descriptors.json` stay executable, but Precision@K on a rebuilt brain is against new labels
   and a new pool hash; the seed baseline of the next run is the reference.
@@ -110,9 +128,9 @@ the dense segmentation are one segmentation run (close to 100% of sampled fragme
 carry the fragment's own segment id). After the build:
 
 1. `preflight` passes for every brain (tables and sidecars).
-2. GT matches GCS: `../claude_scratch/compare_gt_794495_20261013.py <brain>` loads the cache
-   and the current GCS tracings with the same resampling and prints per-neuron differences
-   (0 changed, 0 added expected).
+2. GT matches GCS: `python -m labeled_cache --brains <brain> --mcl 100` compares a reused cache's GT
+   with the current GCS tracings (same resampling) before any stage runs and rebuilds a stale cache;
+   a current cache reports no changed or added neurons.
 3. On-demand contexts: probe a few TRAIN candidates with the chosen geometry/image descriptor
    on a compute node; verify source access, alignment and finite outputs before a full call.
 4. Pool identity: compare the new companion with the previous one (same segment pairs or

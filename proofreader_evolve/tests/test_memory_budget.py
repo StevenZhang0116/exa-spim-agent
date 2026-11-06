@@ -130,7 +130,8 @@ class DescriptorAdmissionTests(unittest.TestCase):
 
     def test_plan_uses_memory_capacity_after_probe(self):
         with patch.object(mb, 'memory_snapshot', return_value=self.snapshot), \
-                patch.object(self.runs, 'probe', return_value={'values': np.zeros((4, 2)), 'wall_seconds': 4.,
+                patch.object(self.runs, 'probe', return_value={
+                    'rows': np.arange(4), 'values': np.zeros((4, 2)), 'wall_seconds': 4.,  # rows: plan memo since 2026-11-04
                     'preparation_seconds': 1., 'worker_seconds': 3.}):
             plan = self.runs.plan(self.table, self.program, self.spec, k=3, sample_rows=4)
         self.assertEqual(plan['worker_limit'], 4)

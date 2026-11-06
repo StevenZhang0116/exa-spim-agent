@@ -16,6 +16,16 @@ other notebooks can reuse them via::
     import sys; sys.path.insert(0, "../scripts")
     from dataset_config import get_segmentation_id, get_img_path
     from dataset_config import get_segmentation_path, get_fragments_path
+
+Layouts. The legacy template is
+``gs://allen-nd-goog/from_google/<brain>/whole_brain/<segmentation_id>/`` with fragments in
+``swcs/``. The older-microscope brains (2026-10-06) and the Google "denoised" segmentations
+(``from_google/<brain>/whole_brain_denoised/<segmentation_id>/``, fragments in
+``<segmentation_id>/swcs``) need explicit ``segmentation_paths.json`` entries. On 2026-11-05 the
+sources of 789202 and 802449 were replaced by their denoised segmentations and 841260 was added
+as a new brain (explicit entries; 820994 was not added: its shared folder was absent and it has
+no GT tracings). Replacing a source is a graph reload for that brain: caches, tables, companions
+and alignment receipts are rebuilt (``docs/dataset_artifact_dependencies.md``).
 """
 
 from __future__ import annotations

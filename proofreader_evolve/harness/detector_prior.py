@@ -26,6 +26,12 @@ withholds stays withheld, and ``check_source`` also refuses ``h<digits>_`` names
 
 The host keeps the frozen score on ``table.host_detector_score`` (and, under ``raw``, the
 dropped frame on ``table.host_detector_features``) for diagnostics only.
+
+Since 2026-11-06 a raw run loads detector-free raw pools (``harness/raw_pool.py``,
+``prepare_feature_tables.py --detector-prior raw``) whose feature frame already holds only the
+raw columns: no detector is resolved or hashed, ``strip_to_raw`` changes nothing and there is
+no frozen baseline to measure. Detector-native tables are still stripped in memory when a raw
+run is given them.
 """
 import math
 import re
@@ -41,6 +47,8 @@ BAND_COLUMN = 'bank_context_available'
 HIDDEN_NAMES = (SCORE_COLUMN, BAND_COLUMN, 'row_in_band')
 NO_SCORE_DESCRIPTOR_SCOPES = ('judgeable', 'all_candidates')
 RAW_PREFIX = 'raw_'
+# Bump when RAW_COLUMNS or raw_columns change: raw_pool digests include it, so stale pools are rebuilt.
+RAW_COLUMNS_VERSION = 'raw-columns-v1'
 DETECTOR_FEATURE_NAME = re.compile(r'\bh\d+_[A-Za-z0-9_]+')
 RAW_COLUMNS = {
     'merge': ('raw_degree', 'raw_candidate_family', 'raw_tip_gap_um'),
@@ -235,9 +243,10 @@ def describe(args, cells=None):
                 'stripped_cells': cells or [], 'raw_columns': {k: list(v) for k, v in RAW_COLUMNS.items()},
                 'raw_column_rules': dict(RAW_COLUMN_RULES),
                 'descriptor_scopes': list(NO_SCORE_DESCRIPTOR_SCOPES),
-                'baseline': 'Frozen detector baseline measured on the unstripped tables and raw-heuristic '
-                            'baselines (split -gap, merge degree with the tip gap as tie-breaker) measured on '
-                            'the raw columns (host-only comparators)',
+                'baseline': 'Raw-heuristic baselines (split -gap, merge degree with the tip gap as tie-breaker) '
+                            'measured on the raw columns; the frozen detector baseline only when the loaded '
+                            'tables carry a detector score (detector-native tables), never on raw pools '
+                            '(host-only comparators)',
                 'scope': 'Ablation: same pools, labels, K, brains and budgets; no frozen detector score and no '
                          'discovered feature columns; predictors are the raw candidate attributes, the agent\'s '
                          'descriptors and TRAIN-fitted models'}

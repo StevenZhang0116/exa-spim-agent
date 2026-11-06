@@ -1,4 +1,4 @@
-"""Write the label-availability sidecar for every detector-native table (required by evolution).
+"""Write the label-availability sidecar for every candidate pool table (required by evolution).
 
 Run with panda on an allocated compute node, for example n268:
     python -u -m proofreader_evolve.cli.precompute_availability --brains 794495 802449 789202 794493 794491
@@ -10,6 +10,8 @@ cache's GT node labels (and GT node coordinates for the merge `near_gt_150` defi
 binding is checked (row identity, labels, source cache, positives available) and the sidecar
 is written beside the table directory (see harness/label_availability.py). Tables and caches
 are only read. Existing valid sidecars are reused unless `--force`.
+With `--detector-prior raw` the tables are the detector-free raw pools (2026-11-06,
+harness/raw_pool.py); no detector is resolved and --merge-dir/--split-dir are ignored.
 No LLM is called.
 """
 import argparse
@@ -29,6 +31,7 @@ import traceback
 from . import precompute_error_scores as pc
 from ..harness import label_availability as la
 from ..harness.native_pool import cache_path, ensure_native_tables
+from ..harness.raw_pool import ensure_raw_tables
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -63,6 +66,9 @@ def parse_args(argv=None):
     parser.add_argument("--feature-tables-dir", type=Path, default=pc.DEFAULT_OUT)
     parser.add_argument("--merge-dir", action="append")
     parser.add_argument("--split-dir", action="append")
+    parser.add_argument("--detector-prior", choices=("frozen", "no-score", "raw"), default="frozen",
+                        help="raw: sidecars for the detector-free raw pools (precompute_raw_pools) instead of "
+                             "the detector-native tables")
     parser.add_argument("--force", action="store_true", help="Rewrite valid existing sidecars")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--log-txt", type=Path)
@@ -74,9 +80,12 @@ def parse_args(argv=None):
 
 def single(args):
     brain = str(args.brain)
-    selected = pc.resolve_detector_runs(args.merge_dir, args.split_dir)
     source = cache_path(brain, args.mcl)
-    bank = ensure_native_tables(brain, source, selected, args.feature_tables_dir, prepare=False, mcl=args.mcl)
+    if args.detector_prior == "raw":
+        bank = ensure_raw_tables(brain, source, args.feature_tables_dir, prepare=False, mcl=args.mcl)
+    else:
+        selected = pc.resolve_detector_runs(args.merge_dir, args.split_dir)
+        bank = ensure_native_tables(brain, source, selected, args.feature_tables_dir, prepare=False, mcl=args.mcl)
     pending = {}
     for kind, table in bank.tables.items():
         table_dir = bank.meta["table_paths"][kind]
@@ -113,7 +122,8 @@ def single(args):
                           pool_sha256=table.meta["pool_sha256"], source_cache=expected,
                           provenance={"host": socket.gethostname(),
                                       "created": datetime.now().astimezone().isoformat(),
-                                      "detector": table.meta["provenance"]["detector"]["run_id"]})
+                                      "detector": (table.meta["provenance"].get("detector") or {}).get("run_id"),
+                                      "pools": table.meta["provenance"]["version"]})
         fractions = ", ".join(f"{name}={arrays[name].mean():.4f}" for name in arrays)
         log(f"{brain}/{kind}: {len(table.truth)} rows, {int(table.truth.sum())} positives, "
             f"available {fractions} -> {target}")
@@ -124,7 +134,7 @@ def launcher(args):
     for brain in dict.fromkeys(args.brains):
         command = [sys.executable, "-u", "-m", "proofreader_evolve.cli.precompute_availability",
                    "--brain", str(brain), "--mcl", str(args.mcl),
-                   "--feature-tables-dir", str(args.feature_tables_dir)]
+                   "--feature-tables-dir", str(args.feature_tables_dir), "--detector-prior", args.detector_prior]
         for flag, values in (("--merge-dir", args.merge_dir), ("--split-dir", args.split_dir)):
             for value in values or []:
                 command += [flag, value]

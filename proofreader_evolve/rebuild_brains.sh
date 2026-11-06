@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Rebuild the derived Stage 3 artifacts on this node, one brain at a time (rebuild plan,
-# section 4): detector-native tables of both kinds with their availability sidecars, the
+# section 4): candidate pools of both kinds with their availability sidecars, the
 # companion pool check (794495 and 802449); then one preflight over this call.
+# DETECTOR_PRIOR=raw (default since 2026-11-06) builds detector-free raw pools (minutes per
+# brain, no detector, no image pass; what --detector-prior raw evolution loads).
+# DETECTOR_PRIOR=frozen builds the detector-native tables with the default frozen detectors
+# (hours per brain), needed only for frozen / no-score runs.
 # Evolution reads geometry and images on demand; no context patches are precomputed.
 #
 # Run it inside the allocation (a terminal of the interactive node's JupyterLab); the steps use the CPUs
@@ -13,10 +17,19 @@
 # different brains are independent (per-brain directories, per-call logs). The TRAIN/selection
 # role check of the closing preflight runs only when the call holds both 794495 and 802449.
 #
-#   bash proofreader_evolve/rebuild_brains.sh [brain ...]          # default: all eleven brains
+# 2026-11-05: the segmentation sources of 789202 and 802449 were replaced by the denoised Google
+# segmentations and 841260 was added (explicit entries in configs/segmentation_paths.json). Rebuild
+# their caches first (python -m labeled_cache --brains 789202 802449 --rebuild-base; --brains 841260
+# for the new brain), and regenerate the 802449 companions before this script
+# (python -m proofreader_evolve.cli.export_rerank_companion --brain 802449 --mcl 100 --pool-only),
+# otherwise the companion pool check below fails against the file of the old segmentation. Re-record
+# the image-alignment receipts of the three brains afterwards (docs/dataset_artifact_dependencies.md).
+#
+#   bash proofreader_evolve/rebuild_brains.sh [brain ...]          # default: all twelve brains, 841260 last
 #   nohup bash proofreader_evolve/rebuild_brains.sh >/dev/null 2>&1 &   # keeps running when the terminal closes
 #
-# Environment: IMAGE_WORKERS (detector image pass, default -1 = one per CPU).
+# Environment: DETECTOR_PRIOR (raw | frozen, default raw); IMAGE_WORKERS (frozen only: detector
+# image pass, default -1 = one per CPU).
 # The console output is mirrored to proofreader_evolve/log/rebuild_brains_<timestamp>_<pid>.log.txt;
 # each finished brain prints "# OK brain <b>", the end "# OK" or "# FAILED".
 
@@ -25,12 +38,16 @@ conda activate panda
 set -euo pipefail
 
 cd "$(dirname "$(readlink -f "$0")")/.."
-# Evolution brains first (TRAIN 794495 802449, validation 789202 794493 794491), then the
-# older-microscope brains, shortest image pass first.
-DEFAULT_BRAINS=(794495 802449 789202 794493 794491 754613 754612 754610 750318 751473 747807)
+# Current roles (2026-11-04): TRAIN/selection 802449 747807 750318 754610 754612 754613, validation
+# 789202 794493 794491 751473, 794495 reserved; 841260 (added 2026-11-05) has no role yet and is last,
+# so it is reached only once its cache exists. Evolution brains first, then the older-microscope
+# brains, shortest image pass first.
+DEFAULT_BRAINS=(794495 802449 789202 794493 794491 754613 754612 754610 750318 751473 747807 841260)
 COMPANION_BRAINS=" 794495 802449 "
 MCL=100
 IMAGE_WORKERS=${IMAGE_WORKERS:--1}
+DETECTOR_PRIOR=${DETECTOR_PRIOR:-raw}
+case "$DETECTOR_PRIOR" in raw|frozen) ;; *) echo "DETECTOR_PRIOR must be raw or frozen" >&2; exit 2 ;; esac
 if [ "$#" -eq 0 ]; then
     set -- "${DEFAULT_BRAINS[@]}"
 fi
@@ -49,17 +66,20 @@ finish() {
 trap finish EXIT
 echo "# argv: $0 $*"
 echo "# started $(date '+%F %T')  host $(hostname)  CPUs $(nproc)  python $(command -v python)"
-echo "# image workers $IMAGE_WORKERS  log $LOG"
+echo "# detector prior $DETECTOR_PRIOR  image workers $IMAGE_WORKERS  log $LOG"
 export AWS_EC2_METADATA_DISABLED=true
 
 check_companion() {
     # The tables' rows must be the companions' rows (pool_sha256 hashes the rows only).
-    python - "$1" "$MCL" <<'PY'
+    python - "$1" "$MCL" "$DETECTOR_PRIOR" <<'PY'
 import json, sys
 from proofreader_evolve.cli import precompute_error_scores as pc
 from proofreader_evolve.harness.native_pool import cache_path, ensure_native_tables
-brain, mcl = sys.argv[1], int(sys.argv[2])
-bank = ensure_native_tables(brain, cache_path(brain, mcl), pc.resolve_detector_runs(), pc.DEFAULT_OUT, mcl=mcl)
+from proofreader_evolve.harness.raw_pool import ensure_raw_tables
+brain, mcl, prior = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+source = cache_path(brain, mcl)
+bank = (ensure_raw_tables(brain, source, pc.DEFAULT_OUT, mcl=mcl) if prior == "raw"
+        else ensure_native_tables(brain, source, pc.resolve_detector_runs(), pc.DEFAULT_OUT, mcl=mcl))
 matches = []
 for kind, table in sorted(bank.tables.items()):
     with open(f"markdowns/rerank_companion_{brain}_{kind}.json") as stream:
@@ -73,7 +93,7 @@ PY
 for b in "$@"; do
     echo; echo "# brain $b: tables and sidecars ($(date '+%F %T'))"
     python -u proofreader_evolve/prepare_feature_tables.py --brains "$b" --mcl "$MCL" \
-        --threads all --image-workers "$IMAGE_WORKERS"
+        --threads all --image-workers "$IMAGE_WORKERS" --detector-prior "$DETECTOR_PRIOR"
     if [[ "$COMPANION_BRAINS" == *" $b "* ]]; then
         echo "# brain $b: companion pool check"
         check_companion "$b"
@@ -86,4 +106,4 @@ if [[ " $* " == *" 794495 "* && " $* " == *" 802449 "* ]]; then
     roles=(--train-brains 794495 802449)
 fi
 echo; echo "# preflight"
-python -u -m proofreader_evolve.cli.preflight --brains "$@" --mcl "$MCL" "${roles[@]}"
+python -u -m proofreader_evolve.cli.preflight --brains "$@" --mcl "$MCL" --detector-prior "$DETECTOR_PRIOR" "${roles[@]}"

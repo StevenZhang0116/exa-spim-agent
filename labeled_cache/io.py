@@ -88,7 +88,9 @@ def dataset_sources(brain):
     """Source paths of one brain: fragment SWCs, GT SWCs, fused image, dense segmentation.
 
     Resolved through ``scripts/dataset_config.py`` (``configs/segmentation_paths.json``
-    first, then the legacy RTF table); the GT path is the fixed GCS layout.
+    first, then the legacy RTF table); the GT path is the fixed GCS layout. Since 2026-11-05
+    789202 and 802449 resolve to their denoised Google segmentations and 841260 is a new
+    brain, all through explicit entries.
     """
     scripts = str(PROJECT_ROOT / "scripts")
     if scripts not in sys.path:

@@ -50,6 +50,7 @@ def parse(driver, tmp, *extra):
 def run_driver(driver, args, banks, revise):
     with patch.object(driver.pc, 'resolve_detector_runs', return_value={}), \
             patch.object(driver, 'ensure_native_tables', side_effect=lambda brain, *a, **k: banks[brain]), \
+            patch.object(driver, 'ensure_raw_tables', side_effect=lambda brain, *a, **k: banks[brain]), \
             patch.object(driver, 'attach_local_context', return_value=None):
         return asyncio.run(driver.run(args, revise_fn=revise))
 

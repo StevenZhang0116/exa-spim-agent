@@ -21,3 +21,13 @@ close to 100%; an unrelated segmentation run gives close to 0%.
 | 754613 | `202504_73227862_855_mean50.mask.136168199.no_omitted_20k.ffn.mt_0.1` | 60 | 240 | 193 | 42 | 3 | 2 | 0 | 97.9% | matched |
 | 750318 | `202504_73227862_855_mean80_dynamic` | 53 | 212 | 180 | 32 | 0 | 0 | 0 | 100.0% | matched |
 | 751473 | `202503_73227862_855_mean80.mask.136168199.no_omitted_20k_v3.ffn.mt_0.1` | 60 | 240 | 233 | 6 | 1 | 0 | 0 | 99.6% | matched |
+
+## 2026-11-05T23:30:35-08:00 on n266
+
+`python -m labeled_cache.source_check --brains 789202 802449 841260 --record`
+
+| brain | segmentation_id | fragments | nodes | exact | within 1 vox | background | other id | failed | agreement | verdict |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 789202 | `denoised_v2.unet_tri_denoised_2370000_move_09_segment_09_it2` | 31 | 124 | 103 | 20 | 1 | 0 | 0 | 99.2% | matched |
+| 802449 | `denoised_v2.unet_tri_denoised_2370000_move_09_segment_09` | 59 | 236 | 178 | 56 | 2 | 0 | 0 | 99.2% | matched |
+| 841260 | `denoised.unet_tri_denoised_2370000_move_09_segment_09_it2` | 38 | 152 | 117 | 31 | 3 | 1 | 0 | 97.4% | matched |

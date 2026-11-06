@@ -49,7 +49,8 @@ class PreflightTests(unittest.TestCase):
             table = SimpleNamespace(meta={"training_brain": "794495"}, truth=[0, 1])
             return SimpleNamespace(meta={"table_paths": {}}, tables={"merge": table, "split": table})
         with patch.object(preflight.pc, "resolve_detector_runs", return_value={}), \
-                patch.object(preflight, "ensure_native_tables", side_effect=bank):
+                patch.object(preflight, "ensure_native_tables", side_effect=bank), \
+                patch.object(preflight, "ensure_raw_tables", side_effect=bank):
             raw = preflight.inspect_readiness(["794495", "802449"], train_brains=["794495", "802449"],
                                               selection_brains=["all"], detector_prior="raw")
             default = preflight.inspect_readiness(["794495", "802449"], train_brains=["794495", "802449"],

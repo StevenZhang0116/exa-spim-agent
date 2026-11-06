@@ -167,7 +167,11 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(prior['raw_columns']['merge'], list(detector_prior.RAW_COLUMNS['merge']))
         self.assertEqual(split['detector_prior'], 'raw')
         self.assertEqual(summary['detector_prior'], 'raw')
-        self.assertIn('Raw-candidate ablation', seen['rules'])
+        # The notice is part of the system contract since the 2026-11-04 simplification; rules.md
+        # holds the research notes only (same expectation as test_detector_prior).
+        self.assertIn('Raw-candidate ablation', driver._contract(args))
+        self.assertIn('research notes', seen['rules'])
+        self.assertNotIn(driver.CONTRACT, seen['rules'])
         for name, text in seen['visible'].items():
             with self.subTest(file=name):
                 self.assertNotIn('detector_score', text)

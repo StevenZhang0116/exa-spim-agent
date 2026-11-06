@@ -7,7 +7,9 @@ selection brains the detectors were not fitted on (auxiliary TRAIN brains only s
 fitting rows), or the historical in-sample protocol for attribution runs. Under
 `--detector-prior raw` no detector-derived input remains, so every TRAIN brain may be a
 selection brain and `--selection-brains all --selection-holdout-brains all` scores each
-brain whole by a model that never saw it (2026-11-04).
+brain whole by a model that never saw it (2026-11-04). Since 2026-11-06 a raw run loads
+detector-free raw pools (`harness/raw_pool.py`): no frozen detector is resolved, hashed or
+measured, and `--merge-dir` / `--split-dir` are refused.
 Promote on the target-kind validation objective (AUROC by default)
 whose paired-bootstrap lower bound is above zero, subject to a head guard on precision at K/2, K and 2K
 (`--promotion-gate bootstrap`, default); individual brain regressions are allowed.
@@ -32,6 +34,7 @@ import time
 from . import precompute_error_scores as pc
 from ..harness import fixed_pool_scoring as scoring
 from ..harness.native_pool import cache_path, ensure_native_tables
+from ..harness.raw_pool import ensure_raw_tables
 from ..harness import label_availability
 from ..harness import detector_prior
 from ..harness.image_coordinates import MAX_RADIUS_UM
@@ -467,11 +470,14 @@ def parse_args(argv=None):
                         "ablation that withholds the frozen detector score from scorers, training programs, "
                         "descriptors and the reviser (same pools, detector feature columns, labels, K, brains); "
                         "raw: also withholds every discovered h<n>_ feature column, leaving the "
-                        "label-blind raw candidate attributes (raw_*), on-demand contexts and the agent's descriptors")
+                        "label-blind raw candidate attributes (raw_*), on-demand contexts and the agent's descriptors; "
+                        "loads the detector-free raw pools of prepare_feature_tables.py --detector-prior raw")
     p.add_argument("--runs-dir", type=Path, default=HERE / "runs")
     p.add_argument("--run-dir", type=Path, help="Explicit new run directory, also used by the Slurm launcher")
     args = p.parse_args(argv)
     ablation = args.detector_prior != "frozen"
+    if args.detector_prior == "raw" and (args.merge_dir or args.split_dir):
+        p.error("--merge-dir / --split-dir are not used under --detector-prior raw: raw pools carry no detector")
     if args.start_from is None:
         args.start_from = HERE / "artifacts" / ("scorer_no_score.py" if ablation else "scorer.py")
     default_banks = {"frozen": HERE / "descriptor_bank", "no-score": HERE / "descriptor_bank_no_score",
@@ -545,8 +551,12 @@ def _load_evaluation_banks(args, selected, trace):
 
     def load(brain):
         trace.emit("table_load", f"Loading and validating tables for brain {brain}")
-        bank = ensure_native_tables(brain, cache_path(brain, args.mcl), selected,
-                                    args.feature_tables_dir, prepare=False, mcl=args.mcl)
+        if selected is None:  # --detector-prior raw: detector-free raw pools (harness/raw_pool.py)
+            bank = ensure_raw_tables(brain, cache_path(brain, args.mcl), args.feature_tables_dir,
+                                     prepare=False, mcl=args.mcl)
+        else:
+            bank = ensure_native_tables(brain, cache_path(brain, args.mcl), selected,
+                                        args.feature_tables_dir, prepare=False, mcl=args.mcl)
         if not bank.tables or any(len(table.truth) == 0 for table in bank.tables.values()):
             raise ValueError(f"Empty candidate pool for brain {brain}; repair its source cache/tables")
         return bank
@@ -557,7 +567,8 @@ def _load_evaluation_banks(args, selected, trace):
                      for bank in banks.values() for table in bank.tables.values()
                      if table.meta.get("training_brain") is not None}
     if args.selection_protocol == "grouped_oof":
-        for brain in args.train_brains:
+        # Raw pools name no training brain: nothing in them is detector-derived.
+        for brain in args.train_brains if selected is not None else ():
             if any(table.meta.get("training_brain") is None for table in banks[brain].tables.values()):
                 raise ValueError("Detector training-brain provenance is required for the grouped_oof "
                                  "selection protocol; rebuild the tables or use --selection-protocol in_sample")
@@ -641,7 +652,7 @@ def _load_evaluation_banks(args, selected, trace):
             continue
         for table in bank.tables.values():
             fitted = table.meta.get("training_brain")
-            if fitted is None:
+            if fitted is None and selected is not None:  # raw pools carry no detector provenance
                 raise ValueError("Detector training-brain provenance is required for independent validation")
             if str(fitted) == brain:
                 raise ValueError("Detector-fitted brain cannot be development validation")
@@ -790,7 +801,8 @@ async def run(args, revise_fn=None):
 
 
 async def _run(args, revise_fn, run_dir, trace):
-    selected = pc.resolve_detector_runs(args.merge_dir, args.split_dir)
+    # Raw pools carry no detector (2026-11-06): nothing to resolve, hash or import.
+    selected = None if detector_prior.raw_enabled(args) else pc.resolve_detector_runs(args.merge_dir, args.split_dir)
     banks, selection = _load_evaluation_banks(args, selected, trace)
     # Three-valued labels everywhere (TRAIN, selection, validation): 1 / 0 / NaN from the
     # required GT-availability sidecars; a missing or mismatched sidecar stops the run.
@@ -885,7 +897,15 @@ async def _run(args, revise_fn, run_dir, trace):
     raw = detector_prior.raw_enabled(args)
     if no_score:
         # Measure the host comparators first, then withhold the columns from everything downstream.
-        baseline = frozen_baseline()
+        # Raw pools (2026-11-06) carry no detector score, so there is no frozen baseline to measure.
+        scored = all(detector_prior.SCORE_COLUMN in table.features.columns
+                     for bank in banks.values() for table in bank.tables.values())
+        if scored:
+            baseline = frozen_baseline()
+        else:
+            trace.emit("baseline_evaluation", "No frozen detector baseline: the loaded raw pools carry no detector score")
+            baseline = {"train": None, "validation": None,
+                        "note": "raw pools carry no detector score; the frozen detector baseline is unavailable"}
         stripped_cells = detector_prior.strip_to_raw(banks) if raw else detector_prior.strip(banks)
         if raw:
             heuristic = detector_prior.raw_heuristic_source()
@@ -1047,6 +1067,7 @@ async def _run(args, revise_fn, run_dir, trace):
                 "explore_every": args.explore_every, "early_stop": not args.no_early_stop,
                 "precision_margin": args.precision_margin, "train_brains": args.train_brains,
                 "development_validation_brains": args.validation_brains, "selected_detectors": selected,
+                "candidate_pools": "raw (detector-free)" if selected is None else "detector-native",
                 "pools": {b: {k: t.meta for k, t in bank.tables.items()} for b, bank in banks.items()},
                 "evaluator_sha256": pc._sha256(Path(scoring.__file__)),
                 "harness_sha256": {p.name: pc._sha256(p) for p in sorted((HERE / 'harness').glob('*.py'))},

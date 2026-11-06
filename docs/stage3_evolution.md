@@ -58,6 +58,12 @@ Exactly one detector per kind is required.
 | Development validation / promotion | 789202, 794493, 794491, 751473 |
 | Reserved for future independent validation | **794495**, excluded from the current loop |
 
+Segmentation sources (2026-11-05): 789202 and 802449 now resolve to their denoised Google
+segmentations and 841260 is a new brain with GT (role not yet assigned, so it is absent from
+the lists on this page). Caches, tables, companions and alignment receipts of the three brains
+are rebuilt before the next run, which sets a new seed baseline; runs before the rebuild are
+not comparable on 802449 or 789202 (see [artifact dependencies](dataset_artifact_dependencies.md)).
+
 Do not use 794495 for new training (including auxiliary fitting), selection/OOF,
 tuning, ablations, testing or evolution promotion. Its independent validation
 protocol remains to be designed. The explicitly requested
@@ -84,14 +90,21 @@ ability to select a detector-fitted brain does not authorize using reserved 7944
 
 Use the `panda` environment on an allocated compute node. Existing matching tables
 and availability sidecars can be reused; evolution does not prepare them itself.
+Since 2026-11-06 raw runs load detector-free **raw pools**
+(`proofreader_evolve/harness/raw_pool.py`, `cli/precompute_raw_pools.py`): the same candidate
+rows, labels and `pool_sha256` as the detector-native tables, with the raw candidate
+attributes as the only feature frame, so no frozen detector is resolved, hashed or run at
+preparation or at run start (a cache load plus the enumeration per brain, minutes). The
+detector-native tables and the frozen detectors are needed only by `--detector-prior frozen`
+/ `no-score` (`prepare_feature_tables.py` without `--detector-prior raw`, hours per brain).
 
 ```bash
 EVOLUTION_BRAINS=(802449 747807 750318 754610 754612 754613 789202 794493 794491 751473)
 python -u proofreader_evolve/prepare_feature_tables.py \
-  --brains "${EVOLUTION_BRAINS[@]}" --mcl 100 --threads all --image-workers -1
+  --brains "${EVOLUTION_BRAINS[@]}" --mcl 100 --threads all --detector-prior raw
 # Preparation writes these sidecars too; this standalone command reuses valid ones.
 python -u -m proofreader_evolve.cli.precompute_availability \
-  --brains "${EVOLUTION_BRAINS[@]}" --mcl 100
+  --brains "${EVOLUTION_BRAINS[@]}" --mcl 100 --detector-prior raw
 python -m proofreader_evolve.cli.preflight \
   --brains "${EVOLUTION_BRAINS[@]}" \
   --train-brains 802449 747807 750318 754610 754612 754613 \
@@ -262,6 +275,8 @@ process creation are denied before candidate code executes. Linux with
 `libseccomp.so.2` is required; unavailable isolation fails the evaluation.
 See [workflow revision](../proofreader_evolve/WORKFLOW_REVISION.md).
 
+Raw runs resolve no detector since 2026-11-06 (raw pools, section 3.2); the rest of this
+paragraph applies to `frozen` and `no-score` runs only.
 The default frozen detectors (`DEFAULT_MERGE_DIR` / `DEFAULT_SPLIT_DIR` in
 `proofreader_evolve/cli/precompute_error_scores.py`) are the 2026-10 builds since 2026-10-23
 ([Stage 2](stage2_detector_build.md#24-detectors-currently-in-use)):

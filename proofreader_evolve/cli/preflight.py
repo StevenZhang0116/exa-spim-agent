@@ -5,7 +5,9 @@ reviser's own SDK path (bundled Claude Code CLI, API env, model id); it does not
 tool workflow. Run `precision_20261009_235526_ispymdwn` lost every generation because the
 bundled CLI was too old for the model, which a direct API request cannot detect.
 Contexts are read on demand during evolution. These offline checks do not exercise
-fragment loading or cloud image access.
+fragment loading or cloud image access. Under --detector-prior raw the checked tables are
+the detector-free raw pools (2026-11-06); no detector is resolved and --merge-dir/--split-dir
+are ignored.
 """
 
 import argparse
@@ -16,6 +18,7 @@ import socket
 from . import precompute_error_scores as pc
 from ..harness.reviser_session import DEFAULT_MODEL
 from ..harness.native_pool import ensure_native_tables, cache_path as native_cache_path
+from ..harness.raw_pool import ensure_raw_tables
 from ..harness import label_availability
 
 
@@ -61,15 +64,16 @@ def selection_readiness(report, train_brains, selection_brains, protocol, detect
     train_brains = [str(b) for b in train_brains or []]
     if not train_brains:
         return None
+    # Under --detector-prior raw no detector-derived input remains, so fitted brains may be selection
+    # brains, and raw pools (2026-11-06) carry no training provenance to check.
+    withheld = detector_prior == "raw"
     fitted, missing = set(), []
     for brain in train_brains:
         entry = report["brains"].get(brain, {})
         provenance = entry.get("detector_training_brains")
-        if entry.get("status") == "passed" and not provenance:
+        if entry.get("status") == "passed" and not provenance and not withheld:
             missing.append(brain)
         fitted.update(provenance or [])
-    # Under --detector-prior raw no detector-derived input remains, so fitted brains may be selection brains.
-    withheld = detector_prior == "raw"
     if protocol != "grouped_oof" or list(selection_brains or []) == ["all"] or (not selection_brains and withheld):
         chosen = list(train_brains)
     elif selection_brains:
@@ -99,17 +103,25 @@ def inspect_readiness(brains, mcl=100, tables_dir=pc.DEFAULT_OUT,
                       "model": model},
               "warnings": ["Native mode evolves scores on fixed candidates, not graph edits or candidate expansion.",
                            "Raw brain-cache contents and the reviser tool workflow are not checked here; --check-api covers the SDK session path only."]}
-    try:
-        selected = pc.resolve_detector_runs(merge_dirs, split_dirs)
-    except (Exception, SystemExit) as exc:
-        report.update(status="blocked", detector_error=str(exc))
-        return report
-    report["detectors"] = selected
+    if detector_prior == "raw":
+        # Raw pools carry no detector (2026-11-06): nothing to resolve.
+        selected = None
+        report["detectors"] = None
+        report["candidate_pools"] = "raw (detector-free pools; harness/raw_pool.py)"
+    else:
+        try:
+            selected = pc.resolve_detector_runs(merge_dirs, split_dirs)
+        except (Exception, SystemExit) as exc:
+            report.update(status="blocked", detector_error=str(exc))
+            return report
+        report["detectors"] = selected
+        report["candidate_pools"] = "detector-native tables"
     for brain in brains:
         brain = str(brain)
         try:
-            bank = ensure_native_tables(brain, native_cache_path(brain, mcl), selected,
-                                         tables_dir, prepare=False, mcl=mcl)
+            source = native_cache_path(brain, mcl)
+            bank = (ensure_raw_tables(brain, source, tables_dir, prepare=False, mcl=mcl) if selected is None
+                    else ensure_native_tables(brain, source, selected, tables_dir, prepare=False, mcl=mcl))
             tables = getattr(bank, "tables", None) or {}
             # Evolution requires the three-valued labels; a missing/mismatched sidecar blocks.
             labels = label_availability.apply({brain: bank}) if tables else {}

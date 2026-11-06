@@ -1,7 +1,8 @@
 """Command line of the labeled-cache builder.
 
     python -m labeled_cache --brains 794495 --mcl 100 --policy length_v1 --check-reproduce
-    python -m labeled_cache --brains 718162 794492                 # new brains: base + labels
+    python -m labeled_cache --brains 841260                        # new brain (2026-11-05): base + labels
+    python -m labeled_cache --brains 789202 802449 --rebuild-base  # sources replaced 2026-11-05: both pkl files rebuilt
     python -m labeled_cache --brains 794495 --dry-run              # show the stages, load nothing
     python -m labeled_cache --brains 794491 --refresh-image-path   # only replace a stale img_path
 

@@ -398,7 +398,7 @@ per cell (`log_archive/preflight_labeled_extension_20261013.log`); two registere
 `precision_20261011_235340_phg8xri5` recomputed on 802449 (merge geometry, 18 names; split level-0
 image, 7 names) are byte-identical to the band-only bank results on all 50,000 band rows and finite on
 the extension rows (`log_archive/labeled_extension_descriptor_compare_20261013.log`; the band-only bank entries
-are backed up in `../claude_scratch/descriptor_bank_backup_20261013/`).
+were backed up in a scratch directory outside the repository, deleted on 2026-11-06).
 
 **Measured after the build** (n268, 2026-10-13, `log_archive/labeled_extension_verify_20261013.log`; labeled rows
 under the run definitions, `near_gt_150` for merge and `segment_on_gt` for split; every labeled row and

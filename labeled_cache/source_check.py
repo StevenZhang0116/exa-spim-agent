@@ -14,9 +14,13 @@ within a voxel of the centre line); an unrelated segmentation gives close to 0.
 
     python -m labeled_cache.source_check --brains 794495 802449
     python -m labeled_cache.source_check --brains 751473 --record docs/fragment_segmentation_match.md
+    python -m labeled_cache.source_check --brains 789202 802449 841260 --record   # 2026-11-05 source update
 
 Reads a few SWC zip shards and a few hundred 3x3x3 voxel patches per brain (seconds,
 GCS credentials needed); no cache is loaded, so it runs on a login node.
+
+On 2026-11-05 the explicit entries of 789202 and 802449 (replaced by the denoised Google
+segmentations) and of the new brain 841260 were checked this way before their caches were rebuilt.
 """
 
 from __future__ import annotations

@@ -119,7 +119,7 @@ exa-spim-agent/
 ```text
 autodiscovery/<RUN>.summary.md                validated discovery report (Stage 1)
 autodiscovery-application/<RUN>/              frozen detector deliverables and runs (Stage 2)
-proofreader_evolve/feature_tables/<brain>/    detector-native candidate tables (Stage 3 input)
+proofreader_evolve/feature_tables/<brain>/    candidate pool tables: raw pools (raw runs) or detector-native tables (Stage 3 input)
 proofreader_evolve/runs/precision_*/          evolution runs: best_scorer.py, ledger, report.html
 cache/                                        base and labeled pickle files
 metrics_out/                                  official reference metrics

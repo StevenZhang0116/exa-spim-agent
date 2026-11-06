@@ -14,6 +14,12 @@ After the tables, precompute_availability writes the label-availability sidecars
 the closing preflight (and evolution) require; without them a fresh table always failed it.
 Existing matching tables and valid sidecars are reused. The first failure stops the script
 with a nonzero exit code. No LLM calls or evolution.
+The segmentation sources of 789202 and 802449 were replaced on 2026-11-05 and 841260 is a new
+brain: their tables are built from the rebuilt caches (docs/dataset_artifact_dependencies.md).
+--detector-prior raw (2026-11-06) prepares detector-free raw pools instead
+(cli.precompute_raw_pools: declared rule, labels and raw candidate attributes only; no
+detector, no image pass, minutes per brain) and passes the prior on to the sidecar and
+preflight steps; --image-workers is then unused. Raw evolution runs load only these pools.
 
 Use --dry-run to print commands without importing models or loading any data.
 Real runs mirror console output to proofreader_evolve/log/prepare_feature_tables_<timestamp>_<pid>.log.txt.
@@ -117,6 +123,9 @@ def parse_args(argv=None):
                              "(default: 0)")
     parser.add_argument("--out-dir", type=Path,
                         default=PROJECT_ROOT / "proofreader_evolve" / "feature_tables")
+    parser.add_argument("--detector-prior", choices=("frozen", "raw"), default="frozen",
+                        help="frozen (default): detector-native tables with the default frozen detectors; "
+                             "raw: detector-free raw pools for --detector-prior raw evolution runs")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--log-txt", type=Path,
                         help="Append console output to this file (default: a new file in proofreader_evolve/log/)")
@@ -142,15 +151,20 @@ def commands(args):
     result = []
     for brain in args.brains:
         cache = PROJECT_ROOT / "cache" / f"dataset_cache_{brain}_mcl{args.mcl}_add.pkl"
-        result.append([sys.executable, "-u", "-m", "proofreader_evolve.cli.precompute_error_scores",
-                       "--brain", brain, "--mcl", str(args.mcl), "--pkl", str(cache),
-                       "--out-dir", str(args.out_dir), "--image-workers", str(args.image_workers)])
+        if args.detector_prior == "raw":
+            result.append([sys.executable, "-u", "-m", "proofreader_evolve.cli.precompute_raw_pools",
+                           "--brain", brain, "--mcl", str(args.mcl), "--pkl", str(cache),
+                           "--out-dir", str(args.out_dir)])
+        else:
+            result.append([sys.executable, "-u", "-m", "proofreader_evolve.cli.precompute_error_scores",
+                           "--brain", brain, "--mcl", str(args.mcl), "--pkl", str(cache),
+                           "--out-dir", str(args.out_dir), "--image-workers", str(args.image_workers)])
     result.append([sys.executable, "-u", "-m", "proofreader_evolve.cli.precompute_availability",
                    "--brains", *args.brains, "--mcl", str(args.mcl),
-                   "--feature-tables-dir", str(args.out_dir)])
+                   "--feature-tables-dir", str(args.out_dir), "--detector-prior", args.detector_prior])
     result.append([sys.executable, "-u", "-m", "proofreader_evolve.cli.preflight",
                    "--brains", *args.brains, "--mcl", str(args.mcl),
-                   "--feature-tables-dir", str(args.out_dir)])
+                   "--feature-tables-dir", str(args.out_dir), "--detector-prior", args.detector_prior])
     return result
 
 
@@ -204,7 +218,9 @@ def run(args):
     print(f"Project: {PROJECT_ROOT}\nOutput: {args.out_dir}\n"
           f"Threads: {args.threads} (requested: {args.requested_threads}; "
           f"available CPUs: {args.available_cpus})\n"
-          f"Image workers: {args.image_workers} (0 = auto capped at 8, -1 = all CPUs)", flush=True)
+          f"Image workers: {args.image_workers} (0 = auto capped at 8, -1 = all CPUs)\n"
+          f"Candidate pools: {'raw (detector-free; image workers unused)' if args.detector_prior == 'raw' else 'detector-native'}",
+          flush=True)
     for command in planned:
         print("\n" + shlex.join(command), flush=True)
         if args.dry_run:
