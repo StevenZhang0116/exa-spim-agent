@@ -84,7 +84,7 @@ python -u scripts/check_image_alignment_from_cache.py --brains <b> --mcl 100 --o
 python -u scripts/check_image_alignment_from_cache.py --brains <b> --mcl 100 --out figs/candidate_image_alignment_<date> \
     --record-reviewed --review-note "<what you saw in the six overlays>"
 python -m proofreader_evolve.cli.preflight --brains <development brains> --train-brains <TRAIN brains> --selection-brains all --detector-prior raw --mcl 100
-mv metrics_out/<b> metrics_out/archive/<b>_<olddate>; python -u notebooks/evaluate_skeleton_metrics.py --brains <b>   # only if GT changed
+rm -rf metrics_out/<b>; python -u notebooks/evaluate_skeleton_metrics.py --brains <b>   # only if GT or the segmentation changed; old runs are deleted, not archived
 ```
 
 After a label-only refresh keep the pkl files and the directories: run

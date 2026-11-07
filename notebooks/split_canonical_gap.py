@@ -53,7 +53,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 import agentic_neuron_proofreader  # noqa: E402,F401  (registers SkeletonGraph for pickle)
 
 DEFAULT_BRAINS = ["794495", "802449", "789202", "794493", "794491",
-                  "747807", "750318", "751473", "754610", "754612", "754613"]
+                  "747807", "750318", "751473", "754610", "754612", "754613", "841260"]
 OUT_DIR = PROJECT_ROOT / "notebooks" / "split_canonical_gap"
 CONFIG_DIR = PROJECT_ROOT / "configs"
 MATCH_RADIUS_UM = 50.0

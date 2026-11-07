@@ -54,7 +54,7 @@ import candidate_rules as cr  # noqa: E402
 from proofreader_evolve.harness import candidate_pools  # noqa: E402
 
 DEFAULT_BRAINS = ["794495", "802449", "789202", "794493", "794491",
-                  "747807", "750318", "751473", "754610", "754612", "754613"]
+                  "747807", "750318", "751473", "754610", "754612", "754613", "841260"]
 RADII_UM = [5.0, 10.0, 15.0, 20.0, 30.0, 40.0, 50.0, 75.0, 100.0, 150.0]
 SNAP_MAX_UM = 50.0          # detector: CANDIDATE_SITE_SNAP_MAX_UM
 CLAIM_RADIUS_UM = 150.0     # detector: CANDIDATE_CLAIM_RADIUS_UM

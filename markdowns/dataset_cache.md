@@ -128,9 +128,9 @@ provided rather than relying on any quoted figures.
 - **Fragments are filtered.** When each cache was built, UNet fragments shorter
   than `min_cable_length` µm of total path length were dropped, removing the
   shortest noise fragments; most caches use `min_cable_length = 100` µm
-  (`mcl100`), but `mcl10` caches exist for some brains. Skeletons were also
+  (`mcl100`); the `mcl10` caches that once existed for some brains were deleted. Skeletons were also
   resampled to a target inter-node spacing (`node_spacing`, 5 µm for the `mcl100`
-  caches, 2 µm for e.g. `789202_mcl10`), so node geometry is decimated relative to
+  caches, 2 µm for the retired `mcl10` caches), so node geometry is decimated relative to
   the original SWCs. Fragments are comparable across brains only between caches
   with the same build parameters: always read `payload["min_cable_length"]` and
   `payload["node_spacing"]` per file, and never pool `mcl10` with `mcl100`.
@@ -163,7 +163,7 @@ the cache was built.
 | `segmentation_path` | `str` | Provenance only — dense segmentation the labels would be read from. Present in caches written by the current builder; older plain caches may lack it. |
 | `anisotropy` | `tuple` | `(0.748, 0.748, 1.0)` — µm/voxel in **(x, y, z)** order. |
 | `min_cable_length` | `int` | µm threshold; shorter fragments were discarded (`100` for `mcl100` caches, `10` for `mcl10`). |
-| `node_spacing` | number | Target µm spacing between adjacent skeleton nodes (`5` for `mcl100`; `2` for `789202_mcl10`). |
+| `node_spacing` | number | Target µm spacing between adjacent skeleton nodes (`5` for `mcl100`; `2` for the retired `mcl10` caches). |
 
 Caches written by the current builder also carry the label keys
 (`gt_node_canonical_label`, `gt_edge_error`, `gt_merge_labels`, `gt_merge_sites`,
@@ -347,7 +347,7 @@ safe to pool:
   between physical coordinates and voxel indices.
 - `min_cable_length` — µm (`100` for `mcl100`, `10` for `mcl10`); UNet fragments
   shorter than this were dropped at build time (the `mclN` in the filename).
-- `node_spacing` — µm (`5` for `mcl100`, `2` for `789202_mcl10`); target spacing
+- `node_spacing` — µm (`5` for `mcl100`, `2` for the retired `mcl10` caches); target spacing
   the skeletons were resampled to.
 
 No image is stored in the cache — only the two `SkeletonGraph` objects and these

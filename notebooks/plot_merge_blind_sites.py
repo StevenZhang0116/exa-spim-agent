@@ -3,8 +3,9 @@
 A blind site is a census bridge site (``merge_diagnosis/mcl100/followup/bridge_sites.csv``: no
 junction within 30 um of cable on its segment) whose nearest junction or tip-to-shaft candidate
 (family J+S20 of ``merge_shaft_candidate_reach.py``) is more than 20 um of cable away, or not
-within 150 um at all. Pooled over the eleven brains these are the 199 bridge sites that neither
-candidate family reaches. The per-site distances come from the reach JSONs
+within 150 um at all. Pooled over the twelve brains of the 2026-11-06 census (denoised 789202 and
+802449 sources, 841260 added) these are the 142 bridge sites that neither candidate family
+reaches; the eleven 2026-10 caches had 199. The per-site distances come from the reach JSONs
 (``notebooks/merge_shaft_reach/<brain>_mcl<N>.json``, ``site_distances_um``, written since
 2026-10-16); the blind count of every brain is checked against the JSON's ``bridge`` record.
 

@@ -52,7 +52,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-CURRENT_BRAINS = ["794495", "802449", "789202", "794493", "794491"]
+CURRENT_BRAINS = ["794495", "802449", "789202", "794493", "794491", "841260"]
 OLDER_BRAINS = ["747807", "750318", "751473", "754610", "754612", "754613"]
 ALL_BRAINS = CURRENT_BRAINS + OLDER_BRAINS
 OUT_DIR = ROOT / "notebooks" / "gt_neuron_length"

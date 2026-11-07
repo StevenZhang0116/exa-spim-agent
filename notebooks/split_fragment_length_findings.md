@@ -1,5 +1,10 @@
 # Fragment length of split candidate pairs (2026-10-21)
 
+> **Note added 2026-11-07.** The 802449 rows below come from its previous segmentation (companion of
+> 2026-10-17). Its source was replaced on 2026-11-05; `notebooks/split_fragment_length/` holds the
+> 2026-11-06 re-measurement of all twelve brains (841260 included) and the 2026-11-07 `--canonical` rerun
+> for 802449, which supersede the 802449 numbers here. 794495 and the older-microscope brains are unchanged.
+
 Script: `notebooks/split_fragment_length.py` (`--measure` per brain on a compute node, `--plot`,
 `--canonical` on the companion brains). Pool: the declared split pool `tip_to_any_node|r=80|k=2`,
 enumerated through `export_rerank_companion.pool_only_bank` (same rows and labels as the

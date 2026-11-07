@@ -52,7 +52,7 @@ from merge_shaft_candidate_reach import snap  # noqa: E402
 from merge_topology_diagnosis import build_fragment_index, load_payload  # noqa: E402
 
 ALL_BRAINS = ["794495", "802449", "789202", "794493", "794491", "747807", "750318",
-              "751473", "754610", "754612", "754613"]
+              "751473", "754610", "754612", "754613", "841260"]
 OUT_DIR = PROJECT_ROOT / "notebooks" / "merge_site_gt_tip"
 REACH_DIR = PROJECT_ROOT / "notebooks" / "merge_shaft_reach"
 BRIDGE_SITES = PROJECT_ROOT / "notebooks" / "merge_diagnosis" / "mcl100" / "followup" / "bridge_sites.csv"

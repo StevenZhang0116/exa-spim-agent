@@ -1,5 +1,13 @@
 # Cache merge labels vs canonical metrics: node-count threshold finding
 
+> **Historical record (note added 2026-11-07).** Every number below was measured on the 2026-10 caches:
+> eleven brains, the previous 789202 and 802449 segmentations, no 841260. On 2026-11-05 those two sources
+> were replaced by the denoised Google segmentations and 841260 was added; the current twelve-brain figures
+> are in `notebooks/merge_candidate_pool_sweep_outputs_with_oldscope/mcl100_96e1b6bbfbf36f5c/RESULTS.md`,
+> `notebooks/merge_shaft_reach/summary.csv`, `notebooks/merge_canonical_gap/summary.csv` and
+> `notebooks/merge_site_gt_tip/` (reruns of 2026-11-06). The generator behind section 6 was deleted on
+> 2026-10-17; `notebooks/merge_label_shadow/*.json` are its 2026-10-07 outputs and are kept as the record.
+
 Date: 2026-10-07. All numbers below were produced on n238 (panda env) from the
 `dataset_cache_<brain>_mcl100_add.pkl` caches and the canonical `metrics_out/<brain>/*/`
 results. No cache, feature table, context cache or detector was modified.

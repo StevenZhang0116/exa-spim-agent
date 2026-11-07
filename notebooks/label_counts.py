@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 ALL_BRAINS = ["794495", "802449", "789202", "794493", "794491", "747807", "750318",
-              "751473", "754610", "754612", "754613"]
+              "751473", "754610", "754612", "754613", "841260"]
 OUT_DIR = ROOT / "notebooks" / "label_counts"
 COMPANION_DIR = ROOT / "markdowns"
 KINDS = ("merge", "split")

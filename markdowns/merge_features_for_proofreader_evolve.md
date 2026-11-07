@@ -503,7 +503,8 @@ when the companion changes):**
   values among the labeled rows (2, 3, 4), so every labeled row is tied; the
   tie-aware `average_precision` above gives 0.028, and 0.028 is the figure to beat.
   Random tie-breaks of degree alone average AP 0.035 on this companion (95% range
-  0.027 to 0.048; on the 802449 companion 0.058, 0.054 to 0.062), so a model whose AP
+  0.027 to 0.048; on the 802449 companion rebuilt 2026-11-06 for its denoised segmentation
+  0.0143, 0.0120 to 0.0173, around a degree baseline AP of 0.0139), so a model whose AP
   lies inside that range has only reordered degree's ties: report `tie_break_null`
   for every model. Pooled per-fold logistic fits of degree alone score 0.0258 to
   0.0286 (a fitted tree 0.0185), and eleven records of the 2026-10-19 run measured

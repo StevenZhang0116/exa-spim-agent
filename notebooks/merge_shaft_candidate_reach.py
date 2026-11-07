@@ -60,7 +60,7 @@ from merge_canonical_gap import load_canonical  # noqa: E402
 from merge_topology_diagnosis import build_fragment_index, load_payload  # noqa: E402
 
 ALL_BRAINS = ["794495", "802449", "789202", "794493", "794491", "747807", "750318",
-              "751473", "754610", "754612", "754613"]
+              "751473", "754610", "754612", "754613", "841260"]
 NMS_UM = 20.0
 SNAP_MAX_UM = 50.0
 POSITIVE_UM = 20.0

@@ -31,7 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TABLES_DIR = ROOT / "proofreader_evolve" / "feature_tables"
 COUNTS_DIR = ROOT / "notebooks" / "label_counts"
 DEFAULT_OUT = ROOT / "notebooks" / "label_availability_distribution.svg"
-CURRENT_BRAINS = ("789202", "794491", "794493", "794495", "802449")
+CURRENT_BRAINS = ("789202", "794491", "794493", "794495", "802449", "841260")
 
 # Reference categorical slots (dataviz palette): 1 = slot-2 orange, 0 = slot-1 blue,
 # NaN = recessive neutral gray (unknown, not a category to compare).
