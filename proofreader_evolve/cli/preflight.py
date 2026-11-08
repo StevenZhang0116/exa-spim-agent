@@ -7,7 +7,10 @@ bundled CLI was too old for the model, which a direct API request cannot detect.
 Contexts are read on demand during evolution. These offline checks do not exercise
 fragment loading or cloud image access. Under --detector-prior raw the checked tables are
 the detector-free raw pools (2026-11-06); no detector is resolved and --merge-dir/--split-dir
-are ignored.
+are ignored. The label counts also give the GT-positive floor check (2026-11-08): pools below
+--min-positives are listed, since a run scores and reports them but leaves them out of the
+objective, the bootstrap and kind headroom, and a TRAIN kind without a counted pool blocks,
+as the driver refuses it.
 """
 
 import argparse
@@ -19,6 +22,7 @@ from . import precompute_error_scores as pc
 from ..harness.reviser_session import DEFAULT_MODEL
 from ..harness.native_pool import ensure_native_tables, cache_path as native_cache_path
 from ..harness.raw_pool import ensure_raw_tables
+from ..harness.fixed_pool_scoring import DEFAULT_MIN_POSITIVES
 from ..harness import label_availability
 
 
@@ -93,10 +97,37 @@ def selection_readiness(report, train_brains, selection_brains, protocol, detect
                     "; fragment-graph availability for split folds is verified when the run starts"}
 
 
+def positive_floor(report, min_positives, train_brains=None):
+    """Pools below the GT-positive floor, from the label counts already in the report.
+
+    Mirrors the driver's ``Budgets.in_mean``: a pool with fewer than ``min_positives`` label-1
+    rows is scored and reported by a run but excluded from the objective, the paired bootstrap
+    and kind headroom. The driver refuses to start when every pool of a kind in a role is below
+    the floor; TRAIN is checked here (validation brains are not named to preflight).
+    """
+    positives = {}
+    for entry in report["brains"].values():
+        for cell, counts in (entry.get("label_counts") or {}).items():
+            positives[cell] = int(counts.get("1", 0))
+    below = {cell: n for cell, n in sorted(positives.items()) if n < min_positives}
+    train = [str(b) for b in train_brains or []]
+    uncounted_kinds = []
+    for kind in ("merge", "split"):
+        cells = [f"{b}/{kind}" for b in train if f"{b}/{kind}" in positives]
+        if cells and all(cell in below for cell in cells):
+            uncounted_kinds.append(kind)
+    return {"min_positives": min_positives, "positives": positives, "below_floor": below,
+            "train_kinds_without_counted_pool": uncounted_kinds,
+            "status": "blocked" if uncounted_kinds else "passed",
+            "rule": (f"pools with fewer than {min_positives} GT positives are scored and reported but excluded "
+                     "from the objective, the bootstrap and kind headroom (--min-positives of the driver)"
+                     if min_positives > 0 else "every pool counts toward the objective (--min-positives 0)")}
+
+
 def inspect_readiness(brains, mcl=100, tables_dir=pc.DEFAULT_OUT,
                       merge_dirs=None, split_dirs=None, check_api=False, model=DEFAULT_MODEL,
                       train_brains=None, selection_brains=None, selection_protocol="grouped_oof",
-                      detector_prior="frozen"):
+                      detector_prior="frozen", min_positives=DEFAULT_MIN_POSITIVES):
     report = {"host": socket.gethostname(), "mcl": mcl, "brains": {},
               "scope": "No brain-cache deserialization, table preparation, scoring or evolution",
               "api": {"status": "not_checked", "key_present": bool(os.environ.get("ANTHROPIC_API_KEY")),
@@ -138,9 +169,17 @@ def inspect_readiness(brains, mcl=100, tables_dir=pc.DEFAULT_OUT,
                                               detector_prior)
     report["descriptor_context"] = {"mode": "on_demand", "precomputed_context_required": False,
                                     "source_access": "not_exercised"}
+    report["positive_floor"] = positive_floor(report, min_positives, train_brains)
+    below = report["positive_floor"]["below_floor"]
+    if below:
+        report["warnings"].append(
+            f"{len(below)} pool(s) below the GT-positive floor ({min_positives}) are scored and reported but "
+            "excluded from the objective, the bootstrap and kind headroom: "
+            + ", ".join(f"{cell} ({n})" for cell, n in below.items()))
     blocked = (not brains or any(v["status"] != "passed" for v in report["brains"].values())
                or (check_api and report["api"]["status"] != "passed")
-               or (report["selection"] is not None and report["selection"]["status"] != "passed"))
+               or (report["selection"] is not None and report["selection"]["status"] != "passed")
+               or report["positive_floor"]["status"] != "passed")
     report["status"] = "blocked" if blocked else "checks_passed"
     return report
 
@@ -164,11 +203,17 @@ def main(argv=None):
     parser.add_argument("--detector-prior", choices=("frozen", "no-score", "raw"), default="frozen",
                         help="raw withholds every detector-derived input, so detector training brains may be "
                              "selection brains (--selection-brains all)")
+    parser.add_argument("--min-positives", type=int, default=DEFAULT_MIN_POSITIVES,
+                        help="GT-positive floor of the run to list the pools it will not count; must match the "
+                             f"driver's --min-positives (default: {DEFAULT_MIN_POSITIVES})")
     args = parser.parse_args(argv)
+    if args.min_positives < 0:
+        parser.error("min-positives must be >= 0 (0 counts every pool)")
     report = inspect_readiness(args.brains, args.mcl, args.feature_tables_dir,
                                args.merge_dir, args.split_dir, args.check_api, args.model,
                                train_brains=args.train_brains, selection_brains=args.selection_brains,
-                               selection_protocol=args.selection_protocol, detector_prior=args.detector_prior)
+                               selection_protocol=args.selection_protocol, detector_prior=args.detector_prior,
+                               min_positives=args.min_positives)
     print(json.dumps(report, indent=2))
     return int(report["status"] != "checks_passed")
 

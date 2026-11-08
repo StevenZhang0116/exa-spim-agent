@@ -320,7 +320,8 @@ guides use GT-labeled rows; optional `X_unlabeled` for `fit`. Still open:
   Split cap 1000 since 2026-10-12 (WORKFLOW_REVISION "Split cap raised to 1000"): run
   `precision_20261011_235340_phg8xri5` saturated the 500-row split window (selection
   out-of-fold 0.978-0.980, validation 0.916-0.984), so the lower frozen-baseline P@1000 in
-  the table is taken as headroom, not noise; every split pool has >= 1,020 positives.
+  the table is taken as headroom, not noise; every split pool had >= 1,020 positives (2026-10
+  tables; >= 1,048 with the 2026-11-07 raw pools).
   Split cap removed 2026-10-26 (WORKFLOW_REVISION "Split K = GT positives"): P@1000 saturated
   again in `precision_20261025_193120_5to8nx13` (validation 0.917-0.982 with 1,759-2,783
   positives per pool); split now ranks K = its GT positives (`--k-positive-ratio merge=2,split=1`,
@@ -328,8 +329,10 @@ guides use GT-labeled rows; optional `X_unlabeled` for `fit`. Still open:
 - **Merge validation cells.** Labeled merge cells hold 9-825 positives; decide together
   with the merge-gate proposals (pooled validation merge cells, K scaled to positives).
   Done 2026-10-12: K scaled to positives (above) and pools with fewer than `--min-positives`
-  (default 20) GT positives are reported but excluded from the mean, the bootstrap and kind
-  headroom (754610 / 754612 / 754613 merge with the current tables). Pooling merge cells
+  (default 20 then; 10 since 2026-11-08, when positive weighting had made the higher floor
+  redundant) GT positives are reported but excluded from the mean, the bootstrap and kind
+  headroom (754610 / 754612 / 754613 merge with the 2026-10 tables; with the 2026-11-07 raw
+  pools and the floor of 10 only 754613 merge, 9 positives). Pooling merge cells
   across brains remains open.
 - **Definitions.** Whether the merge 20-150 um ambiguous ring should also be NaN, and
   whether split needs a distance condition like merge.

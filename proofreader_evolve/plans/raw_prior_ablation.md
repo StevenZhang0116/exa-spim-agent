@@ -171,7 +171,7 @@ python -u -m proofreader_evolve.cli.run_evolution \
   --train-brains 802449,747807,750318,754610,754612,754613 \
   --selection-brains all --selection-holdout-brains all \
   --validation-brains 789202,794493,794491,751473,841260 \
-  --generations 5 --objective auroc --aggregation positive-weighted \
+  --generations 5 --objective auroc --aggregation positive-weighted --min-positives 10 \
   --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400
 ```
 

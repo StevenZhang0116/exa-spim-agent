@@ -9,7 +9,8 @@ Since 2026-10-12 (v3) each pool's K is resolved from its own GT positives throug
 ``Budgets``: ``K = min(cap, ceil(positive_ratio * positives))``, so every pool that
 counts has the same attainable ceiling (1 / positive_ratio when the ratio binds), and
 pools with fewer than ``min_positives`` GT positives are scored and reported but
-excluded from the promotion mean, the bootstrap and kind headroom. Both inputs are
+excluded from the promotion mean, the bootstrap and kind headroom (the CLI floor
+``DEFAULT_MIN_POSITIVES`` is 10 since 2026-11-08, 20 before). Both inputs are
 label counts, so every K is fixed for a run. Since v6 the objective is independent
 for each kind across its counted brains. Selection, ablation and validation use
 the same aggregation; each generation promotes only its target kind.
@@ -44,6 +45,13 @@ from .training_diagnostics import describe
 from .local_features import augmented_features
 from .model_execution import DEFAULT_MEMORY_MB
 from .label_availability import labeled_rows, labels_digest
+
+# CLI default of ``Budgets.min_positives`` (``--min-positives`` of the driver and preflight). 10 since
+# 2026-11-08: under positive-weighted aggregation a pool near the floor carries a few percent of its
+# kind's weight, so the floor only has to drop pools whose rank statistics are degenerate. It was 20
+# from 2026-10-12, chosen under equal-brain aggregation, where merge pools of 9 to 17 positives held
+# a third of the merge weight. The library default below stays 0 (every pool counts).
+DEFAULT_MIN_POSITIVES = 10
 from .rank_statistics import (DEFAULT_PAUC_FPR, HEAD_STATISTICS, OBJECTIVE_LABELS, aggregate_statistics,
                               cell_statistics, cell_value, check_objective, check_pauc_fpr, prefix_hits, ranking,
                               auroc as weighted_auroc, average_precision as weighted_average_precision,

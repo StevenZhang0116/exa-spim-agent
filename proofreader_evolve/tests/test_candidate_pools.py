@@ -23,7 +23,8 @@ class CandidatePoolDeclarationTests(unittest.TestCase):
         raw = json.loads(cp.POLICY_PATH.read_text())
         self.assertEqual(raw["schema_version"], cp.SCHEMA_VERSION)
         for kind in cp.KINDS:
-            self.assertEqual(raw["pools"][kind]["evidence"]["datasets"], 11)
+            # Twelve brains since the 2026-11-06 sweep reruns (841260 added; eleven before).
+            self.assertEqual(raw["pools"][kind]["evidence"]["datasets"], 12)
 
     def test_merge_claim_radius_is_the_availability_radius(self):
         self.assertEqual(cp.load_pool_policies()["merge"]["claim_radius_um"], la.NEAR_GT_UM)

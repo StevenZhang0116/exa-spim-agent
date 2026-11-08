@@ -19,9 +19,12 @@ K = ceil(ratio x its GT positives), limited to the kind's cap when it has one. S
 2026-10-27 no kind has a cap and both ratios are 1, so every pool ranks exactly its GT
 positives and Precision@K equals Recall@K (R-precision) for merge and split alike, in
 TRAIN, selection and validation (merge was 2 x positives under a cap of 300 from
-2026-10-12 to 2026-10-27; split uncapped since 2026-10-26). Pools with fewer than 20 GT
+2026-10-12 to 2026-10-27; split uncapped since 2026-10-26). Pools with fewer than 10 GT
 positives are reported but excluded from the objective (`--k-positive-ratio`,
-`--merge-k` / `--split-k`, `--min-positives`).
+`--merge-k` / `--split-k`, `--min-positives`). The floor was 20 from 2026-10-12, chosen under
+equal-brain aggregation; since 2026-11-08 it is 10, because positive weighting already keeps a
+small pool from steering the objective and the floor only has to drop pools whose rank
+statistics are degenerate. `cli/preflight.py` lists the pools below it (`positive_floor`).
 Each active kind gets an initial generation before adaptive allocation returns to
 a previously scheduled kind. Allocation then uses a rotation floor, pending follow-ups,
 recent validation point gain and remaining headroom. Deferred follow-ups stay pending.
@@ -61,10 +64,14 @@ detector-free raw pools (section 3.2) and no detector is involved.
 
 Segmentation sources (2026-11-05): 789202 and 802449 now resolve to their denoised Google
 segmentations and 841260 is a new brain with GT. On 2026-11-07 the user placed 841260 in the
-development validation set: 789202's merge pool fell below the 20-positive floor with the denoised
-source, so without 841260 the merge promotion gate would hold no denoised brain, while TRAIN keeps
-353 countable merge positives and its three whole-brain holdout folds unchanged; 841260's 118 merge
-positives also balance the two sides (TRAIN 353 / validation 377). Caches, raw pool tables,
+development validation set: 789202's merge pool fell to 15 positives with the denoised source, below
+the floor of 20 then in force, so without 841260 the merge promotion gate would hold no denoised
+brain, while TRAIN kept 395 countable merge positives (802449 104, 747807 125, 750318 144,
+754612 22; 754610 with 19 and 754613 with 9 were below that floor) and its three whole-brain
+holdout folds unchanged; 841260's 118 merge positives also balance the two sides (TRAIN 395 /
+validation 424, the latter 794493 41, 794491 125, 751473 140, 841260 118; preflight label counts
+of 2026-11-07). With the floor of 10 (2026-11-08) 754610 and 789202 count as well: TRAIN 414 and
+validation 439 countable merge positives, 754613 (9) still excluded. Caches, raw pool tables,
 companions and alignment receipts of the three brains were rebuilt on 2026-11-06/07 and the raw
 preflight passes with these roles; the next run sets a new seed baseline, and runs before the
 rebuild are not comparable on 802449 or 789202 (see [artifact dependencies](dataset_artifact_dependencies.md)).
@@ -114,7 +121,7 @@ python -u -m proofreader_evolve.cli.precompute_availability \
 python -m proofreader_evolve.cli.preflight \
   --brains "${EVOLUTION_BRAINS[@]}" \
   --train-brains 802449 747807 750318 754610 754612 754613 \
-  --selection-brains all --detector-prior raw --mcl 100
+  --selection-brains all --detector-prior raw --mcl 100 --min-positives 10
 ```
 
 Image crops and fragment neighborhoods are read on demand; no context precompute
@@ -140,7 +147,7 @@ nohup /home/zihan.zhang/.conda/envs/panda/bin/python -u \
   --train-brains 802449,747807,750318,754610,754612,754613 \
   --selection-brains all --selection-holdout-brains all \
   --validation-brains 789202,794493,794491,751473,841260 \
-  --generations 5 --objective auroc --aggregation positive-weighted \
+  --generations 5 --objective auroc --aggregation positive-weighted --min-positives 10 \
   --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400 \
   > "$EVOLUTION_LOG" 2>&1 &
 printf 'Console log: %s\n' "$EVOLUTION_LOG"
@@ -156,7 +163,8 @@ Current defaults are grouped OOF selection, positive-weighted AUROC, the
 `precision_depth_mean` head guard (tolerance 0.01), paired-bootstrap promotion
 (1000 draws, two-sided alpha 0.05), adaptive kind allocation and 8 evaluation units
 per generation. K equals each pool's GT-positive count; there are no kind caps and
-pools below 20 positives are excluded from the objective. Metrics remain separate
+pools below 10 positives (`--min-positives`; 20 until 2026-11-08) are excluded from the
+objective. Metrics remain separate
 for merge and split. No LLM judge or equal-brain default was introduced.
 
 For a controlled frozen/no-score/raw comparison, use the same explicit brain roles,
@@ -253,7 +261,7 @@ not supplied to the reviser. Promotion uses the **target-kind validation objecti
 (AUROC by default; Precision@K until 2026-11-02) with the head guard.
 For each kind independently, `--aggregation positive-weighted` (default) weights rank
 statistics by GT-positive counts over brains whose pool holds at least `--min-positives`
-GT positives, and computes precision as `sum(TP) / sum(effective K)`.
+(default 10) GT positives, and computes precision as `sum(TP) / sum(effective K)`.
 `equal-brain` assigns equal weight when explicitly selected. Smaller pools are
 reported but excluded. The candidate must exceed the accepted parent's score for this kind
 by more than `--precision-margin` (default 0; ties fail) and, with the default
@@ -290,7 +298,12 @@ The default frozen detectors (`DEFAULT_MERGE_DIR` / `DEFAULT_SPLIT_DIR` in
 `autodiscovery-application/new-split-1_2026-10-20/runs/794495-with-figures`, both fitted on
 794495. `--merge-dir` / `--split-dir` override them (a deliverable directory, or one of its
 `runs/<brain>-<purpose>/` run directories, which the resolver binds to the script through
-the run's recorded detector SHA-256).
+the run's recorded detector SHA-256). Both default run directories were deleted with
+`autodiscovery-application/` on 2026-11-06 and restored on 2026-11-08 from the filesystem snapshot
+`.snapshot/mindscope_daily_2026-11-05_19:00` (trees identical, detector script SHA-256 equal to the
+recorded provenance); the real-detector parity test in `tests/test_native_pool.py` skips only while
+they are absent. A `frozen` / `no-score` run still has to re-prepare its detector-native tables
+first (deleted on 2026-11-07; `prepare_feature_tables.py` without `--detector-prior raw`).
 The detectors' image pass is threaded (2026-10-21): `--image-workers N` on
 `precompute_error_scores.py`, forwarded by `prepare_feature_tables.py` (0 = auto capped at 8,
 -1 = all CPUs; the pass waits on S3, so N may exceed the CPU count), reaches every detector

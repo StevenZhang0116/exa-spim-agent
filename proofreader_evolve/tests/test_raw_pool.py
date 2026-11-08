@@ -161,9 +161,11 @@ class PreparationTests(unittest.TestCase):
                 patch.object(preflight, "ensure_raw_tables", side_effect=bank) as raw, \
                 patch.object(preflight, "ensure_native_tables",
                              side_effect=AssertionError("native tables must not be loaded under raw")):
+            # One positive per fixture pool: opt out of the GT-positive floor (min_positives=0) so only the
+            # detector resolution and table loading are under test here.
             report = preflight.inspect_readiness(["1", "2"], train_brains=["1", "2"], selection_brains=["all"],
-                                                 detector_prior="raw")
-            frozen = preflight.inspect_readiness(["1"], train_brains=["1"])
+                                                 detector_prior="raw", min_positives=0)
+            frozen = preflight.inspect_readiness(["1"], train_brains=["1"], min_positives=0)
         self.assertEqual(report["status"], "checks_passed")
         self.assertIsNone(report["detectors"])
         self.assertIn("raw", report["candidate_pools"])

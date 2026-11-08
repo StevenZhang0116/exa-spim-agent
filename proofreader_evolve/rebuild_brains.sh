@@ -111,4 +111,7 @@ if [ "${#train_present[@]}" -gt 0 ]; then
     roles=(--train-brains "${train_present[@]}" --selection-brains all)
 fi
 echo; echo "# preflight"
-python -u -m proofreader_evolve.cli.preflight --brains "$@" --mcl "$MCL" --detector-prior "$DETECTOR_PRIOR" "${roles[@]}"
+# Table and role check only: a subset rebuild may hold a single small TRAIN pool, so the GT-positive
+# floor is switched off here (--min-positives 0); the launch preflight in docs/stage3_evolution.md
+# checks the floor of the run (10 since 2026-11-08).
+python -u -m proofreader_evolve.cli.preflight --brains "$@" --mcl "$MCL" --detector-prior "$DETECTOR_PRIOR" "${roles[@]}" --min-positives 0

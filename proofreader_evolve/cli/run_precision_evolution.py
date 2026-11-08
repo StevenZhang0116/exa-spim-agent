@@ -385,9 +385,12 @@ def parse_args(argv=None):
                    help="Each pool ranks K = ceil(ratio x its GT positives), limited to the kind cap when there is "
                         "one; a single number applies to every kind, 'merge=R,split=R' sets each kind; 0 keeps the "
                         "fixed kind cap (default: 1 for both kinds, i.e. K = GT positives)")
-    p.add_argument("--min-positives", type=int, default=20,
+    p.add_argument("--min-positives", type=int, default=scoring.DEFAULT_MIN_POSITIVES,
                    help="Pools with fewer GT positives are scored and reported but excluded from the promotion "
-                        "objective, the bootstrap and kind headroom; 0 counts every pool (default: 20)")
+                        "objective, the bootstrap and kind headroom; 0 counts every pool (default: "
+                        f"{scoring.DEFAULT_MIN_POSITIVES}; 20 until 2026-11-08, chosen under equal-brain "
+                        "aggregation, while positive weighting already keeps small pools from steering the "
+                        "objective)")
     p.add_argument("--aggregation", choices=scoring.AGGREGATIONS, default="positive-weighted",
                    help="How the counted pools are combined separately for each kind, in "
                         "selection, validation, the bootstrap and kind headroom: positive-weighted (default) "

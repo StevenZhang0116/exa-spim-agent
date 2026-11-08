@@ -252,7 +252,9 @@ class DriverTests(unittest.TestCase):
     def test_defaults_and_argument_validation(self):
         from proofreader_evolve.cli import run_precision_evolution as driver
         args = driver.parse_args([])
-        self.assertEqual((args.k_positive_ratio, args.min_positives), ({"merge": 1.0, "split": 1.0}, 20))
+        # Floor 10 since 2026-11-08 (20 from 2026-10-12, chosen under equal-brain aggregation).
+        self.assertEqual((args.k_positive_ratio, args.min_positives), ({"merge": 1.0, "split": 1.0}, 10))
+        self.assertEqual(driver.scoring.DEFAULT_MIN_POSITIVES, 10)
         # No cap on either kind since 2026-10-27 (merge 300 before; split 1000 until 2026-10-26).
         self.assertEqual((args.merge_k, args.split_k), (None, None))
         with redirect_stderr(io.StringIO()):

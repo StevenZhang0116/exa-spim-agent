@@ -41,6 +41,7 @@ log('bank_context_available attached from the context cache band')
 positives = {b: int(np.nansum(banks[b].tables['merge'].truth)) for b in BRAINS}
 log(f'merge positives: {positives}')
 
+# min_positives=20 was the driver default when this check ran (2026-10-27); DEFAULT_MIN_POSITIVES is 10 since 2026-11-08.
 budgets = scoring.Budgets({'merge': None, 'split': None}, positive_ratio={'merge': 1.0, 'split': 1.0}, min_positives=20)
 
 def k_variants(P):

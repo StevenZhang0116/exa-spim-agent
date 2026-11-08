@@ -86,7 +86,7 @@ python -u -m proofreader_evolve.cli.export_rerank_companion --brain <b> --mcl 10
 python -u scripts/check_image_alignment_from_cache.py --brains <b> --mcl 100 --out figs/candidate_image_alignment_<date>
 python -u scripts/check_image_alignment_from_cache.py --brains <b> --mcl 100 --out figs/candidate_image_alignment_<date> \
     --record-reviewed --review-note "<what you saw in the six overlays>"
-python -m proofreader_evolve.cli.preflight --brains <development brains> --train-brains <TRAIN brains> --selection-brains all --detector-prior raw --mcl 100
+python -m proofreader_evolve.cli.preflight --brains <development brains> --train-brains <TRAIN brains> --selection-brains all --detector-prior raw --mcl 100 --min-positives 10
 rm -rf metrics_out/<b>; python -u notebooks/evaluate_skeleton_metrics.py --brains <b>   # only if GT or the segmentation changed; old runs are deleted, not archived
 ```
 
@@ -100,13 +100,16 @@ cloud reads apart from the GT check), then steps 2 to 4, then re-record the rece
   `precompute_error_scores.resolve_detector_runs`): fitted on the cache of their time; a
   rebuilt cache changes their training labels only if they are refitted. Decide explicitly.
   The 2026-08 detectors and all AutoDiscovery results were deleted on 2026-10-17 (fitted
-  before the relabel, on the old pools); no default detector is set until the new builds
-  exist. Companions and the candidate-pool sweeps do not need a detector. Since 2026-11-06
+  before the relabel, on the old pools); since 2026-10-23 the defaults point at the 2026-10
+  builds (`new-merge-1_2026-10-19`, `new-split-1_2026-10-20`, run directory
+  `runs/794495-with-figures`). Companions and the candidate-pool sweeps do not need a
+  detector. Since 2026-11-06
   raw runs need no detector either: they load raw pools. The detector-native table directories
   (32.6 GiB of `features.pkl` across nine brains) were deleted on 2026-11-07, so `feature_tables/`
   holds only raw pools; a `frozen` / `no-score` run first re-prepares its tables (item 2 without
-  `--detector-prior raw`, hours per brain). The detectors themselves stay in
-  `autodiscovery-application/`.
+  `--detector-prior raw`, hours per brain) with the detector deliverables, whose run directories
+  under `autodiscovery-application/` were deleted on 2026-11-06 and restored on 2026-11-08 from
+  the `mindscope_daily_2026-11-05_19:00` filesystem snapshot.
 - **Evolution runs** (`proofreader_evolve/runs/<run>/`): `best_scorer.py` and
   `descriptors.json` stay executable, but Precision@K on a rebuilt brain is against new labels
   and a new pool hash; the seed baseline of the next run is the reference.

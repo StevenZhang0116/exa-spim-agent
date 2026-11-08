@@ -224,8 +224,9 @@ class NativePoolTests(unittest.TestCase):
                 self.assertEqual(rows_a, rows_b)
                 self.assertTrue(np.any(truth_a != truth_b))
 
-    @unittest.skipUnless(pc.DEFAULT_MERGE_DIR and pc.DEFAULT_SPLIT_DIR,
-                         "no default frozen detectors configured")
+    @unittest.skipUnless(pc.DEFAULT_MERGE_DIR.is_dir() and pc.DEFAULT_SPLIT_DIR.is_dir(),
+                         "default frozen detector deliverables are not on disk (restore the 2026-10 "
+                         "autodiscovery-application run directories from a snapshot or rebuild them)")
     def test_real_frozen_feature_extraction_and_model_parity_on_tiny_graph(self):
         selected = pc.resolve_detector_runs()
         for kind, records in selected.items():
