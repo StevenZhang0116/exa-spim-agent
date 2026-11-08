@@ -158,10 +158,10 @@ per-call wall for raw runs in a follow-up, not in this change.
 
 Estimated effort: code half a day, tests and docs half a day, seed baselines under an hour.
 
-## Current launch example (2026-11-04; after reserving 794495)
+## Current launch example (2026-11-04; after reserving 794495; 841260 added to validation 2026-11-07)
 
 Run on an allocated compute node in the `panda` environment. This example uses
-the current six TRAIN / four development-validation split and excludes reserved
+the current six TRAIN / five development-validation split and excludes reserved
 794495 entirely. The [Stage 3 guide](../../docs/stage3_evolution.md#32-prepare-tables-and-launch-a-run)
 contains the preferred Slurm launcher with a console log.
 
@@ -170,7 +170,7 @@ python -u -m proofreader_evolve.cli.run_evolution \
   --detector-prior raw \
   --train-brains 802449,747807,750318,754610,754612,754613 \
   --selection-brains all --selection-holdout-brains all \
-  --validation-brains 789202,794493,794491,751473 \
+  --validation-brains 789202,794493,794491,751473,841260 \
   --generations 5 --objective auroc --aggregation positive-weighted \
   --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400
 ```

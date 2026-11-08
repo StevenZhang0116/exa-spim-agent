@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Rebuild the derived Stage 3 artifacts on this node, one brain at a time (rebuild plan,
 # section 4): candidate pools of both kinds with their availability sidecars, the
-# companion pool check (794495 and 802449); then one preflight over this call.
+# companion pool check (802449; 794495 only when passed explicitly); then one preflight over this call.
 # DETECTOR_PRIOR=raw (default since 2026-11-06) builds detector-free raw pools (minutes per
 # brain, no detector, no image pass; what --detector-prior raw evolution loads).
 # DETECTOR_PRIOR=frozen builds the detector-native tables with the default frozen detectors
-# (hours per brain), needed only for frozen / no-score runs.
+# (hours per brain), needed only for frozen / no-score runs; every brain's native tables were
+# deleted on 2026-11-07, so frozen mode starts from nothing.
 # Evolution reads geometry and images on demand; no context patches are precomputed.
 #
 # Run it inside the allocation (a terminal of the interactive node's JupyterLab); the steps use the CPUs
@@ -14,18 +15,17 @@
 # first unfinished brain and kind; a kind interrupted mid-way is built again from its start.
 # The first failure stops the script. Never run two of these on one node: 200 GB held one brain
 # (802449 in the detector build), two brains together are untested. Calls on different nodes with
-# different brains are independent (per-brain directories, per-call logs). The TRAIN/selection
-# role check of the closing preflight runs only when the call holds both 794495 and 802449.
+# different brains are independent (per-brain directories, per-call logs). The closing preflight
+# receives the current TRAIN brains among the call's brains as --train-brains (selection all).
 #
 # 2026-11-05: the segmentation sources of 789202 and 802449 were replaced by the denoised Google
-# segmentations and 841260 was added (explicit entries in configs/segmentation_paths.json). Rebuild
-# their caches first (python -m labeled_cache --brains 789202 802449 --rebuild-base; --brains 841260
-# for the new brain), and regenerate the 802449 companions before this script
-# (python -m proofreader_evolve.cli.export_rerank_companion --brain 802449 --mcl 100 --pool-only),
-# otherwise the companion pool check below fails against the file of the old segmentation. Re-record
-# the image-alignment receipts of the three brains afterwards (docs/dataset_artifact_dependencies.md).
+# segmentations and 841260 was added (explicit entries in configs/segmentation_paths.json). Their
+# caches (2026-11-06), raw pools and 802449 companions (2026-11-06/07) and alignment receipts
+# (2026-11-07) are rebuilt. After any future graph reload repeat that order first: rebuild the cache,
+# regenerate the brain's companions if it has any (otherwise the companion pool check below fails
+# against the old file), run this script, then re-record the receipt (docs/dataset_artifact_dependencies.md).
 #
-#   bash proofreader_evolve/rebuild_brains.sh [brain ...]          # default: all twelve brains, 841260 last
+#   bash proofreader_evolve/rebuild_brains.sh [brain ...]          # default: the eleven development brains, 841260 last
 #   nohup bash proofreader_evolve/rebuild_brains.sh >/dev/null 2>&1 &   # keeps running when the terminal closes
 #
 # Environment: DETECTOR_PRIOR (raw | frozen, default raw); IMAGE_WORKERS (frozen only: detector
@@ -39,10 +39,11 @@ set -euo pipefail
 
 cd "$(dirname "$(readlink -f "$0")")/.."
 # Current roles (2026-11-04): TRAIN/selection 802449 747807 750318 754610 754612 754613, validation
-# 789202 794493 794491 751473, 794495 reserved; 841260 (added 2026-11-05) has no role yet and is last,
-# so it is reached only once its cache exists. Evolution brains first, then the older-microscope
-# brains, shortest image pass first.
-DEFAULT_BRAINS=(794495 802449 789202 794493 794491 754613 754612 754610 750318 751473 747807 841260)
+# 789202 794493 794491 751473 841260 (841260 added 2026-11-05, validation since 2026-11-07); 794495 is
+# reserved (no development role, so not in the default list; pass it explicitly if its pools are ever
+# needed). Evolution brains first, then the older-microscope brains, shortest image pass first.
+DEFAULT_BRAINS=(802449 789202 794493 794491 754613 754612 754610 750318 751473 747807 841260)
+TRAIN_BRAINS=" 802449 747807 750318 754610 754612 754613 "
 COMPANION_BRAINS=" 794495 802449 "
 MCL=100
 IMAGE_WORKERS=${IMAGE_WORKERS:--1}
@@ -102,8 +103,12 @@ for b in "$@"; do
 done
 
 roles=()
-if [[ " $* " == *" 794495 "* && " $* " == *" 802449 "* ]]; then
-    roles=(--train-brains 794495 802449)
+train_present=()
+for b in "$@"; do
+    if [[ "$TRAIN_BRAINS" == *" $b "* ]]; then train_present+=("$b"); fi
+done
+if [ "${#train_present[@]}" -gt 0 ]; then
+    roles=(--train-brains "${train_present[@]}" --selection-brains all)
 fi
 echo; echo "# preflight"
 python -u -m proofreader_evolve.cli.preflight --brains "$@" --mcl "$MCL" --detector-prior "$DETECTOR_PRIOR" "${roles[@]}"

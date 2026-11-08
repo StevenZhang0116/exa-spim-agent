@@ -8,6 +8,9 @@ close to 100%; an unrelated segmentation run gives close to 0%.
 
 `python -m labeled_cache.source_check --brains 794495 802449 789202 794493 794491 747807 754610 754612 754613 750318 751473 --record`
 
+The 802449 and 789202 rows of this table are the sources replaced on 2026-11-05; the receipts of their
+denoised replacements are in the next section. The rows stay as the record of that check.
+
 | brain | segmentation_id | fragments | nodes | exact | within 1 vox | background | other id | failed | agreement | verdict |
 |---|---|---|---|---|---|---|---|---|---|---|
 | 794495 | `raw.unet_449_792_202_splits_and_merges_831600` | 60 | 240 | 230 | 10 | 0 | 0 | 0 | 100.0% | matched |

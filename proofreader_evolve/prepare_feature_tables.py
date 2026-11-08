@@ -1,22 +1,24 @@
 """Generate the candidate pool tables evolution loads (raw pools or detector-native tables) and their
 availability sidecars, then run read-only validation.
 
-Run with panda on an allocated compute node (e.g. n257):
-    python -u proofreader_evolve/prepare_feature_tables.py --brains 794495 789202 794491 794493 802449
+Run with panda on an allocated compute node:
+    python -u proofreader_evolve/prepare_feature_tables.py --detector-prior raw --threads all \
+        --brains 802449 747807 750318 754610 754612 754613 789202 794493 794491 751473 841260
 
-Without --brains, the preparation default is 789202 and 794491; include 794495
-explicitly to prepare the current default evolution TRAIN brain. MCL defaults
-to 100, with labeled _add caches, the candidate pools declared in candidate_pools.json and
-the default frozen detectors. Under frozen / no-score, precompute, preflight and evolution all
-resolve the detectors through precompute_error_scores (DEFAULT_MERGE_DIR / DEFAULT_SPLIT_DIR,
-the 2026-10 builds since 2026-10-23).
+Pass explicit brain lists: without --brains the legacy default is 789202 and 794491, and 794495
+is reserved (no development role since 2026-11-04). MCL defaults to 100, with labeled _add caches,
+the candidate pools declared in candidate_pools.json and, under frozen / no-score, the default
+frozen detectors resolved through precompute_error_scores (DEFAULT_MERGE_DIR / DEFAULT_SPLIT_DIR,
+the 2026-10 builds since 2026-10-23). The detector-native tables of every brain were deleted on
+2026-11-07, so a frozen / no-score preparation starts from nothing (hours per brain).
 Each brain runs in a fresh subprocess to release memory before the next.
 After the tables, precompute_availability writes the label-availability sidecars, which
 the closing preflight (and evolution) require; without them a fresh table always failed it.
 Existing matching tables and valid sidecars are reused. The first failure stops the script
 with a nonzero exit code. No LLM calls or evolution.
 The segmentation sources of 789202 and 802449 were replaced on 2026-11-05 and 841260 is a new
-brain: their tables are built from the rebuilt caches (docs/dataset_artifact_dependencies.md).
+brain: their raw pools were built from the rebuilt caches on 2026-11-06/07
+(docs/dataset_artifact_dependencies.md).
 --detector-prior raw (2026-11-06) prepares detector-free raw pools instead
 (cli.precompute_raw_pools: declared rule, labels and raw candidate attributes only; no
 detector, no image pass, minutes per brain) and passes the prior on to the sidecar and

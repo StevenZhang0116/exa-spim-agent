@@ -23,8 +23,8 @@ Layouts. The legacy template is
 (``from_google/<brain>/whole_brain_denoised/<segmentation_id>/``, fragments in
 ``<segmentation_id>/swcs``) need explicit ``segmentation_paths.json`` entries. On 2026-11-05 the
 sources of 789202 and 802449 were replaced by their denoised segmentations and 841260 was added
-as a new brain (explicit entries; 820994 was not added: its shared folder was absent and it has
-no GT tracings). Replacing a source is a graph reload for that brain: caches, tables, companions
+as a new brain (explicit entries, and the superseded 789202/802449 lines were removed from the RTF
+on 2026-11-07; 820994 was not added: its shared folder was absent and it has no GT tracings). Replacing a source is a graph reload for that brain: caches, tables, companions
 and alignment receipts are rebuilt (``docs/dataset_artifact_dependencies.md``).
 """
 

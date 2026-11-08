@@ -16,9 +16,12 @@ formats are unchanged, 748 nm sharded precomputed and zip-sharded voxel SWCs). 8
 added: the shared folder did not exist and the brain has no GT tracings. For 789202 and 802449
 this is the graph reload of section 3 (`--rebuild-base`, tables, the 802449 companions, alignment
 receipts, preflight, then a new seed baseline; `metrics_out/<brain>/` gets a new segmentation-id
-directory, so move the old one aside before the comparison scripts). 841260 needs the full build,
-its image prefix (added) and an alignment review. The cache file name carries no segmentation id,
-so the old and new sources of one brain cannot coexist in `cache/`.
+directory; old runs are deleted, not archived). 841260 needs the full build,
+its image prefix (added) and an alignment review. All of this was done on 2026-11-06/07 (caches,
+raw pools, 802449 companions, receipts from the `figs/candidate_image_alignment_20261106` overlays,
+preflight); the old 789202/802449 lines were removed from `configs/segmentation_datasets.rtf` on
+2026-11-07 because `configs/segmentation_paths.json` takes precedence. The cache file name carries no
+segmentation id, so the old and new sources of one brain cannot coexist in `cache/`.
 
 Written 2026-10-14 after the 794495 rebuild. Every derived artifact of a brain descends from
 its labeled dataset cache `cache/dataset_cache_<brain>_mcl<N>_add.pkl`. This page lists those
@@ -75,7 +78,7 @@ AutoDiscovery audit (`bind_companions`); items 1 and 8 are the ones that surpris
 
 ```bash
 conda activate panda            # compute node; one brain at a time; with srun always add -n1
-rm -rf proofreader_evolve/feature_tables/<b> proofreader_evolve/descriptor_bank/<b>
+rm -rf proofreader_evolve/feature_tables/<b> proofreader_evolve/descriptor_bank*/<b>
 python -u -m labeled_cache --brains <b> --mcl 100 --rebuild-base                      # deletes both pkl files, GCS load; 58 min (794495)
 python -u proofreader_evolve/prepare_feature_tables.py --brains <b> --mcl 100 --threads all --detector-prior raw   # raw pools + sidecars, minutes (raw runs, since 2026-11-06)
 # frozen / no-score runs only: the same command without --detector-prior raw and with --image-workers -1 (detector image pass, about 16 h for 794495)
@@ -99,9 +102,11 @@ cloud reads apart from the GT check), then steps 2 to 4, then re-record the rece
   The 2026-08 detectors and all AutoDiscovery results were deleted on 2026-10-17 (fitted
   before the relabel, on the old pools); no default detector is set until the new builds
   exist. Companions and the candidate-pool sweeps do not need a detector. Since 2026-11-06
-  raw runs need no detector either: they load raw pools, so the detector-native table
-  directories (44 GB of `features.pkl` across the eleven brains on 2026-11-06) and the
-  detectors are kept only for `frozen` / `no-score` runs and can otherwise be deleted.
+  raw runs need no detector either: they load raw pools. The detector-native table directories
+  (32.6 GiB of `features.pkl` across nine brains) were deleted on 2026-11-07, so `feature_tables/`
+  holds only raw pools; a `frozen` / `no-score` run first re-prepares its tables (item 2 without
+  `--detector-prior raw`, hours per brain). The detectors themselves stay in
+  `autodiscovery-application/`.
 - **Evolution runs** (`proofreader_evolve/runs/<run>/`): `best_scorer.py` and
   `descriptors.json` stay executable, but Precision@K on a rebuilt brain is against new labels
   and a new pool hash; the seed baseline of the next run is the reference.
@@ -116,7 +121,9 @@ cloud reads apart from the GT check), then steps 2 to 4, then re-record the rece
   `notebooks/split_fragment_length/` and `notebooks/gt_neuron_length/` record it as
   `source_cache` in the per-brain JSON (`gt_neuron_length` also reads the GT SWCs from GCS, so
   a GT edit on GCS changes it too); results for a rebuilt brain must be recomputed, not
-  merged with old ones.
+  merged with old ones. `notebooks/errors_per_neuron/` (`plot_errors_per_neuron.py`, 2026-11-07)
+  reads only item 8 and the two canonical-gap outputs and checks their segmentation ids, so it is
+  rerun after `evaluate_skeleton_metrics.py` or either `*_canonical_gap.py --measure` (seconds).
 - **Documents quoting numbers**: `proofreader_evolve/TODO.md` coverage tables,
   `notebooks/merge_label_shadow_findings.md`, the feature specifications (item 5).
 

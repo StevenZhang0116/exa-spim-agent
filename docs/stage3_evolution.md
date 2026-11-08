@@ -56,14 +56,18 @@ detector-free raw pools (section 3.2) and no detector is involved.
 |---|---|
 | TRAIN and selection | 802449, 747807, 750318, 754610, 754612, 754613 |
 | Whole-brain selection holdouts | All six TRAIN brains |
-| Development validation / promotion | 789202, 794493, 794491, 751473 |
+| Development validation / promotion | 789202, 794493, 794491, 751473, 841260 (added 2026-11-07) |
 | Reserved for future independent validation | **794495**, excluded from the current loop |
 
 Segmentation sources (2026-11-05): 789202 and 802449 now resolve to their denoised Google
-segmentations and 841260 is a new brain with GT (role not yet assigned, so it is absent from
-the lists on this page). Caches, tables, companions and alignment receipts of the three brains
-are rebuilt before the next run, which sets a new seed baseline; runs before the rebuild are
-not comparable on 802449 or 789202 (see [artifact dependencies](dataset_artifact_dependencies.md)).
+segmentations and 841260 is a new brain with GT. On 2026-11-07 the user placed 841260 in the
+development validation set: 789202's merge pool fell below the 20-positive floor with the denoised
+source, so without 841260 the merge promotion gate would hold no denoised brain, while TRAIN keeps
+353 countable merge positives and its three whole-brain holdout folds unchanged; 841260's 118 merge
+positives also balance the two sides (TRAIN 353 / validation 377). Caches, raw pool tables,
+companions and alignment receipts of the three brains were rebuilt on 2026-11-06/07 and the raw
+preflight passes with these roles; the next run sets a new seed baseline, and runs before the
+rebuild are not comparable on 802449 or 789202 (see [artifact dependencies](dataset_artifact_dependencies.md)).
 
 Do not use 794495 for new training (including auxiliary fitting), selection/OOF,
 tuning, ablations, testing or evolution promotion. Its independent validation
@@ -97,10 +101,11 @@ rows, labels and `pool_sha256` as the detector-native tables, with the raw candi
 attributes as the only feature frame, so no frozen detector is resolved, hashed or run at
 preparation or at run start (a cache load plus the enumeration per brain, minutes). The
 detector-native tables and the frozen detectors are needed only by `--detector-prior frozen`
-/ `no-score` (`prepare_feature_tables.py` without `--detector-prior raw`, hours per brain).
+/ `no-score` (`prepare_feature_tables.py` without `--detector-prior raw`, hours per brain); those
+tables were deleted on 2026-11-07, so such a run re-prepares them first.
 
 ```bash
-EVOLUTION_BRAINS=(802449 747807 750318 754610 754612 754613 789202 794493 794491 751473)
+EVOLUTION_BRAINS=(802449 747807 750318 754610 754612 754613 789202 794493 794491 751473 841260)
 python -u proofreader_evolve/prepare_feature_tables.py \
   --brains "${EVOLUTION_BRAINS[@]}" --mcl 100 --threads all --detector-prior raw
 # Preparation writes these sidecars too; this standalone command reuses valid ones.
@@ -134,7 +139,7 @@ nohup /home/zihan.zhang/.conda/envs/panda/bin/python -u \
   --detector-prior raw \
   --train-brains 802449,747807,750318,754610,754612,754613 \
   --selection-brains all --selection-holdout-brains all \
-  --validation-brains 789202,794493,794491,751473 \
+  --validation-brains 789202,794493,794491,751473,841260 \
   --generations 5 --objective auroc --aggregation positive-weighted \
   --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400 \
   > "$EVOLUTION_LOG" 2>&1 &
