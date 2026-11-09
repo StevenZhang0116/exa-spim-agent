@@ -62,6 +62,13 @@ detector-free raw pools (section 3.2) and no detector is involved.
 | Development validation / promotion | 789202, 794493, 794491, 751473, 841260 (added 2026-11-07) |
 | Reserved for future independent validation | **794495**, excluded from the current loop |
 
+Image sources (2026-11-08): the raw `fused.zarr` of 754613 and 751473 were deleted from
+`aind-open-data` on 2026-11-08; both brains now read the `fused-denoised.zarr` of the same prefix
+(same grid, denoised pixels), with rewritten cache `img_path`, re-prepared raw pools and new alignment
+receipts. The `fused.zarr` of 841260 (and of the reserved 794495) is itself denoised (AIND denoise-net on
+the tiles before flat-field correction and fusion), the other eight development brains read raw images,
+so image descriptors see two kinds of pixels across brains (`cache/dataset_source_status_20261108.md`, `docs/dataset_artifact_dependencies.md`).
+
 Segmentation sources (2026-11-05): 789202 and 802449 now resolve to their denoised Google
 segmentations and 841260 is a new brain with GT. On 2026-11-07 the user placed 841260 in the
 development validation set: 789202's merge pool fell to 15 positives with the denoised source, below

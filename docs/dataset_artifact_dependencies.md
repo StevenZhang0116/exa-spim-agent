@@ -163,6 +163,14 @@ carry the fragment's own segment id). After the build:
   the surviving volume, then run `--refresh-image-path`; `BrainDataset.load_from_cache` opens
   `img_path` eagerly, so the base cache is unusable until then. The rewrite changes the file
   identity, so the alignment receipt is re-recorded afterwards.
+  On 2026-11-08 AIND deleted the raw `fused.zarr` of 754613 and 751473 (levels and root metadata
+  removed over the day); both prefixes keep a `fused-denoised.zarr` with the same shape, spacing and
+  chunking, and the only other fusions of these brains are 8x downsampled. The prefixes, the cache
+  `img_path` (`--refresh-image-path`, 522 s for both brains), the raw pools and sidecars (new cache
+  identity) and the receipts (`figs/candidate_image_alignment_20261108`) were redone the same day;
+  these two brains, 841260 and the reserved 794495 (whose `fused.zarr` AIND denoised at the tile level
+  before fusion) read denoised pixels while the other eight development brains read raw ones
+  (`cache/dataset_source_status_20261108.md`).
 - `prepare_feature_tables.py` exits 1 when its final preflight finds no sidecars; the tables
   are complete nonetheless.
 - Inside the user's Slurm job use `srun --jobid=<job> --overlap -n1 ...`; without `-n1` the

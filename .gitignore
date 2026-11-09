@@ -125,6 +125,7 @@ notebooks/label_counts/
 notebooks/split_canonical_gap/
 notebooks/evaluable_precision_test/
 notebooks/gt_neuron_length/
+notebooks/raw_vs_denoised_image/
 notebooks/split_rank_curves/
 notebooks/split_fragment_length/
 notebooks/errors_per_neuron/
