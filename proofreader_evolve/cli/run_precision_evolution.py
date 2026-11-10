@@ -367,7 +367,7 @@ def parse_args(argv=None):
                         "(default: 14400)")
     p.add_argument("--mcl", type=int, default=100)
     p.add_argument("--generations", type=int, default=15)
-    # Three-valued defaults (2026-10-09 K sweep, TODO.md): K must stay well below the GT-labeled rows per cell.
+    # Three-valued defaults (2026-10-09 K sweep; table in `git show efcd2be:proofreader_evolve/TODO.md`): K must stay well below the GT-labeled rows per cell.
     # Split cap raised to 1000 on 2026-10-12 (the 500-row window saturated at the end of run phg8xri5) and
     # removed on 2026-10-26: the frozen detector alone scored Precision@1000 0.92-0.97 on the validation
     # pools, which hold 1,759-2,783 GT positives each, so split now ranks K = its GT positives

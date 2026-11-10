@@ -127,7 +127,7 @@ cloud reads apart from the GT check), then steps 2 to 4, then re-record the rece
   merged with old ones. `notebooks/errors_per_neuron/` (`plot_errors_per_neuron.py`, 2026-11-07)
   reads only item 8 and the two canonical-gap outputs and checks their segmentation ids, so it is
   rerun after `evaluate_skeleton_metrics.py` or either `*_canonical_gap.py --measure` (seconds).
-- **Documents quoting numbers**: `proofreader_evolve/TODO.md` coverage tables,
+- **Documents quoting numbers**: `proofreader_evolve/TODO.md` (pool counts in its data section),
   `notebooks/merge_label_shadow_findings.md`, the feature specifications (item 5).
 
 ## 5. Verification after a rebuild

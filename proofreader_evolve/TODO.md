@@ -1,860 +1,210 @@
 # proofreader_evolve TODO
 
-Open items and dated design notes record behaviour and evidence at the time of
-writing. The current decisions below take precedence over older proposals;
-completed items are marked explicitly so historical costs are not read as current
-implementation gaps.
+Open items only. Each entry says what is open, why it matters and where it would be
+changed; "checked" dates say when the code was last compared with the entry.
 
-## Current decisions overriding older proposals (2026-11-04)
+This file was reduced from 861 to its open items on 2026-11-09. Completed work, superseded
+proposals and the measurement tables that older documents cite from here (the 2026-10-09
+K sweep, the context-cache coverage tables, the 2026-10-29 three-arm state) are in the
+change log of [WORKFLOW_REVISION.md](WORKFLOW_REVISION.md) and in the previous version of
+this file: `git show efcd2be:proofreader_evolve/TODO.md`.
 
-- Reserve 794495 for a future independent validation protocol; no new fitting,
-  selection/OOF, tuning, testing or evolution promotion on it. The current split
-  and launch recipe are in [Stage 3](../docs/stage3_evolution.md#32-prepare-tables-and-launch-a-run).
-- **Open implementation gap:** driver defaults still select 794495 and the tools
-  have no general reserved-brain guard. Documentation now uses explicit lists;
-  migrating defaults/enforcing the reservation requires a separate code change.
-- The old proposals for an auxiliary weight or detector-OOF selection on 794495
-  are superseded by its reservation. The current raw recipe already holds out all
-  six TRAIN brains whole. The old mixed within-brain/whole-brain recipe is historical.
-- Keep positive-weighted aggregation consistent for selection, ablation, validation
-  and bootstrap. Earlier suggestions for equal-brain selection alone are not the
-  current decision. No LLM selection/promotion judge has been implemented.
-- Fit/frame identities, rotation-floor priority, timing reuse, classifier search
-  budgets, prompt/transport simplification and artifact deduplication are implemented;
-  assess their effect in subsequent runs rather than treating the older proposals
-  below as pending patches. Run every Python analysis/test on a compute node.
+## Standing decisions
 
-The dated run observations below remain historical evidence, not authorization to
-reuse their dataset partition. New independent validation remains undesigned.
+- 794495 is reserved for a future independent validation; no fitting, selection, tuning,
+  testing or promotion on it. The split and launch recipe are in
+  [Stage 3](../docs/stage3_evolution.md#32-prepare-tables-and-launch-a-run).
+- Positive-weighted aggregation is shared by selection, ablation, validation and the
+  bootstrap. No LLM judge takes part in selection or promotion.
+- The five validation brains are development data: the gate has judged many candidates on
+  them. A result on them is not a held-out test result.
+- Do not change the objective or the gate while a run that will be compared is running;
+  every such change gets a WORKFLOW_REVISION row naming the runs it applies to.
 
-## Revision directions after the three detector-prior runs (2026-10-29, by priority)
+## 1. Is the workflow's complexity paying for itself? (2026-11-09)
 
-The three runs were stopped by the user on 2026-10-29 at 08:50 (SIGTERM to the driver
-process groups; `run_status.json` says `interrupted`): frozen
-`precision_20261027_220207_3zf4mz8t` in generation 12/20 (11 completed), no-score
-`precision_20261027_233027_6pgo4846` in generation 14/20 (13 completed, killed during that
-generation's outer validation), raw `precision_20261028_000623_cun4h9k0` in generation 20/20
-(19 completed). There is no `final.json`; the ledgers are the final record and the table below
-is final. The last five to eight generations of every arm were rejected inside the bootstrap
-interval, which is why the runs were not taken to 20. All three
-arms used the same partition (TRAIN 794495 auxiliary, 802449 within-brain folds, 747807 /
-754610 / 754612 / 754613 whole-brain holdouts; validation 789202 / 794493 / 794491 / 750318 /
-751473), uniform K = GT positives, positive-weighted aggregation and the bootstrap gate, so
-validation numbers are comparable across arms (merge: hits out of 524 slots; split: out of
-12,581).
+**The question.** The workflow has grown faster than the evidence for its parts.
 
-State so far (accepted / best measured on validation):
+| Measured 2026-11-09 | Amount |
+|---|---|
+| Harness | 59 files, about 12,500 lines |
+| Driver command-line options | 54 |
+| Tests | 550, about 12,000 lines, about one hour for the whole suite |
+| WORKFLOW_REVISION.md | 2,336 lines, 90 change rows, versions v9 to v17 in five weeks |
+| Agent-facing guides | 7 files, about 1,300 lines |
+| Evidence base | the ten most recent runs with at least three generations: 71 generations, 42 accepted |
 
-| Arm | Merge hits (accepted / best) | Split precision (accepted / best) | Accepted gens |
-|---|---|---|---|
-| frozen (detector_score + h*) | 66 (seed detector) / 81 (gen 8) | 0.860 / 0.861 | 1 of 11 |
-| no-score (h* only) | 113 (gen 9) / 113 | 0.859 / 0.862 | 4 of 13 |
-| raw (raw_* + agent descriptors) | 112 (gen 9) / 119 (gen 17) | 0.858 / 0.858 | 4 of 19 |
+What is not in doubt: the workflow as a whole works. Accepted scorers beat the raw-heuristic
+baseline on development validation (merge AUROC 0.762 to 0.847 / 0.863 after one generation
+of the two 2026-11-08 runs).
 
-Observations the directions rest on: (i) the two arms without detector_score both beat the
-frozen detector's merge ranking by 46-53 hits, and both gains came from agent descriptors
-that are brain-scale free (no-score gen 8: 22 `geo_*` 50 um fragment-geometry columns such as
-the through-pair kink change between 5 and 45 um and the number of arms reaching 30 um; gen 9:
-dropping the 10% most brain-shifted h* columns, mostly absolute radii, 96 -> 113 hits; raw gen 1
-and gen 9: branch-intensity ratios and `w_*` columns normalised by patch percentiles). (ii)
-Every h* re-ranker in the frozen arm gained only on the detector's own microscope generation
-(789202 / 794493 / 794491: 18 -> 27-31 of 240) and lost on the older-microscope validation
-brains (750318 / 751473: 48 -> 39-44 of 284), while the accepted no-score and raw models gained
-on both (44-48 of 240 and 64-69 of 284). (iii) Absolute radius columns differ by brain
-(802449 about 2 um, 747807 / 754612 about 4-8 um); replacing them by ratios (no-score gen 13)
-raised TRAIN OOF 0.291 -> 0.304 but lowered validation 113 -> 101, so a TRAIN-side scale-free
-fix is not equivalent to the pruning that transferred. (iv) Split converged to 0.858-0.862 in
-all three arms from seeds of 0.850 / 0.478 / 0.830; the eleven split generations after each
-arm's first split model moved validation by -0.003..+0.0028 (one accepted, raw gen 5), and
-the agents' paired ablations of six descriptor families were +0.001..+0.003 each, the size of
-seed noise. (v) Twelve completed tune generations across the three runs accepted nothing;
-merge needs about +16 hits (+0.03 on the kind) to clear the gate, split about +0.002. (vi) The
-selection metric is 86-88% 802449 within-brain folds for merge (K 1038 of 1185 counted);
-agents repeatedly submitted the best-selection candidate over the best-holdout one, and
-raw's merge acceptance (gen 9) was the one time the agent chose by holdout (0.224 vs 0.197)
-against a lower pooled OOF (0.3055 vs 0.3105). (vii) Both h* arms found independently that
-dropping the detector-fitted brain 794495 from fitting raises split holdout precision
-(frozen gen 10: +0.006, 747807 +12 / 754610 +7 / 754612 +10 / 754613 +5 / 802449 -22 OOF hits;
-no-score gen 11: +0.003 on two seeds) while it hurts merge (no-score gen 12); the split
-validation gains were +0.0007 and +0.0013, the second missing the gate by 0.00008.
+What is unknown: how much of that comes from the search-control machinery and how much from
+letting an agent write features and models at all. No run has removed one of these
+mechanisms to measure its effect, and the provenance section of WORKFLOW_REVISION states that
+a cited paper is not evidence that the implementation improves anything.
 
-### P1. Offline analyses on the finished artefacts (compute node; do first)
+**Why the machinery is suspect** (judgement, not measurement):
 
-- **Cross-arm paired bootstrap and overlap.** Run the harness's paired Poisson bootstrap on
-  the validation cells for no-score gen 9 (113), raw gen 9 (112) and raw gen 17 (119) against
-  the detector (66) and against each other, and measure the Top-K overlap of the two accepted
-  merge scorers (re-score the validation pools with the two accepted components from
-  `model_artifacts/`, as the outer evaluator does). They use different information (h* + `geo_*` vs raw + `g_/i_/w_`), so
-  low overlap would make an ensemble the cheapest next gain. Caveat for the write-up: the
-  five validation brains are development data (the gate has judged 40+ candidates on them)
-  and merge has no untouched test brain (754613 holds 9 positives), so the cross-arm claim is
-  "about 3 standard errors on development validation", not a held-out test result.
-- **Cross-brain screen of the 293 h* merge columns.** Reuse the brain-shift score from
-  no-score gen 9's `training.py` (label-0 distribution distance between TRAIN brains) plus a
-  six-brain sign-consistency test on the existing feature tables, and measure offline with
-  the harness grouped-OOF / holdout code whether "screened h* + `geo_*`" reproduces 113 and
-  whether "screened h* + the raw arm's descriptors" exceeds it. The result decides between
-  P4(a) (build-time filter) and P4(b) (re-discovery). Columns to watch beyond radii: the
-  gen 13 shift list still had raw intensities (h57 / h58 / h64), gradient magnitudes (h63)
-  and h41 near the top.
-- **Attribution of the accepted gains.** Per-column gain and paired masking for
-  `geo_pair_kink_change`, `geo_long_arms`, the pruned radius set (no-score gens 8-9) and
-  `w_pn_far_min`, `w_orient_dev_max`, `i_branch_med_ratio` (raw gens 1, 9); per-brain
-  medians by label are already in the descriptor plans. This is the material for P4(c).
-- **Record the final state.** Per-arm final validation, accepted components, per-generation
-  table, acceptance rate, API cost and wall time into WORKFLOW_REVISION; link the three run
-  ids. Keep the per-microscope-generation split of the merge hits (240 + 284 slots), it is the
-  clearest statement of the transfer effect.
+- It is built for long searches, and a run has five to ten generations, so three to five
+  decisions per kind. The branch pool (five branches plus a protected reference), hypothesis
+  memory, handoff records, adaptive kind allocation, stagnation penalties, the exploration
+  interval and the plateau patience have little room to act and no way to show that they did.
+- Most mechanisms were added in reaction to one run's observation.
+- Image tooling is larger than its use: the preview allowance is 32 per generation and the
+  most used in the 2026-11-05 and 2026-11-08 runs was 4, usually 0.
+- Run-to-run variation is as large as the effect expected from any one mechanism: the two
+  identical 2026-11-08 runs reached merge validation AUROC 0.847 and 0.863 in generation 1.
 
-### P2. Selection protocol and scheduling (code + tests + WORKFLOW_REVISION, before the next runs)
+**What is not overengineering and must stay in any simplification:** the TRAIN / validation
+separation (the agent never sees validation results), the paired-bootstrap promotion gate
+with the head guard, whole-brain holdout selection, and three-valued labels. They answer a
+property of this data set: some merge pools hold 15-22 positives, so one comparison's noise
+exceeds a real gain.
 
-- **Confirm the AUROC objective on real candidates.** Since 2026-11-02 the driver's default
-  objective is AUROC with a head guard (`harness/rank_statistics.py`, objective v7; chosen from a
-  paired-bootstrap simulation, see WORKFLOW_REVISION 2026-11-02). Every cell of the next raw run
-  records P@K, the three depths, AP, AUROC and pAUC, so after one or two runs: (a) compare the
-  paired-bootstrap interval widths of AUROC and P@K on the same candidates; (b) compute the
-  Spearman correlation of each selection statistic (`experiments[*].selection.per_kind_statistics`)
-  with the validation objective and with validation P@K; (c) count head-guard vetoes, rejected
-  gens whose P@K rose, and candidates whose three-depth mean held while P@K alone fell by more than
-  the tolerance (the mean lets depths compensate; `--head-guard-statistic precision_at_k` guards the
-  single cut, and such cases decide whether the default moves). Revert to `--objective
-  precision_at_k` if validation P@K falls over the run or the head guard vetoes most AUROC-accepted
-  candidates; AUROC rising while P@K stays flat is the expected low-power case, not a failure (the
-  2026-11-02 simulation, bootstrap K fixed as in production: broad-change z P@K 3.2 vs AUROC 12.1).
-  Motivation: in `precision_20261031_175627_2okbyg6b` four merge
-  generations with P@K point gains of +0.010 to +0.027 were rejected by a gate that needs about
-  +0.035, and the five validated merge candidates were ordered oppositely by selection and
-  validation.
-- **Holdout-first candidate selection for merge.** Make `holdout_precision` (whole-brain
-  out-of-fold cells) the primary key of `candidate_selection` and of the `restore_candidate("best")`
-  rule when the kind's selection pool is dominated by one within-brain cell (say > 70% of the
-  counted K), or switch selection-side aggregation to equal-brain while keeping
-  positive-weighted for validation. Evidence (vi) above and frozen gen 1 (submitted 0.282 /
-  0.197 over 0.272 / 0.224). Touches `train_experiments.py` candidate ranking,
-  `classifier_guide.md`, the feedback report, `test_candidate_specialists.py` and
-  `test_selection_protocol.py`.
-- **Per-kind default for the auxiliary brain weight.** Expose the host default that the
-  agents' `aux_weight` parameter reimplemented: split 0 (794495 excluded from fitting), merge
-  unchanged (0.5-1.0). Evidence (vii). The cleaner long-term fix is the open item "794495 as a
-  selection cell via detector OOF probabilities" (below, 2026-10-27 follow-ups); until then the
-  detector-fitted brain should not pull split models toward in-sample detector behaviour.
-- **Fewer tune rounds.** Twelve tune generations, none accepted, 40-464 min each (frozen gen 10
-  took 464 min for eight split fits). Either skip `tune` for a kind whose last two tune rounds
-  produced no validation gain, or charge tune rounds half the evaluation units, or drop tune
-  for merge outright while the noise floor is 16 hits. Touches `kind_schedule` /
-  `search_plan`, `docs/stage3_evolution.md`.
-- **Plateau detection on validation, not TRAIN novelty.** The existing item under
-  `precision_20261008_001127_bqp8vmtv` ("Plateau detection counts TRAIN novelty") now has the
-  numbers: eleven split generations after saturation. Stop allocating a kind after N
-  consecutive rejections whose validation delta lies inside the bootstrap interval, and send
-  the budget to the other kind or end the run early.
-- **Guide text.** Tell the agent in `classifier_guide.md` that promotion has correlated with
-  holdout_precision, not pooled selection, and that single-seed OOF differences below about
-  0.01 (merge) / 0.002 (split) have never cleared the gate; several agents rediscovered both
-  facts per run at 2-3 generations each.
+**Proposal: a simplified control arm.** Keep the outer loop and everything in the previous
+paragraph. Replace the inner loop by a single line of work in the manner of Karpathy's
+`autoresearch` (one editable program, one measurement per change, keep it if it improved,
+discard it otherwise): no branch pool, no hypothesis memory or handoff, no adaptive kind
+scheduling (fixed alternation), one short instruction file. Start with geometry-only
+descriptors so that one TRAIN evaluation takes minutes. `autoresearch` itself is not a
+drop-in replacement: it keeps or discards on the validation metric directly, about a hundred
+times a night, which its large text validation set tolerates and our merge pools do not, and
+it assumes a fixed five-minute experiment where a whole-TRAIN fit with image descriptors
+takes tens of minutes here.
 
-### P3. Harness fixes (small, independent)
+- Prerequisite: a completed baseline run on the 2026-11-09 sources with the documented
+  resource settings, and at least one replicate, so that the run-to-run spread is known.
+- Compare on the same partition, objective, gate and generation count: accepted validation
+  objective per kind, acceptance rate, wall time and API cost per generation.
+- Decision rule, fixed before running: if the control arm lands inside the replicate spread
+  of the full workflow, remove the corresponding machinery; if it is clearly worse, the
+  complexity has its evidence and this section closes.
+- Cost: a new inner driver, estimated at a few days; not a parameter change.
 
-- **`search_memory` result size.** The tool returned 211,980 characters in raw gen 8 (five
-  entries, each with the full experiment record and a 3,000-character diff), above the MCP
-  output cap, so the SDK spilled it to a file the agent read in four chunks. Strip the
-  per-cell `train` block and cap `code_diff` at about 800 characters, or add a `limit` /
-  `fields` argument. `harness/train_experiments.py` `search_memory` and `ExperimentMemory.search`.
-- **Descriptor run budget.** All-cached runs took 1,220-1,509 s (raw), 1,278-1,339 s (frozen)
-  and 1,781 s of the 1,800 s cap (no-score gen 10, after one timeout at 16 s per row). Scale
-  the per-call wall budget with cached rows, or let a run resume per brain instead of
-  failing whole. `--descriptor-generation-wall-seconds` interacts; document the two.
-  Superseded 2026-10-30: contexts are on demand and production descriptors run on the judgeable
-  rows (49 k merge / 34 k split TRAIN rows; 802449 merge: geometry 177 s, level-1 image 854 s), see
-  `plans/on_demand_contexts.md`; the per-brain resume idea stays open. 2026-11-03: `plan_descriptor_run`
-  overstated an 802449 level-1 image call 4.7x (3,432 s estimated, 727 s measured) because the 64-row sample
-  charged the graph load per row; it now times the load apart, samples a contiguous labeled block and caps
-  the credited image concurrency at 8, and the shared TensorStore context cut the call to 299 s. Still open:
-  the sample amortizes the worker start-up over four times fewer rows than a batch (2.8x over under the new
-  context), and the per-brain resume.
-- **Descriptor values for `X_unlabeled`.** Under the judgeable scope the up to 100,000 NaN-label
-  rows per brain that `fit_classifier` stages for a `fit(..., X_unlabeled=...)` carry NaN in every
-  `bank_agent_*` column, and a formula's whole-column statistics over such a column run on the
-  computed rows only (2026-10-31, `plans/on_demand_contexts.md`). If semi-supervised use of
-  descriptors matters, add a scope that unions the judgeable rows with the deterministic
-  `_unlabeled_sample` rows (about 600 k TRAIN rows: geometry minutes, level-1 images hours), keyed
-  like `judgeable` by the row set; not implemented.
-- **Transient image read timeout aborts a descriptor call.** Generation 5 of the raw run
-  `precision_20261031_175627_2okbyg6b` (2026-10-31) failed at frozen inference on 789202 with
-  `Descriptor batch 0 failed: ` and no further text: one tensorstore read of a level-0 patch hit
-  the 45 s `ImageSource` timeout (a `TimeoutError` with an empty message; 185,524 patch reads in
-  the run, one failure), so the whole generation was discarded (4,244 s; the 750318 and 751473
-  results stayed in the bank and gen 6 reused them). The message now carries the exception type
-  (2026-11-01). Still open: a bounded retry (two or three attempts within the call deadline) for
-  `TimeoutError` in `descriptor_inputs._image` / `ImageSource.read`, so that one stalled S3
-  request does not cost an image generation; an image submission reads about 27 k validation
-  plus 34 k TRAIN rows, so the exposure per generation is not negligible.
-- **Host faults before the agent runs end the run as `completed`.** Run
-  `precision_20261102_133644_rst004og` (2026-11-02) was launched from a JupyterLab terminal whose
-  `SLURM_EXPORT_ENV=NONE` left the srun step without `ANTHROPIC_API_KEY` (launcher fixed with
-  `--export=ALL`). The driver evaluated the baseline for 20 minutes, then every generation failed
-  in `reviser_session.anthropic_api_env()` before any agent call. The failure happens in the
-  `revision` stage, so the driver records a research `execution` failure event; `ResearchEvidence.status`
-  reports `execution_blocked` (a failure and no fresh measurement) and `CandidatePool.finish` counts
-  the round in `execution_blocked_rounds`; at `--exploration-patience 2` both kinds paused after two
-  failures each, and the run ended after four generations with `stop_reason all_kinds_paused` and
-  `run_status.json` `status completed`. That pause is meant for an agent program that cannot execute,
-  not for host or API faults (missing key, SDK transport error, network outage): an outage of a few
-  minutes would end a 15-generation run the same way, and `completed` hides it. Proposed: (1) check
-  `ANTHROPIC_API_KEY` and the SDK/model (what `preflight --check-api` does) in the driver before
-  loading tables, so a misconfigured step fails in seconds; (2) classify exceptions raised before
-  `run_reviser` hands control to the agent (session construction, SDK/transport errors) as host
-  faults: retry the generation after a bounded backoff, do not record a research execution failure,
-  and if the retries fail stop with `status failed` and a stop reason naming the fault.
-  `run_precision_evolution.py` (the `except Exception` branch recording `_record_research('execution',
-  'failure')`), `harness/research_evidence.py` (`status`), `harness/candidate_pool.py` (`finish`),
-  `harness/reviser_session.py`.
-- **Host-side failure diagnostics.** The driver records only `Failed: <type>: <message>` for a
-  generation that fails outside the agent's code (`run_precision_evolution.py`, the
-  `generation_error` event) and the console log holds no traceback either; add
-  `traceback.format_exc()` to the host-only trajectory event. `ensure_descriptors` returns its
-  per-brain reports only after every brain has finished, so a failure on the third brain leaves
-  `descriptor_inference` empty for the brains that did complete.
-- **Charge evaluation units by wall time.** Split fits take 37-50 min each (three fold fits
-  plus a full fit of 500-tree LightGBM on about 34,000 rows x 310 columns); split generations
-  took 160-464 min and the validation phase alone 24-45 min when descriptors must be computed
-  on five brains. The existing "Per-attempt classifier time" item below should move up:
-  either a per-fit time budget for tune families or fewer units per split generation.
-- **Monitoring.** `run_status.json` is written once per generation; a `phase_started_at`
-  and `last_event_at` would make a stalled run distinguishable from a long split fit without
-  reading the trajectory. Since 2026-11-01, `execution.json`, the Slurm launcher and
-  `check_run_status` cover terminal-step reconciliation (including confirmed OOM);
-  continuous heartbeat/progress detection remains deferred. Also note for operators: node pid counters wrapped on n242 during
-  the frozen run, so `pgrep -f cli.run_evolution | head -1` can return the probe shell; match
-  the full command line.
+## 2. Design defects found in use (2026-11-08 / 09)
 
-### P4. Detector build and AD specification (after P1's screen; days of work)
+Concrete, each one met while switching seven brains to denoised images.
 
-- **(a) Build-time inclusion rule.** `detector_build/inputs.py` keeps 73 of 89 merge
-  hypotheses and excludes only ARTIFACT (OVERTURNED were kept by override); the generalisation
-  verdicts on 802449 (13 robust ids in the 2026-10-19 audit) do not filter anything. Add a hard
-  criterion: generalisation verdict plus the P1 brain-shift / sign-consistency screen, and
-  drop or convert absolute radius and raw-intensity columns (radius relative to the segment
-  median, intensity relative to patch percentiles). Only merge tables and sidecars need
-  re-preparation (`pool_sha256` is unchanged when rows are unchanged); no AD rerun.
-- **(b) Multi-brain discovery, only if (a) is insufficient.** Revise
-  `markdowns/merge_features_for_proofreader_evolve.md` from the single-brain form (files named
-  for 794495) to a two-brain Phase 1 with one older-microscope brain (747807, 125 merge
-  positives, the only older brain with enough) and 802449 as the confirmation brain whose
-  labels feed verdicts only, so it stays detector-naive for the selection protocol. The build
-  then fits on the union with the brain as a fold group. Cost: one AD run per kind (about 10 h
-  and 130 USD for the 2026-10-20 split run), the detector build, and merge tables for 11
-  brains; 747807 becomes an auxiliary brain and the cross-brain holdout signal shrinks to
-  754610 / 754612 / 754613 (22 counted positives). 802449 must not become a discovery brain:
-  Phase 1 reads its labels, and it is the only merge cell large enough to anchor selection.
-- **(c) Spec content.** Whatever (a) or (b) decides, the merge spec should ask for the three
-  families the agents found and the AD set lacks: fragment geometry at 30-50 um (the arm
-  walks stop at 10-25 um; `geo_pair_kink_change`, `geo_long_arms`, parallel-run length),
-  intensities as ratios to the patch's own percentiles, and radii as ratios. Leave the split
-  spec: split features transfer (holdout 0.84-0.85, validation 0.86).
-- **(d) Acceptance test for a rebuilt detector.** The frozen arm with the new detector must
-  reach the no-score / raw level on validation merge (about 110 of 524), not just a better AP
-  on 794495.
+- **Cache identity is the file's size, inode and mtime.** `--refresh-image-path` rewrote only
+  `img_path`, the candidate rows did not change (`pool_sha256` equal before and after on all
+  fourteen pools), and the raw pools and sidecars of seven brains still had to be deleted and
+  re-prepared (522 + 1669, 911 + 3646 and 183 + 620 s). Bind derived artifacts to content
+  (graph and label digests) instead of file identity, or let a path-only rewrite keep them.
+  `harness/local_context.cache_identity`, the table provenance in `native_pool.py` (do not
+  edit without re-preparing: its hash enters the table digests), `labeled_cache/build.py`.
+- **The reviewed image URI takes precedence over the cache path.** After a volume is
+  replaced, the old receipt must lose its `reviewed` status by hand before the alignment
+  check reads the new volume; otherwise the deleted URI is returned
+  (`scripts/dataset_config.get_cache_img_path`). Make the alignment script accept an explicit
+  image root, or detect an unreadable reviewed URI and say so.
+- **The driver does not size its resources to the allocation**, and its defaults are hard
+  limits inside the reviser's tools, so a run with defaults is restricted without a visible
+  failure. Documented on 2026-11-09 (Stage 3, "Give the run the allocation's resources");
+  the code is unchanged. Derive the defaults from the step's CPUs and the job's memory limit,
+  or warn at start-up when they are far below the allocation. The documented settings
+  (`--classifier-threads 32 --classifier-search-seconds 7200 --descriptor-workers auto
+  --reviser-max-turns 80`) have not been exercised by a run yet.
+- **The driver's default TRAIN brain is the reserved 794495 and nothing enforces the
+  reservation.** A command without explicit lists uses it. Change the default and add a
+  reserved-brain guard to the driver, preflight and the preparation tools
+  (`--train-brains` default in `cli/run_precision_evolution.py`, `cli/preflight.py`).
+- **The same fact is written in several documents** (CLAUDE.md, README, Stage 3, artifact
+  dependencies, WORKFLOW_REVISION, the cache schema document, a status note, a summary JSON).
+  Every revision on 2026-11-08 / 09 needed several passes to find stale copies, and each pass
+  found some. Give each fact one home and link to it.
+- **"raw" has three meanings**: an unprocessed (not denoised) image, the un-annotated row of
+  a preview, and the detector-free prior mode (`--detector-prior raw`, raw pools). Rename the
+  first two where they face the agent.
 
-### P5. Data and context (longer term; the current ceilings)
+## 3. Search protocol
 
-- **Long-gap split positives.** About half of the missed split positives have gap > 25 um
-  (slice recall 0.05-0.29 in every arm); level-0 patches have a 16 um radius and level-1 30 um,
-  so paths longer than about 40 um are never in view. Options: a wider level-1 patch for split
-  rows with gap > 25 um, or path-following reads at descriptor time. Touches
-  `harness/descriptor_inputs.py` (`DESCRIPTOR.image`, on-demand crops since 2026-10-29) and `image_context_guide.md`.
-- **Fragment-level context.** Agents in all arms asked for it: whether an anchor's fragment
-  already continues elsewhere, competing partner tips, and the tip's own direction continuing
-  past the shaft for tip_to_shaft merge rows (77 positives, recall about 0 in every arm). The
-  50 um neighbourhood is the limit of what `describe(context)` can see.
-- **Label review.** Short-gap collinear label-0 pairs (no-score gen 6 cites 754613 pair04:
-  17.7 um gap, equal radii) look geometrically identical to positives; a GT-side check of a
-  sample of such pairs would say whether the remaining 15% split FPs are label convention.
-- **Merge resolution.** 524 validation slots cap what the gate can see (the "Merge is invisible"
-  item and its 2026-10-28 update below). More GT merge positives, not a looser gate, is the
-  real fix; until then report merge hits per microscope generation alongside the mean.
+- **Confirm the AUROC objective on real candidates** (default since 2026-11-02, objective
+  v7). On the next completed runs: (a) paired-bootstrap interval widths of AUROC and P@K on
+  the same candidates; (b) Spearman correlation of each selection statistic with the
+  validation objective and with validation P@K; (c) head-guard vetoes, rejected generations
+  whose P@K rose, and candidates whose three-depth mean held while P@K alone fell beyond the
+  tolerance. Revert to `--objective precision_at_k` if validation P@K falls over a run or the
+  guard vetoes most AUROC-accepted candidates. Not done as of 2026-11-09.
+- **Plateau detection counts TRAIN novelty, not validation progress.** `stalled_rounds` in
+  `harness/candidate_pool.py` advances on TRAIN selection gains (checked 2026-11-09), so a
+  kind whose candidates are rejected inside the bootstrap interval keeps its budget. Stop
+  allocating a kind after N consecutive such rejections and send the budget to the other kind
+  or end the run; host-side only, no validation value shown to the agent. The same rule would
+  cover the `tune` rounds, which accepted nothing in twelve generations of the 2026-10-27
+  runs. Depends on section 1: a simplified inner loop removes most of this machinery.
+- **Merge has little statistical power.** Validation holds 439 merge positives over five
+  brains (15 / 41 / 125 / 140 / 118 on the 2026-11-07 pools) and the gate needs the lower bound
+  of a two-sided 95% paired-bootstrap interval above zero. Options if it proves too strict: a one-sided test at
+  alpha = 0.05, a merge-specific margin, or more merge GT positives, which is the real fix.
+  These are methodological choices, not defects.
+- **Replicates.** Each run is one search trajectory. Run at least two per configuration
+  before reading a difference between configurations.
 
-### P6. Replication under the revised protocol
+## 4. Harness robustness
 
-- One more seed of each arm after P2 and P3 land. Each arm is a single search trajectory:
-  the frozen arm's failure to promote any merge model may be the detector_score input
-  anchoring the GBM to the 794495 ranking, or search-path luck (its agent spent its merge
-  rounds on re-rankers and linear models and never tried 50 um geometry). API cost is 15-25
-  USD per run; the cost is 24-36 h of a 200 GB node per arm. Run the replicates with the same
-  partition so the two trajectories per arm are comparable.
+- **Host faults before the agent runs are recorded as research failures.** A missing API key,
+  an SDK transport error or a network outage raises in the `revision` stage, counts as an
+  `execution` failure, pauses both kinds after `--exploration-patience` rounds and ends the
+  run with `status completed` (run `precision_20261102_133644_rst004og`). Check the key and
+  the model in the driver before loading tables; classify exceptions raised before
+  `run_reviser` hands over as host faults, retry with a bounded backoff, and stop with
+  `status failed` if the retries fail. Not implemented (checked 2026-11-09).
+  `cli/run_precision_evolution.py`, `harness/research_evidence.py`,
+  `harness/candidate_pool.py`, `harness/reviser_session.py`.
+- **Host-side failures carry no traceback**, only `Failed: <type>: <message>`; add
+  `traceback.format_exc()` to the host-only trajectory event. `ensure_descriptors` returns
+  its per-brain reports only after every brain has finished, so a failure on a later brain
+  leaves `descriptor_inference` empty for the brains that completed.
+- **No heartbeat.** `run_status.json` is written once per generation; `phase_started_at` and
+  `last_event_at` would tell a stalled run from a long fit. Terminal-step reconciliation
+  (launcher, `check_run_status`) exists; continuous progress detection does not.
+- **Descriptor planning and resumption.** The plan's sample amortizes the worker start-up
+  over four times fewer rows than a batch (about 2.8x overestimate after the 2026-11-03 fix),
+  and a descriptor call cannot resume per brain after a failure.
+- **Descriptor values for `X_unlabeled`.** Under the judgeable scope the unlabeled rows
+  staged for `fit(..., X_unlabeled=...)` carry NaN in every `bank_agent_*` column. If
+  semi-supervised use matters, add a scope that unions the judgeable rows with the
+  `_unlabeled_sample` rows. `UNLABELED_ROWS_PER_BRAIN` = 100,000 is a transport bound, not a
+  tuned value.
+- **Tool result size.** `search_memory` returns full experiment records (211,980 characters
+  in one call of the 2026-10-28 raw run). Return index-level entries with file paths if context cost matters.
 
-## Three-valued labels: open items (2026-10-09)
+## 5. Data, labels and candidates
 
-Done 2026-10-09 (WORKFLOW_REVISION "Three-valued labels throughout"): labels are
-1 / 0 / NaN everywhere; ranking, promotion, bootstrap, selection, fitting, feedback and
-guides use GT-labeled rows; optional `X_unlabeled` for `fit`. Still open:
-
-- **K for three-valued runs (defaults set 2026-10-09: merge 300, split 500; split cap 1000
-  from 2026-10-12; split uncapped, K = its GT positives, since 2026-10-26; merge uncapped
-  with ratio 1 as well since 2026-10-27, see WORKFLOW_REVISION "Uniform K = GT positives").** Labeled
-  rows per cell are small (merge: 449-18,564; split: 1,795-13,074), so K = 2000 covered
-  most or all labeled rows of several cells. Frozen-baseline P@K sweep over labeled rows
-  (`scripts/three_valued_smoke.py`, log `notebooks/log/three_valued_k_sweep.log`):
-
-  | K | split 789202 / 794493 / 794491 / 802449 | merge 789202 / 794493 / 794491 / 802449 (TP) |
-  |---|---|---|
-  | 50 | .86 / .92 / .80 / .92 | .00 / .02 / .04 / .20 (0/1/2/10) |
-  | 100 | .90 / .84 / .77 / .93 | .00 / .03 / .05 / .16 (0/3/5/16) |
-  | 200 | .90 / .81 / .80 / .935 | .03 / .025 / .035 / .165 (6/5/7/33) |
-  | 300 | .887 / .813 / .777 / .91 | .027 / .023 / .030 / .137 (8/7/9/41) |
-  | 500 | .884 / .81 / .762 / .892 | .020 / .024 / .024 / .118 (10/12/12/59) |
-  | 1000 | .858 / .737 / .708 / .885 | .031 / .016 / .019 / .100 (31/16/19/100) |
-  | 2000 | .796 / .661 / – / – | .021 / .013 / – / – |
-
-  Labeled rows / positives: split 4,162/2,720, 3,596/1,756, 3,650/1,813, 13,074/6,393;
-  merge 3,582/62, 2,363/29, 3,467/88, 18,564/825. Split K = 500 is ~14% of the
-  validation labeled rows (SE ~0.018 per cell, ceiling 1.0, baseline headroom
-  0.12-0.24); K >= 1000 drifts toward the ~50% labeled base rate, K <= 100 is noisy and
-  near 0.9. Merge baseline P@K is near the labeled base rate (1.2-2.5%) at every K;
-  K = 300 keeps 7-9 hits per validation cell and a ceiling of 29/300 ~ 0.10 on 794493
-  (K = 2000 had ceiling 0.0145 there, baseline 0.013). Merge stays noisy whatever K;
-  see the next item. Older-microscope merge cells (e.g. 754613: 449 labeled, 9
-  positives) are unusable for merge validation.
-  Done 2026-10-12 (WORKFLOW_REVISION evidence log): `--merge-k` / `--split-k` are now caps;
-  each pool ranks K = min(cap, ceil(`--k-positive-ratio` x its GT positives)), default 2.0.
-  Split cap 1000 since 2026-10-12 (WORKFLOW_REVISION "Split cap raised to 1000"): run
-  `precision_20261011_235340_phg8xri5` saturated the 500-row split window (selection
-  out-of-fold 0.978-0.980, validation 0.916-0.984), so the lower frozen-baseline P@1000 in
-  the table is taken as headroom, not noise; every split pool had >= 1,020 positives (2026-10
-  tables; >= 1,048 with the 2026-11-07 raw pools).
-  Split cap removed 2026-10-26 (WORKFLOW_REVISION "Split K = GT positives"): P@1000 saturated
-  again in `precision_20261025_193120_5to8nx13` (validation 0.917-0.982 with 1,759-2,783
-  positives per pool); split now ranks K = its GT positives (`--k-positive-ratio merge=2,split=1`,
-  `--split-k none`), where the frozen detector scores 0.83-0.88.
-- **Merge validation cells.** Labeled merge cells hold 9-825 positives; decide together
-  with the merge-gate proposals (pooled validation merge cells, K scaled to positives).
-  Done 2026-10-12: K scaled to positives (above) and pools with fewer than `--min-positives`
-  (default 20 then; 10 since 2026-11-08, when positive weighting had made the higher floor
-  redundant) GT positives are reported but excluded from the mean, the bootstrap and kind
-  headroom (754610 / 754612 / 754613 merge with the 2026-10 tables; with the 2026-11-07 raw
-  pools and the floor of 10 only 754613 merge, 9 positives). Pooling merge cells
-  across brains remains open.
-- **Definitions.** Whether the merge 20-150 um ambiguous ring should also be NaN, and
+- **Three development brains read unprocessed images and have no denoised volume on their
+  grid**: 802449 (TRAIN), 789202 and 794491 (validation). If AIND deletes one, there is no
+  replacement and its image descriptors fail. The other nine brains read denoised pixels
+  (`cache/dataset_source_status_20261108.md`).
+- **Mixed pixels are unmeasured downstream.** Raw and denoised volumes differ in background
+  noise (high-pass ratio 0.15-0.22) and little else in the measured patches, but no descriptor
+  has been computed on both versions of one brain. Only 802449 among the TRAIN brains is raw.
+- **Split candidate recall**: worst brain 0.80 (802449) since the 2026-11-05 segmentation
+  change; the 0.90 floor of the 2026-10 sweep is no longer reachable with
+  `tip_to_any_node|r=80|k=2`. Flank pairs across an omitted stretch were the known misses under r=50.
+- **Merge site recall at 150 um**: 789202 0.88 and 841260 0.89, below the 0.90 target; the
+  user kept `gap=20` on 2026-11-07. Open idea for the blind bridge sites: a path change-point
+  family (direction, radius or edge-length jumps on unbranched paths), to be measured against
+  the same marginal positive rate before adoption.
+- **Label definitions.** Whether the merge 20-150 um ring should be NaN rather than 0, and
   whether split needs a distance condition like merge.
-- **Unlabeled sample size.** `UNLABELED_ROWS_PER_BRAIN` = 100,000 is a transport bound,
-  not tuned.
+- **Label review.** Short-gap collinear label-0 split pairs look like positives; a GT-side
+  check of a sample would say whether the remaining split false positives are label
+  convention.
+- **Fragment-level context.** Agents asked for it repeatedly: whether an anchor's fragment
+  continues elsewhere, competing partner tips, and the tip's own direction past the shaft for
+  `tip_to_shaft` merge rows. `describe(context)` sees a 50 um neighbourhood.
+- **Independent validation on 794495 is undesigned.** `evaluation/` holds a source audit
+  only.
+- **Minor.** `notebooks/verify_add_cache_metrics.py` reports the canonical `SWC Run Length`
+  in voxel units, so the column is not comparable with the cache's.
 
-## 794495 ground truth: cached snapshot was stale; cache, tables, sidecars and companions rebuilt (2026-10-13)
+## 6. Deferred: the frozen / no-score arms
 
-**Found.** The 794495 base dataset cache (GT skeletons) dated 2026-08-24 held 19 neurons; GCS
-`ground_truth_tracings/794495/voxel` was re-uploaded on 2026-09-01 with 22 neurons, and all 19
-shared neurons differ from the cache after identical resampling (node counts -6.1% to +2.7%).
-The 2026-09-23 `_add.pkl` reused the stale base cache (`generate_add_caches.py` reuses an
-existing base cache without checking GCS). The other ten brains match GCS neuron by neuron
-(789202 12, 794493 10, 794491 9, 802449 38; the six older-microscope brains by provenance).
-Full inventory: `cache/ground_truth_inventory_20261013.md` (not tracked).
-
-**Done 2026-10-13.** Deleted the stale 794495 artifacts: both dataset caches,
-`feature_tables/794495` (tables and sidecars), `context_cache/794495`, `descriptor_bank/794495`.
-Kept `metrics_out/794495` (June, 19 neurons) and `markdowns/rerank_companion_794495_*` (old tables).
-
-**Rebuilt 2026-10-13.** `generate_add_caches.py` (58 min; 22 GT neurons, node by node identical to
-GCS), `prepare_feature_tables.py` (2 h 52 min; its final `preflight` reported `blocked` only because
-the sidecars did not exist yet, hence exit code 1 with complete tables), `precompute_availability`,
-`export_rerank_companion`. The pools hold the same physical candidates as before (500,111 split
-pairs in the same order; the same 58,120 merge junctions, reordered), but node ids were renumbered
-by the graph reload, so pool hashes, context-cache entries, bank results and companion row indices
-do not carry over. Labels: split 4,817 labeled (2,426 / 2,391; 985 rows changed), merge 7,010
-(128 / 6,882; 827 changed). Details: `cache/ground_truth_inventory_20261013.md` section 8.
-
-**Context cache rebuilt 2026-10-13 evening** (user, n268; `log/precompute_context_cache_20261013_211042_*.log.txt`):
-`precompute_context_cache --brains 794495 --mcl 100 --readers 16 --band-rows 50000 --labeled-extension`,
-2 h 7 min, fresh 50,000-row bands plus extensions of 52 (merge) and 1,428 (split) rows, 0 image failures.
-The image-alignment receipt had to be re-recorded first (`check_image_alignment`, then `--record-reviewed`):
-the receipt binds the dataset-cache identity, so a rebuilt cache fails `image_context.source` with
-`Image/cache identity changed since alignment review` until the review is redone. Verified the same
-evening (`log_archive/labeled_extension_verify_794495_rebuilt_20261013.log`: all checks passed; 100% of labeled
-rows cached, 99.3% / 70.4% of them in the band before the extension) and `preflight --context-cache`
-passes for all eleven brains (`log_archive/preflight_794495_rebuilt_20261013.log`).
-
-**Still open.** The frozen detectors remain fitted on the August snapshot (retraining is a separate
-decision); 794495 Precision@K from earlier runs is not comparable with the rebuilt tables. Consider a
-GCS `updated`-time check in `generate_add_caches.py` before reusing a base cache, and let
-`prepare_feature_tables.py` skip or soften its final preflight when sidecars are not expected yet.
-
-## Context cache misses many GT-labeled rows: NaN descriptors where the metric is measured (2026-10-11)
-
-**Status: done** (code 2026-10-12, builds and verification 2026-10-13; WORKFLOW_REVISION "Labeled extension of the context cache":
-`ContextCacheBuilder._grow` / `extend_labeled`, `precompute_context_cache --labeled-extension`,
-scopes and `bank_context_available` confined to the band, `LabeledExtensionTests`). Deviations
-from the plan below: the extension is appended to the one row list instead of a separate
-block, so `extend_band` and `extend_labeled` share one in-place growth path; the identity key
-changes only for entries that carry an extension (bank results of extended entries are
-recomputed once, which the changed `all_cached` rows force anyway); the extension uses
-`segment_on_gt` for both kinds so it does not depend on the label definition a run selects.
-**Built 2026-10-13** (user, n268, `log_archive/context_cache_labeled_extension_20261012.log`): one launcher call over
-the eleven brains with `--readers 16`, 22 cells in 8,291 s (22:47 to 01:05); 18 entries extended by 40 to
-11,649 rows, the four whole-pool entries (754612 / 754613 / 789202 merge, 789202 split) confirmed with 0
-extension rows; common prefix = band everywhere, so no band chunk was re-read; 0 new image failures (the 15
-recorded level-0 failures on 802449 and 794491 split are pre-existing band rows); cache 117 GB.
-**Verified 2026-10-13** (n268): `../claude_scratch/verify_labeled_extension_20261013.py` checked every
-entry (extension == `segment_on_gt` rows minus band, sorted and unique; band order equals `select_rows`;
-manifest digests and chunk counts; every labeled row under both definitions cached; sampled band and
-extension contexts load at both tiers with the right `row_in_band`), all checks passed
-(`log_archive/labeled_extension_verify_20261013.log`); `preflight --context-cache` passed with `extension_rows`
-per cell (`log_archive/preflight_labeled_extension_20261013.log`); two registered descriptors of run
-`precision_20261011_235340_phg8xri5` recomputed on 802449 (merge geometry, 18 names; split level-0
-image, 7 names) are byte-identical to the band-only bank results on all 50,000 band rows and finite on
-the extension rows (`log_archive/labeled_extension_descriptor_compare_20261013.log`; the band-only bank entries
-were backed up in a scratch directory outside the repository, deleted on 2026-11-06).
-
-**Measured after the build** (n268, 2026-10-13, `log_archive/labeled_extension_verify_20261013.log`; labeled rows
-under the run definitions, `near_gt_150` for merge and `segment_on_gt` for split; every labeled row and
-every positive of every cell is now cached, so the "in cache" columns are 100% throughout and omitted):
-
-| Cell | Pool rows | Band rows | Extension rows | Labeled rows | Labeled in band | Positives in band |
-|---|---|---|---|---|---|---|
-| 794495 merge / split (rebuilt 2026-10-13, new GT) | 58,120 / 500,111 | 50,000 | 52 / 1,428 | 7,010 / 4,817 | 99% / 70% | 100% / 90% |
-| 802449 merge / split | 299,339 / 890,547 | 50,000 | 11,649 / 7,170 | 18,564 / 13,074 | 63% / 45% | 79% / 66% |
-| 789202 merge / split | 43,737 / 37,354 | whole pool | 0 / 0 | 3,582 / 4,162 | 100% | 100% |
-| 794493 merge / split | 74,051 / 375,611 | 50,000 | 49 / 1,620 | 2,363 / 3,596 | 98% / 55% | 100% / 75% |
-| 794491 merge / split | 203,956 / 990,296 | 50,000 | 904 / 2,587 | 3,467 / 3,650 | 74% / 29% | 76% / 42% |
-| 747807 merge / split | 378,095 / 1,915,423 | 50,000 | 1,971 / 2,644 | 1,213 / 2,800 | 36% / 6% | 56% / 8% |
-| 750318 merge / split | 103,641 / 943,342 | 50,000 | 1,656 / 1,810 | 1,439 / 2,064 | 57% / 12% | 66% / 15% |
-| 751473 merge / split | 242,152 / 1,558,747 | 50,000 | 3,078 / 8,479 | 4,715 / 9,187 | 38% / 8% | 64% / 12% |
-| 754610 merge / split | 77,150 / 303,992 | 50,000 | 182 / 2,050 | 820 / 2,813 | 78% / 27% | 100% / 38% |
-| 754612 merge / split | 36,392 / 97,577 | whole pool / 50,000 | 0 / 704 | 747 / 2,334 | 100% / 70% | 100% / 91% |
-| 754613 merge / split | 43,509 / 82,325 | whole pool / 50,000 | 0 / 462 | 449 / 1,795 | 100% / 74% | 100% / 90% |
-
-The 802449 merge extension holds 11,649 rows, not the 7,000 estimated from `near_gt_150`, because the
-extension uses `segment_on_gt` (29,200 labeled merge rows there). The older-microscope split pools
-confirm the guess above: before the extension only 6% to 27% of their labeled split rows were in the band.
-
-**Behaviour before the change.** The context cache stored only the top 50,000
-detector-ranked rows per brain and kind (`BAND_SPEC`). Rows outside the band got NaN in
-every `bank_agent_*` descriptor column and 0 in `bank_context_available`. With
-three-valued labels, Precision@K is measured on GT-labeled rows only, and many of them
-lay outside the band. After the extension build, `bank_context_available` still marks
-the band only, and NaN descriptors remain on unlabeled rows outside the band.
-
-**Measured** (n268, 2026-10-11; GT-labeled = sidecar `near_gt_150` for merge,
-`segment_on_gt` for split):
-
-| Cell | Pool rows | Band rows | Labeled rows | Labeled in band | Positives in band |
-|---|---|---|---|---|---|
-| 794495 merge | 58,120 | 50,000 | 6,212 | 99% | 100% |
-| 794495 split | 500,111 | 50,000 | 4,001 | 73% | 94% |
-| 802449 merge | 299,339 | 50,000 | 18,564 | 63% | 79% |
-| 802449 split | 890,547 | 50,000 | 13,074 | 45% | 66% |
-| 789202 merge / split | 43,737 / 37,354 | whole pool | 3,582 / 4,162 | 100% | 100% |
-| 794493 merge | 74,051 | 50,000 | 2,363 | 98% | 100% |
-| 794493 split | 375,611 | 50,000 | 3,596 | 55% | 75% |
-| 794491 merge | 203,956 | 50,000 | 3,467 | 74% | 76% |
-| 794491 split | 990,296 | 50,000 | 3,650 | 29% | 41% |
-
-The older-microscope brains were not measured; their split pools (up to 1.9M rows)
-make coverage likely as low as 794491.
-
-**Effect.**
-- A descriptor can only help on in-band labeled rows. On 794491 split, 59% of the
-  positives always score with NaN descriptor inputs.
-- The selection brain 802449 split has 34% of its positives outside the band, so
-  descriptor gains are measured on a subset.
-- Out-of-band labeled rows are the ones the frozen detector ranks low, which is
-  exactly where re-ranking could recover missed positives.
-
-**Options.**
-- **(a) Add the GT-labeled rows to the cache** (an explicit row list next to the
-  band).
-  - Few extra rows per cell: about 7,000 each for 802449 merge and split; about
-    900 to 2,600 for the other split and merge cells above.
-  - Caveat: row selection then depends on GT availability. `bank_context_available`
-    would become a GT-coverage proxy for unlabeled rows. That is harmless for the
-    metric, since it is constant (1) across the labeled rows that are ranked, but
-    it leaks the availability mask into a feature column. Fix by dropping or
-    zeroing that column for these extra rows, or by not exposing it as a predictor.
-- **(b) Grow the band by detector rank** (label-free).
-  - Covering 90% of labeled split rows would need far larger bands (794491 split's
-    labeled rows reach deep into a 990k-row pool).
-  - Image reads scale with band size (about 18 min per 24k rows per tier with 16
-    readers), so this is days of S3 reads per brain.
-- Recommended: (a) with the context-available column handled explicitly; validation
-  brains need the same extension for frozen inference.
-
-**Suggested solution (option a), step by step.**
-1. **Rows to add.** For each brain and kind, take the GT-labeled rows that are not in
-   the band (sidecar mask from `label_availability.load`, the merge `near_gt_150`
-   and split `segment_on_gt` definitions). Do this for TRAIN, selection and
-   validation brains alike: frozen inference must see the same coverage the scorer
-   was fitted on.
-2. **Cache layout.**
-   - Append these rows after the band as a separate, sorted "labeled extension"
-     block. Reuse the in-place growth path of `ContextCacheBuilder.extend_band`
-     (existing chunks kept byte-for-byte, only new rows read).
-   - Record in the manifest: `band_rows` (unchanged), `extension_rows`,
-     `extension_source` (sidecar version and labels digest) and
-     `extension_rows_sha256`.
-   - Keep the band block first, in detector-rank order, because
-     `DescriptorRuns.scope_rows` uses that order for the `pilot` and `boundary`
-     scopes. Those two scopes must read the band block only; `all_cached` reads
-     both blocks.
-3. **Identity.** Add `extension_rows_sha256` to `ContextCache.identity_key`, so
-   descriptor bank results computed on the band alone are not reused for the
-   extended entry. Descriptor runs over the extension block are new work units;
-   band results keep their own identity if the band block is keyed separately.
-   Prefer keying per block, so existing bank results stay valid.
-4. **`bank_context_available` stays label-free.** Set it to 1 for band rows only
-   (`entry.band_rows`), not for extension rows. It then means "inside the top-N
-   detector band", a function of `detector_score` alone, and carries no GT
-   availability. Descriptor values on extension rows remain usable.
-5. **Leakage check.**
-   - Only labeled rows are ranked, and every labeled row then has descriptor
-     values, so NaN-ness carries no availability signal among ranked rows.
-   - Unlabeled out-of-band rows stay NaN. Where they appear (`fit`'s optional
-     `X_unlabeled`, whole-pool statistics), document that descriptor coverage
-     there follows GT availability.
-   - Add a test that a scorer cannot gain Precision@K from descriptor missingness.
-6. **CLI.** `precompute_context_cache --labeled-extension` reads the sidecars (fails
-   if one is missing or mismatched, same bindings as `label_availability.apply`).
-   Run it one brain at a time as before. Expected reads: about 7,000 rows each for
-   802449 merge and split, 900 to 2,600 for other cells, plus the older-microscope
-   brains (not yet measured).
-7. **Verification before a run.**
-   - Re-measure the coverage table above; it should reach 100% labeled-in-cache.
-   - Rerun one registered descriptor and compare in-band values byte-for-byte
-     with the band-only result.
-   - Full test suite on n268.
-8. **Docs.** WORKFLOW_REVISION entry (cache version bump if the manifest format
-   changes), `descriptor_guide.md` (what `all_cached` covers), and this entry
-   marked done.
-
-**Touches (as implemented).** `harness/context_cache.py` (`_grow`, `extend_labeled`, manifest,
-`ContextEntry.band`, `identity_key`), `cli/precompute_context_cache.py` (`--labeled-extension`,
-`labeled_rows`), `harness/descriptor_runs.py` (`scope_rows`, `register_context_column`),
-`cli/preflight.py` (`extension_rows`), agent guides, and `tests/test_descriptor_compute.py`.
-
-## Frozen descriptor inference computes 50,000 rows per brain where the metric uses 1,000-5,000 (2026-10-12)
-
-**Current behaviour.** At submission, every referenced descriptor is computed over every
-cached row (`all_cached`: the 50,000-row band plus the GT-labeled rows outside it since the 2026-10-13
-extension build, 40 to 11,649 more per cell) of each validation brain, serially over brains. For the
-generation-20 image descriptor of run `precision_20261011_235340_phg8xri5` this is about 3,600
-worker-seconds per brain (53 ms per row, single-threaded sandbox), so nine brains cost about
-40 minutes on 14 workers even with the chunk-loading fix of 2026-10-12 (WORKFLOW_REVISION
-"Unchanged submissions and descriptor chunk loading"). Precision@K, however, ranks GT-labeled
-rows only (1,213-4,715 labeled merge rows and 1,795-9,187 labeled split rows per validation
-brain; with the labeled extension every one of them is cached).
-
-**Option.** Compute inference descriptors only on the cached rows that are GT-labeled (plus the
-rows a scorer needs for pool-level statistics, if any). Expected saving: 5-20x per brain.
-
-**Why not yet.**
-- Formula scorers see the whole `features` frame and may use pool-relative quantities
-  (ranks, quantiles, means over all rows); NaN on unlabeled rows changes those values, so
-  the TRAIN measurement (full band) and the validation measurement (labeled rows) would no
-  longer run the same code on the same inputs.
-- Row selection would depend on GT availability, the same caveat as the labeled-extension
-  cache proposal above; `bank_context_available` must stay a function of detector rank only.
-- Classifier manifests reindex to their `columns` row-wise, so for frozen models the saving is
-  safe; a per-candidate-type rule would be needed.
-
-**If revisited.** Restrict `ensure_descriptors` to labeled band rows for frozen-model
-candidates only, keep the full band for formulas, record the row rule in the inference report
-and the run manifest, and add a test that labeled-row inference reproduces the full-band
-Precision@K for a classifier candidate.
-
-## Split labels and candidates against canonical: labels fine, flank pairs beyond r = 50 um (2026-10-14)
-
-**Status 2026-10-15: pool rule changed to `tip_to_any_node|r=80|k=2`** (declared in
-`proofreader_evolve/candidate_pools.json`, applied at table preparation; detector-build default
-review moved to the eleven-brain sweep). Chosen as the fewest-candidate rule with worst-brain
-candidate recall >= 0.90 on all eleven brains (r=50 left 754612 at 0.866). The rebuild of
-tables, sidecars, companions, receipts, context caches and the specifications is deferred until
-the new frozen detectors exist (AutoDiscovery rerun on the revised specifications); the full
-order, commands and one-time follow-ups are in `plans/rebuild_after_relabel_and_split_pool.md`.
-Done 2026-10-15 for the AutoDiscovery rerun: split companions of 794495 and 802449 regenerated
-with `export_rerank_companion --kinds split --pool-only` (794495: 689,677 rows, labels
-2,497 / 3,579 / 683,601; the r=80 pool contains every r=50 pair with unchanged labels and gaps;
-log `proofreader_evolve/log_archive/export_companion_split_r80_20261015.log`), r=50 companions archived
-in `markdowns/archive/companions_20261014/` (deleted 2026-10-17), split specification rewritten (gap baseline AP
-0.825, folds 0.827 / 0.844 / 0.808). Merge companions and the merge specification follow once
-the merge pool is settled. Done 2026-10-17: merge companions regenerated for
-`junction+tip_to_shaft|nms=20|gap=20|k=2|r=150` and the merge specification rewritten. Done
-2026-10-18: image-alignment receipts of all eleven brains re-recorded from the current caches
-(`scripts/check_image_alignment_from_cache.py`; plan section 3).
-
-Measured by `notebooks/split_canonical_gap.py` (write-up: `notebooks/merge_label_shadow_findings.md`
-section 7). The canonical `# Splits` exceeds the cache's by about 10% because 83% of canonical split
-pairs involve a segment below the 100 um MCL that is absent from the fragments graph and can never
-be a candidate; for the 27,949 pairs whose segments are both in the fragments graph the cache labels
-hold 97.5%, the split pool `tip_to_any_node|r=50|k=2` holds 95.0% (both 92.7%), reproducing the
-split sweep. The pool's misses are flank pairs, splits across an omitted stretch whose fragment
-ends lie farther apart than 50 um (87.9% covered against 99.4% of directly adjacent pairs; 754612
-69%, 794495 83%, 802449 84%). **Open:** size a larger pairing radius, or a tip-to-tip family for
-facing ends, on these flank pairs before changing the pool; no relabel is needed for splits.
-`verify_add_cache_metrics.py` reports canonical `SWC Run Length` in voxel units (cache / canonical
-0.67 everywhere); worth converting so the column is comparable.
-
-## Merge labels are conservative: GT-node-count thresholds not rescaled (2026-10-07)
-
-Full write-up: `notebooks/merge_label_shadow_findings.md`.
-
-**Status 2026-10-15: fix implemented, caches not yet relabeled.** Thresholds are a parameter
-(`canonical_labeling.MergeThresholds`, package branch `feat/length-based-merge-thresholds`)
-and the caches are built and relabeled by one command, `python -m labeled_cache` (stages
-base / label / policy, GT checked against GCS before a cache is reused; see
-`markdowns/labeled_dataset_cache.md`). To apply, per brain on a compute node (`srun -n1`):
-`python -m labeled_cache --brains <b> --mcl 100 --policy length_v1 --check-reproduce`, then the
-label-only chain of `docs/dataset_artifact_dependencies.md` section 3 (tables, sidecars,
-companions, alignment receipt, context-cache identity check), `merge_canonical_gap.py
---measure`, and the specifications' label counts. Decide separately whether to refit the
-frozen merge detector. `notebooks/generate_add_caches.py` and `scripts/relabel_cache.py` were
-deleted on 2026-10-15 after the builder's first compute-node run (794495: reproduction of the
-stored labels exact; merge labels 106 -> 140, sites 156 -> 177, as the shadow relabel predicted).
-
-**Current behaviour.** `canonical_labeling` (agentic-neuron-proofreader) ports three merge
-thresholds from `segmentation_skeleton_metrics` as GT NODE COUNTS of 50:
-`MERGE_MIN_NODES` (node-count merge rule, `summarize`), `MERGE_PASSTHRU_MIN_CC` (walk
-pass-through test) and `min_gt_nodes` (two-GT junction audit). The canonical package reads
-raw GT SWCs (about 1.0 um between nodes), so 50 nodes is about 50 um; the cache GT graphs are
-resampled (3.99-4.36 um between nodes), so the same threshold is about 200 um and short
-genuine merges are rejected as pass-throughs. `MERGE_MIN_NODES` is also bound as a default
-argument in `merge_labels` and `audit_junction_gt_connections`, so changing the module
-constant alone does nothing.
-
-**Measured.** Cache merge sites recover 46-89% of canonical sites (site recall @ 50 um;
-precision 0.83-1.00; same-segment placement 2.4-4.5 um, so coordinates are right). Most
-missed sites are on segments present in the cache but not flagged; their same-label GT
-component has a median of 26-31 cache nodes (70-88% below 50). A shadow relabel with the
-thresholds set to the same cable length (50 um = 11-13 cache nodes;
-`scripts/shadow_merge_relabel.py`, exact reproduction with the original thresholds on all
-11 brains) raises site recall to 0.80-0.94 at precision 0.83-0.96; the older-microscope
-brains gain most (754610 0.46 -> 0.81, 750318 0.59 -> 0.90).
-
-**Downstream impact (5 current brains, `scripts/shadow_merge_impact.py`, deleted 2026-10-17).** Positives in
-the frozen merge detector's pool grow 8-24% (802449: 825 -> 973), but the new positives rank
-at median 5,900-75,000 and only 14 enter any Top-2000; P@500 / P@2000 change by <= 0.005
-and the per-brain ordering is unchanged. The recovered merges are mostly short and away
-from junctions, which the junction-anchored policy reaches less often.
-
-**Decision (2026-10-07): not fixed.** A fix means relabelling all 11 `_add.pkl`, which
-invalidates image-alignment receipts, feature tables, availability sidecars and context
-caches (all bound to the cache identity) and makes past results incomparable; it may also
-require refitting the merge detector. Not justified by the measured impact. Known bias:
-merge label 1 is under-counted (10-20% of true merge sites are invisible to the current
-merge pipeline), separately from the label-0 "no GT here" problem handled by the
-availability sidecars.
-
-**If revisited.** Make the thresholds length-based in `canonical_labeling` (old behaviour
-behind a flag), relabel every brain together (now `python -m labeled_cache`), then rebuild
-tables, sidecars and context caches, re-record alignment receipts, decide whether to refit
-the merge detector, and add a dated `WORKFLOW_REVISION.md` entry. Worth doing together with
-any redesign of merge candidate generation (a non-junction candidate family) or the merge
-promotion gate (see "Merge is invisible to the promotion metric" below), since all three
-change the merge benchmark at once. Remaining gap after rescaling (recall 0.80-0.94): the
-cache walks against the union of GT neurons rather than per neuron, canonical snaps sites
-to branch nodes, canonical dedups on its mislabeled `World` column, and fragments below the
-100 um MCL are absent.
-
-**Follow-up 2026-10-14** (`notebooks/merge_label_shadow_findings.md` section 6). Pooled over the
-eleven brains the current labels hold 67% of the canonical merge sites, 84% with length-based
-thresholds. Measured directly (`notebooks/merge_canonical_gap.py`, `notebooks/merge_canonical_gap/merge_canonical_gap.svg`), the
-junction rule `junction|nms=20|r=150` has a candidate within 20 um geodesic of 81% of the canonical sites
-(62-89% per brain; 89% within 150 um), almost the same as for the cache's own sites (84%, which
-reproduces the sweep). So the label gap and the candidate gap overlap: most merges missing from the
-labels already have a candidate and are labeled 0 or NaN; relabeling recovers most of the gap, and the
-candidate rule's own ceiling is the 11-19% bridge-type sites. About 16% of the label gap is
-label-definition difference (per-neuron walk, site snapping, MCL filter) to fix in the relabel step.
-Plan: relabel all brains (length thresholds plus the definition fixes; the 794495 canonical reference was
-rerun on 2026-10-14 from the 22-neuron GT: 198 sites, cache precision 92%), then decide on a second candidate
-family for bridge sites (tip-to-shaft partner nodes, wider radius, mid-shaft bulge scan), and rebuild
-once (the detector is refitted anyway).
-
-**Status 2026-10-16: second family decided.** All caches relabeled 2026-10-15. Merge pool
-`junction+tip_to_shaft|nms=20|gap=20|k=2|r=150` declared in `candidate_pools.json` and
-enumerated by `candidate_rules.py` (also the split rule; detectors copy the module). Over the
-eleven brains it lifts cache-site reach at 20 um from 0.801 to 0.875 and the worst brain at
-150 um from 0.74 to 0.90, at 2.8 times the candidates; wider gaps were rejected (the 20 to 40 and
-40 to 80 um steps add GT-judgeable rows at 0.12% and 0.08% positives, against 0.24% for 10 to
-20 um). Still unreached: 199 blind bridge sites (half at a GT tip, where the fragment runs on
-past the end of the tracing; the rest mid-shaft, mostly 747807 and 750318) and 67 sites whose
-junction lies 20 to 30 um away. **Open:** a path change-point family (direction, radius or
-edge-length jumps on unbranched paths) for the blind sites, measured against the same marginal
-rate before adoption. Real-data checks passed 2026-10-17: split rows unchanged (pool-only companions keep
-their `pool_sha256`) and the merge sweep through the module reproduces the reach counts;
-against the 2,319 canonical sites the rule reaches 88.1% within 20 um and 95.1% within 150 um
-(`notebooks/merge_canonical_gap/`, rerun 2026-10-17). Write-up: findings sections 6.6 and 6.7; rebuild order in
-`plans/rebuild_after_relabel_and_split_pool.md`.
-
-## Context cache: band grown to 50,000 rows and older-microscope brains added (2026-10-08)
-
-**Status: done** (code 2026-10-08: `ContextCacheBuilder.extend_band`; `precompute_context_cache
---band-rows 50000` grows entries in place; `ExtendBandTests`). Builds completed 2026-10-08/09 for the
-five current brains and by 2026-10-12 for the six older-microscope brains (manifests checked
-2026-10-12): all 22 entries hold 50,000 rows or the whole pool (754612 / 754613 / 789202 merge,
-789202 split) with both image tiers complete. Measured
-before the change: the evolved scorer's Top-2000 on 802449/split drew 24 of 2,000 rows from outside
-the 20,000-row band and still missed 60% of in-band positives, so the growth is a moderate step,
-not a fix for a binding limit; 200,000 rows (about 120 GB, 30–50 min descriptor runs) was declined.
-Growing the band further is superseded by the labeled extension (item above, 2026-10-12), which
-caches every GT-labeled row whatever its detector rank.
-
-## Context cache: extend the level-0 image tier to the whole band (2026-10-05)
-
-**Status: implemented 2026-10-05** (`max_rows: None`, `ContextCacheBuilder.extend_tier`,
-`precompute_context_cache --extend-tier level0`, tier-selective bank identities; build
-ran 2026-10-05/06: 10 entries, 0 failures, 2 h 21 min, level-0 tier 1.55 -> 7.77 GB). The
-notes below are kept as the design record; the remaining open idea is refreshing the
-band with rows the evolving scorer pulls into the Top-K.
-
-**Current behaviour.** `IMAGE_TIERS` in `harness/context_cache.py` caches the
-level-1 image patch (30 um radius, 1.496 x 1.496 x 2.0 um voxels, 30 x 41 x 41)
-for every row of the 20,000-row detector-ranked band, but the level-0 patch
-(16 um radius, 0.748 x 0.748 x 1.0 um voxels, 32 x 43 x 43) only for the first
-4,000 rows (`max_rows: 4000`). The cap was a budget choice made when v14 was
-built: 4,000 rows is the Top-2000 scoring window plus the next 2,000, the same
-boundary convention as the v11 `top_k_boundary` selection.
-
-**Why it may need to change.** A descriptor declared with
-`image_tier: 'level0'` is NaN for band ranks 4,001 to 20,000. A reranker can
-pull such rows into the Top-2000, and the model then has no fine-resolution
-information for exactly those rows. Level-1 voxels (about 1.5 x 1.5 x 2 um)
-undersample thin axons, so sub-2-um evidence (continuity, small gaps) is only
-measurable at level 0. The gen3 reviser of run
-`precision_20261005_114814_zxsbw5pj` chose level 1, trading resolution for
-coverage.
-
-**Measured cost (2026-10-05 build, ten brain/kind entries, 0 failed reads).**
-
-| tier | reads | on disk | build time |
-|---|---|---|---|
-| level1, whole band | 200,000 | 6.07 GB | 123 min |
-| level0, first 4,000 | 40,000 | 1.55 GB | 24 min |
-
-Per-read cost is the same for both tiers (25 to 30 reads/s aggregate) because
-the level-0 radius was halved to keep the voxel count comparable. Extending
-level 0 to the whole band adds about 160,000 reads, roughly +100 min and +6 GB
-at that rate.
-
-**What the change touches.**
-
-- `IMAGE_TIERS['level0']['max_rows']` -> `None` in `harness/context_cache.py`.
-- Done 2026-10-05: `ContextCacheBuilder.extend_tier` adds or grows one tier of a
-  complete entry without re-reading level 1 (the `--force` rebuild estimated here,
-  about 4.3 h, was avoided; the extension took 2 h 21 min). Done 2026-10-08:
-  `extend_band` does the same for a larger band.
-- Done 2026-10-05: `ContextCache.identity_key(table, tiers=...)` is tier-selective, so
-  extending one tier invalidates only descriptor-bank entries that read it; coverage
-  estimates follow the manifest's per-tier row counts.
-- Do not rebuild a cache root while an evolution run is reading it; build into
-  a separate `--context-cache` root or wait for the run to finish.
-- Done 2026-10-05: `WORKFLOW_REVISION.md` cache paragraph and v14 provenance row updated.
-
-## Observed in run `precision_20261008_001127_bqp8vmtv`, not yet fixed (2026-10-08)
-
-Context: 16 generations done, validation 0.085 -> 0.1411 (generations 1, 2, 5, 6, 9 promoted),
-nothing promoted since generation 9 although TRAIN selection kept creeping (0.568 -> 0.574).
-Two generations were lost to end-of-session checks and the search stayed in tuning mode.
-
-- **Done 2026-10-08 (`sanitize_research`).** `validate_research` was fail-closed at the submission check. Generation 16 (merge)
-  finished with a measured, restored candidate and failed only because the agent added an
-  `outcome` key to `proposal.json.research` (25 min, $5.9). Same class as the handoff
-  (fixed 2026-10-07, `sanitize_handoff`) and `strategy` length (bound raised to 3000)
-  failures. Fix: sanitize like the handoff (drop unknown keys, clip text), never raise.
-  Implemented in `hypothesis_memory.sanitize_research`, `search_proposals.read_proposal`, tests.
-- **Done 2026-10-08 (submission fallback; default 60 turns).** A session that hit `--reviser-max-turns` failed the whole generation. Generation 15
-  (split) measured six candidates (0.570–0.573 vs parent 0.568) while finally changing the
-  information source to `local_geometry`, then issued its 41st tool call; the SDK ended the
-  session with `error_max_turns` and the driver raised instead of submitting (124 min, $6.2;
-  the attempts survived only in the TRAIN archive). Fix: on `error_max_turns`, run the normal
-  submission check on the current `scorer.py`, and when it does not match a measured
-  snapshot fall back to the generation's best measured candidate. Also raise
-  `DEFAULT_REVISER_MAX_TURNS` 40 -> 60: exploration rounds that write a new descriptor family
-  used 44 tool calls. Touches `cli/run_precision_evolution.revise` (the RuntimeError on
-  error subtypes), `TrainingExperiments.submitted` / `restore('best')`, tests.
-- **Plateau detection counts TRAIN novelty, not validation-accepted progress.** The
-  `stalled_rounds` counter stayed at 0 for six rejected generations because each one
-  raised the selection score by 0.001–0.006, so the explore/pause machinery never
-  engaged and the agent kept retuning the same 38-column classifier
-  (`*-retune-image-gbdt`, information source `tabular_bank_features`) despite its own
-  handoffs saying "stop tuning, change the information source" (generations 10–14).
-  Proposal (host-side only, no validation leak to the agent): count TRAIN progress only
-  when the selection gain exceeds the fold-to-fold spread of the OOF measurement; after
-  N (2–3) consecutive rejections within bootstrap noise, make the next round an explore
-  round whose `research.information_source` must differ from the recent ones, otherwise
-  the submission is not promotable. Touches `candidate_pool` progress accounting,
-  `kind_schedule`, `TrainingExperiments.research_status`, scorer rules text.
-- **Done 2026-10-08 (grid stops at the first execution error; kill message names the cap; default cap 16384 MiB, also for scoring).** A parameter grid kept running after a worker was killed for memory. Generation 17 ran a
-  pre-registered four-cell grid of a 16-member subspace ensemble; every cell fitted fine
-  (3 folds plus the full fit, about 30 min each) and then the scoring worker was killed
-  with signal 9 at the 8 GiB `--classifier-memory-mb` cap while scoring the 1.39 M-row
-  pools. The harness ran all four cells before the agent saw a result (2 h 10 min, four
-  evaluation units), and the error text ("Model worker exited -9 without status" plus a
-  joblib warning) does not say "memory limit"; the agent inferred it. The node had 449 GB
-  free, so the cap is ours. Fixes: stop a grid after the first execution error of the same
-  program; name the memory cap in the worker-kill message; raise the default
-  `--classifier-memory-mb` (8192) given 200 GB jobs, or let the agent see the cap in
-  `model_environment.json`. Not started; touches `train_experiments.search_parameters`
-  / `train_classifier` grid loop, `model_execution.predict_model`, the driver flag.
-- **Per-attempt classifier time.** Generations 10–15 spent 90–125 min each on 5–8 fits of
-  500-tree, depth-8 ensembles (about 25 min per fit at `--classifier-time-budget 1800`),
-  with in-sample vs OOF gaps up to 8 points. Options: charge evaluation units by wall
-  time, or lower the per-fit budget for retune families. Not started.
-- **Merge is invisible to the promotion metric (why merge never promotes).** The validation
-  merge pools hold 62 / 29 / 88 positives against K = 2000, so P@K is capped at
-  0.031 / 0.0145 / 0.044 and the seed already finds 52% / 34% / 6% of those positives.
-  Promotion uses the equal-weight mean over six cells, so ten extra merge hits on one
-  brain are +0.005 on that cell and +0.0008 on the mean, below any bootstrap lower bound;
-  even recovering every validation merge positive would add only about 0.011. TRAIN
-  gains on 802449 (0.07 -> 0.10–0.11 with table-only XGBoost, generations 4 and 8) traded
-  hits between brains on validation (789202 32 -> 19 / 23, 794491 5 -> 16 / 18, 794493
-  10 -> 8; net about zero). The only merge changes that moved all three validation brains
-  in the same direction were the image-patch and junction-geometry descriptor banks of
-  run `precision_20261005_114814_zxsbw5pj` (generations 3 and 5: +6/+10/+1 and
-  +9/+16/+3 hits), each worth only +0.001 on the mean. Tried and refuted since:
-  junction-saddle image descriptors, boundary-weighted fits, depth-diverse ensembles,
-  cross-brain percentile blends (generation 12 here: the inverted sign "helped" too, so
-  noise); a junction-local image GBDT (generation 16, 0.1155 OOF) was lost to the
-  `research` schema failure above. Pool and label limits add to this: bridge merges
-  (about 9% of sites) have no junction and are never candidates; the 20–150 µm ring is
-  labelled negative; only 34 of 794491's 88 merge positives lie in the 20,000-row band.
-  Proposals, in order: (1) judge merge separately — a per-kind gate, or a merge K scaled
-  to the positive count (K = 200) or recall@K — so a real merge gain is not diluted six
-  times; (2) pool the three validation merge cells (micro P@K over 179 positives) before
-  gating, because per-brain cells with 29–88 positives are too noisy; (3) stop
-  floor-scheduling merge until a junction-local image information source exists for it
-  (raise `--kind-floor-every` from 4 to 8 or more, or require a new
-  `research.information_source`). Not started; touches `fixed_pool_scoring` aggregation,
-  the gate record, `kind_schedule`, `docs/stage3_evolution.md` and the agent rules.
-  Update 2026-10-28 (runs `precision_20261027_220207_3zf4mz8t` frozen,
-  `precision_20261027_233027_6pgo4846` no-score and `precision_20261028_000623_cun4h9k0` raw:
-  uniform K = GT positives, positive-weighted aggregation, five validation brains with 524
-  merge slots in total). Proposals (1) and (2) are partly in place (each pool ranks its own
-  positives; a kind's pools are pooled by positives before gating), so merge is now visible to
-  the mean, but it is still hard to promote: the bootstrap gate (two-sided 95% interval of the
-  paired delta, lower bound above zero) rejected the raw run's generation 7 merge candidate at
-  +0.0134 on the mean (+14 of 524 merge hits; interval [-0.00002, +0.0229]; P(delta <= 0) =
-  0.038) and the frozen run's generation 3 at +0.0086 (interval [-0.0086, +0.0239]), while a
-  split gain of +0.005 passed with interval [+0.0034, +0.0067] because split has 12,581 slots.
-  A merge gain needs roughly +0.03 on the kind (about 16 hits) to clear the gate; split needs
-  about +0.002. If the gate proves too strict for merge, the three places to change are: a
-  one-sided test at alpha = 0.05 (the generation 7 candidate would have passed), a
-  merge-specific margin or per-kind gate, or more validation merge positives (more brains, or
-  pooled cells). These are methodological choices, not defects. Do not change the gate while
-  the three runs above are running; any change goes into WORKFLOW_REVISION with the runs it
-  applies to, and earlier runs stay comparable only under the gate they were judged by.
-
-## Observed in run `precision_20261005_114814_zxsbw5pj` (2026-10-05; two of three resolved)
-
-- Resolved 2026-10-06: `image_evidence.descriptor_image_computations` was always
-  empty because the image-evidence summary ran before `record['descriptor_runs']`
-  was assigned; the order is now fixed.
-- Resolved 2026-10-05 by raising limits (MCP output cap 100,000 tokens, feedback
-  budget 96 KB, parked tool results readable): oversized `search_memory`,
-  `train_classifier` and `restore_candidate` results and the 48 KB feedback cap.
-  Raised again 2026-10-07 (feedback 128 KB, SDK file-read cap 100,000 tokens,
-  generation artefact directories readable) after parked results above about 50 KB
-  could not be read in one call; see WORKFLOW_REVISION "Limit increases".
-  2026-10-27: on the eleven-brain partition (five selection merge cells x about 290 frozen
-  feature columns) one example per group already needs 155 KB, and the budget cannot grow
-  (1.75 to 1.9 bytes per token puts 128 KB near the 100,000-token caps), so whole cells now
-  lose their examples, fewest GT positives first (`examples_omitted_cells`), before the error.
-  Still open if context cost matters later: return file paths plus summaries
-  instead of embedding the full feedback (about 39 KB of feature matrix) in
-  `train_classifier` / `restore_candidate` results, and index-level
-  `search_memory` entries.
+Raw runs need no detector. The detector-native tables were deleted on 2026-11-07, so a
+`frozen` or `no-score` run first re-prepares them (hours per brain). If those arms are taken
+up again, the 2026-10-29 findings still apply to the detector build: filter merge hypotheses
+by cross-brain generalisation and a brain-shift screen, replace absolute radii and raw
+intensities by ratios, ask the specification for fragment geometry at 30-50 um, and accept a
+rebuilt detector only if the frozen arm reaches the no-score / raw level on validation merge,
+not on a better AP on its fitting brain. Details: `git show efcd2be:proofreader_evolve/TODO.md`,
+section P4.
