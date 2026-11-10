@@ -65,11 +65,14 @@ detector-free raw pools (section 3.2) and no detector is involved.
 Image sources (2026-11-09): the raw `fused.zarr` of 754613 and 751473 were deleted from
 `aind-open-data` on 2026-11-08 and those of 747807, 750318 and 754610 were found deleted on 2026-11-09;
 these five brains now read the `fused-denoised.zarr` of the same prefix (same grid, denoised pixels),
-with rewritten cache `img_path`, re-prepared raw pools and new alignment receipts. The `fused.zarr` of
-841260 (and of the reserved 794495) is itself denoised (AIND denoise-net on the tiles before flat-field
-correction and fusion). Five development brains still read unprocessed fusions: 802449 and 754612 (TRAIN),
-789202, 794493 and 794491 (validation). TRAIN is therefore four denoised brains and two raw ones,
-validation two denoised and three raw, and image descriptors see two kinds of pixels across brains (`cache/dataset_source_status_20261108.md`, `docs/dataset_artifact_dependencies.md`).
+with rewritten cache `img_path`, re-prepared raw pools and new alignment receipts. 754612 and 794493,
+whose raw volumes were still present, were switched to their `fused-denoised.zarr` the same evening
+(user decision) so that a later deletion cannot interrupt a run. The `fused.zarr` of 841260 (and of the
+reserved 794495) is itself denoised (AIND denoise-net on the tiles before flat-field correction and
+fusion). Three development brains still read unprocessed fusions, because no denoised volume on their
+grid exists: 802449 (TRAIN), 789202 and 794491 (validation). TRAIN is therefore five denoised brains
+and one raw one, validation three denoised and two raw, and image descriptors see two kinds of pixels
+across brains (`cache/dataset_source_status_20261108.md`, `docs/dataset_artifact_dependencies.md`).
 
 Segmentation sources (2026-11-05): 789202 and 802449 now resolve to their denoised Google
 segmentations and 841260 is a new brain with GT. On 2026-11-07 the user placed 841260 in the

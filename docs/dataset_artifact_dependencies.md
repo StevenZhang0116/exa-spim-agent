@@ -172,10 +172,12 @@ carry the fragment's own segment id). After the build:
   the evening before) and the same steps were repeated for them (`--refresh-image-path` 911 s for the
   three brains, receipts `figs/candidate_image_alignment_20261109`); before the switch their denoised
   volumes were checked against the fragments and, on the same voxel windows, against the dense
-  segmentation. These five brains, 841260 and the reserved 794495 (whose `fused.zarr` AIND denoised at
-  the tile level before fusion) read denoised pixels; 802449, 754612, 789202, 794493 and 794491 read
-  unprocessed fusions (`cache/dataset_source_status_20261108.md`). The same-prefix `fused-denoised.zarr`
-  of 754612 and 794493 exist, so a later deletion of their raw volumes is handled the same way.
+  segmentation. The same evening 754612 and 794493, whose raw volumes were still present, were switched
+  to their `fused-denoised.zarr` after the same checks (raw and denoised patches coincide at zero shift),
+  so that a later deletion cannot interrupt a run. These seven brains, 841260 and the reserved 794495
+  (whose `fused.zarr` AIND denoised at the tile level before fusion) read denoised pixels; 802449, 789202
+  and 794491 read unprocessed fusions and have no denoised volume on the same grid
+  (`cache/dataset_source_status_20261108.md`).
 - `prepare_feature_tables.py` exits 1 when its final preflight finds no sidecars; the tables
   are complete nonetheless.
 - Inside the user's Slurm job use `srun --jobid=<job> --overlap -n1 ...`; without `-n1` the

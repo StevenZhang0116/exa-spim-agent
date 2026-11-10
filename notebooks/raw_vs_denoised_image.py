@@ -4,9 +4,10 @@
 AIND publishes two full-resolution volumes for some ExaSPIM brains in the same dataset prefix:
 the raw fusion ``fused.zarr`` and a denoised one ``fused-denoised.zarr`` with the same shape,
 voxel size (on 2026-11-08 the raw volumes of 754613 and 751473 were deleted, on 2026-11-09
-those of 747807, 750318 and 754610, and the repository switched these five brains to the
-denoised volume; the ``fused.zarr`` of 841260 and 794495 were denoised by AIND at the tile
-level before fusion; see ``cache/dataset_source_status_20261108.md``). This
+those of 747807, 750318 and 754610, and the repository switched these five brains, and on
+2026-11-09 also 754612 and 794493, to the denoised volume; the ``fused.zarr`` of 841260 and
+794495 were denoised by AIND at the tile level before fusion; see
+``cache/dataset_source_status_20261108.md``). This
 script measures what the denoiser changes, so that image features computed on a denoised
 brain can be compared with the same features on a raw brain.
 
