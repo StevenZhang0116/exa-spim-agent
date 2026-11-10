@@ -5,7 +5,12 @@ With descriptor tools enabled, use `probe_descriptor` to inspect and test the cu
 (see `descriptor_guide.md`). `DESCRIPTOR.image` supports custom radius and pyramid
 level in both paths. `LOCAL_IMAGE` below remains available for stateless feature extraction and models that consume raw patches.
 
-Image access uses reviewed, registered raw fused fluorescence volumes. For
+Image access uses reviewed, registered fused fluorescence volumes. The volumes are not
+homogeneous across brains: the data provider denoised some of them and left others unprocessed,
+so voxel-level noise statistics (local variance, high-frequency texture, isolated bright voxels,
+striping) can differ between brains for reasons unrelated to the candidate, while background
+level, upper intensity percentiles and the shape of bright structures are similar in both kinds.
+Check an image quantity on more than one TRAIN brain before trusting it. For
 separate local exploration, write `analysis.py` and `analysis_request.json`, then call
 `run_volume_analysis({})`: your code receives actual 3D TRAIN pixels and aligned
 fragment geometry, and returns concise results. See `volume_analysis_guide.md`

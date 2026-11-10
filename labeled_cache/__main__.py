@@ -73,7 +73,7 @@ def parse_args(argv=None):
                         help="Before relabeling, recompute with the original thresholds and require the stored labels back.")
     parser.add_argument("--refresh-image-path", action="store_true",
                         help="Only give the existing pkl files the img_path of configs/exaspim_image_prefixes.json "
-                             "(after an S3 volume moved); no GT check, no other stage.")
+                             "(after an S3 volume moved or was replaced, e.g. by its denoised sibling); no GT check, no other stage.")
     parser.add_argument("--dry-run", action="store_true", help="Print the stages per brain and exit.")
     parser.add_argument("--quiet", action="store_true", help="No per-step progress bars.")
     parser.add_argument("--log-txt", type=Path, help="Append console output to this file.")

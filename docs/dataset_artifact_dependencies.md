@@ -165,12 +165,17 @@ carry the fragment's own segment id). After the build:
   identity, so the alignment receipt is re-recorded afterwards.
   On 2026-11-08 AIND deleted the raw `fused.zarr` of 754613 and 751473 (levels and root metadata
   removed over the day); both prefixes keep a `fused-denoised.zarr` with the same shape, spacing and
-  chunking, and the only other fusions of these brains are 8x downsampled. The prefixes, the cache
+  chunking, and the only other fusions of these brains are separate runs on a grid about eight times coarser. The prefixes, the cache
   `img_path` (`--refresh-image-path`, 522 s for both brains), the raw pools and sidecars (new cache
   identity) and the receipts (`figs/candidate_image_alignment_20261108`) were redone the same day;
-  these two brains, 841260 and the reserved 794495 (whose `fused.zarr` AIND denoised at the tile level
-  before fusion) read denoised pixels while the other eight development brains read raw ones
-  (`cache/dataset_source_status_20261108.md`).
+  On 2026-11-09 the raw `fused.zarr` of 747807, 750318 and 754610 were found deleted as well (read
+  the evening before) and the same steps were repeated for them (`--refresh-image-path` 911 s for the
+  three brains, receipts `figs/candidate_image_alignment_20261109`); before the switch their denoised
+  volumes were checked against the fragments and, on the same voxel windows, against the dense
+  segmentation. These five brains, 841260 and the reserved 794495 (whose `fused.zarr` AIND denoised at
+  the tile level before fusion) read denoised pixels; 802449, 754612, 789202, 794493 and 794491 read
+  unprocessed fusions (`cache/dataset_source_status_20261108.md`). The same-prefix `fused-denoised.zarr`
+  of 754612 and 794493 exist, so a later deletion of their raw volumes is handled the same way.
 - `prepare_feature_tables.py` exits 1 when its final preflight finds no sidecars; the tables
   are complete nonetheless.
 - Inside the user's Slurm job use `srun --jobid=<job> --overlap -n1 ...`; without `-n1` the

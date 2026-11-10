@@ -3,10 +3,10 @@
 
 AIND publishes two full-resolution volumes for some ExaSPIM brains in the same dataset prefix:
 the raw fusion ``fused.zarr`` and a denoised one ``fused-denoised.zarr`` with the same shape,
-voxel size and chunking (on 2026-11-08 the raw volumes of 754613 and 751473 were deleted and
-the repository switched those two brains to the denoised volume; the ``fused.zarr`` of 841260 and
-794495 were denoised by AIND at the tile level before fusion; see
-``cache/dataset_source_status_20261108.md``). This
+voxel size (on 2026-11-08 the raw volumes of 754613 and 751473 were deleted, on 2026-11-09
+those of 747807, 750318 and 754610, and the repository switched these five brains to the
+denoised volume; the ``fused.zarr`` of 841260 and 794495 were denoised by AIND at the tile
+level before fusion; see ``cache/dataset_source_status_20261108.md``). This
 script measures what the denoiser changes, so that image features computed on a denoised
 brain can be compared with the same features on a raw brain.
 
@@ -42,8 +42,10 @@ Run on a compute node in the ``panda`` environment (anonymous S3 reads;
 
 The roots default to the brain's entry in ``configs/exaspim_image_prefixes.json`` with the zarr
 name replaced (``fused.zarr`` / ``fused-denoised.zarr``); ``--raw-root`` / ``--denoised-root``
-override them. A brain whose raw volume no longer exists (754613, 751473) fails with
-``Missing image metadata`` unless ``--raw-root`` names another raw volume. Read-only: nothing
+override them. A brain whose raw volume no longer exists (754613, 751473, 747807, 750318,
+754610) fails with ``Missing image metadata`` unless ``--raw-root`` names another raw volume
+on the same grid; the outputs of 747807, 750318 and 754610 were written on 2026-11-08, before
+their raw volumes disappeared. On 2026-11-09 both volumes existed for 754612 and 794493 only. Read-only: nothing
 in the repository, the caches or the cloud is modified.
 """
 from __future__ import annotations

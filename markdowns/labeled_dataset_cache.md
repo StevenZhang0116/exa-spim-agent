@@ -218,7 +218,7 @@ keys plus the two graphs are the ones you will actually use.
 | Key | Type | Meaning |
 |---|---|---|
 | `fragments_path`, `gt_path` | `str` | Provenance only — source GCS paths of the SWCs. Not read to use the cache. |
-| `img_path` | `str` | **Public S3** path of the raw fused ExaSPIM image. Not needed for error recovery, but lets you fetch raw-image patches on demand with no credentials — see *Optionally reading the raw image*. A volume can be reprocessed and deleted; opening a deleted one fails with `NOT_FOUND ... .zarray`, and the cache builder rewrites the path (`python -m labeled_cache --brains <b> --refresh-image-path`). |
+| `img_path` | `str` | **Public S3** path of the fused ExaSPIM image (AIND-denoised pixels on 747807, 750318, 751473, 754610, 754613, 841260 and 794495 as of 2026-11-09, unprocessed fusion on the other brains; `cache/dataset_source_status_20261108.md`). Not needed for error recovery, but lets you fetch raw-image patches on demand with no credentials — see *Optionally reading the raw image*. A volume can be reprocessed and deleted; opening a deleted one fails with `NOT_FOUND ... .zarray`, and the cache builder rewrites the path (`python -m labeled_cache --brains <b> --refresh-image-path`). |
 | `segmentation_path` | `str` | Provenance only — **private GCS** path of the dense segmentation the labels were read from. Not read at load time and not needed (its information is already in the stored labels). |
 | `anisotropy` | `tuple` | µm/voxel in (x, y, z) — `(0.748, 0.748, 1.0)` for this batch of caches. **Not a fixed constant:** it is stored per dataset as-passed at build time, so always read it from the payload (`payload["anisotropy"]`) rather than hard-coding this value. |
 | `min_cable_length` | `int` | µm threshold shorter fragments were dropped at — the `<N>` from the `mcl<N>` filename (`100` for most caches; `mcl10` caches exist for some brains). |
@@ -553,7 +553,7 @@ were built to support.
 
 ### Optionally reading the raw image (public S3, no credentials)
 
-Everything above is **cache-only** — no network. The raw fluorescence image is
+Everything above is **cache-only** — no network. The fused fluorescence image (denoised on some brains, see `img_path` above) is
 **not** stored in the `_add.pkl`; only its path is (`img_path`). If you want the
 actual voxels — e.g. to render an image patch around a merge site for visual
 context — you can fetch them on demand. **This is the only part of the workflow
@@ -578,7 +578,7 @@ from agentic_neuron_proofreader.utils import img_util
 os.environ["AWS_EC2_METADATA_DISABLED"] = "true"   # public S3; no credentials
 
 # Path comes straight out of the cache payload — no hard-coding.
-image = img_util.TensorStoreImage(payload["img_path"])   # raw fused image (public S3)
+image = img_util.TensorStoreImage(payload["img_path"])   # fused image (public S3; denoised on some brains)
 
 # Read a patch CENTERED on a node's voxel. node_voxel(i) returns (z, y, x);
 # TensorStoreImage.read(center, shape) treats `center` as the patch center.

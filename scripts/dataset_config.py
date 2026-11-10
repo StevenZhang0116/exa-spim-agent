@@ -140,7 +140,10 @@ def get_reviewed_img_path(brain_id, fallback: str | None = None,
     on-demand descriptor contexts and the companions read, and it stays valid when a cache's stored
     ``img_path`` points at a deleted S3 volume (794491's 2025-10-26 volume). Without a
     reviewed entry, ``fallback`` (typically the cache's ``img_path``) is returned, else
-    the ``exaspim_image_prefixes.json`` entry. A review that needs a non-identity
+    the ``exaspim_image_prefixes.json`` entry. Because the reviewed URI wins, a review that
+    names a volume deleted later (the raw ``fused.zarr`` of five older brains, 2026-11-08/09,
+    replaced by their ``fused-denoised.zarr``) must lose its ``reviewed`` status before the
+    alignment is checked again on the new volume, or the deleted URI is returned. A review that needs a non-identity
     ``graph_to_world_um`` raises: an untransformed patch read would be misplaced.
     """
     review = {}
