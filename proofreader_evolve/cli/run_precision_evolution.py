@@ -413,6 +413,10 @@ def parse_args(argv=None):
                    help="Allowed drop of the head statistic below the accepted scorer's, point estimates (default: 0.01)")
     p.add_argument("--precision-margin", type=float, default=0,
                    help="Required absolute gain in the target-kind validation objective over its counted pools (default: 0)")
+    # Resource options: the defaults below are conservative values for a small shared job and are hard
+    # limits inside the reviser's tools; the driver does not size them to the allocation. On a dedicated
+    # node pass them explicitly (docs/stage3_evolution.md, "Give the run the allocation's resources"),
+    # otherwise the agent adapts to cut fits and refused plans and the search is silently restricted.
     p.add_argument("--policy-time-budget", type=float, default=300,
                    help="Scoring/feature worker budget and 3D analysis worker timeout, in seconds (default: 300)")
     p.add_argument("--classifier-time-budget", type=float, default=300,

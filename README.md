@@ -61,8 +61,15 @@ python -m proofreader_evolve.cli.run_evolution \
     --selection-brains all --selection-holdout-brains all \
     --validation-brains 789202,794493,794491,751473,841260 \
     --generations 5 --objective auroc --aggregation positive-weighted --min-positives 10 \
-    --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400
+    --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400 \
+    --classifier-threads 32 --classifier-search-seconds 7200 \
+    --descriptor-workers auto --reviser-max-turns 80
 ```
+
+The last two option lines size the run to a dedicated 40-CPU / 600 GB allocation. The driver does not
+size itself to the node and its defaults are hard limits inside the agent's tools, so always pass the
+resource options explicitly and run one evolution run per allocation
+([details](docs/stage3_evolution.md#give-the-run-the-allocations-resources)).
 
 ## Documentation
 

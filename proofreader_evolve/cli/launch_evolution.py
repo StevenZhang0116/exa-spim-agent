@@ -2,6 +2,20 @@
 
 Run this lightweight parent on an allocated compute node. If the parent/allocation
 also dies, check_run_status can reconcile later from another compute allocation.
+
+Resources: the driver does not size itself to the allocation. Its defaults (8 threads,
+16 GiB and 300 s per fitting worker, 24 descriptor workers, 3600 s of classifier search)
+are hard limits inside the reviser's tools, and a run that keeps them on a large node is
+silently restricted: the agent answers cut fits and refused plans with smaller models and
+cheaper descriptors. Pass the resource options after ``--`` sized to the allocation and
+run one evolution run per allocation; for a dedicated 40-CPU / 600 GB job:
+
+    --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400
+    --classifier-threads 32 --classifier-search-seconds 7200
+    --descriptor-workers auto --reviser-max-turns 80
+
+The table and its rationale are in docs/stage3_evolution.md ("Give the run the
+allocation's resources").
 """
 import argparse
 from datetime import datetime
@@ -15,7 +29,7 @@ from ..harness.run_lifecycle import atomic_json, reconcile
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--job-id', default=os.environ.get('SLURM_JOB_ID'))
     parser.add_argument('--node', required=True)
     parser.add_argument('--cpus', type=int, required=True)

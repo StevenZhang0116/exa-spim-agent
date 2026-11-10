@@ -147,7 +147,9 @@ lists to preparation scripts; their historical defaults may include 794495.
 Use the lightweight launcher from an allocated compute node, outside the evolution
 step, with a separate allocation for each run. Replace `JOB_ID`, `NODE` and the CPU
 count with granted resources. Configure `ANTHROPIC_API_KEY` in that environment.
-This example requests five generations; the CLI default remains 15.
+This example requests five generations; the CLI default remains 15. The last two option
+lines size the run to a dedicated 40-CPU / 600 GB allocation and must be adapted to the
+allocation in use ("Give the run the allocation's resources" below).
 
 ```bash
 mkdir -p proofreader_evolve/log
@@ -161,10 +163,56 @@ nohup /home/zihan.zhang/.conda/envs/panda/bin/python -u \
   --validation-brains 789202,794493,794491,751473,841260 \
   --generations 5 --objective auroc --aggregation positive-weighted --min-positives 10 \
   --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400 \
+  --classifier-threads 32 --classifier-search-seconds 7200 \
+  --descriptor-workers auto --reviser-max-turns 80 \
   > "$EVOLUTION_LOG" 2>&1 &
 printf 'Console log: %s\n' "$EVOLUTION_LOG"
 tail -f "$EVOLUTION_LOG"
 ```
+
+#### Give the run the allocation's resources
+
+**The driver does not size itself to the allocation.** Its command-line defaults (8 numerical
+threads, 16 GiB per fitting worker, 300 s per fit, 24 descriptor workers, 3600 s of classifier
+search per generation, 60 reviser turns) are conservative values for a small shared job, and
+every one of them is a hard limit inside the reviser's tools. A run launched with the defaults
+on a large node does not fail visibly: a fit can be cut by the worker time or memory limit, the
+classifier search stops between configurations once its budget is spent, a descriptor plan
+can be refused or shrunk, and the agent adapts by proposing smaller models, fewer
+configurations and cheaper descriptors. The ledger then records a restricted search as if it
+were the agent's choice. Always pass the
+resource options explicitly, sized to the allocation, and run **one evolution run per
+allocation** (two runs in one job share its memory limit; the 2026-10-31 twin run was killed
+that way).
+
+Settings for a dedicated 40-CPU / 600 GB allocation (2026-11-09; used amounts are the maxima
+of the 2026-11-05 and 2026-11-08 raw runs):
+
+| Option | Default | Dedicated node | Why |
+|---|---|---|---|
+| `--classifier-threads` | 8 | 32 | Numerical threads of the fitting / prediction worker process; the worker clamps the value to the CPUs it sees. Leave a few CPUs for the driver. |
+| `--classifier-memory-mb` | 16384 | 98304 | Address-space limit of fitting, fit-time extraction, diagnostics, 3D analysis and fixed-pool scoring; the value of the documented launch since 2026-10-27. |
+| `--classifier-time-budget` | 300 | 3600 | Per fitting worker; the value of the documented launch since the six-TRAIN-brain partition. |
+| `--policy-time-budget` | 300 | 2400 | Scoring / feature worker and 3D analysis timeout. |
+| `--classifier-search-seconds` | 3600 | 7200 | Per generation; a 2026-11-05 generation used 3131 s of 3600. |
+| `--descriptor-workers` | 24 | `auto` | CPUs of the step minus 2; concurrency stays gated by the job's memory headroom (16 GiB per worker, `--descriptor-memory-mb`), which lowers the risk of an out-of-memory kill but does not exclude it. |
+| `--reviser-max-turns` | 60 | 80 | Used up to 50 of 60; costs no compute. |
+
+Left at their defaults on purpose: the descriptor wall budgets (7200 s per call, 14400 s per
+generation; at most 3021 s used), the image preview allowance (32; at most 4 used) and
+`--train-evaluations-per-generation` (8; reached in two of fifteen generations), which bounds
+how often the agent may look at TRAIN results and is a search-protocol choice, not a compute
+limit. Image reads are credited with at most eight concurrent readers
+(`IMAGE_IO_PARALLELISM` in `harness/descriptor_runs.py`, a constant, not a command-line option).
+
+Scale the table with the allocation: threads to about 80% of the step's CPUs, classifier
+memory to about a sixth of the job's memory limit as a rule of thumb (the descriptor workers
+and the 80-90 GB driver need the rest), and pass `--cpus` of the launcher equal to the CPUs actually granted.
+The nodes are shared: a job's CPUs are its own, but a node whose load average is far above its
+core count (n267 on 2026-11-09: about 150 on 88 cores) slows memory- and disk-bound steps, so
+the time budgets above are not generous there. After a run, compare `classifier_seconds_used`,
+`descriptor_seconds_used`, `train_evaluations_used` and `reviser.num_turns` in `ledger.jsonl`
+with their limits; a value at or near its limit means the generation may have been cut by that budget.
 
 Ctrl+C stops `tail`, not the background run. The driver also writes `trajectory.txt`,
 `trajectory.jsonl`, `run_status.json` and `report.html` in its own run directory.
@@ -190,8 +238,8 @@ brain's frozen computation at submission) and 14400 s per generation since 2026-
 (`--descriptor-wall-seconds`, `--descriptor-generation-wall-seconds`; 3600 / 5400 before).
 These are limits, not a throughput guarantee; use the descriptor plan for the
 actual crop, scope and allocated resources. Image-capable runs (an agent descriptor
-that reads patches) still need an allocation whose memory headroom admits the 24 descriptor
-workers: a 600 GB job does, a 200 GB job holding the 80-90 GB driver admits one to three
+that reads patches) still need an allocation whose memory headroom admits the requested descriptor
+workers: a 600 GB job admitted the default 24 (2026-11-03), a 200 GB job holding the 80-90 GB driver admits one to three
 (`proofreader_evolve/plans/on_demand_contexts.md`, 2026-11-03).
 
 The launcher inherits the absolute panda interpreter, creates a unique directory,
