@@ -83,8 +83,9 @@ class CandidatePool:
         # Separate from the bounded TRAIN archive: a weaker TRAIN score cannot
         # evict the component currently used by the outer evaluator.
         self.references = {kind: None for kind in kinds}
-        # Candidates the outer evaluator has measured: identity and promotion status only
-        # (no validation numbers), so a known ranking is never submitted twice.
+        # Candidates the outer evaluator has measured: identity and promotion status, plus the
+        # promotion judge's rejection category when there is one (a word from a fixed vocabulary;
+        # no validation numbers), so a known ranking is never submitted twice.
         self.validated = {kind: [] for kind in kinds}
         self.covered_history = {kind: set() for kind in kinds}
         self.best_slice_hits = {kind: {} for kind in kinds}
@@ -104,14 +105,18 @@ class CandidatePool:
     def add(self, entry):
         self._retain(entry['target_kind'], [entry])
 
-    def mark_validated(self, entry, generation, promoted):
-        """Record an outer measurement of this candidate: identity and promotion status only."""
+    def mark_validated(self, entry, generation, promoted, rejection=None):
+        """Record an outer measurement of this candidate: identity and promotion status, plus, for a
+        candidate the promotion judge rejected, its category from a fixed vocabulary
+        (``promotion_judge.REJECTION_CATEGORIES``); never a heldout score or a decision text."""
         kind = entry['target_kind']
         if kind not in self.validated:
             raise ValueError('Validated candidate of an unconfigured kind')
         item = {'generation': int(generation), 'experiment': entry['experiment'],
                 'component_sha256': entry['component_sha256'], 'scores_sha256': entry.get('scores_sha256'),
                 'promoted': bool(promoted)}
+        if rejection is not None and not promoted:
+            item['rejection'] = str(rejection)
         self.validated[kind].append(item)
         return deepcopy(item)
 
@@ -123,7 +128,8 @@ class CandidatePool:
                   else 'scores' if scores and item['scores_sha256'] == scores else None)
             if by is not None:
                 return {'generation': item['generation'], 'experiment': item['experiment'],
-                        'promoted': item['promoted'], 'by': by}
+                        'promoted': item['promoted'], 'by': by,
+                        **({'rejection': item['rejection']} if item.get('rejection') else {})}
         return None
 
     def _annotate(self, entry):
@@ -367,8 +373,9 @@ class CandidatePool:
 
     def summary(self):
         # Metrics and diagnostics remain TRAIN-only. Reference identity and each candidate's
-        # outer_measurement status (generation, promoted) are supplied by the host; no heldout
-        # scores, labels or decision reasons are included.
+        # outer_measurement status (generation, promoted, and under the promotion judge a rejection
+        # category from a fixed vocabulary) are supplied by the host; no heldout scores, labels or
+        # decision texts are included.
         return {'selection': 'train-champion-and-specialists-v1' if self.coverage else 'near-best-train',
                 'scheduling': 'cumulative-objective-progress-v4',
                 'coverage': self.coverage.definitions() if self.coverage else None,

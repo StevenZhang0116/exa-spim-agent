@@ -6,9 +6,11 @@ The evolution stage keeps the declared candidate pools fixed and learns their
 ranking. Available predictors depend on the detector prior: raw mode withholds both
 frozen scores and discovered feature columns. It is an LLM-driven search: a
 fresh agent session is the mutation operator, a TRAIN-side selection score ranks
-exploration branches, and a held-out validation gate alone decides promotion: the
+exploration branches, and a held-out validation gate alone decides promotion: by default the
 target kind's objective over its counted brains must rise by more than
-paired-bootstrap resampling noise while the head of the ranking holds. The objective
+paired-bootstrap resampling noise while the head of the ranking holds; under
+`--promotion-gate judge` (the configuration in use since 2026-11-10, section 3.2) an LLM judge
+votes on a table of every rank statistic with its paired-bootstrap interval. The objective
 is a rank statistic over the GT-labeled rows (`--objective`, since 2026-11-02 AUROC by
 default; `pauc`, `average_precision` and the earlier `precision_at_k` are the alternatives,
 and every statistic is recorded whatever the objective); the head guard
@@ -161,7 +163,8 @@ nohup /home/zihan.zhang/.conda/envs/panda/bin/python -u \
   --train-brains 802449,747807,750318,754610,754612,754613 \
   --selection-brains all --selection-holdout-brains all \
   --validation-brains 789202,794493,794491,751473,841260 \
-  --generations 5 --objective auroc --aggregation positive-weighted --min-positives 10 \
+  --generations 5 --objective average_precision --promotion-gate judge \
+  --aggregation positive-weighted --min-positives 10 \
   --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400 \
   --classifier-threads 32 --classifier-search-seconds 7200 \
   --descriptor-workers auto --reviser-max-turns 80 \
@@ -219,13 +222,67 @@ Ctrl+C stops `tail`, not the background run. The driver also writes `trajectory.
 Direct `python -m proofreader_evolve.cli.run_evolution` accepts the same arguments
 after the launcher's `--`, but the launcher additionally reconciles Slurm exits.
 
-Current defaults are grouped OOF selection, positive-weighted AUROC, the
+The command above selects the configuration in use since 2026-11-10: average precision as
+the objective and the LLM judge as the promotion gate ("Promotion by an LLM judge" below).
+The command-line defaults are unchanged: grouped OOF selection, positive-weighted AUROC, the
 `precision_depth_mean` head guard (tolerance 0.01), paired-bootstrap promotion
 (1000 draws, two-sided alpha 0.05), adaptive kind allocation and 8 evaluation units
 per generation. K equals each pool's GT-positive count; there are no kind caps and
 pools below 10 positives (`--min-positives`; 20 until 2026-11-08) are excluded from the
 objective. Metrics remain separate
-for merge and split. No LLM judge or equal-brain default was introduced.
+for merge and split. No equal-brain default was introduced, and no LLM takes part in TRAIN-side
+selection; an LLM judge decides promotion only under `--promotion-gate judge`.
+
+#### Promotion by an LLM judge (`--promotion-gate judge`, 2026-11-10)
+
+Why: on merge, AUROC is not sensitive to the head of the ranking. The two 2026-11-09 runs ended
+at nearly the same merge AUROC (0.881 and 0.879) with different heads (average precision 0.128
+and 0.100), and the AUROC gate accepted two candidates without a head gain and rejected three
+with one. An offline replay (`notebooks/acceptance_rule_replay.py`) of the 19 validated
+candidates showed that an LLM shown every statistic with its interval decides like an
+average-precision gate (14 of 15 pairs) and accepted 1 of 60 null pairs.
+
+What happens at a submission (`harness/promotion_judge.py`):
+
+1. The host measures both scorers on the validation pools and computes, in one paired
+   Poisson(1) bootstrap (`--bootstrap-draws`, `--bootstrap-alpha`, seed = generation), the delta
+   and its interval for AUROC, pAUC, average precision, precision at K/2, K and 2K and their
+   mean. The interval of the run's objective is the one the bootstrap gate would have used.
+2. Guard rail: if AUROC, pAUC, average precision, the depth mean or precision at K is
+   significantly worse (interval entirely below zero), the candidate is rejected and the model
+   is not called.
+3. Otherwise `--judge-votes` (default 5) independent calls of `--judge-model` (default
+   `claude-opus-5-5`, `--judge-effort medium`) each read the table and answer accept or reject
+   with a reason. The table holds numbers only: no run or generation id, no code, no reviser
+   summary. The system prompt asks for a real improvement with the top of the ranking mattering
+   most.
+4. The candidate is promoted on a strict majority of the *requested* votes. A failed call, a
+   refusal or an unparseable answer is no vote, so it counts against the candidate; a failure
+   to build the table rejects.
+
+5. Feedback to the reviser. A rejected candidate's `outer_measurement` gains `rejection`, one of
+   four words that the host derives from the table's intervals, never from the model's text:
+   `significantly_worse` (the guard rail), `within_noise` (no guarded statistic's interval above
+   zero), `head_not_improved` (only AUROC improved beyond noise) and `not_convincing` (a head
+   statistic improved beyond noise and the votes still rejected). No category is given when no
+   vote was cast. This is the only addition to what a later session learns about an outer
+   measurement: it still sees no heldout number, ballot or reason. It is also validation
+   information flowing back into the search, about two bits per rejected submission.
+
+The ledger's `validation_gate` carries `mode: "judge"`, the table, every ballot with its
+reason and request id, the token use, and the objective's bootstrap and point gate as
+non-binding records (`bootstrap_gate.binding` false; the head guard is not applied because the
+judge sees the head statistics). Kind scheduling still reads the objective's point gain.
+`ANTHROPIC_API_KEY` is used for the calls; five votes cost a few cents.
+
+Use `--objective average_precision` with this gate: the objective still drives TRAIN-side
+selection and kind scheduling, and a reviser optimizing AUROC while the judge weighs the head
+would be rejected more often.
+
+Limits. The judge is a model reading development-validation statistics; it selects on those
+brains like any gate, and its decision is not exactly reproducible (the votes are recorded).
+The replay evidence is two runs and 15 non-seed pairs produced under the AUROC objective, and
+60 null pairs for the judge. A run with this gate is not comparable with earlier runs.
 
 For a controlled frozen/no-score/raw comparison, use the same explicit brain roles,
 folds, objective, aggregation and budgets in all arms. With the current detector
@@ -327,7 +384,8 @@ reported but excluded. The candidate must exceed the accepted parent's score for
 by more than `--precision-margin` (default 0; ties fail) and, with the default
 `--promotion-gate bootstrap`, the lower bound of the paired row-resampling interval of
 that gain must be above zero (`--bootstrap-draws 1000`, `--bootstrap-alpha 0.05`);
-`--promotion-gate margin` restores the point-estimate rule. Individual brain/kind
+`--promotion-gate margin` restores the point-estimate rule and `--promotion-gate judge` hands the
+decision to the LLM judge described in section 3.2. Individual brain/kind
 regressions are allowed; TRAIN gain is diagnostic, not a promotion requirement.
 Selection scores guide experiment ranking, branch retention and plateau scheduling.
 Candidate selection, feature-ablation deltas, in-sample diagnostics and the outer gate
@@ -500,7 +558,7 @@ data; in-sample TRAIN precision is a **resubstitution diagnostic**. Under
 of two brains for the six-TRAIN setup in section 3.2): one cross-brain out-of-fold score, no auxiliary role. The agent may still use
 TRAIN-only internal validation/CV during fitting. Final promotion requires improvement in
 the target-kind development-validation objective that clears the paired-bootstrap noise
-gate and the head guard (section 3.3). The outer evaluator calls
+gate and the head guard (section 3.3), or the promotion judge's majority (section 3.2). The outer evaluator calls
 frozen feature extraction and predict on validation; it never supplies validation labels to a worker.
 `best_scorer.py` binds training source, parameters, provenance and artifact hashes.
 Keep its sibling `model_artifacts/` directory when moving/resuming a run; use
@@ -710,10 +768,10 @@ bytes or by `scores_sha256` (the exact scores of its kind on every TRAIN and sel
 cell): the generation ends as `repeated` (ledger `submission_repeat`, gate
 `skipped: repeated_submission`, handoff host status `repeated_submission`). The agent is
 told beforehand through `outer_measurement` (generation and promotion status, no
-numbers) on the search parent, the pool members and training-tool results, and can read
+numbers; under `--promotion-gate judge` also the rejection category of section 3.2) on the search parent, the pool members and training-tool results, and can read
 earlier generations' programs and TRAIN artefact trees. Full-precision
 target-kind validation scores decide promotion together with the paired-bootstrap noise bound
-(section 3.3); reports retain each brain/kind's result, any regressed cells and
+(section 3.3) or through the promotion judge's table (section 3.2); reports retain each brain/kind's result, any regressed cells and
 the bootstrap interval. An evaluation failure on any selected brain rejects the
 candidate; it never silently removes that brain from the evaluation. Exported `best_scorer.py`
 bundles both components and remains usable
@@ -811,8 +869,8 @@ are displayed verbatim; conversation language does not change the project langua
 Completed runs stay under `proofreader_evolve/runs/precision_<timestamp>_<id>/`.
 `dataset_split.json` records the brain roles, `manifest.json` the frozen
 detectors, budgets, gate mode and kind schedule, `ledger.jsonl` every generation's
-decision (`validation_gate` with `point_gate`, `bootstrap_gate` and the paired
-interval; `kind_allocation` with the rule, headroom and momentum; descriptor runs
+decision (`validation_gate` with `point_gate`, `bootstrap_gate`, the paired
+interval and, under the judge gate, `judge` with the statistics table and every ballot; `kind_allocation` with the rule, headroom and momentum; descriptor runs
 and inference) and `search_summary.json` the stopping reason. Open items that are
 deliberately deferred are listed in `proofreader_evolve/TODO.md`. Treat numbers from these runs as
 development evidence; the validation brains are queried every generation.

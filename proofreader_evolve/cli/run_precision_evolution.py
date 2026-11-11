@@ -12,7 +12,9 @@ detector-free raw pools (`harness/raw_pool.py`): no frozen detector is resolved,
 measured, and `--merge-dir` / `--split-dir` are refused.
 Promote on the target-kind validation objective (AUROC by default)
 whose paired-bootstrap lower bound is above zero, subject to a head guard on precision at K/2, K and 2K
-(`--promotion-gate bootstrap`, default); individual brain regressions are allowed.
+(`--promotion-gate bootstrap`, default), or on the votes of an LLM judge that reads every rank statistic with
+its paired-bootstrap interval inside a guard rail (`--promotion-gate judge`, `harness/promotion_judge.py`);
+individual brain regressions are allowed.
 Generations go to one kind each. Adaptive allocation first gives each active kind one opportunity,
 then uses a rotation floor, pending follow-up, recent validation point gain (accepted or not)
 and remaining headroom (`--kind-schedule adaptive`, default); strict rotation is also available.
@@ -56,6 +58,7 @@ from ..harness.train_experiments import ExperimentMemory, TrainingExperiments, D
 from ..harness.candidate_pool import CandidatePool, POOL_TOLERANCES
 from ..harness import kind_schedule
 from ..harness import rank_statistics
+from ..harness import promotion_judge
 from ..harness.classifier_contract import frozen_model, MODEL_VERSION, copy_artifacts
 from ..harness.training_diagnostics import feature_statistics, selection_examples
 from ..harness.local_context import attach_local_context, CONTEXT_VERSION
@@ -332,10 +335,21 @@ def parse_args(argv=None):
     p.add_argument("--skip-auxiliary-ablation", action="store_true",
                    help="Skip the one-time baseline diagnostic that refits the seed training template with "
                         "and without auxiliary TRAIN rows under the selection protocol")
-    p.add_argument("--promotion-gate", choices=scoring.GATE_MODES, default="bootstrap",
+    p.add_argument("--promotion-gate", choices=promotion_judge.gate_modes(), default="bootstrap",
                    help="bootstrap (default): promote only when the target-kind validation gain exceeds --precision-margin "
                         "AND the lower bound of the paired bootstrap interval of that gain is above zero; "
-                        "margin: point-estimate gain only (legacy behaviour)")
+                        "margin: point-estimate gain only (legacy behaviour); judge: an LLM reads every rank "
+                        "statistic of both scorers with the paired-bootstrap interval of each delta and votes, the "
+                        "host accepts on a strict majority of the requested votes unless a guarded statistic is "
+                        "significantly worse (harness/promotion_judge.py; the point gate and the head guard are "
+                        "recorded but not binding)")
+    p.add_argument("--judge-votes", type=int, default=promotion_judge.DEFAULT_VOTES,
+                   help=f"Votes per submission under --promotion-gate judge (default: {promotion_judge.DEFAULT_VOTES}); "
+                        "a failed call counts against the candidate")
+    p.add_argument("--judge-model", default=promotion_judge.DEFAULT_MODEL,
+                   help=f"Model of the promotion judge (default: {promotion_judge.DEFAULT_MODEL})")
+    p.add_argument("--judge-effort", choices=promotion_judge.EFFORTS, default=promotion_judge.DEFAULT_EFFORT,
+                   help=f"Effort of the promotion judge (default: {promotion_judge.DEFAULT_EFFORT})")
     p.add_argument("--bootstrap-draws", type=int, default=1000,
                    help="Paired row-resampling draws of the validation delta (default: 1000). Binding in the "
                         "bootstrap gate mode; logging only in margin mode, where 0 disables it")
@@ -505,8 +519,10 @@ def parse_args(argv=None):
         p.error("bootstrap-draws must be >= 0")
     if not (math.isfinite(args.bootstrap_alpha) and 0. < args.bootstrap_alpha < 1.):
         p.error("bootstrap-alpha must be in (0, 1)")
-    if args.promotion_gate == "bootstrap" and args.bootstrap_draws < 1:
-        p.error("The bootstrap promotion gate needs --bootstrap-draws >= 1 (or use --promotion-gate margin)")
+    if args.promotion_gate in ("bootstrap", promotion_judge.MODE) and args.bootstrap_draws < 1:
+        p.error(f"The {args.promotion_gate} promotion gate needs --bootstrap-draws >= 1 (or use --promotion-gate margin)")
+    if args.judge_votes < 1:
+        p.error("judge-votes must be >= 1")
     if args.kind_floor_every < 1:
         p.error("kind-floor-every must be >= 1")
     if args.descriptor_workers != "auto":
@@ -831,8 +847,12 @@ async def _run(args, revise_fn, run_dir, trace):
                   if args.promotion_gate == "bootstrap" else "")
                + (f"; head guard: {head_guard['statistic']} may not fall more than "
                   f"{head_guard['tolerance']:g} below the accepted scorer's (point estimates)"
-                  if head_guard else ""),
-               gate_version=scoring.gate_version(args.promotion_gate), gate_mode=args.promotion_gate,
+                  if head_guard else "")
+               + (f". Gate mode judge: the decision is a strict majority of {args.judge_votes} votes of {args.judge_model} "
+                  "on the table of all rank statistics with their paired-bootstrap intervals, unless a guarded statistic "
+                  "is significantly worse; the objective's point gate and the head guard are recorded, not binding"
+                  if args.promotion_gate == promotion_judge.MODE else ""),
+               gate_version=promotion_judge.gate_version(args.promotion_gate), gate_mode=args.promotion_gate,
                aggregation=scoring.AGGREGATION_LABELS[args.aggregation], objective=args.objective,
                head_guard=head_guard)
     trace.emit("metric_definitions", "Labels are three-valued (1 error / 0 GT-confirmed no error / NaN not "
@@ -993,8 +1013,14 @@ async def _run(args, revise_fn, run_dir, trace):
                 "objective_label": rank_statistics.OBJECTIVE_LABELS[budgets.objective],
                 "head_guard": budgets.head_guard, "pauc_fpr": budgets.pauc_fpr,
                 "budgets": budgets.describe(), "pool_budgets": pool_budgets,
-                "promotion_gate": {"version": scoring.gate_version(args.promotion_gate),
+                "promotion_gate": {"version": promotion_judge.gate_version(args.promotion_gate),
                                    "mode": args.promotion_gate, "objective": budgets.objective,
+                                   "judge": ({"version": promotion_judge.VERSION, "model": args.judge_model,
+                                              "effort": args.judge_effort, "votes": args.judge_votes,
+                                              "guarded_statistics": list(promotion_judge.GUARDED),
+                                              "rule": "strict majority of the requested votes on the statistics table "
+                                                      "with intervals, and no guarded statistic significantly worse"}
+                                             if args.promotion_gate == promotion_judge.MODE else None),
                                    "head_guard": budgets.head_guard,
                                    "aggregation": scoring.AGGREGATION_LABELS[budgets.aggregation],
                                    "target": "generation.target_kind", "split": "development_validation",
@@ -1348,7 +1374,7 @@ async def _run(args, revise_fn, run_dir, trace):
                           f"{target_kind} component (sha256 {submitted['entry']['component_sha256'][:12]}); "
                           "validation evaluation skipped, parent retained")
                 record["submission_unchanged"] = True
-                record["validation_gate"] = {"version": scoring.gate_version(args.promotion_gate),
+                record["validation_gate"] = {"version": promotion_judge.gate_version(args.promotion_gate),
                                              "mode": args.promotion_gate, "passed": False, "reason": reason,
                                              "skipped": "unchanged_submission",
                                              "brains": list(args.validation_brains),
@@ -1368,7 +1394,7 @@ async def _run(args, revise_fn, run_dir, trace):
                           f"{'promoted' if known['promoted'] else 'not promoted'}); "
                           "validation evaluation skipped, parent retained")
                 record["submission_repeat"] = dict(known)
-                record["validation_gate"] = {"version": scoring.gate_version(args.promotion_gate),
+                record["validation_gate"] = {"version": promotion_judge.gate_version(args.promotion_gate),
                                              "mode": args.promotion_gate, "passed": False, "reason": reason,
                                              "skipped": "repeated_submission",
                                              "brains": list(args.validation_brains),
@@ -1408,13 +1434,22 @@ async def _run(args, revise_fn, run_dir, trace):
                     gen_trace.emit("promotion_uncertainty", "Paired bootstrap of the validation delta recorded "
                                    + ("(binding: the lower bound must exceed zero)" if args.promotion_gate == "bootstrap"
                                       else "(does not affect the gate)"), paired_bootstrap=bootstrap)
+                judged = None
                 if args.promotion_gate == "bootstrap":
                     accepted, reason = scoring.bootstrap_acceptance(parent_validation, candidate_validation, bootstrap,
                                                                     args.precision_margin, target_kind=target_kind, alpha=args.bootstrap_alpha)
+                elif args.promotion_gate == promotion_judge.MODE:
+                    # Same Poisson draws as the bootstrap above (seed = generation); fails closed.
+                    judged = promotion_judge.judge(parent_validation_state, candidate_validation_state, validation, budgets,
+                                                   target_kind=target_kind, draws=args.bootstrap_draws, seed=generation,
+                                                   alpha=args.bootstrap_alpha, votes=args.judge_votes,
+                                                   model=args.judge_model, effort=args.judge_effort)
+                    accepted, reason = bool(judged["passed"]), judged["reason"]
+                    gen_trace.emit("promotion_judge", reason, judge=judged)
                 else:
                     accepted, reason = point_passed, point_reason
                 interval = (bootstrap or {}).get("delta_ci")
-                record["validation_gate"] = {"version": scoring.gate_version(args.promotion_gate),
+                record["validation_gate"] = {"version": promotion_judge.gate_version(args.promotion_gate),
                                              "mode": args.promotion_gate,
                                              "passed": accepted, "reason": reason,
                                              "point_gate": {"passed": point_passed, "reason": point_reason,
@@ -1431,9 +1466,10 @@ async def _run(args, revise_fn, run_dir, trace):
                                              "regressed_cells": [cell for cell, before in parent_validation["cells"].items()
                                                  if (rank_statistics.cell_value(candidate_validation["cells"][cell], budgets.objective) or 0.)
                                                  < (rank_statistics.cell_value(before, budgets.objective) or 0.)],
-                                             "paired_bootstrap": bootstrap}
+                                             "paired_bootstrap": bootstrap, "judge": judged}
                 record.update(accepted=accepted, reason="VALIDATION: " + reason)
-                record["submission_validated"] = pool.mark_validated(submitted['entry'], generation, accepted)
+                record["submission_validated"] = pool.mark_validated(
+                    submitted['entry'], generation, accepted, rejection=(judged or {}).get("rejection_category"))
                 if accepted:
                     source, rules[target_kind] = candidate_source, candidate_rules
                     parent_sources[target_kind] = submitted['component']

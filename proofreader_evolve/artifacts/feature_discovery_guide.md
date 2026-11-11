@@ -164,7 +164,7 @@ repair units.
 The tool does not change the current scorer or register fold models as candidates.
 After interpreting the comparison, call `train_classifier({})` or
 `evaluate_train({})` normally and submit an exactly measured snapshot. The outer
-promotion gate (target-kind precision on counted validation pools) is separate from this
+promotion gate (the target kind's rank statistics on counted validation pools) is separate from this
 tool, and no other brain is made visible to it. Feature diagnostics are advisory,
 not a new promotion veto.
 

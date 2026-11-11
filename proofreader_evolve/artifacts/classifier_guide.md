@@ -154,8 +154,18 @@ An absent or disabled guard does not filter candidates. `restore_candidate("best
 uses the same preference among candidates not yet measured by the outer evaluator,
 falling back to all candidates when all have been measured. Explicit IDs remain
 selectable; a selection-objective gain over the parent is not required. Selection comparisons guide search;
-only the outer target-kind validation objective, with its resampling-noise bound and the head
-guard, controls promotion. With no
+only the outer evaluator's measurement of the target kind on held-out pools controls promotion:
+by default the objective with its resampling-noise bound and the head guard; a run configured
+with a promotion judge instead has every rank statistic reviewed with its resampling
+uncertainty, the top of the ranking mattering most. A candidate the outer evaluator already
+measured carries `outer_measurement` (`generation`, `experiment`, `promoted`) in the pool and
+plan files; when a promotion judge rejected it, `rejection` gives the only reason you are told,
+one of four words: `significantly_worse` (a rank statistic fell beyond resampling noise: leave
+this direction), `within_noise` (nothing improved beyond noise: a larger or different change is
+needed, not a retune), `head_not_improved` (the ranking improved overall but not at its top:
+work on the highest-ranked candidates) and `not_convincing` (the top improved beyond noise yet
+the evidence was judged insufficient: strengthen the same direction). No heldout number is ever
+shown. With no
 grid, it measures one fit. A grid stops at the first failed fit or execution error of
 the program; the reply's `stopped_early` lists the skipped configurations, which are not
 charged, so fix the program or its memory use before resubmitting them. To try a
@@ -235,7 +245,8 @@ evaluation unit, fold refits included. You may still print your own internal
 diagnostics. Under `in_sample`, the selection score instead uses the full-TRAIN
 ranking with the same aggregation and positive floor. Final promotion requires
 the target kind's development-validation gain to exceed the configured margin and,
-by default, clear the paired-bootstrap noise gate on the frozen candidate;
+by default, clear the paired-bootstrap noise gate on the frozen candidate (or, in a run
+configured with a promotion judge, pass its review of every rank statistic);
 the selection score is a repeatedly used development signal, not an
 untouched final test.
 

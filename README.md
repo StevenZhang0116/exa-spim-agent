@@ -60,12 +60,17 @@ python -m proofreader_evolve.cli.run_evolution \
     --train-brains 802449,747807,750318,754610,754612,754613 \
     --selection-brains all --selection-holdout-brains all \
     --validation-brains 789202,794493,794491,751473,841260 \
-    --generations 5 --objective auroc --aggregation positive-weighted --min-positives 10 \
+    --generations 5 --objective average_precision --promotion-gate judge \
+    --aggregation positive-weighted --min-positives 10 \
     --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400 \
     --classifier-threads 32 --classifier-search-seconds 7200 \
     --descriptor-workers auto --reviser-max-turns 80
 ```
 
+`--objective average_precision --promotion-gate judge` is the configuration in use since 2026-11-10: an LLM
+judge decides promotion from a numbers-only table of rank statistics, inside a guard rail
+([details](docs/stage3_evolution.md#promotion-by-an-llm-judge---promotion-gate-judge-2026-11-10)); the
+command-line defaults remain AUROC and the bootstrap gate.
 The last two option lines size the run to a dedicated 40-CPU / 600 GB allocation. The driver does not
 size itself to the node and its defaults are hard limits inside the agent's tools, so always pass the
 resource options explicitly and run one evolution run per allocation

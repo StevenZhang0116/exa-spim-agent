@@ -15,7 +15,10 @@ this file: `git show efcd2be:proofreader_evolve/TODO.md`.
   testing or promotion on it. The split and launch recipe are in
   [Stage 3](../docs/stage3_evolution.md#32-prepare-tables-and-launch-a-run).
 - Positive-weighted aggregation is shared by selection, ablation, validation and the
-  bootstrap. No LLM judge takes part in selection or promotion.
+  bootstrap. No LLM takes part in TRAIN-side selection. Promotion: since 2026-11-10 the user
+  runs with `--objective average_precision --promotion-gate judge` (an LLM judge inside a
+  guard rail, `harness/promotion_judge.py`); the command-line defaults stay AUROC and the
+  bootstrap gate.
 - The five validation brains are development data: the gate has judged many candidates on
   them. A result on them is not a held-out test result.
 - Do not change the objective or the gate while a run that will be compared is running;
@@ -124,7 +127,26 @@ Concrete, each one met while switching seven brains to denoised images.
   validation objective and with validation P@K; (c) head-guard vetoes, rejected generations
   whose P@K rose, and candidates whose three-depth mean held while P@K alone fell beyond the
   tolerance. Revert to `--objective precision_at_k` if validation P@K falls over a run or the
-  guard vetoes most AUROC-accepted candidates. Not done as of 2026-11-09.
+  guard vetoes most AUROC-accepted candidates.
+  **First evidence, 2026-11-10** (`notebooks/acceptance_rule_replay.py` on the 19 validated
+  candidates of runs `uxuqkoag` and `e7y6ie3_`, every candidate rescored to the ledger's values
+  and every AUROC interval reproducing the gate's): on merge the AUROC gate and an
+  average-precision gate disagree on five of the eight candidates that had a non-seed parent.
+  AUROC accepted two candidates whose average precision and depth-mean intervals include zero
+  (one with precision at K down 0.025) and rejected three whose average precision and
+  depth-mean intervals lie above zero. On split the two gates agree on all seven. False
+  acceptance on null pairs (exchangeable hybrids of real pairs): AUROC gate 6/200 merge and
+  5/175 split, average-precision gate 5/200 and 3/175. An LLM judge shown the statistics with
+  their intervals (five votes, numbers only) made the average-precision gate's decision on
+  14 of the 15 pairs and accepted 1 of 60 null pairs; without the intervals it accepted fewer
+  real pairs and its votes split more often. Decided by the user on 2026-11-10: the next runs
+  use `--objective average_precision --promotion-gate judge`. Still to do after those runs:
+  compare the judge's decisions with the average-precision gate's (both are in the ledger: the
+  objective's bootstrap is recorded beside the ballots), count split votes and failed calls, and
+  check whether the rejection category shown to the reviser (`outer_measurement.rejection`,
+  four host-derived words) reduces near-identical resubmissions of rejected candidates. Limits: two runs, candidates
+  produced under the AUROC objective, development-validation data, and the replay keeps each
+  run's parent sequence fixed although another gate would have changed it.
 - **Plateau detection counts TRAIN novelty, not validation progress.** `stalled_rounds` in
   `harness/candidate_pool.py` advances on TRAIN selection gains (checked 2026-11-09), so a
   kind whose candidates are rejected inside the bootstrap interval keeps its budget. Stop

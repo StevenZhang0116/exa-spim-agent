@@ -60,7 +60,8 @@ def in_sample_precision(report, kind):
 
 
 class ExperimentMemory:
-    """Host-owned archive: no validation values or validation decision reasons."""
+    """Host-owned archive: no validation values and no decision text; of an outer decision only the
+    promotion status and, under the promotion judge, a rejection category from a fixed vocabulary."""
     def __init__(self, run_dir, *, train=None, protocol=None, fit_limits=None, descriptor_runs=None):
         self.path = run_dir / 'train_experiments.jsonl'
         self.artifact_store = run_dir / 'model_artifacts'
@@ -206,8 +207,9 @@ class TrainingExperiments:
             raise ValueError('image_preview_budget must be a nonnegative integer')
         self.image_preview_budget = image_preview_budget
         self.gen_dir, self.policy_path, self.rules_path = gen_dir, policy_path, rules_path
-        # Host lookup (entry -> {generation, experiment, promoted, by} or None) of candidates the
-        # outer evaluator already measured; status only, never a validation number.
+        # Host lookup (entry -> {generation, experiment, promoted, by[, rejection]} or None) of candidates
+        # the outer evaluator already measured; status and the judge's rejection category only, never a
+        # validation number.
         self.validated = validated
         self.proposal_path = gen_dir / 'proposal.json'
         self.training_path = gen_dir / 'training.py'
@@ -606,8 +608,10 @@ class TrainingExperiments:
                 public['outer_measurement'] = known
                 self.trace.emit('outer_measurement_known', f"{entry['experiment']}: same {known['by']} as "
                                 f"{known['experiment']}, measured by the outer evaluator in generation "
-                                f"{known['generation']} ({'promoted' if known['promoted'] else 'not promoted'})",
-                                **{k: known[k] for k in ('generation', 'experiment', 'promoted', 'by')})
+                                f"{known['generation']} ({'promoted' if known['promoted'] else 'not promoted'}"
+                                + (f", {known['rejection']}" if known.get('rejection') else '') + ")",
+                                **{k: known[k] for k in ('generation', 'experiment', 'promoted', 'by', 'rejection')
+                                   if k in known})
             log_metrics(self.trace, f"TRAIN {entry['experiment']}", report, self.parent_report)
             self.trace.emit('selection_measurement', f"{entry['experiment']}: {self.protocol.mode} selection "
                             f"{entry['selection_gate']['objective']}={entry['target_objective']:.6f} "
