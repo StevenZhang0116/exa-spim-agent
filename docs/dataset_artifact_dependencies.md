@@ -53,7 +53,7 @@ Two kinds of change have different blast radii:
   renumbered because `SkeletonGraph.load` assigns component ids in load order, even when the
   fragments are unchanged. Everything keyed by node ids or by the pool hash changes.
 - **Label-only refresh** (the `policy` stage of `python -m labeled_cache`, for example
-  `--policy length_v1`): graphs and node ids stay, only `gt_*` label arrays,
+  `--policy length_v2`): graphs and node ids stay, only `gt_*` label arrays,
   `gt_merge_sites` and `gt_label_policy` change. Candidate pools and folds stay identical;
   labels, sidecars, companions and anything carrying labels must still be redone.
 
@@ -82,7 +82,7 @@ rm -rf proofreader_evolve/feature_tables/<b> proofreader_evolve/descriptor_bank*
 python -u -m labeled_cache --brains <b> --mcl 100 --rebuild-base                      # deletes both pkl files, GCS load; 58 min (794495)
 python -u proofreader_evolve/prepare_feature_tables.py --brains <b> --mcl 100 --threads all --detector-prior raw   # raw pools + sidecars, minutes (raw runs, since 2026-11-06)
 # frozen / no-score runs only: the same command without --detector-prior raw and with --image-workers -1 (detector image pass, about 16 h for 794495)
-python -u -m proofreader_evolve.cli.export_rerank_companion --brain <b> --mcl 100     # 1 min
+python -u -m proofreader_evolve.cli.export_rerank_companion --brain <b> --mcl 100 --pool-only   # minutes; without --pool-only it needs detector-native tables
 python -u scripts/check_image_alignment_from_cache.py --brains <b> --mcl 100 --out figs/candidate_image_alignment_<date>
 python -u scripts/check_image_alignment_from_cache.py --brains <b> --mcl 100 --out figs/candidate_image_alignment_<date> \
     --record-reviewed --review-note "<what you saw in the six overlays>"
@@ -90,9 +90,18 @@ python -m proofreader_evolve.cli.preflight --brains <development brains> --train
 rm -rf metrics_out/<b>; python -u notebooks/evaluate_skeleton_metrics.py --brains <b>   # only if GT or the segmentation changed; old runs are deleted, not archived
 ```
 
-After a label-only refresh keep the pkl files and the directories: run
-`python -m labeled_cache --brains <b> --mcl 100 --policy length_v1 --check-reproduce` instead (the `policy` stage, no
+After a label-only refresh keep the pkl files: run
+`python -m labeled_cache --brains <b> --mcl 100 --policy length_v2 --check-reproduce` instead (the `policy` stage, no
 cloud reads apart from the GT check), then steps 2 to 4, then re-record the receipt. Descriptor inputs are read on demand; there is no context-cache rebuild.
+
+As done on 2026-11-11 for the `length_v2` refresh of the twelve caches: relabel (minutes per brain, four groups on two
+nodes); delete `proofreader_evolve/feature_tables/<b>` and `proofreader_evolve/descriptor_bank_raw/<b>`; `bash
+proofreader_evolve/rebuild_brains.sh <brains>` (one call per node; 25 to 35 min for a large brain because of the split
+pool); regenerate the 802449 and 794495 companions with `--pool-only`; run the alignment audit and compare the six
+overlays per brain with the previously reviewed set (same seed, same nodes: pixel-identical overlays mean the earlier
+review stands, `figs/candidate_image_alignment_20261111/overlay_comparison.json`) before `--record-reviewed`; the
+eleven-brain preflight; `notebooks/merge_canonical_gap.py --measure` and `--plot`. Every `pool_sha256` and every split
+label were unchanged; only merge labels moved.
 
 ## 4. Not invalidated automatically, but no longer comparable
 

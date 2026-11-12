@@ -1,6 +1,6 @@
 """Command line of the labeled-cache builder.
 
-    python -m labeled_cache --brains 794495 --mcl 100 --policy length_v1 --check-reproduce
+    python -m labeled_cache --brains 794495 --mcl 100 --policy length_v2 --check-reproduce
     python -m labeled_cache --brains 841260                        # new brain (2026-11-05): base + labels
     python -m labeled_cache --brains 789202 802449 --rebuild-base  # sources replaced 2026-11-05: both pkl files rebuilt
     python -m labeled_cache --brains 794495 --dry-run              # show the stages, load nothing
@@ -27,7 +27,7 @@ import traceback
 
 from labeled_cache import io
 from labeled_cache.build import BuildRequest, plan, run
-from labeled_cache.policy import DEFAULT_LENGTH_UM, POLICIES, POLICY_LENGTH_V1, describe
+from labeled_cache.policy import DEFAULT_LENGTH_UM, DEFAULT_POLICY, POLICIES, describe
 
 
 class _Tee:
@@ -55,10 +55,11 @@ def parse_args(argv=None):
     parser.add_argument("--brains", nargs="+", required=True,
                         help="Brain ids from configs/segmentation_paths.json or segmentation_datasets.rtf.")
     parser.add_argument("--mcl", type=int, default=100, help="Minimum cable length (default %(default)s).")
-    parser.add_argument("--policy", choices=POLICIES, default=POLICY_LENGTH_V1,
-                        help="Merge-threshold policy (default %(default)s).")
+    parser.add_argument("--policy", choices=POLICIES, default=DEFAULT_POLICY,
+                        help="Merge-label policy (default %(default)s: length thresholds, merge walk one GT "
+                             "neuron at a time; length_v1 is the same thresholds with the earlier pooled walk).")
     parser.add_argument("--threshold-um", type=float, default=DEFAULT_LENGTH_UM,
-                        help="Cable length of the length_v1 policy (default %(default)s).")
+                        help="Cable length of the length policies (default %(default)s).")
     parser.add_argument("--cache-dir", type=Path, default=io.DEFAULT_CACHE_DIR)
     parser.add_argument("--node-spacing", type=float, default=5.0)
     parser.add_argument("--anisotropy", type=float, nargs=3, default=(0.748, 0.748, 1.0), metavar=("X", "Y", "Z"))
@@ -70,7 +71,8 @@ def parse_args(argv=None):
     parser.add_argument("--force-relabel", action="store_true",
                         help="Apply the policy even when the cache already records it.")
     parser.add_argument("--check-reproduce", action="store_true",
-                        help="Before relabeling, recompute with the original thresholds and require the stored labels back.")
+                        help="Before relabeling, recompute with the thresholds and the merge walk the cache records and "
+                             "require the stored labels back.")
     parser.add_argument("--refresh-image-path", action="store_true",
                         help="Only give the existing pkl files the img_path of configs/exaspim_image_prefixes.json "
                              "(after an S3 volume moved or was replaced, e.g. by its denoised sibling); no GT check, no other stage.")

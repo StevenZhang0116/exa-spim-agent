@@ -9,6 +9,9 @@ K sweep, the context-cache coverage tables, the 2026-10-29 three-arm state) are 
 change log of [WORKFLOW_REVISION.md](WORKFLOW_REVISION.md) and in the previous version of
 this file: `git show efcd2be:proofreader_evolve/TODO.md`.
 
+For merge, read section 7 first: it names what currently limits the merge scorer. The sections
+keep their numbers because other documents cite them.
+
 ## Standing decisions
 
 - 794495 is reserved for a future independent validation; no fitting, selection, tuning,
@@ -154,6 +157,8 @@ Concrete, each one met while switching seven brains to denoised images.
   or end the run; host-side only, no validation value shown to the agent. The same rule would
   cover the `tune` rounds, which accepted nothing in twelve generations of the 2026-10-27
   runs. Depends on section 1: a simplified inner loop removes most of this machinery.
+- **Merge is limited by within-junction discrimination, see section 7** (2026-11-11); the item
+  below is the statistical side of the same problem.
 - **Merge has little statistical power.** Validation holds 439 merge positives over five
   brains (15 / 41 / 125 / 140 / 118 on the 2026-11-07 pools) and the gate needs the lower bound
   of a two-sided 95% paired-bootstrap interval above zero. Options if it proves too strict: a one-sided test at
@@ -230,3 +235,350 @@ intensities by ratios, ask the specification for fragment geometry at 30-50 um, 
 rebuilt detector only if the frozen arm reaches the no-score / raw level on validation merge,
 not on a better AP on its fitting brain. Details: `git show efcd2be:proofreader_evolve/TODO.md`,
 section P4.
+
+## 7. Merge: the scorer does not separate merge junctions from true branch points (2026-11-11)
+
+**Diagnosis.** The pooled merge AUROC is inflated by the candidate family. Merge pools hold
+two families, `junction` and `tip_to_shaft`; nearly every positive is a junction and nearly
+every `tip_to_shaft` row is a negative, so ranking junctions above `tip_to_shaft` rows already
+gives a high pooled AUROC. Inside the junction family, where the task is, discrimination is
+weak. Measured on the accepted merge scorer of run `precision_20261111_004622_zl8_wyc1`
+(generation 7), whole-brain holdout scores of the six TRAIN brains, GT-labeled rows only:
+
+| TRAIN brain | pooled AUROC | junction: labeled / positives / base rate | junction AUROC | `tip_to_shaft` positives, of them in the top 5% |
+|---|---|---|---|---|
+| 802449 | 0.753 | 6,883 / 98 / 1.4% | 0.625 | 6, none |
+| 747807 | 0.894 | 1,213 / 113 / 9.3% | 0.738 | 12, none |
+| 750318 | 0.824 | 1,439 / 114 / 7.9% | 0.661 | 30, none |
+| 754610 | 0.876 | 820 / 14 / 1.7% | 0.844 | 5, none |
+| 754612 | 0.914 | 747 / 22 / 2.9% | 0.743 | no positive |
+| 754613 | 0.941 | 449 / 9 / 2.0% | 0.783 | no positive |
+
+What follows from the table:
+
+- The pooled statistic hid the state of the task. This is the mechanism behind "AUROC rose and
+  the head of the ranking did not" (section 3).
+- No `tip_to_shaft` positive (53 on TRAIN) reaches the top 5% of its brain: the scorer treats the
+  family as negative.
+- The junction base rate is 1.4% on 802449 (denoised Google segmentation) against 8-9% on
+  747807 and 750318, so the same scorer puts mostly true branch points at the top of 802449.
+  This is the direct reason for its 4-7 hits of 104 in every run.
+- Three runs with different gates and objectives (AUROC with the bootstrap gate twice, average
+  precision with the judge once) ended at the same merge level (validation AUROC 0.876-0.881,
+  average precision 0.10-0.13). The gate and the objective decide whether an improvement is
+  recognized; they do not produce one.
+
+Interpretation: within 50 um of geometry and a local image patch, a crossing or touching pair
+of neurites resembles a branch point. The first guess at what is missing, longer-range fragment
+context, was tested on 2026-11-11 and is **not supported**:
+
+**Fragment totals and arm subtrees do not separate the classes**
+(`notebooks/merge_junction_study/merge_junction_fragment_context.py`, six TRAIN brains, junction
+family, GT-labeled rows, whole-brain holdout; outputs in
+`notebooks/merge_junction_study/merge_junction_fragment_context/summary.md`).
+For every junction the script computes the fragment's cable length, tips and branch points and,
+for each arm, the cable, tips and branch points of the whole subtree behind it (the arms sum to
+the fragment total within 4e-12 um), plus the through pair and the side arm from a 30 um walk.
+
+| Junction family, positive-weighted over the six brains | AUROC | average precision | hits in Top K (K = positives) |
+|---|---|---|---|
+| accepted scorer's holdout score (reference) | 0.690 | 0.122 | 54 / 370 |
+| fragment features alone | 0.652 | 0.096 | 41 / 370 |
+| scorer score + fragment totals | 0.702 | 0.149 | 64 / 370 |
+| scorer score + all fragment features | 0.698 | 0.133 | 57 / 370 |
+
+The one-feature AUROCs are 0.44-0.61 on the three large brains and change sign between brains
+(fragment cable length: 0.46 on 802449, 0.51 on 747807, 0.32 on 750318, 0.57-0.71 on the three
+small brains), and adding the features lowers 747807 (0.738 to 0.664) while raising 750318
+(0.661 to 0.727). A merged fragment is not reliably larger and the arms of a merge junction are
+not reliably longer than those of a true branch point. Limits: a fixed, untuned
+gradient-boosting model; simple size statistics only (no path-following of where an arm goes);
+9-22 positives on the small brains.
+
+**The labels are on the right junctions; they are not what caps the junction AUROC**
+(`notebooks/merge_junction_study/merge_junction_label_localization.py`, 2026-11-11, six TRAIN
+brains, junction family, GT-labeled rows; outputs in
+`notebooks/merge_junction_study/merge_junction_label_localization/summary.md`).
+The question was whether a positive label often lands on a true branch point beside the false
+connection. Each arm of a junction is followed over 60 um of fragment cable and compared with
+the tracing (a GT node within 6 um, the cache's own walk distance). `two_gt`: arms on different
+GT neurons. `leaves_gt`: one arm on a GT neuron, another arm runs 60 um without any tracing (the
+pattern the geometric walk records). `gt_branch`: every arm on the same GT neuron. `gt_spur`:
+the other arms are short and untraced. `no_gt`: no arm follows a tracing.
+
+| Junction rows, six TRAIN brains | rows | `two_gt` | `leaves_gt` | `gt_branch` | `gt_spur` | mixed | `no_gt` |
+|---|---|---|---|---|---|---|---|
+| positives | 370 | 29 (8%) | 309 (84%) | 4 (1%) | 10 (3%) | 14 (4%) | 4 (1%) |
+| negatives | 11,181 | 22 (0%) | 353 (3%) | 8,277 (74%) | 428 (4%) | 675 (6%) | 1,426 (13%) |
+| mean within-brain rank of the accepted scorer, positives (1 = top) | | 0.67 | 0.70 | 0.87 | 0.38 | 0.46 | 0.49 |
+| the same, negatives | | 0.49 | 0.59 | 0.51 | 0.30 | 0.30 | 0.53 |
+
+| TRAIN brain | junction AUROC, all rows | positives / negatives where label and category agree | junction AUROC on those rows |
+|---|---|---|---|
+| 802449 | 0.625 | 90 / 6,388 | 0.624 |
+| 747807 | 0.738 | 102 / 433 | 0.814 |
+| 750318 | 0.661 | 106 / 337 | 0.762 |
+| 754610 | 0.844 | 13 / 601 | 0.878 |
+| 754612 | 0.743 | 19 / 555 | 0.775 |
+| 754613 | 0.783 | 8 / 391 | 0.792 |
+
+("Agree": positives in `two_gt` or `leaves_gt`, negatives in `gt_branch` or `gt_spur`.)
+
+- 338 of 370 positives (91%) sit on a junction where the tracing itself shows the fragment
+  joining two neurons or leaving the neuron; 14 (4%) sit on a junction the tracing reads as a
+  branch point or a spur. Mislocalized positives are rare.
+- On 802449, 93% of the negatives are branch points with every arm on the same GT neuron, and
+  on the rows where label and tracing agree the AUROC is unchanged (0.624). Its low figure is a
+  feature problem: the scorer ranks verified true branch points (mean rank 0.51) too close to
+  merge junctions (0.70).
+- On 747807 and 750318 the negatives are less clean: 391 and 886 of them are `no_gt` (labeled
+  0 inside the 150 um claim radius, with no tracing along any arm), and 156 and 57 are
+  `leaves_gt`. Without those rows the AUROC rises by 0.08 and 0.10. Over all six brains 375
+  negatives (`two_gt` + `leaves_gt`) show the same pattern as the positives, about as many as
+  there are positives; the scorer already ranks them higher (0.59) than branch points (0.51).
+- The 29 positives confirmed by two GT neurons are ranked no better (0.67) than the
+  `leaves_gt` ones (0.70), so the low ranks are not explained by `leaves_gt` positives being
+  untraced branches of the same neuron (29 rows only).
+
+Limits: the categories are a second reading of the same tracing, not new truth; `leaves_gt` is a
+merge only where the tracing is complete; a GT neuron passing within 6 um of an arm counts as
+covering it; thresholds fixed, not tuned; one scorer of one run.
+
+**The disagreeing negatives, read against the cache's site rule** (same script, second pass the
+same day; it stores per row the quantities `canonical_labeling.geometric_merge_sites` depends
+on and draws examples under
+`notebooks/merge_junction_study/merge_junction_label_localization/examples/`). The walk
+starts only at a fragment leaf more than 50 um from every GT node, stops at the first node
+within 6 um of a GT node, drops the contact as a pass-through when fewer than 12 connected GT
+nodes there carry the segment's label (11 on 750318), and records one site per walk.
+
+- `no_gt` negatives (1,426 junction rows, 2,545 `tip_to_shaft` rows) are not on a tracing at
+  all. Junction rows: 1,020 are 50-150 um (Euclidean) from the nearest GT node, and along the
+  fragment 808 are more than 300 um of cable from the nearest node within 6 um of a GT node
+  (201 at 150-300 um, 217 at 60-150 um, 200 within 60 um). Reading the tracing at 12 um instead
+  of 6 um moves only 174 of them out of `no_gt` (37 to a branch or spur), so this is not a
+  skeleton-to-tracing offset. 902 are on a segment in `gt_merge_labels`; 221 have a recorded
+  site between them and the tracing. They are 0 only through the 150 um claim radius; the
+  scorer ranks them like any branch point (0.53). 3,434 of the 3,971 rows are on 747807 and
+  750318.
+- `leaves_gt` negatives (353 junction rows): for 219 the untraced side arm never gets more than
+  50 um from the tracing, so no walk starts (free region behind the arm: median 126 um of cable
+  against 311 um for the positives); for 76 the tracing beside the junction does not carry the
+  segment's label (the fragment runs next to a GT neuron); 43 have a site recorded 20-60 um of
+  cable away, outside the 20 um label radius; 15 others. A `leaves_gt` positive and most
+  `leaves_gt` negatives therefore differ by how far the untraced arm gets from the tracing, which
+  is not visible inside the descriptor's 50 um.
+- With GT read at 12 um, 117 of the 309 `leaves_gt` positives become `mixed`: the untraced arm
+  often starts 6-12 um beside the traced neurite before it departs (a neighbour running
+  alongside rather than a crossing).
+
+| Junction AUROC of the accepted scorer, measured on other negative sets (positives and scorer unchanged) | junction / `tip_to_shaft` negatives kept | 802449 | 747807 | 750318 | 754610 | 754612 | 754613 |
+|---|---|---|---|---|---|---|---|
+| current labels | 11,181 / 15,799 | 0.625 | 0.738 | 0.661 | 0.844 | 0.743 | 0.783 |
+| without `no_gt` negatives | 9,755 / 13,254 | 0.625 | 0.774 | 0.722 | 0.843 | 0.748 | 0.783 |
+| without `no_gt` and `leaves_gt` negatives | 9,402 / 12,962 | 0.625 | 0.804 | 0.747 | 0.847 | 0.754 | 0.784 |
+| negatives only within 20 um of cable of a contact whose GT carries the segment (12 nodes) | 9,469 / 11,079 | 0.625 | 0.773 | 0.719 | 0.840 | 0.748 | 0.784 |
+
+**What the image shows at these candidates** (`examples` stage of the same script: eight random
+junction candidates per brain and group, 132 in all, each with the image maximum projection of
+a 160 x 160 x 48 um box, the fragments and the GT; all 18 sheets read by eye on 2026-11-11, one
+view per candidate, so the counts are impressions, not annotations).
+
+- `no_gt` negatives: `no_gt` means that no arm of the candidate follows a tracing, not that
+  the box holds no GT. On most sheets the GT panel is empty or holds GT nodes of another label
+  passing by; on 747807 and 754610 several boxes also hold a tracing that carries the
+  candidate's segment and runs past 20-50 um from the candidate (747807 rows 111413, 612827;
+  754610 rows 2010, 2011). Row 111413 of 747807 was checked node by node: the merge beside it
+  is recorded (a site 52 um of cable away, with its own positive junction, row 111398); the
+  tracing continues under another segment's label, and row 111413 is a further junction on the
+  untraced part. The image shows a mixture: branch points and somata of untraced neurons that
+  look ordinary, apparent
+  crossings of two distinct neurites (several per sheet, e.g. 750318 row 189304, 802449 row
+  42842), and, on 754613 and 754610, fibres of a bundle next to a traced one. A 0 is not
+  supported for this group.
+- `leaves_gt` negatives are heterogeneous: short twigs on a traced neurite (802449); arms lying
+  in the diffuse glow beside a bright neurite with no neurite of their own (747807); and
+  branches the GT does trace, under another label, with a further arm off the tracing (754610,
+  754612). (A tracing that seemed to end in the first version of the sheets had only left the
+  projected slab; GT nodes in front of and behind the slab are now drawn faintly.) Few look like
+  a second neuron. This
+  weakens the case for making them NaN.
+- `leaves_gt` positives fall in four visual kinds: a crossing of two distinct neurites with the
+  GT on one (roughly a third to a half, e.g. 754610 row 38114, 750318 row 51788, 802449 row
+  8495); a dimmer neurite running alongside or branching off, visible only on a square-root grey
+  scale (754612 rows 13909, 11135, 27913); a Y that looks like an ordinary branch point, with the
+  GT on some arms only (about one in five, e.g. 802449 rows 16365, 29999); and an arm with no
+  visible signal in the projected slab (754612 rows 61446, 61540).
+
+The Y-shaped positives cannot be told from branch points by anything local; the crossings and
+the dim or dark side arms can, in principle, by the continuity of opposite arms and by the
+intensity along each arm.
+
+The reasons for a missing site are read from the stored quantities, not from a rerun of the walk
+(its result depends on the order the leaves are visited); the effect of refitting a scorer on
+changed labels was not measured.
+
+**How many off-tracing negatives are merges: a hidden-neuron estimate**
+(`notebooks/merge_junction_study/merge_junction_hidden_neuron.py`, 2026-11-11, six TRAIN brains;
+outputs in `notebooks/merge_junction_study/merge_junction_hidden_neuron/summary.md`). The tracing
+cannot judge the off-tracing negatives themselves, but it can judge stand-ins: candidates that lie
+on the tracing of exactly one GT neuron and that the current rule would still label 0 if that
+neuron had not been traced (their segment also carries another GT neuron's label, and a node of
+another GT neuron lies within 150 um). Their labels are known.
+
+| Junction family | positives / rows on a tracing | rate | positives / stand-in rows | rate (Wilson 95%) | off-tracing negatives |
+|---|---|---|---|---|---|
+| 802449 | 98 / 6,801 | 1.4% | 0 / 66 | 0% (0-5.5) | 82 |
+| 747807 | 113 / 780 | 14.5% | 0 / 25 | 0% (0-13.3) | 433 |
+| 750318 | 114 / 520 | 21.9% | 4 / 43 | 9.3% (3.7-21.6) | 919 |
+| 754610, 754612, 754613 | 45 / 1,877 | 2.4% | 0 / 30 | 0% (0-11.4) | 139 |
+| all six | 370 / 9,978 | 3.7% | 4 / 164 | 2.4% (1.0-6.1) | 1,573 |
+
+`tip_to_shaft`: 0 positives in 174 stand-in rows (0-2.2%), against 53 / 12,532 on a tracing.
+("On a tracing": a GT node within 6 um of a fragment node within 20 um of cable of the
+candidate, carrying the segment's label over at least 12 connected GT nodes; by this definition
+1,573 junction negatives are off-tracing, against 1,426 `no_gt` rows by the arm reading.)
+
+The stand-ins are positive no more often than candidates on a tracing, and less often on the
+two brains that hold most of the off-tracing negatives. There is no sign that those negatives
+hide many merges: at the pooled rate about 40 of the 1,573 would be merges (16 to 96 at the
+interval's ends), against 370 labeled positives. Limits: 164 stand-in rows from 23 neurons and
+51 segments, only 25 and 43 rows (5 neurons, 18 segments) on 747807 and 750318, so a rate up to
+13% and 22% there is not excluded; a stand-in sits on a neuron somebody chose to trace, on a
+segment that two traced neurons share; its label follows the same site convention.
+
+**Candidates at a canonical merge site that are labeled 0**
+(`notebooks/merge_junction_study/merge_canonical_site_labels.py`, 2026-11-11, six TRAIN brains;
+outputs in
+`notebooks/merge_junction_study/merge_canonical_site_labels/summary.md`). Positives come from the
+sites recomputed on the
+cache, not from the sites segmentation-skeleton-metrics reports (`metrics_out`, "canonical").
+Per canonical site, the candidates within 20 um of fragment cable and their labels:
+
+| TRAIN brain | canonical sites | a positive candidate | candidates, all labeled 0 | no candidate within 20 um | not on a fragment of the segment |
+|---|---|---|---|---|---|
+| 802449 | 157 | 94 | 32 | 26 | 5 |
+| 747807 | 160 | 104 | 25 | 27 | 4 |
+| 750318 | 162 | 122 | 23 | 13 | 4 |
+| 754610, 754612, 754613 | 58 | 38 | 10 | 10 | 0 |
+| all six | 537 | 358 (67%) | 90 (17%) | 76 (14%) | 13 (2%) |
+
+- 92 candidates sit at a canonical site with the label 0 (none is unlabeled): 75 junctions
+  against 370 junction positives (+20%; 802449 29 against 98) and 17 `tip_to_shaft` rows against
+  53. Of the 75 junctions, 54 are `leaves_gt` or `two_gt` by the reading of the tracing above,
+  so this accounts for 54 of the 375 negatives with the positives' pattern.
+- For 62 of the 90 sites the cache has no site within 150 um of cable (31 of 32 on 802449);
+  for 20 it has one within 50 um, so the merge is labeled on a neighbouring candidate. Why the
+  cache's walk records nothing at the 62 is taken up in the next paragraph (at the snapped node
+  the contact is below the pass-through threshold for 19, the nearest GT node farther than 6 um
+  for 12).
+- In the other direction, 42 of the 370 junction positives and 23 of the 53 `tip_to_shaft`
+  positives have no canonical site within 20 um of cable.
+- The accepted scorer ranks the 75 junctions between the classes: mean rank 0.59 and 20% in
+  the top tenth, against 0.68 and 24% for the labeled positives and 0.49 and 9% for the other
+  negatives.
+
+| Junction family, accepted scorer (scorer unchanged) | 802449 | 747807 | 750318 | 754610 | 754612 |
+|---|---|---|---|---|---|
+| average precision, current labels | 0.025 | 0.207 | 0.137 | 0.100 | 0.069 |
+| average precision, canonical sites added | 0.030 | 0.224 | 0.162 | 0.127 | 0.085 |
+| Top-K hits, current labels | 4 / 98 | 28 / 113 | 19 / 114 | 0 / 14 | 2 / 22 |
+| Top-K hits, canonical sites added | 5 / 127 | 34 / 132 | 25 / 134 | 2 / 18 | 3 / 25 |
+| AUROC, current labels | 0.625 | 0.738 | 0.661 | 0.844 | 0.743 |
+| AUROC, canonical sites added | 0.626 | 0.719 | 0.643 | 0.814 | 0.736 |
+
+The missing positives are real and are the hardest negatives the scorer was fitted on, but
+they do not explain the merge level: 802449 stays at 5 hits of 127. The effect of refitting
+with the added positives was not measured.
+
+**Why the cache misses them: the port of the metric differs from the metric in two places**
+(`notebooks/merge_junction_study/merge_site_walk_replay.py`, 2026-11-11, six TRAIN brains; outputs in
+`notebooks/merge_junction_study/merge_site_walk_replay/summary.md`). The cache's sites come from
+`canonical_labeling.geometric_merge_sites` (agentic-neuron-proofreader), a port of
+`MergeCountMetric` (segmentation-skeleton-metrics). Read side by side: (1) the metric works one
+GT neuron at a time, with a KD-tree of that neuron alone: a walk starts at a leaf more than
+50 um from that neuron and stops within 6 um of that neuron; the port uses one KD-tree of all GT
+neurons in a single pass, so a leaf near any other traced neuron starts no walk and a walk
+stops at whatever tracing it meets first. (2) The metric moves an accepted site to the nearest
+branching node within 40 um of cable that lies within 16 um of the neuron
+(`search_branching_node`); the port keeps the node where the walk stopped. Replayed on the
+cache's own graphs (the replay with one tree for all neurons reproduces the cache's 480
+geometric-walk sites and their match counts exactly):
+
+| Canonical sites (537 on TRAIN) with a site of the list within | 20 um | 50 um | sites in the list | of them with a canonical site within 50 um |
+|---|---|---|---|---|
+| cache, all sources | 421 (78%) | 441 (82%) | 509 | 87% |
+| cache, geometric walk only | 397 (74%) | 415 (77%) | 480 | 87% |
+| replay, one GT neuron at a time | 456 (85%) | 477 (89%) | 545 | 88% |
+| replay, one neuron at a time and moved to a branching node | 465 (87%) | 477 (89%) | 546 | 88% |
+
+On 802449 (38 GT neurons) the share within 50 um goes from 69% to 85%; on 754613 the walk alone
+finds 9 of 9 where the port's walk finds 3. Of the 90 canonical sites whose candidates are all
+labeled 0, the replay with both changes puts a site within 20 um for 51 (22 of 32 on 802449);
+of the 358 that already have a positive candidate it keeps 355. The other 39 are not explained;
+the metric ran on its own fragment and GT graphs, and the order of leaves and neighbours decides
+which contact a walk records.
+
+Still open as an explanation: junction-local image evidence at full resolution, and which
+existing descriptors separate verified branch points from merge junctions on 802449.
+
+Limits of the measurement: one scorer of one run, TRAIN holdout scores only (the validation
+breakdown by family was not computed), and 9-22 positives on the three small brains.
+
+**To do** (the run finished on 2026-11-11; items 1 and 6 were carried out that day, items 2 to 5
+are as recorded), cheapest first:
+
+1. Per-family merge statistics: **done 2026-11-11, reporting only** (`by_family` per cell,
+   `per_kind_by_family` per report, shown in TRAIN feedback; a second judge table restricted to
+   junction candidates; `docs/stage3_evolution.md`). Still open: whether the merge objective and
+   the guard rail should be computed within the junction family. Decide after the first run
+   that reports both.
+2. Offline study of junction positives against junction negatives before another evolution
+   run. Done 2026-11-11 for fragment totals and arm subtrees (no usable signal, above). Done the
+   same day for label localization (labels are on the right junctions, above). Still to do:
+   which existing descriptors separate the classes, and what the missed positives look like in
+   the image, both first on 802449 (`gt_branch` negatives against `two_gt`/`leaves_gt`
+   positives, the cleanest contrast). No evolution run is needed. Repeat the family breakdown
+   on validation with `notebooks/acceptance_rule_replay.py rescore` (it saves the validation
+   scores).
+3. Longer-range fragment context for `describe(context)` (section 5): **not as a next step.**
+   The size statistics tested on 2026-11-11 carry no consistent signal; revisit only with a
+   specific quantity that the offline study shows to separate the classes.
+4. `tip_to_shaft`: score the family separately, or leave it out of the merge statistics until a
+   scorer finds any of its positives, so that it stops raising the pooled figure.
+5. Label policy for negatives: **keep the current labels** (the rule is `near_gt_150` in
+   `harness/label_availability.py`: segment on GT and a GT node within 150 um; changing it means
+   a new definition there and new availability sidecars, not a cache or table rebuild). The
+   off-tracing rows are 0 without a tracing at the candidate, but the hidden-neuron estimate
+   above puts the share of merges among them at 2.4% (1.0-6.1), not above the rate on a
+   tracing; the higher junction AUROC measured without them (+0.04 / +0.06 on 747807 / 750318)
+   only shows that they are harder than the other negatives, and they are the only negatives on
+   untraced neurites, which is where a scorer works when it is used. Reopen only if a larger or
+   independent sample (750318 has 43 stand-in rows from 2 neurons) shows a rate well above the
+   labeled positive rate. `leaves_gt` negatives and the 43 negatives 20-60 um from a site: leave.
+6. Positive labels that follow the metric. **Port repaired 2026-11-11** (agentic-neuron-proofreader
+   `geometric_merge_sites(walk="per_neuron")`; `labeled_cache` policy `length_v2`, default).
+   Computed in memory on the six TRAIN caches with the package's functions
+   (`notebooks/merge_junction_study/merge_walk_port_check.py`): sites 509 to 553; junction
+   positives 370 to 426 (58 gained, 2 lost); `tip_to_shaft` positives 53 to 51 (9 gained, 11
+   lost, the site now sits on the branching node); canonical sites with a positive candidate
+   358 to 406 of 537, 41 still with candidates and none positive, 89 without a candidate or not
+   on a fragment. **Relabeled 2026-11-11:** twelve caches (`--check-reproduce` passed on each),
+   cache sites 1,181 to 1,309; raw pools and sidecars of the eleven development brains (every
+   `pool_sha256` unchanged, split labels unchanged, merge positives 862 to 956); 802449 and
+   794495 companions; twelve alignment receipts; eleven-brain raw preflight passed;
+   `notebooks/merge_canonical_gap` rerun (cache labels hold 0.888 of the canonical sites within
+   50 um, 0.813 before); `candidate_pools.json` evidence updated. Later runs are not comparable
+   with earlier ones. **Not redone:** the seed baselines (next run measures them); the pool
+   sweeps and `merge_shaft_reach` (their site denominators are the `length_v1` sites); the
+   2026-11-06 label notebooks (`merge_label_counts`, `merge_site_gt_tip`, census); the outputs
+   under `notebooks/merge_junction_study/`, which describe the `length_v1` labels.
+   **Decision (user, 2026-11-11): the canonical sites are not added as a label source for now.**
+   The labels stay computed from the cache alone (GT tracings, GT node labels and the fragment
+   graph), with no dependence on the result files in `metrics_out`. Known cost, on the six
+   TRAIN brains after `length_v2`: 41 of 537 canonical sites (8%) have candidates within 20 um
+   that are all labeled 0, and 89 have no candidate or are not on a fragment of their segment.
+   The 41 are not explained by the two repaired differences; the metric ran on its own
+   fragment and GT graphs (other node spacing, no minimum cable length) and the order of leaves
+   and neighbours decides which contact a walk records. Reopen if the residual matters for a
+   result; `merge_canonical_site_labels.py` and `merge_walk_port_check.py` list the sites.

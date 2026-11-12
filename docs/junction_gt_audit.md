@@ -29,7 +29,7 @@ labels without cloud reads (apart from the GT check against GCS):
 srun --partition=aibs_debug --constraint=cpu --nodes=1 --ntasks=1 \
   --cpus-per-task=4 --mem=100G --time=01:00:00 \
   "$HOME/.conda/envs/panda/bin/python" -m labeled_cache \
-  --brains 794495 --mcl 100 --policy length_v1 --check-reproduce
+  --brains 794495 --mcl 100 --policy length_v2 --check-reproduce
 ```
 
 This atomically replaces the selected `_add.pkl`, reusing the stored GT node

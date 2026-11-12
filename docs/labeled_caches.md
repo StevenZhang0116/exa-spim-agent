@@ -68,7 +68,7 @@ to validate the labeled cache later.
 Run from the repository root (panda, compute node):
 
 ```bash
-python -m labeled_cache --brains 802449 --mcl 100 --policy length_v1
+python -m labeled_cache --brains 802449 --mcl 100 --policy length_v2
 ```
 
 One command covers every state: no cache yet (skeletons from GCS, then labels), a

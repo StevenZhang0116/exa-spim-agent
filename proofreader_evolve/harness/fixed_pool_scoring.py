@@ -52,8 +52,8 @@ from .label_availability import labeled_rows, labels_digest
 # from 2026-10-12, chosen under equal-brain aggregation, where merge pools of 9 to 17 positives held
 # a third of the merge weight. The library default below stays 0 (every pool counts).
 DEFAULT_MIN_POSITIVES = 10
-from .rank_statistics import (DEFAULT_PAUC_FPR, HEAD_STATISTICS, OBJECTIVE_LABELS, aggregate_statistics,
-                              cell_statistics, cell_value, check_objective, check_pauc_fpr, prefix_hits, ranking,
+from .rank_statistics import (DEFAULT_PAUC_FPR, HEAD_STATISTICS, OBJECTIVE_LABELS, aggregate_families, aggregate_statistics,
+                              cell_statistics, family_statistics, cell_value, check_objective, check_pauc_fpr, prefix_hits, ranking,
                               auroc as weighted_auroc, average_precision as weighted_average_precision,
                               pauc as weighted_pauc)
 
@@ -332,6 +332,11 @@ def aggregate_objective(cells, aggregation="equal-brain", objective="precision_a
         if value is None:
             raise ValueError(f"No {OBJECTIVE_LABELS[objective]} on the counted {kind} pools")
         per_kind[kind] = float(value)
+    # Reporting only: within-family figures for kinds whose candidates come from several rules.
+    families = {kind: summary for kind, summary in ((kind, aggregate_families(group))
+                                                    for kind, group in sorted(by_kind.items())) if summary}
+    if families:
+        result['per_kind_by_family'] = families
     result.update(objective=objective, objective_label=OBJECTIVE_LABELS[objective], per_kind_objective=per_kind,
                   per_kind_statistics={kind: {key: value for key, value in summary.items() if key not in ('note', 'version')}
                                        for kind, summary in statistics.items()},
@@ -439,6 +444,9 @@ def evaluate(source, tables_by_brain, budgets, timeout=120, examples=False, *,
             k = budgets.k_for(kind, table.truth)
             metrics, chosen = rank_metrics(scores, table.truth, table.keys, k, in_mean=budgets.in_mean(table.truth),
                                            pauc_fpr=budgets.pauc_fpr)
+            by_family = family_statistics(scores, table.truth, table.keys, getattr(table, 'candidates', ()), chosen)
+            if by_family:
+                metrics['by_family'] = by_family
             if 'local_context' in features.attrs:
                 metrics['local_context'] = features.attrs['local_context']
             if 'image_context' in features.attrs:

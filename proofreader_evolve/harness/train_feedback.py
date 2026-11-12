@@ -3,6 +3,7 @@
 import json
 
 from .rank_statistics import CELL_KEYS as DIAGNOSTIC_METRICS
+from .rank_statistics import FAMILY_NOTE
 
 
 FEEDBACK_VERSION = "stratified-train-v8-selection-comparison"
@@ -64,6 +65,7 @@ def metrics_only(report):
             "objective": report.get("objective") or "precision_at_k",
             "per_kind_objective": report.get("per_kind_objective") or report["per_kind_precision"],
             "per_kind_statistics": report.get("per_kind_statistics") or "not recorded",
+            **({"per_kind_by_family": report["per_kind_by_family"]} if report.get("per_kind_by_family") else {}),
             **({"head_guard": report["head_guard"]} if report.get("head_guard") else {}),
             **({"mode": report["mode"]} if "mode" in report else {}),
             **({"aggregation": report["aggregation"]} if "aggregation" in report else {}),
@@ -71,6 +73,7 @@ def metrics_only(report):
                 "holdout_objective": report.get("holdout_objective", report["holdout_precision"])}
                if report.get("holdout_cells") else {}),
             "cells": {name: {key: cell[key] for key in (*METRICS, *SELECTION_METRICS, *DIAGNOSTIC_METRICS) if key in cell}
+                      | ({'by_family': cell['by_family']} if cell.get('by_family') else {})
                       | ({'local_context': cell['local_context']} if 'local_context' in cell else {})
                       | ({'image_context': cell['image_context']} if 'image_context' in cell else {})
                       for name, cell in report["cells"].items()}}
@@ -168,7 +171,8 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                        "average_precision, auroc, pauc; half_k and double_k are the labeled rows actually ranked), "
                        "describe head hits, deeper coverage and the whole ranking on the same labeled rows and "
                        "partition; only the objective decides, the rest is diagnostic. 'not recorded' marks older "
-                       "artifacts."
+                       "artifacts. " + FAMILY_NOTE.replace("by_family splits", "per_kind_by_family and each cell's "
+                                                           "by_family split", 1)
                        if selection is not None else "")
                     + (" Examples and ranking_delta describe the assigned search branch (search_branch); "
                        f"{report_role}_selection/{report_role}_train describe the accepted scorer, and ranking_delta "

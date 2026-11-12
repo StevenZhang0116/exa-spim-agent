@@ -22,7 +22,7 @@ import numpy as np
 from .label_availability import labeled_rows
 
 
-STATISTICS_VERSION = 'rank-statistics-v2'
+STATISTICS_VERSION = 'rank-statistics-v3-by-family'
 OBJECTIVES = ('precision_at_k', 'auroc', 'pauc', 'average_precision')
 OBJECTIVE_LABELS = {'precision_at_k': 'Precision@K', 'auroc': 'AUROC', 'pauc': 'partial AUROC',
                     'average_precision': 'average precision'}
@@ -229,6 +229,74 @@ def cell_statistics(scores, truth, keys, k, *, fold_ids=None, pauc_fpr=DEFAULT_P
         out[statistic] = weighted / positives if positives else None
     out['pauc_fpr'] = check_pauc_fpr(pauc_fpr)
     return out
+
+
+# --- candidate families (reporting only) -------------------------------------------------------
+
+FAMILY_FIELD = 'candidate_family'
+FAMILY_NOTE = ('by_family splits a pool by the rule that produced each candidate (merge pools: junction and '
+               'tip_to_shaft). Per family: labeled rows and positives, positives_in_pool_top_k (how many of its '
+               'positives the whole-pool Top-K holds), and, ranking the family alone, top_k_hits of k (k = its '
+               'positives), average_precision and auroc. A pooled statistic can be high only because one family '
+               'ranks above the other; the within-family figures show whether errors are told from non-errors '
+               'inside a family. Reporting only: the objective and the gate use the whole pool.')
+
+
+def family_statistics(scores, truth, keys, candidates, chosen=None, fold_ids=None):
+    """Per-family statistics of one pool, or None when the candidates carry no family or the
+    labeled rows span several folds (fold scores are never pooled). ``chosen`` is the pool's
+    Top-K (row indices). Reporting only: nothing here enters the objective or a gate."""
+    if not len(candidates) or FAMILY_FIELD not in candidates[0]:
+        return None
+    scores, truth = np.asarray(scores, dtype=float), np.asarray(truth, dtype=float)
+    labeled = np.isfinite(truth)
+    if fold_ids is not None and len(np.unique(np.asarray(fold_ids)[labeled])) > 1:
+        return None
+    families = np.array([candidate[FAMILY_FIELD] for candidate in candidates])
+    in_top = np.zeros(len(truth), dtype=bool)
+    if chosen is not None:
+        in_top[np.asarray(chosen, dtype=int)] = True
+    out = {}
+    for name in sorted(set(families.tolist())):
+        member = families == name
+        _, labels, starts = ranking(scores, truth, keys, np.flatnonzero(member))
+        labels = labels.astype(float)
+        positives = int(labels.sum())
+        entry = {'labeled': int(len(labels)), 'positives': positives,
+                 'positives_in_pool_top_k': None if chosen is None else int((member & in_top & (truth == 1)).sum()),
+                 'k': None, 'top_k_hits': None, 'average_precision': None, 'auroc': None}
+        if 0 < positives < len(labels):
+            weights = np.ones(len(labels))
+            hits, depth = prefix_hits(labels, weights, positives)
+            entry.update(k=int(depth), top_k_hits=int(round(hits)),
+                         average_precision=average_precision(labels, weights, starts),
+                         auroc=auroc(labels, weights, starts))
+        out[str(name)] = entry
+    return out
+
+
+def aggregate_families(cells):
+    """Family statistics over the counted cells of one kind: counts and hits are summed, the rank
+    statistics weighted by the family's positives. None when no cell carries ``by_family``."""
+    totals = {}
+    for cell in cells.values():
+        if not cell.get('in_mean', True) or not cell.get('by_family'):
+            continue
+        for name, entry in cell['by_family'].items():
+            total = totals.setdefault(name, {'pools': 0, 'labeled': 0, 'positives': 0, 'positives_in_pool_top_k': 0,
+                                             'k': 0, 'top_k_hits': 0, 'average_precision': [], 'auroc': []})
+            total['pools'] += 1
+            for key in ('labeled', 'positives', 'positives_in_pool_top_k', 'k', 'top_k_hits'):
+                total[key] += int(entry[key] or 0)
+            for key in ('average_precision', 'auroc'):
+                if entry[key] is not None:
+                    total[key].append((float(entry[key]), entry['positives']))
+    for total in totals.values():
+        total['precision_at_k'] = total['top_k_hits'] / total['k'] if total['k'] else None
+        for key in ('average_precision', 'auroc'):
+            weight = sum(count for _, count in total[key])
+            total[key] = sum(value * count for value, count in total[key]) / weight if weight else None
+    return totals or None
 
 
 def cell_value(cell, statistic):

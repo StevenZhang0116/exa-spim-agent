@@ -85,6 +85,17 @@ class PolicyTests(unittest.TestCase):
         self.assertTrue(policy.policy_matches(length, policy.POLICY_LENGTH_V1, 50.0))
         self.assertFalse(policy.policy_matches(length, policy.POLICY_LENGTH_V1, 40.0))
         self.assertFalse(policy.policy_matches({**length, "reused_geometric_sites": True}, policy.POLICY_LENGTH_V1, 50.0))
+        # the walk is part of the policy: a record without the key is the pooled walk of length_v1
+        self.assertFalse(policy.policy_matches(length, policy.POLICY_LENGTH_V2, 50.0))
+        self.assertTrue(policy.policy_matches({**length, "walk": "per_neuron"}, policy.POLICY_LENGTH_V2, 50.0))
+        self.assertFalse(policy.policy_matches({**length, "walk": "per_neuron"}, policy.POLICY_LENGTH_V1, 50.0))
+        self.assertTrue(policy.policy_matches({**length, "walk": "pooled"}, policy.POLICY_LENGTH_V1, 50.0))
+        self.assertEqual([policy.walk_for(name) for name in policy.POLICIES], ["pooled", "pooled", "per_neuron"])
+        self.assertEqual((policy.recorded_walk(None), policy.recorded_walk(length)), ("pooled", "pooled"))
+        self.assertEqual(policy.DEFAULT_POLICY, policy.POLICY_LENGTH_V2)
+        stored = policy.recorded_thresholds({**length, "gt_median_edge_um": 4.0})
+        self.assertEqual((stored.min_nodes, stored.passthru_min_cc, stored.policy, stored.length_um), (12, 12, "length", 50.0))
+        self.assertEqual(policy.recorded_thresholds(None).min_nodes, 50)
         with self.assertRaises(ValueError):
             policy.policy_matches(None, "bogus")
 
@@ -92,6 +103,7 @@ class PolicyTests(unittest.TestCase):
         original = policy.thresholds_for(policy.POLICY_ORIGINAL)
         self.assertEqual((original.min_nodes, original.passthru_min_cc, original.policy), (50, 50, "nodes"))
         scaled = policy.thresholds_for(policy.POLICY_LENGTH_V1, GtGraph(spacing=4.0), 50.0)
+        self.assertEqual(policy.thresholds_for(policy.POLICY_LENGTH_V2, GtGraph(spacing=4.0), 50.0), scaled)
         self.assertEqual((scaled.min_nodes, scaled.passthru_min_cc, scaled.policy, scaled.length_um), (12, 12, "length", 50.0))
         with self.assertRaises(ValueError):
             policy.thresholds_for(policy.POLICY_LENGTH_V1)

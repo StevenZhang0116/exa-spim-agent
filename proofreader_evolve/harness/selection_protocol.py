@@ -30,7 +30,8 @@ from .internal_validation import FOLDS, fold_assignments, grouped_folds
 from .label_availability import labeled_rows, labels_digest
 from .local_features import augmented_features
 from .model_execution import predict_model, DEFAULT_MEMORY_MB
-from .rank_statistics import DEFAULT_PAUC_FPR, OBJECTIVE_LABELS, cell_statistics, fold_budgets  # noqa: F401 (re-exported)
+from .rank_statistics import (DEFAULT_PAUC_FPR, OBJECTIVE_LABELS, cell_statistics, family_statistics,  # noqa: F401
+                              fold_budgets)  # (partly re-exported)
 
 
 PROTOCOL_VERSION = 'grouped-cv-objective-v7-rank-statistics'
@@ -236,6 +237,10 @@ class SelectionProtocol:
                 metrics, chosen = partitioned_rank_metrics(scores, table.truth, table.keys, fold_ids, k, in_mean=in_mean,
                                                            pauc_fpr=self.budgets.pauc_fpr)
                 metrics['partition_sha256'] = self.partition_sha256(kind)
+            by_family = family_statistics(scores, table.truth, table.keys, getattr(table, 'candidates', ()), chosen,
+                                          None if self.mode == 'in_sample' else fold_ids)
+            if by_family:
+                metrics['by_family'] = by_family
             metrics['pool_sha256'] = table.meta['pool_sha256']
             metrics['labels_sha256'] = labels_digest(table.truth)
             report['cells'][cell] = metrics

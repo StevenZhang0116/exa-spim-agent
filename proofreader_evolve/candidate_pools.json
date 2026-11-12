@@ -18,19 +18,21 @@
         "replaces": "junction|nms=20|r=150 (the frozen merge detector's embedded rule; worst brain 794493 at 0.74 site recall at 150 um)",
         "datasets": 12,
         "total_candidates": 4097775,
-        "gt_judgeable_rows": 44437,
-        "positive_rows": 909,
+        "label_policy": "length_v2 since 2026-11-11 (labeled_cache: merge sites from the metric's walk, one GT neuron at a time, site moved to a branching node; 1,309 cache sites on twelve brains, 1,181 under length_v1). The figures below were recomputed on the relabeled caches on 2026-11-11/12; the pool itself is unchanged (every pool_sha256 equal before and after)",
+        "gt_judgeable_rows": 74824,
+        "positive_rows": 1129,
+        "label_counts": "2026-11-12: sums of the availability sidecars of the eleven development brains (65,079 judgeable rows, 956 positives; 862 positives under length_v1) plus 794495 from its pool-only companion (9,745 judgeable rows, 173 positives)",
         "site_recall_at_20um": {
-          "pooled": 0.846,
+          "pooled": 0.867,
           "worst_brain": "754610",
-          "worst": 0.75
+          "worst": 0.778
         },
-        "canonical_sites": "2026-11-06, notebooks/merge_canonical_gap (2,598 canonical sites, 12 brains): candidate recall 0.829 within 20 um, 0.907 within 150 um; per brain at 20 um 0.552 (789202, 29 sites) to 0.913 (754612); the cache merge labels hold 0.813 of the canonical sites within 50 um",
+        "canonical_sites": "2026-11-11, notebooks/merge_canonical_gap rerun on the relabeled caches (1,299 canonical sites, 12 brains): candidate recall 0.829 within 20 um, 0.907 within 150 um (unchanged, the pool does not depend on the labels); per brain at 20 um 0.552 (789202, 29 sites) to 0.913 (754612); the cache merge labels hold 0.888 of the canonical sites within 50 um (0.813 under length_v1; per brain 0.552 on 789202 to 1.0 on 754613). The canonical sites are not a label source (user decision 2026-11-11, TODO.md section 7 item 6)",
         "site_recall_at_150um": {
           "pooled": 0.937,
           "worst_brain": "789202",
-          "worst": 0.882,
-          "note": "789202 covers 15 of 17 sites and 841260 121 of 136 (0.890), both below the 0.90 target; 794493 0.900, 802449 0.909 and 754610 0.917 have no margin. gap=40 would give worst-brain 0.917 with 6,391,585 candidates (recommended_policy.json); not adopted"
+          "worst": 0.789,
+          "note": "cache sites of length_v2 (notebooks/merge_canonical_gap, 2026-11-11): 1,226 of 1,309 within 150 um; 789202 covers 15 of 19 sites, below the 0.90 target; 794493 0.900, 841260 0.901 and 802449 0.907 have no margin. Under length_v1 the worst brain was 789202 at 0.882 (15 of 17) and gap=40 would have given worst-brain 0.917 with 6,391,585 candidates (recommended_policy.json of the 2026-11-06 sweep); not adopted, and the sweep was not rerun on the length_v2 sites"
         },
         "sweep": "2026-11-06 rerun on the twelve current caches: notebooks/merge_candidate_pool_sweep_outputs_with_oldscope/mcl100_96e1b6bbfbf36f5c (merge_candidate_pool_sweep.py through candidate_rules.py, --tip-gaps 10 20 40 80); the J and J+S10/20/40/80 candidate counts equal notebooks/merge_shaft_reach/summary.csv on every brain"
       }

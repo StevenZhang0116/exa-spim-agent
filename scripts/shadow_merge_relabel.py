@@ -12,6 +12,10 @@ thresholds expressed as the node count that spans the same cable length in the c
 
     threshold_nodes = round(threshold_um / median GT edge length)    (threshold_um = 50)
 
+The walk is the pooled one those caches were labeled with (``canonical_labeling.WALK_POOLED``);
+caches relabeled with ``length_v2`` on 2026-11-11 use the metric's per-neuron walk, so the
+reproduction check below no longer applies to them.
+
 It reuses the stored GT node labels (no segmentation or cloud reads), NEVER writes the
 ``_add.pkl`` and never imports ``proofreader_evolve``. For each brain it writes a JSON
 with the stored labels, optionally a recomputation with the original thresholds (a
@@ -58,8 +62,10 @@ def relabel(fragments, gt, node_label, nodes):
     (``canonical_labeling.MergeThresholds``, passed to each rule)."""
     thresholds = cl.MergeThresholds.nodes(nodes)
     merge_set = set(cl.merge_labels(gt, node_label, thresholds=thresholds))
+    # The pooled walk of the 2026-10 caches this study was made on (the default since 2026-11-11
+    # is the metric's per-neuron walk; a cache labeled with length_v2 is not reproduced here).
     walk_labels, walk_sites = cl.geometric_merge_sites(fragments, gt, node_label, verbose=False,
-                                                       thresholds=thresholds)
+                                                       thresholds=thresholds, walk=cl.WALK_POOLED)
     merge_set |= set(walk_labels)
     sites, metadata = cl.combined_merge_sites(fragments, gt, node_label, walk_sites, verbose=False,
                                               thresholds=thresholds)

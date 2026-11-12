@@ -30,10 +30,10 @@ import time
 import numpy as np
 
 import agentic_neuron_proofreader  # noqa: F401  registers SkeletonGraph for unpickling
-from agentic_neuron_proofreader.data_modules.canonical_labeling import MergeThresholds
 
 from labeled_cache import io
-from labeled_cache.policy import DEFAULT_LENGTH_UM, POLICY_LENGTH_V1, describe, policy_matches, thresholds_for
+from labeled_cache.policy import (DEFAULT_LENGTH_UM, DEFAULT_POLICY, describe, policy_matches, recorded_thresholds,
+                                  recorded_walk, thresholds_for, walk_for)
 
 STAGE_BASE, STAGE_LABEL, STAGE_POLICY, STAGE_IMAGE_PATH = "base", "label", "policy", "image_path"
 # Caches of derived detector universes stored by older tooling in the payload; they
@@ -48,7 +48,7 @@ class StaleGroundTruth(RuntimeError):
 
 
 class ReproductionMismatch(RuntimeError):
-    """Recomputing with the original thresholds did not reproduce the stored labels."""
+    """Recomputing with the recorded thresholds and walk did not reproduce the stored labels."""
 
 
 @dataclasses.dataclass
@@ -56,7 +56,7 @@ class BuildRequest:
     brain: str
     mcl: int = 100
     cache_dir: Path = io.DEFAULT_CACHE_DIR
-    policy: str = POLICY_LENGTH_V1
+    policy: str = DEFAULT_POLICY
     length_um: float = DEFAULT_LENGTH_UM
     node_spacing: float = 5.0
     anisotropy: tuple = (0.748, 0.748, 1.0)
@@ -150,9 +150,10 @@ def _base_dataset(request, build, log):
 
 def _label(request, dataset, log):
     thresholds = thresholds_for(request.policy, dataset.gt_graph, request.length_um)
-    log(f"labeling GT from the segmentation with thresholds {thresholds.as_record()}")
+    walk = walk_for(request.policy)
+    log(f"labeling GT from the segmentation with thresholds {thresholds.as_record()}, merge walk {walk}")
     dataset.label_gt_from_segmentation(dataset.segmentation_path, verbose=request.verbose,
-                                       thresholds=thresholds)
+                                       thresholds=thresholds, walk=walk)
     io.atomic_cache_write(request.labeled_path, dataset.save)
     log(f"saved {request.labeled_path}")
     return {"action": "labeled", "thresholds": thresholds.as_record(),
@@ -198,23 +199,26 @@ def apply_policy(request, log=print) -> dict:
 
     if request.check_reproduce:
         t = time.monotonic()
-        dataset.refresh_merge_labels(verbose=request.verbose, thresholds=MergeThresholds.nodes())
+        # with the thresholds and the walk the cache records (no record: the module constants, pooled)
+        dataset.refresh_merge_labels(verbose=request.verbose, thresholds=recorded_thresholds(record),
+                                     walk=recorded_walk(record))
         recomputed = _label_state(gt.merge_labels, gt.merge_sites)
         same = recomputed["labels"] == stored["labels"] and recomputed["sites"] == stored["sites"]
         result["reproduction"] = {"labels_equal": recomputed["labels"] == stored["labels"],
                                   "sites_equal": recomputed["sites"] == stored["sites"],
                                   "seconds": round(time.monotonic() - t, 1)}
-        log(f"reproduction with the original thresholds: {result['reproduction']}")
+        log(f"reproduction with the recorded thresholds and walk: {result['reproduction']}")
         if not same:
             raise ReproductionMismatch(
-                f"{path}: the original thresholds do not reproduce the stored labels "
+                f"{path}: the recorded thresholds and walk do not reproduce the stored labels "
                 f"({len(stored['labels'])} stored vs {len(recomputed['labels'])} recomputed merge labels, "
                 f"{len(stored['sites'])} vs {len(recomputed['sites'])} sites); nothing written")
 
     thresholds = thresholds_for(request.policy, gt, request.length_um)
-    log(f"relabeling with thresholds {thresholds.as_record()}")
+    walk = walk_for(request.policy)
+    log(f"relabeling with thresholds {thresholds.as_record()}, merge walk {walk}")
     t = time.monotonic()
-    dataset.refresh_merge_labels(verbose=request.verbose, thresholds=thresholds)
+    dataset.refresh_merge_labels(verbose=request.verbose, thresholds=thresholds, walk=walk)
     result["seconds"] = round(time.monotonic() - t, 1)
     result["thresholds"] = thresholds.as_record()
     result["current"] = {"merge_labels": int(len(gt.merge_labels)), "merge_sites": int(len(gt.merge_sites))}

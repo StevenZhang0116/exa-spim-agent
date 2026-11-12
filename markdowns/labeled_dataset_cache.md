@@ -177,10 +177,13 @@ systematic *topological* errors, both already identified in the `_add` cache:
   branch is unaffected (it only needs `gt_node_canonical_label`). Expect
   `mcl10` and `mcl100` caches of the same brain to carry *different* merge-label
   sets, and compare only like-for-like `mcl`.
-- **Merge percentages match closely, not byte-exactly.** The geometric walk is
-  reproduced faithfully, but the canonical pipeline snaps merge sites to nearby
-  branch nodes and dedups in a specific order; expect strong agreement with a
-  small residual on a few merge-heavy neurons.
+- **Merge percentages match closely, not byte-exactly.** Since `length_v2` (2026-11-11) the
+  geometric walk follows the metric: one GT neuron at a time, the site moved to a nearby
+  branching node. Under `length_v1` it pooled all GT neurons in one pass and kept the node
+  where the walk stopped, which lost sites wherever several traced neurons lie close (the
+  cache held a site within 50 um of 81% of the canonical sites, 89% after the change). The
+  remaining residual comes from the metric running on its own fragment and GT graphs (other
+  node spacing, no minimum cable length) and from the order in which leaves are visited.
 - **Ground truth is sparse and skeleton-only.** Only a handful of neurons are
   traced per brain (4–25, named `N0XX-<brain_id>-<initials>`). There is no dense
   GT voxel volume; a region with no traced neuron is simply unlabeled.
@@ -239,18 +242,33 @@ and `gt_graph.label_policy`, so you can read them off either the payload dict or
 the graph. Their combined size is tiny (~tens of MB) next to the multi-GB graphs.
 
 **Building and relabeling (one entry point, 2026-10-15):** `python -m labeled_cache
---brains <brain> --mcl 100 --policy length_v1` runs, per brain, the stages its files
+--brains <brain> --mcl 100 --policy length_v2` runs, per brain, the stages its files
 still need: `base` (skeletons from GCS into `dataset_cache_<brain>_mcl<N>.pkl`),
 `label` (GT labels from the dense segmentation into `_add.pkl`) and `policy` (an
 existing `_add.pkl` whose `gt_label_policy` differs from the request is relabeled in
 place from its stored GT node labels, no cloud reads; graphs and node ids are
 untouched). A reused cache has its GT compared with the current GCS tracings first
 and is refused when stale (`--rebuild-base` rebuilds it, `--no-verify-gt` skips the
-check). `--check-reproduce` recomputes with the original thresholds before relabeling
-and requires the stored labels back. `--dry-run` prints the stages. Policies:
+check). `--check-reproduce` recomputes with the thresholds and the merge walk the cache
+records before relabeling and requires the stored labels back. `--dry-run` prints the stages. Policies:
 `original` (50 GT nodes for every merge threshold, which is about 200 um in a cache
-resampled at 4 um) and `length_v1` (50 um of GT cable in each cache's own node
-spacing, 11 to 13 nodes; see `notebooks/merge_label_shadow_findings.md`). Console
+resampled at 4 um), `length_v1` (50 um of GT cable in each cache's own node
+spacing, 11 to 13 nodes; see `notebooks/merge_label_shadow_findings.md`) and `length_v2`
+(default since 2026-11-11: the thresholds of `length_v1`, and the geometric merge walk done
+one GT neuron at a time with the site moved to a branching node, as
+`MergeCountMetric` of segmentation-skeleton-metrics does; the earlier walk used one KD-tree of
+all GT neurons and left 90 of 537 canonical sites on the six TRAIN brains without a positive
+candidate, 41 with `length_v2` computed in memory; `notebooks/merge_junction_study/`). The
+policy is recorded as `gt_label_policy` with its `walk` (`per_neuron` or `pooled`; a record
+without the key is `pooled`). The canonical sites in `metrics_out` are deliberately not a
+label source (user decision 2026-11-11): the labels are computed from the cache alone, and the
+41 TRAIN canonical sites that still have no positive candidate are a known residual
+(`proofreader_evolve/TODO.md` section 7, item 6). All twelve caches were relabeled with `length_v2` on 2026-11-11
+(`notebooks/log/relabel_length_v2_*_20261111.log`); merge sites before and after: 747807 161 /
+171, 750318 171 / 172, 751473 160 / 173, 754610 24 / 27, 754612 23 / 23, 754613 9 / 10,
+789202 17 / 19, 794491 132 / 152, 794493 50 / 50, 794495 177 / 210, 802449 121 / 150,
+841260 136 / 152. Site counts quoted elsewhere in this file for the `length_v1` labels are
+historical. Console
 output goes to `notebooks/log/labeled_cache_*.log`. The builder replaced
 `notebooks/generate_add_caches.py` and `scripts/relabel_cache.py` on 2026-10-15 (both
 removed after the first compute-node run reproduced the stored 794495 labels exactly).

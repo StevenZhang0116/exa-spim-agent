@@ -233,6 +233,17 @@ objective. Metrics remain separate
 for merge and split. No equal-brain default was introduced, and no LLM takes part in TRAIN-side
 selection; an LLM judge decides promotion only under `--promotion-gate judge`.
 
+#### Per-family merge statistics (reporting only, 2026-11-11)
+
+Every scored merge cell carries `by_family` and every report `per_kind_by_family`: per candidate
+family (`junction`, `tip_to_shaft`) the labeled rows and positives, how many of its positives the
+whole-pool Top-K holds, and, ranking the family alone, Top-K hits (K = its positives), average
+precision and AUROC (`rank_statistics.family_statistics`, `aggregate_families`; counts summed over
+the counted cells, rank statistics weighted by the family's positives). TRAIN feedback shows both
+with a note; validation reports in the ledger carry them host-side. The objective, the head
+guard and the promotion gates are unchanged and use the whole pool. A cell whose labeled rows
+span several folds carries no `by_family` (fold scores are never pooled).
+
 #### Promotion by an LLM judge (`--promotion-gate judge`, 2026-11-10)
 
 Why: on merge, AUROC is not sensitive to the head of the ranking. The two 2026-11-09 runs ended
@@ -268,6 +279,13 @@ What happens at a submission (`harness/promotion_judge.py`):
    vote was cast. This is the only addition to what a later session learns about an outer
    measurement: it still sees no heldout number, ballot or reason. It is also validation
    information flowing back into the search, about two bits per rejected submission.
+6. Second table for merge (2026-11-11). Merge pools hold two candidate families, and ranking
+   junctions above `tip_to_shaft` rows raises every pooled statistic without telling errors from
+   non-errors inside the junctions (`TODO.md` section 7). For merge the prompt therefore carries
+   the same seven statistics a second time, restricted to junction candidates (other rows count
+   as unlabeled; K and the positives floor follow the restricted rows; same draws and seed). The
+   guard rail and the rejection category keep using the first table; a second table that cannot
+   be built is recorded (`family_table_error`) and the vote goes ahead on the first.
 
 The ledger's `validation_gate` carries `mode: "judge"`, the table, every ballot with its
 reason and request id, the token use, and the objective's bootstrap and point gate as

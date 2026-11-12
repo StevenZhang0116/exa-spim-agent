@@ -35,10 +35,10 @@ import numpy as np
 
 from . import fixed_pool_scoring as scoring
 from .label_availability import labeled_rows
-from .rank_statistics import ranking, ranking_statistics
+from .rank_statistics import FAMILY_FIELD, ranking, ranking_statistics
 
-VERSION = "promotion-judge-v1"
-GATE_VERSION = "target-kind-validation-judge-v1"
+VERSION = "promotion-judge-v2-family-table"
+GATE_VERSION = "target-kind-validation-judge-v2"
 MODE = "judge"
 DEFAULT_MODEL = "claude-opus-5-5"
 DEFAULT_VOTES = 5
@@ -53,6 +53,11 @@ LABELS = {"auroc": "AUROC", "pauc": "pAUC (FPR <= {fpr:g})", "average_precision"
 GUARDED = ("auroc", "pauc", "average_precision", "precision_depth_mean", "precision")
 # Guarded statistics that weigh the top of the ranking (everything but the whole-ranking AUROC).
 HEAD = ("pauc", "average_precision", "precision_depth_mean", "precision")
+# Kinds whose candidates come from several rules get a second table restricted to the family that
+# holds nearly all true errors: ranking that family above the other raises every pooled statistic
+# without telling errors from non-errors inside it. The guard rail and the rejection category keep
+# using the whole-pool table.
+FAMILY_TABLES = {"merge": "junction"}
 # The only words about a rejection that reach the reviser (``rejection_category``).
 REJECTION_CATEGORIES = ("significantly_worse", "within_noise", "head_not_improved", "not_convincing")
 
@@ -66,7 +71,10 @@ top of the ranking mattering most because that is what gets inspected. Reject wh
 could be resampling noise or when the candidate trades the top of the ranking away. Both mistakes \
 cost something: accepting a change that is not an improvement makes all later work build on it, and \
 rejecting a real improvement loses the work behind it. Judge from the table alone; you are given no \
-other information on purpose."""
+other information on purpose. When a second table is given, it holds the same statistics on the one \
+group of candidates that contains nearly all true errors; a model can raise the first table merely \
+by ranking that group above the rest, so the second table shows whether errors are separated from \
+non-errors where it matters."""
 
 SCHEMA = {"type": "object",
           "properties": {"decision": {"type": "string", "enum": ["accept", "reject"]},
@@ -158,9 +166,11 @@ def intervals_from_rankings(cells, *, draws, seed, alpha=.05, pauc_fpr=scoring.D
     return out
 
 
-def joint_intervals(parent_state, candidate_state, tables_by_brain, budgets, *, target_kind, draws, seed, alpha=.05):
+def joint_intervals(parent_state, candidate_state, tables_by_brain, budgets, *, target_kind, draws, seed, alpha=.05,
+                    family=None):
     """``intervals_from_rankings`` over the target-kind cells of scored tables (the inputs of
-    ``fixed_pool_scoring.paired_bootstrap``)."""
+    ``fixed_pool_scoring.paired_bootstrap``). ``family`` restricts every pool to the candidates of
+    one family (other rows count as unlabeled; K and the positives floor follow the restricted rows)."""
     budgets = scoring.Budgets.coerce(budgets)
     cells = {}
     for brain, banks in tables_by_brain.items():
@@ -169,6 +179,14 @@ def joint_intervals(parent_state, candidate_state, tables_by_brain, budgets, *, 
                 continue
             name = f"{brain}/{kind}"
             truth = np.asarray(table.truth, dtype=float)
+            if family is not None:
+                candidates = getattr(table, 'candidates', None)
+                if not candidates or FAMILY_FIELD not in candidates[0]:
+                    raise ValueError(f'{name} carries no candidate families')
+                member = np.array([candidate[FAMILY_FIELD] == family for candidate in candidates], dtype=bool)
+                truth = np.where(member, truth, np.nan)
+                if not np.nansum(truth) or not (truth == 0).any():
+                    continue
             rows = labeled_rows(truth)
             position = np.full(len(truth), -1, dtype=np.int64)
             position[rows] = np.arange(len(rows))
@@ -179,8 +197,8 @@ def joint_intervals(parent_state, candidate_state, tables_by_brain, budgets, *, 
                     raise ValueError(f"Judge scores do not align with {name}")
                 order, labels, starts = ranking(scores, truth, table.keys)
                 arms.append((position[order], labels.astype(float), starts))
-            cells[name] = {"arms": tuple(arms), "size": len(rows), "k": budgets.k_for(kind, table.truth),
-                           "counted": budgets.in_mean(table.truth), "positives": int(np.nansum(truth))}
+            cells[name] = {"arms": tuple(arms), "size": len(rows), "k": budgets.k_for(kind, truth),
+                           "counted": budgets.in_mean(truth), "positives": int(np.nansum(truth))}
     statistics = intervals_from_rankings(cells, draws=draws, seed=seed, alpha=alpha, pauc_fpr=budgets.pauc_fpr,
                                          pooled=budgets.aggregation == "positive-weighted")
     counted = [cell for cell in cells.values() if cell["counted"]]
@@ -214,8 +232,9 @@ def rejection_category(statistics):
 # --- the judge -------------------------------------------------------------------------------
 
 def prompt(kind, pools, statistics, *, alpha=.05, pauc_fpr=scoring.DEFAULT_PAUC_FPR, pooled=True,
-           with_intervals=True):
-    """The user message: the held-out sample sizes and the table. Nothing identifies the run."""
+           with_intervals=True, family=None):
+    """The user message: the held-out sample sizes and the table. Nothing identifies the run.
+    ``family`` = ``(name, pools, statistics)`` appends the same table restricted to one family."""
     level = f"{100. * (1. - alpha):g}%"
     lines = [f"Error kind: {kind}. Held-out data: {pools['pools']} pools, {pools['labeled']} labeled candidates "
              f"of which {pools['positives']} are true errors. K in a pool is its number of true errors, so "
@@ -235,6 +254,21 @@ def prompt(kind, pools, statistics, *, alpha=.05, pauc_fpr=scoring.DEFAULT_PAUC_
         if with_intervals:
             line += f" [{number(row['low'], True)}, {number(row['high'], True)}] |"
         lines.append(line)
+    if family is not None:
+        name, family_pools, family_statistics = family
+        lines += ["", f"Second table: {name} candidates only ({family_pools['pools']} pools, {family_pools['labeled']} "
+                      f"labeled candidates of which {family_pools['positives']} are true errors; K is again the number "
+                      "of true errors).", "",
+                  "| statistic | accepted model | candidate | delta |"
+                  + (f" {level} interval of the delta (paired bootstrap) |" if with_intervals else ""),
+                  "|---|---|---|---|" + ("---|" if with_intervals else "")]
+        for key in STATISTICS:
+            row = family_statistics[key]
+            line = (f"| {LABELS[key].format(fpr=pauc_fpr)} | {number(row['parent'])} | {number(row['candidate'])} | "
+                    f"{number(row['delta'], True)} |")
+            if with_intervals:
+                line += f" [{number(row['low'], True)}, {number(row['high'], True)}] |"
+            lines.append(line)
     lines += ["", "Does the candidate replace the accepted model? Answer with the JSON object."]
     return "\n".join(lines)
 
@@ -298,8 +332,18 @@ def judge(parent_state, candidate_state, tables_by_brain, budgets, *, target_kin
                       reason=f"Judge statistics unavailable; candidate not promoted: {type(exc).__name__}: {exc}")
         return record
     guard = guard_rail(statistics)
+    family = None
+    if target_kind in FAMILY_TABLES:
+        try:  # a missing second table never blocks the vote: the first table is the gate's basis
+            family = (FAMILY_TABLES[target_kind],
+                      *joint_intervals(parent_state, candidate_state, tables_by_brain, budgets, target_kind=target_kind,
+                                       draws=draws, seed=seed, alpha=alpha, family=FAMILY_TABLES[target_kind])[::-1])
+        except Exception as exc:
+            record["family_table_error"] = f"{type(exc).__name__}: {exc}"
     text = prompt(target_kind, pools, statistics, alpha=alpha, pauc_fpr=budgets.pauc_fpr,
-                  pooled=budgets.aggregation == "positive-weighted")
+                  pooled=budgets.aggregation == "positive-weighted", family=family)
+    if family is not None:
+        record.update(family=family[0], family_pools=family[1], family_statistics=family[2])
     record.update(statistics=statistics, pools=pools, guard_rail=guard,
                   prompt_sha256=hashlib.sha256((SYSTEM + "\n" + text).encode()).hexdigest())
     worse = [name for name in GUARDED if statistics[name]["high"] is None or statistics[name]["high"] < 0]
