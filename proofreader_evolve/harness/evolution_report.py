@@ -182,6 +182,8 @@ def generation_status(row, event_names):
         return 'unchanged'
     if row.get('submission_repeat'):
         return 'repeated'
+    if row.get('submission_within_noise'):
+        return 'not_measured'
     if row.get('validation') is not None and row.get('accepted') is False:
         return 'rejected'
     if 'generation_interrupted' in event_names:

@@ -156,13 +156,20 @@ class DecisionTests(unittest.TestCase):
         category = promotion_judge.rejection_category
         self.assertEqual(category(table()), "within_noise")
         self.assertEqual(category(table(low={"auroc": .001})), "head_not_improved")
-        self.assertEqual(category(table(low={"auroc": .001, "average_precision": .002})), "not_convincing")
-        self.assertEqual(category(table(low={"precision": .01})), "not_convincing")
+        # Average precision and precision at K are not statistics of the top (2026-11-12).
+        self.assertEqual(category(table(low={"auroc": .001, "average_precision": .002})), "head_not_improved")
+        self.assertEqual(category(table(low={"average_precision": .002, "pauc": .001})), "not_convincing")
+        self.assertEqual(category(table(low={"auroc": .001, "precision_at_half_k": .01})), "not_convincing")
+        self.assertEqual(category(table(low={"precision": .01})), "head_not_improved")
         # Worse on one guarded statistic wins over better on another.
         self.assertEqual(category(table(low={"auroc": .001}, high={"pauc": -.001})), "significantly_worse")
-        # A single-cut precision that is neither guarded nor a head statistic changes nothing.
+        # A single-cut precision alone is not guarded, so nothing guarded improved.
         self.assertEqual(category(table(low={"precision_at_half_k": .01})), "within_noise")
-        for value in (category(table()), category(table(low={"auroc": .001}))):
+        # Under the rule the objective alone decides between the two words.
+        self.assertEqual(category(table(low={"pauc": .01}), {"significant": False}), "within_noise")
+        self.assertEqual(category(table(), {"significant": True}), "gain_too_small")
+        self.assertEqual(category(table(high={"pauc": -.001}), {"significant": True}), "significantly_worse")
+        for value in (category(table()), category(table(low={"auroc": .001})), category(table(), {"significant": True})):
             self.assertIn(value, promotion_judge.REJECTION_CATEGORIES)
 
     def test_judge_records_a_category_only_for_a_rejection_with_votes(self):
@@ -173,7 +180,9 @@ class DecisionTests(unittest.TestCase):
             self.assertIsNone(promotion_judge.judge(parent, candidate, tables, rule, **common)["rejection_category"])
         with patch.object(promotion_judge, "cast_votes", return_value=ballots(*["reject"] * 5)):
             rejected = promotion_judge.judge(parent, candidate, tables, rule, **common)
-        self.assertEqual(rejected["rejection_category"], "not_convincing")  # the better scorer, voted down
+        # The better scorer, voted down: which of the two words depends on whether the top improved beyond noise.
+        self.assertIn(rejected["rejection_category"], ("not_convincing", "head_not_improved"))
+        self.assertEqual(rejected["rejection_category"], promotion_judge.rejection_category(rejected["statistics"]))
         with patch.object(promotion_judge, "cast_votes", return_value=ballots(*["timeout"] * 5)):
             self.assertIsNone(promotion_judge.judge(parent, candidate, tables, rule, **common)["rejection_category"])
         with patch.object(promotion_judge, "cast_votes"):
@@ -182,7 +191,8 @@ class DecisionTests(unittest.TestCase):
         self.assertIsNone(promotion_judge.judge({}, candidate, tables, rule, **common)["rejection_category"])
 
     def test_gate_modes_and_versions(self):
-        self.assertEqual(promotion_judge.gate_modes(), ("bootstrap", "margin", "judge"))
+        self.assertEqual(promotion_judge.gate_modes(), ("bootstrap", "margin", "judge", "rule"))
+        self.assertEqual(promotion_judge.gate_version("rule"), promotion_judge.RULE_GATE_VERSION)
         self.assertEqual(promotion_judge.gate_version("judge"), promotion_judge.GATE_VERSION)
         self.assertEqual(promotion_judge.gate_version("bootstrap"), scoring.gate_version("bootstrap"))
 
@@ -256,3 +266,97 @@ class DriverTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RuleGateTests(unittest.TestCase):
+    """--promotion-gate rule (2026-11-12): the table decides without a model."""
+    common = dict(target_kind="merge", draws=100, seed=1, votes=5, binding="rule")
+
+    def test_the_rule_decides_on_the_objective_without_calling_the_model(self):
+        tables, parent, candidate = synthetic()
+        rule = budgets("average_precision")
+        with patch.object(promotion_judge, "cast_votes") as cast:
+            accepted = promotion_judge.judge(parent, candidate, tables, rule, **self.common)
+            small = promotion_judge.judge(parent, candidate, tables, rule, margin=.9, **self.common)
+            worse = promotion_judge.judge(candidate, parent, tables, rule, **self.common)
+            same = promotion_judge.judge(parent, parent, tables, rule, **self.common)
+        cast.assert_not_called()
+        self.assertEqual((accepted["passed"], accepted["status"], accepted["votes_requested"]), (True, "rule", 0))
+        self.assertEqual(accepted["rule"]["statistic"], "average_precision")
+        self.assertTrue(accepted["rule"]["significant"] and accepted["rule"]["large_enough"])
+        self.assertIsNone(accepted["rejection_category"])
+        self.assertIn("accepted by the promotion rule", accepted["reason"])
+        # Beyond noise, below the minimum effect.
+        self.assertEqual((small["passed"], small["rejection_category"]), (False, "gain_too_small"))
+        self.assertEqual((worse["passed"], worse["status"], worse["rejection_category"]),
+                         (False, "guard_rail", "significantly_worse"))
+        # Identical rankings: every delta is zero, the guard passes and nothing is beyond noise.
+        self.assertEqual((same["passed"], same["status"], same["rejection_category"]), (False, "rule", "within_noise"))
+        self.assertEqual(promotion_judge.judge({}, candidate, tables, rule, **self.common)["status"], "unavailable")
+
+    def test_the_rule_follows_the_runs_objective(self):
+        tables, parent, candidate = synthetic()
+        for objective, name in (("pauc", "pauc"), ("precision_at_k", "precision"), ("auroc", "auroc")):
+            record = promotion_judge.judge(parent, candidate, tables, budgets(objective), **self.common)
+            self.assertEqual(record["rule"]["statistic"], name)
+            self.assertEqual(record["rule"]["low"], record["statistics"][name]["low"])
+
+    def test_shadow_votes_are_recorded_and_never_decide(self):
+        tables, parent, candidate = synthetic()
+        rule = budgets("average_precision")
+        with patch.object(promotion_judge, "cast_votes", return_value=ballots(*["reject"] * 5)) as cast:
+            accepted = promotion_judge.judge(parent, candidate, tables, rule, shadow=True, **self.common)
+        self.assertEqual(cast.call_count, 1)
+        self.assertEqual((accepted["passed"], accepted["accept_votes"], accepted["votes_cast"]), (True, 0, 5))
+        self.assertIs(accepted["shadow_votes_passed"], False)
+        self.assertIn("shadow judge 0 accept of 5", accepted["reason"])
+        with patch.object(promotion_judge, "cast_votes", side_effect=RuntimeError("network")):
+            failed = promotion_judge.judge(parent, candidate, tables, rule, shadow=True, **self.common)
+        self.assertTrue(failed["passed"])  # a failed shadow call changes nothing
+        with self.assertRaises(ValueError):
+            promotion_judge.judge(parent, candidate, tables, rule, target_kind="merge", draws=10, seed=1, binding="x")
+
+    def test_the_driver_applies_the_rule(self):
+        from proofreader_evolve.cli import run_precision_evolution as driver
+        banks = driver_banks()
+
+        async def revise(run_dir, policy, rules, report, model, *, experiments):
+            policy.write_text("def score_candidates(features, ctx):\n"
+                              "    return features['signal'].fillna(0).to_numpy()\n")
+            experiments.proposal_path.write_text(json.dumps({'hypothesis': 'signal ranks positives',
+                'strategy': 'use signal', 'family': 'signal', 'parameter_grid': {}}))
+            experiments.evaluate()
+            return {'summary': 'signal', 'cost_usd': 0}
+
+        def arguments(tmp, *extra):
+            return driver.parse_args(['--min-positives', '0', '--train-brains', '794495,802449', '--validation-brains', '2',
+                                      '--merge-k', '3', '--split-k', '1', '--generations', '1', '--runs-dir', tmp,
+                                      '--skip-auxiliary-ablation', '--bootstrap-draws', '50', '--promotion-gate', 'rule',
+                                      '--objective', 'average_precision', '--kind-schedule', 'alternate',
+                                      '--detector-prior', 'no-score', *extra])
+
+        def once(*extra):
+            with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()), \
+                    patch.object(promotion_judge, "cast_votes") as cast:
+                path = run_driver(driver, arguments(tmp, *extra), banks, revise)
+                cast.assert_not_called()
+                return (json.loads((path / 'manifest.json').read_text()),
+                        json.loads((path / 'ledger.jsonl').read_text().splitlines()[0]))
+
+        manifest, record = once()
+        gate = record['validation_gate']
+        self.assertEqual((manifest['promotion_gate']['mode'], manifest['promotion_gate']['judge']), ('rule', None))
+        self.assertEqual(manifest['promotion_gate']['rule']['statistic'], 'average_precision')
+        self.assertEqual((gate['mode'], gate['version']), ('rule', promotion_judge.RULE_GATE_VERSION))
+        self.assertEqual(record['accepted'], gate['judge']['rule']['passed'])
+        self.assertEqual(gate['judge']['status'], 'rule')
+        if not record['accepted']:
+            self.assertEqual(record['submission_validated']['rejection'], gate['judge']['rejection_category'])
+        # A minimum effect no gain can reach: the same candidate is rejected with a category.
+        _, record = once('--precision-margin', '2')
+        self.assertFalse(record['accepted'])
+        self.assertIn(record['submission_validated']['rejection'], ('gain_too_small', 'within_noise'))
+        with redirect_stdout(io.StringIO()), patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit):
+            driver.parse_args(['--promotion-gate', 'judge', '--judge-shadow'])
+        with redirect_stdout(io.StringIO()), patch('sys.stderr', io.StringIO()), self.assertRaises(SystemExit):
+            driver.parse_args(['--promotion-gate', 'rule', '--bootstrap-draws', '0'])

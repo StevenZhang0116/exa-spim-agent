@@ -18,8 +18,11 @@ keep their numbers because other documents cite them.
   testing or promotion on it. The split and launch recipe are in
   [Stage 3](../docs/stage3_evolution.md#32-prepare-tables-and-launch-a-run).
 - Positive-weighted aggregation is shared by selection, ablation, validation and the
-  bootstrap. No LLM takes part in TRAIN-side selection. Promotion: since 2026-11-10 the user
-  runs with `--objective average_precision --promotion-gate judge` (an LLM judge inside a
+  bootstrap. No LLM takes part in TRAIN-side selection. Promotion: the documented launch since
+  2026-11-12 is `--objective average_precision --promotion-gate rule --precision-margin 0.002
+  --selection-noise-gate` (the rule on the objective inside the guard rail, and no validation
+  for a submission within TRAIN noise; section 8). From 2026-11-10 to 2026-11-12 the user
+  ran with `--objective average_precision --promotion-gate judge` (an LLM judge inside a
   guard rail, `harness/promotion_judge.py`); the command-line defaults stay AUROC and the
   bootstrap gate.
 - The five validation brains are development data: the gate has judged many candidates on
@@ -610,3 +613,34 @@ are as recorded), cheapest first:
    fragment and GT graphs (other node spacing, no minimum cable length) and the order of leaves
    and neighbours decides which contact a walk records. Reopen if the residual matters for a
    result; `merge_canonical_site_labels.py` and `merge_walk_port_check.py` list the sites.
+
+## 8. Promotion gate and validation feedback after the 2026-11-12 runs
+
+Done on 2026-11-12 (`docs/stage3_evolution.md` section 3.2, `WORKFLOW_REVISION.md` entry of that
+day): the rule gate on the declared objective (`--promotion-gate rule`, `--precision-margin`), the
+corrected rejection categories with the outcomes quoted in the prompt, and the TRAIN
+selection-noise check (`--selection-noise-gate`). Evidence so far is an offline replay on the
+two runs of that day (`notebooks/promotion_rule_replay.py`); no run has used them yet.
+
+Open:
+
+1. **First runs with the new configuration.** Check (a) how many generations end as
+   `not_measured` and whether a later generation of the same kind then makes a larger change;
+   (b) whether `rules.md` / `proposal.json` refer to the quoted outcomes and to
+   `selection_gate.resampling`; (c) `gain_too_small` rejections and what followed them.
+2. **The objective is now the promotion criterion.** The judge had applied "pAUC interval above
+   zero"; the documented launch keeps average precision. For split the two differ in practice
+   (two of ten split submissions that reached the table). Decide from the next runs whether split should run with
+   `--objective pauc`; one flag, no code change. A run and its comparison runs need the same
+   objective and gate.
+3. **The margin, 0.002, is one number chosen from two runs**, for both kinds and any objective.
+   Revisit with more submissions; a per-kind value would need a code change.
+4. **The intervals resample rows.** Candidates on one segment are not independent, and five
+   validation brains are queried every generation without a correction for repeated tries.
+   Resampling segments (or brains) would widen the intervals of both the gate and the TRAIN
+   check; not done, and it would change which earlier decisions count as beyond noise.
+5. **The TRAIN check needs whole-brain holdouts.** With within-brain folds it reports
+   `unavailable`; a fold-wise paired bootstrap would be needed for frozen / no-score runs that
+   use them.
+6. **Merge is not helped by any of this**: after the first accepted merge generations no merge
+   candidate was beyond noise on TRAIN or on validation (section 7).

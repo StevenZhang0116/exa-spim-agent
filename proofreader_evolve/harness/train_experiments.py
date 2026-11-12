@@ -202,7 +202,8 @@ class TrainingExperiments:
                  memory, max_evaluations=8, generation=0, search_plan=None,
                  classifier_timeout=300, classifier_memory_mb=DEFAULT_MEMORY_MB, classifier_threads=1,
                  parent_selection=None, descriptor_budget=None, branch=None, validated=None,
-                 image_preview_budget=DEFAULT_IMAGE_PREVIEWS, classifier_search_seconds=3600.):
+                 image_preview_budget=DEFAULT_IMAGE_PREVIEWS, classifier_search_seconds=3600.,
+                 outer_history=None, selection_noise=None):
         if type(image_preview_budget) is not int or image_preview_budget < 0:
             raise ValueError('image_preview_budget must be a nonnegative integer')
         self.image_preview_budget = image_preview_budget
@@ -211,6 +212,13 @@ class TrainingExperiments:
         # the outer evaluator already measured; status and the judge's rejection category only, never a
         # validation number.
         self.validated = validated
+        # This kind's latest submissions and what the outer evaluator did with them (CandidatePool.outer_history;
+        # no held-out number), quoted in the reviser's prompt.
+        self.outer_history = list(outer_history or ())
+        # {"draws", "alpha"}: every measured candidate's selection gate then carries the row-resampling interval
+        # of its gain over the accepted parent (TRAIN only); the driver skips the outer evaluation of a
+        # submission whose interval does not lie above zero.
+        self.selection_noise = dict(selection_noise) if selection_noise else None
         self.proposal_path = gen_dir / 'proposal.json'
         self.training_path = gen_dir / 'training.py'
         self.target_kind, self.parent_sources = target_kind, dict(parent_sources)
@@ -368,10 +376,10 @@ class TrainingExperiments:
             raise ValueError('This is a tune generation: change only PARAMS or numeric training parameters; '
                              'restore_candidate("parent") recovers the assigned formula')
 
-    def _selection_gate(self, selection_report):
+    def _selection_gate(self, selection_report, selection_state=None):
         details = scoring.gate_details(self.parent_selection, selection_report, self.target_kind)
         before, after, guard = details['parent_objective'], details['candidate_objective'], details['head_guard']
-        return {'metric': self.protocol_info['metric'], 'objective': details['objective'],
+        gate = {'metric': self.protocol_info['metric'], 'objective': details['objective'],
                 'mode': self.protocol.mode, 'target_kind': self.target_kind,
                 'parent': before, 'candidate': after, 'delta': after - before,
                 'parent_precision': details['parent_precision'], 'candidate_precision': details['candidate_precision'],
@@ -379,6 +387,13 @@ class TrainingExperiments:
                 'passed': after > before + 1e-12 and (guard is None or guard['passed']),
                 'required_for_promotion': False,
                 'scope': 'Development selection signal on selection brains; the outer promotion gate decides acceptance'}
+        if self.selection_noise and selection_state is not None:
+            # The same draws the driver uses at submission (seed = generation), so the reviser sees
+            # beforehand whether this candidate's gain would be sent to the outer evaluator.
+            gate['resampling'] = self.protocol.paired_noise(
+                self.target_kind, self.parent_selection_state, selection_state, seed=self.generation,
+                **self.selection_noise)
+        return gate
 
     def _k(self, kind, truth):
         """This pool's resolved Top-K (Budgets.k_for); plain {kind: K} budgets mean a fixed K."""
@@ -580,7 +595,7 @@ class TrainingExperiments:
                          in_sample_precision=in_sample_precision(report, self.target_kind),
                          selection=metrics_only(selection_report),
                          selection_comparison=selection_comparison(self.parent_selection, selection_report, self.target_kind),
-                         selection_gate=self._selection_gate(selection_report),
+                         selection_gate=self._selection_gate(selection_report, selection_state),
                          selection_ranking_delta={k: v['ranking_delta'] for k, v in selection_feedback['cells'].items()},
                          scores_sha256=scores_digest(self.target_kind, ('train', measured_state),
                                                      ('selection', selection_state)),

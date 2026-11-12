@@ -131,3 +131,4 @@ notebooks/merge_junction_study/*/
 notebooks/split_rank_curves/
 notebooks/split_fragment_length/
 notebooks/errors_per_neuron/
+notebooks/promotion_rule_replay/

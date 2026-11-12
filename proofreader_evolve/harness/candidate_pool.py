@@ -87,6 +87,9 @@ class CandidatePool:
         # promotion judge's rejection category when there is one (a word from a fixed vocabulary;
         # no validation numbers), so a known ranking is never submitted twice.
         self.validated = {kind: [] for kind in kinds}
+        # Submissions the outer evaluator did not measure because their TRAIN selection gain was
+        # within TRAIN resampling noise (the interval is a TRAIN number, so it may be shown).
+        self.unmeasured = {kind: [] for kind in kinds}
         self.covered_history = {kind: set() for kind in kinds}
         self.best_slice_hits = {kind: {} for kind in kinds}
         self.progress = {kind: {'rounds': 0, 'train_rounds': 0, 'stalled_rounds': 0, 'stalled_explorations': 0,
@@ -119,6 +122,31 @@ class CandidatePool:
             item['rejection'] = str(rejection)
         self.validated[kind].append(item)
         return deepcopy(item)
+
+    def mark_unmeasured(self, entry, generation, noise):
+        """Record a submission that was not sent to the outer evaluator: its selection gain over
+        the accepted parent was within TRAIN resampling noise (``SelectionProtocol.paired_noise``)."""
+        kind = entry['target_kind']
+        if kind not in self.unmeasured:
+            raise ValueError('Unmeasured candidate of an unconfigured kind')
+        item = {'generation': int(generation), 'experiment': entry['experiment'],
+                'selection_gain': (entry.get('selection_gate') or {}).get('delta'),
+                'selection_gain_interval': list(noise['delta_ci']), 'interval_level': 1. - noise['alpha']}
+        self.unmeasured[kind].append(item)
+        return deepcopy(item)
+
+    def outer_history(self, kind, limit=6):
+        """What happened to this kind's latest submissions, oldest first, for the reviser's prompt:
+        ``promoted`` / ``not_promoted`` (with the rejection category when there is one) /
+        ``not_measured`` (with the TRAIN interval). The seed (generation 0) is left out; no
+        held-out number appears."""
+        rows = [{'generation': item['generation'], 'experiment': item['experiment'],
+                 'outcome': 'promoted' if item['promoted'] else 'not_promoted',
+                 **({'rejection': item['rejection']} if item.get('rejection') else {})}
+                for item in self.validated.get(kind, ()) if item['generation'] > 0]
+        rows += [{'outcome': 'not_measured', 'reason': 'selection_gain_within_train_noise', **deepcopy(item)}
+                 for item in self.unmeasured.get(kind, ())]
+        return sorted(rows, key=lambda row: row['generation'])[-limit:]
 
     def validation_of(self, kind, entry):
         """The earliest outer measurement of a candidate identical by bytes or kind scores, else None."""
@@ -381,6 +409,7 @@ class CandidatePool:
                 'coverage': self.coverage.definitions() if self.coverage else None,
                 'kinds': {kind: {'progress': deepcopy(self.progress[kind]),
                     'reference_branch': self._reference_summary(kind),
+                    'outer_history': self.outer_history(kind),
                     'retained_positive_hits': len(self.coverage.union(self.members[kind])) if self.coverage else None,
                     'ever_retained_positive_hits': len(self.covered_history[kind]) if self.coverage else None,
                     'candidates': [self._candidate_summary(e) for e in self.members[kind]]} for kind in self.kinds},

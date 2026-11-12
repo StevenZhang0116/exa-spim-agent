@@ -9,7 +9,9 @@ fresh agent session is the mutation operator, a TRAIN-side selection score ranks
 exploration branches, and a held-out validation gate alone decides promotion: by default the
 target kind's objective over its counted brains must rise by more than
 paired-bootstrap resampling noise while the head of the ranking holds; under
-`--promotion-gate judge` (the configuration in use since 2026-11-10, section 3.2) an LLM judge
+`--promotion-gate rule` (the documented launch since 2026-11-12, section 3.2) the same holds for
+the run's objective inside a guard rail on every rank statistic, with a minimum effect; under
+`--promotion-gate judge` (in use 2026-11-10 to 2026-11-12) an LLM judge
 votes on a table of every rank statistic with its paired-bootstrap interval. The objective
 is a rank statistic over the GT-labeled rows (`--objective`, since 2026-11-02 AUROC by
 default; `pauc`, `average_precision` and the earlier `precision_at_k` are the alternatives,
@@ -163,7 +165,8 @@ nohup /home/zihan.zhang/.conda/envs/panda/bin/python -u \
   --train-brains 802449,747807,750318,754610,754612,754613 \
   --selection-brains all --selection-holdout-brains all \
   --validation-brains 789202,794493,794491,751473,841260 \
-  --generations 5 --objective average_precision --promotion-gate judge \
+  --generations 5 --objective average_precision --promotion-gate rule --precision-margin 0.002 \
+  --selection-noise-gate \
   --aggregation positive-weighted --min-positives 10 \
   --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400 \
   --classifier-threads 32 --classifier-search-seconds 7200 \
@@ -231,7 +234,8 @@ per generation. K equals each pool's GT-positive count; there are no kind caps a
 pools below 10 positives (`--min-positives`; 20 until 2026-11-08) are excluded from the
 objective. Metrics remain separate
 for merge and split. No equal-brain default was introduced, and no LLM takes part in TRAIN-side
-selection; an LLM judge decides promotion only under `--promotion-gate judge`.
+selection; an LLM judge decides promotion only under `--promotion-gate judge`, and the documented launch
+(`--promotion-gate rule`) calls no model for the gate.
 
 #### Per-family merge statistics (reporting only, 2026-11-11)
 
@@ -271,14 +275,22 @@ What happens at a submission (`harness/promotion_judge.py`):
    refusal or an unparseable answer is no vote, so it counts against the candidate; a failure
    to build the table rejects.
 
-5. Feedback to the reviser. A rejected candidate's `outer_measurement` gains `rejection`, one of
-   four words that the host derives from the table's intervals, never from the model's text:
+5. Feedback to the reviser. A rejected candidate's `outer_measurement` gains `rejection`, a word
+   that the host derives from the table's intervals, never from the model's text:
    `significantly_worse` (the guard rail), `within_noise` (no guarded statistic's interval above
-   zero), `head_not_improved` (only AUROC improved beyond noise) and `not_convincing` (a head
-   statistic improved beyond noise and the votes still rejected). No category is given when no
-   vote was cast. This is the only addition to what a later session learns about an outer
-   measurement: it still sees no heldout number, ballot or reason. It is also validation
-   information flowing back into the search, about two bits per rejected submission.
+   zero), `head_not_improved` (something improved beyond noise, but none of pAUC, precision at
+   K/2 and the depth mean) and `not_convincing` (one of those three improved beyond noise and the
+   votes still rejected). Until 2026-11-12 average precision and precision at K counted as head
+   statistics; the judge rejected two split candidates whose gains in those two were beyond
+   noise while pAUC and precision at K/2 were not, and they were reported as `not_convincing`
+   ("strengthen the same direction") although the votes' reasons were the top of the ranking.
+   No category is given when no vote was cast. The rule gate below uses `significantly_worse`,
+   `within_noise` and a fifth word, `gain_too_small`. Since 2026-11-12 the prompt of a generation
+   quotes the kind's latest outcomes (`CandidatePool.outer_history`, also in
+   `candidate_pool.json`); before, the word was only in the pool and plan files, and of the
+   generations that followed a rejection in the two runs of 2026-11-12 two mention it in `rules.md`. A later
+   session still sees no heldout number, ballot or reason. The word is validation information
+   flowing back into the search, about two bits per rejected submission.
 6. Second table for merge (2026-11-11). Merge pools hold two candidate families, and ranking
    junctions above `tip_to_shaft` rows raises every pooled statistic without telling errors from
    non-errors inside the junctions (`TODO.md` section 7). For merge the prompt therefore carries
@@ -301,6 +313,82 @@ Limits. The judge is a model reading development-validation statistics; it selec
 brains like any gate, and its decision is not exactly reproducible (the votes are recorded).
 The replay evidence is two runs and 15 non-seed pairs produced under the AUROC objective, and
 60 null pairs for the judge. A run with this gate is not comparable with earlier runs.
+
+#### Promotion by the rule (`--promotion-gate rule`, 2026-11-12)
+
+Why: in the two runs of 2026-11-12 (`precision_20261112_010152_bfg7kacp`,
+`precision_20261112_010306_tuap47i8`) the judge voted on fourteen submissions, thirteen times
+unanimously, and every outcome equalled "the pAUC interval lies above zero". That criterion was
+not declared anywhere: the runs' objective was average precision, which TRAIN selection and the
+reviser optimise. Two split candidates whose average precision, AUROC and precision at K were
+all better beyond noise were rejected because pAUC and precision at K/2 were not, and the
+reviser was told `not_convincing`. A model that behaves like one fixed rule is better replaced
+by that rule, stated in advance and applied to the declared objective.
+
+What happens at a submission: steps 1 and 2 of the judge (the table and the guard rail) are
+unchanged. Then the candidate is promoted when the interval of the objective's gain lies above
+zero and the gain exceeds `--precision-margin`, a minimum effect (default 0). No model is
+called. `--judge-shadow` casts and records the judge's votes anyway, without effect, to keep
+comparing the two. The objective decides, so choosing `--objective pauc` gives the criterion
+the judge applied, and `average_precision` the one the runs declared.
+
+The minimum effect exists because the split pools hold about 17,000 positives: their intervals
+are narrow enough that a gain of 0.0009 in average precision was accepted and a loss of 0.0005
+in AUROC rejected. The documented launch uses `--precision-margin 0.002`.
+
+Feedback: `significantly_worse` (the guard rail), `within_noise` (the objective's interval does
+not lie above zero) and `gain_too_small` (it does, and the gain is not above the margin). The
+ledger's `validation_gate` carries `mode: "rule"` and, under `judge`, the same record as before
+plus `binding` and `rule` (`statistic`, `delta`, `low`, `margin`, `significant`,
+`large_enough`, `passed`).
+
+Replay (`notebooks/promotion_rule_replay.py`; the eighteen submissions of the two runs that reached
+the table, each decision with the run's own parent). With margin 0 the rule decides like the judge on
+sixteen and accepts the two split candidates described above (average-precision gains of +0.0018 and
++0.0048). With margin 0.002 it also agrees on sixteen: it accepts the second of those two, and
+rejects as `gain_too_small` the first and one split candidate the judge accepted (+0.0009). The four
+guard-rail rejections are the same under both gates. Under the corrected category rule the two
+candidates reported as `not_convincing` are `head_not_improved`.
+
+Limits. The rule's interval resamples candidate rows, not segments or brains, and the same five
+validation brains are queried every generation, so "beyond noise" is conditional on those
+brains and is not corrected for repeated tries. The margin is one number for both kinds and for
+whatever the objective is; 0.002 was chosen from two runs.
+
+#### TRAIN selection-noise check (`--selection-noise-gate`, 2026-11-12)
+
+Why: the two runs submitted six merge candidates
+whose selection gain over the accepted parent was between -0.006 and +0.003 in average
+precision; none was promoted, and each measured one cost a frozen inference over five brains
+and one more query of the validation pools.
+
+What it does. For every measured candidate the host computes the paired row-resampling interval
+of its selection-objective gain over the accepted parent on the selection brains
+(`SelectionProtocol.paired_noise`, the same Poisson bootstrap as the promotion gate, on TRAIN
+rows; `--bootstrap-draws`, `--selection-noise-alpha`, default 0.2 for an 80% interval, seed =
+generation). The reviser sees it during the session as `selection_gate.resampling` (`delta_ci`,
+`beyond_noise`). At submission, a candidate whose lower bound is not above zero is not sent to
+the outer evaluator: the generation ends as `not_measured` (ledger `submission_within_noise`,
+gate `skipped: "selection_within_noise"`), the parent stays, and later sessions read the TRAIN
+interval in the prompt and in `outer_history`. The level is deliberately loose: the check is meant to
+remove submissions that TRAIN itself cannot tell from no change, not to be a second promotion test.
+
+The interval is defined where every selection pool is ranked as one pool, which is the case for
+whole-brain holdouts (`--selection-holdout-brains all`, the raw-run setting) and for the
+in-sample protocol. A pool split into within-brain folds is ranked fold by fold; there the
+check reports `unavailable` and the submission is evaluated as before.
+
+Replay on the same two runs (twenty generations, `notebooks/promotion_rule_replay.py`). At the 80%
+level eight submissions would not have been measured: the two the driver already skipped as repeated
+and unchanged, five the judge rejected and one the guard rail rejected (six merge, two split). All
+seven promoted candidates lie beyond TRAIN noise; the closest has a lower bound of +0.00002 and is the
+split candidate promoted on a validation gain of +0.0009. At the 95% level that candidate and one
+more guard-rail rejection would not have been measured either. One interval of 1000 draws took 4 to
+11 s on the six TRAIN brains.
+
+Limits. Two runs; the candidates were produced without the check, and a reviser that sees the
+interval may behave differently. The interval resamples rows, like the gate's. A real gain smaller
+than TRAIN can resolve is never measured, which matters most for merge (468 TRAIN positives).
 
 For a controlled frozen/no-score/raw comparison, use the same explicit brain roles,
 folds, objective, aggregation and budgets in all arms. With the current detector
@@ -402,7 +490,8 @@ reported but excluded. The candidate must exceed the accepted parent's score for
 by more than `--precision-margin` (default 0; ties fail) and, with the default
 `--promotion-gate bootstrap`, the lower bound of the paired row-resampling interval of
 that gain must be above zero (`--bootstrap-draws 1000`, `--bootstrap-alpha 0.05`);
-`--promotion-gate margin` restores the point-estimate rule and `--promotion-gate judge` hands the
+`--promotion-gate margin` restores the point-estimate rule, `--promotion-gate rule` adds the guard rail on
+every rank statistic to the interval and margin test, and `--promotion-gate judge` hands the
 decision to the LLM judge described in section 3.2. Individual brain/kind
 regressions are allowed; TRAIN gain is diagnostic, not a promotion requirement.
 Selection scores guide experiment ranking, branch retention and plateau scheduling.
@@ -784,9 +873,13 @@ retained and no descriptor inference runs (2026-10-12). Since 2026-10-26 the sam
 for a submission identical to any candidate the outer evaluator already measured, by
 bytes or by `scores_sha256` (the exact scores of its kind on every TRAIN and selection
 cell): the generation ends as `repeated` (ledger `submission_repeat`, gate
-`skipped: repeated_submission`, handoff host status `repeated_submission`). The agent is
+`skipped: repeated_submission`, handoff host status `repeated_submission`). With
+`--selection-noise-gate` (section 3.2, 2026-11-12) a submission whose TRAIN selection gain is within
+TRAIN resampling noise is not evaluated either: the generation ends as `not_measured` (ledger
+`submission_within_noise` and `selection_noise`, gate `skipped: selection_within_noise`, handoff host
+status `selection_within_noise`). The agent is
 told beforehand through `outer_measurement` (generation and promotion status, no
-numbers; under `--promotion-gate judge` also the rejection category of section 3.2) on the search parent, the pool members and training-tool results, and can read
+numbers; under `--promotion-gate rule` or `judge` also the rejection category of section 3.2) on the search parent, the pool members and training-tool results, and can read
 earlier generations' programs and TRAIN artefact trees. Full-precision
 target-kind validation scores decide promotion together with the paired-bootstrap noise bound
 (section 3.3) or through the promotion judge's table (section 3.2); reports retain each brain/kind's result, any regressed cells and

@@ -11,7 +11,7 @@ accept or reject several times; the host decides from the votes inside fixed lim
 * acceptance needs a strict majority of the *requested* votes, so a failed call, a refusal or
   an unparseable answer counts against the candidate (fail closed);
 * every vote, its reason, the table and the token use go into the gate record;
-* the reviser learns one thing more than "not promoted": a category from a fixed list of four,
+* the reviser learns one thing more than "not promoted": a category from a fixed list of five,
   derived by the host from the table's intervals (``rejection_category``), never the model's
   words and never a number.
 
@@ -24,6 +24,14 @@ Evidence for the design (``notebooks/acceptance_rule_replay.py``, 2026-11-10, 19
 candidates of two raw runs): with intervals the judge agreed with an average-precision gate on
 14 of 15 non-seed pairs and accepted 1 of 60 null pairs; without intervals it accepted fewer
 real improvements and its votes split more often, which is why the table always carries them.
+
+``--promotion-gate rule`` (2026-11-12) decides from the same table without a model: the guard
+rail, the interval of the run's objective above zero, and its gain above ``--precision-margin``.
+In the two runs of 2026-11-12 the judge's fourteen voted decisions (thirteen unanimous) all
+equalled "the pAUC interval lies above zero", a criterion the run had not declared: the agent
+optimised average precision. The rule gate decides on the declared objective instead, so what
+the agent optimises on TRAIN is what promotes; choose the objective to choose the criterion.
+With ``--judge-shadow`` the judge's votes are still cast and recorded, without effect.
 """
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
@@ -37,9 +45,11 @@ from . import fixed_pool_scoring as scoring
 from .label_availability import labeled_rows
 from .rank_statistics import FAMILY_FIELD, ranking, ranking_statistics
 
-VERSION = "promotion-judge-v2-family-table"
+VERSION = "promotion-judge-v3-rule-binding"
 GATE_VERSION = "target-kind-validation-judge-v2"
+RULE_GATE_VERSION = "target-kind-validation-rule-v1"
 MODE = "judge"
+RULE_MODE = "rule"
 DEFAULT_MODEL = "claude-opus-5-5"
 DEFAULT_VOTES = 5
 DEFAULT_EFFORT = "medium"
@@ -51,15 +61,19 @@ LABELS = {"auroc": "AUROC", "pauc": "pAUC (FPR <= {fpr:g})", "average_precision"
           "precision_at_half_k": "precision at K/2", "precision_at_double_k": "precision at 2K"}
 # Single-cut precisions at K/2 and 2K enter the guard through their mean with precision at K.
 GUARDED = ("auroc", "pauc", "average_precision", "precision_depth_mean", "precision")
-# Guarded statistics that weigh the top of the ranking (everything but the whole-ranking AUROC).
-HEAD = ("pauc", "average_precision", "precision_depth_mean", "precision")
+# Statistics of the top of the ranking, for the rejection category under the votes. Average
+# precision and precision at K are left out since 2026-11-12: the judge rejected candidates whose
+# gains in those two were beyond noise while pAUC and precision at K/2 were not, and the category
+# then told the reviser that the top had improved.
+HEAD = ("pauc", "precision_at_half_k", "precision_depth_mean")
 # Kinds whose candidates come from several rules get a second table restricted to the family that
 # holds nearly all true errors: ranking that family above the other raises every pooled statistic
 # without telling errors from non-errors inside it. The guard rail and the rejection category keep
 # using the whole-pool table.
 FAMILY_TABLES = {"merge": "junction"}
 # The only words about a rejection that reach the reviser (``rejection_category``).
-REJECTION_CATEGORIES = ("significantly_worse", "within_noise", "head_not_improved", "not_convincing")
+REJECTION_CATEGORIES = ("significantly_worse", "within_noise", "head_not_improved", "not_convincing",
+                        "gain_too_small")
 
 SYSTEM = """You review one proposed change to a ranking model. The model ranks candidate \
 reconstruction errors in neuron tracings so that proofreaders inspect the highest-ranked candidates \
@@ -83,11 +97,11 @@ SCHEMA = {"type": "object",
 
 
 def gate_modes():
-    return (*scoring.GATE_MODES, MODE)
+    return (*scoring.GATE_MODES, MODE, RULE_MODE)
 
 
 def gate_version(mode):
-    return GATE_VERSION if mode == MODE else scoring.gate_version(mode)
+    return {MODE: GATE_VERSION, RULE_MODE: RULE_GATE_VERSION}.get(mode) or scoring.gate_version(mode)
 
 
 # --- statistics ------------------------------------------------------------------------------
@@ -212,21 +226,38 @@ def guard_rail(statistics):
     return all(statistics[name]["high"] is not None and statistics[name]["high"] >= 0 for name in GUARDED)
 
 
-def rejection_category(statistics):
+def rule_check(statistics, objective, margin=0.):
+    """The deterministic rule of ``--promotion-gate rule`` on the run's objective: the interval
+    of its delta above zero and the point gain above ``margin``. The guard rail is separate."""
+    name = "precision" if objective == "precision_at_k" else objective
+    row = statistics[name]
+    significant = row["low"] is not None and row["low"] > 0
+    large_enough = row["delta"] is not None and row["delta"] > max(float(margin), 1e-12)
+    return {"statistic": name, "delta": row["delta"], "low": row["low"], "high": row["high"],
+            "margin": float(margin), "significant": bool(significant), "large_enough": bool(large_enough),
+            "passed": bool(significant and large_enough)}
+
+
+def rejection_category(statistics, rule=None):
     """Why a candidate was not promoted, as one of ``REJECTION_CATEGORIES``; a function of the
     table's intervals alone, so no statistic's value and no text of the judge is passed on.
 
-    ``significantly_worse``: a guarded statistic's interval lies below zero (the guard rail);
-    ``within_noise``: no guarded statistic's interval lies above zero;
-    ``head_not_improved``: only the whole-ranking AUROC improved beyond noise;
-    ``not_convincing``: a head statistic improved beyond noise and the votes still rejected.
+    ``significantly_worse``: a guarded statistic's interval lies below zero (the guard rail).
+    Under the votes: ``within_noise``: no guarded statistic's interval lies above zero;
+    ``head_not_improved``: something improved beyond noise but no statistic of the top of the
+    ranking (``HEAD``) did; ``not_convincing``: a head statistic improved beyond noise and the
+    votes still rejected. Under the rule (``rule`` = ``rule_check``'s result): ``within_noise``:
+    the objective's interval does not lie above zero; ``gain_too_small``: it does, and the gain
+    is not above the margin.
     """
     if not guard_rail(statistics):
         return "significantly_worse"
-    better = [name for name in GUARDED if statistics[name]["low"] is not None and statistics[name]["low"] > 0]
-    if not better:
+    if rule is not None:
+        return "gain_too_small" if rule["significant"] else "within_noise"
+    if not any(statistics[name]["low"] is not None and statistics[name]["low"] > 0 for name in GUARDED):
         return "within_noise"
-    return "not_convincing" if any(name in HEAD for name in better) else "head_not_improved"
+    top = any(statistics[name]["low"] is not None and statistics[name]["low"] > 0 for name in HEAD)
+    return "not_convincing" if top else "head_not_improved"
 
 
 # --- the judge -------------------------------------------------------------------------------
@@ -318,11 +349,20 @@ def decide(statistics, ballots, requested):
 
 
 def judge(parent_state, candidate_state, tables_by_brain, budgets, *, target_kind, draws, seed, alpha=.05,
-          votes=DEFAULT_VOTES, model=DEFAULT_MODEL, effort=DEFAULT_EFFORT):
+          votes=DEFAULT_VOTES, model=DEFAULT_MODEL, effort=DEFAULT_EFFORT, binding=MODE, margin=0., shadow=False):
     """The gate record of one submission; ``passed`` and ``reason`` are what the driver applies.
-    Never promotes on an internal failure."""
+    Never promotes on an internal failure.
+
+    ``binding`` = ``"judge"``: the votes decide inside the guard rail. ``binding`` = ``"rule"``:
+    ``rule_check`` on the run's objective decides inside the guard rail, no model is needed, and
+    with ``shadow`` the votes are cast and recorded without effect (a failed shadow call changes
+    nothing)."""
+    if binding not in (MODE, RULE_MODE):
+        raise ValueError(f"Unknown binding {binding!r}")
     budgets = scoring.Budgets.coerce(budgets)
-    record = {"version": VERSION, "model": model, "effort": effort, "votes_requested": votes,
+    by_rule = binding == RULE_MODE
+    record = {"version": VERSION, "binding": binding, "model": model, "effort": effort,
+              "votes_requested": 0 if by_rule and not shadow else votes,
               "draws": draws, "seed": seed, "alpha": alpha, "guarded_statistics": list(GUARDED)}
     try:
         statistics, pools = joint_intervals(parent_state, candidate_state, tables_by_brain, budgets,
@@ -334,7 +374,7 @@ def judge(parent_state, candidate_state, tables_by_brain, budgets, *, target_kin
     guard = guard_rail(statistics)
     family = None
     if target_kind in FAMILY_TABLES:
-        try:  # a missing second table never blocks the vote: the first table is the gate's basis
+        try:  # a missing second table never blocks the decision: the first table is the gate's basis
             family = (FAMILY_TABLES[target_kind],
                       *joint_intervals(parent_state, candidate_state, tables_by_brain, budgets, target_kind=target_kind,
                                        draws=draws, seed=seed, alpha=alpha, family=FAMILY_TABLES[target_kind])[::-1])
@@ -344,32 +384,44 @@ def judge(parent_state, candidate_state, tables_by_brain, budgets, *, target_kin
                   pooled=budgets.aggregation == "positive-weighted", family=family)
     if family is not None:
         record.update(family=family[0], family_pools=family[1], family_statistics=family[2])
-    record.update(statistics=statistics, pools=pools, guard_rail=guard,
+    rule = rule_check(statistics, budgets.objective, margin)
+    record.update(statistics=statistics, pools=pools, guard_rail=guard, rule=rule,
                   prompt_sha256=hashlib.sha256((SYSTEM + "\n" + text).encode()).hexdigest())
     worse = [name for name in GUARDED if statistics[name]["high"] is None or statistics[name]["high"] < 0]
-    objective = "precision" if budgets.objective == "precision_at_k" else budgets.objective
-    row = statistics[objective]
+    row = statistics[rule["statistic"]]
     detail = (f"{scoring.OBJECTIVE_LABELS[budgets.objective]} "
               + (f"{row['parent']:.6f} -> {row['candidate']:.6f}; delta={row['delta']:+.6f}, "
                  f"interval [{row['low']:+.6f}, {row['high']:+.6f}]" if row["delta"] is not None and row["low"] is not None
                  else "undefined"))
     if not guard:
-        # The votes could not change the outcome, so the model is not called.
+        # Neither the votes nor the rule could change the outcome, so the model is not called.
         record.update(passed=False, status="guard_rail", ballots=[], accept_votes=0, votes_cast=0,
                       rejection_category=rejection_category(statistics),
-                      reason=f"{target_kind} rejected by the judge's guard rail (significantly worse: "
-                             f"{', '.join(worse)}): {detail}")
+                      reason=f"{target_kind} rejected by the {'rule' if by_rule else 'judge'}'s guard rail "
+                             f"(significantly worse: {', '.join(worse)}): {detail}")
         return record
-    try:
-        ballots = cast_votes(text, votes=votes, model=model, effort=effort)
-    except Exception as exc:  # fail closed
-        ballots = [{"error": f"{type(exc).__name__}: {exc}"} for _ in range(votes)]
-    accepted, accepts, cast = decide(statistics, ballots, votes)
+    ballots = []
+    if not by_rule or shadow:
+        try:
+            ballots = cast_votes(text, votes=votes, model=model, effort=effort)
+        except Exception as exc:  # fail closed under the votes; without effect under the rule
+            ballots = [{"error": f"{type(exc).__name__}: {exc}"} for _ in range(votes)]
+    voted, accepts, cast = decide(statistics, ballots, votes)
     usage = {key: sum((ballot.get("usage") or {}).get(key, 0) for ballot in ballots)
              for key in ("input_tokens", "output_tokens")}
+    record.update(ballots=ballots, accept_votes=accepts, votes_cast=cast, usage=usage)
+    if by_rule:
+        accepted = rule["passed"]
+        record.update(passed=accepted, status="rule", shadow_votes_passed=voted if shadow and cast else None,
+                      rejection_category=None if accepted else rejection_category(statistics, rule),
+                      reason=f"{target_kind} {'accepted' if accepted else 'rejected'} by the promotion rule "
+                             f"(guard rail passed; the interval must lie above zero and the gain above "
+                             f"{rule['margin']:g}): {detail}"
+                             + (f"; shadow judge {accepts} accept of {cast} votes cast" if shadow else ""))
+        return record
     # No category without a vote cast: failed calls say nothing about the candidate.
-    record.update(passed=accepted, status="voted", ballots=ballots, accept_votes=accepts, votes_cast=cast, usage=usage,
-                  rejection_category=None if accepted or not cast else rejection_category(statistics),
-                  reason=f"{target_kind} {'accepted' if accepted else 'rejected'} by the LLM judge "
+    record.update(passed=voted, status="voted",
+                  rejection_category=None if voted or not cast else rejection_category(statistics),
+                  reason=f"{target_kind} {'accepted' if voted else 'rejected'} by the LLM judge "
                          f"({accepts} accept of {cast} votes cast, {votes} requested; guard rail passed): {detail}")
     return record

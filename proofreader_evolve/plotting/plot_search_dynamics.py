@@ -18,7 +18,8 @@ from proofreader_evolve.plotting.plot_run_performance import (
 
 def _outcome_reason(row):
     outcome = ("accepted" if row.get("accepted") else "unchanged" if row.get("submission_unchanged")
-               else "repeated" if row.get("submission_repeat") else "rejected")
+               else "repeated" if row.get("submission_repeat")
+               else "not_measured" if row.get("submission_within_noise") else "rejected")
     return outcome, records.decision_reason(row)
 
 

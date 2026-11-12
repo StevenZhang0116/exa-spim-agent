@@ -24,7 +24,7 @@ import numpy as np
 
 from .classifier_contract import frozen_model
 from .classifier_training import fit_classifier
-from .fixed_pool_scoring import Budgets, aggregate_objective, rank_metrics
+from .fixed_pool_scoring import Budgets, aggregate_objective, paired_bootstrap, rank_metrics
 from .image_features import subset_features
 from .internal_validation import FOLDS, fold_assignments, grouped_folds
 from .label_availability import labeled_rows, labels_digest
@@ -35,6 +35,7 @@ from .rank_statistics import (DEFAULT_PAUC_FPR, OBJECTIVE_LABELS, cell_statistic
 
 
 PROTOCOL_VERSION = 'grouped-cv-objective-v7-rank-statistics'
+NOISE_VERSION = 'selection-noise-v1'
 MODES = ('grouped_oof', 'in_sample')
 
 
@@ -255,6 +256,38 @@ class SelectionProtocol:
         report['holdout_precision'] = holdout['per_kind_precision'][kind] if holdout else None
         report['holdout_objective'] = holdout['per_kind_objective'][kind] if holdout else None
         return report, state
+
+    def paired_noise(self, kind, parent_state, candidate_state, *, draws=1000, seed=0, alpha=.2):
+        """Row-resampling interval of a candidate's selection-objective gain over the accepted
+        parent, on the selection brains (TRAIN data only; 2026-11-12).
+
+        ``beyond_noise`` is whether the lower bound of the two-sided (1 - alpha) interval lies
+        above zero. The statistic is ``fixed_pool_scoring.paired_bootstrap``'s, which ranks each
+        pool as a whole; that equals the selection objective when every selection pool is one
+        fold (whole-brain holdouts, or the in-sample protocol). A pool split into within-brain
+        folds is ranked fold by fold, which the bootstrap does not reproduce, so the result is
+        ``unavailable`` there rather than an interval of a different statistic.
+        """
+        if self.mode == 'grouped_oof':
+            split = []
+            for brain in self.selection_brains:
+                truth = self.train[brain].tables[kind].truth
+                if len(np.unique(self.fold_ids(kind, brain)[labeled_rows(truth)])) > 1:
+                    split.append(brain)
+            if split:
+                return {'version': NOISE_VERSION, 'status': 'unavailable',
+                        'reason': 'selection pools ranked in within-brain folds: ' + ', '.join(split)}
+        try:
+            result = paired_bootstrap(parent_state, candidate_state, self.selection_train, self.budgets,
+                                      target_kind=kind, draws=draws, seed=seed, alpha=alpha)
+        except Exception as exc:
+            return {'version': NOISE_VERSION, 'status': 'unavailable', 'reason': f'{type(exc).__name__}: {exc}'}
+        low, high = result['delta_ci']
+        return {'version': NOISE_VERSION, 'status': 'ok', 'objective': result['objective'],
+                'alpha': alpha, 'draws': draws, 'seed': seed, 'delta_ci': [low, high],
+                'bootstrap_mean_delta': result['bootstrap_mean_delta'], 'beyond_noise': bool(low > 0.),
+                'scope': 'Row-resampling noise of the selection-objective gain over the accepted parent on the '
+                         'TRAIN selection brains; no held-out data.'}
 
     def measure_formula(self, kind, measured_state, policy_sha256=None):
         """A deterministic formula is scored once; the partition only sets the budgets."""
