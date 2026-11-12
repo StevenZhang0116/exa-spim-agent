@@ -437,7 +437,7 @@ brain, `summary.csv`), figures `notebooks/merge_shaft_reach/merge_shaft_capture.
 (`tip_to_any_node|r=80|k=2`), every partner node with role `non_tip`, i.e. a shaft node of one
 segment that a tip of another segment approaches within the gap limit; same-segment NMS 20 um
 (smallest gap first), and shaft nodes within 20 um of a kept junction dropped. The junction
-family reproduced `notebooks/merge_site_counts/mcl100_length_v1` exactly on all eleven brains
+family reproduced `notebooks/merge_site_counts/mcl100_length_v1` (deleted 2026-11-12 after the `length_v2` relabel; the current counts are in `mcl100_length_v2`) exactly on all eleven brains
 (candidates, positives, reach at 20 um). Sites captured at 20 um:
 
 | brain | GT merge sites | junction | + tip-to-shaft gap <= 10 um | + tip-to-shaft gap <= 20 um | junction candidates | + candidates (<= 10 um) | + candidates (<= 20 um) |

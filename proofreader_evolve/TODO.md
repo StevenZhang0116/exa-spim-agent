@@ -569,10 +569,38 @@ are as recorded), cheapest first:
    794495 companions; twelve alignment receipts; eleven-brain raw preflight passed;
    `notebooks/merge_canonical_gap` rerun (cache labels hold 0.888 of the canonical sites within
    50 um, 0.813 before); `candidate_pools.json` evidence updated. Later runs are not comparable
-   with earlier ones. **Not redone:** the seed baselines (next run measures them); the pool
-   sweeps and `merge_shaft_reach` (their site denominators are the `length_v1` sites); the
-   2026-11-06 label notebooks (`merge_label_counts`, `merge_site_gt_tip`, census); the outputs
-   under `notebooks/merge_junction_study/`, which describe the `length_v1` labels.
+   with earlier ones. **Added sites checked against the canonical sites**
+   (`notebooks/merge_junction_study/merge_added_sites_check.py`, 2026-11-12, six TRAIN brains):
+   of the 553 sites now in those caches 507 have an old site within 30 um and 46 are added; 42
+   of the 46 (91%) have a canonical site within 50 um and 40 (87%) within 20 um, against 87% of
+   the kept sites within 50 um; 3 old sites have no new site within 30 um (all three had a
+   canonical site within 50 um). On the other six brains the old coordinates were not kept;
+   from the `merge_canonical_gap` summaries before and after, sites rose by 84 and sites with
+   a canonical site within 50 um by about 76. **In the image** (all 46 added and 3 dropped sites
+   drawn with image, fragments, GT and the canonical sites,
+   `merge_added_sites_check/examples/`, read by eye on 2026-11-12): the three dropped sites are
+   the same events as three of the added ones, recorded more than 30 um away; on 750318 the
+   site moved onto the canonical position (it was 29 um off), on 747807 two sites moved 35 and
+   39 um away from it (order of the walks; the junction beside the canonical site lost its
+   positive). Of the 43 new sites, 40 coincide with a canonical site, and most show two
+   differently traced GT neurons meeting or crossing inside the segment, which is what the
+   pooled walk could not find. The four without a canonical site within 50 um: 802449 #2 (two
+   traced neurons meeting) and 747807 #9 (a dimmer neurite joining a traced one at a T) look
+   like merges, 802449 #13 and #23 lie in cluttered regions and are not clear either way.
+   **Label-dependent notebook results redone 2026-11-12** on the relabeled caches:
+   `label_counts` and `label_availability_distribution.svg`; `merge_site_counts`
+   (`mcl100_length_v2`); the site census (`merge_topology_diagnosis.py`,
+   `merge_diagnosis_followup.py`: 269 bridge sites); `merge_shaft_reach` (declared rule 0.867
+   of the cache sites within 20 um, 0.937 within 150 um); `merge_site_gt_tip` (60 of 157 blind
+   sites at a GT tip); the blind-site figures; the pool sweep (gap=40 no longer reaches 0.90 on
+   every brain: 789202 at 0.895); `verify_add_cache_metrics` (geometric merge counts within 15%
+   of the canonical count on eleven brains, 789202 19 against 29); `errors_per_neuron`; the
+   degree baseline of the merge feature specification (794495 companion: 173 positives, AP
+   0.030). The census must run before the reach, the GT-tip and the blind-site scripts
+   (`docs/dataset_artifact_dependencies.md`). **Not redone:** the outputs under
+   `notebooks/merge_junction_study/` except `merge_added_sites_check`, which describe the
+   `length_v1` labels; `notebooks/merge_label_shadow_findings.md` (historical). The seed
+   baselines are measured by the two runs started on 2026-11-12.
    **Decision (user, 2026-11-11): the canonical sites are not added as a label source for now.**
    The labels stay computed from the cache alone (GT tracings, GT node labels and the fragment
    graph), with no dependence on the result files in `metrics_out`. Known cost, on the six

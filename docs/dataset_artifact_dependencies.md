@@ -103,6 +103,17 @@ review stands, `figs/candidate_image_alignment_20261111/overlay_comparison.json`
 eleven-brain preflight; `notebooks/merge_canonical_gap.py --measure` and `--plot`. Every `pool_sha256` and every split
 label were unchanged; only merge labels moved.
 
+The notebooks that read the cache's merge sites were rerun the next day, and their order matters: the site census
+(`notebooks/merge_topology_diagnosis.py --mcl 100`, then `notebooks/merge_diagnosis_followup.py --mcl 100`) writes
+`merge_diagnosis/mcl100/followup/bridge_sites.csv`, which `merge_shaft_candidate_reach.py`, `merge_site_gt_tip.py` and
+`plot_merge_blind_sites.py` read; `merge_site_gt_tip.py` and `plot_merge_blind_sites.py` also read the reach JSONs; and
+`merge_shaft_candidate_reach.py` checks its junction family against `log_merge_site_counts.py`'s summary. So: site
+counts, census, follow-up, reach (the brains can be split over processes, then `--summarize`), GT tip, blind sites.
+Independent of these: `label_counts.py` (then `plot_label_availability.py`), `merge_candidate_pool_sweep.py`
+(about 1 h 45 min for twelve caches), `verify_add_cache_metrics.py`, `merge_canonical_gap.py`,
+`plot_errors_per_neuron.py`, and `agentic/canonical_stats.py card` for the merge feature specification. A census
+older than the cache makes `plot_merge_blind_sites.py` stop with "the census predates this cache".
+
 ## 4. Not invalidated automatically, but no longer comparable
 
 - **Frozen detectors** (`autodiscovery-application/<run>/*.joblib`, selected by

@@ -13,7 +13,7 @@
       "positive_label_radius_um": 20.0,
       "evidence": {
         "decided": "2026-10-16, by the user, after the tip-to-shaft reach measurement (not selected by a recall floor). Kept on 2026-11-07 by the user after the twelve-brain rerun, where the floor-based selection at target 0.90 would pick gap=40",
-        "measurement": "notebooks/merge_shaft_reach/<brain>_mcl100.json (notebooks/merge_shaft_candidate_reach.py, family J+S20)",
+        "measurement": "notebooks/merge_shaft_reach/<brain>_mcl100.json (notebooks/merge_shaft_candidate_reach.py, family J+S20; rerun 2026-11-12 on the length_v2 sites)",
         "findings": "notebooks/merge_label_shadow_findings.md sections 6.6 and 6.7 (2026-10 caches, eleven brains; historical since the 2026-11-05 source change)",
         "replaces": "junction|nms=20|r=150 (the frozen merge detector's embedded rule; worst brain 794493 at 0.74 site recall at 150 um)",
         "datasets": 12,
@@ -32,9 +32,9 @@
           "pooled": 0.937,
           "worst_brain": "789202",
           "worst": 0.789,
-          "note": "cache sites of length_v2 (notebooks/merge_canonical_gap, 2026-11-11): 1,226 of 1,309 within 150 um; 789202 covers 15 of 19 sites, below the 0.90 target; 794493 0.900, 841260 0.901 and 802449 0.907 have no margin. Under length_v1 the worst brain was 789202 at 0.882 (15 of 17) and gap=40 would have given worst-brain 0.917 with 6,391,585 candidates (recommended_policy.json of the 2026-11-06 sweep); not adopted, and the sweep was not rerun on the length_v2 sites"
+          "note": "cache sites of length_v2 (notebooks/merge_canonical_gap, 2026-11-11): 1,226 of 1,309 within 150 um; 789202 covers 15 of 19 sites, below the 0.90 target; 794493 0.900, 841260 0.901 and 802449 0.907 have no margin. Under length_v1 the worst brain was 789202 at 0.882 (15 of 17) and gap=40 would have given worst-brain 0.917 with 6,391,585 candidates. On the length_v2 sites (sweep rerun 2026-11-12) gap=40 gives 0.960 pooled and worst-brain 0.895 (789202, 17 of 19), so no swept rule reaches the 0.90 floor on every brain; not adopted"
         },
-        "sweep": "2026-11-06 rerun on the twelve current caches: notebooks/merge_candidate_pool_sweep_outputs_with_oldscope/mcl100_96e1b6bbfbf36f5c (merge_candidate_pool_sweep.py through candidate_rules.py, --tip-gaps 10 20 40 80); the J and J+S10/20/40/80 candidate counts equal notebooks/merge_shaft_reach/summary.csv on every brain"
+        "sweep": "2026-11-12 rerun on the twelve caches relabeled with length_v2: notebooks/merge_candidate_pool_sweep_outputs_with_oldscope/mcl100_96e1b6bbfbf36f5c (merge_candidate_pool_sweep.py through candidate_rules.py, --tip-gaps 10 20 40 80; same directory as the 2026-11-06 run, replaced); pooled site recall of the declared rule 0.867 at 20 um and 0.937 at 150 um, junction-only 0.778 and 0.853; the J and J+S10/20/40 candidate totals equal notebooks/merge_shaft_reach/summary.csv (rerun the same night)"
       }
     },
     "split": {

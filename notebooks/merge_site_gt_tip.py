@@ -19,7 +19,8 @@ Per cache site (``gt_merge_sites``):
   GT); 0 = the fragment carries straight on past the end of the tracing;
 - group, from the per-site distances of ``merge_shaft_candidate_reach.py``: ``junction``
   (a junction candidate within 20 um), ``tip_to_shaft`` (added by J+S20), ``blind_bridge``
-  (a census bridge site neither reaches: the 199) and ``missed_branch`` (the rest).
+  (a census bridge site neither reaches: 157 on the 2026-11-12 census of the ``length_v2`` sites, 199 on the
+  2026-10 caches) and ``missed_branch`` (the rest).
 Per brain, the base rate: the share of GT nodes within 10 / 20 um of cable of a GT tip.
 
 Run with panda on a compute node, one process per group of brains (each loads one cache):

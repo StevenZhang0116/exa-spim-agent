@@ -7,7 +7,7 @@ read-only for caches, tables, runs and `metrics_out`, and writes to a folder of 
 it (gitignored). Run on a compute node in the `panda` environment from the repository root; logs go
 to `notebooks/log/`.
 
-**All stored outputs describe the `length_v1` labels**, the caches as they were until the relabel
+**All stored outputs except those of `merge_added_sites_check.py` describe the `length_v1` labels**, the caches as they were until the relabel
 of 2026-11-11 (policy `length_v2`, `labeled_cache/policy.py`). Results are recorded in the TODO
 section; this file only says what each script is for.
 
@@ -19,6 +19,7 @@ section; this file only says what each script is for.
 | `merge_canonical_site_labels.py` | Which candidates sit at a canonical (segmentation-skeleton-metrics) merge site without a positive label? | 90 of 537 canonical sites had candidates all labeled 0 (92 candidates). |
 | `merge_site_walk_replay.py` | Why does the cache record no site there? Replays the metric's walk on the cache graphs. | The port pooled all GT neurons and did not move a site to a branching node; replayed as in the metric, 51 of the 90 get a site. |
 | `merge_walk_port_check.py` | What does the repaired port change, computed in memory before any cache is written? | Junction positives 370 to 426, canonical sites with a positive candidate 358 to 406 of 537. |
+| `merge_added_sites_check.py` | Are the sites the relabel added the ones the metric reports? (run after the relabel, 2026-11-12) | 46 added on the TRAIN brains, 42 with a canonical site within 50 um; the 3 dropped are 3 of the added recorded more than 30 um away (`--examples` draws all of them with the image). |
 
 Shared helpers: the later scripts import from `merge_junction_fragment_context.py` (brain list,
 logging, the accepted scorer's holdout scores) and `merge_junction_label_localization.py` (walks and

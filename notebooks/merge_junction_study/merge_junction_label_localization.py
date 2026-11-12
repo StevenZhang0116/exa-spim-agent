@@ -268,11 +268,12 @@ def local_fragment(graph, xyz, junction, limit_um=150.0):
 
 
 def draw_example(axes, image, anisotropy, graph, xyz, component, gt_xyz, gt_neuron, gt_label, sites,
-                 junction, segment_id, title):
+                 junction, segment_id, title, marks=()):
     """Three panels for one candidate, one view: the image (maximum projection of a ``PATCH_UM`` by
     ``PATCH_UM`` by ``SLAB_UM`` box, projected along the axis the arms spread least in), the same
     image with the fragments in the box, and with the GT nodes in the box. Follows
-    ``scripts/plot_top_merge_predictions.py`` (reader, intensity range, colours)."""
+    ``scripts/plot_top_merge_predictions.py`` (reader, intensity range, colours). ``marks`` holds
+    ``(xyz, scatter keywords)`` pairs drawn on the GT panel (used by ``merge_added_sites_check.py``)."""
     from matplotlib.collections import LineCollection
     from matplotlib.colors import Normalize, PowerNorm
     from scripts.plot_top_merge_predictions import JUNCTION_COLOR, SEGMENT_COLOR, read_patch
@@ -345,6 +346,10 @@ def draw_example(axes, image, anisotropy, graph, xyz, component, gt_xyz, gt_neur
         point = np.asarray(site["xyz"], dtype=np.float64)
         if np.all((point >= lower) & (point < upper)):
             axes[2].scatter(*flat(point), s=220, marker="*", color="gold", edgecolor="black", zorder=5)
+    for point, style in marks:  # further points of interest, drawn when inside the deeper box
+        point = np.asarray(point, dtype=np.float64)
+        if np.all((point >= deep_lower) & (point < deep_upper)):
+            axes[2].scatter(*flat(point), zorder=6, **style)
     return True
 
 

@@ -26,7 +26,7 @@ Per brain and family, all GT-blind except the measurement:
 - coverage of the census bridge sites (``merge_diagnosis/mcl100/followup/bridge_sites.csv``)
   by category.
 
-Validation printed per brain: J must reproduce ``notebooks/merge_site_counts/mcl100_length_v1``
+Validation printed per brain: J must reproduce ``notebooks/merge_site_counts/mcl100_length_v2``
 (candidates, positives, reach at 20 um).
 
 Run with panda on a compute node, one process per group of brains (each loads one cache):
@@ -69,7 +69,7 @@ REACH_RADII_UM = (POSITIVE_UM, 30.0, CLAIM_UM)
 NEAR_GT_UM = 150.0
 GAP_VARIANTS = (10.0, 20.0, 40.0, 80.0)
 OUT_DIR = PROJECT_ROOT / "notebooks" / "merge_shaft_reach"
-SITE_COUNTS = PROJECT_ROOT / "notebooks" / "merge_site_counts" / "mcl100_length_v1" / "summary.csv"
+SITE_COUNTS = PROJECT_ROOT / "notebooks" / "merge_site_counts" / "mcl100_length_v2" / "summary.csv"
 BRIDGE_SITES = PROJECT_ROOT / "notebooks" / "merge_diagnosis" / "mcl100" / "followup" / "bridge_sites.csv"
 
 

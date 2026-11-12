@@ -19,6 +19,11 @@ Revised 2026-10-17: the candidate pool adds a second family, tip-to-shaft candid
 (§1), and the labels follow a corrected labeling of the cache; every count and
 baseline figure is recomputed from the new companion, results are also reported per
 family, and the labeled-share check compares with the degree baseline (Evaluation).
+Revised 2026-11-12: the cache's merge sites were relabeled on 2026-11-11 with the metric's
+walk (labeled_cache policy `length_v2`; one GT neuron at a time, site moved to a branching
+node), which raises the positives of this brain from 146 to 173 on the same candidates and
+the same labeled rows; the counts and the degree baseline below are recomputed from the
+companion of 2026-11-12 (`agentic/canonical_stats.py card`).
 Revised 2026-10-21 after the audit of the 2026-10-19 run: the scoring code gains the
 paired bootstrap and the tie-breaking null that integer degree needs, the raw baseline
 is told apart from the refit control, models must be able to represent degree 4,
@@ -64,12 +69,12 @@ neurites fused side by side form an unbranched shaft.
 
 | Family | Rows | Label 1 | Label 0 | NaN |
 |---|---|---|---|---|
-| `junction` | 58,120 | 141 | 6,869 | 51,110 |
-| `tip_to_shaft` | 134,057 | 5 | 2,730 | 131,322 |
-| all | 192,177 | 146 | 9,599 | 182,432 |
+| `junction` | 58,120 | 166 | 6,844 | 51,110 |
+| `tip_to_shaft` | 134,057 | 7 | 2,728 | 131,322 |
+| all | 192,177 | 173 | 9,572 | 182,432 |
 
-Tip-to-shaft rows are 70% of all rows but 28% of the labeled rows, and hold 5 of the
-146 positives in this brain. Every feature still needs a value for them, or NaN where
+Tip-to-shaft rows are 70% of all rows but 28% of the labeled rows, and hold 7 of the
+173 positives in this brain. Every feature still needs a value for them, or NaN where
 it is undefined (for example a quantity that needs three branches). A feature that
 only tells the two families apart repeats the degree baseline (Evaluation).
 
@@ -87,7 +92,7 @@ they are errors. The companion `label` column is:
 | `0` | GT can judge the candidate and it is not an error: the segment carries a GT label and the candidate is within 150 um of a GT node |
 | `NaN` | GT cannot judge it: no traced neuron nearby. **Unknown, not "no error."** |
 
-For this brain: 192,177 candidates; label 1: 146; label 0: 9,599; NaN: 182,432
+For this brain: 192,177 candidates; label 1: 173; label 0: 9,572; NaN: 182,432
 (per family above).
 
 Precision and AP use labeled rows only (label 1 or 0); the one check that looks at
@@ -467,8 +472,8 @@ Report for each feature and for the model:
 All of these are computed on the whole labeled set. A number computed on a subset
 of rows (one fold, one family, one degree value, one region) must carry the subset's
 row and positive counts next to it and is not evidence on its own: the 20 labeled
-degree-4 rows hold 5 positives, so any score gives them an AP far above the 0.015
-random rate of the whole set, and the tip-to-shaft family has 5 positives among
+degree-4 rows hold 5 positives, so any score gives them an AP far above the 0.018
+random rate of the whole set, and the tip-to-shaft family has 7 positives among
 2,735 labeled rows, too few to judge a feature on that family alone in this brain.
 
 **Labeled versus unlabeled rows.** Only 9,745 of 192,177 rows are labeled (5.1%):
@@ -489,30 +494,31 @@ Flag every feature whose labeled and unlabeled distributions differ strongly; it
 measure "how traced-neuron-like" a candidate is rather than whether it is an error.
 
 **Baselines (compute them yourself from the data; the figures below are what the
-companion of 2026-10-17 gives with the scoring code above, and must be recomputed
+companion of 2026-11-12 gives with the scoring code above, and must be recomputed
 when the companion changes):**
 - **Random ranking**: its precision equals the share of label 1 among labeled rows,
-  0.015 here (146 of 9,745).
+  0.018 here (173 of 9,745).
 - **Degree** (higher ranked first). Every tip-to-shaft row has degree 2 and every
   junction degree >= 3 (58,047 of degree 3, 72 of degree 4, one of degree 5), so
   degree ranks all junctions before all tip-to-shaft rows and the few junctions of
-  degree >= 4 first; both orders are enriched in merges. Out-of-fold AP 0.028 (folds
-  0.020 / 0.024 / 0.052); precision 7/97 at 1%, 11/244 at 2.5%, 13/487 at 5%, 19/974
-  at 10%, 39/1,461 at 15%, 49/1,950 at 20%. Its top 1%, 5% and 20% of all rows hold
+  degree >= 4 first; both orders are enriched in merges. Out-of-fold AP 0.030 (folds
+  0.024 / 0.028 / 0.049); precision 7/97 at 1%, 12/244 at 2.5%, 15/487 at 5%, 23/974
+  at 10%, 47/1,461 at 15%, 58/1,950 at 20%. Its top 1%, 5% and 20% of all rows hold
   18.1%, 12.3% and 10.2% labeled rows against 5.1% overall. Degree takes only three
   values among the labeled rows (2, 3, 4), so every labeled row is tied; the
-  tie-aware `average_precision` above gives 0.028, and 0.028 is the figure to beat.
-  Random tie-breaks of degree alone average AP 0.035 on this companion (95% range
-  0.027 to 0.048; on the 802449 companion rebuilt 2026-11-06 for its denoised segmentation
-  0.0143, 0.0120 to 0.0173, around a degree baseline AP of 0.0139), so a model whose AP
+  tie-aware `average_precision` above gives 0.030, and 0.030 is the figure to beat.
+  Random tie-breaks of degree alone average AP 0.037 on this companion (95% range
+  0.029 to 0.048; on the 802449 companion of 2026-11-12, denoised segmentation,
+  0.0172, 0.0146 to 0.0205, around a degree baseline AP of 0.0169), so a model whose AP
   lies inside that range has only reordered degree's ties: report `tie_break_null`
-  for every model. Pooled per-fold logistic fits of degree alone score 0.0258 to
-  0.0286 (a fitted tree 0.0185), and eleven records of the 2026-10-19 run measured
+  for every model. On the 2026-10-17 companion pooled per-fold logistic fits of degree
+  alone scored 0.0258 to 0.0286 (a fitted tree 0.0185), and eleven records of the 2026-10-19
+  run measured
   their increment against such a fit: report it only as the **refit control**,
   labeled so; the headline increment and its interval are against the raw ranking.
 - **Segment cable length** (total edge length of the candidate's segment, direction
   chosen on the fitting rows) is **not** a usable baseline: AP 0.017, 4/97 at 1%,
-  30/1,950 at 20%. Labeled candidates sit on long segments (median 6,973 um against
+  30/1,950 at 20% on the 2026-10-17 companion (not recomputed for the 2026-11-12 labels). Labeled candidates sit on long segments (median 6,973 um against
   346 um for all candidates), so 54% of its top 1% of all rows are labeled rows, against
   18% for degree and 5.1% overall: it measures how traced-neuron-like a candidate is,
   not whether it is a merge. Keep it as the worked example of the availability proxy
@@ -525,7 +531,7 @@ increment in AP over degree lies above zero, alone or in the two-column model
 (degree plus the feature), and the labeled share at the top of its full ranking
 stays near the degree baseline's (and, within each family, near that family's
 share): a feature whose top 1% of all rows is mostly labeled rows is doing what cable
-length does and is a negative result. With 146 positives, precision at 1% is 97
+length does and is a negative result. With 173 positives, precision at 1% is 97
 ranked rows and a few hits, and one fold can carry 40% of the positives: judge mainly
 by the AP and its interval, and report per-fold values.
 
@@ -540,10 +546,10 @@ model (degree as a column or one-hot), or keep the leaf minimum at or below 5, a
 report the same model fitted on degree alone as the refit control.
 
 **Report class contrasts within family and within junctions.** Every tip-to-shaft
-row has degree 2, every junction degree 3 or 4, and 141 of the 146 positives are
+row has degree 2, every junction degree 3 or 4, and 166 of the 173 positives are
 junctions, so a pooled contrast between classes restates the family mix unless it
 also holds within junctions (and within degree 3): report the within-junction AUC
-or medians next to the pooled ones. The tip-to-shaft family holds 5 positives here:
+or medians next to the pooled ones. The tip-to-shaft family holds 7 positives here:
 report its figures with a permutation p-value and draw no conclusion from that
 family on this brain.
 
@@ -589,7 +595,7 @@ What to measure is yours to find; print `VARIANTS COMPARED <n>`.
   code reads: a quantity computed from graph geometry is not an image feature, and
   a "contrast" or "intensity" whose code never touched the image is substituted
   data.
-- **Implausible results are bugs until proven otherwise.** With 146 positives
+- **Implausible results are bugs until proven otherwise.** With 173 positives
   among 9,745 labeled rows, honest features move the average precision by
   hundredths. An out-of-fold AP above 0.9, a gain above 0.3 or perfect precision
   at every fraction has so far come only from leaked or substituted inputs;
