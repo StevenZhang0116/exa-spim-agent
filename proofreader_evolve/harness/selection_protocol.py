@@ -35,7 +35,7 @@ from .rank_statistics import (DEFAULT_PAUC_FPR, OBJECTIVE_LABELS, cell_statistic
 
 
 PROTOCOL_VERSION = 'grouped-cv-objective-v7-rank-statistics'
-NOISE_VERSION = 'selection-noise-v1'
+NOISE_VERSION = 'selection-noise-v2-fragment-groups'
 MODES = ('grouped_oof', 'in_sample')
 
 
@@ -181,7 +181,6 @@ class SelectionProtocol:
                 'aggregation': self.budgets.aggregation,
                 'folds': FOLDS if grouped else None,
                 'objective': self.budgets.objective, 'objective_label': OBJECTIVE_LABELS[self.budgets.objective],
-                'head_guard': self.budgets.head_guard,
                 'metric': (('grouped_cv_precision' if self.budgets.objective == 'precision_at_k'
                             else f'grouped_cv_{self.budgets.objective}') if grouped else
                            ('in_sample_precision_at_k' if self.budgets.objective == 'precision_at_k'
@@ -221,7 +220,7 @@ class SelectionProtocol:
     def score_report(self, kind, scores_by_cell, policy_sha256=None):
         """Apply the official ranking to one score vector per selection cell of this kind."""
         report = {'version': PROTOCOL_VERSION, 'mode': self.mode, 'target_kind': kind,
-                  'objective': self.budgets.objective, 'head_guard': self.budgets.head_guard,
+                  'objective': self.budgets.objective,
                   'policy_sha256': policy_sha256, 'cells': {}}
         state = {}
         for brain in self.selection_brains:
@@ -246,8 +245,7 @@ class SelectionProtocol:
             metrics['labels_sha256'] = labels_digest(table.truth)
             report['cells'][cell] = metrics
             state[cell] = {'scores': scores, 'chosen': chosen}
-        report.update(aggregate_objective(report['cells'], self.budgets.aggregation, self.budgets.objective,
-                                          self.budgets.head_guard))
+        report.update(aggregate_objective(report['cells'], self.budgets.aggregation, self.budgets.objective))
         holdout_cells = [f'{brain}/{kind}' for brain in self.holdout_brains]
         counted = [cell for cell in holdout_cells if report['cells'][cell].get('in_mean', True)]
         report['holdout_cells'] = holdout_cells
@@ -258,7 +256,7 @@ class SelectionProtocol:
         return report, state
 
     def paired_noise(self, kind, parent_state, candidate_state, *, draws=1000, seed=0, alpha=.2):
-        """Row-resampling interval of a candidate's selection-objective gain over the accepted
+        """Bootstrap interval (fragment groups resampled) of a candidate's selection-objective gain over the accepted
         parent, on the selection brains (TRAIN data only; 2026-11-12).
 
         ``beyond_noise`` is whether the lower bound of the two-sided (1 - alpha) interval lies
@@ -286,7 +284,7 @@ class SelectionProtocol:
         return {'version': NOISE_VERSION, 'status': 'ok', 'objective': result['objective'],
                 'alpha': alpha, 'draws': draws, 'seed': seed, 'delta_ci': [low, high],
                 'bootstrap_mean_delta': result['bootstrap_mean_delta'], 'beyond_noise': bool(low > 0.),
-                'scope': 'Row-resampling noise of the selection-objective gain over the accepted parent on the '
+                'scope': 'Fragment-resampling noise of the selection-objective gain over the accepted parent on the '
                          'TRAIN selection brains; no held-out data.'}
 
     def measure_formula(self, kind, measured_state, policy_sha256=None):

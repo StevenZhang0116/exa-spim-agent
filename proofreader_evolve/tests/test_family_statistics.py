@@ -1,15 +1,13 @@
 """Per-family merge statistics (2026-11-11): reporting only. A pooled statistic can be high because
-one candidate family ranks above the other; the within-family figures and the judge's second table
-show whether errors are separated inside the family that holds them. Synthetic fixtures only."""
+one candidate family ranks above the other; the within-family figures show whether errors are
+separated inside the family that holds them. Synthetic fixtures only."""
 
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
 
 import numpy as np
 
 from proofreader_evolve.harness import fixed_pool_scoring as scoring
-from proofreader_evolve.harness import promotion_judge
 from proofreader_evolve.harness.rank_statistics import (FAMILY_NOTE, aggregate_families, auroc, family_statistics,
                                                         ranking)
 from proofreader_evolve.harness.train_feedback import metrics_only
@@ -81,36 +79,6 @@ class FamilyStatisticsTests(unittest.TestCase):
         self.assertEqual(shown["per_kind_by_family"], report["per_kind_by_family"])
         self.assertIn("by_family", shown["cells"]["a/merge"])
 
-    def test_the_judge_gets_a_second_table_for_merge_junctions(self):
-        tables, parent, candidate = {}, {}, {}
-        for index, brain in enumerate(("a", "b", "c")):
-            table, scores = pool(brain, index)
-            tables[brain] = SimpleNamespace(tables={"merge": table})
-            parent[f"{brain}/merge"] = {"scores": scores}
-            candidate[f"{brain}/merge"] = {"scores": scores + 2. * np.nan_to_num(table.truth)}
-        accept = [{"decision": "accept", "reason": "r"}] * 3
-        with patch.object(promotion_judge, "cast_votes", return_value=accept) as cast:
-            record = promotion_judge.judge(parent, candidate, tables, budgets(), target_kind="merge", draws=50, seed=1,
-                                           votes=3)
-        text = cast.call_args.args[0]
-        self.assertIn("Second table: junction candidates only", text)
-        self.assertEqual(record["family"], "junction")
-        self.assertEqual(record["family_pools"]["positives"], record["pools"]["positives"])   # no tip_to_shaft positive
-        self.assertLess(record["family_pools"]["labeled"], record["pools"]["labeled"])
-        whole, inside = record["statistics"]["auroc"], record["family_statistics"]["auroc"]
-        self.assertLess(inside["parent"], whole["parent"])              # the pooled figure flatters the parent
-        self.assertGreater(inside["delta"], whole["delta"])
-        self.assertTrue(record["passed"])
-        self.assertEqual(text.count("| statistic |"), 2)
-        for bank in tables.values():                                    # without families: one table, still a vote
-            del bank.tables["merge"].candidates
-        with patch.object(promotion_judge, "cast_votes", return_value=accept) as cast:
-            record = promotion_judge.judge(parent, candidate, tables, budgets(), target_kind="merge", draws=50, seed=1,
-                                           votes=3)
-        self.assertNotIn("Second table", cast.call_args.args[0])
-        self.assertIn("family_table_error", record)
-        self.assertTrue(record["passed"])
-        self.assertNotIn("split", promotion_judge.FAMILY_TABLES)
 
 
 if __name__ == "__main__":

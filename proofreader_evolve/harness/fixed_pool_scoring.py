@@ -52,7 +52,7 @@ from .label_availability import labeled_rows, labels_digest
 # from 2026-10-12, chosen under equal-brain aggregation, where merge pools of 9 to 17 positives held
 # a third of the merge weight. The library default below stays 0 (every pool counts).
 DEFAULT_MIN_POSITIVES = 10
-from .rank_statistics import (DEFAULT_PAUC_FPR, HEAD_STATISTICS, OBJECTIVE_LABELS, aggregate_families, aggregate_statistics,
+from .rank_statistics import (DEFAULT_PAUC_FPR, OBJECTIVE_LABELS, aggregate_families, aggregate_statistics,
                               cell_statistics, family_statistics, cell_value, check_objective, check_pauc_fpr, prefix_hits, ranking,
                               auroc as weighted_auroc, average_precision as weighted_average_precision,
                               pauc as weighted_pauc)
@@ -60,8 +60,8 @@ from .rank_statistics import (DEFAULT_PAUC_FPR, HEAD_STATISTICS, OBJECTIVE_LABEL
 
 # v7 (2026-11-02): the objective is a configurable rank statistic (``Budgets.objective``: precision at K,
 # AUROC, partial AUROC or average precision over the same GT-labeled rows), every cell records all of
-# them, and an optional head guard (mean precision at ceil(K/2), K and 2K, or precision at K) vetoes
-# candidates whose head falls beyond a tolerance. Selection, ablation, the bootstrap and promotion all
+# them (the optional point-estimate head guard of v7 was removed on 2026-11-12; the guard rail of
+# ``promotion_gate`` protects the head). Selection, ablation, the bootstrap and promotion all
 # read the objective; per_kind_precision stays in every report for comparison with earlier runs.
 SCORING_VERSION = "native-rank-objective-v7-configurable-statistic"
 AGGREGATIONS = ("equal-brain", "positive-weighted")
@@ -79,9 +79,9 @@ def aggregation_mode(value):
         if value == label:
             return mode
     raise ValueError(f"Unknown aggregation {value!r}; use one of {AGGREGATIONS}")
-VALIDATION_GATE_VERSION = "target-kind-validation-objective-v7"
-BOOTSTRAP_GATE_VERSION = "target-kind-validation-bootstrap-v7"
-GATE_MODES = ("bootstrap", "margin")
+VALIDATION_GATE_VERSION = "target-kind-validation-objective-v8"
+# The point-estimate gate. The gate with intervals is ``promotion_gate`` (mode ``rule``).
+GATE_MODES = ("margin",)
 
 
 class Budgets(Mapping):
@@ -104,14 +104,13 @@ class Budgets(Mapping):
     ``objective`` (v7) names the rank statistic that selection, ablation, the bootstrap and
     promotion compare: ``precision_at_k`` (the rule of every run before 2026-11-02),
     ``auroc``, ``pauc`` (partial AUROC up to a false-positive rate of ``pauc_fpr``) or
-    ``average_precision``. ``head_guard`` is None or ``{"statistic", "tolerance"}``: the
-    candidate's statistic (``precision_depth_mean`` or ``precision_at_k``) over the counted pools
-    must be at least the parent's minus the tolerance, a point-estimate constraint that keeps a
-    whole-ranking objective from trading away the head of the list.
+    ``average_precision``. The head of the ranking is protected by the guard rail of
+    ``promotion_gate`` on the validation pools; the point-estimate head guard of v7 was removed
+    on 2026-11-12.
     """
 
     def __init__(self, caps, positive_ratio=0., min_positives=0, aggregation="equal-brain", *,
-                 objective="precision_at_k", pauc_fpr=DEFAULT_PAUC_FPR, head_guard=None):
+                 objective="precision_at_k", pauc_fpr=DEFAULT_PAUC_FPR):
         caps = dict(caps)
         for kind, cap in caps.items():
             if cap is not None and (type(cap) is not int or cap < 1):
@@ -138,21 +137,6 @@ class Budgets(Mapping):
         self.positive_ratio = {kind: float(ratios[kind]) for kind in caps}
         self.objective = check_objective(objective)
         self.pauc_fpr = check_pauc_fpr(pauc_fpr)
-        self.head_guard = self.check_head_guard(head_guard)
-
-    @staticmethod
-    def check_head_guard(value):
-        if value is None:
-            return None
-        if not isinstance(value, Mapping) or set(value) != {"statistic", "tolerance"}:
-            raise ValueError("head_guard must be None or a mapping with exactly statistic and tolerance")
-        statistic, tolerance = value["statistic"], value["tolerance"]
-        if statistic not in HEAD_STATISTICS:
-            raise ValueError(f"head_guard statistic must be one of {HEAD_STATISTICS}")
-        if (isinstance(tolerance, bool) or not isinstance(tolerance, (int, float))
-                or not math.isfinite(tolerance) or tolerance < 0):
-            raise ValueError("head_guard tolerance must be a finite nonnegative number")
-        return {"statistic": statistic, "tolerance": float(tolerance)}
 
     @classmethod
     def coerce(cls, value):
@@ -214,7 +198,7 @@ class Budgets(Mapping):
                                    + ("; separately for each kind: sum(TP) / sum(effective K) across counted pools"
                                       if pooled else "; separately for each kind: equal-weight precision across counted pools")),
                 "objective": self.objective, "objective_label": OBJECTIVE_LABELS[self.objective],
-                "pauc_fpr": self.pauc_fpr, "head_guard": dict(self.head_guard) if self.head_guard else None,
+                "pauc_fpr": self.pauc_fpr,
                 "objective_rule": self.objective_rule()}
 
     def objective_rule(self):
@@ -227,12 +211,7 @@ class Budgets(Mapping):
                          f"while the false-positive rate is at most {self.pauc_fpr:g}, ties one half), {weighting}",
                  "average_precision": f"separately for each kind: tie-aware average precision of each counted "
                                       f"pool over its GT-labeled rows, {weighting}"}
-        rule = rules[self.objective]
-        if self.head_guard:
-            rule += (f"; head guard: the candidate's {self.head_guard['statistic']} over the counted pools must be "
-                     f"at least the parent's minus {self.head_guard['tolerance']:g} (point estimates; a practical "
-                     "constraint, not a statistical bound)")
-        return rule
+        return rules[self.objective]
 
     def resolve(self, tables_by_brain):
         """Per-pool K and mean membership for a bank mapping; depends on labels only."""
@@ -249,7 +228,7 @@ class Budgets(Mapping):
 def gate_version(mode):
     if mode not in GATE_MODES:
         raise ValueError(f"Unknown promotion gate mode {mode!r}")
-    return BOOTSTRAP_GATE_VERSION if mode == "bootstrap" else VALIDATION_GATE_VERSION
+    return VALIDATION_GATE_VERSION
 
 
 def aggregate_precision(cells, aggregation="equal-brain"):
@@ -313,12 +292,12 @@ def report_objective(report):
     return check_objective(report.get('objective') or 'precision_at_k')
 
 
-def aggregate_objective(cells, aggregation="equal-brain", objective="precision_at_k", head_guard=None):
+def aggregate_objective(cells, aggregation="equal-brain", objective="precision_at_k"):
     """Per-kind objective and every rank statistic over the pools that count.
 
     Extends ``aggregate_precision``: ``per_kind_objective`` is the configured statistic
     (identical to ``per_kind_precision`` for ``precision_at_k``), ``per_kind_statistics`` holds
-    all of them under the same aggregation rule, and ``head_guard`` echoes the configured guard.
+    all of them under the same aggregation rule.
     """
     result = aggregate_precision(cells, aggregation)
     objective = check_objective(objective)
@@ -339,8 +318,7 @@ def aggregate_objective(cells, aggregation="equal-brain", objective="precision_a
         result['per_kind_by_family'] = families
     result.update(objective=objective, objective_label=OBJECTIVE_LABELS[objective], per_kind_objective=per_kind,
                   per_kind_statistics={kind: {key: value for key, value in summary.items() if key not in ('note', 'version')}
-                                       for kind, summary in statistics.items()},
-                  head_guard=Budgets.check_head_guard(head_guard))
+                                       for kind, summary in statistics.items()})
     return result
 
 
@@ -365,30 +343,15 @@ def statistic_for_kind(report, kind, statistic):
     return aggregate_statistics(_kind_cells(report, kind), report.get('aggregation'))[statistic]
 
 
-def head_guard_check(parent, candidate, kind):
-    """The parent's head guard applied to a candidate, or None when the parent declares none."""
-    guard = Budgets.check_head_guard(parent.get('head_guard'))
-    if guard is None:
-        return None
-    before = statistic_for_kind(parent, kind, guard['statistic'])
-    after = statistic_for_kind(candidate, kind, guard['statistic'])
-    if before is None or after is None:
-        raise ValueError(f"Head guard statistic {guard['statistic']} is unavailable for {kind}")
-    return {**guard, 'parent': float(before), 'candidate': float(after),
-            'passed': bool(after >= before - guard['tolerance'] - 1e-12)}
-
-
 def gate_details(parent, candidate, kind):
-    """Objective, precision and head-guard numbers of a parent/candidate pair for the ledger."""
+    """Objective and precision numbers of a parent/candidate pair for the ledger."""
     objective = report_objective(parent)
     details = {'objective': objective, 'objective_label': OBJECTIVE_LABELS[objective],
                'parent_objective': objective_for_kind(parent, kind), 'candidate_objective': None,
-               'parent_precision': precision_for_kind(parent, kind), 'candidate_precision': None,
-               'head_guard': None}
+               'parent_precision': precision_for_kind(parent, kind), 'candidate_precision': None}
     if candidate is not None:
         details.update(candidate_objective=objective_for_kind(candidate, kind),
-                       candidate_precision=precision_for_kind(candidate, kind),
-                       head_guard=head_guard_check(parent, candidate, kind))
+                       candidate_precision=precision_for_kind(candidate, kind))
     return details
 
 
@@ -433,7 +396,7 @@ def evaluate(source, tables_by_brain, budgets, timeout=120, examples=False, *,
         raise ValueError("Scorer timeout must be positive and finite")
     budgets = Budgets.coerce(budgets)
     report = {"version": SCORING_VERSION, "budgets": budgets.describe(),
-              "objective": budgets.objective, "head_guard": budgets.head_guard,
+              "objective": budgets.objective,
               "policy_sha256": hashlib.sha256(source.encode()).hexdigest(), "cells": {}}
     sources = components(source)
     for brain, banks in tables_by_brain.items():
@@ -462,13 +425,13 @@ def evaluate(source, tables_by_brain, budgets, timeout=120, examples=False, *,
             if examples:
                 metrics.update(describe(table, scores, chosen, generation, cell,
                                         (parent_state or {}).get(cell), features=features))
-    report.update(aggregate_objective(report["cells"], budgets.aggregation, budgets.objective, budgets.head_guard))
+    report.update(aggregate_objective(report["cells"], budgets.aggregation, budgets.objective))
     return report
 
 
 def acceptance(parent, candidate, margin=0, *, target_kind, require_no_cell_regression=True):
     """Compare the target kind's objective at identical K/pools; optionally veto its cell
-    regressions; apply the parent's head guard when it declares one."""
+    regressions."""
     if not math.isfinite(margin) or margin < 0:
         raise ValueError("Precision margin must be finite and nonnegative")
     if parent["version"] != candidate["version"] or parent["cells"].keys() != candidate["cells"].keys():
@@ -498,28 +461,57 @@ def acceptance(parent, candidate, margin=0, *, target_kind, require_no_cell_regr
                     return False, f"{label} regressed on {cell}"
     gain = after_value - before_value
     details = f"{before_value:.6f} -> {after_value:.6f}; delta={gain:+.6f}, margin={margin:g}"
-    guard = head_guard_check(parent, candidate, target_kind)
-    if guard is not None:
-        details += (f"; head guard {guard['statistic']} {guard['parent']:.6f} -> {guard['candidate']:.6f} "
-                    f"(tolerance {guard['tolerance']:g})")
-        if not guard['passed']:
-            return False, f"{target_kind} head guard failed: {details}"
     passed = gain > max(margin, 1e-12)
     reason = f"{target_kind} {label} improved" if passed else f"No sufficient {target_kind} {label} gain"
     return passed, f"{reason}: {details}"
 
 
-BOOTSTRAP_VERSION = "paired-poisson-bootstrap-v7-rank-objective"
+BOOTSTRAP_VERSION = "paired-poisson-bootstrap-v8-fragment-groups"
+RESAMPLING_UNIT = ("fragment segment (merge: the candidate's segment; split: the segment of the pair's "
+                   "anchor-side fragment); one row per group when a table carries no candidate rows")
+
+
+def resampling_groups(kind, table):
+    """Group index per row for the bootstrap (2026-11-12).
+
+    Candidates on one fragment are not independent draws: they share the fragment's geometry,
+    image and tracing, and a GT neuron covers many of them. The bootstrap therefore resamples
+    fragments, not rows. Merge: the candidate's segment. Split: the segment of the anchor-side
+    fragment of the pair (``anchor_side``), the fragment whose tip produced the candidate. A
+    table without candidate rows (synthetic fixtures) gets one group per row, which is row
+    resampling.
+    """
+    candidates = getattr(table, "candidates", None)
+    size = len(table.truth)
+    if not candidates:
+        return np.arange(size, dtype=np.int64)
+    if len(candidates) != size:
+        raise ValueError("Candidate rows do not align with the labels")
+    if kind == "merge":
+        keys = [int(row["segment_id"]) for row in candidates]
+    elif kind == "split":
+        keys = [int(row["segment_id_b"] if row.get("anchor_side") == "b" else row["segment_id_a"]) for row in candidates]
+    else:
+        raise ValueError(f"Unknown candidate kind {kind!r}")
+    return np.unique(np.asarray(keys, dtype=np.int64), return_inverse=True)[1].astype(np.int64)
+
+
+def labeled_groups(kind, table, rows):
+    """(group index of each labeled row, number of groups) among the labeled ``rows``."""
+    groups = resampling_groups(kind, table)[rows]
+    present, inverse = np.unique(groups, return_inverse=True)
+    return inverse.astype(np.int64), int(len(present))
 
 
 def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *, target_kind, draws=1000, seed=0, alpha=.05):
-    """Paired resampling of GT-labeled candidate rows for the target-kind delta of the objective.
+    """Paired resampling of the GT-labeled candidates for the target-kind delta of the objective.
 
     Both scorers are re-measured on the same Poisson(1)-weighted multiset per cell (one weight
-    per labeled row) with the weighted statistics of ``rank_statistics``, so the interval
-    reflects row sampling noise, not scorer nondeterminism: precision at the cell's own K, or
+    per fragment group of ``resampling_groups``, shared by its labeled rows) with the weighted
+    statistics of ``rank_statistics``, so the interval reflects the sampling noise of the
+    fragments, not scorer nondeterminism: precision at the cell's own K, or
     AUROC, partial AUROC and average precision with the cell's score-tie groups. The two-sided
-    (1 - alpha) interval is what `bootstrap_acceptance` reads; the 95% interval is always
+    (1 - alpha) interval is ``delta_ci``; the 95% interval is always
     recorded as well. Cells below the GT-positive floor get a per-cell interval but never enter
     the target-kind delta, matching `aggregate_objective`; positive-weighted aggregation of a
     rank statistic uses each cell's resampled positive weight.
@@ -543,8 +535,8 @@ def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *,
             after = np.asarray(candidate_state[cell]["scores"], dtype=float)
             if before.shape != truth.shape or after.shape != truth.shape:
                 raise ValueError(f"Bootstrap scores do not align with {cell}")
-            # Resample labeled rows only: weights are drawn per labeled row and unlabeled
-            # rows never enter either ranking, matching rank_metrics.
+            # Labeled rows only: weights are drawn per fragment group of the labeled rows, and
+            # unlabeled rows never enter either ranking, matching rank_metrics.
             rows = labeled_rows(truth)
             position = np.full(len(truth), -1, dtype=np.int64)
             position[rows] = np.arange(len(rows))
@@ -552,8 +544,9 @@ def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *,
             for scores in (before, after):
                 order, labels, starts = ranking(scores, truth, table.keys)
                 arms.append((position[order], labels.astype(float), starts))
+            groups, n_groups = labeled_groups(kind, table, rows)
             cells[cell] = {"arms": arms, "size": len(rows), "k": budgets.k_for(kind, table.truth),
-                           "counted": budgets.in_mean(table.truth)}
+                           "counted": budgets.in_mean(table.truth), "groups": groups, "n_groups": n_groups}
     counted = {cell for cell, info in cells.items() if info["counted"]}
     if not counted:
         raise ValueError("No candidate pool counts toward the bootstrap mean")
@@ -589,7 +582,7 @@ def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *,
     for draw in range(draws):
         sampled = {}
         for cell, info in cells.items():
-            counts = rng.poisson(1., info["size"]).astype(np.int64)
+            counts = rng.poisson(1., info["n_groups"]).astype(np.int64)[info["groups"]]
             before_pair, after_pair = (measure(arm, counts, info["k"]) for arm in info["arms"])
             if objective == "precision_at_k":
                 value_before = before_pair[0] / before_pair[1] if before_pair[1] else 0.
@@ -623,39 +616,7 @@ def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *,
             "p_delta_le_0": float(np.mean(defined_deltas <= 0)), "p_delta_ge_0": float(np.mean(defined_deltas >= 0)),
             "cells": {cell: {"delta_ci": interval(values, bounds), "delta_ci95": interval(values, [2.5, 97.5])}
                       for cell, values in per_cell.items()},
-            "scope": f"Row-resampling uncertainty of the paired {OBJECTIVE_LABELS[objective]} delta over the fixed "
-                     "pools; the configured promotion gate mode decides whether it is binding."}
-
-
-def bootstrap_acceptance(parent, candidate, bootstrap, margin=0, *, target_kind, alpha=.05):
-    """Promote only when the point gain clears the margin (and the head guard, when configured)
-    AND the lower bound of the paired bootstrap interval of the target-kind delta is above zero.
-
-    A missing or failed bootstrap never promotes (fail closed). The point-estimate
-    comparison reuses `acceptance`, so benchmark identity checks still apply.
-    """
-    passed_point, point_reason = acceptance(parent, candidate, margin, target_kind=target_kind,
-                                               require_no_cell_regression=False)
-    details = point_reason.split(": ", 1)[1]
-    if not passed_point:
-        return False, point_reason
-    label = OBJECTIVE_LABELS[report_objective(parent)]
-    if not isinstance(bootstrap, dict) or bootstrap.get("status") == "unavailable" \
-            or "delta_ci" not in bootstrap:
-        return False, f"Bootstrap interval unavailable; candidate not promoted: {details}"
-    if bootstrap.get('target_kind') != target_kind:
-        raise ValueError("Bootstrap target kind differs from the promotion target")
-    if aggregation_mode(bootstrap.get('aggregation')) != aggregation_mode(parent.get('aggregation')):
-        raise ValueError("Bootstrap aggregation differs from the promotion objective")
-    if check_objective(bootstrap.get('objective') or 'precision_at_k') != report_objective(parent):
-        raise ValueError("Bootstrap objective differs from the promotion objective")
-    if bootstrap.get("alpha") != alpha:
-        raise ValueError("Bootstrap interval level differs from the gate alpha")
-    lower = float(bootstrap["delta_ci"][0])
-    if not math.isfinite(lower):
-        return False, f"Bootstrap interval not finite; candidate not promoted: {details}"
-    detail = (f"{details}; bootstrap lower bound {lower:+.6f} at alpha={alpha:g} "
-              f"({bootstrap['draws']} draws)")
-    if lower > 0.:
-        return True, f"{target_kind} {label} improved beyond resampling noise: {detail}"
-    return False, f"{target_kind} {label} gain within resampling noise: {detail}"
+            "resampling_unit": RESAMPLING_UNIT,
+            "groups": {cell: info["n_groups"] for cell, info in cells.items()},
+            "scope": f"Fragment-resampling uncertainty of the paired {OBJECTIVE_LABELS[objective]} delta over the fixed "
+                     "pools."}

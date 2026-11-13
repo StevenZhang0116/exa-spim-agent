@@ -61,7 +61,7 @@ def in_sample_precision(report, kind):
 
 class ExperimentMemory:
     """Host-owned archive: no validation values and no decision text; of an outer decision only the
-    promotion status and, under the promotion judge, a rejection category from a fixed vocabulary."""
+    promotion status and, after a rejection by the gate, a category from a fixed vocabulary."""
     def __init__(self, run_dir, *, train=None, protocol=None, fit_limits=None, descriptor_runs=None):
         self.path = run_dir / 'train_experiments.jsonl'
         self.artifact_store = run_dir / 'model_artifacts'
@@ -209,13 +209,13 @@ class TrainingExperiments:
         self.image_preview_budget = image_preview_budget
         self.gen_dir, self.policy_path, self.rules_path = gen_dir, policy_path, rules_path
         # Host lookup (entry -> {generation, experiment, promoted, by[, rejection]} or None) of candidates
-        # the outer evaluator already measured; status and the judge's rejection category only, never a
+        # the outer evaluator already measured; status and the gate's rejection category only, never a
         # validation number.
         self.validated = validated
         # This kind's latest submissions and what the outer evaluator did with them (CandidatePool.outer_history;
         # no held-out number), quoted in the reviser's prompt.
         self.outer_history = list(outer_history or ())
-        # {"draws", "alpha"}: every measured candidate's selection gate then carries the row-resampling interval
+        # {"draws", "alpha"}: every measured candidate's selection gate then carries the bootstrap interval
         # of its gain over the accepted parent (TRAIN only); the driver skips the outer evaluation of a
         # submission whose interval does not lie above zero.
         self.selection_noise = dict(selection_noise) if selection_noise else None
@@ -378,13 +378,12 @@ class TrainingExperiments:
 
     def _selection_gate(self, selection_report, selection_state=None):
         details = scoring.gate_details(self.parent_selection, selection_report, self.target_kind)
-        before, after, guard = details['parent_objective'], details['candidate_objective'], details['head_guard']
+        before, after = details['parent_objective'], details['candidate_objective']
         gate = {'metric': self.protocol_info['metric'], 'objective': details['objective'],
                 'mode': self.protocol.mode, 'target_kind': self.target_kind,
                 'parent': before, 'candidate': after, 'delta': after - before,
                 'parent_precision': details['parent_precision'], 'candidate_precision': details['candidate_precision'],
-                'head_guard': guard,
-                'passed': after > before + 1e-12 and (guard is None or guard['passed']),
+                'passed': after > before + 1e-12,
                 'required_for_promotion': False,
                 'scope': 'Development selection signal on selection brains; the outer promotion gate decides acceptance'}
         if self.selection_noise and selection_state is not None:
@@ -445,8 +444,7 @@ class TrainingExperiments:
         budgets = scoring.Budgets.coerce(self.budgets)
         # Objective, every rank statistic and precision are re-aggregated from the merged cells
         # (until 2026-11-02 only precision was, leaving the parent's objective in the summary).
-        report.update(scoring.aggregate_objective(report['cells'], budgets.aggregation, budgets.objective,
-                                                  budgets.head_guard))
+        report.update(scoring.aggregate_objective(report['cells'], budgets.aggregation, budgets.objective))
         return report, state
 
     def evaluate(self):
@@ -690,13 +688,9 @@ class TrainingExperiments:
         valid = [r for r in results if r['report'] is not None]
         if not valid:
             raise ValueError('No successfully measured candidate to restore')
-        # Prefer candidates satisfying the existing selection head guard. This is
-        # a default recommendation, not an admission gate: if none pass, still
-        # restore the highest objective, and explicit candidate IDs remain usable.
-        eligible = [r for r in valid
-                    if ((r['entry'].get('selection_gate') or {}).get('head_guard') or {}).get('passed', True)]
+        # The highest selection objective; explicit candidate IDs remain usable.
         # Legacy entries carry precision only; exact ties use source length and sequence.
-        return max(eligible or valid, key=lambda r: (r['entry'].get('target_objective', r['entry']['target_precision']),
+        return max(valid, key=lambda r: (r['entry'].get('target_objective', r['entry']['target_precision']),
                                                    -len(r['component']), -r['entry']['sequence']))
 
     def _restore_result(self, result):
@@ -1521,8 +1515,7 @@ class TrainingExperiments:
             return await invoke(self.evaluate, arguments)
 
         @tool('search_parameters', 'Read proposal.json.parameter_grid and enumerate numeric PARAMS values '
-              'with the formula fixed. Call with {}. Restore the highest selection objective, preferring '
-              'candidates passing the selection head guard; fall back to the highest objective if none pass. '
+              'with the formula fixed. Call with {}. Restore the highest selection objective. '
               'The grid stops at the first execution error of the formula; stopped_early lists the skipped, '
               'uncharged configurations.', {})
         async def search_parameters(arguments):
@@ -1530,8 +1523,7 @@ class TrainingExperiments:
 
         @tool('train_classifier', 'Run agent-written training.py with proposal.json.classifier.parameters and optional parameter_grid. '
               'Call with {}. Harness uses TRAIN only, freezes preprocessing/weights, evaluates and restores '
-              'the highest selection objective, preferring models passing the selection head guard '
-              '(highest objective if none pass). Under grouped_oof selection each configuration is first refit in '
+              'the highest selection objective. Under grouped_oof selection each configuration is first refit in '
               'three host-owned folds and ranked by the out-of-fold objective on the selection brains; the full '
               'fit is the frozen candidate. One configuration costs one evaluation unit, folds included. '
               'New descriptor inputs invalidate fit reuse. The grid also stops before a new uncached fit '
@@ -1652,9 +1644,8 @@ class TrainingExperiments:
 
         @tool('restore_candidate', 'Restore an immutable measured snapshot by short ID, e.g. '
               'gen002/attempt001, parent (assigned branch), or best (this generation\'s best measured candidate '
-              'the outer evaluator has not seen yet; all candidates when all were seen). Best prefers the '
-              'highest selection objective passing the selection head guard, falling back to the highest '
-              'objective if none pass. Explicit IDs remain selectable. No evaluation charge.',
+              'the outer evaluator has not seen yet; all candidates when all were seen). Best is the '
+              'highest selection objective. Explicit IDs remain selectable. No evaluation charge.',
               {'candidate_id': str})
         async def restore_candidate(arguments):
             return await invoke(self.restore, arguments)

@@ -1,11 +1,11 @@
 """Rank statistics over GT-labeled rows: Precision@depth, average precision, AUROC, partial AUROC.
 
 Every statistic is a function of one ranking (labels in ranking order, score-tie groups) and
-nonnegative row weights, so the point estimate (unit weights) and the paired Poisson row
-bootstrap (resampled weights) share one implementation. Which statistic is the objective of a
+nonnegative row weights, so the point estimate (unit weights) and the paired Poisson
+bootstrap (one resampled weight per fragment group, shared by its rows) share one implementation. Which statistic is the objective of a
 run is the ``Budgets.objective`` setting (``OBJECTIVES``); the others are recorded in every
-cell and report as diagnostics. Since 2026-11-02 the driver's default objective is AUROC with a
-head guard on the mean precision at ceil(K/2), K and 2K (see ``fixed_pool_scoring``): on pools
+cell and report as diagnostics. Since 2026-11-02 the driver's default objective is AUROC (the
+head of the ranking is protected by the guard rail of ``promotion_gate``): on pools
 shaped like the validation merge cells a broad improvement of the ranking gives AUROC about
 four times the paired signal of Precision@K, head-only changes the same signal, and
 degradations two to three times (simulation in WORKFLOW_REVISION, 2026-11-02).
@@ -26,7 +26,6 @@ STATISTICS_VERSION = 'rank-statistics-v3-by-family'
 OBJECTIVES = ('precision_at_k', 'auroc', 'pauc', 'average_precision')
 OBJECTIVE_LABELS = {'precision_at_k': 'Precision@K', 'auroc': 'AUROC', 'pauc': 'partial AUROC',
                     'average_precision': 'average precision'}
-HEAD_STATISTICS = ('precision_depth_mean', 'precision_at_k')
 DEFAULT_PAUC_FPR = .1
 # Cell fields produced by cell_statistics (beside the official precision/tp/fp of the cell).
 CELL_KEYS = ('half_k', 'half_k_tp', 'precision_at_half_k', 'double_k', 'double_k_tp',

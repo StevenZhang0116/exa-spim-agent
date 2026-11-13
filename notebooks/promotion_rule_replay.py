@@ -1,22 +1,26 @@
 #!/usr/bin/env python3
 """Replay of the rule gate and the TRAIN selection-noise check on finished evolution runs.
 
-Questions (2026-11-12): what would ``--promotion-gate rule`` have decided on the tables the
-promotion judge voted on, and which submissions would ``--selection-noise-gate`` have kept away
-from the validation pools?
+Questions (2026-11-12): what would ``--promotion-gate rule`` have decided on the tables of earlier
+submissions, and which submissions would ``--selection-noise-gate`` have kept away from the
+validation pools?
 
 For every generation of a run the script reads the ledger and
 
-* applies ``promotion_judge.rule_check`` and the guard rail to the recorded table
-  (``validation_gate.judge.statistics``) at each ``--margin``, and derives the rejection
-  category the votes would get today (``promotion_judge.rejection_category``);
+* applies ``promotion_gate.rule_check`` and the guard rail to the recorded table at each
+  ``--margin`` (``validation_gate.gate_table.statistics``; ``validation_gate.judge.statistics`` in
+  the runs of 2026-11-10 to 2026-11-12, when a language model voted on the table: their recorded
+  outcome and votes are shown beside the rule's decision). The recorded intervals are used as they
+  are: rows were resampled before 2026-11-12, fragment groups since;
 * recomputes ``SelectionProtocol.paired_noise`` of the submitted candidate against the then
   accepted parent from the saved selection scores (``gen*/experiments/attempt*/selection_state.npz``)
   at each ``--alpha``. The seed parent is a constant scorer.
 
 Each decision is replayed with the run's own parent sequence; another gate would have changed
 the later parents, so this is a comparison of single decisions, not of whole runs. The
-validation numbers come from the host-side ledger; no validation pool is opened. The TRAIN
+validation numbers come from the host-side ledger; no validation pool is opened, so the
+validation intervals cannot be recomputed under another resampling unit here (that needs the
+candidates rescored on the validation pools). The TRAIN
 tables of the run's selection brains are loaded (raw pools, about two minutes for six brains).
 
 Run on a compute node in the ``panda`` environment from the repository root::
@@ -49,7 +53,7 @@ def log(message):
 
 
 def replay(args):
-    from proofreader_evolve.harness import fixed_pool_scoring as scoring, label_availability, promotion_judge
+    from proofreader_evolve.harness import fixed_pool_scoring as scoring, label_availability, promotion_gate
     from proofreader_evolve.harness.native_pool import cache_path
     from proofreader_evolve.harness.raw_pool import ensure_raw_tables
     from proofreader_evolve.harness.selection_protocol import SelectionProtocol, load_selection
@@ -80,7 +84,7 @@ def replay(args):
         for row in map(json.loads, (run / "ledger.jsonl").read_text().splitlines()):
             kind, generation, experiment = row["target_kind"], row["generation"], row.get("submitted_experiment")
             gate = row.get("validation_gate") or {}
-            judge = gate.get("judge") or {}
+            judge = gate.get("gate_table") or gate.get("judge") or {}
             line = {"run": run.name, "generation": generation, "kind": kind, "experiment": experiment,
                     "accepted": bool(row["accepted"]), "gate_status": judge.get("status") or gate.get("skipped"),
                     "accept_votes": judge.get("accept_votes"), "votes_cast": judge.get("votes_cast"),
@@ -88,17 +92,14 @@ def replay(args):
                     "selection_gain": (row.get("selection_gate") or {}).get("delta")}
             statistics = judge.get("statistics")
             if statistics:
-                name = promotion_judge.rule_check(statistics, objective)["statistic"]
+                name = promotion_gate.rule_check(statistics, objective)["statistic"]
                 line["validation_gain"] = statistics[name]["delta"]
                 line["validation_interval"] = [statistics[name]["low"], statistics[name]["high"]]
-                line["votes_category_now"] = (None if row["accepted"] or not judge.get("votes_cast")
-                                              and judge.get("status") != "guard_rail"
-                                              else promotion_judge.rejection_category(statistics))
                 line["rule"] = {}
                 for margin in args.margin:
-                    rule = promotion_judge.rule_check(statistics, objective, margin)
-                    passed = promotion_judge.guard_rail(statistics) and rule["passed"]
-                    line["rule"][f"{margin:g}"] = "accept" if passed else promotion_judge.rejection_category(statistics, rule)
+                    rule = promotion_gate.rule_check(statistics, objective, margin)
+                    passed = promotion_gate.guard_rail(statistics) and rule["passed"]
+                    line["rule"][f"{margin:g}"] = "accept" if passed else promotion_gate.rejection_category(statistics, rule)
             if experiment:
                 generation_dir, attempt = experiment.split("/")
                 _, state = load_selection(run / generation_dir / "experiments" / attempt)
@@ -126,9 +127,9 @@ def summarize(rows, args):
              "Script `notebooks/promotion_rule_replay.py`. Each decision uses the run's own parent sequence.", "",
              "| run | gen | kind | recorded outcome | votes | validation gain of the objective | 95% interval | "
              + " | ".join(f"rule, margin {margin:g}" for margin in args.margin)
-             + " | category under the votes, today | TRAIN selection gain | "
+             + " | TRAIN selection gain | "
              + " | ".join(f"TRAIN {100 * (1 - alpha):g}% interval | beyond noise" for alpha in args.alpha) + " |",
-             "|" + "---|" * (10 + len(args.margin) + 2 * len(args.alpha) - 1)]
+             "|" + "---|" * (8 + len(args.margin) + 2 * len(args.alpha))]
     for row in rows:
         outcome = "accepted" if row["accepted"] else (row["gate_status"] or "failed")
         votes = "" if row["accept_votes"] is None or row["gate_status"] != "voted" else f"{row['accept_votes']}/{row['votes_cast']}"
@@ -137,7 +138,7 @@ def summarize(rows, args):
                  number(row.get("validation_gain")),
                  "" if not interval or interval[0] is None else f"[{interval[0]:+.4f}, {interval[1]:+.4f}]"]
         cells += [(row.get("rule") or {}).get(f"{margin:g}", "") for margin in args.margin]
-        cells += [row.get("votes_category_now") or "", number(row.get("selection_gain"))]
+        cells += [number(row.get("selection_gain"))]
         for alpha in args.alpha:
             noise = (row.get("selection_noise") or {}).get(f"{alpha:g}") or {}
             ci = noise.get("delta_ci")

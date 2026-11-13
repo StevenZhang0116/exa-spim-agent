@@ -1,4 +1,4 @@
-"""--selection-noise-gate (2026-11-12): the row-resampling interval of a candidate's TRAIN
+"""--selection-noise-gate (2026-11-12): the bootstrap interval of a candidate's TRAIN
 selection gain, the skipped outer evaluation, and what later sessions are told.
 Synthetic fixtures only; no brain caches, cloud reads or LLM calls."""
 

@@ -20,7 +20,7 @@ Three stages, each a subcommand writing under ``notebooks/acceptance_rule_replay
 
 ``replay``
     For each candidate against the scorer that was accepted when it was submitted: one joint
-    paired Poisson(1) bootstrap (the row weights of ``fixed_pool_scoring.paired_bootstrap``, the
+    paired Poisson(1) bootstrap over rows (the unit of ``fixed_pool_scoring.paired_bootstrap`` until 2026-11-12, the
     statistics of ``rank_statistics.ranking_statistics``) gives the delta and its 95% interval
     for AUROC, pAUC, average precision, precision at K/2, K, 2K and their mean, under the run's
     positive-weighted aggregation. With ``seed = generation`` the AUROC interval reproduces the
@@ -30,20 +30,17 @@ Three stages, each a subcommand writing under ``notebooks/acceptance_rule_replay
     their expected difference is exactly zero while their row-level disagreement is that of two
     real models; every acceptance of C2 over C1 is a false acceptance.
 
-``judge``
-    The promotion judge of ``proofreader_evolve/harness/promotion_judge.py`` (the module behind
-    ``--promotion-gate judge``; this script imports its prompt, statistics and guard rail, so
-    what is replayed here is what a run applies). An LLM (``claude-opus-5-5``) sees only a table of the statistics (parent, candidate, delta,
-    and in one variant the bootstrap intervals), never run ids, code or the agent's summary,
-    and votes accept / reject several times per item. Reported: the majority with intervals
-    behind a host guard rail (no statistic significantly worse), the raw majority with
-    intervals, and the majority without intervals. Needs ``ANTHROPIC_API_KEY``.
+``judge`` (removed 2026-11-12)
+    This stage called the LLM judge of ``--promotion-gate judge`` on the replayed tables (five votes of
+    ``claude-opus-5-5`` per item, with and without the intervals). The judge was removed from the
+    harness on 2026-11-12 (``proofreader_evolve/harness/promotion_gate.py``, History) and the stage with
+    it; the stage's code is in the repository history (commit 17473f7). The votes it recorded on
+    2026-11-10 (``judge_votes.jsonl``) are kept, and ``summary`` still reports them.
 
 Run on a compute node in the ``panda`` environment from the repository root, for example::
 
     python -u notebooks/acceptance_rule_replay.py rescore --runs <run_dir> <run_dir> --kinds merge
     python -u notebooks/acceptance_rule_replay.py replay
-    python -u notebooks/acceptance_rule_replay.py judge
     python -u notebooks/acceptance_rule_replay.py summary
 
 Read-only for the runs, the caches and the tables. The descriptor bank is read; with
@@ -61,7 +58,7 @@ import os
 import sys
 import time
 import zlib
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -70,12 +67,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from proofreader_evolve.harness import promotion_judge  # noqa: E402  (the gate's own judge and statistics)
+from proofreader_evolve.harness import promotion_gate  # noqa: E402  (the gate's own table and guard rail)
 
 OUT = Path(__file__).resolve().parent / "acceptance_rule_replay"
-STATISTICS = promotion_judge.STATISTICS
+STATISTICS = promotion_gate.STATISTICS
 HEAD_TOLERANCE = 0.01
-JUDGE_MODEL = promotion_judge.DEFAULT_MODEL
+JUDGE_MODEL = "claude-opus-5-5"  # the model of the recorded votes
 
 
 def log(message):
@@ -170,12 +167,10 @@ def rescore(args):
     attach_local_context(banks, scratch / "local_feature_cache", trace)
     attach_image_context(banks, scratch / "image_cache", run_args.image_alignment, trace)
     detector_prior.strip_to_raw(banks)
-    head_guard = (None if run_args.head_guard_statistic == "none" else
-                  {"statistic": run_args.head_guard_statistic, "tolerance": run_args.head_guard_tolerance})
     budgets = scoring.Budgets({"merge": run_args.merge_k, "split": run_args.split_k},
                               positive_ratio=run_args.k_positive_ratio, min_positives=run_args.min_positives,
                               aggregation=run_args.aggregation, objective=run_args.objective,
-                              pauc_fpr=run_args.pauc_fpr, head_guard=head_guard)
+                              pauc_fpr=run_args.pauc_fpr)
     descriptor_runs = DescriptorRuns(DescriptorContexts(), run_args.descriptor_bank,
                                      workers=run_args.descriptor_workers,
                                      memory_mb=run_args.descriptor_memory_mb, trace=trace)
@@ -291,7 +286,8 @@ def load_scores(name, kind, brains):
 
 def paired_intervals(job):
     """Point statistics of both arms and the paired bootstrap interval of every delta, by the
-    promotion judge's own implementation (``promotion_judge.intervals_from_rankings``)."""
+    promotion gate's own implementation (``promotion_gate.intervals_from_rankings``; rows are resampled
+    here because the saved cells carry no fragment groups)."""
     from proofreader_evolve.harness.rank_statistics import ranking
     cells, parent, candidate, draws, seed, pauc_fpr = job
     prepared = {}
@@ -301,7 +297,7 @@ def paired_intervals(job):
             order, labels, starts = ranking(scores, cell["truth"], cell["keys"])
             arms.append((order, labels.astype(float), starts))  # every stored row is labeled: order is the position
         prepared[brain] = {"arms": tuple(arms), "size": len(cell["truth"]), "k": cell["k"], "counted": cell["in_mean"]}
-    return promotion_judge.intervals_from_rankings(prepared, draws=draws, seed=seed, alpha=.05, pauc_fpr=pauc_fpr)
+    return promotion_gate.intervals_from_rankings(prepared, draws=draws, seed=seed, alpha=.05, pauc_fpr=pauc_fpr)
 
 
 def rank_normalized(scores):
@@ -322,7 +318,7 @@ def null_pair(parent, candidate, cells, seed):
 
 
 def rule_auroc(stats):
-    """The current gate: AUROC point gain, bootstrap lower bound above zero, head guard."""
+    """The gate of the replayed runs (2026-11-09): AUROC point gain and bootstrap lower bound above zero."""
     return _objective_rule(stats, "auroc")
 
 
@@ -340,7 +336,7 @@ def _objective_rule(stats, objective):
                 and head["candidate"] >= head["parent"] - HEAD_TOLERANCE)
 
 
-guard_rail = promotion_judge.guard_rail  # no guarded statistic significantly worse
+guard_rail = promotion_gate.guard_rail  # no guarded statistic significantly worse
 
 
 def rule_multi(stats):
@@ -369,7 +365,7 @@ def replay(args):
                 if row["target_kind"] != kind:
                     continue
                 name = f"{run.name[-8:]}_gen{row['generation']:02d}"
-                gate = (row.get("validation_gate") or {}).get("bootstrap_gate") or {}
+                gate = (row.get("validation_gate") or {}).get("bootstrap_gate") or {}  # ledgers before 2026-11-12
                 pairs.append({"name": name, "run": run.name[-8:], "generation": row["generation"],
                               "parent": accepted, "ledger_accepted": bool(row["accepted"]),
                               "ledger_lower": gate.get("lower_bound"), "ledger_upper": gate.get("upper_bound"),
@@ -421,63 +417,6 @@ def replay(args):
                                            for b, c in cells.items()}}
     (OUT / "replay.json").write_text(json.dumps(result, indent=1))
     log(f"wrote {OUT / 'replay.json'}")
-
-
-# --------------------------------------------------------------------------------------------
-# Stage 3: LLM judge
-# --------------------------------------------------------------------------------------------
-
-def judge_prompt(kind, cells, stats, with_intervals):
-    counted = [c for c in cells.values() if c["in_mean"]]
-    pools = {"pools": len(counted), "labeled": sum(c["labeled"] for c in counted),
-             "positives": sum(c["positives"] for c in counted)}
-    return promotion_judge.prompt(kind, pools, stats, with_intervals=with_intervals)
-
-
-def judge(args):
-    import anthropic
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        raise RuntimeError("ANTHROPIC_API_KEY is not set")
-    replayed = json.loads((OUT / "replay.json").read_text())
-    items = []
-    for kind, data in replayed["kinds"].items():
-        cells = data["cells"]
-        for pair in data["pairs"]:
-            if pair["parent"] != "seed":
-                items.append((f"real/{kind}/{pair['name']}", kind, cells, pair["statistics"]))
-        for null in data["nulls"]:
-            if null["index"] < args.null_per_pair:
-                items.append((f"null/{kind}/{null['source']}/{null['index']}", kind, cells, null["statistics"]))
-    votes_path = OUT / "judge_votes.jsonl"
-    done = set()
-    if votes_path.is_file():
-        for line in votes_path.open():
-            record = json.loads(line)
-            if "decision" in record:
-                done.add((record["item"], record["variant"], record["vote"]))
-    tasks = [(item, variant, vote, judge_prompt(kind, cells, stats, variant == "intervals"))
-             for item, kind, cells, stats in items for variant in ("intervals", "no_intervals")
-             for vote in range(args.votes) if (item, variant, vote) not in done]
-    log(f"{len(items)} items, {len(tasks)} calls to {JUDGE_MODEL} at effort {args.effort} ({len(done)} already recorded)")
-    client = anthropic.Anthropic(max_retries=6)
-
-    def run(task):
-        item, variant, vote, prompt = task
-        return {"item": item, "variant": variant, "vote": vote,
-                **promotion_judge.vote(client, prompt, model=JUDGE_MODEL, effort=args.effort)}
-
-    spent = {"input_tokens": 0, "output_tokens": 0}
-    with votes_path.open("a") as stream, ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-        for count, record in enumerate(pool.map(run, tasks), 1):
-            stream.write(json.dumps(record) + "\n")
-            stream.flush()
-            for key in spent:
-                spent[key] += (record.get("usage") or {}).get(key, 0)
-            if count % 50 == 0 or count == len(tasks):
-                log(f"{count}/{len(tasks)} calls; tokens in {spent['input_tokens']} out {spent['output_tokens']}")
-    if tasks:
-        (OUT / "judge_prompt_example.txt").write_text(promotion_judge.SYSTEM + "\n\n---\n\n" + tasks[0][3])
-    log(f"wrote {votes_path}")
 
 
 # --------------------------------------------------------------------------------------------
@@ -583,15 +522,10 @@ def main():
     p.add_argument("--draws", type=int, default=1000)
     p.add_argument("--null-per-pair", type=int, default=25)
     p.add_argument("--workers", type=int, default=max(1, len(os.sched_getaffinity(0)) - 2))
-    p = sub.add_parser("judge", help="LLM votes on the real pairs and a subset of the null pairs")
-    p.add_argument("--votes", type=int, default=5)
-    p.add_argument("--null-per-pair", type=int, default=4)
-    p.add_argument("--effort", default="medium", choices=["low", "medium", "high", "xhigh", "max"])
-    p.add_argument("--concurrency", type=int, default=8)
     sub.add_parser("summary", help="write and print summary.md")
     args = parser.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
-    {"rescore": rescore, "replay": replay, "judge": judge, "summary": summary}[args.stage](args)
+    {"rescore": rescore, "replay": replay, "summary": summary}[args.stage](args)
 
 
 if __name__ == "__main__":

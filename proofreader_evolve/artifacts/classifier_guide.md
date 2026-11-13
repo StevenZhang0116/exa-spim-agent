@@ -148,34 +148,25 @@ or custom predictor. The harness runs fit on TRAIN, snapshots the artifacts,
 runs label-free inference with the declared inputs, measures the selection score (see Evaluation
 below; the configured objective, AUROC by default, with Precision@K and the other rank statistics
 beside it) alongside in-sample TRAIN Precision@K, and restores the highest selection
-objective among configurations satisfying the selection head guard. If none satisfy it,
-the highest objective is restored with the failed guard shown in `selection_gate`.
-An absent or disabled guard does not filter candidates. `restore_candidate("best")`
-uses the same preference among candidates not yet measured by the outer evaluator,
-falling back to all candidates when all have been measured. Explicit IDs remain
-selectable; a selection-objective gain over the parent is not required. Selection comparisons guide search;
-only the outer evaluator's measurement of the target kind on held-out pools controls promotion:
-by default the objective with its resampling-noise bound and the head guard. A run configured
-with the promotion rule promotes when no rank statistic is worse beyond resampling noise, the
-objective's gain is beyond resampling noise and the gain exceeds a fixed minimum, so the
-selection objective you compare on TRAIN is the quantity that decides. A run configured
-with a promotion judge instead has every rank statistic reviewed with its resampling
-uncertainty, the top of the ranking mattering most. A candidate the outer evaluator already
-measured carries `outer_measurement` (`generation`, `experiment`, `promoted`) in the pool and
-plan files, and the prompt and `candidate_pool.json` (`outer_history`) list the kind's latest
-submissions. When the rule or the judge rejected one, `rejection` gives the only reason you are
-told, one of five words: `significantly_worse` (a rank statistic fell beyond resampling noise:
-leave this direction), `within_noise` (under the rule the objective did not improve beyond
-noise, under the judge nothing did: a larger or different change is needed, not a retune),
-`gain_too_small` (the objective improved beyond noise, but by less than the required minimum:
-the direction holds and the effect must grow), `head_not_improved` (the ranking improved, but
-not at its top, meaning the first half of the K highest-ranked candidates and the
-low-false-positive range: work on the highest-ranked candidates) and `not_convincing` (the top
-improved beyond noise yet the judge found the evidence insufficient: strengthen the same
-direction). No heldout number is ever shown. When the run checks selection noise, each measured
-candidate's `selection_gate.resampling` holds the row-resampling interval of its selection gain
-over the accepted parent (`delta_ci`, `beyond_noise`); a submission whose interval does not lie
-above zero is not sent to the outer evaluator and is listed as `not_measured`, so compare a gain
+objective. `restore_candidate("best")` uses the same preference among candidates not yet
+measured by the outer evaluator, falling back to all candidates when all have been measured.
+Explicit IDs remain selectable; a selection-objective gain over the parent is not required.
+Selection comparisons guide search; only the outer evaluator's measurement of the target kind
+on held-out pools controls promotion. A candidate is promoted when no rank statistic is worse
+beyond resampling noise, the objective's gain is beyond resampling noise and the gain exceeds
+a fixed minimum, so the selection objective you compare on TRAIN is the quantity that decides,
+and a gain bought with a clearly worse top of the ranking is rejected. A candidate the outer
+evaluator already measured carries `outer_measurement` (`generation`, `experiment`, `promoted`)
+in the pool and plan files, and the prompt and `candidate_pool.json` (`outer_history`) list the
+kind's latest submissions. After a rejection, `rejection` gives the only reason you are told,
+one of three words: `significantly_worse` (a rank statistic fell beyond resampling noise: leave
+this direction), `within_noise` (the objective did not improve beyond noise: a larger or
+different change is needed, not a retune) and `gain_too_small` (the objective improved beyond
+noise, but by less than the required minimum: the direction holds and the effect must grow). No
+heldout number is ever shown. When the run checks selection noise, each measured candidate's
+`selection_gate.resampling` holds the resampling interval of its selection gain over the
+accepted parent (`delta_ci`, `beyond_noise`); a submission whose interval does not lie above
+zero is not sent to the outer evaluator and is listed as `not_measured`, so compare a gain
 with that interval before spending further units on small variations. With no
 grid, it measures one fit. A grid stops at the first failed fit or execution error of
 the program; the reply's `stopped_early` lists the skipped configurations, which are not
@@ -255,9 +246,8 @@ Series) so you can weight or block auxiliary rows. One configuration costs one
 evaluation unit, fold refits included. You may still print your own internal
 diagnostics. Under `in_sample`, the selection score instead uses the full-TRAIN
 ranking with the same aggregation and positive floor. Final promotion requires
-the target kind's development-validation gain to exceed the configured margin and,
-by default, clear the paired-bootstrap noise gate on the frozen candidate (or, in a run
-configured with a promotion judge, pass its review of every rank statistic);
+the target kind's development-validation gain to exceed the configured minimum, to clear
+paired-bootstrap noise on the frozen candidate, and no rank statistic to be worse beyond that noise;
 the selection score is a repeatedly used development signal, not an
 untouched final test.
 

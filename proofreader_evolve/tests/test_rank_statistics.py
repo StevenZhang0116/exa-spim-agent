@@ -1,6 +1,6 @@
 """Rank statistics (v7): weighted, tie-aware definitions shared by point estimates and the
 paired bootstrap; fold handling; the configurable objective in evaluation and selection
-reports; the head guard; scheduler, candidate-pool and driver behaviour under AUROC."""
+reports; scheduler, candidate-pool and driver behaviour under AUROC."""
 from contextlib import redirect_stderr
 import io
 from pathlib import Path
@@ -149,48 +149,43 @@ def _cell(precision, auroc, head, k=100, positives=100):
             'precision_depth_mean': (2 * head + precision) / 3}
 
 
-def _report(objective, head_guard, **cells):
-    report = {'version': scoring.SCORING_VERSION, 'objective': objective, 'head_guard': head_guard,
+def _report(objective, **cells):
+    report = {'version': scoring.SCORING_VERSION, 'objective': objective,
               'cells': {name: cell for name, cell in cells.items()}}
-    report.update(scoring.aggregate_objective(report['cells'], 'positive-weighted', objective, head_guard))
+    report.update(scoring.aggregate_objective(report['cells'], 'positive-weighted', objective))
     return report
 
 
-class ObjectiveAndHeadGuardTests(unittest.TestCase):
-    def test_budgets_validate_objective_and_head_guard(self):
-        budgets = scoring.Budgets({'merge': 10}, objective='auroc', head_guard={'statistic': 'precision_at_k', 'tolerance': .02})
+class ObjectiveTests(unittest.TestCase):
+    def test_budgets_validate_the_objective(self):
+        budgets = scoring.Budgets({'merge': 10}, objective='auroc')
         self.assertEqual(budgets.describe()['objective_label'], 'AUROC')
-        self.assertIn('head guard', budgets.objective_rule())
-        for bad in ({'statistic': 'f1', 'tolerance': 0.}, {'statistic': 'precision_at_k'},
-                    {'statistic': 'precision_at_k', 'tolerance': -1.}):
-            with self.assertRaises(ValueError):
-                scoring.Budgets({'merge': 10}, head_guard=bad)
+        self.assertNotIn('head_guard', budgets.describe())
+        with self.assertRaises(TypeError):   # the point-estimate head guard was removed on 2026-11-12
+            scoring.Budgets({'merge': 10}, head_guard={'statistic': 'precision_at_k', 'tolerance': .02})
         with self.assertRaises(ValueError):
             scoring.Budgets({'merge': 10}, objective='accuracy')
         with self.assertRaises(ValueError):
             scoring.Budgets({'merge': 10}, pauc_fpr=0.)
 
-    def test_objective_decides_and_head_guard_vetoes(self):
-        guard = {'statistic': 'precision_depth_mean', 'tolerance': .01}
-        parent = _report('auroc', guard, **{'a/merge': _cell(.30, .80, .30)})
-        broad = _report('auroc', guard, **{'a/merge': _cell(.30, .85, .30)})       # AUROC up, head unchanged
-        tail = _report('auroc', guard, **{'a/merge': _cell(.25, .90, .25)})        # AUROC up, head down .05
+    def test_the_objective_decides_the_point_gate(self):
+        parent = _report('auroc', **{'a/merge': _cell(.30, .80, .30)})
+        broad = _report('auroc', **{'a/merge': _cell(.30, .85, .30)})       # AUROC up, head unchanged
+        tail = _report('auroc', **{'a/merge': _cell(.25, .90, .25)})        # AUROC up, head down .05
         self.assertEqual(scoring.objective_for_kind(parent, 'merge'), .80)
         self.assertEqual(scoring.precision_for_kind(parent, 'merge'), .30)
         passed, reason = scoring.acceptance(parent, broad, target_kind='merge')
         self.assertTrue(passed, reason)
         self.assertIn('AUROC improved', reason)
-        self.assertIn('head guard precision_depth_mean', reason)
-        passed, reason = scoring.acceptance(parent, tail, target_kind='merge')
-        self.assertFalse(passed)
-        self.assertIn('head guard failed', reason)
+        # The point gate reads the objective only; the head is protected by promotion_gate's guard rail.
+        self.assertTrue(scoring.acceptance(parent, tail, target_kind='merge')[0])
         details = scoring.gate_details(parent, tail, 'merge')
         self.assertEqual((details['objective'], details['parent_objective'], details['candidate_objective']), ('auroc', .80, .90))
-        self.assertFalse(details['head_guard']['passed'])
+        self.assertNotIn('head_guard', details)
         self.assertAlmostEqual(details['candidate_precision'], .25)
         # Under precision at K the same tail candidate is simply a regression.
-        parent_p = _report('precision_at_k', None, **{'a/merge': _cell(.30, .80, .30)})
-        tail_p = _report('precision_at_k', None, **{'a/merge': _cell(.25, .90, .25)})
+        parent_p = _report('precision_at_k', **{'a/merge': _cell(.30, .80, .30)})
+        tail_p = _report('precision_at_k', **{'a/merge': _cell(.25, .90, .25)})
         passed, reason = scoring.acceptance(parent_p, tail_p, target_kind='merge', require_no_cell_regression=False)
         self.assertFalse(passed)
         self.assertIn('Precision@K', reason)
@@ -212,8 +207,7 @@ class ObjectiveAndHeadGuardTests(unittest.TestCase):
 class EvaluationUnderAurocTests(unittest.TestCase):
     def setUp(self):
         self.banks = {'2': pool('2')}
-        self.budgets = scoring.Budgets({'merge': K}, objective='auroc',
-                                       head_guard={'statistic': 'precision_depth_mean', 'tolerance': .01})
+        self.budgets = scoring.Budgets({'merge': K}, objective='auroc')
         self.reports, self.states = {}, {}
         for name, source in (('detector', DETECTOR), ('signal', SIGNAL), ('tweak', TWEAK)):
             state = {}
@@ -227,7 +221,6 @@ class EvaluationUnderAurocTests(unittest.TestCase):
         self.assertEqual(report['per_kind_objective']['merge'], cell['auroc'])
         self.assertEqual(report['per_kind_precision']['merge'], cell['precision'])
         self.assertEqual(report['per_kind_statistics']['merge']['pauc'], cell['pauc'])
-        self.assertEqual(report['head_guard'], self.budgets.head_guard)
         self.assertGreater(cell['auroc'], .95)
         self.assertLess(self.reports['detector']['cells']['2/merge']['auroc'], .6)
         self.assertEqual(report['budgets']['objective'], 'auroc')
@@ -245,15 +238,9 @@ class EvaluationUnderAurocTests(unittest.TestCase):
         same = scoring.paired_bootstrap(self.states['signal'], self.states['signal'], self.banks, self.budgets,
                                         target_kind='merge', draws=50, seed=2)
         self.assertEqual(same['delta_ci'], [0., 0.])
-        accepted, reason = scoring.bootstrap_acceptance(self.reports['detector'], self.reports['signal'], interval,
-                                                        target_kind='merge')
-        self.assertTrue(accepted, reason)
-        self.assertIn('AUROC improved beyond resampling noise', reason)
         precision_interval = scoring.paired_bootstrap(self.states['detector'], self.states['signal'], self.banks,
                                                       {'merge': K}, target_kind='merge', draws=50, seed=1)
-        with self.assertRaisesRegex(ValueError, 'objective differs'):
-            scoring.bootstrap_acceptance(self.reports['detector'], self.reports['signal'], precision_interval,
-                                         target_kind='merge')
+        self.assertEqual(precision_interval['objective'], 'precision_at_k')
 
     def test_bootstrap_under_average_precision_defines_every_draw(self):
         budgets = scoring.Budgets({'merge': K}, objective='average_precision')
@@ -290,7 +277,6 @@ class EvaluationUnderAurocTests(unittest.TestCase):
         self.assertEqual(merged['per_kind_objective']['merge'], cell['auroc'])
         self.assertEqual(merged['per_kind_statistics']['merge']['pauc'], cell['pauc'])
         self.assertEqual(merged['per_kind_precision']['merge'], cell['precision'])
-        self.assertEqual(merged['head_guard'], self.budgets.head_guard)
         self.assertEqual(scoring.objective_for_kind(merged, 'merge'), merged['per_kind_objective']['merge'])
         self.assertIs(state['2/merge'], self.states['signal']['2/merge'])
         self.assertNotEqual(merged['per_kind_objective']['merge'], self.reports['detector']['per_kind_objective']['merge'])
@@ -368,12 +354,10 @@ class DriverDefaultsTests(unittest.TestCase):
         self.assertEqual(args.image_previews_per_generation, 32)
         self.assertEqual(parse_args(['--image-previews-per-generation', '5']).image_previews_per_generation, 5)
         self.assertEqual(parse_args(['--image-previews-per-generation', '0']).image_previews_per_generation, 0)
-        self.assertEqual((args.objective, args.head_guard_statistic, args.head_guard_tolerance, args.pauc_fpr),
-                         ('auroc', 'precision_depth_mean', .01, .1))
+        self.assertEqual((args.objective, args.pauc_fpr, args.promotion_gate), ('auroc', .1, 'rule'))
         self.assertIsNone(args.candidate_score_tolerance)
-        self.assertEqual(parse_args(['--head-guard-statistic', 'none', '--objective', 'precision_at_k']).objective,
-                         'precision_at_k')
-        for bad in (['--pauc-fpr', '0'], ['--head-guard-tolerance', '-1'], ['--objective', 'f1'],
+        self.assertEqual(parse_args(['--objective', 'precision_at_k']).objective, 'precision_at_k')
+        for bad in (['--pauc-fpr', '0'], ['--head-guard-tolerance', '0'], ['--objective', 'f1'],
                     ['--image-previews-per-generation', '-1'], ['--image-previews-per-generation', '1.5']):
             with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 parse_args(bad)

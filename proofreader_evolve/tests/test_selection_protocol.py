@@ -413,9 +413,7 @@ class DriverRoleTests(unittest.TestCase):
             self.assertTrue(row['selection_gate']['passed'])
             self.assertFalse(row['selection_gate']['required_for_promotion'])
             self.assertIn('2/merge', row['validation']['cells'])
-            bootstrap = row['validation_gate']['paired_bootstrap']
-            self.assertEqual(bootstrap['draws'], 20)
-            self.assertEqual(len(bootstrap['delta_ci95']), 2)
+            self.assertIsNone(row['validation_gate']['gate_table'])  # margin mode: no table
             self.assertTrue(row['accepted'])
             pool = json.loads((path / 'candidate_pool.json').read_text())['kinds']['merge']
             self.assertEqual(pool['reference_branch']['selection']['per_kind_precision']['merge'], 1.)

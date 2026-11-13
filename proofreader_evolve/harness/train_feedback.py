@@ -66,7 +66,6 @@ def metrics_only(report):
             "per_kind_objective": report.get("per_kind_objective") or report["per_kind_precision"],
             "per_kind_statistics": report.get("per_kind_statistics") or "not recorded",
             **({"per_kind_by_family": report["per_kind_by_family"]} if report.get("per_kind_by_family") else {}),
-            **({"head_guard": report["head_guard"]} if report.get("head_guard") else {}),
             **({"mode": report["mode"]} if "mode" in report else {}),
             **({"aggregation": report["aggregation"]} if "aggregation" in report else {}),
             **({"holdout_cells": report["holdout_cells"], "holdout_precision": report["holdout_precision"],
@@ -152,9 +151,8 @@ def write_train_feedback(path, parent_train, history, budgets, *, target_kind=No
                     "ablation and promotion compare, and per_kind_objective is its value: precision_at_k; auroc = the "
                     "probability that a GT positive outranks a GT negative over the labeled rows (ties count one "
                     "half); pauc = the same restricted to false-positive rates up to pauc_fpr; average_precision. "
-                    "Optimize the target kind's selection objective. head_guard, when present, is a point-estimate "
-                    "constraint the promotion gate also applies: the candidate's named head statistic over the "
-                    "counted cells must not fall more than the tolerance below the accepted scorer's. When "
+                    "Optimize the target kind's selection objective; the promotion gate also rejects a candidate whose "
+                    "other rank statistics on held-out pools are worse beyond resampling noise. When "
                     "holdout_cells are listed, those selection brains were held out whole (a model that never saw "
                     "the brain scored them) and holdout_objective / holdout_precision summarize only those cells "
                     "under the same aggregation; use them to diagnose whether selection gains transfer across brains. "

@@ -18,13 +18,12 @@ keep their numbers because other documents cite them.
   testing or promotion on it. The split and launch recipe are in
   [Stage 3](../docs/stage3_evolution.md#32-prepare-tables-and-launch-a-run).
 - Positive-weighted aggregation is shared by selection, ablation, validation and the
-  bootstrap. No LLM takes part in TRAIN-side selection. Promotion: the documented launch since
-  2026-11-12 is `--objective average_precision --promotion-gate rule --precision-margin 0.002
-  --selection-noise-gate` (the rule on the objective inside the guard rail, and no validation
-  for a submission within TRAIN noise; section 8). From 2026-11-10 to 2026-11-12 the user
-  ran with `--objective average_precision --promotion-gate judge` (an LLM judge inside a
-  guard rail, `harness/promotion_judge.py`); the command-line defaults stay AUROC and the
-  bootstrap gate.
+  bootstrap. No LLM takes part in TRAIN-side selection or in promotion. Promotion: one gate
+  since 2026-11-12, `--promotion-gate rule` (the default; guard rail, then the objective's
+  interval above zero and the gain above `--precision-margin`; `harness/promotion_gate.py`).
+  The documented launch adds `--objective average_precision --precision-margin 0.002
+  --selection-noise-gate` (section 8). The LLM judge (2026-11-10 to 2026-11-12), the
+  `bootstrap` gate mode and the point-estimate head guard were removed on 2026-11-12.
 - The five validation brains are development data: the gate has judged many candidates on
   them. A result on them is not a held-out test result.
 - Do not change the objective or the gate while a run that will be compared is running;
@@ -66,7 +65,7 @@ a cited paper is not evidence that the implementation improves anything.
 
 **What is not overengineering and must stay in any simplification:** the TRAIN / validation
 separation (the agent never sees validation results), the paired-bootstrap promotion gate
-with the head guard, whole-brain holdout selection, and three-valued labels. They answer a
+with its guard rail (the head guard until 2026-11-12), whole-brain holdout selection, and three-valued labels. They answer a
 property of this data set: some merge pools hold 15-22 positives, so one comparison's noise
 exceeds a real gain.
 
@@ -130,10 +129,9 @@ Concrete, each one met while switching seven brains to denoised images.
 - **Confirm the AUROC objective on real candidates** (default since 2026-11-02, objective
   v7). On the next completed runs: (a) paired-bootstrap interval widths of AUROC and P@K on
   the same candidates; (b) Spearman correlation of each selection statistic with the
-  validation objective and with validation P@K; (c) head-guard vetoes, rejected generations
-  whose P@K rose, and candidates whose three-depth mean held while P@K alone fell beyond the
-  tolerance. Revert to `--objective precision_at_k` if validation P@K falls over a run or the
-  guard vetoes most AUROC-accepted candidates.
+  validation objective and with validation P@K; (c) guard-rail rejections and rejected generations
+  whose P@K rose (the point-estimate head guard this item first named was removed on 2026-11-12).
+  Revert to `--objective precision_at_k` if validation P@K falls over a run.
   **First evidence, 2026-11-10** (`notebooks/acceptance_rule_replay.py` on the 19 validated
   candidates of runs `uxuqkoag` and `e7y6ie3_`, every candidate rescored to the ledger's values
   and every AUROC interval reproducing the gate's): on merge the AUROC gate and an
@@ -146,7 +144,9 @@ Concrete, each one met while switching seven brains to denoised images.
   their intervals (five votes, numbers only) made the average-precision gate's decision on
   14 of the 15 pairs and accepted 1 of 60 null pairs; without the intervals it accepted fewer
   real pairs and its votes split more often. Decided by the user on 2026-11-10: the next runs
-  use `--objective average_precision --promotion-gate judge`. Still to do after those runs:
+  use `--objective average_precision --promotion-gate judge` (done: the two runs of 2026-11-12;
+  the comparison is in section 8 and the judge was removed that day). The list that follows is
+  kept as written on 2026-11-10:
   compare the judge's decisions with the average-precision gate's (both are in the ledger: the
   objective's bootstrap is recorded beside the ballots), count split votes and failed calls, and
   check whether the rejection category shown to the reviser (`outer_measurement.rejection`,
@@ -532,10 +532,12 @@ breakdown by family was not computed), and 9-22 positives on the three small bra
 are as recorded), cheapest first:
 
 1. Per-family merge statistics: **done 2026-11-11, reporting only** (`by_family` per cell,
-   `per_kind_by_family` per report, shown in TRAIN feedback; a second judge table restricted to
-   junction candidates; `docs/stage3_evolution.md`). Still open: whether the merge objective and
-   the guard rail should be computed within the junction family. Decide after the first run
-   that reports both.
+   `per_kind_by_family` per report, shown in TRAIN feedback; `docs/stage3_evolution.md`). The
+   second judge table restricted to junction candidates was removed with the judge on
+   2026-11-12: in the two runs of that day it moved in the same direction as the pooled table
+   in all eight merge decisions. That is also the first evidence on the open question, whether
+   the merge objective and the guard rail should be computed within the junction family: no
+   decision would have differed. Left open; the reports still carry both.
 2. Offline study of junction positives against junction negatives before another evolution
    run. Done 2026-11-11 for fragment totals and arm subtrees (no usable signal, above). Done the
    same day for label localization (labels are on the right junctions, above). Still to do:
@@ -616,11 +618,13 @@ are as recorded), cheapest first:
 
 ## 8. Promotion gate and validation feedback after the 2026-11-12 runs
 
-Done on 2026-11-12 (`docs/stage3_evolution.md` section 3.2, `WORKFLOW_REVISION.md` entry of that
-day): the rule gate on the declared objective (`--promotion-gate rule`, `--precision-margin`), the
-corrected rejection categories with the outcomes quoted in the prompt, and the TRAIN
-selection-noise check (`--selection-noise-gate`). Evidence so far is an offline replay on the
-two runs of that day (`notebooks/promotion_rule_replay.py`); no run has used them yet.
+Done on 2026-11-12 (`docs/stage3_evolution.md` section 3.2, `WORKFLOW_REVISION.md` entries of that
+day): one promotion gate, the rule on the declared objective inside the guard rail
+(`--promotion-gate rule`, default, `--precision-margin`), with the LLM judge, the `bootstrap` mode,
+the head guard and the junction-only second table removed; three rejection words, with the
+outcomes quoted in the prompt; the paired bootstrap over fragment segments instead of rows; and
+the TRAIN selection-noise check (`--selection-noise-gate`). Evidence so far is an offline replay
+on the two runs of that day (`notebooks/promotion_rule_replay.py`); no run has used them yet.
 
 Open:
 
@@ -635,12 +639,22 @@ Open:
    objective and gate.
 3. **The margin, 0.002, is one number chosen from two runs**, for both kinds and any objective.
    Revisit with more submissions; a per-kind value would need a code change.
-4. **The intervals resample rows.** Candidates on one segment are not independent, and five
-   validation brains are queried every generation without a correction for repeated tries.
-   Resampling segments (or brains) would widen the intervals of both the gate and the TRAIN
-   check; not done, and it would change which earlier decisions count as beyond noise.
+4. **The intervals resample fragments, not brains.** Fragment resampling (2026-11-12) widened
+   the TRAIN intervals by 8% (merge) and 2% (split) and changed no verdict, so within-fragment
+   dependence is not what limits the gate. Still open: the five validation brains are queried
+   every generation without a correction for repeated tries, brains are not resampled, and the
+   validation-side effect of the new unit was not measured (validation scores of submitted
+   candidates are not stored; storing them per generation would make such replays cheap).
 5. **The TRAIN check needs whole-brain holdouts.** With within-brain folds it reports
    `unavailable`; a fold-wise paired bootstrap would be needed for frozen / no-score runs that
    use them.
-6. **Merge is not helped by any of this**: after the first accepted merge generations no merge
+6. **Restoring the best TRAIN candidate no longer prefers one whose head held** (the head guard
+   was removed). A candidate whose objective rose with a clearly worse top is now submitted and
+   rejected by the guard rail on validation, at the cost of the generation. Count
+   `significantly_worse` rejections in the next runs; if they rise, add a TRAIN-side check on the
+   same statistics before submission.
+7. **Selection protocols were left as they are.** The in-sample protocol is the path of the
+   tiny-fixture tests and the within-brain folds serve the frozen / no-score arms (section 6);
+   raw runs use whole-brain holdouts only. Removing either means deciding about those arms.
+8. **Merge is not helped by any of this**: after the first accepted merge generations no merge
    candidate was beyond noise on TRAIN or on validation (section 7).

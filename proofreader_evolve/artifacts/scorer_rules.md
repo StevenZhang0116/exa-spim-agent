@@ -16,12 +16,12 @@ candidate pool. Use English for code, diagnostics, proposals and research notes.
   rows enter metrics and supervised fitting. Unlabeled rows can still affect
   whole-column statistics or optional transductive inputs; do not assume they
   cannot affect measured scores. Feedback samples are diagnostic, not a dataset.
-- `objective`, `aggregation`, `head_guard` and `selection_protocol` in feedback
+- `objective`, `aggregation` and `selection_protocol` in feedback
   define the current rules. Compare the configured objective, not an assumed
   metric. Grouped OOF ranks within host-defined folds; in-sample scores are
   diagnostic under that protocol. Selection and ablation use the same per-kind
   aggregation as validation (default: positive-weighted). The host controls the
-  separate validation gain, bootstrap and head guard. TRAIN improvement alone
+  separate validation gain, its bootstrap and the guard on the other rank statistics. TRAIN improvement alone
   does not establish promotion; a ranking gain does not establish repair safety.
 - Respect `search_plan` and its host-enforced research/follow-up assignment.
   Incomplete assignments retain the accepted scorer and skip outer evaluation.

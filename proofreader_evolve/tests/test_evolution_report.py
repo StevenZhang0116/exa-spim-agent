@@ -40,14 +40,12 @@ class EvolutionReportTests(unittest.TestCase):
         return row
 
     def test_manifest_objective_fields_reach_the_page(self):
-        guard = {'statistic': 'precision_depth_mean', 'tolerance': .01}
         self.put('manifest.json', {'objective': PRECISION, 'train_brains': ['794495'],
                                   'development_validation_brains': ['794493'], 'budgets': {'split': 10},
-                                  'objective_statistic': 'auroc', 'objective_label': 'AUROC', 'head_guard': guard})
+                                  'objective_statistic': 'auroc', 'objective_label': 'AUROC'})
         self.generation(1)
         manifest = build_report_data(self.root)['manifest']
         self.assertEqual((manifest['objective_statistic'], manifest['objective_label']), ('auroc', 'AUROC'))
-        self.assertEqual(manifest['head_guard'], guard)
         self.assertIn('objective_statistic', Path(__file__).resolve().parents[1].joinpath(
             'plotting', 'report_assets', 'report.js').read_text())
 

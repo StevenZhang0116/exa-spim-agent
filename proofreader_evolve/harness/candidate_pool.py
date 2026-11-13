@@ -84,7 +84,7 @@ class CandidatePool:
         # evict the component currently used by the outer evaluator.
         self.references = {kind: None for kind in kinds}
         # Candidates the outer evaluator has measured: identity and promotion status, plus the
-        # promotion judge's rejection category when there is one (a word from a fixed vocabulary;
+        # promotion gate's rejection category when there is one (a word from a fixed vocabulary;
         # no validation numbers), so a known ranking is never submitted twice.
         self.validated = {kind: [] for kind in kinds}
         # Submissions the outer evaluator did not measure because their TRAIN selection gain was
@@ -110,8 +110,8 @@ class CandidatePool:
 
     def mark_validated(self, entry, generation, promoted, rejection=None):
         """Record an outer measurement of this candidate: identity and promotion status, plus, for a
-        candidate the promotion judge rejected, its category from a fixed vocabulary
-        (``promotion_judge.REJECTION_CATEGORIES``); never a heldout score or a decision text."""
+        candidate the promotion gate rejected, its category from a fixed vocabulary
+        (``promotion_gate.REJECTION_CATEGORIES``); never a heldout score."""
         kind = entry['target_kind']
         if kind not in self.validated:
             raise ValueError('Validated candidate of an unconfigured kind')
@@ -401,7 +401,7 @@ class CandidatePool:
 
     def summary(self):
         # Metrics and diagnostics remain TRAIN-only. Reference identity and each candidate's
-        # outer_measurement status (generation, promoted, and under the promotion judge a rejection
+        # outer_measurement status (generation, promoted, and after a gate rejection a
         # category from a fixed vocabulary) are supplied by the host; no heldout scores, labels or
         # decision texts are included.
         return {'selection': 'train-champion-and-specialists-v1' if self.coverage else 'near-best-train',

@@ -60,7 +60,7 @@ python -m proofreader_evolve.cli.run_evolution \
     --train-brains 802449,747807,750318,754610,754612,754613 \
     --selection-brains all --selection-holdout-brains all \
     --validation-brains 789202,794493,794491,751473,841260 \
-    --generations 5 --objective average_precision --promotion-gate rule --precision-margin 0.002 \
+    --generations 5 --objective average_precision --precision-margin 0.002 \
     --selection-noise-gate \
     --aggregation positive-weighted --min-positives 10 \
     --classifier-memory-mb 98304 --classifier-time-budget 3600 --policy-time-budget 2400 \
@@ -68,15 +68,13 @@ python -m proofreader_evolve.cli.run_evolution \
     --descriptor-workers auto --reviser-max-turns 80
 ```
 
-`--objective average_precision --promotion-gate rule --precision-margin 0.002 --selection-noise-gate` is the
-documented configuration since 2026-11-12: a candidate is promoted when no rank statistic is significantly
-worse and its average-precision gain is beyond resampling noise and above the margin, and a submission that
-TRAIN cannot tell from the accepted scorer is not measured
-([details](docs/stage3_evolution.md#promotion-by-the-rule---promotion-gate-rule-2026-11-12)). From 2026-11-10
-to 2026-11-12 the runs used `--promotion-gate judge`: an LLM
-judge decides promotion from a numbers-only table of rank statistics, inside a guard rail
-([details](docs/stage3_evolution.md#promotion-by-an-llm-judge---promotion-gate-judge-2026-11-10)); the
-command-line defaults remain AUROC and the bootstrap gate.
+`--objective average_precision --precision-margin 0.002 --selection-noise-gate` with the default
+`--promotion-gate rule` is the documented configuration since 2026-11-12: a candidate is promoted when no
+rank statistic is significantly worse and its average-precision gain is beyond resampling noise and above
+the margin, and a submission that TRAIN cannot tell from the accepted scorer is not measured
+([details](docs/stage3_evolution.md#the-promotion-gate---promotion-gate-rule-default-since-2026-11-12)).
+The LLM judge that decided the runs of 2026-11-10 to 2026-11-12 and the earlier bootstrap gate with its
+head guard were removed on 2026-11-12; the other command-line defaults are AUROC and no noise check.
 The last two option lines size the run to a dedicated 40-CPU / 600 GB allocation. The driver does not
 size itself to the node and its defaults are hard limits inside the agent's tools, so always pass the
 resource options explicitly and run one evolution run per allocation
@@ -104,7 +102,7 @@ Per-stage figures: [`agentic/discovery_workflow_diagram.png`](agentic/discovery_
 [`proofreader_evolve/workflow_diagram.png`](proofreader_evolve/workflow_diagram.png),
 [`proofreader_evolve/workflow_overview.png`](proofreader_evolve/workflow_overview.png),
 [`proofreader_evolve/data_overview.png`](proofreader_evolve/data_overview.png),
-[`proofreader_evolve/promotion_judge_overview.png`](proofreader_evolve/promotion_judge_overview.png) and
+[`proofreader_evolve/promotion_gate_overview.png`](proofreader_evolve/promotion_gate_overview.png) and
 [`proofreader_evolve/validation_feedback_overview.png`](proofreader_evolve/validation_feedback_overview.png).
 The evolution figures were revised on 2026-11-12; the current dataset roles
 and launch settings are maintained in [Stage 3](docs/stage3_evolution.md#32-prepare-tables-and-launch-a-run).

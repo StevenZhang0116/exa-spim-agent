@@ -138,20 +138,18 @@ class ObjectiveTests(unittest.TestCase):
              'report': report({'a/merge': cell(10, 10), 'a/split': cell(10, 10)})}
         self.assertIs(TrainingExperiments._best([b, a]), a)
 
-    def test_best_prefers_head_guard_without_requiring_objective_gain(self):
-        def result(score, guard, passed=False):
+    def test_best_is_the_highest_objective_without_requiring_a_gain(self):
+        def result(score, passed=False):
             return {'report': {}, 'component': FORMULA,
                     'entry': {'sequence': 1, 'target_precision': .5, 'target_objective': score,
-                              'selection_gate': {'passed': passed, 'head_guard': guard}}}
+                              'selection_gate': {'passed': passed}}}
 
-        highest = result(.82, {'passed': False})
-        guarded = result(.81, {'passed': True})
-        lower = result(.80, {'passed': True}, passed=True)
-        self.assertIs(TrainingExperiments._best([highest, guarded, lower]), guarded)
-        self.assertFalse(guarded['entry']['selection_gate']['passed'])  # OOF gain is not required.
-        self.assertIs(TrainingExperiments._best([highest, result(.81, {'passed': False})]), highest)
-        disabled = result(.83, None)
-        self.assertIs(TrainingExperiments._best([highest, guarded, disabled]), disabled)
+        highest = result(.82)
+        lower = result(.80, passed=True)
+        self.assertIs(TrainingExperiments._best([highest, lower]), highest)
+        self.assertFalse(highest['entry']['selection_gate']['passed'])  # OOF gain is not required.
+        top = result(.83)
+        self.assertIs(TrainingExperiments._best([highest, top, lower]), top)
 
     def test_margin_is_in_target_kind_units_and_other_kind_cannot_compensate(self):
         before = report({'a/merge': cell(5, 20), 'a/split': cell(10, 20)})
@@ -183,10 +181,7 @@ class ObjectiveTests(unittest.TestCase):
         self.assertGreater(interval['delta_ci'][0], 0.)
         parent = report({'a/merge': cell(20, 100), 'a/split': cell(100, 100)})
         candidate = report({'a/merge': cell(90, 100), 'a/split': cell(0, 100)})
-        self.assertTrue(scoring.bootstrap_acceptance(parent, candidate, interval, target_kind='merge')[0])
-        for key, wrong in (('target_kind', 'split'), ('aggregation', 'equal-brain')):
-            with self.subTest(key=key), self.assertRaises(ValueError):
-                scoring.bootstrap_acceptance(parent, candidate, {**interval, key: wrong}, target_kind='merge')
+        self.assertTrue(scoring.acceptance(parent, candidate, target_kind='merge', require_no_cell_regression=False)[0])
 
     def test_report_and_feedback_keep_separate_scores_and_exclusion_flags(self):
         measured = report({'a/merge': cell(10, 20), 'a/split': cell(18, 20),

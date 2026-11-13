@@ -77,8 +77,8 @@ and evaluation in `train_classifier`, including failed work. This is a configura
 budget: the current candidate finishes under existing worker limits, and further uncached fits
 stop; cached models and restore remain available. Descriptors and paired ablations retain their
 own budgets. The default per-kind aggregation remains **positive-weighted**, consistently for TRAIN
-selection, ablation, validation, bootstrap and scheduling; AUROC and the head-guard rule remain
-unchanged. Rank statistics use each eligible brain's positive count as its weight; precision
+selection, ablation, validation, bootstrap and scheduling; AUROC remains the default objective
+(the point-estimate head guard was removed on 2026-11-12, see the change entry of that day). Rank statistics use each eligible brain's positive count as its weight; precision
 pools hits over effective K. Pools below the positive floor remain excluded. The temporary
 equal-brain default was reverted on user request on 2026-11-04 because small merge pools would
 receive much more influence; `--aggregation equal-brain` remains an explicit option.
@@ -168,7 +168,7 @@ A one-page visual overview (fixed inputs, the generation loop, outputs and the
 data-access boundary) is in [workflow_overview.png](workflow_overview.png). The data model
 is in [data_overview.png](data_overview.png): fixed candidate rows, mode-dependent predictors,
 on-demand geometry and configurable image crops, three-valued labels, and the `judgeable`
-descriptor scope. The LLM promotion judge is in [promotion_judge_overview.png](promotion_judge_overview.png)
+descriptor scope. The promotion gate is in [promotion_gate_overview.png](promotion_gate_overview.png)
 and what the agent learns from validation in
 [validation_feedback_overview.png](validation_feedback_overview.png). Every row is scored; only labeled rows enter metric ranking, while
 uncomputed rows can still affect cross-row operations or unlabeled-data training.
@@ -201,7 +201,7 @@ flowchart TD
     U -->|No| G["Frozen validation: compute referenced descriptors with their registered scope on each brain, then predict; inputs and descriptor logs stay private"]
     U -->|Yes, repeated| H[Retain parent]
     F -->|No| H[Retain parent]
-    G --> I{Target-kind objective gain exceeds the margin, its paired-bootstrap lower bound is above zero, and the head guard holds?}
+    G --> I{No guarded rank statistic significantly worse, and the target-kind objective gain exceeds the margin with its paired-bootstrap lower bound above zero?}
     I -->|Yes| J[Promote candidate]
     I -->|No| H
     J --> R[Update parent; queue next same-kind follow-up]
@@ -232,9 +232,8 @@ flowchart TD
    and memory guide formula design. A literal numeric `PARAMS` dictionary separates
    constants from the formula. `evaluate_train({})` measures one candidate;
    `search_parameters({})` measures the proposed grid and restores its best
-   successful candidate by the official selection objective, preferring candidates
-   satisfying the selection head guard. If none pass, the highest objective is restored
-   with its failed guard reported; explicit candidate IDs remain selectable. Under
+   successful candidate by the official selection objective; explicit candidate IDs
+   remain selectable. Under
    `grouped_oof`, selection uses out-of-fold scores on the selection brains.
    With `--context-cache`, `compute_descriptors` runs agent-written
    `describe(context)` over the cached candidate band and registers `bank_agent_*`
@@ -253,11 +252,10 @@ flowchart TD
    AUROC by default, weighted by GT positives; Precision@K as sum(TP) / sum(effective K)
    before, and still reported beside it; equal-brain weighting when configured). Promote
    only if the target kind's score exceeds its accepted parent's score
-   by more than `--precision-margin`, the head guard holds (the candidate's mean precision
-   at ceil(K/2), K and 2K is not more than `--head-guard-tolerance` below the parent's) and,
-   in the default `--promotion-gate bootstrap`
-   mode, the lower bound of the paired row-resampling interval of that gain is
-   above zero (`--bootstrap-draws`, `--bootstrap-alpha`). Individual brain/kind
+   by more than `--precision-margin` and, in the default `--promotion-gate rule`
+   mode (`harness/promotion_gate.py`, 2026-11-12), the lower bound of the paired
+   bootstrap interval of that gain (fragment groups resampled) is above zero and no guarded
+   rank statistic is significantly worse (`--bootstrap-draws`, `--bootstrap-alpha`). Individual brain/kind
    regressions and TRAIN regressions are allowed. Reject invalid, nondeterministic or timed-out scorers;
    a failure on any selected brain rejects the candidate, not that brain.
 7. Independently retain up to 5 TRAIN branches per kind. Keep the overall TRAIN
@@ -303,8 +301,8 @@ The exploration parent and the accepted parent are distinct roles. TRAIN archive
 selection reads TRAIN only; the reference identity comes from the host's promotion
 decision and therefore carries indirect development-validation feedback. Only
 TRAIN measurements and diagnostics are exposed in pool/plan files; no heldout
-data, scores or decision texts enter them (under `--promotion-gate judge`, since 2026-11-10, a
-rejected candidate also carries one of five host-derived category words, `outer_measurement.rejection`; since 2026-11-12 the prompt quotes the kind's latest outcomes). The promotion gate compares against the
+data, scores or decision texts enter them (since 2026-11-10 a rejected candidate also carries a
+host-derived category word, `outer_measurement.rejection`, one of three since 2026-11-12, when the prompt began to quote the kind's latest outcomes). The promotion gate compares against the
 accepted parent's full-precision measurements. TRAIN feedback's `parent_train` and
 `parent_selection` also refer to that accepted parent, while its examples,
 `ranking_delta` and `failure_cases.json` describe the exploration branch (v17);
@@ -1573,7 +1571,7 @@ research assignments receives one outer evaluation across the fixed validation
 brains; TRAIN gain is not a prerequisite. TRAIN archive selection and progress use
 the official selection score; promotion also replaces a protected reference and
 resets stagnation.
-Promotion uses the target-kind validation objective, paired-bootstrap gate and head guard. Final submission and
+Promotion uses the target-kind validation objective under the rule gate (`harness/promotion_gate.py`). Final submission and
 cache reuse check the code/configuration and artifact hashes. Resume requires
 `best_scorer.py` plus `model_artifacts/`, or `--start-from-artifacts` pointing to
 that store; no refit occurs. Models fitted on requested validation brains are
@@ -1625,8 +1623,8 @@ weights each eligible brain by its positive count, while precision uses
 `sum(TP) / sum(effective K)`. Pools below the positive floor are reported but
 excluded. TRAIN selection, ablation and validation use the same configured
 objective and aggregation on their separate partitions. Promotion requires a
-target-kind gain, a positive paired-bootstrap lower bound under the default gate,
-and the configured head guard. Ties do not pass.
+target-kind gain above the margin, a positive paired-bootstrap lower bound and no guarded
+rank statistic significantly worse under the default gate. Ties do not pass.
 
 Pool identity, labels, budgets, frozen detector weights and base feature
 definitions cannot change within a run. Under `no-score`, `detector_score` is
@@ -1818,15 +1816,16 @@ CodeAct relationship are recorded below; discovery benefit is still unmeasured.
   pools for `--detector-prior raw` (shared enumeration, raw columns, no detector).
 - `harness/dataset.py`: trusted cache loading and brain/MCL checks only.
 - `harness/fixed_pool_scoring.py`: ranking evaluation and acceptance.
-- `harness/promotion_judge.py` (2026-11-10; 2026-11-12): the gates `--promotion-gate judge` and `rule`: joint
-  paired-bootstrap table of every rank statistic, guard rail, the votes or the rule on the objective
-  (`rule_check`: interval above zero and gain above `--precision-margin`), fail-closed decision and the
-  rejection category passed to later reviser sessions. `SelectionProtocol.paired_noise` and the driver's
-  `selection_within_noise` branch implement `--selection-noise-gate`; `CandidatePool.outer_history` and
-  `outer_history_text` put the latest outcomes into the prompt.
+- `harness/promotion_gate.py` (2026-11-12; `promotion_judge.py` from 2026-11-10): the gate `--promotion-gate rule`:
+  joint paired-bootstrap table of every rank statistic over fragment groups, guard rail, the rule on the
+  objective (`rule_check`: interval above zero and gain above `--precision-margin`), fail-closed decision and
+  the rejection category passed to later reviser sessions. `fixed_pool_scoring.resampling_groups` defines the
+  resampled unit. `SelectionProtocol.paired_noise` and the driver's `selection_within_noise` branch implement
+  `--selection-noise-gate`; `CandidatePool.outer_history` and `outer_history_text` put the latest outcomes
+  into the prompt.
 - `dataset_split.json`, manifest `promotion_gate`: resolved datasets, exclusions,
   configured per-kind aggregation (positive-weighted by default), rank objective,
-  head guard, gate mode (`bootstrap` or `margin`) and bootstrap draws/alpha.
+  gate mode (`rule` or `margin`), margin, bootstrap draws/alpha and the resampled unit.
 - `harness/isolated_scoring.py`: dispatch to isolated formula or model inference,
   preserving declared raw image inputs. `scorer_worker.py` runs numeric formulas
   behind seccomp with bounded resources.
@@ -2105,8 +2104,9 @@ records the motivating run and the original proposals.
 
 | Source / relationship | Mechanism and implementation | Differences and claim boundary | Evidence status |
 |---|---|---|---|
-| No claimed paper algorithm; **project-specific design**, 2026-11-12 (rule gate on the declared objective; TRAIN selection-noise check; outcome history in the prompt) | `harness/promotion_judge.py`: `rule_check` and `judge(binding="rule")` promote when no guarded statistic is significantly worse, the paired-bootstrap interval of the objective's gain lies above zero and the gain exceeds `--precision-margin`; `--judge-shadow` records the votes without effect. `harness/selection_protocol.py`: `paired_noise`, the same row bootstrap on the TRAIN selection scores; the driver skips the outer evaluation when its (1 - alpha) lower bound is not above zero (`--selection-noise-gate`). `harness/candidate_pool.py`: `mark_unmeasured`, `outer_history`; `cli/run_precision_evolution.py`: `outer_history_text`. Rejection categories: `HEAD` reduced to pAUC, precision at K/2 and the depth mean; `gain_too_small` added. | The paired bootstrap is standard; requiring an effect above a fixed margin as well as significance is the usual distinction between statistical and practical significance, not a method from a cited paper. Screening on TRAIN before a held-out query reduces the number of times the validation pools are queried; no literature source was used for it and no reuse budget is accounted. | Unit and driver tests (`tests/test_promotion_judge.py`, `tests/test_selection_noise.py`) and an offline replay on two finished runs (`notebooks/promotion_rule_replay.py`); no run has used the new gate or the check yet. |
-| No claimed paper algorithm; **project-specific design**, 2026-11-10 (LLM judge for promotion) | `harness/promotion_judge.py`: a model votes on a numbers-only table of rank statistics with paired-bootstrap intervals; the host applies a guard rail and a strict majority of the requested votes, and fails closed. Gate mode `--promotion-gate judge` in `cli/run_precision_evolution.py`. | Not an LLM-as-judge method from the literature and not validated beyond the offline replay: the judge sees statistics, never candidates or code, and cannot promote a candidate whose guarded statistics are significantly worse. Its agreement with an average-precision gate is an observation on 15 pairs of two runs. | Offline replay only (`notebooks/acceptance_rule_replay.py`, 2026-11-10); unit and driver tests; no run evidence yet. |
+| No claimed paper algorithm; **project-specific simplification and correction**, 2026-11-12 (one promotion gate; fragment-group bootstrap) | `harness/promotion_gate.py` (renamed from `promotion_judge.py`): the table, the guard rail and the rule; the LLM votes, the junction-only second table, the `bootstrap` gate mode and the point-estimate head guard are removed. `fixed_pool_scoring.resampling_groups` / `labeled_groups`: `paired_bootstrap` and the gate's table draw one Poisson(1) weight per fragment segment (merge: the candidate's segment; split: the segment of the pair's anchor-side fragment) instead of per row. | Resampling clusters instead of rows is the standard cluster (block) bootstrap for dependent observations; no specific paper's procedure is reproduced, and the choice of the fragment as the cluster is this project's. Brains are not resampled. | Tests (`tests/test_promotion_gate.py`, `tests/test_bootstrap_gate.py`) and a TRAIN-side comparison of row and fragment intervals on two finished runs; validation intervals of earlier runs were not recomputed; no run has used the gate yet. |
+| No claimed paper algorithm; **project-specific design**, 2026-11-12 (rule gate on the declared objective; TRAIN selection-noise check; outcome history in the prompt) | `harness/promotion_gate.py`: `rule_check` and `gate` promote when no guarded statistic is significantly worse, the paired-bootstrap interval of the objective's gain lies above zero and the gain exceeds `--precision-margin`. `harness/selection_protocol.py`: `paired_noise`, the same bootstrap on the TRAIN selection scores; the driver skips the outer evaluation when its (1 - alpha) lower bound is not above zero (`--selection-noise-gate`). `harness/candidate_pool.py`: `mark_unmeasured`, `outer_history`; `cli/run_precision_evolution.py`: `outer_history_text`. Rejection categories: `significantly_worse`, `within_noise`, `gain_too_small`. (As first written that day the rule was a binding of the judge module with shadow votes; the row above records the simplification.) | The paired bootstrap is standard; requiring an effect above a fixed margin as well as significance is the usual distinction between statistical and practical significance, not a method from a cited paper. Screening on TRAIN before a held-out query reduces the number of times the validation pools are queried; no literature source was used for it and no reuse budget is accounted. | Unit and driver tests (`tests/test_promotion_judge.py`, `tests/test_selection_noise.py`) and an offline replay on two finished runs (`notebooks/promotion_rule_replay.py`); no run has used the new gate or the check yet. |
+| No claimed paper algorithm; **project-specific design**, 2026-11-10 (LLM judge for promotion; **removed 2026-11-12**, the code is in the repository history at commit 17473f7) | `harness/promotion_judge.py`: a model votes on a numbers-only table of rank statistics with paired-bootstrap intervals; the host applies a guard rail and a strict majority of the requested votes, and fails closed. Gate mode `--promotion-gate judge` in `cli/run_precision_evolution.py`. | Not an LLM-as-judge method from the literature and not validated beyond the offline replay: the judge sees statistics, never candidates or code, and cannot promote a candidate whose guarded statistics are significantly worse. Its agreement with an average-precision gate is an observation on 15 pairs of two runs. | Offline replay only (`notebooks/acceptance_rule_replay.py`, 2026-11-10); unit and driver tests; no run evidence yet. |
 | Review of model input selection and paired diagnostics, 2026-11-05; **project-specific correction** | `feature_ablation.py` checks requested removals against existing full-arm fold manifests, including separately transported raw patches. Ineffective groups skip the control and return `not_applicable`; partial groups expose effective/ignored columns. `train_experiments.py` records an ineffective check as an observation; `image_evidence.py` excludes ignored image descriptors from comparison evidence. | No paper algorithm, extra fit, host execution of agent selectors, or new promotion rule. Input presence does not prove internal learner use, and a measured ablation remains an adaptively inspected TRAIN diagnostic. | Synthetic worker, research-accounting and image-evidence regressions are recorded in the dated entry below. No new evolution run or real-image benchmark. |
 | Local audit of [4gtri727](runs/precision_20261105_010715_4gtri727/ledger.jsonl) and [cv7t20if](runs/precision_20261105_010742_cv7t20if/ledger.jsonl), 2026-11-05; **project-specific engineering** | `classifier_train_worker.py` and `classifier_training.py` freeze optional input selection for inference dependencies; `image_context.py` retries one timed-out patch within the remaining deadline. Scheduling initializes both kinds and tracks cumulative objective progress; restoration prefers the existing selection head guard. | Execution and selection bookkeeping corrections, not evidence of improved transfer. Selectors run only in isolated workers; programs without selectors retain all columns. Transient retry cannot guarantee recovery, and selection-head agreement cannot guarantee validation-head agreement. | The two earlier revision batches have separate dated entries and preserved 42-test / 121-test logs below. Historical runs motivated these changes and do not validate the revised behavior. |
 | User dataset reservation and documentation audit, 2026-11-04; **project-specific protocol choice** | Current launch guides exclude 794495, use six whole-brain TRAIN holdouts and four development-validation brains, and link the imported CodeOcean snapshot and separate source audit. | Documentation alignment only; legacy parser defaults remain and no reserved-brain guard or independent model-validation protocol has been implemented. AUROC, positive weighting, bootstrap and the head guard are unchanged. Historical runs and upstream capsule files are preserved. | Current commands and claims checked against parser/selection/scheduler source; source-audit measurements and limits are in [evaluation/README.md](../evaluation/README.md). No new evolution trial. |
@@ -2145,6 +2145,7 @@ previously recorded results, rather than evidence reverified in this audit.
 
 | Date / version | Change and motivation | Verification / future evidence |
 |---|---|---|
+| 2026-11-12 (later) / one promotion gate; judge, bootstrap mode and head guard removed; bootstrap over fragment groups | **Simplification at the user's decision, with one correction.** After the rule gate existed, four gate modes (`bootstrap`, `margin`, `judge`, `rule`), two head protections (the point-estimate head guard and the guard rail) and a second judge table did overlapping work. Removed: `--promotion-gate judge` with `--judge-votes` / `--judge-model` / `--judge-effort` / `--judge-shadow`, the LLM prompt and vote code, the junction-only second table (it changed none of eight merge decisions), `--promotion-gate bootstrap` and `fixed_pool_scoring.bootstrap_acceptance` (covered by the rule), and the head guard everywhere (`--head-guard-statistic`, `--head-guard-tolerance`, `Budgets.head_guard`, the selection gate's field and the preference when the best TRAIN candidate is restored, which is now the highest selection objective). `--promotion-gate rule` is the default; `margin` stays as the point-estimate gate of the tiny-fixture tests. The module is `harness/promotion_gate.py`; new ledgers carry the table under `validation_gate.gate_table` (ledgers of 2026-11-10 to 2026-11-12 keep `validation_gate.judge`); the words `head_not_improved` and `not_convincing`, which only the votes produced, are gone, leaving three. Correction: the paired bootstrap resampled candidate rows although candidates on one fragment share its geometry, image and tracing; it now resamples fragment segments, for the gate's table and for the TRAIN selection-noise check alike. Not changed: the selection protocols (the in-sample protocol is the tests' path and the within-brain folds serve the frozen / no-score arms), the per-family merge statistics in reports, and the TRAIN selection-noise check. Agent-facing text changed: the tool descriptions of `search_parameters`, `train_classifier` and `restore_candidate`, the feedback note on the objective, `artifacts/classifier_guide.md` and `artifacts/scorer_rules.md` (no head guard, three rejection words). `notebooks/acceptance_rule_replay.py` lost its `judge` stage; its recorded votes are kept and still summarised. The seven workflow figures were redrawn; `promotion_judge_overview.png` is now `promotion_gate_overview.png`. | On the TRAIN selection scores of the twenty generations of runs `precision_20261112_010152_bfg7kacp` and `precision_20261112_010306_tuap47i8`, resampling fragments instead of rows makes the 80% interval of the selection gain 1.08 times as wide for merge (median; 0.90 to 1.32) and 1.02 times for split (0.98 to 1.10), and changes no beyond-noise verdict (`notebooks/promotion_rule_replay.py` run before and after the change). The validation-side effect was not measured: validation scores of submitted candidates are not stored. Tests: the whole suite of `proofreader_evolve/tests`. Not yet verified: any run under the simplified gate; the effect of dropping the head-guard preference on which TRAIN candidate is submitted. |
 | 2026-11-12 / promotion by a rule on the declared objective (`--promotion-gate rule`); TRAIN selection-noise check; corrected rejection categories; outcomes quoted in the prompt | **Project-specific design at the user's decision ("do 1-4"), changing the documented launch.** Findings on runs `precision_20261112_010152_bfg7kacp` and `precision_20261112_010306_tuap47i8`: the judge's fourteen voted decisions (thirteen unanimous) all equalled "pAUC interval above zero" while the declared objective was average precision; two split candidates better beyond noise in average precision, AUROC and precision at K were rejected and reported to the reviser as `not_convincing`; the rejection word was in the pool and plan files only and two later `rules.md` files mention it; six merge submissions with selection gains between -0.006 and +0.003 were sent to validation and none was promoted. Changes: (1) gate mode `rule`: the judge's table and guard rail, then the interval of the objective's gain above zero and the gain above `--precision-margin` (0.002 in the documented launch), no model call, `--judge-shadow` for recorded votes; (2) the objective therefore decides promotion as well as TRAIN selection; (3) `HEAD` for the votes' category is pAUC, precision at K/2 and the depth mean, the rule adds `gain_too_small`, and the prompt lists the kind's latest outcomes; (4) `--selection-noise-gate` (`--selection-noise-alpha`, default 0.2): the TRAIN interval of every candidate's selection gain is shown in `selection_gate.resampling`, and a submission whose lower bound is not above zero ends as `not_measured`. Agent-facing text changed: the prompt lines of `outer_history_text` and one paragraph of `artifacts/classifier_guide.md`. The CLI defaults (AUROC, bootstrap gate, no check) are unchanged. `promotion_judge_overview.png` and `validation_feedback_overview.png` were redrawn for the two gates, the five words and the TRAIN check. | Replay (`notebooks/promotion_rule_replay.py`, both runs, each decision with the run's own parents): of eighteen submissions that reached the table the rule agrees with the judge on sixteen at margin 0 (it accepts the two split candidates) and on sixteen at margin 0.002 (it accepts one of them and rejects one candidate promoted on +0.0009 as `gain_too_small`); the noise check at 80% would have kept eight of twenty submissions from validation (two already skipped as repeated or unchanged, five rejected by the votes, one by the guard rail) and none of the seven promoted ones; one interval took 4 to 11 s. Tests: `tests/test_promotion_judge.py`, `tests/test_selection_noise.py`. Not yet verified: any run with the new configuration; whether the reviser acts on the interval and the quoted outcomes; the margin's value beyond these two runs. |
 | 2026-11-12 / workflow figures revised for the judge gate; two figures added | **Project-specific documentation update.** `workflow_overview.png`, `workflow_diagram.png`, `data_overview.png`, `end_to_end_workflow_diagram.png` and `workflow_story.png` (last drawn 2026-11-03) now show the promotion gate as the LLM judge or the bootstrap rule (the CLI default) with average precision or AUROC as the objective, the GT-positive floor of 10, the kind order floor, follow-up, gain, headroom, raw mode loading no detector and starting from a constant seed, whole-brain holdouts in raw runs, and the split rule's worst-brain candidate recall of 0.80 on twelve brains; they state that the agent learns the promotion status and, after a judge rejection, one fixed word. Two overflowing text bands in `end_to_end_workflow_diagram.png` were fixed. New: `promotion_judge_overview.png` (table, guard rail, five votes, host decision; example table from run `precision_20261112_010152_bfg7kacp`, generation 10) and `validation_feedback_overview.png` (what stays with the host, `outer_measurement`, the four rejection categories and their guidance). | Each PNG was rendered with `scripts/diagrams/render_svgs.py` and inspected for overflow and overlap. The figures describe the implementation; they are not run evidence. SVG sources are kept outside the repository. |
 | 2026-11-11 / merge labels follow the metric's walk (`length_v2`); twelve caches relabeled | **Correction of the label source.** Positives come from sites recomputed on the cache by a port of `MergeCountMetric`; the port used one KD-tree of all GT neurons in a single pass and kept the node where a walk stopped, while the metric works one GT neuron at a time and moves a site to a branching node. On the six TRAIN brains 90 of 537 canonical sites had candidates within 20 um that were all labeled 0 (`notebooks/merge_junction_study/`). agentic-neuron-proofreader: `geometric_merge_sites(walk="per_neuron")` (default) with `"pooled"` kept for existing caches; `labeled_cache`: policy `length_v2` (default), `gt_label_policy.walk`, `--check-reproduce` against the recorded thresholds and walk. Computed in memory with the package's functions: junction positives 370 to 426 (58 gained, 2 lost), `tip_to_shaft` 53 to 51, canonical sites with a positive candidate 358 to 406, 41 still with candidates and no positive. **Relabeled 2026-11-11** (twelve caches, `--check-reproduce` passed on each: the pooled walk returned the stored labels and sites): cache sites 1,181 to 1,309; raw pools and sidecars rebuilt for the eleven development brains with every `pool_sha256` unchanged, split labels unchanged, merge positives 862 to 956 (802449 104 to 128, 754613 still 9 and below the floor); 802449 and 794495 companions regenerated (`--pool-only`); twelve alignment receipts re-recorded (overlays pixel-identical to the reviewed sets on ten brains, inspected again on 794491 and 794495); eleven-brain raw preflight passed; cache labels hold 0.888 of the 1,299 canonical sites within 50 um (0.813 before). The canonical sites are not a label source (user decision). Runs after the relabel are not comparable with earlier ones. **2026-11-12:** every notebook result that reads the cache's merge sites was redone on the relabeled caches (label counts and `label_availability_distribution.svg`, site counts, site census, `merge_shaft_reach`, `merge_site_gt_tip`, blind-site figures, pool sweep, `verify_add_cache_metrics`, `errors_per_neuron`) and the merge feature specification's counts and degree baseline were recomputed from the 794495 companion (173 positives, AP 0.030); their order is in `docs/dataset_artifact_dependencies.md`. The seed baselines are measured by the two runs started on 2026-11-12. | `labeled_cache/policy.py`, `labeled_cache/build.py`, `markdowns/labeled_dataset_cache.md`, `TODO.md` section 7 |
@@ -2278,11 +2279,11 @@ Tests use tiny fixtures, arbitrary model artifacts, sandbox-boundary probes, moc
 plots. They do not load full brains or call a live LLM.
 `tests/test_selection_noise.py` (2026-11-12) covers the TRAIN selection-noise interval (equal to `paired_bootstrap`
 on whole-brain holdouts, unavailable with within-brain folds), the pool's outcome history, the prompt text and two
-driver runs (a submission within noise is not measured; the check is off by default); `tests/test_promotion_judge.py`
-adds the rule gate (decision without a model call, margin, shadow votes, objective-specific statistic, one driver run).
-`tests/test_promotion_judge.py` (2026-11-10) covers the judge gate with patched votes: the table's
-objective interval against `paired_bootstrap`, point statistics against the reports, the guard rail,
-the strict majority of requested votes, fail-closed paths, the rejection category and two driver runs.
+driver runs (a submission within noise is not measured; the check is off by default).
+`tests/test_promotion_gate.py` (2026-11-12; `test_promotion_judge.py` before) covers the gate: the table's
+objective interval against `paired_bootstrap`, point statistics against the reports, fragment-group
+resampling, the guard rail, the rule and its margin, the three rejection categories, fail-closed paths
+and two driver runs.
 `tests/test_feature_discovery.py` adds synthetic cases for matched TRAIN panels,
 fragment-isolated folds, fitting-row transport, paired refits, budget refusal,
 exact evidence binding, hypothesis progress, and protected-reference scheduling.
@@ -2302,11 +2303,11 @@ feedback and failure cases, label-free group transport, bootstrap intervals,
 the auxiliary ablation and the driver's brain-role checks. Tiny-fixture driver
 tests pass `--selection-protocol in_sample` because three-row pools cannot form
 three grouped folds.
-`tests/test_bootstrap_gate.py` (v15) covers the bootstrap promotion rule on a
+`tests/test_bootstrap_gate.py` (v15; rule gate since 2026-11-12) covers the paired bootstrap and the gate on a
 4,000-row synthetic pool (a single extra Top-K hit passes the margin gate and
-fails the bootstrap gate; a clear gain passes; missing or mismatched intervals
-fail closed; CLI validation) and driver runs in both modes, including the
-recorded `point_gate`/`bootstrap_gate` fields, TRAIN-archive retention and the
+fails the rule gate; a clear gain passes; the reverse is significantly worse;
+CLI validation) and driver runs in both modes, including the
+recorded `point_gate`/`gate_table` fields, TRAIN-archive retention and the
 absence of a promotion follow-up after a bootstrap rejection. Tiny-fixture
 driver tests pass `--promotion-gate margin` because a resampled three-row pool
 cannot separate any gain from zero.
