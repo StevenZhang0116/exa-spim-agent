@@ -44,10 +44,13 @@ checks reduce risk; arbitrary host/worker allocation spikes can still exceed mem
    does not use detector rank or labels. Optional previews use the exact input pixels
    and matching geometry, sharing the configurable per-generation preview allowance
    (default 32; see `model_environment.json`); default probes return
-   numerical diagnostics. Reports include input shape, spacing, validity, geometry
-   coverage, finite/missing/nonzero counts, min/max/std, quartiles and example handles.
-   Zero quartiles alone do not imply a constant column. Full sampled values are saved
-   under `descriptor_probes/`; the tool returns a few representative cases per brain.
+   numerical diagnostics. The reply gives a few representative cases per brain (input shape,
+   spacing, validity, geometry coverage and the column values) and `column_summary`: per column
+   the lowest finite fraction, the range, the brains where it is constant (`constant_in`) and
+   the median per brain. A zero median alone does not imply a constant column. The probe's
+   `result.json` (`result_file`) holds the full diagnostics per brain (finite/missing/nonzero
+   counts, min/max/std, quartiles and example handles), and the `*_values.npz` files beside it
+   every sampled value.
    Each preview reports `preview_inlined`; oversized PNGs stay on disk unchanged.
    See image_context_guide.md for display limits and controls.
    Previews default to native slice sheets with separate raw and depth-clipped overlay rows,
@@ -109,9 +112,11 @@ checks reduce risk; arbitrary host/worker allocation spikes can still exceed mem
    `all_candidates`. One
    uncached call costs one evaluation unit plus wall time from the per-call and
    per-generation descriptor budgets in `model_environment.json`. The reply
-   gives, for each column on each TRAIN brain, the diagnostics above and quartiles conditional on labels
-   1 and 0 (NaN-label rows are only counted, as `unlabeled_count`),
-   finite fraction and coverage. Results are cached by code, inputs and implementation
+   gives the coverage per brain and `column_summary`: per column the lowest finite fraction,
+   the range and the median per brain, overall and for labels 1 and 0. The run's `result.json`
+   (`summaries_file`) holds, for each column on each TRAIN brain, the diagnostics above and
+   quartiles conditional on labels 1 and 0 (NaN-label rows are only counted, as
+   `unlabeled_count`). Results are cached by code, inputs and implementation
    identity. An unchanged valid cache costs no evaluation unit or descriptor wall budget.
    In no-score/raw modes, production calls use `judgeable` or `all_candidates`; sampled probes do
    not become sparse predictor columns.

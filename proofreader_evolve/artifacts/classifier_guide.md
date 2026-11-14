@@ -215,8 +215,9 @@ occur after Linux Landlock + seccomp isolation; unavailable isolation fails clos
 
 Print useful training diagnostics, internal CV results and convergence information.
 `worker.log` preserves stdout/stderr when there is any (a silent successful fit leaves
-no file), and the tool returns its last 8 KB with the
-training summary or failure. Logs are limited to 4 MiB. Each measured candidate
+no file), and the tool returns its tail with the training summary or failure: the last
+2 KB of a successful fit, the last 8 KB of a failed one; `worker.log` under the fit's
+`fit_snapshot` holds the rest. Logs are limited to 4 MiB. Each measured candidate
 records code, parameters, artifact hashes, library versions, TRAIN provenance,
 ranking changes, wall time and errors. These are observable execution records,
 not hidden agent reasoning.
@@ -238,6 +239,15 @@ selection score; `target_precision` / `grouped_cv_precision` is Precision@K over
 rows, combining the target kind's counted pools by the configured aggregation
 (sum(TP) / sum(effective K) by default, or equal-brain precision) and is reported beside
 it. Pools below the positive floor are reported but excluded. The
+replies of `train_classifier`, `evaluate_train`, `search_parameters` and `restore_candidate`
+carry an attempt's conclusions: `target_objective`, `selection_gate` (with `resampling`),
+`train_gate`, `selection_comparison` (overall, holdout and per brain) and, under `feedback`,
+the rank statistics, the per-family statistics (`per_kind_by_family`) and `ranking_delta` of
+`candidate_train` and `candidate_selection`. The example rows with their `candidate_refs`,
+the per-brain cells and the fixed explanations (`reading_guide`, `k_rule`,
+`selection_protocol`) stay in the attempt's `feedback.json`, whose path the reply gives as
+`feedback.file`; read it when you need them. A grid lists one short row per configuration
+and the restored best in full. The
 full-TRAIN fit is then frozen as the candidate. `candidate_train` numbers remain
 **in-sample resubstitution** diagnostics and do not rank candidates under `grouped_oof`. A model that memorizes
 rows scores high in-sample and low out-of-fold. If `fit` declares a `groups`

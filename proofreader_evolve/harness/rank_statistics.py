@@ -3,7 +3,8 @@
 Every statistic is a function of one ranking (labels in ranking order, score-tie groups) and
 nonnegative row weights, so the point estimate (unit weights) and the paired Poisson
 bootstrap (one resampled weight per fragment group, shared by its rows) share one implementation. Which statistic is the objective of a
-run is the ``Budgets.objective`` setting (``OBJECTIVES``); the others are recorded in every
+kind is the ``Budgets`` setting (``OBJECTIVES``; one name for every kind, or since 2026-11-13 one
+per kind, ``Budgets.objective_for``); the others are recorded in every
 cell and report as diagnostics. Since 2026-11-02 the driver's default objective is AUROC (the
 head of the ranking is protected by the guard rail of ``promotion_gate``): on pools
 shaped like the validation merge cells a broad improvement of the ranking gives AUROC about
@@ -15,6 +16,7 @@ only. Precision at a depth credits the key-broken order; AUROC, partial AUROC an
 precision treat tied scores as one threshold (as sklearn does), so a score that ties many rows
 is not credited for the row order inside its ties.
 """
+from collections.abc import Mapping
 import math
 
 import numpy as np
@@ -43,6 +45,48 @@ def check_objective(objective):
     if objective not in OBJECTIVES:
         raise ValueError(f'Unknown objective {objective!r}; use one of {OBJECTIVES}')
     return objective
+
+
+def objective_of(objective, kind):
+    """One kind's objective. ``objective`` is one name for every kind, or a mapping kind -> name
+    (``--objective merge=average_precision,split=pauc``, 2026-11-13); a missing value is
+    precision at K, the rule of reports written before v7."""
+    if isinstance(objective, Mapping):
+        if kind not in objective:
+            raise ValueError(f'No objective for kind {kind!r}; the mapping names {sorted(objective)}')
+        return check_objective(objective[kind])
+    return check_objective(objective or 'precision_at_k')
+
+
+def objective_record(objectives):
+    """A mapping kind -> name as it is recorded and shown: the one name when every kind shares
+    it (the form of every record before 2026-11-13), else the mapping."""
+    names = set(objectives.values())
+    return next(iter(names)) if len(names) == 1 else dict(objectives)
+
+
+def objective_text(objective, labels=True):
+    """One line for logs and manifests: ``average precision`` or
+    ``merge: average precision; split: partial AUROC`` (``merge=...,split=...`` without labels)."""
+    if isinstance(objective, Mapping):
+        return ('; '.join(f'{kind}: {OBJECTIVE_LABELS[name]}' for kind, name in sorted(objective.items())) if labels
+                else ','.join(f'{kind}={name}' for kind, name in sorted(objective.items())))
+    return OBJECTIVE_LABELS[objective] if labels else objective
+
+
+def parse_objective(text):
+    """The ``--objective`` argument: one name, or ``kind=name`` pairs separated by commas."""
+    text = str(text).strip()
+    if '=' not in text:
+        return check_objective(text)
+    result = {}
+    for part in text.split(','):
+        kind, _, name = part.partition('=')
+        kind, name = kind.strip(), name.strip()
+        if not kind or kind in result:
+            raise ValueError(f'Malformed objective {text!r}; use NAME or merge=NAME,split=NAME')
+        result[kind] = check_objective(name)
+    return result
 
 
 def check_pauc_fpr(value):

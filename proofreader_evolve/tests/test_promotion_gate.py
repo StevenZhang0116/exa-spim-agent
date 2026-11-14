@@ -6,6 +6,7 @@ Synthetic fixtures only; no brain caches, cloud reads or LLM calls."""
 from contextlib import redirect_stdout
 import io
 import json
+from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -127,6 +128,39 @@ class ResamplingGroupTests(unittest.TestCase):
         self.assertEqual(pools["groups"], sum(grouped["groups"].values()))
 
 
+class StoredScoresTests(unittest.TestCase):
+    """Validation scores kept for replays (2026-11-13)."""
+
+    def test_stored_scores_reproduce_the_table(self):
+        tables, parent, candidate = synthetic()
+        rule = budgets("average_precision")
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, state in (("parent", parent), ("candidate", candidate)):
+                stored = promotion_gate.save_scores(Path(tmp) / promotion_gate.SCORES_DIR / f"{name}.npz", state, tables, ["merge"])
+            self.assertEqual(stored["version"], promotion_gate.SCORES_VERSION)
+            cell = stored["cells"]["a/merge"]
+            truth = tables["a"].tables["merge"].truth
+            self.assertEqual((cell["pool_size"], cell["labeled"]), (len(truth), int(np.isfinite(truth).sum())))
+            loaded = [promotion_gate.load_scores(Path(tmp) / promotion_gate.SCORES_DIR / f"{name}.npz", tables)
+                      for name in ("parent", "candidate")]
+            # Only the labeled rows are kept, and they are all a statistic reads.
+            labeled = np.isfinite(truth)
+            np.testing.assert_array_equal(loaded[1]["a/merge"]["scores"][labeled], candidate["a/merge"]["scores"][labeled])
+            self.assertTrue((loaded[1]["a/merge"]["scores"][~labeled] == 0).all())
+            for objective in ("average_precision", "pauc"):   # any objective can be replayed from one file
+                first = promotion_gate.gate(parent, candidate, tables, budgets(objective), target_kind="merge", draws=100, seed=1)
+                again = promotion_gate.gate(*loaded, tables, budgets(objective), target_kind="merge", draws=100, seed=1)
+                self.assertEqual(first["statistics"], again["statistics"])
+                self.assertEqual(first["rule"], again["rule"])
+            # Other labels or another pool: the file is refused instead of being misread.
+            tables["b"].tables["merge"].truth[0] = 1. - np.nan_to_num(tables["b"].tables["merge"].truth[0])
+            with self.assertRaisesRegex(ValueError, "another pool or other labels"):
+                promotion_gate.load_scores(Path(tmp) / promotion_gate.SCORES_DIR / "parent.npz", tables)
+            with self.assertRaises(ValueError):
+                promotion_gate.save_scores(Path(tmp) / "bad.npz", {"a/merge": {"scores": np.zeros(3)}},
+                                           {"a": tables["a"]}, ["merge"])
+
+
 class DecisionTests(unittest.TestCase):
     common = dict(target_kind="merge", draws=100, seed=1)
 
@@ -218,7 +252,35 @@ class DriverTests(unittest.TestCase):
             manifest = json.loads((path / 'manifest.json').read_text())
             record = json.loads((path / 'ledger.jsonl').read_text().splitlines()[0])
             record['_pool'] = json.loads((path / 'candidate_pool.json').read_text())
+            record['_score_files'] = sorted(p.name for p in (path / promotion_gate.SCORES_DIR).iterdir())
+            record['_replayed'] = self.replay(path, banks, driver, args, record)
+            record['_guard'] = self.guard_reads(path)
         return manifest, record
+
+    @staticmethod
+    def replay(path, banks, driver, args, record):
+        """The recorded table recomputed from the stored score files alone."""
+        validation = {brain: banks[brain] for brain in args.validation_brains}
+        rule = scoring.Budgets({"merge": args.merge_k, "split": args.split_k}, positive_ratio=args.k_positive_ratio,
+                               min_positives=args.min_positives, aggregation=args.aggregation, objective=args.objective)
+        scores = path / promotion_gate.SCORES_DIR
+        table = promotion_gate.gate(promotion_gate.load_scores(scores / "seed.npz", validation),
+                                    promotion_gate.load_scores(scores / "gen001.npz", validation), validation, rule,
+                                    target_kind=record["target_kind"], draws=args.bootstrap_draws, seed=1,
+                                    margin=args.precision_margin)
+        return table["statistics"]
+
+    @staticmethod
+    def guard_reads(path):
+        """What the reviser's file guard answers for a stored score file and for the scorer."""
+        import asyncio
+        from proofreader_evolve.harness.reviser_access import make_guard
+        gen = path / "gen001"
+        guard, _ = make_guard(path, gen, [gen / "train_feedback.json"], path / "guard_audit.jsonl", allow_proposal=True,
+                              readable_dirs=[gen / "experiments"])
+        answers = [asyncio.run(guard("Read", {"file_path": str(target)}, None))
+                   for target in (path / promotion_gate.SCORES_DIR / "gen001.npz", gen / "scorer.py")]
+        return [type(answer).__name__ for answer in answers]
 
     def test_the_driver_applies_and_records_the_rule(self):
         manifest, record = self.run_once()
@@ -235,6 +297,11 @@ class DriverTests(unittest.TestCase):
         self.assertIsNotNone(gate['candidate_objective'])  # kind scheduling reads the objective's gain
         for removed in ('judge', 'bootstrap_gate', 'paired_bootstrap', 'head_guard'):
             self.assertNotIn(removed, gate)
+        # The held-out scores are kept for replays, outside what a reviser session may read.
+        self.assertEqual(record['_score_files'], ['gen001.npz', 'seed.npz'])
+        self.assertEqual(record['validation_scores']['file'], 'validation_scores/gen001.npz')
+        self.assertEqual(record['_replayed'], table['statistics'])
+        self.assertEqual(record['_guard'], ['PermissionResultDeny', 'PermissionResultAllow'])
         if record['accepted']:
             self.assertIsNone(table['rejection_category'])
             self.assertNotIn('rejection', record['submission_validated'])

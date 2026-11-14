@@ -34,12 +34,21 @@ def _number(value):
     return value if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else None
 
 
+def _objective_name(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict) and value and all(isinstance(name, str) for name in value.values()):
+        return dict(value)
+    return None
+
+
 def _metrics(value):
     if not isinstance(value, dict):
         return None
     return {'per_kind_precision': {kind: _number(score) for kind, score in value.get('per_kind_precision', {}).items()},
             # v7 reports name their objective and carry every rank statistic per kind; earlier ones were precision.
-            'objective': value.get('objective') if isinstance(value.get('objective'), str) else None,
+            # One name, or a name per kind when the run's kinds have different objectives (2026-11-13).
+            'objective': _objective_name(value.get('objective')),
             'per_kind_objective': {kind: _number(score) for kind, score in (value.get('per_kind_objective') or {}).items()},
             'per_kind_statistics': ({kind: {name: _number(stat) for name, stat in stats.items()}
                                      for kind, stats in value['per_kind_statistics'].items() if isinstance(stats, dict)}
@@ -319,7 +328,7 @@ def build_report_data(run_dir):
             'state': state, 'manifest': {key: manifest.get(key) for key in (
                 'train_brains', 'development_validation_brains', 'budgets', 'promotion_gate',
                 'search_version', 'classifier_training_protocol', 'selection_protocol', 'kind_schedule',
-                'detector_prior', 'objective_statistic', 'objective_label')},
+                'detector_prior', 'objective_statistic', 'objective_statistics', 'objective_label')},
             'baseline': _pair(reader.json('baseline.json')), 'seed': seed,
             'final': _pair(final) if final else None,
             'pool': _pool(reader.json('candidate_pool.json')), 'seeds': seeds,

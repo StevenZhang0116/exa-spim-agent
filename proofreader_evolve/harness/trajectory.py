@@ -5,6 +5,8 @@ import difflib
 import json
 import hashlib
 
+from .rank_statistics import objective_of
+
 
 def image_safe_content(value):
     """Retain image provenance, without duplicating base64 pixels in text logs."""
@@ -117,9 +119,10 @@ def log_metrics(trace, label, report, parent=None):
     lines = [label]
     for kind, value in summary['per_kind_precision'].items():
         parts = []
-        if objective != "precision_at_k":
+        name = objective_of(objective, kind)
+        if name != "precision_at_k":
             current = summary["per_kind_objective"][kind]
-            text = f"{objective}={current:.4f}"
+            text = f"{name}={current:.4f}"
             if parent is not None and parent_objective.get(kind) is not None:
                 delta = current - parent_objective[kind]
                 summary.setdefault('delta_per_kind_objective', {})[kind] = delta
@@ -136,8 +139,9 @@ def log_metrics(trace, label, report, parent=None):
         if parent is not None:
             cell["delta_precision"] = cell["precision"] - parent["cells"][name]["precision"]
             cell["delta_tp"] = cell["tp"] - parent["cells"][name]["tp"]
-            if cell.get(objective) is not None and parent["cells"][name].get(objective) is not None:
-                cell["delta_objective"] = cell[objective] - parent["cells"][name][objective]
+            statistic = objective_of(objective, name.rsplit("/", 1)[-1])
+            if cell.get(statistic) is not None and parent["cells"][name].get(statistic) is not None:
+                cell["delta_objective"] = cell[statistic] - parent["cells"][name][statistic]
     trace.emit("metrics", "; ".join(lines), label=label, metrics=summary)
     for name, cell in summary["cells"].items():
         brain, kind = name.rsplit("/", 1)

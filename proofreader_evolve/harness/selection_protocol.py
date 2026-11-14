@@ -31,6 +31,7 @@ from .label_availability import labeled_rows, labels_digest
 from .local_features import augmented_features
 from .model_execution import predict_model, DEFAULT_MEMORY_MB
 from .rank_statistics import (DEFAULT_PAUC_FPR, OBJECTIVE_LABELS, cell_statistics, family_statistics,  # noqa: F401
+                              objective_text,
                               fold_budgets)  # (partly re-exported)
 
 
@@ -170,6 +171,13 @@ class SelectionProtocol:
 
     def describe(self, kind=None):
         grouped = self.mode == 'grouped_oof'
+        # One kind: its objective. Every kind: the objective as the budgets record it.
+        objective = self.budgets.objective_for(kind) if kind is not None else self.budgets.objective_record()
+
+        def metric(name):
+            return (('grouped_cv_precision' if name == 'precision_at_k' else f'grouped_cv_{name}') if grouped else
+                    ('in_sample_precision_at_k' if name == 'precision_at_k' else f'in_sample_{name}'))
+
         info = {'version': PROTOCOL_VERSION, 'mode': self.mode,
                 'selection_brains': list(self.selection_brains),
                 'auxiliary_train_brains': list(self.auxiliary_brains),
@@ -180,11 +188,9 @@ class SelectionProtocol:
                                  'other folds.' if self.holdout_brains else None),
                 'aggregation': self.budgets.aggregation,
                 'folds': FOLDS if grouped else None,
-                'objective': self.budgets.objective, 'objective_label': OBJECTIVE_LABELS[self.budgets.objective],
-                'metric': (('grouped_cv_precision' if self.budgets.objective == 'precision_at_k'
-                            else f'grouped_cv_{self.budgets.objective}') if grouped else
-                           ('in_sample_precision_at_k' if self.budgets.objective == 'precision_at_k'
-                            else f'in_sample_{self.budgets.objective}')),
+                'objective': objective, 'objective_label': objective_text(objective),
+                'metric': (metric(objective) if isinstance(objective, str)
+                           else {name: metric(value) for name, value in sorted(objective.items())}),
                 'ranking': ('Per-fold ranking of out-of-fold scores over GT-labeled rows with '
                             'largest-remainder fold budgets that sum to each pool\'s effective K; '
                             'target-kind pools share the configured aggregation and positive floor.' if grouped else
@@ -220,7 +226,7 @@ class SelectionProtocol:
     def score_report(self, kind, scores_by_cell, policy_sha256=None):
         """Apply the official ranking to one score vector per selection cell of this kind."""
         report = {'version': PROTOCOL_VERSION, 'mode': self.mode, 'target_kind': kind,
-                  'objective': self.budgets.objective,
+                  'objective': self.budgets.objective_for(kind),
                   'policy_sha256': policy_sha256, 'cells': {}}
         state = {}
         for brain in self.selection_brains:
@@ -245,12 +251,12 @@ class SelectionProtocol:
             metrics['labels_sha256'] = labels_digest(table.truth)
             report['cells'][cell] = metrics
             state[cell] = {'scores': scores, 'chosen': chosen}
-        report.update(aggregate_objective(report['cells'], self.budgets.aggregation, self.budgets.objective))
+        report.update(aggregate_objective(report['cells'], self.budgets.aggregation, self.budgets.objective_for(kind)))
         holdout_cells = [f'{brain}/{kind}' for brain in self.holdout_brains]
         counted = [cell for cell in holdout_cells if report['cells'][cell].get('in_mean', True)]
         report['holdout_cells'] = holdout_cells
         holdout = (aggregate_objective({cell: report['cells'][cell] for cell in counted}, self.budgets.aggregation,
-                                       self.budgets.objective) if counted else None)
+                                       self.budgets.objective_for(kind)) if counted else None)
         report['holdout_precision'] = holdout['per_kind_precision'][kind] if holdout else None
         report['holdout_objective'] = holdout['per_kind_objective'][kind] if holdout else None
         return report, state

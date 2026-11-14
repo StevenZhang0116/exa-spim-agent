@@ -10,7 +10,8 @@ The candidate pool, original features and Top K stay fixed.
 
 ## Inspect a TRAIN candidate
 
-`train_feedback.json` and evaluation feedback contain `candidate_refs` aligned
+`train_feedback.json` and each attempt's `feedback.json` (the path is `feedback.file` in the
+evaluation reply) contain `candidate_refs` aligned
 with example labels, scores and feature vectors. Call:
 
 ```json

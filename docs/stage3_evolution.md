@@ -7,12 +7,13 @@ ranking. Available predictors depend on the detector prior: raw mode withholds b
 frozen scores and discovered feature columns. It is an LLM-driven search: a
 fresh agent session is the mutation operator, a TRAIN-side selection score ranks
 exploration branches, and a held-out validation gate alone decides promotion: no rank statistic
-of the target kind may be worse beyond paired-bootstrap resampling noise, and the run's objective
+of the target kind may be worse beyond paired-bootstrap resampling noise, and the kind's objective
 over its counted brains must be better beyond that noise by more than a minimum effect
 (`--promotion-gate rule`, the default since 2026-11-12, section 3.2). The objective
 is a rank statistic over the GT-labeled rows (`--objective`, since 2026-11-02 AUROC by
 default; `pauc`, `average_precision` and the earlier `precision_at_k` are the alternatives,
-and every statistic is recorded whatever the objective). Each pool ranks its own
+and every statistic is recorded whatever the objective; since 2026-11-13
+`--objective merge=NAME,split=NAME` gives each kind its own). Each pool ranks its own
 K = ceil(ratio x its GT positives), limited to the kind's cap when it has one. Since
 2026-10-27 no kind has a cap and both ratios are 1, so every pool ranks exactly its GT
 positives and Precision@K equals Recall@K (R-precision) for merge and split alike, in
@@ -264,14 +265,32 @@ What happens at a submission (`harness/promotion_gate.py`):
 
 The objective decides, so what TRAIN selection and the reviser optimise is what promotes;
 choosing `--objective pauc` instead of `average_precision` moves the criterion to the
-low-false-positive range. The minimum effect exists because the split pools hold about 17,000
+low-false-positive range. The two kinds may differ (2026-11-13):
+`--objective merge=average_precision,split=pauc` gives each kind its own objective, used for
+that kind's TRAIN selection, feature ablation, TRAIN noise check, bootstrap, rule and scheduling
+figures (`Budgets.objective_for(kind)`). Merge pools hold 1 to 9% positives and split pools about
+40%, so one statistic need not suit both; in the runs of 2026-11-12 the average-precision and
+the pAUC criterion disagreed on two of ten split submissions. The TRAIN objective and the
+promotion criterion of a kind stay one and the same statistic. The manifest records
+`objective_statistic` (`merge=...,split=...` when they differ) and `objective_statistics` per
+kind, each ledger row the objective of its target kind. Kind scheduling compares the kinds'
+recent gains and headroom in their own objectives' units, as it already compared two kinds whose
+values lie in different ranges; no normalisation was added. The documented launch still uses
+average precision for both kinds. The minimum effect exists because the split pools hold about 17,000
 positives: their intervals are narrow enough that a gain of 0.0009 in average precision was
 beyond noise, and a loss of 0.0005 in AUROC significantly worse.
 
 The ledger's `validation_gate` carries `mode: "rule"`, the point gate (recorded, not binding)
 and `gate_table`: the statistics with their intervals, `guard_rail`, `rule` (`statistic`,
 `delta`, `low`, `margin`, `significant`, `large_enough`, `passed`), `status` (`rule`,
-`guard_rail` or `unavailable`) and `rejection_category`. Kind scheduling reads the objective's
+`guard_rail` or `unavailable`) and `rejection_category`. Since 2026-11-13 the run also keeps the
+scores the table was computed from: `validation_scores/seed.npz` and one
+`validation_scores/gen<NNN>.npz` per measured submission (the GT-labeled rows of the validation
+pools, a few hundred kilobytes each, bound to the pools and labels by their digests;
+`promotion_gate.save_scores` / `load_scores`). They are host-side files outside every path a
+reviser session may read. With them `notebooks/promotion_rule_replay.py --objective ...`
+recomputes the gate of a finished run under another objective, margin or resampling unit
+without scoring a candidate again. Kind scheduling reads the objective's
 point gain. `--promotion-gate margin` is the point-estimate gate without a table; the tests use
 it.
 
@@ -311,8 +330,8 @@ the 80% interval of the gain is 1.08 times as wide (median; 0.90 to 1.32) for me
 times (0.98 to 1.10) for split when fragments are resampled instead of rows, and no
 beyond-noise verdict changes. The dependence inside a fragment is therefore small for the paired
 gain of two scorers; the unit was changed because it is the correct one, not because it moves
-decisions. The validation intervals of earlier runs were not recomputed (the candidates'
-validation scores are not stored).
+decisions. The validation intervals of earlier runs were not recomputed (their candidates'
+validation scores were not stored; runs since 2026-11-13 store them).
 
 Limits. The five validation brains are queried every generation, so "beyond noise" is
 conditional on those brains and is not corrected for repeated tries; brains are not resampled.
@@ -511,7 +530,16 @@ use `--reviser-max-turns` to change this independently of
 Tool results may be up to
 100,000 tokens; a result the SDK parks on disk (above about 50 KB) stays readable
 through the session's file guard, and file reads allow 100,000 tokens instead of
-the SDK default of 25,000. The session may also read its own generation's
+the SDK default of 25,000. A parked result reaches the session only as a 2 KB preview
+unless it reads the file, and in the runs of 2026-11-12 the sessions read it for 38 of
+105 parked training replies (`notebooks/feedback_use_audit.py`). Since 2026-11-13 the
+replies of the training, restore, descriptor and memory tools therefore stay inside
+30,000 characters (`harness/tool_replies.py`): they carry the conclusions (objective,
+gates with the resampling interval, the per-brain comparison, per-kind and per-family
+statistics, ranking changes, one digest per descriptor column) and name the file that
+holds the detail (an attempt's `feedback.json` with the example rows and per-brain
+cells, a descriptor run's or probe's `result.json`). A reply above the budget is
+recorded in the trajectory as `tool_reply_over_budget`. The session may also read its own generation's
 `experiments/`, `classifier_fits/`, TRAIN `descriptor_runs/` and `descriptor_probes/`
 directories, including the corresponding trees in earlier generations. PNG previews
 under current/earlier `image_inspections/` are also readable; adjacent host audit JSON
@@ -943,7 +971,8 @@ Completed runs stay under `proofreader_evolve/runs/precision_<timestamp>_<id>/`.
 detectors, budgets, gate mode and kind schedule, `ledger.jsonl` every generation's
 decision (`validation_gate` with `point_gate` and `gate_table`, the gate's statistics table with its intervals, guard rail,
 rule and rejection category; ledgers before 2026-11-12 carry `bootstrap_gate` and `paired_bootstrap`, those of 2026-11-10 to 2026-11-12 also `judge` with every ballot; `kind_allocation` with the rule, headroom and momentum; descriptor runs
-and inference) and `search_summary.json` the stopping reason. Open items that are
+and inference), `validation_scores/` the host-only held-out scores of the seed and of every measured
+submission (section 3.2), and `search_summary.json` the stopping reason. Open items that are
 deliberately deferred are listed in `proofreader_evolve/TODO.md`. Treat numbers from these runs as
 development evidence; the validation brains are queried every generation.
 

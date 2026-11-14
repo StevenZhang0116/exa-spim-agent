@@ -134,7 +134,11 @@ class HoldoutProtocolTests(unittest.TestCase):
             session.proposal_path.write_text(json.dumps({**proposal, 'classifier': {'parameters': {'scale': 1.}}}))
             fitted = session.train_classifier()
             self.assertEqual(fitted['status'], 'trained', fitted)
-            for candidate in (formula, fitted['candidates'][0]):
+            # A grid row carries the overall and holdout comparison; the per-brain rows of the restored
+            # candidate are in best (tool_replies, 2026-11-13).
+            self.assertGreater(fitted['candidates'][0]['selection_comparison']['holdout']['delta'], 0.)
+            self.assertNotIn('per_brain', fitted['candidates'][0]['selection_comparison'])
+            for candidate in (formula, fitted['best']):
                 comparison = candidate['selection_comparison']
                 self.assertGreater(comparison['holdout']['delta'], 0.)
                 self.assertTrue(comparison['per_brain']['747807/merge']['whole_brain_holdout'])

@@ -8,7 +8,7 @@ import numpy as np
 
 from .search_proposals import formula_info
 from .fixed_pool_scoring import objective_for_kind, precision_for_kind
-from .rank_statistics import check_objective
+from .rank_statistics import check_objective, objective_of, objective_record
 
 
 REFERENCE_EVERY = 3
@@ -68,12 +68,18 @@ class CandidatePool:
                  exploration_patience=2, explore_every=3, early_stop=True, coverage=None, hypotheses=None,
                  research=None, image_kinds=(), objective='precision_at_k'):
         self.path, self.kinds, self.cursor = path, list(kinds), 0
-        self.objective = check_objective(objective)
+        # One objective per kind (a single name applies to all); the tolerances follow the kind's
+        # objective. The attributes keep the single value when every kind shares it.
+        self.objectives = {kind: objective_of(objective, kind) for kind in self.kinds}
+        self.objective = objective_record(self.objectives) if self.objectives else check_objective(objective)
         # Scheduling heuristic, not a significance test or a promotion threshold.
         # Keep the historical positive-gain rule for the other objectives.
-        self.progress_tolerance = .0005 if self.objective == 'auroc' else 0.
+        self._progress_tolerance = {kind: .0005 if name == 'auroc' else 0. for kind, name in self.objectives.items()}
+        self._score_tolerance = {kind: POOL_TOLERANCES[name] if score_tolerance is None else score_tolerance
+                                 for kind, name in self.objectives.items()}
+        self.progress_tolerance = self._recorded(self._progress_tolerance, 0.)
+        self.score_tolerance = self._recorded(self._score_tolerance, score_tolerance)
         self.size = size
-        self.score_tolerance = POOL_TOLERANCES[self.objective] if score_tolerance is None else score_tolerance
         self.plateau_patience, self.exploration_patience = plateau_patience, exploration_patience
         self.explore_every, self.early_stop = explore_every, early_stop
         self.coverage = coverage
@@ -98,6 +104,12 @@ class CandidatePool:
                                 'no_evidence_rounds': 0, 'incomplete_investigations': 0,
                                 'execution_blocked_rounds': 0, 'pending_investigation': None,
                                 'pause_reason': None, 'progress_objective': None} for kind in kinds}
+
+    @staticmethod
+    def _recorded(per_kind, default):
+        """A per-kind setting as it is shown: the one value when the kinds share it, else the mapping."""
+        values = set(per_kind.values())
+        return default if not values else next(iter(values)) if len(values) == 1 else dict(per_kind)
 
     @staticmethod
     def _objective(entry):
@@ -216,7 +228,7 @@ class CandidatePool:
                 candidate['retention'] = {'reason': 'train_specialist', **comparison}
             else:
                 eligible = [e for e in remaining
-                            if self._objective(e) >= best - self.score_tolerance - 1e-12]
+                            if self._objective(e) >= best - self._score_tolerance[kind] - 1e-12]
                 if not eligible:
                     break
                 candidate = min(eligible, key=lambda e: (
@@ -312,7 +324,7 @@ class CandidatePool:
                     'followup_required': followup, 'investigation': investigation,
                     'observed_sources': self.research.sources(kind) if self.research is not None else None,
                     'search_parent': self._annotate(parent), 'best_precision_before': champion['target_precision'],
-                    'best_objective_before': self._objective(champion), 'objective': self.objective,
+                    'best_objective_before': self._objective(champion), 'objective': self.objectives[kind],
                     'complementary_candidates': self._complements(parent),
                     'research_focus': ('failure_driven_feature_discovery' if explore else 'controlled_parameter_tuning'),
                     'hypothesis_advice': self.hypotheses.advice(kind) if self.hypotheses is not None else None,
@@ -373,7 +385,7 @@ class CandidatePool:
             gain = best - progress['progress_objective']
             # Accumulate small gains across generations. Coverage still retains
             # specialists, but does not by itself reset performance stagnation.
-            improved = gain > 1e-12 and gain + 1e-12 >= self.progress_tolerance
+            improved = gain > 1e-12 and gain + 1e-12 >= self._progress_tolerance[kind]
             if improved:
                 progress.update(stalled_rounds=0, stalled_explorations=0, progress_objective=best)
             else:

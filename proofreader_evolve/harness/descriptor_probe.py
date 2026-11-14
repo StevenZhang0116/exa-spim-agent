@@ -5,6 +5,7 @@ import time
 
 import numpy as np
 
+from . import tool_replies
 from .descriptor_inputs import input_summary
 from .local_context import candidate_ref, resolve_train_candidate, resident_first
 
@@ -130,8 +131,10 @@ def probe(session, candidate_refs=None, sample_per_brain=128, seed=0, previews=F
         response['status'] == 'probed', path, outcome={'status': response['status']})
     session.trace.emit('descriptor_probe', f"{response['probe']}: {response['status']}; {elapsed:.1f}s",
                        status=response['status'], preview_count=len(preview_paths), previews_inlined=len(blocks))
-    return ({'content': [{'type': 'text', 'text': json.dumps(response, allow_nan=False)}, *blocks]}
-            if preview_paths else response)
+    # result.json keeps the full diagnostics; the reply carries their digest (tool_replies).
+    public = tool_replies.probe_reply(response, path)
+    return ({'content': [{'type': 'text', 'text': json.dumps(public, allow_nan=False)}, *blocks]}
+            if preview_paths else public)
 
 
 def plan(session):

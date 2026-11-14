@@ -634,17 +634,21 @@ Open:
    `selection_gate.resampling`; (c) `gain_too_small` rejections and what followed them.
 2. **The objective is now the promotion criterion.** The judge had applied "pAUC interval above
    zero"; the documented launch keeps average precision. For split the two differ in practice
-   (two of ten split submissions that reached the table). Decide from the next runs whether split should run with
-   `--objective pauc`; one flag, no code change. A run and its comparison runs need the same
-   objective and gate.
+   (two of ten split submissions that reached the table). Since 2026-11-13 each kind can have its own
+   objective (`--objective merge=average_precision,split=pauc`), and runs store their validation
+   scores, so the question can be answered on a finished run with
+   `notebooks/promotion_rule_replay.py --objective average_precision pauc` instead of by a new
+   run. Decide whether split should run with pAUC; the documented launch still uses average
+   precision for both. A run and its comparison runs need the same objective and gate. The
+   kind scheduler compares gains and headroom of the two kinds in their own objectives' units.
 3. **The margin, 0.002, is one number chosen from two runs**, for both kinds and any objective.
    Revisit with more submissions; a per-kind value would need a code change.
 4. **The intervals resample fragments, not brains.** Fragment resampling (2026-11-12) widened
    the TRAIN intervals by 8% (merge) and 2% (split) and changed no verdict, so within-fragment
    dependence is not what limits the gate. Still open: the five validation brains are queried
    every generation without a correction for repeated tries, brains are not resampled, and the
-   validation-side effect of the new unit was not measured (validation scores of submitted
-   candidates are not stored; storing them per generation would make such replays cheap).
+   validation-side effect of the new unit was not measured on the runs before 2026-11-13, whose
+   validation scores were not stored (later runs store them in `validation_scores/`).
 5. **The TRAIN check needs whole-brain holdouts.** With within-brain folds it reports
    `unavailable`; a fold-wise paired bootstrap would be needed for frozen / no-score runs that
    use them.

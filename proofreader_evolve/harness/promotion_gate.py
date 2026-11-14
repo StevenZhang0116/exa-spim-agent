@@ -5,7 +5,7 @@ development-validation pools,
 
 * no guarded rank statistic is significantly worse (the guard rail: the paired-bootstrap
   interval of its delta lies entirely below zero), and
-* the run's objective is better beyond resampling noise (the interval of its delta lies above
+* the target kind's objective is better beyond resampling noise (the interval of its delta lies above
   zero), by more than a minimum effect (``--precision-margin``).
 
 The host computes one table: every rank statistic of both scorers and the interval of each
@@ -30,12 +30,14 @@ changed a decision in eight merge submissions and was removed with it. The earli
 ``bootstrap`` mode (the objective's interval and a point-estimate head guard) is covered by the
 rule and the guard rail. The code is in the repository history (commit 17473f7).
 """
+import json
 import math
+from pathlib import Path
 
 import numpy as np
 
 from . import fixed_pool_scoring as scoring
-from .label_availability import labeled_rows
+from .label_availability import labeled_rows, labels_digest
 from .rank_statistics import ranking, ranking_statistics
 
 VERSION = "promotion-gate-v4-rule-fragment-groups"
@@ -175,7 +177,7 @@ def guard_rail(statistics):
 
 
 def rule_check(statistics, objective, margin=0.):
-    """The rule on the run's objective: the interval of its delta above zero and the point gain
+    """The rule on the target kind's objective: the interval of its delta above zero and the point gain
     above ``margin``. The guard rail is separate."""
     name = "precision" if objective == "precision_at_k" else objective
     row = statistics[name]
@@ -199,6 +201,71 @@ def rejection_category(statistics, rule):
     return "gain_too_small" if rule["significant"] else "within_noise"
 
 
+# --- stored scores ---------------------------------------------------------------------------
+
+SCORES_VERSION = "validation-scores-v1-labeled-rows"
+SCORES_DIR = "validation_scores"  # under the run directory; outside every path a reviser session may read
+
+
+def save_scores(path, state, tables_by_brain, kinds):
+    """Store a scorer's scores on the GT-labeled rows of the given kinds' pools (2026-11-13).
+
+    The gate's table is a function of these scores and the labels alone, so a stored file lets
+    any objective, margin or resampling unit be replayed on a finished run without scoring the
+    candidate again. Host-side only: the file holds held-out scores. Unlabeled rows are left out
+    (no statistic reads them); the pool and label digests bind the file to the tables.
+    """
+    arrays, cells = {}, {}
+    for brain, banks in tables_by_brain.items():
+        for kind, table in banks.tables.items():
+            if kind not in kinds:
+                continue
+            cell = f"{brain}/{kind}"
+            truth = np.asarray(table.truth, dtype=float)
+            scores = np.asarray(state[cell]["scores"], dtype=np.float64)
+            if scores.shape != truth.shape:
+                raise ValueError(f"Scores do not align with {cell}")
+            rows = labeled_rows(truth)
+            arrays[f"{cell}:rows"] = rows.astype(np.int64)
+            arrays[f"{cell}:scores"] = scores[rows]
+            cells[cell] = {"pool_size": int(len(truth)), "labeled": int(len(rows)),
+                           "pool_sha256": (getattr(table, "meta", None) or {}).get("pool_sha256"),
+                           "labels_sha256": labels_digest(truth)}
+    arrays["meta"] = np.array(json.dumps({"version": SCORES_VERSION, "kinds": sorted(kinds), "cells": cells}))
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp.npz")
+    np.savez_compressed(temporary, **arrays)
+    temporary.replace(path)
+    return {"path": str(path), "version": SCORES_VERSION, "cells": cells}
+
+
+def load_scores(path, tables_by_brain):
+    """The state ``{cell: {"scores"}}`` of a file written by ``save_scores``, aligned with the
+    current tables: full-length score vectors with the stored values on the labeled rows and zero
+    elsewhere (unlabeled rows are never ranked). Refuses tables whose pool or labels differ."""
+    with np.load(path, allow_pickle=False) as data:
+        meta = json.loads(str(data["meta"]))
+        if meta.get("version") != SCORES_VERSION:
+            raise ValueError(f"Unsupported stored scores: {meta.get('version')!r}")
+        state = {}
+        for cell, recorded in meta["cells"].items():
+            brain, kind = cell.rsplit("/", 1)
+            table = tables_by_brain[brain].tables[kind]
+            truth = np.asarray(table.truth, dtype=float)
+            current = {"pool_size": int(len(truth)), "pool_sha256": (getattr(table, "meta", None) or {}).get("pool_sha256"),
+                       "labels_sha256": labels_digest(truth)}
+            if any(recorded[key] != value for key, value in current.items()):
+                raise ValueError(f"{cell}: the stored scores were measured on another pool or other labels")
+            rows = data[f"{cell}:rows"]
+            if not np.array_equal(rows, labeled_rows(truth)):
+                raise ValueError(f"{cell}: the stored rows are not the labeled rows of this table")
+            scores = np.zeros(len(truth), dtype=np.float64)
+            scores[rows] = data[f"{cell}:scores"]
+            state[cell] = {"scores": scores}
+    return state
+
+
 # --- the gate --------------------------------------------------------------------------------
 
 def gate(parent_state, candidate_state, tables_by_brain, budgets, *, target_kind, draws, seed, alpha=.05, margin=0.):
@@ -215,10 +282,11 @@ def gate(parent_state, candidate_state, tables_by_brain, budgets, *, target_kind
                       reason=f"Gate statistics unavailable; candidate not promoted: {type(exc).__name__}: {exc}")
         return record
     guard = guard_rail(statistics)
-    rule = rule_check(statistics, budgets.objective, margin)
+    objective = budgets.objective_for(target_kind)
+    rule = rule_check(statistics, objective, margin)
     record.update(statistics=statistics, pools=pools, guard_rail=guard, rule=rule)
     row = statistics[rule["statistic"]]
-    detail = (f"{scoring.OBJECTIVE_LABELS[budgets.objective]} "
+    detail = (f"{scoring.OBJECTIVE_LABELS[objective]} "
               + (f"{row['parent']:.6f} -> {row['candidate']:.6f}; delta={row['delta']:+.6f}, "
                  f"interval [{row['low']:+.6f}, {row['high']:+.6f}]" if row["delta"] is not None and row["low"] is not None
                  else "undefined"))

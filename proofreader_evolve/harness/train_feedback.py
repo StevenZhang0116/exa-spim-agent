@@ -3,7 +3,7 @@
 import json
 
 from .rank_statistics import CELL_KEYS as DIAGNOSTIC_METRICS
-from .rank_statistics import FAMILY_NOTE
+from .rank_statistics import FAMILY_NOTE, objective_of
 
 
 FEEDBACK_VERSION = "stratified-train-v8-selection-comparison"
@@ -16,7 +16,7 @@ SELECTION_METRICS = ("protocol", "fold_budgets", "fold_tp", "fold_held_rows")
 
 def selection_comparison(parent, candidate, kind):
     """TRAIN-only transfer diagnostics; never change candidate selection or promotion."""
-    objective = candidate.get('objective') or 'precision_at_k'
+    objective = objective_of(candidate.get('objective'), kind)
     metric = 'precision' if objective == 'precision_at_k' else objective
 
     def pair(before, after):

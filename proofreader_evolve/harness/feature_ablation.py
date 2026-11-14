@@ -179,7 +179,8 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
                                             in_mean=in_mean, pauc_fpr=budgets.pauc_fpr)
         gained = np.setdiff1d(chosen, control)
         lost = np.setdiff1d(control, chosen)
-        full_value, removed_value = cell_value(full, budgets.objective), cell_value(removed, budgets.objective)
+        objective = budgets.objective_for(kind)
+        full_value, removed_value = cell_value(full, objective), cell_value(removed, objective)
         cells[f'{brain}/{kind}'] = {
             'full': full, 'without_features': removed,
             'delta_precision': full['precision'] - removed['precision'],
@@ -193,7 +194,7 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
                 'selection': frames[brain].attrs['image_context'].get('selection_coverage'),
                 'full': scoring_coverage(frames[brain], chosen, table.truth, k)}
     arms = {arm: aggregate_objective({name: cell[arm] for name, cell in cells.items()}, budgets.aggregation,
-                                     budgets.objective)
+                                     budgets.objective_for(kind))
             for arm in ('full', 'without_features')}
     delta_precision = arms['full']['per_kind_precision'][kind] - arms['without_features']['per_kind_precision'][kind]
     # The conclusion follows the objective; delta_precision stays for comparison with earlier runs.
@@ -210,7 +211,7 @@ def measure_ablation(train, kind, source, config, frames, columns, split, identi
     image_only = removed_images and set(columns) == set(image_columns)
     return {'version': ABLATION_VERSION, 'status': 'measured', 'target_kind': kind,
             'aggregation': arms['full']['aggregation'], 'excluded_cells': arms['full']['excluded_cells'],
-            'objective': budgets.objective,
+            'objective': budgets.objective_for(kind),
             'objective_by_arm': {arm: report['per_kind_objective'][kind] for arm, report in arms.items()},
             'precision_by_arm': {arm: report['per_kind_precision'][kind] for arm, report in arms.items()},
             'protocol': ('TRAIN_grouped_out_of_fold_partitioned_k' if classifier else

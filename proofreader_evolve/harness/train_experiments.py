@@ -29,6 +29,7 @@ from .selection_protocol import SelectionProtocol, load_selection, save_selectio
 from .descriptor_contract import descriptor_spec, referenced_columns, COLUMN_PREFIX
 from .descriptor_runs import SCOPES as DESCRIPTOR_SCOPES
 from . import descriptor_probe
+from . import tool_replies
 from .image_evidence import descriptor_ablation_evidence
 from .local_context import resolve_train_candidate, resident_first
 from .local_features import augmented_features
@@ -444,7 +445,7 @@ class TrainingExperiments:
         budgets = scoring.Budgets.coerce(self.budgets)
         # Objective, every rank statistic and precision are re-aggregated from the merged cells
         # (until 2026-11-02 only precision was, leaving the parent's objective in the summary).
-        report.update(scoring.aggregate_objective(report['cells'], budgets.aggregation, budgets.objective))
+        report.update(scoring.aggregate_objective(report['cells'], budgets.aggregation, budgets.objective_record()))
         return report, state
 
     def evaluate(self):
@@ -615,7 +616,8 @@ class TrainingExperiments:
             write_train_feedback(feedback_path, report, [], self.budgets, target_kind=self.target_kind,
                                  report_role='candidate', selection=selection_feedback, protocol=self.protocol_info,
                                  comparison=entry['selection_comparison'])
-            public = {**entry, 'feedback': json.loads(feedback_path.read_text())}
+            # The reply carries the conclusions; feedback.json keeps the examples and per-brain cells.
+            public = tool_replies.attempt_reply(entry, json.loads(feedback_path.read_text()), feedback_path)
             known = self._already_validated(entry)
             if known is not None:
                 public['outer_measurement'] = known
@@ -780,11 +782,13 @@ class TrainingExperiments:
                       if digest(c) in self.results and self.results[digest(c)]['report'] is not None]
         restored = self._restore_result(self._best(successful)) if successful else None
         # The full proposal and metrics already live in snapshots; avoid echoing them for every grid row.
-        best = ({key: restored[key] for key in ('restored', 'parameters', 'train_gate', 'selection_gate', 'feedback')}
+        best = ({key: restored[key] for key in ('restored', 'parameters', 'target_objective', 'target_precision', 'train_gate',
+                                                'selection_gate', 'selection_comparison', 'feedback')}
                 if restored else None)
-        return {'status': 'searched' if restored else 'no_successful_candidate', 'candidates': rows,
-                'best': best, 'stopped_early': stopped, 'evaluations_used': self.evaluations_used,
-                'evaluations_remaining': self.remaining}
+        return tool_replies.grid_reply(
+            {'status': 'searched' if restored else 'no_successful_candidate', 'candidates': rows,
+             'best': best, 'stopped_early': stopped, 'evaluations_used': self.evaluations_used,
+             'evaluations_remaining': self.remaining})
 
     @staticmethod
     def _grid_stop(response, skipped):
@@ -892,7 +896,7 @@ class TrainingExperiments:
                         oof_scores = {cell: values['scores'] for cell, values in selection_state.items()}
                         save_selection(directory, selection_report, selection_state)
                         self.trace.emit('classifier_fold_fits', f"Program {digest(program)[:12]}: "
-                                        f"{len(selection_report['fold_fits'])} fold fits; grouped_cv_{selection_report['objective']}="
+                                        f"{len(selection_report['fold_fits'])} fold fits; grouped_cv_{scoring.report_objective(selection_report, self.target_kind)}="
                                         f"{scoring.objective_for_kind(selection_report, self.target_kind):.6f}",
                                         fold_fits=selection_report['fold_fits'])
                     phase_started = time.monotonic()
@@ -942,16 +946,18 @@ class TrainingExperiments:
                         'program_sha256': digest(program),
                         'parameters': row['classifier']['parameters']} for row in rows]
         restored = self._restore_result(self._best(successful)) if successful else None
-        best = ({key: restored[key] for key in ('restored', 'classifier', 'train_gate', 'selection_gate', 'feedback', 'training')}
+        best = ({key: restored[key] for key in ('restored', 'classifier', 'target_objective', 'target_precision', 'train_gate',
+                                                'selection_gate', 'selection_comparison', 'feedback', 'training')}
                 if restored else None)
-        return {'status': 'trained' if restored else 'no_successful_candidate', 'candidates': public_rows, 'best': best,
+        return tool_replies.grid_reply({
+                'status': 'trained' if restored else 'no_successful_candidate', 'candidates': public_rows, 'best': best,
                 'stopped_early': stopped,
                 'training_metric_protocol': (self.protocol_info['metric'] if self.protocol.requires_fold_fits
                                              else 'in_sample_resubstitution'),
                 'selection_protocol': self.protocol.mode,
                 'classifier_seconds_used': self.classifier_seconds_used,
                 'classifier_seconds_remaining': max(0., self.classifier_search_seconds - self.classifier_seconds_used),
-                'evaluations_used': self.evaluations_used, 'evaluations_remaining': self.remaining}
+                'evaluations_used': self.evaluations_used, 'evaluations_remaining': self.remaining})
 
     def submitted(self):
         component, rules = self._read_candidate()
@@ -1411,7 +1417,9 @@ class TrainingExperiments:
                         f"{entry['wall_seconds']:.0f}s; evaluations remaining={self.remaining}; "
                         f"descriptor seconds remaining={self.descriptor_seconds_remaining:.0f}",
                         **{k: v for k, v in entry.items() if k != 'summaries'})
-        public = {**entry, 'evaluations_used': self.evaluations_used, 'evaluations_remaining': self.remaining}
+        public = tool_replies.descriptor_reply(
+            {**entry, 'evaluations_used': self.evaluations_used, 'evaluations_remaining': self.remaining},
+            directory / 'result.json')
         if registered:
             public['next'] = ('Use the columns in scorer.py or training.py (NaN on uncomputed rows), or list them in research.feature_columns '
                               'and call evaluate_feature_ablation for the out-of-fold increment. Reserve two evaluation units '
@@ -1475,6 +1483,16 @@ class TrainingExperiments:
                 'programs': {code: {'program': self.memory.descriptor_programs[code]['program'],
                                     'spec': self.memory.descriptor_programs[code]['spec']} for code in codes}}
 
+    def _check_reply_size(self, tool, response):
+        """A reply above the budget is close to the size at which the CLI hands the session a preview
+        instead of the reply (tool_replies); the event makes that visible in the trajectory."""
+        chars = tool_replies.reply_chars(response)
+        if chars > tool_replies.REPLY_BUDGET_CHARS:
+            self.trace.emit('tool_reply_over_budget', f'{tool}: reply of {chars} characters exceeds the budget of '
+                            f'{tool_replies.REPLY_BUDGET_CHARS}', tool=tool, chars=chars,
+                            budget=tool_replies.REPLY_BUDGET_CHARS)
+        return chars
+
     def mcp_server(self):
         from claude_agent_sdk import create_sdk_mcp_server, tool
         descriptor_scopes = list(getattr(self.memory.descriptor_runs, 'allowed_scopes', DESCRIPTOR_SCOPES))
@@ -1496,6 +1514,7 @@ class TrainingExperiments:
                     response['research_status'] = receipt
                 elif isinstance(response, dict):
                     response['content'].append({'type': 'text', 'text': json.dumps({'research_status': receipt})})
+            self._check_reply_size(getattr(function, '__name__', 'tool'), response)
             return response if isinstance(response, dict) and 'content' in response else {
                 'content': [{'type': 'text', 'text': json.dumps(response, allow_nan=False)}]}
 
@@ -1664,6 +1683,8 @@ class TrainingExperiments:
                 entry['code_diff'], entry['diff_truncated'] = text[:3000], len(text) > 3000
                 entry['hypothesis_evidence'] = self.memory.hypotheses.snapshot(
                     self.target_kind, entry.get('hypothesis', ''), limit=1)
+            response = tool_replies.memory_reply(response)
+            self._check_reply_size('search_memory', response)
             return {'content': [{'type': 'text', 'text': json.dumps(response, allow_nan=False)}]}
 
         return create_sdk_mcp_server('training', tools=[install_python_packages, evaluate_train, search_parameters,

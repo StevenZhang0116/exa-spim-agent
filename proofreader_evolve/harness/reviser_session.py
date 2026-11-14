@@ -19,6 +19,8 @@ MCP_OUTPUT_TOKENS = 100_000
 # The CLI parks tool results above about 50 KB on disk and the agent must Read them; its
 # file-read default of 25,000 tokens then rejected 60-130 KB parked train_classifier results
 # (4 failed reads, 13 of 34 results parked) in run precision_20261007_112554_t33clknu.
+# Neither limit stops the parking itself; since 2026-11-13 the tools keep their replies below
+# that size (tool_replies.REPLY_BUDGET_CHARS), and these limits cover what is left.
 FILE_READ_TOKENS = 100_000
 # A tool result can appear twice in a CLI stream line. Leave room for bounded
 # inline PNGs (image_preview.py) plus text; SDK overflow aborts the session.

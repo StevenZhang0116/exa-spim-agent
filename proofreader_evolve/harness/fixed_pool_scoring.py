@@ -53,6 +53,7 @@ from .label_availability import labeled_rows, labels_digest
 # a third of the merge weight. The library default below stays 0 (every pool counts).
 DEFAULT_MIN_POSITIVES = 10
 from .rank_statistics import (DEFAULT_PAUC_FPR, OBJECTIVE_LABELS, aggregate_families, aggregate_statistics,
+                              objective_of, objective_record, objective_text,
                               cell_statistics, family_statistics, cell_value, check_objective, check_pauc_fpr, prefix_hits, ranking,
                               auroc as weighted_auroc, average_precision as weighted_average_precision,
                               pauc as weighted_pauc)
@@ -63,6 +64,9 @@ from .rank_statistics import (DEFAULT_PAUC_FPR, OBJECTIVE_LABELS, aggregate_fami
 # them (the optional point-estimate head guard of v7 was removed on 2026-11-12; the guard rail of
 # ``promotion_gate`` protects the head). Selection, ablation, the bootstrap and promotion all
 # read the objective; per_kind_precision stays in every report for comparison with earlier runs.
+# Since 2026-11-13 the kinds may have different objectives (``Budgets.objective_for(kind)``); a
+# report then names them per kind and each kind's cells are aggregated under its own. A single
+# name gives the same records as before, so the version is unchanged.
 SCORING_VERSION = "native-rank-objective-v7-configurable-statistic"
 AGGREGATIONS = ("equal-brain", "positive-weighted")
 AGGREGATION_LABELS = {"equal-brain": "per-kind-equal-brain-precision",
@@ -135,8 +139,39 @@ class Budgets(Mapping):
             raise ValueError(f"aggregation must be one of {AGGREGATIONS}, got {aggregation!r}")
         self.caps, self.min_positives, self.aggregation = caps, min_positives, aggregation
         self.positive_ratio = {kind: float(ratios[kind]) for kind in caps}
-        self.objective = check_objective(objective)
+        if isinstance(objective, Mapping):
+            if set(objective) != set(caps):
+                raise ValueError("objective must name exactly the budgeted kinds: "
+                                 f"{sorted(caps)} vs {sorted(objective)}")
+            self._default_objective = None
+        else:
+            self._default_objective = check_objective(objective)
+        # One objective per kind (2026-11-13); a single name applies to every kind.
+        self.objectives = {kind: objective_of(objective, kind) for kind in caps}
         self.pauc_fpr = check_pauc_fpr(pauc_fpr)
+
+    @property
+    def objective(self):
+        """The one objective of every kind. With different objectives per kind there is none:
+        use ``objective_for(kind)``."""
+        if self._default_objective is not None:
+            return self._default_objective
+        names = set(self.objectives.values())
+        if len(names) != 1:
+            raise ValueError("The objective differs by kind (" + objective_text(self.objectives, labels=False)
+                             + "); use objective_for(kind)")
+        return next(iter(names))
+
+    def objective_for(self, kind):
+        if kind in self.objectives:
+            return self.objectives[kind]
+        if self._default_objective is not None:
+            return self._default_objective
+        raise ValueError(f"No objective for kind {kind!r}")
+
+    def objective_record(self):
+        """The objective as records carry it: one name, or the mapping kind -> name when they differ."""
+        return self._default_objective if self._default_objective is not None else objective_record(self.objectives)
 
     @classmethod
     def coerce(cls, value):
@@ -197,11 +232,13 @@ class Budgets(Mapping):
                                     if self.min_positives > 0 else "every pool counts toward the objective")
                                    + ("; separately for each kind: sum(TP) / sum(effective K) across counted pools"
                                       if pooled else "; separately for each kind: equal-weight precision across counted pools")),
-                "objective": self.objective, "objective_label": OBJECTIVE_LABELS[self.objective],
+                "objective": self.objective_record(), "objective_label": objective_text(self.objective_record()),
                 "pauc_fpr": self.pauc_fpr,
-                "objective_rule": self.objective_rule()}
+                "objective_rule": (self.objective_rule(self.objective_record())
+                                   if isinstance(self.objective_record(), str)
+                                   else {kind: self.objective_rule(name) for kind, name in sorted(self.objectives.items())})}
 
-    def objective_rule(self):
+    def objective_rule(self, objective=None):
         pooled = self.aggregation == "positive-weighted"
         weighting = ("weighted by its GT positives" if pooled else "with equal weight per counted pool")
         rules = {"precision_at_k": "the precision_rule above (precision at K is the objective)",
@@ -211,7 +248,7 @@ class Budgets(Mapping):
                          f"while the false-positive rate is at most {self.pauc_fpr:g}, ties one half), {weighting}",
                  "average_precision": f"separately for each kind: tie-aware average precision of each counted "
                                       f"pool over its GT-labeled rows, {weighting}"}
-        return rules[self.objective]
+        return rules[self.objective if objective is None else objective]
 
     def resolve(self, tables_by_brain):
         """Per-pool K and mean membership for a bank mapping; depends on labels only."""
@@ -287,9 +324,13 @@ def precision_for_kind(report, kind):
     return aggregate_precision(cells, report.get('aggregation'))['per_kind_precision'][kind]
 
 
-def report_objective(report):
-    """The objective a report was measured under; reports before v7 carry none and are precision at K."""
-    return check_objective(report.get('objective') or 'precision_at_k')
+def report_objective(report, kind=None):
+    """The objective a report was measured under; reports before v7 carry none and are precision at K.
+    A report measured with an objective per kind needs the kind."""
+    recorded = report.get('objective')
+    if isinstance(recorded, Mapping) and kind is None:
+        raise ValueError('This report carries an objective per kind; name the kind')
+    return objective_of(recorded, kind)
 
 
 def aggregate_objective(cells, aggregation="equal-brain", objective="precision_at_k"):
@@ -300,23 +341,25 @@ def aggregate_objective(cells, aggregation="equal-brain", objective="precision_a
     all of them under the same aggregation rule.
     """
     result = aggregate_precision(cells, aggregation)
-    objective = check_objective(objective)
     by_kind = {}
     for name, cell in cells.items():
         by_kind.setdefault(name.rsplit('/', 1)[-1], {})[name] = cell
     statistics = {kind: aggregate_statistics(group, result['aggregation']) for kind, group in sorted(by_kind.items())}
+    # ``objective`` is one name or a mapping kind -> name; the kinds present are recorded.
+    names = {kind: objective_of(objective, kind) for kind in statistics}
+    recorded = objective if isinstance(objective, str) else (objective_record(names) if names else 'precision_at_k')
     per_kind = {}
     for kind, summary in statistics.items():
-        value = result['per_kind_precision'][kind] if objective == 'precision_at_k' else summary[objective]
+        value = result['per_kind_precision'][kind] if names[kind] == 'precision_at_k' else summary[names[kind]]
         if value is None:
-            raise ValueError(f"No {OBJECTIVE_LABELS[objective]} on the counted {kind} pools")
+            raise ValueError(f"No {OBJECTIVE_LABELS[names[kind]]} on the counted {kind} pools")
         per_kind[kind] = float(value)
     # Reporting only: within-family figures for kinds whose candidates come from several rules.
     families = {kind: summary for kind, summary in ((kind, aggregate_families(group))
                                                     for kind, group in sorted(by_kind.items())) if summary}
     if families:
         result['per_kind_by_family'] = families
-    result.update(objective=objective, objective_label=OBJECTIVE_LABELS[objective], per_kind_objective=per_kind,
+    result.update(objective=recorded, objective_label=objective_text(recorded), per_kind_objective=per_kind,
                   per_kind_statistics={kind: {key: value for key, value in summary.items() if key not in ('note', 'version')}
                                        for kind, summary in statistics.items()})
     return result
@@ -332,7 +375,7 @@ def _kind_cells(report, kind):
 def objective_for_kind(report, kind):
     """The shared selection/promotion objective of this kind, recomputed from its cells under the
     objective the report was measured with."""
-    objective = report_objective(report)
+    objective = report_objective(report, kind)
     return aggregate_objective(_kind_cells(report, kind), report.get('aggregation'), objective)['per_kind_objective'][kind]
 
 
@@ -345,7 +388,7 @@ def statistic_for_kind(report, kind, statistic):
 
 def gate_details(parent, candidate, kind):
     """Objective and precision numbers of a parent/candidate pair for the ledger."""
-    objective = report_objective(parent)
+    objective = report_objective(parent, kind)
     details = {'objective': objective, 'objective_label': OBJECTIVE_LABELS[objective],
                'parent_objective': objective_for_kind(parent, kind), 'candidate_objective': None,
                'parent_precision': precision_for_kind(parent, kind), 'candidate_precision': None}
@@ -396,7 +439,7 @@ def evaluate(source, tables_by_brain, budgets, timeout=120, examples=False, *,
         raise ValueError("Scorer timeout must be positive and finite")
     budgets = Budgets.coerce(budgets)
     report = {"version": SCORING_VERSION, "budgets": budgets.describe(),
-              "objective": budgets.objective,
+              "objective": budgets.objective_record(),
               "policy_sha256": hashlib.sha256(source.encode()).hexdigest(), "cells": {}}
     sources = components(source)
     for brain, banks in tables_by_brain.items():
@@ -425,7 +468,7 @@ def evaluate(source, tables_by_brain, budgets, timeout=120, examples=False, *,
             if examples:
                 metrics.update(describe(table, scores, chosen, generation, cell,
                                         (parent_state or {}).get(cell), features=features))
-    report.update(aggregate_objective(report["cells"], budgets.aggregation, budgets.objective))
+    report.update(aggregate_objective(report["cells"], budgets.aggregation, budgets.objective_record()))
     return report
 
 
@@ -447,8 +490,8 @@ def acceptance(parent, candidate, margin=0, *, target_kind, require_no_cell_regr
     mode = aggregation_mode(parent.get("aggregation"))
     if aggregation_mode(candidate.get("aggregation")) != mode:
         raise ValueError("Cannot compare evaluations with different aggregations")
-    objective = report_objective(parent)
-    if report_objective(candidate) != objective:
+    objective = report_objective(parent, target_kind)
+    if report_objective(candidate, target_kind) != objective:
         raise ValueError("Cannot compare evaluations with different objectives")
     label = OBJECTIVE_LABELS[objective]
     before_value = objective_for_kind(parent, target_kind)
@@ -522,7 +565,7 @@ def paired_bootstrap(parent_state, candidate_state, tables_by_brain, budgets, *,
         raise ValueError("Bootstrap alpha must be a float in (0, 1)")
     budgets = Budgets.coerce(budgets)
     pooled = budgets.aggregation == "positive-weighted"
-    objective = budgets.objective
+    objective = budgets.objective_for(target_kind)
     rng = np.random.default_rng(seed)
     cells = {}
     for brain, banks in tables_by_brain.items():

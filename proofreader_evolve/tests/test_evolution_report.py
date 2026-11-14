@@ -49,6 +49,23 @@ class EvolutionReportTests(unittest.TestCase):
         self.assertIn('objective_statistic', Path(__file__).resolve().parents[1].joinpath(
             'plotting', 'report_assets', 'report.js').read_text())
 
+    def test_an_objective_per_kind_reaches_the_page(self):
+        names = {'merge': 'average_precision', 'split': 'pauc'}
+        self.put('manifest.json', {'objective': PRECISION, 'train_brains': ['794495'],
+                                  'development_validation_brains': ['794493'], 'budgets': {'split': 10},
+                                  'objective_statistic': 'merge=average_precision,split=pauc',
+                                  'objective_statistics': names})
+        self.put('seed.json', {'train': {**measurement(.4), 'objective': names, 'per_kind_objective': {'split': .2}},
+                               'validation': measurement(.3)})
+        self.generation(1, objective_statistic='pauc')
+        data = build_report_data(self.root)
+        self.assertEqual(data['manifest']['objective_statistics'], names)
+        self.assertEqual(data['seed']['train']['objective'], names)
+        self.assertEqual(data['generations'][0]['objective_statistic'], 'pauc')
+        script = Path(__file__).resolve().parents[1].joinpath('plotting', 'report_assets', 'report.js').read_text()
+        self.assertIn('objective_statistics', script)
+        self.assertNotIn('${report.objective}', script)
+
     def test_descriptor_requests_and_probe_evidence_survive_report_export(self):
         request = {'level': 0, 'radius_um': 40., 'channel': 0, 'timepoint': 0}
         run = {'run': 'gen001/descriptor001', 'status': 'registered', 'inputs': 'image',

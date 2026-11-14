@@ -61,7 +61,11 @@ def _counted(cells, kinds):
     return per_kind
 
 
-def _objective(budgets):
+def _objective(budgets, kind):
+    """The objective of one kind; plain mappings and budgets without one are precision at K."""
+    lookup = getattr(budgets, "objective_for", None)
+    if lookup is not None:
+        return lookup(kind)
     return getattr(budgets, "objective", "precision_at_k") or "precision_at_k"
 
 
@@ -70,9 +74,9 @@ def headroom(cells, budgets, kinds):
     aggregation: for precision the equal-brain mean or pooled hits / effective K when
     positive-weighted; for a rank statistic 1 minus its positive-weighted (or equal) mean."""
     pooled = getattr(budgets, "aggregation", "equal-brain") == "positive-weighted"
-    objective = _objective(budgets)
     result = {}
     for kind, counted in _counted(cells, kinds).items():
+        objective = _objective(budgets, kind)
         if objective != "precision_at_k":
             values = [(float(cell[objective]), int(cell["positives"])) for cell in counted
                       if cell.get(objective) is not None]
@@ -105,13 +109,12 @@ def saturation_thresholds(cells, budgets, kinds):
     evidence of saturation; a zero threshold keeps that kind unsaturated.
     """
     pooled = getattr(budgets, "aggregation", "equal-brain") == "positive-weighted"
-    objective = _objective(budgets)
     result = {}
     for kind, counted in _counted(cells, kinds).items():
         if not counted:
             result[kind] = 0.
             continue
-        if objective != "precision_at_k":
+        if _objective(budgets, kind) != "precision_at_k":
             pairs = sum(int(cell["positives"]) * max(0, int(cell.get("n_labeled", cell["positives"])) - int(cell["positives"]))
                         for cell in counted)
             result[kind] = SATURATION_HITS / pairs if pairs else 0.

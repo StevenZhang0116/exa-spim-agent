@@ -403,8 +403,14 @@ class SessionDescriptorTests(unittest.TestCase):
         self.assertEqual(result['status'], 'registered')
         self.assertFalse(result['cached'])
         self.assertEqual(self.session.evaluations_used, 1)
-        self.assertEqual(set(result['summaries']), {'794495', '802449'})
-        self.assertEqual(result['summaries']['802449']['bank_agent_node_count']['1']['count'], 6)
+        # The reply carries one digest per column; the run's result.json keeps the diagnostics per brain.
+        self.assertNotIn('summaries', result)
+        digest = result['column_summary']['bank_agent_node_count']
+        self.assertEqual(set(digest['median']), {'794495', '802449'})
+        self.assertEqual(set(digest['median_label1']), {'794495', '802449'})
+        stored = json.loads(Path(result['summaries_file']).read_text())
+        self.assertEqual(set(stored['summaries']), {'794495', '802449'})
+        self.assertEqual(stored['summaries']['802449']['bank_agent_node_count']['1']['count'], 6)
         for bank in self.train.values():
             self.assertIn('bank_agent_node_count', bank.tables['merge'].features.columns)
         self.assertEqual(set(self.memory.descriptors), {'bank_agent_node_count', 'bank_agent_mean_radius'})
@@ -426,7 +432,11 @@ class SessionDescriptorTests(unittest.TestCase):
         measured = self.session.evaluate()
         self.assertEqual(measured['status'], 'evaluated')
         self.assertEqual(measured['target_precision'], 1.)
-        self.assertIn('bank_agent_node_count', measured['feedback']['examples']['802449/merge']['features'])
+        # The reply names the attempt's feedback file, which holds the example rows.
+        self.assertNotIn('examples', measured['feedback'])
+        self.assertIn('examples', measured['feedback']['file_holds'])
+        stored = json.loads(Path(measured['feedback']['file']).read_text())
+        self.assertIn('bank_agent_node_count', stored['examples']['802449/merge']['features'])
         self.assertEqual(self.session.required_descriptors(BANK_FORMULA), ['bank_agent_node_count'])
         with self.assertRaisesRegex(ValueError, 'Unregistered'):
             self.session.required_descriptors("features['bank_agent_missing_one']")
