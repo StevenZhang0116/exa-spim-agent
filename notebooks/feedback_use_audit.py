@@ -121,6 +121,8 @@ def outcome_of(row):
     reason = str(row.get("reason", ""))
     if row.get("accepted"):
         return "promoted"
+    if row.get("failure_stage") or reason.startswith("Failed"):
+        return f"failed ({row.get('failure_stage') or 'stage not recorded'})"
     if row.get("submission_within_noise") or "within TRAIN resampling noise" in reason:
         return "not_measured"
     if row.get("submission_repeat") or "Repeated submission" in reason:

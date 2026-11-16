@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -233,6 +233,58 @@ class DescriptorRunTests(unittest.TestCase):
             self.runs.compute(self.table, program, spec, 'pilot', k=3, wall_budget=2, log_dir=self.root / 'logs')
         self.assertLess(__import__('time').monotonic() - started, 30)
         self.assertFalse(self.runs.directory(self.table, spec, 'pilot').exists())
+
+    def test_a_batch_that_times_out_is_run_again(self):
+        program, spec = descriptor_spec(GEOMETRY_DESCRIPTOR)
+        real, calls = dr.DescriptorRuns._run_batch, []
+
+        def flaky(runs, root, table, entry, program_, spec_, rows, deadline, log_path, **kwargs):
+            calls.append(log_path.name)
+            if log_path.name == 'batch0001.log' and calls.count(log_path.name) <= 2:
+                raise TimeoutError()  # a stalled remote read: the bare error tensorstore raises
+            return real(runs, root, table, entry, program_, spec_, rows, deadline, log_path, **kwargs)
+
+        self.runs.trace = Mock()
+        with patch.object(dr, 'BATCH_ROWS', 4), patch.object(dr.DescriptorRuns, '_run_batch', flaky):
+            result = self.runs.compute(self.table, program, spec, 'all_candidates', k=3, wall_budget=120,
+                                       log_dir=self.root / 'logs')
+        self.assertEqual(calls.count('batch0001.log'), 3)  # two timeouts, then success
+        self.assertEqual(calls.count('batch0000.log'), 1)
+        self.assertEqual(result['manifest']['batch_retries'], 2)
+        np.testing.assert_array_equal(result['values'][:, 0], [3 + r % 4 for r in range(12)])
+        events = [call.args[0] for call in self.runs.trace.emit.call_args_list]
+        self.assertEqual(events.count('descriptor_batch_retry'), 2)
+
+    def test_repeated_timeouts_and_other_errors_still_fail(self):
+        program, spec = descriptor_spec(GEOMETRY_DESCRIPTOR)
+        calls = []
+
+        def stalled(runs, root, table, entry, program_, spec_, rows, deadline, log_path, **kwargs):
+            calls.append(log_path.name)
+            raise TimeoutError()
+
+        with patch.object(dr.DescriptorRuns, '_run_batch', stalled), \
+                self.assertRaisesRegex(ModelExecutionError, 'Descriptor batch 0 failed: TimeoutError'):
+            self.runs.compute(self.table, program, spec, 'pilot', k=3, wall_budget=120, log_dir=self.root / 'logs')
+        self.assertEqual(len(calls), dr.BATCH_TIMEOUT_RETRIES + 1)
+        self.assertFalse(self.runs.directory(self.table, spec, 'pilot').exists())
+
+        calls.clear()
+
+        def broken(runs, root, table, entry, program_, spec_, rows, deadline, log_path, **kwargs):
+            calls.append(log_path.name)
+            raise ModelExecutionError('describe raised')
+
+        with patch.object(dr.DescriptorRuns, '_run_batch', broken), \
+                self.assertRaisesRegex(ModelExecutionError, 'describe raised'):
+            self.runs.compute(self.table, program, spec, 'pilot', k=3, wall_budget=120, log_dir=self.root / 'logs')
+        self.assertEqual(len(calls), 1)  # an error of the program is not retried
+
+        calls.clear()
+        with patch.object(dr.DescriptorRuns, '_run_batch', stalled), \
+                self.assertRaisesRegex(ModelExecutionError, 'TimeoutError'):
+            self.runs.compute(self.table, program, spec, 'pilot', k=3, wall_budget=0, log_dir=self.root / 'logs')
+        self.assertEqual(len(calls), 1)  # no retry once the wall budget is spent
 
     def test_plan_extrapolates_from_a_small_sample(self):
         program, spec = descriptor_spec(GEOMETRY_DESCRIPTOR)

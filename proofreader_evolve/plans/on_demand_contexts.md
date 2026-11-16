@@ -93,7 +93,7 @@ patch touches a few of them. On n266: 0.18 s per read for the gen-3 level-1 12 u
 for the level-1 30 um tier (0.1 MB), 0.20 s for the level-0 16 um tier (0.11 MB), 0.15 s at level 1 /
 60 um (0.75 MB), 0.25 s at level 1 / 100 um (3.4 MB). On n06 with the 256 um cube (radius 128): 0.22 s
 at level 2 (0.9 MB), 0.39 s at level 1 (7.2 MB), 1.4 s at level 0 (57 MB, max 2.4 s), all far under the
-45 s read timeout. What grows is bytes against the unchanged 128 MiB descriptor batch limit (a level-0
+45 s read timeout (120 s since 2026-11-15, `image_context.READ_TIMEOUT_SECONDS`). What grows is bytes against the unchanged 128 MiB descriptor batch limit (a level-0
 cube runs one row per worker batch, so worker start-ups dominate; the planner measures this) and the
 agent's own `describe` cost on the larger array. End to end with the gen-3 descriptor on n266 (24
 workers, 27,934 rows; `claude_scratch/time_image_scaling_20261103/`): level 1 / 12 um 299 s (891

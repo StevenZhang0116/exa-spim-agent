@@ -63,9 +63,15 @@ def kv_spec(uri):
             'path': parsed.path.lstrip('/').rstrip('/') + '/'}
 
 
+# Longest wait for one remote read (store open, metadata, one patch). 45 s until 2026-11-15: the
+# slowest ordinary patch read measured 33 s (plans/on_demand_contexts.md), and one read past 45 s
+# ended generation 5 of run precision_20261114_133715_jkc36yxa on a validation brain.
+READ_TIMEOUT_SECONDS = 120.
+
+
 class ImageSource:
     """OME-Zarr v2 reader with explicit metadata and bounded IO waits."""
-    def __init__(self, uri, *, graph_to_world=None, timeout=45.):
+    def __init__(self, uri, *, graph_to_world=None, timeout=READ_TIMEOUT_SECONDS):
         import tensorstore as ts
         self.timeout = timeout
         # Native cache metadata identifies one array, e.g. fused.zarr/0.

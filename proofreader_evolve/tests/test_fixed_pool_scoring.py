@@ -153,6 +153,13 @@ class FixedScoringTests(unittest.TestCase):
             self.assertIsNone(record["validation"])
             self.assertEqual(record["failure_stage"], "revision")
             self.assertEqual(record["reviser"]["cost_usd"], .02)
+            # The trajectory keeps the traceback of the failure (2026-11-15), so the failing call is known.
+            events = [json.loads(line) for line in (path / "gen001/trajectory.jsonl").read_text().splitlines()]
+            error = next(event for event in events if event["event"] == "generation_error")
+            self.assertEqual(error["stage"], "revision")
+            self.assertIn("Traceback", error["traceback"])
+            self.assertIn("failed_revision", error["traceback"])
+            self.assertIn("RuntimeError: fixture SDK failure after editing", error["traceback"])
             self.assertEqual((path / "best_scorer.py").read_text(), args.start_from.read_text())
             self.assertIn("+    return features['evidence']", (path / "gen001/scorer.py.diff").read_text())
 

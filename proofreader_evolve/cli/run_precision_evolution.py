@@ -33,6 +33,7 @@ import math
 from pathlib import Path
 import tempfile
 import time
+import traceback
 
 from . import precompute_error_scores as pc
 from ..harness import fixed_pool_scoring as scoring
@@ -1550,7 +1551,10 @@ async def _run(args, revise_fn, run_dir, trace):
                 experiments._record_research(stage, 'execution', 'failure',
                     {'error': f'{type(exc).__name__}: {exc}'}, False,
                     gen_dir / 'trajectory.jsonl', outcome=f'{type(exc).__name__}: {exc}')
-            gen_trace.emit("generation_error", record["reason"], stage=stage)
+            # The chained traceback names the call that failed (which read timed out, for instance);
+            # host-side trajectory only, never a file a reviser session may read.
+            gen_trace.emit("generation_error", record["reason"], stage=stage,
+                           traceback="".join(traceback.format_exception(exc))[-8000:])
             # Preserve usage/cost even when the SDK's final result reports failure.
             result_path = gen_dir / "reviser_result.json"
             if "reviser" not in record and result_path.exists():

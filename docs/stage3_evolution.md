@@ -389,6 +389,17 @@ that reads patches) still need an allocation whose memory headroom admits the re
 workers: a 600 GB job admitted the default 24 (2026-11-03), a 200 GB job holding the 80-90 GB driver admits one to three
 (`proofreader_evolve/plans/on_demand_contexts.md`, 2026-11-03).
 
+Inside those budgets one remote image read (store open, metadata, one patch) may wait
+`image_context.READ_TIMEOUT_SECONDS` = 120 s (45 s until 2026-11-15), a patch read is tried twice,
+and a descriptor batch that still fails with `TimeoutError` is run again up to
+`descriptor_runs.BATCH_TIMEOUT_RETRIES` = 2 times while wall budget remains (trajectory event
+`descriptor_batch_retry`, manifest field `batch_retries`). Errors of the descriptor program are
+not retried. Before 2026-11-15 one stalled read among the thousands of a brain ended the whole
+computation and with it the generation: generation 5 of run
+`precision_20261114_133715_jkc36yxa` lost a split candidate that was beyond TRAIN noise while
+its descriptors were computed on a validation brain. A failed generation now records the
+chained traceback in its `generation_error` event (host-side `gen<NNN>/trajectory.jsonl`).
+
 The launcher inherits the absolute panda interpreter, creates a unique directory,
 and launches one `srun --overlap --exact --export=ALL` step. Overlap permits coexistence with an
 interactive/Jupyter allocation's parent step; it is not a concurrency lock. The

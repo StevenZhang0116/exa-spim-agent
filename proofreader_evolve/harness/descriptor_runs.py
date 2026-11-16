@@ -33,6 +33,10 @@ SCOPES = ('judgeable', 'pilot', 'boundary', 'all_candidates')
 PILOT_ROWS = 512
 BOUNDARY_ROWS = 2000
 BATCH_ROWS = 256
+# A batch that fails with TimeoutError (a remote image read that stalled) is run again this many
+# times before the computation fails; any other error fails at once. Since 2026-11-15: one stalled
+# read among thousands used to end the whole computation, and with it the generation.
+BATCH_TIMEOUT_RETRIES = 2
 # S3 patch reads, not workers, bound image descriptors: 24 threads read like 8 before the shared
 # TensorStore context and like about 14 after it (plans/on_demand_contexts.md, 2026-11-03), so plans
 # credit image descriptors with at most this concurrency and stay on the conservative side.
@@ -314,18 +318,35 @@ class DescriptorRuns:
         log_dir = Path(log_dir)
         log_dir.mkdir(parents=True, exist_ok=True)
 
+        retried = []
+
         def job(index):
-            if cancel.is_set():
-                return
-            with tempfile.TemporaryDirectory(prefix='descriptor_batch_') as tmp:
-                try:
-                    timing = {}
-                    results[index] = self._run_batch(Path(tmp), table, entry, program, spec, batches[index],
-                                                     deadline, log_dir / f'batch{index:04d}.log', timings=timing)
-                    timings[index] = timing
-                except Exception as exc:
-                    cancel.set()
-                    errors.append((index, exc))
+            for attempt in range(BATCH_TIMEOUT_RETRIES + 1):
+                if cancel.is_set():
+                    return
+                with tempfile.TemporaryDirectory(prefix='descriptor_batch_') as tmp:
+                    try:
+                        timing = {}
+                        results[index] = self._run_batch(Path(tmp), table, entry, program, spec, batches[index],
+                                                         deadline, log_dir / f'batch{index:04d}.log', timings=timing)
+                        timings[index] = timing
+                        return
+                    except TimeoutError as exc:
+                        # No retry once the wall budget is spent: the next attempt could not finish either.
+                        if attempt == BATCH_TIMEOUT_RETRIES or time.monotonic() >= deadline:
+                            cancel.set()
+                            errors.append((index, exc))
+                            return
+                        retried.append(index)
+                        if self.trace is not None:
+                            # Batch number and error type only; no candidate or validation content.
+                            self.trace.emit('descriptor_batch_retry', f"batch {index}: {type(exc).__name__} "
+                                            f"{exc}".rstrip() + f"; attempt {attempt + 2} of {BATCH_TIMEOUT_RETRIES + 1}",
+                                            batch=int(index), attempt=attempt + 2)
+                    except Exception as exc:
+                        cancel.set()
+                        errors.append((index, exc))
+                        return
 
         loads_before = entry.chunk_loads
         peak_workers, admission_records = 0, []
@@ -381,7 +402,7 @@ class DescriptorRuns:
                     'worker_limit': self.workers, 'requested_workers': self.requested_workers,
                     'worker_memory_mb': self.memory_mb, 'memory_admission': admission_records,
                     'wall_seconds': time.monotonic() - started, 'worker_seconds_total': worker_seconds,
-                    'chunk_loads': entry.chunk_loads - loads_before, **images,
+                    'chunk_loads': entry.chunk_loads - loads_before, 'batch_retries': len(retried), **images,
                     'created_at': datetime.now().astimezone().isoformat(timespec='seconds')}
         directory.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix='.staging_', dir=directory.parent) as staging:
