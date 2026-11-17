@@ -26,6 +26,8 @@ metrics_merge_site_patches_794495/
 
 # Evolution runs: ignore the entire directory (large/local artifacts).
 proofreader_evolve/runs/
+proofreader_evolve/evaluation/*
+!proofreader_evolve/evaluation/README.md
 proofreader_evolve/image_audits/
 proofreader_evolve/log/*.log.txt
 proofreader_evolve/log_archive/
