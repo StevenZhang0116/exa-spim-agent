@@ -66,9 +66,91 @@ import.
 The original environment uses Python 3.12.4 and installs
 `segmentation-skeleton-metrics` at `478aede` and
 `neuron-proofreading-evaluation` at `f15bd8d`; see
-[environment/postInstall](environment/postInstall). The dependency environment,
-cloud access and data mounts have not been reproduced here. Any execution in this
-workspace must use a compute node.
+[environment/postInstall](environment/postInstall). Since 2026-11-18 a local conda
+environment holds these dependencies (next section). Cloud access and the data
+mounts have not been reproduced here. Any execution in this workspace must use a
+compute node.
+
+## Local environment `arborist_eval` (2026-11-18)
+
+The capsule's programs do not run in `panda`: `neuron_proofreading_evaluation` is
+absent there, and `panda`'s `segmentation_skeleton_metrics` (commit `d76557d`,
+2026-05-21, with two local fixes) predates the method that `code/main.py` replaces.
+Moving `panda` to the capsule's commit would break this repository's own scripts
+(`data_handling` was renamed to `datamodules`, and the merge metric was restructured),
+so the capsule has an environment of its own and `panda` is unchanged.
+
+```text
+/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/conda_envs/arborist_eval
+```
+
+Activate it by that path (`conda activate <path>`); it lies outside the home
+directory, which had too little free space. Python 3.12.4, `torch` 2.6.0+cu124 from
+the capsule's own install line, 119 distributions (`arborist_eval.freeze.txt` beside
+the environment). The five first-party packages are fixed to commits:
+
+| Package | Commit | Why this commit |
+|---|---|---|
+| `segmentation_skeleton_metrics` | `478aede` (2026-09-29) | fixed by the capsule |
+| `neuron_proofreading_evaluation` | `f15bd8d` (2026-09-29) | fixed by the capsule |
+| `arborist` | `c7a0258` (2026-09-23) | not fixed by the capsule; last commit on `main` up to 2026-09-30 |
+| `neuron-proofreader` | `bb88768` (2026-09-28) | not fixed by the capsule; last commit on `main` up to 2026-09-30 |
+| `aind-exaspim-dataset-utils` | `689b6ca` (2026-07-02) | dependency of `neuron-proofreader`; its `main` |
+
+`neuron_proofreading_evaluation` declares `arborist`, `segmentation-skeleton-metrics`
+and `neuron-proofreader` at their `main` branches, so which commits the capsule's
+image really holds is not known. The three unfixed packages were taken from the same
+weeks as the two fixed ones; the names the evaluation code imports exist at these
+commits.
+
+Recipe (compute node). The environment was built in two passes, because the user site
+was ignored only in the second one; the commands below are the same steps in one pass
+and were not run in exactly this form:
+
+```bash
+ENV=/allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/conda_envs/arborist_eval
+source /shared/utils.x86_64/anaconda3-2024.10/etc/profile.d/conda.sh
+export PYTHONNOUSERSITE=1 PIP_NO_CACHE_DIR=1 CONDA_PKGS_DIRS=$(dirname $ENV)/.pkgs
+conda create -y -p $ENV python=3.12.4
+conda env config vars set PYTHONNOUSERSITE=1 -p $ENV
+PY=$ENV/bin/python
+$PY -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+$PY -m pip install \
+  aiobotocore==2.13.3 "boto3>=1.34,<2" botocore==1.34.162 einops fastremap fonttools \
+    gcsfs google-cloud-storage matplotlib more_itertools networkx numpy pandas pillow \
+    plotly psutil rustworkx s3fs==2024.12.0 scikit-image scikit-learn scipy \
+    smartsheet-python-sdk tensorboard tensorstore==0.1.71 tifffile \
+    torch_geometric==2.5.3 torcheval tqdm urllib3==1.26.15 zarr
+G=git+https://github.com
+$PY -m pip install --no-deps \
+  "segmentation_skeleton_metrics @ $G/AllenNeuralDynamics/segmentation-skeleton-metrics.git@478aedeb6c072281f64c611c92e35f0fbde9343a" \
+  "neuron_proofreading_evaluation @ $G/AllenNeuralDynamics/neuron-proofreading-evaluation.git@f15bd8d3f13fb5c4f007129a7af72b9a5034d7ae" \
+  "arborist @ $G/AllenInstitute/arborist.git@c7a0258f5851cb226f33ea601be2fb1ea565cb33" \
+  "neuron-proofreader @ $G/AllenInstitute/neuron-proofreader.git@bb887689524299fad9afe97eab659fb58276df2c" \
+  "aind-exaspim-dataset-utils @ $G/AllenNeuralDynamics/aind-exaspim-dataset-utils.git@689b6ca78daf95cedabb27ad1f4340ed01945515"
+$PY -m pip check
+```
+
+Two points of the recipe matter:
+
+- `--no-deps` for the five first-party packages. With their own dependency lists pip
+  would fetch `main` of three of them and replace the fixed commits. Their third-party
+  requirements are the list in the second `pip install`, with `neuron-proofreader`'s
+  exact pins.
+- `PYTHONNOUSERSITE=1`, also set by the environment on activation. The home directory
+  holds a user site for Python 3.12 (`~/.local/lib/python3.12`, 79 distributions of
+  other projects), which Python puts before the environment's own packages. The first
+  pass took nine requirements from there (numpy, pandas, scipy, matplotlib and others)
+  and they were then installed into the environment. Calling `$ENV/bin/python`
+  without activating the environment needs `-s` or the variable.
+
+Checked on n243: `pip check` reports no broken requirement; the five commits above are
+the installed ones; numpy, pandas and torch are imported from the environment;
+`code/main.py` imports, and its replacement of `MergeCountMetric.record_merge_site`
+takes effect; `main.py`, `residual_merge_detection/evaluate.py` and
+`review_merges/build_review.py` print their `--help`. No evaluation was run: no cloud
+path was opened and no data asset is attached. The node has no GPU, so CUDA was not
+exercised.
 
 ## Data paths and relationship to this repository
 
