@@ -14,8 +14,9 @@ keep their numbers because other documents cite them.
 
 ## Standing decisions
 
-- 794495 is reserved for a future independent validation; no fitting, selection, tuning,
-  testing or promotion on it. The split and launch recipe are in
+- 794495 has no role inside a run: no fitting, selection, tuning or promotion on it. Since
+  2026-11-14 it is the post-analysis brain: the final policy of a finished run is applied to
+  it once ([record](evaluation/README.md)). The split and launch recipe are in
   [Stage 3](../docs/stage3_evolution.md#32-prepare-tables-and-launch-a-run).
 - Positive-weighted aggregation is shared by selection, ablation, validation and the
   bootstrap. No LLM takes part in TRAIN-side selection or in promotion. Promotion: one gate

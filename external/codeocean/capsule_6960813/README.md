@@ -42,11 +42,13 @@ The Docker recipe still references the omitted `git-ask-pass` helper; this is a
 source snapshot, not a complete standalone Docker build context.
 
 The code is not wired into `proofreader_evolve` or its tests. Importing it does not
-change candidate labels, training, selection or promotion. Brain **794495** is
-reserved for a future independent validation process whose protocol is not yet
-designed; do not use this snapshot to add it to current TRAIN/OOF, tuning, testing
-or evolution promotion. Historical use of this brain is not erased by that
-reservation. No real 794495 evaluation was performed for this import.
+change candidate labels, training, selection or promotion. Brain **794495** has
+no role inside an evolution run; since 2026-11-14 it is used only for post-analysis
+of a finished run's final policy, scored with this repository's own tools
+([record](../../../proofreader_evolve/evaluation/README.md)). Do not use this
+snapshot to add it to TRAIN/OOF, tuning or evolution promotion. Historical use of
+this brain is not erased by that. No real 794495 evaluation was performed for this
+import.
 
 ## Entry points and runtime requirements
 

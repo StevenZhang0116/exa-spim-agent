@@ -7,7 +7,7 @@ positives visually or in aggregate. They support Stage 2 result review and feed
 no training step.
 
 Run these analyses on compute nodes. Current examples use development brains;
-794495 is reserved for the future independent validation protocol, as described
+794495 has no development role (post-analysis only since 2026-11-14), as described
 in [Stage 3](stage3_evolution.md#32-prepare-tables-and-launch-a-run).
 
 ## B1. Inspect cached GT merge sites

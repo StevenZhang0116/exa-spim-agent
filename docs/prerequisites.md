@@ -31,12 +31,14 @@ offline.
 
 ## Data: labeled caches
 
-Brain **794495** is reserved for a future independent validation protocol. Keep it
-out of new training, selection/OOF, tuning, testing and evolution promotion.
+Brain **794495** has no role inside an evolution run: keep it out of training,
+selection/OOF, tuning and development validation / promotion. Since 2026-11-14 it is
+used only for post-analysis of a finished run's final policy
+([record](../proofreader_evolve/evaluation/README.md)).
 Use explicit brain lists; legacy CLI defaults and all-cache scans do not enforce
-this reservation. See the [current split](stage3_evolution.md#32-prepare-tables-and-launch-a-run).
-The explicitly requested [source comparison](../evaluation/README.md) is a data
-audit, not a model evaluation or permission to reuse 794495 in evolution.
+this. See the [current split](stage3_evolution.md#32-prepare-tables-and-launch-a-run).
+The [source comparison](../evaluation/README.md) is a data audit; it scores no model
+and gives no permission to use 794495 in evolution.
 
 Every stage reads `cache/dataset_cache_<brain>_mcl<N>_add.pkl`, a pickle holding
 the UNet fragment reconstruction (`fragments_graph`), the human ground-truth

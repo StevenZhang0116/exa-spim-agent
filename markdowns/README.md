@@ -5,8 +5,9 @@ handed to AutoDiscovery together with one labeled cache. `proofreader_evolve` do
 read these files.
 
 The recorded 794495 submissions and baselines below describe historical discovery
-work. Since 2026-11-04 that brain is reserved for a future independent validation
-process; do not reuse those examples as new training or discovery instructions.
+work. Since 2026-11-04 that brain has no development role (since 2026-11-14 it is used
+only for post-analysis of finished evolution runs); do not reuse those examples as new
+training or discovery instructions.
 Prepare new inputs from the explicitly selected development brains. See the
 [current dataset split](../docs/stage3_evolution.md#32-prepare-tables-and-launch-a-run).
 

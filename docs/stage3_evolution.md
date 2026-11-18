@@ -51,14 +51,14 @@ detector-free raw pools (section 3.2) and no detector is involved.
 
 ## 3.2 Prepare tables and launch a run
 
-### Current dataset roles (user decision, 2026-11-04)
+### Current dataset roles (user decisions, 2026-11-04 and 2026-11-14)
 
 | Role | Brains |
 |---|---|
 | TRAIN and selection | 802449, 747807, 750318, 754610, 754612, 754613 |
 | Whole-brain selection holdouts | All six TRAIN brains |
 | Development validation / promotion | 789202, 794493, 794491, 751473, 841260 (added 2026-11-07) |
-| Reserved for future independent validation | **794495**, excluded from the current loop |
+| Post-analysis only (since 2026-11-14) | **794495**: no role inside a run; the final policy of a finished run is applied to it once |
 
 Image sources (2026-11-09): the raw `fused.zarr` of 754613 and 751473 were deleted from
 `aind-open-data` on 2026-11-08 and those of 747807, 750318 and 754610 were found deleted on 2026-11-09;
@@ -86,12 +86,20 @@ companions and alignment receipts of the three brains were rebuilt on 2026-11-06
 preflight passes with these roles; the next run sets a new seed baseline, and runs before the
 rebuild are not comparable on 802449 or 789202 (see [artifact dependencies](dataset_artifact_dependencies.md)).
 
-Do not use 794495 for new training (including auxiliary fitting), selection/OOF,
-tuning, ablations, testing or evolution promotion. Its independent validation
-protocol remains to be designed. The explicitly requested
-[GT/image source comparison](../evaluation/README.md) is a data audit, not model
-evaluation or feedback for evolution. Historical use of 794495 in discovery and
-detector fitting remains part of the provenance; it was not historically untouched.
+**794495 has no role inside an evolution run.** Do not use it for training (including
+auxiliary fitting), selection/OOF, tuning, ablations, or development validation and
+promotion. From 2026-11-04 it was reserved for an independent validation whose protocol
+was never designed; on 2026-11-14 the user decided to use it for post-analysis instead.
+After a run has ended, its final policy is applied to 794495 once, when the user asks for
+it, and the figures are recorded in
+[proofreader_evolve/evaluation/README.md](../proofreader_evolve/evaluation/README.md)
+(the command, the rules of that folder, the latest result and the history). Those figures
+are not fed back into a run. They are not a first look either: two policies have been
+scored on the brain so far. Its artifacts (cache, raw pool tables, descriptor bank) are
+rebuilt only at the user's request. The [GT/image source comparison](../evaluation/README.md)
+is a data audit and scores no model. 794495 was used in discovery and detector fitting,
+and as a TRAIN brain of evolution runs in 2026-10; that stays part of the provenance. This
+paragraph is the home of the statement; other documents give it in one sentence and link here.
 
 The current raw setup uses `--selection-brains all --selection-holdout-brains all`.
 The six whole-brain holdouts are assigned to the existing three folds in sorted
@@ -106,7 +114,7 @@ to `--train-brains 794495`, `--detector-prior frozen` and automatic validation d
 there is no general reserved-brain guard. Bare defaults fail the detector-naive
 selection check, but raw or legacy `in_sample` can bypass that particular check.
 Always provide explicit TRAIN and validation lists for new runs. Raw's generic
-ability to select a detector-fitted brain does not authorize using reserved 794495.
+ability to select a detector-fitted brain does not authorize using 794495 inside a run.
 
 ### Prepare inputs only when needed
 

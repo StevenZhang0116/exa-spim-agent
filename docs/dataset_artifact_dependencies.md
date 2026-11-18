@@ -1,10 +1,13 @@
 # What depends on a dataset cache, and what to rerun when it changes
 
-Current dataset reservation (2026-11-04): 794495 is excluded from new development
-training, selection, tuning, testing and evolution promotion. The 794495 rebuild
+Role of 794495 (2026-11-04; post-analysis since 2026-11-14): it is excluded from
+development training, selection, tuning and evolution promotion, and used only for
+post-analysis of a finished run's final policy
+([record](../proofreader_evolve/evaluation/README.md)). The 794495 rebuild
 measurements below are historical evidence, not instructions to rebuild or reuse
-that brain. Use the explicit [current split](stage3_evolution.md#32-prepare-tables-and-launch-a-run)
-for new runs; the independent validation protocol remains to be designed.
+that brain. Its raw pool tables were rebuilt once, on 2026-11-14, for the
+post-analysis; its artifacts are rebuilt only at the user's request. Use the explicit
+[current split](stage3_evolution.md#32-prepare-tables-and-launch-a-run) for new runs.
 
 Segmentation source update (2026-11-05): the Google "denoised" segmentations replace the
 sources of 789202 (`whole_brain_denoised/denoised_v2.unet_tri_denoised_2370000_move_09_segment_09_it2`)

@@ -31,10 +31,12 @@ Three rules hold in every stage:
 
 ## Quick start
 
-Brain **794495 is reserved for a future independent validation process**. Exclude
-it from new training, selection/OOF, tuning, testing and evolution promotion.
-The CLI still has legacy defaults that do not enforce this reservation; pass the
-explicit [current split](docs/stage3_evolution.md#32-prepare-tables-and-launch-a-run).
+Brain **794495 has no role inside an evolution run**: exclude it from training,
+selection/OOF, tuning and development validation / promotion. Since 2026-11-14 it is
+used only for post-analysis, where the final policy of a finished run is applied to it
+once ([record](proofreader_evolve/evaluation/README.md)). The CLI still has legacy
+defaults that do not enforce this; pass the explicit
+[current split](docs/stage3_evolution.md#32-prepare-tables-and-launch-a-run).
 Historical uses of 794495 remain part of the project's provenance.
 
 Every command runs in the `panda` conda environment; steps that load a dataset
@@ -98,7 +100,8 @@ resource options explicitly and run one evolution run per allocation
 | [markdowns/README.md](markdowns/README.md) | the task specifications given to AutoDiscovery and the cache schema |
 | [proofreader_evolve/WORKFLOW_REVISION.md](proofreader_evolve/WORKFLOW_REVISION.md) | the maintained design record of Stage 3, with literature provenance |
 | [CodeOcean capsule 6960813](external/codeocean/capsule_6960813/README.md) | imported Arborist evaluation source, original attribution, data paths and known limitations; separate from the evolution workflow |
-| [evaluation/README.md](evaluation/README.md) | independent evaluation preparation; sampled comparison of repository and capsule GT/image sources for 794495 |
+| [evaluation/README.md](evaluation/README.md) | data audit: sampled comparison of repository and capsule GT/image sources for 794495; no model is scored |
+| [proofreader_evolve/evaluation/README.md](proofreader_evolve/evaluation/README.md) | post-analysis: the final policy of a finished evolution run on 794495, latest result and history |
 
 Per-stage figures: [`agentic/discovery_workflow_diagram.png`](agentic/discovery_workflow_diagram.png),
 [`agentic/detector_build_workflow_diagram.png`](agentic/detector_build_workflow_diagram.png),
@@ -121,7 +124,7 @@ exa-spim-agent/
 ├── autodiscovery/              # AutoDiscovery exports (*.json) plus generated reports and scripts
 ├── autodiscovery-application/  # Stage 2 deliverables, one folder per originating run
 ├── proofreader_evolve/         # Stage 3: cli/, harness/, artifacts/, plotting/, tests/, feature_tables/,
-│                               #          descriptor_bank/, runs/, TODO.md
+│                               #          descriptor_bank/, runs/, evaluation/ (794495 post-analysis), TODO.md
 ├── markdowns/                  # task specifications and the cache schema for agents
 ├── cache/                      # dataset_cache_<brain>_mcl<N>[_add].pkl (gitignored, large)
 ├── notebooks/                  # cache building, verification, candidate-pool sweeps
@@ -129,7 +132,7 @@ exa-spim-agent/
 ├── scripts/                    # one-off tools; diagrams/ renders the figures
 ├── docs/                       # the documents listed above, feature-scope contracts, literature notes
 ├── external/codeocean/         # attributed upstream source snapshots; see each capsule's README
-├── evaluation/                # independent evaluation preparation and source-comparison tools
+├── evaluation/                # source audit: repository vs capsule GT/image sources of 794495
 ├── metrics_out/                # official reference metrics per brain
 ├── figs/                       # generated figures
 ├── .claude/agents/             # subagent definitions used by the drivers

@@ -21,8 +21,8 @@ same source brain + segmentation
 Run the pipeline in the `panda` conda environment. Cloud-reading steps require
 GCS credentials in `configs/allen-nd-goog-f5d46dbfa2cd.json`.
 Run every Python command on a compute node. Use explicit development-brain lists:
-794495 is reserved for a future independent validation process, and legacy
-all-cache defaults do not enforce that reservation. See the
+794495 has no development role (since 2026-11-14 it is used only for post-analysis of
+finished evolution runs), and legacy all-cache defaults do not enforce that. See the
 [current split](stage3_evolution.md#32-prepare-tables-and-launch-a-run).
 
 ## A1. Generate the base cache
