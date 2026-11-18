@@ -32,7 +32,8 @@ candidate pool. Use English for code, diagnostics, proposals and research notes.
   constants; reference it without runtime mutation. No file/network access,
   randomness, persistent state, subprocesses or extra imports; NumPy, pandas
   and math are preloaded. Use `evaluate_train` or `search_parameters` to measure.
-  For fitted models, follow classifier_guide.md; choose a suitable CPU method and
+  For fitted models, follow classifier_guide.md; choose a method suited to the device in
+  model_environment.json (CPU, or a GPU when `gpu.available` is true) and
   use install_packages for missing dependencies, within the limits in model_environment.json.
   Save fitted preprocessing and explicit random seeds. Model workers have no network,
   package installation or child processes; the host installation tool is separate.

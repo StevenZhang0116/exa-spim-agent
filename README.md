@@ -77,6 +77,8 @@ The LLM judge that decided the runs of 2026-11-10 to 2026-11-12 and the earlier 
 head guard were removed on 2026-11-12; the other command-line defaults are AUROC and no noise check.
 `--objective merge=NAME,split=NAME` gives each kind its own objective (2026-11-13), and every run keeps the
 held-out scores of its submissions host-side (`validation_scores/`) so that a gate can be replayed offline.
+`--gpu` (2026-11-17, off by default) lets the fit and predict workers of agent models use the allocation's GPU,
+at the price of a wider model sandbox ([details](docs/stage3_evolution.md#gpu-mode---gpu-2026-11-17)).
 The last two option lines size the run to a dedicated 40-CPU / 600 GB allocation. The driver does not
 size itself to the node and its defaults are hard limits inside the agent's tools, so always pass the
 resource options explicitly and run one evolution run per allocation

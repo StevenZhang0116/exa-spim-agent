@@ -26,8 +26,92 @@ def exit_detail(returncode, request, tail):
     return tail
 
 
+# GPU mode (2026-11-17): a run started with --gpu lets fit and predict workers use the GPU of the
+# allocation. Every other worker (descriptors, feature extraction, 3D analysis) stays on the
+# CPU: dozens of them run side by side. One switch here covers every caller of run_worker:
+# fold fits and predictions, the full fit, ablations, validation and restored candidates.
+GPU_MODES = ('fit', 'predict')
+_GPU = {'enabled': False}
+
+
+def set_gpu(enabled):
+    _GPU['enabled'] = bool(enabled)
+
+
+def gpu_enabled():
+    return _GPU['enabled']
+
+
+def gpu_device():
+    """The GPU this process may use, as the scheduler exposes it; raises when there is none."""
+    if not os.environ.get('CUDA_VISIBLE_DEVICES'):
+        raise ValueError('--gpu was requested but CUDA_VISIBLE_DEVICES is empty: no GPU is allocated to this step')
+    try:
+        listing = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader,nounits'],
+                                 capture_output=True, text=True, timeout=60, check=True).stdout.strip().splitlines()
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(f'--gpu was requested but nvidia-smi could not list a device: {exc}') from exc
+    if not listing:
+        raise ValueError('--gpu was requested but nvidia-smi lists no device')
+    name, memory = (part.strip() for part in listing[0].rsplit(',', 1))
+    return {'name': name, 'memory_mb': int(float(memory)), 'devices': len(listing),
+            'cuda_visible_devices': os.environ['CUDA_VISIBLE_DEVICES']}
+
+
+GPU_CHECK_PROGRAM = '''import json
+import torch
+
+
+def fit(X_train, y_train, artifact_dir, params):
+    if not torch.cuda.is_available():
+        raise RuntimeError('CUDA is not available inside the sandboxed worker')
+    device = torch.device('cuda')
+    left = torch.arange(6., device=device).reshape(2, 3)
+    value = float((left @ left.T).sum().cpu())
+    torch.cuda.synchronize()
+    if value != 83.:  # [[0, 1, 2], [3, 4, 5]] times its transpose sums to 83
+        raise RuntimeError(f'CUDA returned {value} for a product that is 83')
+    properties = torch.cuda.get_device_properties(0)
+    (artifact_dir / 'device.json').write_text(json.dumps({
+        'name': properties.name, 'memory_mb': int(properties.total_memory // 2**20),
+        'torch': torch.__version__, 'cuda': torch.version.cuda}))
+
+
+def predict(X, artifact_dir, params):
+    return [0. for _ in range(len(X))]
+'''
+
+
+def gpu_worker_check(*, timeout=300., memory_mb=DEFAULT_MEMORY_MB, threads=1):
+    """Run one small CUDA computation in a real sandboxed fit worker, with the limits a fit of
+    this run gets, and return the device it used. `gpu_device` shows that the scheduler exposes
+    a GPU; only this shows that CUDA works inside the sandbox on this node. Call it before any
+    data is loaded; GPU mode must be on."""
+    import tempfile
+    import numpy as np
+    if not _GPU['enabled']:
+        raise ValueError('gpu_worker_check needs GPU mode (set_gpu(True))')
+    with tempfile.TemporaryDirectory(prefix='gpu_check_') as tmp:
+        root = Path(tmp)
+        np.save(root / 'X.npy', np.zeros((2, 1)), allow_pickle=False)
+        np.save(root / 'y.npy', np.array([0, 1], dtype=np.int8), allow_pickle=False)
+        (root / 'training.py').write_text(GPU_CHECK_PROGRAM)
+        (root / 'artifacts').mkdir()
+        request = {'mode': 'fit', 'columns': ['x'], 'config': {'parameters': {}}, 'group_names': ['check'],
+                   'timeout': float(timeout), 'memory_mb': int(memory_mb), 'threads': int(threads)}
+        try:
+            run_worker(root, request)
+            return json.loads((root / 'artifacts' / 'device.json').read_text())
+        except (ModelExecutionError, OSError, ValueError) as exc:
+            log = root / 'worker.log'
+            tail = log.read_text(errors='replace')[-1500:].strip() if log.is_file() else ''
+            raise ValueError('--gpu was requested but a sandboxed worker could not use CUDA: '
+                             f'{type(exc).__name__}: {exc}' + (f'\nworker log: {tail}' if tail else '')) from exc
+
+
 def run_worker(root, request, *, log_path=None):
     request = dict(request)
+    request['gpu'] = bool(_GPU['enabled'] and request.get('mode') in GPU_MODES)
     try:
         cpus = len(os.sched_getaffinity(0))
     except (AttributeError, OSError):
@@ -41,7 +125,8 @@ def run_worker(root, request, *, log_path=None):
     env = {name: threads for name in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS',
                                      'NUMEXPR_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS')}
     env.update(HOME=str(scratch), TMPDIR=str(scratch), XDG_CACHE_HOME=str(scratch),
-               CUDA_VISIBLE_DEVICES='', PYTHONDONTWRITEBYTECODE='1')
+               CUDA_VISIBLE_DEVICES=os.environ.get('CUDA_VISIBLE_DEVICES', '') if request['gpu'] else '',
+               PYTHONDONTWRITEBYTECODE='1')
     worker = Path(__file__).with_name('classifier_train_worker.py')
     log_path = Path(log_path) if log_path else root / 'worker.log'
     started = time.monotonic()

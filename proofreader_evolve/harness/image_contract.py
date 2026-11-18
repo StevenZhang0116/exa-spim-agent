@@ -7,6 +7,9 @@ from .classifier_contract import frozen_model
 from .image_coordinates import MAX_RADIUS_UM
 
 IMAGE_VERSION = 'candidate-image-v1'
+# 'judgeable' (2026-11-17): every GT-labeled row of the pool, the rows fit and predict receive.
+# The host chooses them; max_candidates, selection_feature and selection_k do not apply.
+SELECTION_MODES = ('top', 'top_k_boundary', 'judgeable')
 
 
 def image_spec(source):
@@ -35,15 +38,15 @@ def image_spec(source):
     for name, low, high in [('level', 0, 6), ('channel', 0, 15), ('timepoint', 0, 15),
                            ('max_candidates', 1, 4096), ('max_occurrences', 1, 4),
                            ('batch_size', 1, 256), ('batch_max_mb', 1, 1024),
-                           ('max_total_mb', 1, 8192)]:
+                           ('max_total_mb', 1, 262144)]:
         if type(spec[name]) is not int or not low <= spec[name] <= high:
             raise ValueError(f'LOCAL_IMAGE.{name} must be an integer in [{low}, {high}]')
     if type(spec['raw_patches']) is not bool or type(spec['selection_largest']) is not bool:
         raise ValueError('raw_patches and selection_largest must be booleans')
     if not isinstance(spec['selection_feature'], str):
         raise ValueError('selection_feature must name an existing base predictor')
-    if spec['selection_mode'] not in ('top', 'top_k_boundary'):
-        raise ValueError('selection_mode must be top or top_k_boundary')
+    if spec['selection_mode'] not in SELECTION_MODES:
+        raise ValueError('selection_mode must be top, top_k_boundary or judgeable')
     if spec['selection_mode'] == 'top_k_boundary':
         if type(spec['selection_k']) is not int or not 1 <= spec['selection_k'] <= 1_000_000:
             raise ValueError('top_k_boundary requires a literal selection_k in [1, 1000000]')

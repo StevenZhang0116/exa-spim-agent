@@ -1070,7 +1070,9 @@ class TrainingExperiments:
     def plan_image_scoring(self):
         """Dry-run the active image contract on TRAIN predictors without image IO."""
         from .image_contract import image_spec
+        from .image_features import transport_limit
         from .image_selection import select_image_rows, selection_coverage
+        from .label_availability import labeled_rows
         proposal = json.loads(self.proposal_path.read_text())
         source = self._read_program() if proposal.get('classifier') is not None else self._read_candidate()[0]
         contract = image_spec(source)
@@ -1080,6 +1082,11 @@ class TrainingExperiments:
         cells = {}
         for brain, bank in self.train.items():
             table = bank.tables[self.target_kind]
+            if spec['selection_mode'] == 'judgeable':
+                # Row counts only; which rows are GT-labeled is host knowledge, as for descriptor scopes.
+                cells[f'{brain}/{self.target_kind}'] = {'mode': 'judgeable', 'pool_rows': len(table.features),
+                                                        'selected_rows': int(len(labeled_rows(table.truth)))}
+                continue
             selected = select_image_rows(table.features, spec, table.keys)
             cells[f'{brain}/{self.target_kind}'] = selection_coverage(table.features, spec, selected, table.keys)
         # Image selection is one literal selection_k applied to every TRAIN brain, so it is
@@ -1089,17 +1096,23 @@ class TrainingExperiments:
         cap = budgets.kind_budget(self.target_kind, (budgets.k_for(self.target_kind, bank.tables[self.target_kind].truth)
                                                      for bank in self.train.values()))
         warnings = []
-        if spec['selection_mode'] != 'top_k_boundary':
+        if spec['selection_mode'] == 'judgeable':
+            rows = sum(cell['selected_rows'] for cell in cells.values())
+            warnings.append(f'Every GT-labeled row is read ({rows} on the TRAIN brains; the same on each brain the '
+                            'outer evaluator scores). Patch bytes are known only after reading; a request above '
+                            'max_total_mb or the transport limit fails, so start with a small radius or a coarser level')
+        elif spec['selection_mode'] != 'top_k_boundary':
             warnings.append('Top-only sampling does not deliberately cover candidates just outside K')
         elif spec['selection_k'] != cap:
             warnings.append('selection_k differs from this kind\'s K budget (feedback.budgets)')
-        if spec['max_candidates'] < 2 * cap:
+        if spec['selection_mode'] != 'judgeable' and spec['max_candidates'] < 2 * cap:
             warnings.append('Coverage is a pilot near K, not the complete Top-K plus K outside candidates')
         report = {'status': 'planned', 'scope': 'TRAIN predictors only; no images read, no labels used, no score gain measured',
             'target_kind': self.target_kind, 'k_budget': cap, 'contract': spec, 'cells': cells,
             'warnings': warnings, 'evaluations_used': 0,
             'resource_note': 'Numeric extraction batches share one preparation/extraction timeout. '
-                'Actual byte and cache limits are enforced during IO; raw-patch transport still has a 1 GiB limit.',
+                'Actual byte and cache limits are enforced during IO; raw-patch transport is limited to '
+                f'{transport_limit() / 1024**3:g} GiB per worker call.',
             'next_step': 'Implement the proposed 3D measurement as extract_image_features or a raw-patch model. '
                 'Measure a pilot, then expand max_candidates in explore mode. Run an image-only removal '
                 'ablation at the final coverage before fitting/scoring the submitted candidate.'}

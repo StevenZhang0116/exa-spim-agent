@@ -1,9 +1,11 @@
 """Image feature extraction and host-only patch transport for arbitrary models."""
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 import json
 from pathlib import Path
 import shutil
 import tempfile
+import threading
 import time
 
 import numpy as np
@@ -11,9 +13,32 @@ import numpy as np
 from .image_contract import image_spec
 from .image_context import digest_json, file_hash
 from .image_selection import select_image_rows, selection_coverage
+from .label_availability import labeled_rows
 from .model_execution import run_worker, DEFAULT_MEMORY_MB
 
-MAX_STAGE_BYTES = 1024**3
+# Bytes of patch files one worker call may receive. 1 GiB unless the run raises it
+# (--image-transport-gb, 2026-11-17): a model trained on the patches of every GT-labeled row
+# needs more than the pilot selections this limit was written for.
+DEFAULT_STAGE_BYTES = 1024**3
+_TRANSPORT = {'bytes': DEFAULT_STAGE_BYTES}
+# Concurrent remote readers when many patches are missing from the cache; the figure the
+# descriptor planner credits image reads with (descriptor_runs.IMAGE_IO_PARALLELISM).
+IMAGE_READERS = 8
+PARALLEL_READ_ROWS = 64  # below this the single-reader loop is used, with its per-patch trace events
+
+
+def set_transport_limit(limit_bytes=DEFAULT_STAGE_BYTES):
+    if int(limit_bytes) < 1:
+        raise ValueError('The image transport limit must be positive')
+    _TRANSPORT['bytes'] = int(limit_bytes)
+
+
+def transport_limit():
+    return _TRANSPORT['bytes']
+
+
+def _limit_text():
+    return f"{_TRANSPORT['bytes'] / 1024**3:g} GiB"
 
 
 def subset_features(frame, indices, *, missing_row=False):
@@ -39,20 +64,27 @@ def subset_features(frame, indices, *, missing_row=False):
 
 def stage_images(root, frames_and_rows):
     """Stage only requested rows' patches for fitting, prediction or 3D analysis."""
-    directory = Path(root) / 'images'
-    directory.mkdir()
-    mapping, checksums, total, offset = {}, {}, 0, 0
+    frames_and_rows = list(frames_and_rows)
+    # The size of the whole call is known before anything is copied.
+    total = 0
     for frame, indices in frames_and_rows:
         if '_image_rows' not in frame.attrs:
             raise ValueError('Image inputs were not prepared for the requested rows')
+        rows = frame.attrs['_image_rows']
+        for original in indices:
+            total += sum(Path(path).stat().st_size for path in rows.get(int(original), []))
+            if total > _TRANSPORT['bytes']:
+                raise ValueError(f'Image transport exceeds {_limit_text()}; reduce selected candidates, '
+                                 'radius or occurrences')
+    directory = Path(root) / 'images'
+    directory.mkdir()
+    mapping, checksums, offset = {}, {}, 0
+    for frame, indices in frames_and_rows:
         rows = frame.attrs['_image_rows']
         for local, original in enumerate(indices):
             files = []
             for occurrence, path in enumerate(rows.get(int(original), [])):
                 path = Path(path)
-                total += path.stat().st_size
-                if total > MAX_STAGE_BYTES:
-                    raise ValueError('Image transport exceeds 1 GiB; reduce selected candidates, radius or occurrences')
                 name = f'{offset + local}_{occurrence}.npz'
                 shutil.copyfile(path, directory / name)
                 checksums[name] = file_hash(directory / name)
@@ -77,18 +109,27 @@ def augmented_image_features(source, table, frame, timeout=120, memory_mb=DEFAUL
     if set(names) & set(frame.columns):
         raise ValueError('Image feature names collide with existing predictors')
     started = time.monotonic()
-    selected = select_image_rows(table.features, spec, getattr(table, 'keys', None))
-    coverage = selection_coverage(table.features, spec, selected, getattr(table, 'keys', None))
+    if spec['selection_mode'] == 'judgeable':
+        # The rows fit and predict are given. Which rows carry a GT label is the host's
+        # knowledge; the label values are not read here and nothing of this becomes a predictor
+        # (image_available is 1 on every row a model receives).
+        selected = labeled_rows(table.truth)
+        coverage = {'mode': 'judgeable', 'selected_rows': len(selected), 'pool_rows': len(table.features),
+                    'ranking_scope': 'Every GT-labeled row of the pool, chosen by the host; no predictor and no label '
+                                     'value is used'}
+    else:
+        selected = select_image_rows(table.features, spec, getattr(table, 'keys', None))
+        coverage = selection_coverage(table.features, spec, selected, getattr(table, 'keys', None))
     rows, manifests, total_bytes = {}, {}, 0
     batch_indices, batch_rows, batch_bytes = [], {}, 0
     values = np.empty((len(selected), len(spec['feature_names'])), dtype=float)
     batches, cached_batches, written_rows = 0, 0, 0
-    batch_limit = min(spec['batch_max_mb'] * 1024**2, MAX_STAGE_BYTES)
+    batch_limit = min(spec['batch_max_mb'] * 1024**2, _TRANSPORT['bytes'])
     total_limit = spec['max_total_mb'] * 1024**2
     if spec['raw_patches']:
         # Arbitrary fit/predict code may need all its selected inputs together.
         # Only the stateless numeric extractor can be safely batched by the host.
-        total_limit = min(total_limit, MAX_STAGE_BYTES)
+        total_limit = min(total_limit, _TRANSPORT['bytes'])
     base_identity = {'version': 'batched-image-features-v2', 'program': digest_json(program), 'spec': spec,
         'pool': table.meta['pool_sha256'], 'features': table.meta.get('files', {}).get('features.pkl'),
         'implementation': {name: file_hash(Path(__file__).with_name(name)) for name in (
@@ -121,7 +162,7 @@ def augmented_image_features(source, table, frame, timeout=120, memory_mb=DEFAUL
                 np.save(root / 'X.npy', base.to_numpy(dtype=float), allow_pickle=False)
                 (root / 'training.py').write_text(program)
                 (root / 'artifacts').mkdir()
-                logs = provider.directory / 'worker_logs'
+                logs = getattr(provider, 'log_directory', provider.directory) / 'worker_logs'
                 logs.mkdir(parents=True, exist_ok=True)
                 request = {'mode': 'extract_image', 'columns': list(base.columns),
                            'feature_names': spec['feature_names'], 'rows': len(base),
@@ -161,6 +202,41 @@ def augmented_image_features(source, table, frame, timeout=120, memory_mb=DEFAUL
         batch_rows.clear()
         batch_bytes = 0
 
+    many = len(selected) > PARALLEL_READ_ROWS
+    if many:
+        # Fill the patch cache with a few concurrent readers (first occurrences; the others
+        # are rare); the loop below then finds them there. One reader took 0.2 to 0.4 s per patch.
+        # The readers themselves add up the bytes, each as its patch arrives: once the request is
+        # over its limit, or a read fails or times out, no reader starts another read, so at most
+        # the reads already under way (IMAGE_READERS) follow. The count is not left to the thread
+        # that collects the results: `map` returns them in input order, and one slow read at the
+        # front would let every other row be read before the first byte was counted (2026-11-17).
+        stop, counter, read = threading.Event(), threading.Lock(), {'bytes': 0}
+
+        def fetch(index):
+            if stop.is_set():
+                return
+            try:
+                path, _ = provider.patch(table, int(index), spec, 0, timeout=remaining_time(), trace=False)
+                size = Path(path).stat().st_size
+            except BaseException:
+                stop.set()
+                raise
+            with counter:
+                read['bytes'] += size
+                if read['bytes'] > total_limit:
+                    stop.set()
+        pool = ThreadPoolExecutor(max_workers=IMAGE_READERS)
+        try:
+            for _ in pool.map(fetch, selected):   # re-raises a reader's error
+                pass
+        finally:
+            stop.set()
+            pool.shutdown(wait=True, cancel_futures=True)
+        if read['bytes'] > total_limit:
+            raise ValueError(f'Selected images exceed max_total_mb or the {_limit_text()} raw-patch limit; '
+                             'reduce radius/occurrences, use a reviewed coarser level, or stage a smaller pilot')
+
     for index in selected:
         remaining_time()
         paths, identities = [], []
@@ -169,13 +245,14 @@ def augmented_image_features(source, table, frame, timeout=120, memory_mb=DEFAUL
             remaining_time()
             if occurrence and occurrence >= metadata['occurrences_total']:
                 break
-            path, metadata = provider.patch(table, int(index), spec, occurrence)
+            # Thousands of per-patch trace events are not written for a large selection.
+            path, metadata = provider.patch(table, int(index), spec, occurrence, **({'trace': False} if many else {}))
             remaining_time()
             size = path.stat().st_size
             total_bytes += size
             row_bytes += size
             if total_bytes > total_limit:
-                raise ValueError('Selected images exceed max_total_mb or the 1 GiB raw-patch limit; '
+                raise ValueError(f'Selected images exceed max_total_mb or the {_limit_text()} raw-patch limit; '
                                  'reduce radius/occurrences, use a reviewed coarser level, or stage a smaller pilot')
             paths.append(str(path))
             identities.append(metadata['patch_sha256'])

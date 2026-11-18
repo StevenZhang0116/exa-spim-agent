@@ -65,8 +65,9 @@ from ..harness.classifier_contract import frozen_model, MODEL_VERSION, copy_arti
 from ..harness.training_diagnostics import feature_statistics, selection_examples
 from ..harness.local_context import attach_local_context, CONTEXT_VERSION
 from ..harness.local_features import augmented_features
+from ..harness import image_features, model_execution
 from ..harness.image_context import attach_image_context, DEFAULT_ALIGNMENT
-from ..harness.image_contract import IMAGE_VERSION
+from ..harness.image_contract import IMAGE_VERSION, SELECTION_MODES
 from ..harness.image_evidence import generation_image_evidence
 from ..harness.research_evidence import registered_image_available
 from ..harness.volume_analysis import VOLUME_ANALYSIS_VERSION, MAX_ANALYSES, MAX_CASES, MAX_RESULT_BYTES
@@ -163,6 +164,42 @@ def outer_history_text(kind, history, selection_noise=None):
     return text
 
 
+def image_cache_directory(setting, run_dir, budget_bytes):
+    """The run's patch cache directory: the run directory by default, the step's temporary
+    directory for 'local', or a subdirectory of a named parent. A location outside the run
+    directory is checked for write access and for free space of at least the cache budget."""
+    import os
+    import shutil
+    if setting is None:
+        return run_dir / 'image_cache'
+    parent = Path(tempfile.gettempdir()) if setting == 'local' else Path(setting)
+    directory = (parent / f'image_cache_{run_dir.name}').resolve()
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ValueError(f'--image-cache-dir: cannot create {directory}: {exc}') from exc
+    if not os.access(directory, os.W_OK | os.X_OK):
+        raise ValueError(f'--image-cache-dir: {directory} is not writable')
+    free = shutil.disk_usage(directory).free
+    if free < budget_bytes:
+        raise ValueError(f'--image-cache-dir: {directory} has {free / 1024**3:.1f} GiB free, less than the cache '
+                         f'budget of {budget_bytes / 1024**3:g} GiB (--image-cache-gb)')
+    return directory
+
+
+def gpu_prompt_text():
+    """One paragraph of the session prompt, present only in a run started with --gpu (2026-11-17):
+    the two-generation run of that day showed that sessions which merely could use a GPU kept to
+    hand-written descriptors. It names the option and where its example is; it requires nothing."""
+    if not model_execution.gpu_enabled():
+        return ""
+    return ("\nA GPU is available to fit and predict in this run (model_environment.json gpu). Besides "
+            "hand-written descriptors, a model may learn directly from the image patches of every GT-labeled row "
+            "(LOCAL_IMAGE raw_patches with selection_mode 'judgeable'; image_context_guide.md, \"Learn directly "
+            "from patches\", has a working example). Consider it when descriptor features have stopped yielding "
+            "gains; it is an option, not a requirement. ")
+
+
 async def revise(run_dir, policy_path, rules_path, report_path, model, *,
                  max_turns=DEFAULT_REVISER_MAX_TURNS, experiments=None, contract=CONTRACT):
     """A fresh SDK session with the existing per-file access guard; no subagents."""
@@ -247,6 +284,7 @@ async def revise(run_dir, policy_path, rules_path, report_path, model, *,
                        f"{experiments.descriptor_seconds_remaining:.0f} s remaining. "
                        "Check descriptor syntax before preparation; plan before production computation. "
                        "Default scope is judgeable; allowed scopes and charging rules are in the environment and guide.")
+        prompt += gpu_prompt_text()
         prompt += outer_history_text(experiments.target_kind, getattr(experiments, 'outer_history', ()),
                                      getattr(experiments, 'selection_noise', None))
     (policy_path.parent / "reviser_prompt.txt").write_text(prompt)
@@ -395,6 +433,24 @@ def parse_args(argv=None):
     p.add_argument("--image-previews-per-generation", type=int, default=DEFAULT_IMAGE_PREVIEWS,
                    help="Shared allowance for candidate/failure image inspections and descriptor probe previews "
                         "(default: 32; 0 disables previews, not numerical 3D analysis)")
+    p.add_argument("--gpu", action="store_true",
+                   help="Let the fit and predict workers of agent models use the GPU allocated to this step "
+                        "(default: off). The model sandbox then admits the NVIDIA devices and the calls a CUDA "
+                        "process needs (harness/model_sandbox.py); descriptor and analysis workers stay on the CPU. "
+                        "The run fails at start when no GPU is visible. Whether a model uses the GPU is its "
+                        "program's choice")
+    p.add_argument("--image-transport-gb", type=float, default=1.,
+                   help="Raw image patches one fit or predict call may receive, in GiB (default: 1). A model "
+                        "trained on the patches of every GT-labeled row (LOCAL_IMAGE selection_mode 'judgeable') "
+                        "needs more")
+    p.add_argument("--image-cache-gb", type=float, default=20.,
+                   help="Byte budget of the run's patch cache, in GiB (default: 20)")
+    p.add_argument("--image-cache-dir", default=None, metavar="local|PATH",
+                   help="Where the run's patch cache lives (default: image_cache/ in the run directory, on the "
+                        "network file system). 'local' puts it in this step's temporary directory on the node's "
+                        "local disk, which the scheduler removes with the job; a path names another parent "
+                        "directory. Either way the run gets its own subdirectory, and the cache is rebuilt when "
+                        "it is gone. Tens of thousands of small patch files are slow on the network file system")
     p.add_argument("--descriptor-bank", type=Path, default=None,
                    help="Persistent descriptor values, validated by code, input and implementation identity "
                         "(default: proofreader_evolve/descriptor_bank; descriptor_bank_no_score with "
@@ -601,6 +657,9 @@ def parse_args(argv=None):
         p.error("classifier-threads must be >= 1")
     if not math.isfinite(args.classifier_search_seconds) or args.classifier_search_seconds <= 0:
         p.error("classifier-search-seconds must be finite and positive")
+    for name in ("image_transport_gb", "image_cache_gb"):
+        if not math.isfinite(getattr(args, name)) or getattr(args, name) <= 0:
+            p.error(f"{name.replace('_', '-')} must be finite and positive")
     return args
 
 
@@ -844,6 +903,20 @@ async def run(args, revise_fn=None):
             raise ValueError('--run-dir must be new (only launch.json may already exist)')
     record_execution(run_dir)
     trace = Trajectory(run_dir)
+    # GPU mode and the patch transport limit are process-wide settings of the worker launcher;
+    # set them on every run so that an earlier run in this process leaves nothing behind.
+    gpu = model_execution.gpu_device() if getattr(args, "gpu", False) else None
+    model_execution.set_gpu(gpu is not None)
+    if gpu is not None:
+        # Before any brain is loaded: one CUDA computation in a real sandboxed worker with this
+        # run's limits. The device figures are those the worker saw.
+        gpu.update(model_execution.gpu_worker_check(memory_mb=args.classifier_memory_mb,
+                                                    threads=args.classifier_threads), sandbox_checked=True)
+    args.gpu_device = gpu  # read again where the manifest and the agent's environment file are written
+    image_features.set_transport_limit(int(getattr(args, "image_transport_gb", 1.) * 1024**3))
+    if gpu is not None:
+        trace.emit("gpu", f"GPU mode: fit and predict workers may use {gpu['name']} ({gpu['memory_mb']} MiB); "
+                   "the model sandbox admits the NVIDIA devices for them", **gpu)
     trace.emit("run_start", f"Run directory: {run_dir}",
                config={key: str(value) if isinstance(value, Path) else value for key, value in vars(args).items()})
     report = update_report(run_dir, trace, phase='initializing')
@@ -860,6 +933,7 @@ async def run(args, revise_fn=None):
 
 
 async def _run(args, revise_fn, run_dir, trace):
+    gpu = getattr(args, "gpu_device", None)
     # Raw pools carry no detector (2026-11-06): nothing to resolve, hash or import.
     selected = None if detector_prior.raw_enabled(args) else pc.resolve_detector_runs(args.merge_dir, args.split_dir)
     banks, selection = _load_evaluation_banks(args, selected, trace)
@@ -870,7 +944,15 @@ async def _run(args, revise_fn, run_dir, trace):
                "fitting use GT-labeled rows only",
                version=label_availability.AVAILABILITY_VERSION, summary=availability_summary)
     attach_local_context(banks, run_dir / 'local_feature_cache', trace)
-    image_store = attach_image_context(banks, run_dir / 'image_cache', args.image_alignment, trace)
+    cache_bytes = int(getattr(args, "image_cache_gb", 20.) * 1024**3)
+    image_cache = image_cache_directory(getattr(args, "image_cache_dir", None), run_dir, cache_bytes)
+    image_store = attach_image_context(banks, image_cache, args.image_alignment, trace, max_cache_bytes=cache_bytes)
+    # Worker logs of image extraction stay with the run even when the patches do not.
+    image_store.log_directory = run_dir / 'image_cache'
+    if image_cache != run_dir / 'image_cache':
+        trace.emit("image_cache", f"Patch cache on {image_cache} (budget {cache_bytes / 1024**3:g} GiB); it is not "
+                   "part of the run directory and is rebuilt when missing", directory=str(image_cache),
+                   budget_bytes=cache_bytes)
     _write(run_dir / 'image_alignment.json', {'brains': image_store.reviews})
     selection["detector_prior"] = getattr(args, "detector_prior", "frozen")
     _write(run_dir / "dataset_split.json", selection)
@@ -1106,9 +1188,12 @@ async def _run(args, revise_fn, run_dir, trace):
                 "candidate_images": {"version": IMAGE_VERSION,
                     "inspections_per_generation": args.image_previews_per_generation,
                     "preview_default": "native_slice_sheet", "preview_max_slices": 9,
-                    "alignment_receipts": "image_alignment.json", "worker_stage_bytes": 1024**3,
-                    "cache_bytes": image_store.max_cache_bytes, "raw_patch_models": True,
-                    "selection_modes": ["top", "top_k_boundary"], "max_candidates": 4096,
+                    "alignment_receipts": "image_alignment.json",
+                    "worker_stage_bytes": image_features.transport_limit(),
+                    "cache_bytes": image_store.max_cache_bytes, "cache_directory": str(image_store.directory),
+                    "raw_patch_models": True,
+                    "selection_modes": list(SELECTION_MODES), "max_candidates": 4096,
+                    "gpu": gpu,
                     "numeric_extraction": "bounded row/byte batches under a shared timeout",
                     "default_batch_rows": 32, "default_batch_mb": 256, "default_total_mb": 4096,
                     "format": "OME-Zarr v2 with explicit axes, units and transforms"},
@@ -1198,7 +1283,15 @@ async def _run(args, revise_fn, run_dir, trace):
                                  'execution': 'host pip process with package-index access',
                                  'preserve_existing_versions': True, 'timeout_seconds': 600},
         'execution_limits_scope': 'model workers; package installation is a separate host tool',
-        'device': 'cpu', 'network': False, 'child_processes': False,
+        'device': 'cuda' if gpu is not None else 'cpu', 'network': False, 'child_processes': False,
+        'gpu': ({'available': True, **gpu, 'workers': list(model_execution.GPU_MODES),
+                 'note': 'fit and predict may use this device (torch.device("cuda")); every other worker is CPU only. '
+                         'predict runs twice and must return identical scores: use eval mode, '
+                         'torch.backends.cudnn.deterministic = True, cudnn.benchmark = False and a fixed batch order. '
+                         'No child processes: DataLoader needs num_workers=0. Model files are limited by '
+                         'max_artifact_bytes. Write the device as cuda if torch.cuda.is_available() else cpu.'}
+                if gpu is not None else {'available': False}),
+        'image_transport_bytes': image_features.transport_limit(), 'image_cache_bytes': image_store.max_cache_bytes,
         'fit_timeout_seconds': args.classifier_time_budget, 'fit_memory_mb': args.classifier_memory_mb,
         'classifier_search_seconds_per_generation': args.classifier_search_seconds,
         'classifier_search_budget_check': 'between configurations; current candidate completes under worker limits',
@@ -1209,7 +1302,10 @@ async def _run(args, revise_fn, run_dir, trace):
         'evaluation_units_per_generation': args.train_evaluations_per_generation,
         'volume_analyses_per_generation': MAX_ANALYSES, 'volume_cases_per_call': MAX_CASES,
         'numerical_threads': args.classifier_threads, 'max_artifact_bytes': 128 * 1024**2,
-        'max_artifact_files': 256, 'sandbox': 'Linux Landlock ABI >= 3 and libseccomp; fail closed',
+        'max_artifact_files': 256,
+        'sandbox': ('Linux Landlock ABI >= 3 and libseccomp; fail closed'
+                    + ('; GPU mode admits the NVIDIA devices, their ioctls and local sockets that cannot connect '
+                       'for fit and predict workers' if gpu is not None else '')),
         'descriptor_compute': ({'enabled': True, 'workers': descriptor_runs.workers,
             'worker_memory_mb': args.descriptor_memory_mb, 'threads_per_worker': 1,
             'concurrency': 'cpu_and_memory_gated', 'reserve': 'max(8 GiB, 10% of cgroup limit)',

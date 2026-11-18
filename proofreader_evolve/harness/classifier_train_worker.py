@@ -201,7 +201,8 @@ def main():
                 reads.append(root / 'X_unlabeled.npy')
         if request.get('image_inputs'):
             reads.append(root / 'images')
-        sandbox.isolate(reads, [scratch, artifacts] if request['mode'] == 'fit' else [scratch])
+        sandbox.isolate(reads, [scratch, artifacts] if request['mode'] == 'fit' else [scratch],
+                        gpu=bool(request.get('gpu')))
         import numpy as np
         import pandas as pd
         if 'random_seed' in request:

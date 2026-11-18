@@ -101,7 +101,7 @@ class ImageScoringTests(unittest.TestCase):
     def test_invalid_selector_and_resource_limits_fail_before_io(self):
         for settings in ({'selection_mode':'other'}, {'selection_mode':'top_k_boundary'},
                          {'selection_mode':'top_k_boundary','selection_k':True}, {'selection_k':4},
-                         {'batch_size':0}, {'batch_max_mb':1025}, {'max_total_mb':8193}):
+                         {'batch_size':0}, {'batch_max_mb':1025}, {'max_total_mb':262145}):
             with self.subTest(settings=settings), self.assertRaises(ValueError):
                 image_spec(program(**settings))
         self.provider.patch.assert_not_called()
@@ -135,7 +135,7 @@ class ImageScoringTests(unittest.TestCase):
     def test_numeric_batches_can_exceed_aggregate_worker_limit_but_raw_models_cannot(self):
         # Scale the transport cap down to avoid large test allocations.
         limit = self.paths[0].stat().st_size * 2
-        with patch('proofreader_evolve.harness.image_features.MAX_STAGE_BYTES', limit), \
+        with patch.dict('proofreader_evolve.harness.image_features._TRANSPORT', {'bytes': limit}), \
              patch('proofreader_evolve.harness.image_features.run_worker', side_effect=self.fake_worker):
             frame = augmented_image_features(program(max_candidates=8, batch_size=32), self.table, self.table.features)
             self.assertGreater(frame.attrs['image_context']['bytes'], limit)
@@ -181,7 +181,7 @@ class ImageScoringTests(unittest.TestCase):
         self.provider.patch.return_value = (large, {'patch_sha256':file_hash(large),'occurrences_total':1})
         with self.assertRaisesRegex(ValueError, 'max_total_mb'):
             augmented_image_features(program(max_candidates=2,max_total_mb=1), self.table, self.table.features)
-        with patch('proofreader_evolve.harness.image_features.MAX_STAGE_BYTES', 100):
+        with patch.dict('proofreader_evolve.harness.image_features._TRANSPORT', {'bytes': 100}):
             with self.assertRaisesRegex(ValueError, 'One candidate'):
                 augmented_image_features(program(max_candidates=1), self.table, self.table.features)
 

@@ -9,8 +9,9 @@ Choose methods for the problem, not just the packages already installed. Use
 `install_packages({"packages": ["catboost>=1.2"]})` to add dependencies to the current
 Python environment (normally panda). Existing package versions stay fixed; a dependency
 conflict is returned with pip's output. Installations persist across generations and runs,
-refresh `model_environment.json`, and cost no evaluation units. CPU execution and the
-stated worker budgets still define what can run.
+refresh `model_environment.json`, and cost no evaluation units. The device in
+`model_environment.json` (CPU, or a GPU when `gpu.available` is true) and the stated worker
+budgets still define what can run.
 For new local morphology features, read `local_context_guide.md`. You may define
 `LOCAL_CONTEXT` and `extract_local_features(context)` in training.py; the host
 appends these label-free features to TRAIN fit inputs and frozen validation inputs.
@@ -26,13 +27,24 @@ the local patches for that input row. You may learn image preprocessing and
 encoders in fit and save their frozen state alongside your model. Internal folds
 receive only their own row subsets, including images. Handle empty patch lists.
 For coverage beyond a few investigated cases, declare top_k_boundary selection at
-this kind's K budget (feedback.budgets) and call plan_image_scoring({}) before IO. Numeric image extraction
-uses bounded batches; raw-patch models retain a 1 GiB staging limit. Inspect actual
+this kind's K budget (feedback.budgets) and call plan_image_scoring({}) before IO. To give a
+model the patches of every GT-labeled row (the rows fit and predict receive), declare
+`selection_mode: 'judgeable'` instead; `max_candidates`, `selection_feature` and `selection_k`
+then do not apply. Numeric image extraction
+uses bounded batches; one worker call of a raw-patch model receives at most
+`image_transport_bytes` of `model_environment.json` (1 GiB unless the run raised it) and
+`max_total_mb` of patch files, so choose radius and level accordingly. Inspect actual
 Top-K image coverage, then measure an image-only ablation at the intended final
 coverage before attributing any improvement to pixels. See image_context_guide.md.
-Inside model workers, GPU access, network, package installation and child processes
+Inside model workers, network, package installation and child processes
 are unavailable; use the host's `install_packages` tool before fitting and use in-process
-training and threads rather than multiprocessing/joblib processes.
+training and threads rather than multiprocessing/joblib processes (a PyTorch `DataLoader`
+needs `num_workers=0`). A GPU exists for `fit` and `predict` only when
+`model_environment.json` says `gpu.available: true`, and using it is your choice: write
+`torch.device('cuda' if torch.cuda.is_available() else 'cpu')`. The harness calls `predict`
+twice on the frozen model and rejects scores that differ, on a GPU as on a CPU: use eval mode,
+`torch.backends.cudnn.deterministic = True`, `torch.backends.cudnn.benchmark = False` and a
+fixed batch order. Every other worker (descriptors, feature extraction, 3D analysis) is CPU only.
 
 ## Three-valued labels
 

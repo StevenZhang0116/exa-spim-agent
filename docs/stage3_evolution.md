@@ -677,6 +677,164 @@ readable; newly trained models use the program/artifact interface.
 old ledger, candidate pool, scheduling counters or cumulative-progress checkpoint;
 initial exploration and progress accounting restart for the new run.
 
+### GPU mode (`--gpu`, 2026-11-17)
+
+Off by default; without the option nothing below applies and a run behaves as before. With
+`--gpu` the fit and predict workers of agent models may use the GPU the scheduler allocated to
+the step. Whether a model uses it is the program's choice: the harness prescribes no
+architecture, loss or device. The driver fails at start when no GPU is visible
+(`CUDA_VISIBLE_DEVICES` empty or `nvidia-smi` lists nothing), and then, before any brain is
+loaded, runs one small CUDA computation in a real sandboxed fit worker with the run's memory and
+thread limits (`model_execution.gpu_worker_check`, about 25 s on n01); a worker that cannot use
+CUDA ends the run there with the worker's log in the message. The device name and memory the
+worker saw go to the manifest and to each generation's `model_environment.json` (`gpu`,
+`sandbox_checked`). Descriptor, feature
+extraction and 3D-analysis workers stay on the CPU: dozens of them run side by side.
+
+One switch covers every model worker (`model_execution.run_worker`): fold fits and fold
+predictions of the selection protocol (they run one after another), the full fit, ablations,
+the outer evaluator's predictions and restored candidates.
+
+**What the sandbox gives up.** The model sandbox (`harness/model_sandbox.py`, Landlock plus
+seccomp) is applied as before, with these additions for a GPU worker, each found by tracing a
+CUDA start-up inside the sandbox on an L40S node:
+
+- `CUDA_VISIBLE_DEVICES` is passed through as the scheduler set it (it is blanked otherwise);
+- read-write access with device ioctls to the `/dev/nvidia*` device files, read access to the
+  driver's information files, and write access to `/proc/self/task` (the driver names its
+  threads there and aborts when it cannot);
+- the system calls `ioctl`, `eventfd2`, `setsockopt`, `bind`, `listen`, and `socket` for local
+  (AF_UNIX) sockets only. `connect` always fails, so no socket of a worker reaches anything.
+
+Unchanged: no network, no child processes, the filesystem allowlist, the address-space, CPU-time
+and file-size limits, the artifact limits (128 MiB, 256 files). Weaker than the CPU sandbox:
+agent-written code can call the NVIDIA driver's ioctl interface, a large kernel surface the CPU
+sandbox does not expose, and can create local sockets (which cannot connect). Which GPUs a
+worker can open is still decided by the scheduler's device cgroup. Use the option only on an
+allocation where that is acceptable.
+
+**What a model must respect.** The harness calls `predict` twice on the frozen model and rejects
+scores that are not identical; that check is unchanged, so GPU inference has to be deterministic
+(eval mode, `torch.backends.cudnn.deterministic = True`, `cudnn.benchmark = False`, a fixed batch
+order). No child processes means `DataLoader(num_workers=0)`. A program should fall back to the
+CPU when no GPU is present, so that a frozen model can still be applied elsewhere; scores of the
+two devices are not guaranteed to be bit-identical, so compare a policy only with itself on the
+device it was measured on. Retraining a network is not expected to reproduce its weights; the
+frozen model is what the gate measures.
+
+**Patches for a network.** `LOCAL_IMAGE` with `raw_patches: True` hands fit and predict the
+patches of the selected rows. The selection `selection_mode: 'judgeable'` (2026-11-17) selects
+every GT-labeled row of the pool, the rows fit and predict receive; the host chooses them, as
+for the descriptor scope of that name, and no label value is read. Missing patches are read by
+eight concurrent readers into the run's patch cache (budget `--image-cache-gb`, default 20). A
+worker call still receives a copy of exactly its own rows' files, so a fold fit cannot open the
+held-out rows' patches; the size of that copy is limited by `--image-transport-gb` (default
+1 GiB, the limit that was fixed before).
+
+**Where the patch cache lives (`--image-cache-dir`).** By default `image_cache/` in the run
+directory, on the network file system. `--image-cache-dir local` puts it in the step's temporary
+directory on the node's local disk (`image_cache_<run name>/`; the scheduler removes it with the
+job), and a path names another parent directory. The driver checks at start that the directory
+is writable and has at least the cache budget free. The cache holds nothing a run needs later: a
+missing patch is read again. Models, logs and results stay in the run directory, and the
+manifest records the location (`candidate_images.cache_directory`). Worker
+directories were on local disk already (the step's `TMPDIR`). Use `local` for a GPU run: tens of
+thousands of small files are slow on the network file system.
+
+Measured on 2026-11-17 on n01 against the real store (TRAIN brain 754612, the 2,348 GT-labeled
+merge rows, level 1, radius 16 um, 24 KiB per row, eight readers, one process per measurement,
+two passes; log `proofreader_evolve/log/image_cache_timing_20261117.log.txt`):
+
+| step | cache on the network file system | cache on local disk |
+|---|---|---|
+| cold read into the cache | 138 s / 122 s | 52 s / 40 s |
+| the same rows found in the cache | 28 s / 39 s | 2.1 s / 2.1 s |
+| copy to a worker directory | 29 s / 17.5 s | 0.3 s / 0.3 s |
+
+Radius 32 um (32 x 43 x 43 voxels, 174 KiB per row, 0.39 GiB) was 20 s cold on local disk in an
+earlier measurement. Split pools and larger crops were not measured.
+
+**Limits are enforced while reading (2026-11-17).** Patch bytes are known only after a read. Each
+reader adds its patch to a shared count as it arrives, and no reader starts another read once
+the request is over `max_total_mb` or the transport limit, or a read fails or times out; at most
+the reads already under way (eight) follow. Before, every selected row was read and the limit
+checked afterwards. (A first form of this left the count to the thread that collects the
+results in input order; one slow read at the front then let all other rows be read. A review
+found it, and a test with a held first read covers it.) `stage_images` sums the files of a worker call before
+it copies any. The cache's budget check, the move into the cache and the byte count happen under
+one lock and count the stored file (`CandidateImageStore._commit`), so concurrent readers cannot
+pass the budget.
+
+**What tells a session about it.** A two-generation run of 2026-11-17 with `--gpu` and no other
+change kept to hand-written descriptors and tree models in both generations and never touched the
+GPU: the guides said that a GPU exists, nothing named a way to use it. Since then a run with
+`--gpu` adds one paragraph to the session prompt (`gpu_prompt_text` in the driver): a GPU is
+available, a model may learn directly from the patches of every GT-labeled row, the image guide
+has a working example, and it is an option, not a requirement. `image_context_guide.md`
+("Learn directly from patches") prints a complete small 3D network: per-patch normalisation,
+training, saving, deterministic prediction, CPU fallback. `tests/test_gpu_mode.py` extracts that
+program from the guide and runs it through the real workers, so what the guide prints is what
+was tested. Without `--gpu` the prompt is unchanged.
+
+**The whole path on the real pools (2026-11-17).** The guide's example was run in place of an
+agent through the real driver on n01: six TRAIN and five development-validation brains, one
+generation per kind, no language model. Merge: 27,403 labeled rows, 477 positives; the network's
+out-of-fold average precision was 0.0278 against 0.0260 for the constant seed, inside TRAIN noise,
+so the generation ended `not_measured`. Split: 39,984 rows; out-of-fold 0.6528 against 0.4444,
+measured on the five validation brains and promoted (0.4259 to 0.6293; the raw heuristics give
+0.8410). No prediction was rejected by the duplicate-prediction check. A sampler on the node saw
+fit workers holding the GPU (up to 730 MiB, 93% utilisation) and predict workers (598 MiB, 51%).
+The example is an interface demonstration; these figures say nothing about what a network on
+patches can reach.
+
+Where the time went in that run, with the cache in the run directory on the network file
+system (merge generation, 64 minutes of worker time): 21 min to read the patches into the cache,
+10 min for the four trainings, 4 min for fold predictions, and 28 min for the evaluation steps
+(preflight, TRAIN scoring, diagnostics). The split generation took 2 h 15 min, of which 45 min
+were the validation brains.
+
+**The same merge generation with the cache on local disk (2026-11-17, evening).** Same program,
+brains, rows and options plus `--image-cache-dir local` (log
+`proofreader_evolve/log/gpu_fixed_network_full_merge_20261117.log.txt`); the out-of-fold average
+precision was 0.0278 again and the generation again ended `not_measured`.
+
+| step | network file system | local disk |
+|---|---|---|
+| read the patches of 27,403 rows | 21 min | 11.3 min |
+| four trainings (three folds, full fit) | 10 min | 2.7 min |
+| fold predictions | 4 min | 2.4 min |
+| evaluation steps (preflight 5.7, TRAIN scoring 6.3, diagnostics 4.4 min) | 28 min | 16.5 min |
+| the evaluation of the candidate in total | 64 min | 33 min |
+
+About half. What remains is no longer the copying (0.3 s per brain in the table above): the
+patch read is the remote store, and each of the three evaluation steps starts one frozen-model
+worker per TRAIN brain (eighteen in all), which imports torch, initialises CUDA, decodes every
+patch file and predicts twice for the duplicate check. A smaller check of the whole path ran
+before it (merge, TRAIN 747807/754610/754612, validation 794493, no TRAIN noise check, 20
+minutes in all, log `proofreader_evolve/log/gpu_fixed_network_20261117.log.txt`): start-up check
+passed, cache on local disk, three fold fits, full fit, the frozen network scored on the
+validation brain and rejected by the rule (0.0067 to 0.0064), no duplicate-prediction rejection.
+
+Known limits, to be revisited after the first runs:
+
+- every fit and predict call copies its rows' patch files to the worker's directory; with the
+  cache on local disk this was 0.3 s for 2,348 small patches, so access without a copy was not
+  built. Revisit it if large crops make the copy visible again;
+- patch bytes are known only after reading: a request above `max_total_mb` or the transport
+  limit now stops early, and the agent still has to shrink it;
+- an evaluation starts many short frozen-model workers, each paying the torch and CUDA start-up
+  (about 25 s) and a full decode of its patches; this is the larger part of what remains;
+- the read-only path list of the GPU sandbox was not minimised;
+- no tolerance exists for inference that is not bit-reproducible.
+
+A GPU run adds the following to the documented launch (the allocation must hold a GPU; the
+larger budgets give four network trainings per evaluation and the patch reads room):
+
+```bash
+  --gpu --image-transport-gb 16 --image-cache-gb 64 --image-cache-dir local \
+  --classifier-time-budget 3600 --policy-time-budget 3600 --classifier-search-seconds 14400
+```
+
 ## 3.6 Exploration tools: geometry, 3D volumes, images and feature discovery
 
 The agent can inspect **TRAIN candidate locations and local fragment geometry**
@@ -760,7 +918,8 @@ To connect small 3D investigations to ranking at larger K, `LOCAL_IMAGE` support
 cover its entire Top 2000 and the next 2000. The agent can call
 `plan_image_scoring({})` to preview TRAIN coverage without image IO. Stateless
 numeric extraction uses bounded batches with a shared timeout; raw-patch models
-retain the 1 GiB staging limit. Reports distinguish 3D access, actual
+receive at most `--image-transport-gb` per worker call (1 GiB by default; `selection_mode='judgeable'`
+selects every GT-labeled row, see GPU mode in section 3.5). Reports distinguish 3D access, actual
 Top-K image coverage, and image-only paired TRAIN evidence. Neither access nor
 coverage alone demonstrates an image-ranking benefit; promotion uses the target-kind validation gate.
 

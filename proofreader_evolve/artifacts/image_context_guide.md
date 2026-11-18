@@ -220,7 +220,9 @@ across candidates; learned transforms belong in TRAIN fit.
 
 ## Learn directly from patches
 
-For arbitrary CPU image models, set `raw_patches: True` in LOCAL_IMAGE. The
+For arbitrary image models, set `raw_patches: True` in LOCAL_IMAGE. With the default
+selection only the selected rows carry patches; `selection_mode: 'judgeable'` gives every
+GT-labeled row its patch, which is what a network trained on patches needs. The
 feature_names list can be empty if no stateless extractor is needed. Extend the
 ordinary model signatures with a keyword argument:
 
@@ -244,7 +246,98 @@ fold fitting cannot open held-row patches or labels. Save learned image encoders
 and preprocessing with the model; the outer evaluator freezes them on validation.
 The harness does not prescribe a classifier, convolutional architecture or loss.
 Use `install_packages` for missing Python dependencies (see `classifier_guide.md`).
-CPU execution and existing worker time/memory/artifact limits apply.
+Existing worker time/memory/artifact limits apply. Fit and predict run on the CPU unless
+`model_environment.json` lists a GPU (`gpu.available: true`); see `classifier_guide.md` for
+the device, determinism and data-loading rules. Patch bytes are known only after reading:
+a request above `max_total_mb` or `image_transport_bytes` fails, so start with a small
+radius or a coarser level and grow it.
+
+### A working example: a small 3D network
+
+The program below is complete: it trains a small 3D convolutional network on the patches of
+every GT-labeled row, saves it, and applies it with the settings that make GPU inference
+repeatable. It shows the interface, the device choice and the determinism settings; it is not
+a recommended architecture, crop or training schedule, and it ignores the tabular predictors
+in `X`. A model may equally combine a network's output with the tabular columns, or use a
+different network altogether.
+
+```python
+# Example: a small 3D network on image patches (interface example, not a recommendation).
+LOCAL_IMAGE = {'raw_patches': True, 'selection_mode': 'judgeable', 'level': 1, 'radius_um': 16.0,
+               'max_total_mb': 8192}
+
+import numpy as np
+import torch
+import torch.nn as nn
+
+SIDE = 16    # every patch is resampled to SIDE x SIDE x SIDE voxels
+BATCH = 256
+
+
+def _network():
+    return nn.Sequential(
+        nn.Conv3d(1, 8, 3, padding=1), nn.ReLU(), nn.MaxPool3d(2),
+        nn.Conv3d(8, 16, 3, padding=1), nn.ReLU(), nn.AdaptiveAvgPool3d(1),
+        nn.Flatten(), nn.Linear(16, 1))
+
+
+def _volumes(images, rows):
+    """A float tensor (rows, 1, SIDE, SIDE, SIDE) on the CPU; a row without a patch stays zero."""
+    batch = torch.zeros((len(rows), 1, SIDE, SIDE, SIDE))
+    for position, row in enumerate(rows):
+        patches = images[int(row)]
+        if not patches:
+            continue
+        volume = torch.from_numpy(patches[0]['image_zyx'].astype('float32'))[None, None]
+        volume = (volume - volume.mean()) / (volume.std() + 1e-6)   # brains differ in intensity scale
+        batch[position] = nn.functional.interpolate(volume, size=(SIDE, SIDE, SIDE), mode='trilinear',
+                                                    align_corners=False)[0]
+    return batch
+
+
+def fit(X_train, y_train, artifact_dir, params, *, images):
+    torch.manual_seed(0)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    labels = torch.tensor(np.asarray(y_train, dtype='float32'))
+    volumes = _volumes(images, range(len(labels)))   # read every patch once; this fits in host memory
+    positives = float(labels.sum())
+    weight = torch.tensor((len(labels) - positives) / max(positives, 1.), device=device)   # rare positives
+    network = _network().to(device)
+    optimiser = torch.optim.Adam(network.parameters(), lr=float(params.get('lr', 1e-3)))
+    order = np.random.default_rng(0)
+    for _ in range(int(params.get('epochs', 5))):
+        permutation = order.permutation(len(labels))
+        for start in range(0, len(labels), BATCH):
+            rows = permutation[start:start + BATCH]
+            optimiser.zero_grad()
+            loss = nn.functional.binary_cross_entropy_with_logits(
+                network(volumes[rows].to(device)), labels[rows].to(device)[:, None], pos_weight=weight)
+            loss.backward()
+            optimiser.step()
+    torch.save(network.state_dict(), artifact_dir / 'network.pt')
+
+
+def predict(X, artifact_dir, params, *, images):
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    network = _network().to(device)
+    network.load_state_dict(torch.load(artifact_dir / 'network.pt', map_location=device, weights_only=True))
+    network.eval()
+    scores = []
+    with torch.no_grad():
+        for start in range(0, len(X), BATCH):   # the same batches on every call
+            rows = range(start, min(start + BATCH, len(X)))
+            scores.append(network(_volumes(images, rows).to(device))[:, 0].double().cpu())
+    return torch.cat(scores).numpy() if scores else np.zeros(0)
+```
+
+Practical points. The harness trains a configuration four times (three folds and the full
+fit), each inside `fit_timeout_seconds`. The saved state must fit `max_artifact_bytes`. With
+no child processes a `DataLoader` needs `num_workers=0`; indexing tensors as above avoids it.
+`predict` is called twice and must return identical scores: keep the determinism lines and a
+fixed batch order, and do not use dropout or batch statistics at inference. `model_environment.json`
+says whether a GPU exists (`gpu.available`); the example runs on the CPU when none does.
 
 ## Incremental evidence and limits
 
@@ -264,9 +357,12 @@ biological truth. A sampled registration review is not a whole-brain guarantee.
 
 Limits: radius 4..128 um (a patch spans at most a 256 um cube), max_occurrences 1..4,
 max_candidates 1..4096, batch_size 1..256 (default 32), batch_max_mb 1..1024
-(default 256), max_total_mb 1..8192 per brain/kind preparation (default 4096),
-1 GiB staged input per worker, 20 GiB run image cache. Numeric extraction can span
-multiple workers; arbitrary raw-patch fit/predict still stages at most 1 GiB total.
+(default 256), max_total_mb 1..262144 per brain/kind preparation (default 4096).
+`selection_mode: 'judgeable'` ignores max_candidates and selects every GT-labeled row.
+One worker call receives at most `image_transport_bytes` of `model_environment.json`
+(1 GiB unless the run raised it); the run's image cache holds at most `image_cache_bytes`
+(20 GiB unless raised). Numeric extraction can span
+multiple workers; arbitrary raw-patch fit/predict stages all its rows in one call.
 Batching does not increase the run cache allowance, timeout or model memory limit.
 Large image selections may exceed IO/time/byte budgets; start small, reuse cached
 patches and measure incremental value. The full table and fixed Top K remain

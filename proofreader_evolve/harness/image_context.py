@@ -174,6 +174,12 @@ class CandidateImageStore:
         self.cache_bytes = sum(p.stat().st_size for p in self.directory.glob('*/patch.npz')) if self.directory.exists() else 0
         self.sources = {}
         self._source_lock = threading.Lock()
+        # Patches are read by several threads (image_features); the budget check, the rename into
+        # the cache and the byte count happen together under this lock. Remote reads stay outside.
+        self._cache_lock = threading.Lock()
+        # Worker logs of numeric image extraction; the driver points this at the run directory
+        # when the patch cache itself lives on node-local disk.
+        self.log_directory = self.directory
         self.implementation = {name: file_hash(Path(__file__).with_name(name)) for name in
                                ('image_context.py', 'image_coordinates.py', 'image_contract.py')}
 
@@ -219,6 +225,18 @@ class CandidateImageStore:
                     'pool': table.meta['pool_sha256'],
                     'request': {k: spec[k] for k in ('radius_um', 'level', 'channel', 'timepoint')}}
 
+    def _commit(self, staged, target):
+        """Move one staged patch into the cache if the byte budget allows; all of it under one lock,
+        counted by the size of the file that is kept."""
+        size = (staged / 'patch.npz').stat().st_size
+        with self._cache_lock:
+            if target.is_dir():   # another reader stored the same patch meanwhile
+                return
+            if self.cache_bytes + size > self.max_cache_bytes:
+                raise ValueError('Image cache byte budget exhausted')
+            staged.rename(target)
+            self.cache_bytes += size
+
     def patch(self, table, index, spec, occurrence=0, *, reviewed=True, persist=True,
               directory=None, timeout=None, trace=True):
         """Reuse persistent hits; uncached full-run patches live in caller-owned scratch.
@@ -246,8 +264,6 @@ class CandidateImageStore:
             destination = self.directory if persist else Path(directory)
             destination.mkdir(parents=True, exist_ok=True)
             target = destination / key
-            if persist and self.cache_bytes + sum(a.nbytes for a in data.values()) > self.max_cache_bytes:
-                raise ValueError('Image cache byte budget exhausted')
             with tempfile.TemporaryDirectory(prefix='.staging_', dir=destination) as tmp:
                 staged = Path(tmp) / 'entry'
                 staged.mkdir()
@@ -255,9 +271,10 @@ class CandidateImageStore:
                 metadata.update(identity=identity, occurrences_total=total,
                                 patch_sha256=file_hash(staged / 'patch.npz'))
                 (staged / 'metadata.json').write_text(json.dumps(metadata, indent=2, allow_nan=False))
-                staged.rename(target)
-            if persist:
-                self.cache_bytes += (target / 'patch.npz').stat().st_size
+                if persist:
+                    self._commit(staged, target)
+                else:
+                    staged.rename(target)
         metadata = json.loads((target / 'metadata.json').read_text())
         path = target / 'patch.npz'
         if metadata['identity'] != identity or metadata['patch_sha256'] != file_hash(path):
@@ -270,8 +287,9 @@ class CandidateImageStore:
         return path, metadata
 
 
-def attach_image_context(banks, directory, alignment_path=DEFAULT_ALIGNMENT, trace=None):
-    store = CandidateImageStore(directory, alignment_path, trace)
+def attach_image_context(banks, directory, alignment_path=DEFAULT_ALIGNMENT, trace=None, max_cache_bytes=None):
+    store = (CandidateImageStore(directory, alignment_path, trace) if max_cache_bytes is None
+             else CandidateImageStore(directory, alignment_path, trace, max_cache_bytes=int(max_cache_bytes)))
     for bank in banks.values():
         for table in bank.tables.values():
             table.image_context = store

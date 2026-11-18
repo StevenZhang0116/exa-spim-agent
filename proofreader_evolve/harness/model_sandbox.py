@@ -2,6 +2,24 @@
 
 Supports library imports and CPU threads, but no network or child processes.
 Unsupported kernels fail closed; never fall back to an unrestricted worker.
+
+GPU mode (``isolate(..., gpu=True)``, 2026-11-17; off unless the run was started with
+``--gpu``, and then only for fit and predict workers) additionally lets the worker drive the
+NVIDIA devices of its allocation. The additions were found by tracing a CUDA start-up inside
+this sandbox on an L40S node, one failing call at a time:
+
+* the device files ``/dev/nvidia*`` read-write with device ioctls, and read access to the
+  driver's information files (``GPU_READ_PATHS``);
+* write access to ``/proc/self/task`` (libcuda names its threads through ``task/<tid>/comm``
+  and aborts with "OS call failed" when it cannot);
+* ``ioctl`` and ``eventfd2``, and local sockets: ``socket`` for AF_UNIX only, ``bind``,
+  ``listen`` and ``setsockopt`` (the driver binds an abstract socket for its own use).
+  ``connect`` always fails with ENOENT, so no socket of a worker can reach anything.
+
+What stays: no network, no child processes, the filesystem allowlist. What is weaker: agent
+code can call the NVIDIA driver's ioctl interface, a large kernel surface that the CPU sandbox
+does not expose. Which GPUs exist for the worker is still decided by the scheduler's device
+cgroup; this module allows every ``/dev/nvidia*`` node and adds nothing to that.
 """
 import ctypes
 import errno
@@ -12,7 +30,20 @@ import sys
 import sysconfig
 
 
-def restrict_filesystem(read_paths, write_paths):
+# Read-only driver information a CUDA process opens while it initialises.
+GPU_READ_PATHS = ('/dev/nvidia-caps', '/dev/char', '/proc/driver/nvidia', '/sys/module/nvidia',
+                  '/sys/module/nvidia_uvm', '/proc/self', '/proc/devices', '/proc/sys/vm/mmap_min_addr',
+                  '/sys/devices/system/memory', '/sys/devices/system/node')
+GPU_WRITE_PATHS = ('/proc/self/task',)
+GPU_SYSCALLS = ('ioctl', 'eventfd2', 'setsockopt', 'bind', 'listen')
+
+
+def gpu_device_paths():
+    """Every NVIDIA character device of the node; the device cgroup decides which ones open."""
+    return sorted(str(path) for path in Path('/dev').glob('nvidia*') if path.is_char_device())
+
+
+def restrict_filesystem(read_paths, write_paths, device_paths=()):
     if platform.machine() not in ('x86_64', 'aarch64') or sys.platform != 'linux':
         raise RuntimeError('Agent model workers require Linux x86_64/aarch64 with Landlock')
     # Some Python builds omit O_PATH even when the running kernel supports it.
@@ -40,13 +71,15 @@ def restrict_filesystem(read_paths, write_paths):
         raise OSError(ctypes.get_errno(), 'Landlock ruleset creation failed')
     read = (1 << 2) | (1 << 3)  # READ_FILE | READ_DIR; execution disallowed.
     write = read | (1 << 1) | (1 << 4) | (1 << 5) | (1 << 7) | (1 << 8) | (1 << 13) | (1 << 14)
+    # A device is opened read-write and driven by ioctl (IOCTL_DEV, handled from ABI 5).
+    device = (1 << 1) | (1 << 2) | ((1 << 15) if abi >= 5 else 0)
     try:
-        for paths, permissions in ((read_paths, read), (write_paths, write)):
+        for paths, permissions in ((read_paths, read), (write_paths, write), (device_paths, device)):
             for raw in paths:
                 path = Path(raw).resolve()
                 if not path.exists():
                     continue
-                allowed = permissions if path.is_dir() else permissions & ((1 << 1) | (1 << 2) | (1 << 14))
+                allowed = permissions if path.is_dir() else permissions & ((1 << 1) | (1 << 2) | (1 << 14) | (1 << 15))
                 target = os.open(path, path_flags)
                 try:
                     rule = PathRule(allowed, target)
@@ -69,7 +102,7 @@ def runtime_paths():
     return list(dict.fromkeys(p for p in paths if p))
 
 
-def restrict_syscalls():
+def restrict_syscalls(gpu=False):
     lib = ctypes.CDLL('libseccomp.so.2')
     lib.seccomp_init.argtypes = [ctypes.c_uint32]
     lib.seccomp_init.restype = ctypes.c_void_p
@@ -103,6 +136,20 @@ def restrict_syscalls():
             number = lib.seccomp_syscall_resolve_name(name.encode())
             if number >= 0 and lib.seccomp_rule_add(context, 0x7fff0000, number, 0):
                 raise RuntimeError('Cannot allow syscall: ' + name)
+        if gpu:
+            for name in GPU_SYSCALLS:
+                number = lib.seccomp_syscall_resolve_name(name.encode())
+                if number >= 0 and lib.seccomp_rule_add(context, 0x7fff0000, number, 0):
+                    raise RuntimeError('Cannot allow syscall: ' + name)
+            # Local sockets only, and none of them can connect: the driver probes its MPS control
+            # socket and carries on when that is absent.
+            number = lib.seccomp_syscall_resolve_name(b'socket')
+            compare = Compare(0, 4, 1, 0)  # SCMP_CMP_EQ: domain == AF_UNIX
+            if number >= 0 and lib.seccomp_rule_add_array(context, 0x7fff0000, number, 1, ctypes.byref(compare)):
+                raise RuntimeError('Cannot restrict socket to AF_UNIX')
+            number = lib.seccomp_syscall_resolve_name(b'connect')
+            if number >= 0 and lib.seccomp_rule_add(context, 0x00050000 | errno.ENOENT, number, 0):
+                raise RuntimeError('Cannot make connect fail')
         # A library may pin its calling thread, never change the host's affinity.
         number = lib.seccomp_syscall_resolve_name(b'sched_setaffinity')
         compare = Compare(0, 4, 0, 0)  # pid == 0: calling thread
@@ -128,7 +175,9 @@ def restrict_syscalls():
         lib.seccomp_release(context)
 
 
-def isolate(read_paths, write_paths):
+def isolate(read_paths, write_paths, gpu=False):
     # Resolve/load the seccomp library before Landlock; /lib is also allowed for imports.
-    restrict_filesystem([*runtime_paths(), *read_paths], [*write_paths, '/dev/null'])
-    restrict_syscalls()
+    restrict_filesystem([*runtime_paths(), *read_paths, *(GPU_READ_PATHS if gpu else ())],
+                        [*write_paths, '/dev/null', *(GPU_WRITE_PATHS if gpu else ())],
+                        gpu_device_paths() if gpu else ())
+    restrict_syscalls(gpu)
