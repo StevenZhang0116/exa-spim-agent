@@ -1,4 +1,5 @@
-"""Admission correctness without allocating large arrays or triggering a real OOM."""
+"""Admission correctness without allocating large arrays or triggering a real OOM, and the
+CPU-time limit of a model worker with several busy threads (a real worker, a few seconds)."""
 import os
 from contextlib import redirect_stderr
 import io
@@ -65,6 +66,51 @@ class MemoryBudgetTests(unittest.TestCase):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parse_args(['--descriptor-memory-mb', '511'])
         self.assertIn('cause unconfirmed', exit_detail(-9, {'memory_mb': 1}, ''))
+        # The message names both limits and what each does, with the CPU limit of this request.
+        message = exit_detail(-9, {'memory_mb': 98304, 'timeout': 3600., 'threads': 32}, 'tail')
+        self.assertIn('CPU time 115201 s summed over its 32 thread(s)', message)
+        self.assertIn('address space 98304 MiB (exceeding it raises MemoryError', message)
+        self.assertTrue(message.endswith('tail'))
+
+
+BUSY_FIT = '''import time
+import numpy as np
+
+def fit(X_train, y_train, artifact_dir, params):
+    a = np.random.default_rng(0).standard_normal((1200, 1200))
+    end = time.time() + float(params['busy_seconds'])
+    while time.time() < end:      # threaded BLAS keeps every thread of the worker busy
+        a @ a
+    (artifact_dir / 'done.json').write_text('{}')
+
+def predict(X, artifact_dir, params):
+    return [0. for _ in range(len(X))]
+'''
+
+
+class WorkerCpuLimitTests(unittest.TestCase):
+    """The worker's CPU-time limit is the timeout times its threads (2026-11-18). It was the
+    timeout alone, and CPU time adds up over threads: a fit with 32 busy threads was killed after
+    about 113 s of a 3600 s budget, with a message that pointed at memory."""
+    def test_a_fit_with_busy_threads_is_not_killed_inside_its_wall_clock_timeout(self):
+        from proofreader_evolve.harness.model_execution import run_worker
+        threads = min(4, len(os.sched_getaffinity(0)))
+        if threads < 4:
+            self.skipTest('needs four CPUs to tell the two limits apart')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            np.save(root / 'X.npy', np.zeros((2, 1)), allow_pickle=False)
+            np.save(root / 'y.npy', np.array([0, 1], dtype=np.int8), allow_pickle=False)
+            (root / 'training.py').write_text(BUSY_FIT)
+            (root / 'artifacts').mkdir()
+            # 10 s of four busy threads is about 40 s of CPU: above the old limit (21 s),
+            # far below the new one (81 s), and inside the 20 s wall-clock timeout.
+            status = run_worker(root, {'mode': 'fit', 'columns': ['x'], 'group_names': ['check'],
+                                       'config': {'parameters': {'busy_seconds': 10}},
+                                       'timeout': 20., 'memory_mb': 8192, 'threads': threads})
+            self.assertEqual(status['status'], 'ok')
+            self.assertTrue((root / 'artifacts' / 'done.json').is_file())
+            self.assertNotIn('gpu_peak_mb', status)   # recorded for GPU workers only
 
 
 class DescriptorAdmissionTests(unittest.TestCase):

@@ -406,6 +406,7 @@ class GpuWorkerTests(unittest.TestCase):
         component, summary = self.fit('fit')
         model = frozen_model(component)
         self.assertIn('network.pt', json.dumps(summary['artifact_files']))
+        self.assertGreater(summary['gpu_peak_mb'], 0)   # the worker's own record that the fit used the GPU
         first = predict_model(model, self.root / 'models', self.frame, 'merge', timeout=300)
         second = predict_model(model, self.root / 'models', self.frame, 'merge', timeout=300)
         self.assertEqual(first.shape, (len(self.frame),))

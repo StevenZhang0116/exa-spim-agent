@@ -192,7 +192,7 @@ of the 2026-11-05 and 2026-11-08 raw runs):
 |---|---|---|---|
 | `--classifier-threads` | 8 | 32 | Numerical threads of the fitting / prediction worker process; the worker clamps the value to the CPUs it sees. Leave a few CPUs for the driver. |
 | `--classifier-memory-mb` | 16384 | 98304 | Address-space limit of fitting, fit-time extraction, diagnostics, 3D analysis and fixed-pool scoring; the value of the documented launch since 2026-10-27. |
-| `--classifier-time-budget` | 300 | 3600 | Per fitting worker; the value of the documented launch since the six-TRAIN-brain partition. |
+| `--classifier-time-budget` | 300 | 3600 | Wall clock per fitting worker; the value of the documented launch since the six-TRAIN-brain partition. The worker's CPU-time limit is this value times its threads (since 2026-11-18; see "The CPU-time limit of a worker" under GPU mode). |
 | `--policy-time-budget` | 300 | 2400 | Scoring / feature worker and 3D analysis timeout. |
 | `--classifier-search-seconds` | 3600 | 7200 | Per generation; a 2026-11-05 generation used 3131 s of 3600. |
 | `--descriptor-workers` | 24 | `auto` | CPUs of the step minus 2; concurrency stays gated by the job's memory headroom (16 GiB per worker, `--descriptor-memory-mb`), which lowers the risk of an out-of-memory kill but does not exclude it. |
@@ -815,6 +815,51 @@ minutes in all, log `proofreader_evolve/log/gpu_fixed_network_20261117.log.txt`)
 passed, cache on local disk, three fold fits, full fit, the frozen network scored on the
 validation brain and rejected by the rule (0.0067 to 0.0064), no duplicate-prediction rejection.
 
+**The first agent run (2026-11-18).** `precision_20261118_000444_8gpg1yd6` on n01: four
+generations, the documented launch plus the GPU options below with the budgets of that day
+(3600 s per fit, 14400 s of search per generation), 9 h 25 min, log
+`proofreader_evolve/log/gpu_4gen_20261118_000443.log.txt`. The question was whether a session
+takes the patch path on its own.
+
+| generation | kind | what the session did | outcome |
+|---|---|---|---|
+| 1 | merge | descriptors and a tree model; read the image guide, did not use patches | promoted, validation average precision 0.0164 to 0.0816 |
+| 2 | split | descriptors and a tree model | promoted, 0.4259 to 0.8610 |
+| 3 | merge | a 3D CNN on the patches of all 27,403 labeled rows (24 um at level 1, 48 um at level 2), its output stacked into the tree model; then tabular variants | out-of-fold 0.1051 and 0.1057 against the parent's 0.1060; best of the generation 0.1086, inside TRAIN noise, `not_measured` |
+| 4 | split | a 3D CNN (20 um, level 1, image plus a mask of the line between the endpoints) stacked into the tree model | out-of-fold 0.8826 with seed 0, 0.8799 with seed 1, parent 0.8809; validation +0.0008, interval includes zero, rejected |
+
+So the prompt paragraph and the guide's example were enough: from the first follow-up generation
+on, both sessions chose the patch network without further prompting, and neither found a reliable
+gain over descriptors at this network size. The merge session reported that the CNN alone reached
+0.57 to 0.58 AUROC on brains it was not trained on; the split session reran its candidate with a
+second seed and judged the gain seed-dependent itself. No sandbox failure and no
+duplicate-prediction rejection. A CNN attempt took 45 to 55 minutes, about 20 of them the
+evaluation steps; generation 4 took 3 h 34 min. GPU use was not sampled in this run: it is
+inferred from the programs and the sessions' reports (since 2026-11-18 a GPU worker records its
+peak GPU memory, `gpu_peak_mb` in `status.json` and in the fit record; 0 means the program never
+touched the GPU).
+
+Three attempts of generation 4 failed and cost an evaluation unit each: one `predict` allocated a
+single array for all 2,211,738 rows of a pool (228 GiB, `MemoryError`; the guide now says that
+`predict` receives the whole pool and that only selected rows carry a patch), and two fits with
+larger crops (28 and 32 um) were killed, which the message and the session attributed to memory.
+
+**The CPU-time limit of a worker (2026-11-18).** Those two kills were the worker's CPU-time
+limit. It was set to the timeout plus one second, but CPU time adds up over threads while the
+timeout is wall clock: with `--classifier-threads 32` a worker whose threads were all busy was
+killed after about 113 s of its 3600 s. Reproduced with the real worker and no data on n243: one
+thread, timeout 60 s, 30 s of work finished; 32 threads, the same program, killed after 8 s;
+32 threads, timeout 3600 s, 150 s of work, killed after 119 s with the run's message. In the run
+the two fold workers were killed 137 s and 128 s after their start; their arrays were 5 to 9 GB
+against a limit of 98 GB, and exceeding the address-space limit raises `MemoryError` (as the
+228 GiB case did), it does not kill. The limit is now the timeout times the worker's threads
+(`classifier_train_worker.py`; all modes of that worker), with the launcher's wall-clock watchdog
+enforcing the timeout as before, and the kill message names both limits and what each does. The
+scorer worker (`scorer_worker.py`) runs single-threaded, so its limit was right and is unchanged.
+The same message appears once in run jkc36yxa and three times in byxx989h, each two to seven
+minutes into a fit of a large tree ensemble; that fits this cause, but those four were not
+examined one by one.
+
 Known limits, to be revisited after the first runs:
 
 - every fit and predict call copies its rows' patch files to the worker's directory; with the
@@ -827,12 +872,16 @@ Known limits, to be revisited after the first runs:
 - the read-only path list of the GPU sandbox was not minimised;
 - no tolerance exists for inference that is not bit-reproducible.
 
-A GPU run adds the following to the documented launch (the allocation must hold a GPU; the
-larger budgets give four network trainings per evaluation and the patch reads room):
+A GPU run adds the following to the documented launch (the allocation must hold a GPU). The
+fit and search budgets are four times those of the first agent run (3600 s and 14400 s; raised
+at the user's request on 2026-11-18): a fit may take four hours of wall clock, and a
+generation's classifier search sixteen. A generation still has eight evaluation units, so in
+practice it ends after about eight network attempts; a fit that hangs is stopped after four hours
+instead of one.
 
 ```bash
   --gpu --image-transport-gb 16 --image-cache-gb 64 --image-cache-dir local \
-  --classifier-time-budget 3600 --policy-time-budget 3600 --classifier-search-seconds 14400
+  --classifier-time-budget 14400 --policy-time-budget 3600 --classifier-search-seconds 57600
 ```
 
 ## 3.6 Exploration tools: geometry, 3D volumes, images and feature discovery

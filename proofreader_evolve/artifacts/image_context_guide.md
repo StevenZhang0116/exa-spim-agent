@@ -338,6 +338,10 @@ no child processes a `DataLoader` needs `num_workers=0`; indexing tensors as abo
 `predict` is called twice and must return identical scores: keep the determinism lines and a
 fixed batch order, and do not use dropout or batch statistics at inference. `model_environment.json`
 says whether a GPU exists (`gpu.available`); the example runs on the CPU when none does.
+`fit` receives the GT-labeled rows only, but `predict` is also called with every candidate of a
+pool, which can be millions of rows, and only the selected rows carry a patch (`images[i]` is
+empty for the others). Build the volumes of `predict` batch by batch as the example does; one
+array for all rows of a pool does not fit in memory.
 
 ## Incremental evidence and limits
 

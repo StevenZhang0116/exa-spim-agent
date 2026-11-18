@@ -1,5 +1,6 @@
 """Host transport for arbitrary model programs; all executable artifacts stay opaque."""
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -18,10 +19,16 @@ class ModelExecutionError(RuntimeError):
 
 
 def exit_detail(returncode, request, tail):
-    """SIGKILL alone does not identify OOM, cancellation or an administrator kill."""
+    """SIGKILL alone does not identify the cause; the message lists the worker's limits and what
+    each does when it is reached, so that the reader does not chase the wrong one."""
     if returncode == -9:
-        return (f"killed by SIGKILL; cause unconfirmed (worker address-space cap: {request.get('memory_mb')} MiB). "
-                "Check Slurm accounting for OOM, timeout or cancellation. "
+        threads = max(1, int(request.get('threads', 1)))
+        timeout = request.get('timeout')
+        cpu = f'{math.ceil(timeout) * threads + 1} s' if timeout is not None else 'timeout x threads'
+        return (f"killed by SIGKILL; cause unconfirmed. Worker limits: CPU time {cpu} summed over its {threads} "
+                f"thread(s) (reaching it kills the worker like this); address space {request.get('memory_mb')} MiB "
+                "(exceeding it raises MemoryError, it does not kill). Otherwise check Slurm accounting for an "
+                "out-of-memory kill of the job or a cancellation. "
                 + tail)
     return tail
 

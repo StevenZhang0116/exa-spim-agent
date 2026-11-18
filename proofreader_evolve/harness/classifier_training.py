@@ -182,6 +182,7 @@ def fit_classifier(train, kind, config, output_dir, *, program, artifact_store,
                        program_sha256=hashlib.sha256(program.encode()).hexdigest(),
                        component_sha256=hashlib.sha256(source.encode()).hexdigest(),
                        wall_seconds=status['wall_seconds'], versions=status.get('versions', {}),
+                       **({'gpu_peak_mb': status['gpu_peak_mb']} if 'gpu_peak_mb' in status else {}),
                        training_output_tail=status.get('training_output_tail', ''),
                        preprocessing='Defined by agent training.py; fitted state saved in artifacts',
                        # The full fit's own TRAIN metric is resubstitution; branch selection uses

@@ -172,7 +172,12 @@ def main():
     request = json.loads((root / 'request.json').read_text())
     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     resource.setrlimit(resource.RLIMIT_AS, (request['memory_mb'] * 1024**2,) * 2)
-    resource.setrlimit(resource.RLIMIT_CPU, (math.ceil(request['timeout']) + 1,) * 2)
+    # CPU time is summed over the worker's threads, the timeout is wall clock: the limit is the
+    # timeout times the threads. It was the timeout alone until 2026-11-18, which killed a worker
+    # with 32 busy threads after about 113 s of a 3600 s budget. The launcher's wall-clock watchdog
+    # enforces the timeout itself; this limit is the backstop.
+    cpu_seconds = math.ceil(request['timeout']) * max(1, int(request.get('threads', 1))) + 1
+    resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds,) * 2)
     resource.setrlimit(resource.RLIMIT_FSIZE, (128 * 1024**2,) * 2)
     # Load only this trusted sandbox module before restricting filesystem access.
     spec = importlib.util.spec_from_file_location('_model_sandbox', Path(__file__).with_name('model_sandbox.py'))
@@ -283,6 +288,15 @@ def main():
                                if name in ('numpy', 'pandas', 'sklearn', 'torch', 'xgboost', 'lightgbm', 'scipy')}}
         if request['mode'] == 'fit':
             result['input_columns'] = columns
+        if request.get('gpu'):
+            # What the program did with the GPU, for the host's records: 0 when it never touched it.
+            result['gpu_peak_mb'] = 0
+            torch = sys.modules.get('torch')
+            try:
+                if torch is not None and torch.cuda.is_initialized():
+                    result['gpu_peak_mb'] = int(torch.cuda.max_memory_allocated() // 2**20)
+            except Exception:
+                result['gpu_peak_mb'] = None
     except BaseException as exc:
         frames = traceback.extract_tb(exc.__traceback__, limit=12)
         result = {'status': 'error', 'error': f'{type(exc).__name__}: {exc}'[:4000],
