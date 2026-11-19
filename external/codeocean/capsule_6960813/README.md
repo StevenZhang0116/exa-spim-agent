@@ -48,7 +48,8 @@ of a finished run's final policy, scored with this repository's own tools
 ([record](../../../proofreader_evolve/evaluation/README.md)). Do not use this
 snapshot to add it to TRAIN/OOF, tuning or evolution promotion. Historical use of
 this brain is not erased by that. No real 794495 evaluation was performed for this
-import.
+import. On 2026-11-18 the main program was run on this repository's own inputs for the
+unproofread segmentation of 794495; see "Running on our own inputs" below.
 
 ## Entry points and runtime requirements
 
@@ -67,9 +68,9 @@ The original environment uses Python 3.12.4 and installs
 `segmentation-skeleton-metrics` at `478aede` and
 `neuron-proofreading-evaluation` at `f15bd8d`; see
 [environment/postInstall](environment/postInstall). Since 2026-11-18 a local conda
-environment holds these dependencies (next section). Cloud access and the data
-mounts have not been reproduced here. Any execution in this workspace must use a
-compute node.
+environment holds these dependencies (next section). The S3 access and the data
+mounts have not been reproduced here; GCS reads work with the repository's
+credentials. Any execution in this workspace must use a compute node.
 
 ## Local environment `arborist_eval` (2026-11-18)
 
@@ -148,9 +149,21 @@ Checked on n243: `pip check` reports no broken requirement; the five commits abo
 the installed ones; numpy, pandas and torch are imported from the environment;
 `code/main.py` imports, and its replacement of `MergeCountMetric.record_merge_site`
 takes effect; `main.py`, `residual_merge_detection/evaluate.py` and
-`review_merges/build_review.py` print their `--help`. No evaluation was run: no cloud
-path was opened and no data asset is attached. The node has no GPU, so CUDA was not
-exercised.
+`review_merges/build_review.py` print their `--help`. That check ran no evaluation and
+opened no cloud path. The node has no GPU, so CUDA was not exercised.
+
+### Running on our own inputs (2026-11-18)
+
+`code/main.py` needs a proofreading result on S3, which this workspace does not have
+(no Arborist run, no AWS credentials). Its first step, the segmentation before any
+correction, needs only ground truth, fragment SWCs and the segmentation, which the
+repository reads from GCS. [evaluation/run_capsule_original.py](../../../evaluation/run_capsule_original.py)
+runs `main.py` unmodified on them and replaces the three inputs that come from a result
+directory; the fragment SWCs of the Google segmentation hold voxel indices and are
+converted to um for it. The differences from a run on an Arborist result, and the
+figures for 794495 (210 merges, 4,656 splits, 109 truncations over 22 neurons), are in
+[evaluation/README.md](../../../evaluation/README.md). The corrected steps and the two
+other tools still need an Arborist result or the capsule's data assets.
 
 ## Data paths and relationship to this repository
 

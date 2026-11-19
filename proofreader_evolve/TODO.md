@@ -224,8 +224,10 @@ Concrete, each one met while switching seven brains to denoised images.
 - **Fragment-level context.** Agents asked for it repeatedly: whether an anchor's fragment
   continues elsewhere, competing partner tips, and the tip's own direction past the shaft for
   `tip_to_shaft` merge rows. `describe(context)` sees a 50 um neighbourhood.
-- **Independent validation on 794495 is undesigned.** `evaluation/` holds a source audit
-  only.
+- **Independent validation on 794495 is undesigned.** Since 2026-11-14 the brain is used for
+  post-analysis of finished runs ([evaluation/README.md](evaluation/README.md)), which is
+  not a validation protocol. The root `evaluation/` holds a source audit and the capsule's
+  skeleton metrics of the unproofread segmentation; neither scores a policy.
 - **Minor.** `notebooks/verify_add_cache_metrics.py` reports the canonical `SWC Run Length`
   in voxel units, so the column is not comparable with the cache's.
 

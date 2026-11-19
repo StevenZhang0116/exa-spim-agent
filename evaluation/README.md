@@ -1,19 +1,26 @@
-# Source audit for brain 794495: repository vs CodeOcean capsule
+# Brain 794495 and CodeOcean capsule 6960813: source audit and capsule metrics
 
-This directory holds one read-only data audit. It checks whether the ground-truth
-tracings and the image that this repository uses for brain **794495** are the same data
-as those used by [CodeOcean capsule 6960813](../external/codeocean/capsule_6960813/README.md)
-(Arborist evaluation, imported 2026-11-04). No model is scored here, and nothing in
-this directory feeds an evolution run.
+This directory holds two read-only tools around
+[CodeOcean capsule 6960813](../external/codeocean/capsule_6960813/README.md) (Arborist
+evaluation, imported 2026-11-04) and brain **794495**:
+
+1. a data audit: are the ground-truth tracings and the image that this repository uses
+   the same data as the capsule's (2026-11-04);
+2. the capsule's own skeleton metrics, computed on our inputs for the unproofread
+   segmentation (2026-11-18).
+
+Neither scores a model of this repository, and nothing here feeds an evolution run.
 
 It is a different thing from [`proofreader_evolve/evaluation/`](../proofreader_evolve/evaluation/README.md),
 which records how the final policy of a finished evolution run scores on 794495.
 
 | Path | Content | In Git |
 |---|---|---|
-| `compare_794495_sources.py` | the comparison script | yes |
-| `README.md` | this file, with the result of the one comparison run so far | yes |
-| `results/794495_source_comparison_20261104/` | `comparison.json`, `report.md`, `patch_01..03.png` of that run | no (`results/` is ignored) |
+| `compare_794495_sources.py` | the source comparison script | yes |
+| `run_capsule_original.py` | runs the capsule's `main.py` on our inputs, "original" step | yes |
+| `README.md` | this file, with the results of both | yes |
+| `results/794495_source_comparison_20261104/` | `comparison.json`, `report.md`, `patch_01..03.png` of the audit | no (`results/` is ignored) |
+| `results/794495_capsule_original_20261118/` | the capsule's outputs, `run_info.json`, `run.log`, the per-neuron comparison | no |
 
 ## Where 794495 stands
 
@@ -26,10 +33,13 @@ which records how the final policy of a finished evolution run scores on 794495.
   and as a TRAIN brain of evolution runs in 2026-10.
 - A formal independent validation protocol has not been designed.
 
-The audit below needs none of this: it compares data sources and reads no label,
-feature table, score or model.
+Neither tool below touches this: the audit compares data sources, and the capsule
+metrics describe the segmentation itself. Both read the ground truth of 794495; neither
+reads a label table, a feature table, a score or a model of this repository.
 
-## Why the two sources were compared
+## Source audit: repository vs capsule
+
+### Why the two sources were compared
 
 The capsule evaluates the Arborist proofreading pipeline on 794495 with its own data
 paths. The repository reaches the same brain through different ones:
@@ -42,7 +52,7 @@ paths. The repository reaches the same brain through different ones:
 Before a figure from one side is set beside a figure from the other, the two have to
 describe the same neurons and the same pixels.
 
-## What the script does
+### What the script does
 
 `compare_794495_sources.py` makes a small comparison and changes nothing:
 
@@ -63,7 +73,7 @@ The repository image comes from `configs/image_alignment.json` through the usual
 reviewed-source resolver. The capsule's image and GT paths are read from the imported
 Python source by AST parsing; the capsule's programs are not executed.
 
-## Run it
+### Run it
 
 In the `panda` environment **on a compute node**, from the repository root:
 
@@ -84,7 +94,7 @@ directory. The report records the source URIs, the sampled files, the GT objects
 generations and hashes, the image metadata hashes, the seed and the host. The image
 metadata hashes describe the headers, **not** the image contents.
 
-## What it cannot show
+### What it cannot show
 
 - It reads the current cloud sources. It does not examine an existing `_add.pkl` cache
   or the data assets attached to the capsule on CodeOcean.
@@ -93,7 +103,7 @@ metadata hashes describe the headers, **not** the image contents.
 - Different intensities do not by themselves prove a registration error.
 - No dense segmentation is compared.
 
-## Result of 2026-11-04
+### Result of 2026-11-04
 
 Run on **n06** with the defaults (three samples, seed 0, level 0, 24 um radius).
 
@@ -120,7 +130,7 @@ are computed from: image descriptors read pixel values, and these differ.
 Synthetic coordinate and pixel checks of the script and `pyflakes` passed on the
 compute node.
 
-## Since then
+### Since the audit
 
 - The comparison has not been rerun. `comparison.json` keeps the GT objects'
   generations and hashes of 2026-11-04, so a later run can tell whether a tracing
@@ -134,3 +144,87 @@ compute node.
   tiles before flat-field correction and fusion). Both images are therefore processed
   products of the same acquisition, which fits what the patches show; which steps
   differ between them is still not established.
+
+## Capsule metrics of the unproofread segmentation
+
+The capsule's main program computes skeleton metrics for every step of an Arborist
+proofreading result that it reads from S3: the segmentation as it was, then after each
+correction. We have no Arborist result. We do have what the first step needs: the
+ground truth, the fragment SWCs and the segmentation. `run_capsule_original.py` runs the
+capsule's `code/main.py` unmodified on them, which gives the capsule's "original" step.
+The corrected steps, and the capsule's two other tools, need the output of an Arborist
+run and are not covered.
+
+It differs from a run of the capsule on an Arborist result in four ways (details in the
+script's docstring):
+
+1. No list of the segments the pipeline kept (`segment_ids.txt`), so no segment is
+   dropped.
+2. No list of reviewed false-positive merge sites (`ignored_merges.swc`), so no merge
+   site is ignored.
+3. The fragment SWCs of the Google segmentation hold voxel indices; the capsule expects
+   um. They are converted before the capsule's loader sees them. Without this every edge
+   counts as omitted (seen in the first test).
+4. Fragment SWCs are parsed only for the segment IDs that label a ground-truth node. By
+   the code this cannot change a result; it was not checked against an unrestricted run.
+
+Run it on a compute node in the capsule's environment `arborist_eval` (never in
+`panda`), from the repository root:
+
+```bash
+conda activate /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/conda_envs/arborist_eval
+python -u evaluation/run_capsule_original.py --brain 794495 \
+    --out evaluation/results/794495_capsule_original
+```
+
+Run every ground-truth neuron together. A test with N001 alone counted 8 merges for it;
+with all 22 neurons loaded the same neuron has 5. Counts of one neuron depend on which
+other neurons are present.
+
+### Result of 2026-11-18
+
+n243, 19 minutes (4 of them labeling 7,094,284 ground-truth nodes, about 6 downloading
+the 10,000 fragment archives). The ground-truth nodes fall in 12,941 segments, of which
+3,980 have a fragment SWC. No archive failed.
+
+Beside it, the repository's reference metrics of the same segmentation
+(`metrics_out/794495/`, 2026-10-14), computed in `panda` with the older
+`segmentation_skeleton_metrics` (commit `d76557d`) by `notebooks/evaluate_skeleton_metrics.py`:
+
+| | capsule version (`478aede`) | reference (`d76557d`) |
+|---|---:|---:|
+| Merges, total | 210 | 198 |
+| Splits, total | 4,656 | 12,687 |
+| Truncations, total | 109 | not reported |
+| % merged edges, mean per neuron | 27.65 | 29.48 |
+| % omit edges | 2.92 | 1.86 |
+| % split edges | 0.11 | 0.34 |
+| Edge accuracy | 69.31 | 68.32 |
+
+**Merge sites.** The totals are close, the sites less so. Matched one to one within
+20 um (positions taken from the voxel columns; the reference file's `World` column has
+its axes permuted), 147 sites are in both, 63 only in the capsule version and 51 only in
+the reference. A matched pair is the same place: the median distance from a capsule
+site to the nearest reference site is 1.7 um, and widening the radius to 100 um adds
+four pairs. Per neuron the two merge counts correlate at 0.94 and are equal for 4 of 22
+neurons. The merge search was rewritten between the two commits; this repository's
+`length_v2` merge labels follow the older walk.
+
+**Splits.** The capsule version reports about a third as many and has a separate count
+of truncations. The two counts are not the same quantity.
+
+**Edges.** For 19 neurons the shares of merged and omitted edges agree within about two
+points. Omitted edges are higher throughout (by 1.1 points on average), as expected: the
+capsule keeps a ground-truth node's label only when a skeleton node of the node's own
+segment lies within 20 um, and two thirds of the segments under the ground truth have no
+skeleton. Three neurons differ strongly in merged edges: N004 (3.2% against 30.6%), N019
+(4.1% against 17.4%) and N017 (7.5% against 11.7%). The definition of a merged edge is
+the same in both versions (a label shared by two neurons with more than 50 nodes each),
+so the difference comes from the relabeling step; which nodes lost their label was not
+traced. Until it is, do not read the edge-level figures of these three neurons as a
+finding about the segmentation.
+
+**Lengths.** Run length and ERL are not compared. The reference loaded voxel coordinates
+without scaling, so its lengths are not in um (N001: 354,311 against 294,442).
+
+The per-neuron table is `results/794495_capsule_original_20261118/comparison_with_reference_20261014.txt`.
