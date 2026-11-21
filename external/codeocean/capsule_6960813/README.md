@@ -163,7 +163,10 @@ directory; the fragment SWCs of the Google segmentation hold voxel indices and a
 converted to um for it. The differences from a run on an Arborist result, and the
 figures for 794495 (210 merges, 4,656 splits, 109 truncations over 22 neurons), are in
 [evaluation/README.md](../../../evaluation/README.md). The corrected steps and the two
-other tools still need an Arborist result or the capsule's data assets.
+other tools still need an Arborist result or the capsule's data assets. With `--fragments`
+(and `--connections` for joined fragments) the same script evaluates another fragment set
+against the same ground truth, which is how an edited fragment graph of a labeled cache is
+judged; procedure and results are in that README.
 
 ## Data paths and relationship to this repository
 

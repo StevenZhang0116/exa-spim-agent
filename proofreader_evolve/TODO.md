@@ -226,8 +226,11 @@ Concrete, each one met while switching seven brains to denoised images.
   `tip_to_shaft` merge rows. `describe(context)` sees a 50 um neighbourhood.
 - **Independent validation on 794495 is undesigned.** Since 2026-11-14 the brain is used for
   post-analysis of finished runs ([evaluation/README.md](evaluation/README.md)), which is
-  not a validation protocol. The root `evaluation/` holds a source audit and the capsule's
-  skeleton metrics of the unproofread segmentation; neither scores a policy.
+  not a validation protocol. The root `evaluation/` holds a source audit, the capsule's
+  skeleton metrics of the unproofread segmentation, and the first steps toward judging a
+  policy's edits with those metrics (upper bounds on 841260, 2026-11-18); none scores a
+  policy. The open steps and problems of that work are listed in
+  [its README](../evaluation/README.md#edits-judged-by-the-capsule-status-and-open-problems).
 - **Minor.** `notebooks/verify_add_cache_metrics.py` reports the canonical `SWC Run Length`
   in voxel units, so the column is not comparable with the cache's.
 

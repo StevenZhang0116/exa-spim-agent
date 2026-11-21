@@ -23,7 +23,8 @@ explicit brain lists are required. Earlier eleven-brain partitions and results
 below remain historical. None of this erases prior use in discovery
 or detector fitting. CodeOcean source is imported under `external/codeocean/`;
 the root `evaluation/` holds a user-requested source audit of 794495 and, since 2026-11-18, the
-capsule's skeleton metrics of its unproofread segmentation; neither scores a model.
+capsule's skeleton metrics of its unproofread segmentation and upper-bound edit experiments on
+841260 judged by those metrics (no policy's edits evaluated yet); none scores a model.
 
 Segmentation source update (user decision, 2026-11-05): the Google "denoised" segmentations
 replace the sources of 789202 and 802449 (explicit entries in `configs/segmentation_paths.json`)

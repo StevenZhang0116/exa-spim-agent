@@ -97,8 +97,9 @@ it, and the figures are recorded in
 are not fed back into a run. They are not a first look either: two policies have been
 scored on the brain so far. Its artifacts (cache, raw pool tables, descriptor bank) are
 rebuilt only at the user's request. The root [evaluation/](../evaluation/README.md) folder (a
-GT/image source comparison, and the CodeOcean capsule's skeleton metrics of the unproofread
-segmentation) scores no model. 794495 was used in discovery and detector fitting,
+GT/image source comparison, the CodeOcean capsule's skeleton metrics of the unproofread
+segmentation, and upper-bound edit experiments on 841260 judged by those metrics) scores no
+model. 794495 was used in discovery and detector fitting,
 and as a TRAIN brain of evolution runs in 2026-10; that stays part of the provenance. This
 paragraph is the home of the statement; other documents give it in one sentence and link here.
 

@@ -27,6 +27,17 @@ Two adaptations of the fragment SWCs:
 A failed archive download is retried and then stops the run; the package itself would drop the
 archive and go on.
 
+``--fragments`` evaluates another set of fragment SWCs against the same ground truth and
+segmentation, for example the fragments of this repository's labeled cache written by
+``export_cache_fragments.py``, or an edited graph (``cut_merge_sites.py``,
+``join_split_candidates.py``). Such a file holds world um
+(``--fragment-units um``, the default with ``--fragments``) and is read by the capsule's loader
+as it is. ``<out>/segments_under_gt.txt`` lists the segment IDs that label a ground-truth node;
+the exporter takes it as its selection. When fragments of different segments were joined
+(``join_split_candidates.py``), ``--connections`` names the joined pairs, so that a
+ground-truth node of either segment is given to the joined fragment; the capsule's own label
+handler does this, as it does for the split-correction steps of a pipeline result.
+
 Run on a compute node in the capsule's environment (never in panda), from the repository root:
 
     conda activate /allen/programs/mindscope/workgroups/auto-model/zihan.zhang/exaspim-agent/conda_envs/arborist_eval
@@ -60,6 +71,15 @@ def parse_args():
     parser.add_argument("--brain", required=True)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--overwrite", action="store_true", help="Replace the results of an earlier run in --out")
+    parser.add_argument("--fragments", default=None,
+                        help="Fragment SWCs to evaluate: a local .zip or a cloud path (default: the brain's "
+                             "fragment SWCs on GCS)")
+    parser.add_argument("--fragment-units", choices=("voxel", "um"), default=None,
+                        help="Coordinates of the fragment SWCs (default: voxel for the brain's own SWCs, "
+                             "um with --fragments)")
+    parser.add_argument("--connections", type=Path, default=None,
+                        help="With --fragments: the segment pairs that the fragments join, one 'a.k, b.k' per "
+                             "line as in a pipeline step's connections.txt")
     parser.add_argument("--gt-names", nargs="*", default=None,
                         help="Test only: read just these ground-truth SWC names (without .swc)")
     parser.add_argument("--zip-retries", type=int, default=4)
@@ -90,7 +110,12 @@ def main():
     from dataset_config import get_fragments_path, get_segmentation_id, get_segmentation_path
     rtf = str(REPO / "configs/segmentation_datasets.rtf")
     segmentation_id = get_segmentation_id(options.brain, rtf_path=rtf)
-    fragments_path = get_fragments_path(options.brain, rtf_path=rtf)
+    fragments_path = options.fragments or get_fragments_path(options.brain, rtf_path=rtf)
+    units = options.fragment_units or ("um" if options.fragments else "voxel")
+    if options.fragments and not (fragments_path.startswith(("gs://", "s3://")) or fragments_path.endswith(".zip")):
+        sys.exit("--fragments must be a .zip file or a cloud path")
+    if options.connections and not (options.fragments and options.connections.is_file()):
+        sys.exit("--connections needs --fragments and an existing file")
     segmentation_path = get_segmentation_path(options.brain, rtf_path=rtf)
     gt_path = f"gs://allen-nd-goog/ground_truth_tracings/{options.brain}/world/"   # as main.py builds it
 
@@ -111,6 +136,11 @@ def main():
             return None
 
     capsule.ResultsManager = OwnInputs
+    if options.connections:
+        # A fragment that joins two segments stands for both: the capsule's own handler, built from
+        # our file instead of the connections.txt of the pipeline steps.
+        capsule.build_label_handler_upto = lambda step_name: capsule.data_util.build_label_handler(
+            [str(options.connections)])
     capsule.load_ignored_merges = lambda step_name: None
     capsule.data_util.load_labels = lambda path: None
     capsule.data_util.drop_filtered_labels = lambda graphs, labels: None
@@ -140,7 +170,7 @@ def main():
     original_to_graph = graph_loading.GraphLoader.to_graph
 
     def to_graph(self, swc_dict):
-        if not self.is_groundtruth:
+        if not self.is_groundtruth and units == "voxel":
             swc_dict = dict(swc_dict)
             swc_dict["voxel"] = (np.asarray(swc_dict["voxel"], dtype=np.float64) + 0.25) * self.anisotropy
         return original_to_graph(self, swc_dict)
@@ -170,6 +200,7 @@ def main():
         state["phase"] = "fragments"
         counts.update(gt_neurons=len(gt_graphs), gt_nodes=sum(g.number_of_nodes() for g in gt_graphs.values()),
                       segments_labeling_gt_nodes=len(keep_segments))
+        (options.out / "segments_under_gt.txt").write_text("\n".join(sorted(keep_segments, key=int)) + "\n")
         print(f"\nGround truth: {counts['gt_neurons']} neurons, {counts['gt_nodes']} nodes, labeled by "
               f"{len(keep_segments)} segments ({time.time() - started:.0f} s); fragment SWCs are read for "
               "these segments only", flush=True)
@@ -196,7 +227,7 @@ def main():
     capsule.steps = None
     capsule.output_dir = str(options.out)
 
-    print(f"GT:           {gt_path}\nFragments:    {fragments_path}\nSegmentation: {segmentation_path}\n"
+    print(f"GT:           {gt_path}\nFragments:    {fragments_path} ({units})\nSegmentation: {segmentation_path}\n"
           f"Output:       {options.out}", flush=True)
     started = time.time()
     capsule.main()
@@ -205,15 +236,20 @@ def main():
     info = {
         "date": datetime.now().astimezone().isoformat(timespec="seconds"), "host": socket.gethostname(),
         "brain": options.brain, "segmentation_id": segmentation_id, "step": "original",
-        "inputs": {"ground_truth": gt_path, "fragments": fragments_path, "segmentation": segmentation_path},
+        "inputs": {"ground_truth": gt_path, "fragments": fragments_path, "fragment_units": units,
+                   "connections": str(options.connections) if options.connections else None,
+                   "segmentation": segmentation_path},
         "capsule": {"main_py": str(CAPSULE_CODE / "main.py"), "packages": installed_commits()},
         "replaced_inputs": ["result directory: fragment SWCs on GCS as the only step (original)",
                             "segment_ids.txt: none, no segment dropped",
                             "ignored_merges.swc: none, no merge site ignored"],
-        "adaptations": ["fragment SWC voxel indices converted to um before the capsule's loader",
-                        "fragment SWCs parsed only for segment IDs that label a ground-truth node"],
+        "adaptations": (["fragment SWC voxel indices converted to um before the capsule's loader"]
+                        if units == "voxel" else [])
+                       + ["fragment SWCs parsed only for segment IDs that label a ground-truth node"],
         "gt_names": options.gt_names, "counts": counts, "seconds": round(seconds),
     }
+    if options.connections:
+        info["replaced_inputs"].append("connections.txt of the pipeline steps: the file given with --connections")
     (options.out / "run_info.json").write_text(json.dumps(info, indent=2))
     print(f"\nDONE in {seconds:.0f} s; outputs in {options.out}/original", flush=True)
 
