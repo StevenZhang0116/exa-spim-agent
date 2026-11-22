@@ -96,10 +96,13 @@ it, and the figures are recorded in
 (the command, the rules of that folder, the latest result and the history). Those figures
 are not fed back into a run. They are not a first look either: two policies have been
 scored on the brain so far. Its artifacts (cache, raw pool tables, descriptor bank) are
-rebuilt only at the user's request. The root [evaluation/](../evaluation/README.md) folder (a
+rebuilt only at the user's request. The root [evaluation/](../evaluation/README.md) folder holds a
 GT/image source comparison and the CodeOcean capsule's skeleton metrics of the unproofread
-segmentation of 794495; edit experiments on 841260 judged by those metrics) scores no model
-on 794495. 794495 was used in discovery and detector fitting,
+segmentation of 794495, and edit experiments judged by those metrics on 841260. On 2026-11-21,
+at the user's request, the same edits were also made on 794495 with the stored scores of the
+latest post-analysis and with the depths tried on the brain itself: an exploratory look with
+full knowledge, not a validation, read-only for the brain's artifacts and fed back to no run.
+794495 was used in discovery and detector fitting,
 and as a TRAIN brain of evolution runs in 2026-10; that stays part of the provenance. This
 paragraph is the home of the statement; other documents give it in one sentence and link here.
 
