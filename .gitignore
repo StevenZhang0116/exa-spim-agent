@@ -136,5 +136,5 @@ notebooks/errors_per_neuron/
 notebooks/promotion_rule_replay/
 notebooks/feedback_use_audit/
 
-# Edit-evaluation figures and their tables (PNG, CSV); redrawn by evaluation/plot_merge_policy_cuts.py
+# Edit-evaluation figures and their tables (PNG, CSV); redrawn by the plot_*.py scripts of evaluation/
 evaluation/figure/

@@ -24,7 +24,7 @@ below remain historical. None of this erases prior use in discovery
 or detector fitting. CodeOcean source is imported under `external/codeocean/`;
 the root `evaluation/` holds a user-requested source audit of 794495 and, since 2026-11-18, the
 capsule's skeleton metrics of its unproofread segmentation and edit experiments on 841260
-judged by those metrics (upper bounds; since 2026-11-21 the merge cuts of one finished run's
+judged by those metrics (upper bounds; since 2026-11-21 the merge cuts and joins of one finished run's
 policy, from its stored validation scores); none scores a model on 794495 or feeds a run.
 
 Segmentation source update (user decision, 2026-11-05): the Google "denoised" segmentations

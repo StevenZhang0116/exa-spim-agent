@@ -100,7 +100,7 @@ resource options explicitly and run one evolution run per allocation
 | [markdowns/README.md](markdowns/README.md) | the task specifications given to AutoDiscovery and the cache schema |
 | [proofreader_evolve/WORKFLOW_REVISION.md](proofreader_evolve/WORKFLOW_REVISION.md) | the maintained design record of Stage 3, with literature provenance |
 | [CodeOcean capsule 6960813](external/codeocean/capsule_6960813/README.md) | imported Arborist evaluation source, original attribution, data paths and known limitations; separate from the evolution workflow |
-| [evaluation/README.md](evaluation/README.md) | The CodeOcean capsule on our data: sampled comparison of GT/image sources of 794495, the capsule's skeleton metrics of its unproofread segmentation, and the first steps toward judging a policy's edits with those metrics (on 841260: upper bounds, and the merge cuts of one finished run's policy; status and open problems inside); not a validation of any policy |
+| [evaluation/README.md](evaluation/README.md) | The CodeOcean capsule on our data: sampled comparison of GT/image sources of 794495, the capsule's skeleton metrics of its unproofread segmentation, and the first steps toward judging a policy's edits with those metrics (on 841260: upper bounds, and the merge cuts and joins of one finished run's policy; status and open problems inside); not a validation of any policy |
 | [proofreader_evolve/evaluation/README.md](proofreader_evolve/evaluation/README.md) | post-analysis: the final policy of a finished evolution run on 794495, latest result and history |
 
 Per-stage figures: [`agentic/discovery_workflow_diagram.png`](agentic/discovery_workflow_diagram.png),

@@ -28,7 +28,8 @@ Which candidates are cut, ``--sites``:
 
 Only candidates on the segments of ``--segments`` are cut, and only those segments are written
 (``segments_under_gt.txt`` of a run of ``run_capsule_original.py``). The cache is not changed.
-``join_split_candidates.py`` applies the same cuts (``oracle_sites``, ``apply_cuts``) before it
+``join_split_candidates.py`` applies the same cuts (``oracle_sites`` or ``policy_sites``, then
+``apply_cuts``) and reads a policy's split scores with the same ``ranked_rows``, before it
 joins.
 
 Run on a compute node in panda, from the repository root:
@@ -82,25 +83,57 @@ def parse_args():
     return options
 
 
-def merge_pool(brain, cache):
-    """Rows and evaluator labels of the brain's raw merge pool, which must descend from the cache."""
+def pool_table(brain, cache, kind):
+    """Rows and evaluator labels of the brain's raw pool of one kind, which must descend from the cache."""
     found = []
     for meta_path in sorted((REPO / "proofreader_evolve/feature_tables" / brain).glob("*/meta.json")):
         meta = json.loads(meta_path.read_text())
-        if meta.get("provenance", {}).get("kind") == "merge":
+        if meta.get("provenance", {}).get("kind") == kind:
             found.append((meta_path.parent, meta))
     if len(found) != 1:
-        sys.exit(f"expected one merge pool of {brain}, found {len(found)}")
+        sys.exit(f"expected one {kind} pool of {brain}, found {len(found)}")
     table, meta = found[0]
     source, stat = meta["provenance"]["source_cache"], cache.stat()
     if (source["size"], source["mtime_ns"]) != (stat.st_size, stat.st_mtime_ns):
-        sys.exit(f"the merge pool {table.name[:12]} was not built from the present {cache.name}")
+        sys.exit(f"the {kind} pool {table.name[:12]} was not built from the present {cache.name}")
     with (table / "candidates.pkl").open("rb") as stream:
         rows = pickle.load(stream)
     labels = np.load(table / "evaluator_labels.npy")
     if len(rows) != len(labels):
-        sys.exit("the merge pool's rows and labels differ in length")
+        sys.exit(f"the {kind} pool's rows and labels differ in length")
     return table, meta, rows, labels
+
+
+def ranked_rows(brain, cache, kind, scores_path, top):
+    """The ``top`` rows of the brain's pool that a stored scorer ranks highest among the rows ground
+    truth can judge (a file of a run's ``validation_scores/`` holds no other rows). Each row carries
+    its rank, its score and its label; the label is not used to choose. Also returns the record of
+    the pool and of the file. Refuses a file measured on another pool or other labels."""
+    sys.path.insert(0, str(REPO))
+    from proofreader_evolve.harness import label_availability
+
+    table, meta, rows, labels = pool_table(brain, cache, kind)
+    with np.load(label_availability.sidecar_dir(table) / "availability.npz", allow_pickle=False) as data:
+        truth = label_availability.three_valued(labels, data[label_availability.DEFAULT_DEFINITION[kind]])
+    cell = f"{brain}/{kind}"
+    with np.load(scores_path, allow_pickle=False) as data:
+        recorded = json.loads(str(data["meta"]))["cells"].get(cell)
+        if recorded is None:
+            sys.exit(f"{scores_path} holds no scores of {cell}")
+        scored, scores = data[f"{cell}:rows"], data[f"{cell}:scores"]
+    same_tables = (recorded["pool_sha256"], recorded["labels_sha256"]) == (
+        meta["pool_sha256"], label_availability.labels_digest(truth))
+    if not same_tables or not np.array_equal(scored, label_availability.labeled_rows(truth)):
+        sys.exit(f"the scores of {cell} were measured on another pool or other labels")
+    order = np.argsort(-scores, kind="stable")[:top]
+    chosen = [{**rows[int(scored[index])], "rank": rank, "score": float(scores[index]),
+               "evaluator_label": int(truth[scored[index]])} for rank, index in enumerate(order, start=1)]
+    record = {"pool": {"table": table.name, "pool_sha256": meta["pool_sha256"], "rows": len(rows),
+                       "candidate_policy": meta["candidate_policy"]},
+              "scores": {"scores": str(scores_path),
+                         "scores_sha256": hashlib.sha256(scores_path.read_bytes()).hexdigest(),
+                         "ranked_rows": len(scores), "top": top, "chosen": len(chosen)}}
+    return chosen, record
 
 
 def check_rows(graph, rows):
@@ -167,7 +200,7 @@ def arm_to_detach(graph, xyz, site, arm_um):
 def oracle_sites(brain, cache, graph, wanted):
     """The merge candidates that ground truth labels as merges, on the listed segments, with
     the record of where they came from."""
-    table, meta, rows, labels = merge_pool(brain, cache)
+    table, meta, rows, labels = pool_table(brain, cache, "merge")
     chosen = [row for row, label in zip(rows, labels) if label == 1]
     sites = [row for row in chosen if str(row["segment_id"]) in wanted]
     check_rows(graph, sites)
@@ -185,39 +218,18 @@ def policy_sites(brain, cache, graph, wanted, scores_path, top):
     """The ``top`` merge candidates that a stored scorer ranks highest among the rows ground truth
     can judge, on the listed segments, with the record of where they came from. Each site
     carries its rank, its score and its label; the label is not used to choose."""
-    sys.path.insert(0, str(REPO))
-    from proofreader_evolve.harness import label_availability
-
-    table, meta, rows, labels = merge_pool(brain, cache)
-    with np.load(label_availability.sidecar_dir(table) / "availability.npz", allow_pickle=False) as data:
-        truth = label_availability.three_valued(labels, data[label_availability.DEFAULT_DEFINITION["merge"]])
-    cell = f"{brain}/merge"
-    with np.load(scores_path, allow_pickle=False) as data:
-        recorded = json.loads(str(data["meta"]))["cells"].get(cell)
-        if recorded is None:
-            sys.exit(f"{scores_path} holds no scores of {cell}")
-        scored, scores = data[f"{cell}:rows"], data[f"{cell}:scores"]
-    same_tables = (recorded["pool_sha256"], recorded["labels_sha256"]) == (
-        meta["pool_sha256"], label_availability.labels_digest(truth))
-    if not same_tables or not np.array_equal(scored, label_availability.labeled_rows(truth)):
-        sys.exit(f"the scores of {cell} were measured on another pool or other labels")
-
-    order = np.argsort(-scores, kind="stable")[:top]
-    chosen = [{**rows[int(scored[index])], "rank": rank, "score": float(scores[index]),
-               "evaluator_label": int(truth[scored[index]])} for rank, index in enumerate(order, start=1)]
+    chosen, ranked = ranked_rows(brain, cache, "merge", scores_path, top)
     sites = [row for row in chosen if str(row["segment_id"]) in wanted]
     check_rows(graph, sites)
-    print(f"merge pool {table.name[:12]}: {len(rows)} rows, {len(scores)} ranked by {scores_path.name}, "
+    print(f"merge pool {ranked['pool']['table'][:12]}: {ranked['pool']['rows']} rows, "
+          f"{ranked['scores']['ranked_rows']} ranked by {scores_path.name}, "
           f"top {top} chosen (policy), {len(sites)} on the {len(wanted)} listed segments, "
           f"{sum(row['evaluator_label'] for row in sites)} of them labeled as merges", flush=True)
-    record = {"merge_pool": {"table": table.name, "pool_sha256": meta["pool_sha256"], "rows": len(rows),
-                             "candidate_policy": meta["candidate_policy"]},
-              "sites": {"selection": "policy", "scores": str(scores_path),
-                        "scores_sha256": hashlib.sha256(scores_path.read_bytes()).hexdigest(),
-                        "ranked_rows": len(scores), "top": top, "chosen": len(chosen),
+    record = {"merge_pool": ranked["pool"],
+              "sites": {"selection": "policy", **ranked["scores"],
                         "on_listed_segments": len(sites),
                         "labeled_as_merges": sum(row["evaluator_label"] for row in sites),
-                        "lowest_score": float(scores[order[-1]]),
+                        "lowest_score": chosen[-1]["score"],
                         "by_family": dict(Counter(row["candidate_family"] for row in sites)),
                         "by_degree": dict(sorted(Counter(int(row["degree"]) for row in sites).items()))}}
     return sites, record
