@@ -228,8 +228,9 @@ Concrete, each one met while switching seven brains to denoised images.
   post-analysis of finished runs ([evaluation/README.md](evaluation/README.md)), which is
   not a validation protocol. The root `evaluation/` holds a source audit, the capsule's
   skeleton metrics of the unproofread segmentation, and the first steps toward judging a
-  policy's edits with those metrics (upper bounds on 841260, 2026-11-18); none scores a
-  policy. The open steps and problems of that work are listed in
+  policy's edits with those metrics (on 841260: upper bounds, 2026-11-18, and the merge cuts
+  of one finished run's policy, 2026-11-21); none validates a policy or touches 794495
+  beyond that. The open steps and problems of that work are listed in
   [its README](../evaluation/README.md#edits-judged-by-the-capsule-status-and-open-problems).
 - **Minor.** `notebooks/verify_add_cache_metrics.py` reports the canonical `SWC Run Length`
   in voxel units, so the column is not comparable with the cache's.

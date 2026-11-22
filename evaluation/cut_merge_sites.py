@@ -18,6 +18,13 @@ Which candidates are cut, ``--sites``:
 * ``oracle``: the candidates that ground truth labels as merges (``evaluator_labels.npy`` of
   the brain's raw pool). It measures what the candidates and a cut rule can reach at best; no
   policy takes part and nothing here may be used to choose a policy.
+* ``policy``: the ``--top`` candidates that a scorer ranks highest, read from a file of an
+  evolution run's ``validation_scores/`` (``--scores``: the scores of one measured submission
+  on the development-validation pools). Such a file holds scores only for the rows that ground
+  truth can judge (a candidate on a segment under ground truth, within 150 um of a
+  ground-truth node), so the ranking is over those rows and no candidate elsewhere is cut.
+  Labels take no part in the choice; each site's label is written to the cuts file for the
+  analysis afterwards.
 
 Only candidates on the segments of ``--segments`` are cut, and only those segments are written
 (``segments_under_gt.txt`` of a run of ``run_capsule_original.py``). The cache is not changed.
@@ -30,12 +37,16 @@ Run on a compute node in panda, from the repository root:
         --radius-um 12 --segments evaluation/results/<run>/segments_under_gt.txt \\
         --out evaluation/results/<experiment>/remove12/fragments.zip
 
+For a policy's cuts, replace ``--sites oracle`` by
+``--sites policy --scores <run>/validation_scores/gen<NNN>.npz --top <K>``.
+
 Written beside ``<out>``: ``<out>.json`` (counts) and ``<out stem>_cuts.csv`` (one row per
-site). Evaluate with ``run_capsule_original.py --fragments <zip>`` in arborist_eval and compare
+site; with ``policy`` also its rank, score and label). Evaluate with ``run_capsule_original.py --fragments <zip>`` in arborist_eval and compare
 with the unedited export with ``compare_capsule_runs.py --cuts <csv>``.
 """
 import argparse
 import csv
+import hashlib
 import json
 import pickle
 import sys
@@ -55,7 +66,9 @@ def parse_args():
     parser.add_argument("--brain", required=True)
     parser.add_argument("--mcl", type=int, default=100)
     parser.add_argument("--segments", required=True, type=Path, help="Text file, one segment ID per line")
-    parser.add_argument("--sites", required=True, choices=("oracle",))
+    parser.add_argument("--sites", required=True, choices=("oracle", "policy"))
+    parser.add_argument("--scores", type=Path, help="policy: a file of a run's validation_scores/")
+    parser.add_argument("--top", type=int, help="policy: how many of the highest-ranked candidates to cut")
     parser.add_argument("--rule", required=True, choices=("remove", "detach"))
     parser.add_argument("--radius-um", type=float, default=ARBORIST_RADIUS_UM,
                         help=f"remove: path length around a site that is deleted (default {ARBORIST_RADIUS_UM:g}, "
@@ -63,7 +76,10 @@ def parse_args():
     parser.add_argument("--arm-um", type=float, default=30.0,
                         help="detach: path length over which an arm's direction is taken (default 30)")
     parser.add_argument("--out", required=True, type=Path, help="ZIP file to write")
-    return parser.parse_args()
+    options = parser.parse_args()
+    if options.sites == "policy" and (options.scores is None or options.top is None or options.top < 1):
+        parser.error("--sites policy needs --scores and a positive --top")
+    return options
 
 
 def merge_pool(brain, cache):
@@ -165,6 +181,48 @@ def oracle_sites(brain, cache, graph, wanted):
     return sites, record
 
 
+def policy_sites(brain, cache, graph, wanted, scores_path, top):
+    """The ``top`` merge candidates that a stored scorer ranks highest among the rows ground truth
+    can judge, on the listed segments, with the record of where they came from. Each site
+    carries its rank, its score and its label; the label is not used to choose."""
+    sys.path.insert(0, str(REPO))
+    from proofreader_evolve.harness import label_availability
+
+    table, meta, rows, labels = merge_pool(brain, cache)
+    with np.load(label_availability.sidecar_dir(table) / "availability.npz", allow_pickle=False) as data:
+        truth = label_availability.three_valued(labels, data[label_availability.DEFAULT_DEFINITION["merge"]])
+    cell = f"{brain}/merge"
+    with np.load(scores_path, allow_pickle=False) as data:
+        recorded = json.loads(str(data["meta"]))["cells"].get(cell)
+        if recorded is None:
+            sys.exit(f"{scores_path} holds no scores of {cell}")
+        scored, scores = data[f"{cell}:rows"], data[f"{cell}:scores"]
+    same_tables = (recorded["pool_sha256"], recorded["labels_sha256"]) == (
+        meta["pool_sha256"], label_availability.labels_digest(truth))
+    if not same_tables or not np.array_equal(scored, label_availability.labeled_rows(truth)):
+        sys.exit(f"the scores of {cell} were measured on another pool or other labels")
+
+    order = np.argsort(-scores, kind="stable")[:top]
+    chosen = [{**rows[int(scored[index])], "rank": rank, "score": float(scores[index]),
+               "evaluator_label": int(truth[scored[index]])} for rank, index in enumerate(order, start=1)]
+    sites = [row for row in chosen if str(row["segment_id"]) in wanted]
+    check_rows(graph, sites)
+    print(f"merge pool {table.name[:12]}: {len(rows)} rows, {len(scores)} ranked by {scores_path.name}, "
+          f"top {top} chosen (policy), {len(sites)} on the {len(wanted)} listed segments, "
+          f"{sum(row['evaluator_label'] for row in sites)} of them labeled as merges", flush=True)
+    record = {"merge_pool": {"table": table.name, "pool_sha256": meta["pool_sha256"], "rows": len(rows),
+                             "candidate_policy": meta["candidate_policy"]},
+              "sites": {"selection": "policy", "scores": str(scores_path),
+                        "scores_sha256": hashlib.sha256(scores_path.read_bytes()).hexdigest(),
+                        "ranked_rows": len(scores), "top": top, "chosen": len(chosen),
+                        "on_listed_segments": len(sites),
+                        "labeled_as_merges": sum(row["evaluator_label"] for row in sites),
+                        "lowest_score": float(scores[order[-1]]),
+                        "by_family": dict(Counter(row["candidate_family"] for row in sites)),
+                        "by_degree": dict(sorted(Counter(int(row["degree"]) for row in sites).items()))}}
+    return sites, record
+
+
 def apply_cuts(graph, sites, rule, radius_um=ARBORIST_RADIUS_UM, arm_um=30.0):
     """Cut the graph in place at the sites. Returns one record per site and the edit's summary."""
     xyz, records = graph.node_xyz, []
@@ -194,18 +252,23 @@ def main():
     cache, payload = load_cache(options.brain, options.mcl)
     graph = payload["fragments_graph"]
     wanted = read_segments(options.segments)
-    sites, record = oracle_sites(options.brain, cache, graph, wanted)
+    if options.sites == "oracle":
+        sites, record = oracle_sites(options.brain, cache, graph, wanted)
+    else:
+        sites, record = policy_sites(options.brain, cache, graph, wanted, options.scores, options.top)
     records, edit = apply_cuts(graph, sites, options.rule, options.radius_um, options.arm_um)
 
     summary = {**cache_record(options.brain, cache, payload), **record, "edit": edit,
                **write_fragments(graph, wanted, options.out)}
-    fields = ["candidate_id", "node_id", "segment_id", "candidate_family", "degree", "x_um", "y_um", "z_um",
-              "action", "arms", "nodes_removed", "detached_arm_collinearity"]
+    site_fields = ["candidate_id", "node_id", "segment_id", "candidate_family", "degree", "x_um", "y_um", "z_um"]
+    if options.sites == "policy":
+        site_fields += ["rank", "score", "evaluator_label"]
+    fields = site_fields + ["action", "arms", "nodes_removed", "detached_arm_collinearity"]
     with options.out.with_name(options.out.stem + "_cuts.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields, restval="")
         writer.writeheader()
         for row, record in zip(sites, records):
-            writer.writerow({**{field: row[field] for field in fields[:8]}, **record})
+            writer.writerow({**{field: row[field] for field in site_fields}, **record})
     options.out.with_suffix(".json").write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary, indent=2), flush=True)
 

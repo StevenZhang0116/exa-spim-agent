@@ -13,11 +13,14 @@ of the capsule:
    fragment graph of a labeled cache, written out and evaluated by the capsule; then the
    same graph cut at the merge candidates that ground truth labels as merges, and then
    joined at the split candidates that ground truth puts next to each other: two upper
-   bounds that involve no policy. No policy's edits have been evaluated yet; the plan, its
-   state and the open problems are in
+   bounds that involve no policy; then (2026-11-21) the same graph cut at the candidates
+   that a finished run's merge policy ranks highest. The plan, its state and the open
+   problems are in
    [Edits judged by the capsule: status and open problems](#edits-judged-by-the-capsule-status-and-open-problems).
 
-None of them scores a model of this repository, and nothing here feeds an evolution run.
+The first two score no model of this repository. The third applies the stored validation
+scores of one finished run to 841260, a development-validation brain of that run; it is
+not a validation of the policy. Nothing here feeds an evolution run.
 
 It is a different thing from [`proofreader_evolve/evaluation/`](../proofreader_evolve/evaluation/README.md),
 which records how the final policy of a finished evolution run scores on 794495.
@@ -27,15 +30,18 @@ which records how the final policy of a finished evolution run scores on 794495.
 | `compare_794495_sources.py` | the source comparison script | yes |
 | `run_capsule_original.py` | runs the capsule's `main.py` on our inputs, "original" step; `--fragments` evaluates another fragment set | yes |
 | `export_cache_fragments.py` | writes fragments of a labeled cache as SWCs the capsule reads | yes |
-| `cut_merge_sites.py` | cuts the cache's fragment graph at merge candidates (`--sites oracle`; rules `remove`, `detach`) and writes it for the capsule | yes |
+| `cut_merge_sites.py` | cuts the cache's fragment graph at merge candidates (`--sites oracle`, or `--sites policy --scores --top` for a run's stored scores; rules `remove`, `detach`) and writes it for the capsule | yes |
 | `join_split_candidates.py` | after those cuts, enumerates the split candidates again on the cut graph and joins the pairs ground truth names (`--joins oracle`; `--truth labels` or `graph`, `--min-support-um`) | yes |
-| `compare_capsule_runs.py` | totals, per-neuron table and shared merge sites of two capsule outputs; `--cuts` relates the sites to the cuts made | yes |
+| `compare_capsule_runs.py` | totals, per-neuron table and shared merge sites of two capsule outputs; `--cuts` relates the sites to the cuts made, apart by the candidates' labels for a policy's cuts | yes |
+| `plot_merge_policy_cuts.py` | draws the figures of `figure/` from capsule outputs that exist: the capsule's figures before and after a policy's merge cuts | yes |
+| `figure/` | `841260_merge_policy_metrics.png`, `841260_merge_policy_sites.png`, and the plotted numbers in `841260_merge_policy.csv` | no (`evaluation/figure/` is ignored; redraw with the script) |
 | `README.md` | this file, with the results | yes |
 | `results/794495_source_comparison_20261104/` | `comparison.json`, `report.md`, `patch_01..03.png` of the audit | no (`results/` is ignored) |
 | `results/794495_capsule_original_20261118/` | the capsule's outputs, `run_info.json`, `run.log`, the per-neuron comparison | no |
 | `results/841260_baseline_alignment_20261118/` | `raw_swcs/` and `cache_graph/` (two capsule outputs), `cache_fragments.zip`, `comparison.txt` | no |
 | `results/841260_merge_oracle_20261118/` | `remove0/`, `remove12/`, `detach/`: the cut graph (`fragments.zip`, `.json`, `fragments_cuts.csv`), the capsule's output (`capsule/`), `comparison.txt` | no |
 | `results/841260_split_oracle_20261118/` | ten variants (eight `<cut>_<truth>[_s50]`, `remove12_graph_across`, `none_graph`), each with the joined graph (`fragments.zip`, `.json`, `fragments_joins.csv`, `fragments_connections.txt`), `capsule/`, `comparison_with_cut.txt`, `comparison_with_unedited.txt` | no |
+| `results/841260_merge_policy_20261121/` | `top33/` ... `top1310/`: the graph cut at a policy's highest-ranked candidates (`fragments.zip`, `.json`, `fragments_cuts.csv` with rank, score and label), `capsule/`, `comparison.txt` | no |
 
 ## Where 794495 stands
 
@@ -53,7 +59,8 @@ sections) do not touch this: the audit compares data sources, and the capsule me
 describe the segmentation itself. Both read the ground truth of 794495; neither reads a
 label table, a feature table, a score or a model of this repository. The edit experiments
 further down run on 841260, a development-validation brain, and do read its candidate
-pools and evaluator labels; 794495 comes into them only as the last step of the plan, once.
+pools and evaluator labels, and since 2026-11-21 a finished run's stored scores; 794495
+comes into them only as the last step of the plan, once.
 
 ## Source audit: repository vs capsule
 
@@ -256,21 +263,23 @@ joins to make is to be chosen on development brains and frozen; 794495 is then e
 once. Everything is stated for the user's scope of 2026-11-18, the fragments of the cache
 (at least 100 um).
 
-**No policy's edits have been evaluated yet.** What exists is the way to evaluate an edited
-graph, and two upper bounds on 841260 in which ground truth chooses the edits.
+**A policy has chosen merge cuts (step 3); none has chosen joins, and no depth is chosen.**
+What exists is the way to evaluate an edited graph, two upper bounds on 841260 in which
+ground truth chooses the edits, and the merge cuts of one finished run's policy on 841260 at
+six depths.
 
 | Step | What | State |
 |---|---|---|
 | 1 | The cache's fragment graph through the capsule, against the raw SWCs | done: [the cache's fragment graph](#the-caches-fragment-graph-as-the-capsule-sees-it) |
 | 2a | Upper bound: cut at every merge candidate labeled as a merge | done: [merge cuts](#merge-cuts-at-the-candidates-that-ground-truth-labels-as-merges) |
 | 2b | Upper bound: on the cut graph, join the split candidates that ground truth names | done: [joins](#joins-at-the-split-candidates-that-ground-truth-puts-next-to-each-other) |
-| 3 | Merge cuts chosen by a policy's scores, at several depths | not started |
+| 3 | Merge cuts chosen by a policy's scores, at several depths | done for one policy, 2026-11-21: [a policy's cuts](#merge-cuts-at-the-candidates-a-policy-ranks-highest) |
 | 4 | Joins chosen by a policy's scores, on the cut graph | not started |
 | 5 | 794495 once, with the frozen choices | not started |
 
 ### Open problems
 
-All four come from one brain, 841260; the figures are those of the sections below.
+All five come from one brain, 841260; the figures are those of the sections below.
 
 1. **The merge labels cover about half of the capsule's merges.** Cutting every candidate
    labeled as a merge takes the capsule's count from 189 to 91. Of the 189 sites, 97 have
@@ -291,17 +300,31 @@ All four come from one brain, 841260; the figures are those of the sections belo
    yet merged edges rise from 1.20% to 4.72% and edge accuracy returns to the unedited
    level (80.64 against 80.77), while ERL rises fourfold. This follows from problem 1: the
    more merges the cuts miss, the more a join spoils.
-4. **What a policy's cuts cost is not measured.** The 131 cuts of the upper bound added 198
-   splits. A wrong cut adds splits and removes no merge, and a policy's highest-ranked
-   merge candidates are mostly not labeled merges (validation average precision 0.152 for
-   the final merge policy of run `precision_20261115_234249_byxx989h`). Step 3 is to
-   measure how deep a policy can cut before the cost outweighs the merges removed.
+4. **A policy's cuts remove merges at a rising price in splits** (step 3, the final merge
+   policy of run `precision_20261115_234249_byxx989h`). Every cut adds about two splits,
+   right or wrong. Its 130 highest-ranked cuts take the merges from 189 to 136 and add 249
+   splits; 1,305 cuts reach 62 merges, below the upper bound of problem 1, and add 2,699
+   splits (38%). A merge removed costs 4 to 5.5 splits up to 130 cuts and 20 to 50 beyond.
+   The policy also removes merges that the labels do not have (35 of the capsule's sites
+   at 1,305 cuts), which bears on problem 1.
+5. **The capsule's figures disagree on how deep to cut.** Edge accuracy rises with every
+   depth, to 83.41 at 1,305 cuts (unedited 80.77), because a wrong cut costs almost no
+   edges; ERL falls there to 880 (unedited 1,087). Edge accuracy alone asks for as many cuts
+   as possible, as ERL alone asked for as many joins as possible (problem 3).
 
 ### Not decided
 
-* **How an edit is judged.** ERL and the split count cannot be read alone (problem 3), and
-  "the share of merged edges must not rise" fails even the upper bound. Suggested, not
-  agreed: merge count, share of merged edges and edge accuracy together, ERL for reference.
+* **How an edit is judged.** No figure of the capsule can be read alone: ERL and the split
+  count reward joins whatever merges they enlarge (problem 3), edge accuracy rewards cuts
+  whatever splits they add (problem 5), and "the share of merged edges must not rise" fails
+  even the upper bound of the joins. Suggested, not agreed: merge count, share of merged
+  edges, edge accuracy and split count together, ERL for reference.
+* **How deep the merge stage cuts.** It follows from the judge, and from what the split
+  stage can repair.
+* **How the split stage treats a cut.** Most of a policy's cuts are not at a merge (78 of
+  130, 1,178 of 1,305). The splits they add can only be undone by joining two pieces of one
+  cut fragment, which the split stage does not do unless `--across-cuts` is given; with the
+  upper bound's cuts that option brought merges back.
 * **Whether the labels change.** Nothing was changed. The merge labels (`length_v2`) and the
   split truth (`candidate_rules.split_truth`) are those the evolution runs were trained and
   measured on. Changing either means new labels and pool tables on every brain
@@ -449,7 +472,8 @@ tip more than 100 um away) name about 110 common sites; 79 of the capsule's 189 
 the labels and 42 of the labels' 152 are not the capsule's. Which part of the two rules
 differs was not traced. A policy trained and measured on these labels is aimed at the first
 group only; relabeling by the capsule's rule would put a candidate within 20 um of 157 of the
-189 sites.
+189 sites. (A policy's cuts do remove some sites of the second group all the same: see the
+section on a policy's cuts.)
 
 Limits: one brain; ground truth chose the sites, so nothing here measures a policy.
 
@@ -549,3 +573,98 @@ policy; the fragments that label less than 50 um of a neuron were not looked at 
 so whether they are crossing fibers or side branches missing from the ground truth is open;
 the rise of merged edges was not broken down by fragment; why some merge sites disappear
 after joins (15 under `labels`, 50 um) was not traced; the ten outputs take 4.7 GB.
+
+## Merge cuts at the candidates a policy ranks highest
+
+Step 3 of the plan: the merge stage alone, with a policy choosing the sites.
+`cut_merge_sites.py --sites policy` cuts the `--top` candidates that a scorer ranks highest,
+with the Arborist rule (`remove`, 12 um). The scores are read from a file of a finished run's
+`validation_scores/` (the scores of one measured submission on the development-validation
+pools), so the policy is not run again. Such a file holds scores only for the rows that
+ground truth can judge: a candidate on a segment under ground truth, within 150 um of a
+ground-truth node. On 841260 these are 5,440 of the pool's 174,038 candidates. The ranking is
+over those rows and no candidate elsewhere is cut. The script refuses a file whose pool or
+labels are not those of the present tables. Labels take no part in the choice; each site's
+label goes into the cuts file, and `compare_capsule_runs.py --cuts` then reports the cuts
+labeled as merges and the cuts labeled 0 apart.
+
+```bash
+python -u evaluation/cut_merge_sites.py --brain 841260 --sites policy --top 131 \
+    --scores proofreader_evolve/runs/<run>/validation_scores/gen<NNN>.npz \
+    --rule remove --radius-um 12 --segments <base>/raw_swcs/segments_under_gt.txt \
+    --out <exp>/top131/fragments.zip                                              # panda
+```
+
+The capsule run and the comparison are those of the oracle cuts above.
+
+### Result on 841260 (2026-11-21)
+
+The final merge policy of run `precision_20261115_234249_byxx989h` (generation 3,
+`validation_scores/gen003.npz`). Its average precision is 0.152 over the five
+development-validation brains and 0.256 on 841260, which is one of the five. Six depths, from
+a quarter of the brain's 131 labeled merges to ten times; a few of the chosen candidates lie on segments
+outside the capsule's list and are not cut, hence 130 cuts for the top 131. Run on n01. The
+last column is the oracle of the earlier section (every labeled merge, no policy).
+
+| | unedited | top 33 | top 66 | top 131 | top 262 | top 524 | top 1,310 | oracle |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Cuts made | | 33 | 66 | 130 | 260 | 522 | 1,305 | 131 |
+| of them labeled as merges | | 14 | 26 | 48 | 62 | 86 | 119 | 131 |
+| of them within 20 um of a merge site of the capsule | | 16 | 30 | 52 | 68 | 92 | 127 | 97 |
+| Merges, total | 189 | 173 | 159 | 136 | 122 | 94 | 62 | 91 |
+| Merge sites gone / new (20 um) | | 16 / 0 | 30 / 0 | 53 / 0 | 68 / 1 | 95 / 0 | 127 / 0 | 98 / 0 |
+| Splits, total | 7,185 | 7,249 | 7,308 | 7,434 | 7,719 | 8,267 | 9,884 | 7,383 |
+| % merged edges, unweighted mean over neurons | 3.47 | 3.19 | 3.04 | 2.73 | 2.16 | 1.76 | 0.74 | 1.20 |
+| % omit edges | 15.36 | 15.36 | 15.36 | 15.36 | 15.37 | 15.37 | 15.38 | 15.36 |
+| % split edges | 0.40 | 0.40 | 0.40 | 0.40 | 0.41 | 0.42 | 0.47 | 0.40 |
+| Edge accuracy | 80.77 | 81.05 | 81.20 | 81.50 | 82.07 | 82.45 | 83.41 | 83.04 |
+| ERL, um, mean over neurons | 1,087 | 1,088 | 1,087 | 1,079 | 1,105 | 1,052 | 880 | 1,161 |
+| Splits added per cut | | 1.9 | 1.9 | 1.9 | 2.1 | 2.1 | 2.1 | 1.5 |
+| Splits added per merge removed, since the depth before | | 4.0 | 4.2 | 5.5 | 20.4 | 19.6 | 50.5 | |
+
+Figures (not in Git): `python evaluation/plot_merge_policy_cuts.py` (panda, compute node,
+seconds) reads the outputs above and writes `figure/`.
+`841260_merge_policy_metrics.png` shows merges, splits, merged edges, edge accuracy, ERL and
+the share of cuts at a merge site of the capsule against the number of cuts, with the unedited
+graph as a line and the oracle as a single point. `841260_merge_policy_sites.png` shows how
+many of the 189 merge sites each depth removes, apart by the label of the candidates cut
+nearby. `841260_merge_policy.csv` holds the plotted numbers.
+
+**A cut that hits a merge removes it.** Of the capsule's merge sites with a cut within 20 um,
+all are gone at the first five depths (16, 30, 52, 68, 91) and 124 of 126 at the last, as
+with the oracle's cuts (96 of 97).
+
+**The policy removes merges that the labels do not have.** Merge sites of the capsule with
+only cuts labeled 0 nearby: 4, 8, 11, 18, 22 and 36 at the six depths, all gone but one at
+the last. They belong to the 60 sites of "The reach" where a candidate exists and the cache's
+labels do not call it a merge. Among the 130 highest-ranked cuts, 11 of the 82 labeled 0 are
+at such a site, while about one in ninety of all candidates labeled 0 is. So by the capsule's
+count the policy is somewhat better than its precision on the labels says (52 of 130 cuts at
+a site of the capsule, 48 labeled as merges), part of what an evolution run counts as its
+false positives are merges for the capsule, and at 1,305 cuts the merge count (62) is below
+what cutting every labeled merge reaches (91).
+
+**A cut costs two splits, right or wrong.** 1.9 to 2.1 splits per cut at every depth (1.5 for
+the oracle's). Up to 130 cuts a merge removed costs 4 to 5.5 splits; beyond, about 20, and 50
+between 522 and 1,305 cuts.
+
+**The capsule's figures disagree on the depth.** Edge accuracy rises with every depth, to
+83.41 at 1,305 cuts, above the oracle's 83.04. A cut that removes a merge frees every
+ground-truth edge of the fragment, while a cut elsewhere costs almost no edges: over 1,305
+cuts the split edges go from 0.40% to 0.47% and the omitted edges from 15.36% to 15.38%. ERL
+moves the other way: within 2% of the unedited value up to 260 cuts (highest there, 1,105)
+and down to 880 at 1,305, 19% under the unedited graph; the split count is then 38% higher.
+Edge accuracy alone asks for as many cuts as possible, as ERL alone asked for as many joins
+as possible in the section above. Neither can choose the depth.
+
+**What this leaves for the split stage.** 78 of the 130 cuts and 1,178 of the 1,305 are not
+within 20 um of a merge site of the capsule. The splits they add can only be undone by joining
+two pieces of one cut fragment, which `join_split_candidates.py` does not do unless
+`--across-cuts` is given; with the oracle's cuts, all at labeled merges, that option brought
+merges back. How the split stage treats a cut is open for step 4.
+
+Limits: one brain and one policy; 841260 is a development-validation brain of that run, whose
+promotions were decided on these scores among others, so nothing here validates the policy;
+the ranking covers only the rows that ground truth can judge, while a threshold applied to a
+whole brain would also cut elsewhere, where the capsule sees nothing; the scores are the
+stored ones, the scorer was not run again; no depth is chosen; the six outputs take 2.6 GB.

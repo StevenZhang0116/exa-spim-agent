@@ -7,6 +7,8 @@ Sites are matched one to one by position within ``--radius`` um.
 
 With ``--cuts`` (the ``*_cuts.csv`` of ``cut_merge_sites.py``, B being the evaluation of the
 cut graph): how many merge sites of A have a cut nearby, and how many of those B no longer has.
+When the file carries the candidates' labels (a policy's cuts), the same is given apart for the
+cuts labeled as merges and for those labeled 0.
 
 Run on a compute node (panda or arborist_eval), from the repository root:
 
@@ -38,6 +40,15 @@ def site_positions(sites):
     if not len(sites):
         return np.zeros((0, 3))
     return np.array([ast.literal_eval(value) for value in sites["World"]], dtype=float)
+
+
+def match_sites(xyz_a, xyz_b, radius):
+    """Pairs (index in A, index in B) of sites matched one to one within ``radius`` um."""
+    if not len(xyz_a) or not len(xyz_b):
+        return []
+    distance = cdist(xyz_a, xyz_b)
+    rows, columns = linear_sum_assignment(np.where(distance <= radius, distance, 1e9))
+    return [(r, c) for r, c in zip(rows, columns) if distance[r, c] <= radius]
 
 
 def main():
@@ -78,11 +89,7 @@ def main():
                      f"largest |difference| {difference.abs().max():.2f} ({difference.abs().idxmax()})")
 
     xyz_a, xyz_b = site_positions(sites_a), site_positions(sites_b)
-    pairs = []
-    if len(xyz_a) and len(xyz_b):
-        distance = cdist(xyz_a, xyz_b)
-        rows, columns = linear_sum_assignment(np.where(distance <= options.radius, distance, 1e9))
-        pairs = [(r, c) for r, c in zip(rows, columns) if distance[r, c] <= options.radius]
+    pairs = match_sites(xyz_a, xyz_b, options.radius)
     lines += ["", f"merge sites: {name_a} {len(xyz_a)}, {name_b} {len(xyz_b)}; within {options.radius:g} um one to one: "
                   f"{len(pairs)} in both, {len(xyz_a) - len(pairs)} only {name_a}, {len(xyz_b) - len(pairs)} only {name_b}"]
 
@@ -101,6 +108,18 @@ def main():
                          f"{int((near & ~remaining).sum())} of them are gone in {name_b}; of the "
                          f"{int((~near).sum())} without one, {int((~near & ~remaining).sum())} are gone; "
                          f"{int((to_site > radius).sum())} cuts have no {name_a} site nearby")
+        if "evaluator_label" in cuts and len(xyz_a):
+            # A policy's cuts carry the candidate's label: which cuts take a merge site away?
+            labeled = cuts["evaluator_label"].to_numpy() == 1
+            reach = [cdist(xyz_a, cut_xyz[chosen]).min(axis=1) <= options.radius if chosen.any()
+                     else np.zeros(len(xyz_a), dtype=bool) for chosen in (labeled, ~labeled)]
+            only_unlabeled = reach[1] & ~reach[0]
+            lines.append(f"by the candidates' labels, within {options.radius:g} um: {int(labeled.sum())} cuts labeled "
+                         f"as merges, {int(reach[0].sum())} {name_a} sites near one, "
+                         f"{int((reach[0] & ~remaining).sum())} of them gone; {int((~labeled).sum())} cuts labeled 0, "
+                         f"{int(only_unlabeled.sum())} {name_a} sites near such cuts only, "
+                         f"{int((only_unlabeled & ~remaining).sum())} of them gone; "
+                         f"{int((to_site[~labeled] > options.radius).sum())} cuts labeled 0 have no {name_a} site nearby")
 
     text = "\n".join(lines)
     print(text)
