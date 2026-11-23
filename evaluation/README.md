@@ -403,6 +403,7 @@ the cache; the other 21,668 are shorter than the cache's 100 um or have no skele
 | % omit edges | 8.27 | 15.36 |
 | % split edges | 1.56 | 0.40 |
 | Edge accuracy | 86.99 | 80.77 |
+| ERL, um, mean over neurons | 828 | 1,087 |
 
 **Merges carry over.** Of the 202 merge sites on the raw SWCs, 187 are found again on the
 cache graph within 20 um; 15 are lost and 2 are new. The share of merged edges moves by 0.3
@@ -510,7 +511,9 @@ group only; relabeling by the capsule's rule would put a candidate within 20 um 
 189 sites. (A policy's cuts do remove some sites of the second group all the same: see the
 section on a policy's cuts.)
 
-Limits: one brain; ground truth chose the sites, so nothing here measures a policy.
+Limits: one brain here (the cut of every labeled merge with the Arborist rule was repeated on
+794495 on 2026-11-21, last section); ground truth chose the sites, so nothing here measures a
+policy.
 
 ## Joins at the split candidates that ground truth puts next to each other
 
@@ -698,7 +701,8 @@ two pieces of one cut fragment, which `join_split_candidates.py` does not do unl
 `--across-cuts` is given; with the oracle's cuts, all at labeled merges, that option brought
 merges back. How the split stage treats a cut is open for step 4.
 
-Limits: one brain and one policy; 841260 is a development-validation brain of that run, whose
+Limits: one policy, and one brain here (repeated on 794495 the same day, last section);
+841260 is a development-validation brain of that run, whose
 promotions were decided on these scores among others, so nothing here validates the policy;
 the ranking covers only the rows that ground truth can judge, while a threshold applied to a
 whole brain would also cut elsewhere, where the capsule sees nothing; the scores are the
@@ -805,8 +809,9 @@ rows after 130 cuts and of 109 after 1,305. Many joins touch a piece of a cut fr
 
 Limits: an upper estimate, for the three reasons at the head of this section; above all the
 21,341 candidates that pair a fragment under ground truth with one outside it are never joined
-here, and a split stage on a whole brain would join some of them; one brain and one policy, on
-a development-validation brain of that run; no depth is chosen; why some merge sites disappear
+here, and a split stage on a whole brain would join some of them; one policy, and one brain
+here, a development-validation brain of that run (repeated on 794495 the same day, last
+section); no depth is chosen; why some merge sites disappear
 after joins (up to 45) was not traced, as with the oracle's joins; the fifteen outputs take
 6.7 GB.
 
