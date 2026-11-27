@@ -35,8 +35,10 @@ which records how the final policy of a finished evolution run scores on 794495.
 | `join_split_candidates.py` | after those cuts (`--merge-sites oracle` or `policy`), joins split candidates: the pairs ground truth names, enumerated again on the cut graph (`--joins oracle`; `--truth labels` or `graph`, `--min-support-um`), or the pool rows a run's stored scores rank highest (`--joins policy --scores --top`, a simplified split stage) | yes |
 | `compare_capsule_runs.py` | totals, per-neuron table and shared merge sites of two capsule outputs; `--cuts` relates the sites to the cuts made, apart by the candidates' labels for a policy's cuts | yes |
 | `plot_merge_policy_cuts.py` | draws figures of `figure/` from capsule outputs that exist: the capsule's figures before and after a policy's merge cuts | yes |
-| `plot_split_policy_joins.py` | the same for a policy's joins, one line per cut depth, and the table of every graph against the unedited one | yes |
+| `plot_split_policy_joins.py` | the same for a policy's joins, one line per cut depth, and the table of every graph against the unedited one, the upper bound (ground truth's cuts, then its joins: `--oracle-cut`, `--oracle-joined`) in its first rows | yes |
+| `plot_oracle_join_examples.py` | pictures of joins that ground truth names, apart by the 50 um support condition: a few joins made in both oracle runs and a few made only without the condition, drawn with the panels of `proofreader_evolve/plotting/plot_error_contexts.py` (image and skeletons, neighbourhood, ground truth, segmentation), with every join's supports | yes |
 | `figure/` | for 841260 and for 794495: `<brain>_merge_policy_metrics.png`, `<brain>_merge_policy_sites.png`, `<brain>_split_policy_metrics.png`, `<brain>_split_policy_table.png`, and the plotted numbers in `<brain>_merge_policy.csv` and `<brain>_split_policy.csv` | no (`evaluation/figure/` is ignored; redraw with the scripts) |
+| `policy_edit_overview.png` | diagram of how a policy is used here: its stored scores rank the candidates, the top C merge candidates are cut, the top J split candidates are joined, the capsule judges the edited graph (2026-11-23; no results in it) | yes |
 | `README.md` | this file, with the results | yes |
 | `results/794495_source_comparison_20261104/` | `comparison.json`, `report.md`, `patch_01..03.png` of the audit | no (`results/` is ignored) |
 | `results/794495_capsule_original_20261118/` | the capsule's outputs, `run_info.json`, `run.log`, the per-neuron comparison | no |
@@ -44,8 +46,9 @@ which records how the final policy of a finished evolution run scores on 794495.
 | `results/841260_merge_oracle_20261118/` | `remove0/`, `remove12/`, `detach/`: the cut graph (`fragments.zip`, `.json`, `fragments_cuts.csv`), the capsule's output (`capsule/`), `comparison.txt` | no |
 | `results/841260_split_oracle_20261118/` | ten variants (eight `<cut>_<truth>[_s50]`, `remove12_graph_across`, `none_graph`), each with the joined graph (`fragments.zip`, `.json`, `fragments_joins.csv`, `fragments_connections.txt`), `capsule/`, `comparison_with_cut.txt`, `comparison_with_unedited.txt` | no |
 | `results/841260_merge_policy_20261121/` | `top33/` ... `top1310/`: the graph cut at a policy's highest-ranked candidates (`fragments.zip`, `.json`, `fragments_cuts.csv` with rank, score and label), `capsule/`, `comparison.txt` | no |
-| `results/841260_split_policy_20261121/` | fifteen graphs `cut<C>_join<J>/` (C = 0, 131, 1310 merge candidates cut first; J = 500 ... 5000 split candidates taken): `fragments.zip`, `.json`, `fragments_joins.csv` with rank, score and label, `fragments_connections.txt`, `capsule/`, `comparison_with_unedited.txt`, `comparison_with_cut.txt` | no |
-| `results/794495_baseline_alignment_20261121/`, `794495_merge_oracle_20261121/`, `794495_merge_policy_20261121/`, `794495_split_policy_20261121/` | the exploratory look on 794495, in the layout of the four 841260 directories (logs beside each graph as `fragments.build.log`, `fragments.capsule.log`) | no |
+| `results/841260_split_policy_20261121/` | twenty-five graphs `cut<C>_join<J>/` (C = 0, 131, 262, 524, 1310 merge candidates cut first, 262 and 524 added on 2026-11-23; J = 500 ... 5000 split candidates taken): `fragments.zip`, `.json`, `fragments_joins.csv` with rank, score and label, `fragments_connections.txt`, `capsule/`, `comparison_with_unedited.txt`, `comparison_with_cut.txt` | no |
+| `results/794495_baseline_alignment_20261121/`, `794495_merge_oracle_20261121/`, `794495_split_oracle_20261122/` (`remove12_labels`, `remove12_labels_s50`), `794495_merge_policy_20261121/`, `794495_split_policy_20261121/` | the exploratory look on 794495, in the layout of the 841260 directories (logs beside each graph as `fragments.build.log`, `fragments.capsule.log`) | no |
+| `results/794495_join_examples_20261123/` | `join_context_kept_794495_level0.png`, `join_context_dropped_794495_level0.png` (four joins each of the two oracle runs of `794495_split_oracle_20261122/`, in the layout of the error-context figures), `examples.csv`, `joins.csv` (every join with both pieces' supports and cable), `summary.json` | no |
 
 ## Where 794495 stands
 
@@ -67,7 +70,8 @@ pools and evaluator labels, and since 2026-11-21 a finished run's stored scores.
 794495 comes into them only as the last step, once. On 2026-11-21 the user asked for the same
 edits on 794495 as an exploratory look, with the depths tried on the brain itself; that is
 recorded in the last section, reads the brain's cache, pool tables and stored post-analysis
-scores without changing them, and is not the plan's last step.
+scores without changing them, and is not the plan's last step. The pictures of 2026-11-23 in
+that section also read the brain's image volume and its segmentation, read only.
 
 ## Source audit: repository vs capsule
 
@@ -280,12 +284,18 @@ joins to make is to be chosen on development brains and frozen; 794495 is then e
 once. Everything is stated for the user's scope of 2026-11-18, the fragments of the cache
 (at least 100 um).
 
+![How a policy's scores become merge cuts and joins, and how the capsule judges the edited graph](policy_edit_overview.png)
+
+The diagram shows the procedure in its present form (steps 3 and 4 below); the results are in
+the sections that follow.
+
 **A policy has chosen merge cuts (step 3) and, in a simplified form, joins (step 4); no depth
 is chosen, and the split stage of the plan is not built.** What exists is the way to evaluate
 an edited graph, two upper bounds on 841260 in which ground truth chooses the edits, the
 merge cuts of one finished run's policy on 841260 at six depths, and that policy's joins after
-none, 130 and 1,305 of those cuts, from scores measured on the unedited graph; and the same
-cuts and joins on 794495, as an exploratory look with the depths tried on that brain.
+none, 130, 260, 522 and 1,305 of those cuts, from scores measured on the unedited graph; and the same
+on 794495 (both upper bounds, the policy's cuts and joins), as an exploratory look with the
+depths tried on that brain.
 
 | Step | What | State |
 |---|---|---|
@@ -299,7 +309,10 @@ cuts and joins on 794495, as an exploratory look with the depths tried on that b
 ### Open problems
 
 All six come from one brain, 841260; the figures are those of the sections below. The
-exploratory look on 794495 shows the same mechanisms on a brain whose damage is merges.
+exploratory look on 794495 shows the same mechanisms on a brain whose damage is merges; its
+upper bound repeats problems 2 and 3 (merges 85 to 139 when every named pair is joined; with
+the 50 um condition merged edges 5.4% to 18.0%) and still ends better than the unedited graph
+on every figure.
 
 1. **The merge labels cover about half of the capsule's merges.** Cutting every candidate
    labeled as a merge takes the capsule's count from 189 to 91. Of the 189 sites, 97 have
@@ -313,7 +326,11 @@ exploratory look on 794495 shows the same mechanisms on a brain whose damage is 
    end at 83. The split truth has no minimum length, while the capsule's merge count takes
    a fragment as part of a neuron only after 50 um. Whether such a fragment is a crossing
    fiber or a side branch that the ground truth does not trace was not looked at in the
-   image.
+   image of 841260. On 794495, where 136 of 2,434 joins are of this kind, four were drawn
+   and measured on 2026-11-23 ("What the 50 um condition drops, in pictures"): two
+   crossings, one of them with another traced neuron, one that the picture does not decide
+   and one true continuation that carries a long fibre off the tracing. Four joins are an
+   illustration, not a count.
 3. **Joins enlarge the merges that are left.** The capsule counts every ground-truth edge
    of a fragment that has a merge as merged, and joined fragments count as one fragment.
    With the 3,037 joins of the 50 um condition the merge count does not rise (91 to 83),
@@ -340,9 +357,10 @@ exploratory look on 794495 shows the same mechanisms on a brain whose damage is 
    candidates never pair two pieces of one cut fragment. The simplified step 4 is therefore
    an upper estimate. Even so its joins raise the merged edges from the first few hundred
    on, by an amount that depends on how many merges the cuts left (about 2,000 joins: 3.47%
-   to 8.87% without cuts, 0.74% to 2.19% after 1,305 cuts), and only one of the fifteen
-   graphs tried, a small edit (130 cuts, 499 joins), is better than the unedited one on all
-   five figures.
+   to 8.87% without cuts, 0.74% to 2.19% after 1,305 cuts), and only three of the twenty-five
+   graphs tried are better than the unedited one on all five figures, each with few joins
+   (about 500 after 130 or 260 cuts, about 1,000 after 522) and one join depth away from
+   losing two of the five.
 
 ### Not decided
 
@@ -745,8 +763,9 @@ python -u evaluation/join_split_candidates.py --brain 841260 \
 
 The final policy of run `precision_20261115_234249_byxx989h`: joins from generation 9
 (`gen009.npz`, 9,145 judgeable rows, 3,322 of them labeled as splits; split average precision
-0.8694 over the five development-validation brains), cuts from generation 3. Three cut depths
-by five join depths, n01. A row with zero joins is the graph before the joins.
+0.8694 over the five development-validation brains), cuts from generation 3. Five cut depths
+by five join depths, n01; the depths of 260 and 522 cuts were added on 2026-11-23. A row with
+zero joins is the graph before the joins.
 
 | Merge cuts first | Joins made | labeled as splits | Merges | Merge sites the joins add (20 um) | Splits | % merged edges | Edge accuracy | ERL, um |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -762,6 +781,18 @@ by five join depths, n01. A row with zero joins is the graph before the joins.
 | | 1,986 | 1,733 | 150 | 32 | 4,956 | 7.01 | 77.60 | 1,787 |
 | | 3,291 | 2,550 | 198 | 85 | 3,594 | 15.66 | 69.53 | 3,002 |
 | | 4,828 | 3,030 | 257 | 153 | 2,291 | 37.07 | 49.83 | 3,418 |
+| 260 | 0 | | 122 | | 7,719 | 2.16 | 82.07 | 1,105 |
+| | 497 | 461 | 122 | 2 | 7,115 | 2.49 | 81.81 | 1,301 |
+| | 990 | 914 | 124 | 6 | 6,480 | 3.68 | 80.69 | 1,413 |
+| | 1,976 | 1,725 | 136 | 30 | 5,261 | 5.90 | 78.70 | 1,856 |
+| | 3,276 | 2,540 | 186 | 83 | 3,913 | 13.51 | 71.66 | 2,630 |
+| | 4,825 | 3,024 | 248 | 155 | 2,611 | 33.31 | 53.49 | 3,050 |
+| 522 | 0 | | 94 | | 8,267 | 1.76 | 82.45 | 1,052 |
+| | 497 | 461 | 95 | 2 | 7,663 | 2.03 | 82.25 | 1,222 |
+| | 986 | 910 | 99 | 6 | 7,035 | 2.88 | 81.48 | 1,350 |
+| | 1,968 | 1,718 | 112 | 30 | 5,831 | 4.35 | 80.23 | 1,807 |
+| | 3,261 | 2,527 | 162 | 82 | 4,496 | 10.62 | 74.53 | 2,434 |
+| | 4,819 | 3,013 | 228 | 153 | 3,227 | 27.14 | 59.59 | 2,481 |
 | 1,305 | 0 | | 62 | | 9,884 | 0.74 | 83.41 | 880 |
 | | 488 | 452 | 64 | 2 | 9,295 | 0.86 | 83.37 | 987 |
 | | 967 | 892 | 68 | 6 | 8,682 | 0.93 | 83.37 | 1,095 |
@@ -771,19 +802,24 @@ by five join depths, n01. A row with zero joins is the graph before the joins.
 
 Figures (not in Git): `python evaluation/plot_split_policy_joins.py` (panda, compute node)
 writes `figure/841260_split_policy_metrics.png`, the same figures against the number of joins
-with one line per cut depth; `figure/841260_split_policy_table.png`, this table as an image
-with the unedited graph as its first row and every figure marked better or worse than the
-unedited graph's; and `figure/841260_split_policy.csv`.
+with one line per cut depth (one hue, darker with more cuts); `figure/841260_split_policy_table.png`, this table as an image
+with the unedited graph as its first row, the upper bound of the two earlier sections after
+it (ground truth's cuts alone, then its joins under `labels` with and without the 50 um
+condition; `--oracle-cut`, `--oracle-joined`), every figure marked better or worse than
+the unedited graph's and the policy's rows that are better on all five framed in red (the upper
+bound's rows are never framed: ground truth chose their edits); and
+`figure/841260_split_policy.csv`.
 
-**The first thousand joins add few merges; later ones add many.** The joins add 3 merge sites
-at 500 joins, 7 at 1,000, about 30 at 2,000, about 80 at 3,300 and about 150 at 4,800, the same
-after every cut depth. That is about one new site per ten joins that the labels call wrong (36,
+**The first thousand joins add few merges; later ones add many.** The joins add 2 or 3 merge
+sites at 500 joins, 6 or 7 at 1,000, about 30 at 2,000, about 80 at 3,300 and about 150 at
+4,800, the same after every cut depth. That is about one new site per ten joins that the labels call wrong (36,
 76, 254, 745 and 1,796 without cuts); which joins make them was not traced.
 
 **Joins pay for the merges that are left, as the oracle's did.** Without cuts, 1,996 joins take
 the merged edges from 3.47% to 8.87% and the edge accuracy from 80.77 to 75.75, with 32 new
-merge sites. After 1,305 cuts about as many joins end at 2.19% and 82.33. How much a join costs
-depends on how many merges the cuts left, far more than on the join itself.
+merge sites. After 1,305 cuts about as many joins end at 2.19% and 82.33, and the depths
+between fall in order (7.01%, 5.90% and 4.35% after 130, 260 and 522 cuts). How much a join
+costs depends on how many merges the cuts left, far more than on the join itself.
 
 **Edge accuracy never rises with a join.** At best it stays level (83.41 to 83.37 for the first
 967 joins after 1,305 cuts); everywhere else it falls. Split edges are 0.4% of the edges, so
@@ -793,10 +829,21 @@ rewards cuts and cannot reward a join; ERL and the split count reward joins and 
 a cut's cost. No single figure of the capsule can choose either depth.
 
 **Cuts and joins together.** The unedited graph has 189 merges, 7,185 splits, 3.47% merged
-edges, edge accuracy 80.77 and ERL 1,087. One of the fifteen graphs is better on all five
-figures: 130 cuts and 499 joins, with 137 merges, 6,827 splits, 3.15% merged edges, edge
-accuracy 81.16 and ERL 1,273. It is a small edit and its margin on merged edges is thin: at
-995 joins they are at 4.47% and the edge accuracy at 79.92, both worse than unedited. After
+edges, edge accuracy 80.77 and ERL 1,087. Three of the twenty-five graphs are better on all
+five figures:
+
+| Cuts | Joins | Merges | Splits | % merged edges | Edge accuracy | ERL, um |
+|---:|---:|---:|---:|---:|---:|---:|
+| 130 | 499 | 137 | 6,827 | 3.15 | 81.16 | 1,273 |
+| 260 | 497 | 122 | 7,115 | 2.49 | 81.81 | 1,301 |
+| 522 | 986 | 99 | 7,035 | 2.88 | 81.48 | 1,350 |
+
+More cuts leave room for more joins before the merged edges pass the unedited graph's: about
+500 joins after 130 or 260 cuts, about 1,000 after 522. Each of the three is one join depth
+away from losing two figures: at 995 joins after 130 cuts the merged edges are at 4.47% and
+the edge accuracy at 79.92, at 990 after 260 cuts at 3.68% and 80.69, at 1,968 after 522 cuts
+at 4.35% and 80.23, all worse than unedited. The gains are in merges (down by a quarter to a
+half) and ERL (up by 17% to 24%); splits fall by 1% to 5%. After
 1,305 cuts the gains are larger and one figure is always lost. With 1,934 joins: 85 merges,
 2.19%, 82.33 and 1,358, better on four figures with 4% more splits (7,502). With 3,219 joins:
 132 merges, 6,199 splits and ERL 1,664, but 5.31% merged edges and edge accuracy 79.76, both
@@ -804,22 +851,23 @@ worse than unedited; a join depth between these two was not run. Without cuts ev
 is worse than unedited on merges, merged edges and edge accuracy.
 
 **The cuts take few candidates away.** A cut removed a node of 21 of the 5,000 highest-ranked
-rows after 130 cuts and of 109 after 1,305. Many joins touch a piece of a cut fragment (333 of
-4,828 and 1,752 of 4,782).
+rows after 130 cuts, of 42 after 260, 58 after 522 and 109 after 1,305. Many joins touch a
+piece of a cut fragment (333 of 4,828, 631 of 4,825, 1,006 of 4,819 and 1,752 of 4,782).
 
 Limits: an upper estimate, for the three reasons at the head of this section; above all the
 21,341 candidates that pair a fragment under ground truth with one outside it are never joined
 here, and a split stage on a whole brain would join some of them; one policy, and one brain
 here, a development-validation brain of that run (repeated on 794495 the same day, last
 section); no depth is chosen; why some merge sites disappear
-after joins (up to 45) was not traced, as with the oracle's joins; the fifteen outputs take
-6.7 GB.
+after joins (up to 45) was not traced, as with the oracle's joins; the twenty-five outputs
+take 11 GB.
 
 ## The same edits on 794495: an exploratory look (2026-11-21)
 
 At the user's request the procedure above was repeated on 794495: the cache graph through the
-capsule, the oracle merge cut, a policy's merge cuts at six depths, and its joins (simplified
-step 4) after three of them. **This is not the single evaluation of step 5.** The depths were
+capsule, the oracle merge cut, the oracle joins on the graph it leaves (added 2026-11-22), a
+policy's merge cuts at six depths, and its joins (simplified step 4) after four of them (two
+of the four added 2026-11-23). **This is not the single evaluation of step 5.** The depths were
 tried on 794495 itself, "with full knowledge" in the user's words, to see what the edits do on
 the brain; nothing was chosen beforehand, and a later evaluation with frozen choices would no
 longer be a first look. Nothing of 794495 was changed: its cache, pool tables and the
@@ -833,7 +881,9 @@ labeled merges, split 0.8419 over 6,076 judgeable rows of 689,677 with 2,497 lab
 The scripts refuse the file unless pool and labels are the present ones; they were. That folder
 keeps the artifacts of one evaluation at a time, so the file goes with the next post-analysis;
 its SHA-256 is in the `fragments.json` of every graph cut or joined with it. Depths are
-the same multiples of the labeled positives as on 841260. Run on n01, 24 runs of the capsule.
+the same multiples of the labeled positives as on 841260. Run on n01, 36 runs of the capsule
+(24 on 2026-11-21, the two of the oracle joins on 2026-11-22, ten for the joins after 346 and
+692 cuts on 2026-11-23).
 
 **Baseline.** 22 ground-truth neurons; 12,941 segments under ground truth, 3,910 of them in the
 cache. Unlike 841260, the cache graph gives the capsule nearly the picture of the raw SWCs, for
@@ -884,7 +934,89 @@ splits as well as merges:
 * The policy finds few merges beyond the labels here: sites removed by cuts labeled 0 only are
   0, 0, 2, 2, 2 and 8 at the six depths.
 
-**Joins** (simplified step 4, the same upper estimate), after none, 173 and 1,730 cuts:
+**Upper bound of both stages** (2026-11-22): the oracle's 173 cuts, then the joins that ground
+truth names among the split candidates of the cut graph (`--joins oracle --truth labels`, with
+and without `--min-support-um 50`, as on 841260):
+
+| | unedited | cut | `labels`, 50 um | `labels` |
+|---|---:|---:|---:|---:|
+| Joins made | | | 2,299 | 2,434 |
+| Merges, total | 202 | 85 | 80 | 139 |
+| Merge sites not there before the joins (20 um) | | | 14 | 75 |
+| Splits, total | 4,556 | 4,979 | 2,153 | 1,977 |
+| % merged edges | 27.36 | 5.43 | 18.02 | 31.33 |
+| % omit edges | 3.35 | 3.36 | 2.87 | 2.84 |
+| Edge accuracy | 69.17 | 91.09 | 79.05 | 65.77 |
+| ERL, um | 10,511 | 18,240 | 40,836 | 25,519 |
+
+* With the 50 um condition the upper bound is better than the unedited graph on all five
+  figures: 80 merges against 202, less than half the splits, merged edges 18.0% against 27.4%,
+  edge accuracy 79.1 against 69.2 and an ERL 3.9 times as long. On 841260 the same graph is
+  better on three (merged edges and edge accuracy are worse there).
+* Against the cut graph the joins still cost what they cost on 841260. The merge count hardly
+  moves (85 to 80), yet merged edges rise from 5.4% to 18.0% and edge accuracy falls from 91.1
+  to 79.1, because the merges that the cuts did not reach now sit on longer fragments. Three
+  neurons carry about half of the rise (N009 16.0% to 72.8%, N004 1.5% to 53.1%, N010 11.8% to
+  46.8%).
+* Without the condition the joins bring merges back, as on 841260 (91 to 173 there): 85 to
+  139, 75 merge sites that were not there before, merged edges 31.3% and edge accuracy 65.8,
+  both worse than unedited. The two graphs differ by 135 joins.
+* What the candidates reach: with the condition the splits of the cut graph fall from 4,979 to
+  2,153 (57%). Of the pairs that ground truth names between existing pieces, 2,375 of 2,703
+  have a candidate with the condition and 2,515 of 3,018 without.
+
+**What the 50 um condition drops, in pictures** (2026-11-23). `plot_oracle_join_examples.py`
+rebuilds the cut graph and measures, for every join made without the condition, how much of
+the naming neuron each of the two pieces labels (`results/794495_join_examples_20261123/`:
+`joins.csv`, `summary.json`). Of the 2,434 joins, 2,298 are also made with the condition and
+136 are not; one join of the run with the condition is skipped as a loop in the other run,
+hence the difference of 135.
+
+| | made in both runs (2,298) | only without the condition (136) |
+|---|---:|---:|
+| Weaker piece: um of the naming neuron it labels, median | 298 | 12 |
+| Weaker piece: cable, median, um | 300 | 264 |
+| Weaker piece: cable beyond what it labels, median, um | 0 | 247 |
+| Weaker piece labels more than one neuron | 38 | 42 |
+| Gap of the join, median, um | 4.2 | 5.0 |
+
+`join_context_kept_794495_level0.png` and `join_context_dropped_794495_level0.png` draw four
+joins of each group in the layout of the error-context figures
+(`proofreader_evolve/plotting/plot_error_contexts.py`, whose panels the script uses as they
+are): one column per join, and as rows the level-0 image patch (60 um, XY maximum projection;
+the cache's reviewed S3 volume) with the two pieces' skeletons, the two pieces within 150 um
+with the patch's footprint, the ground truth in the same voxel box (one colour per neuron), and
+the dense segmentation in the same box. Blue is the piece that labels more of the neuron,
+orange the one that labels less; the ground truth's colours follow the order in which the
+neurons appear in the box and say nothing about which neuron names the pair. Within a group
+the joins are ordered by the weaker piece's support and taken at the quantiles 1/8, 3/8, 5/8,
+7/8, so they are not picked by eye (`examples.csv`). In the four kept columns both pieces lie
+on one neuron's ground truth on either side of the gap. In the four dropped ones the weaker
+piece labels 4, 8, 17 and 41 um of the naming neuron; the distances below are measured between
+the pieces' skeleton nodes and the tracings (2026-11-23, a one-off check; the stronger piece
+stays within 1 to 3 um of its tracing in all four):
+
+1. N004, 4 um. The weaker piece (190 um) is a fragment of another traced neuron, N005: it
+   labels 194 um of N005 and all of its nodes are within 3 um of N005's tracing. N004's
+   tracing crosses it, and one tracing node falls in its segment. The join would merge N004
+   with N005.
+2. N004, 8 um. The weaker piece (515 um) is a fibre that crosses N004 at one point: two tracing
+   nodes fall in its segment, 2 of its 118 nodes are within 5 um of any tracing, and 30 um from
+   the join it is 27 um from N004's tracing. It lies on no traced neuron.
+3. N019, 17 um. The weaker piece (106 um) continues the stronger one along one bright band in
+   the XY projection. For the first 20 um it is about 3 um or less from the tracing; further on the two
+   stay within 2 to 4 um in XY and separate in z, 5 um at 23 um from the join and 15 um from 63
+   um on, and the tracing nodes there fall on no piece. One fibre traced off its centre and two
+   fibres stacked in z are both possible; the picture does not decide.
+4. N015, 41 um. The tracing runs from the stronger piece onto the weaker one for 40 um and ends
+   there in a tip. The weaker piece is 1,116 um: the remaining 1,075 um leaves the tracing (18
+   um from it at 42 um from the join, 58 um at 200 um) and is on no traced neuron. The join
+   is a true continuation that carries a long fibre the tracing does not follow.
+
+These are four joins of 136, an illustration and not a count.
+
+**Joins** (simplified step 4, the same upper estimate), after none, 173, 346, 692 and 1,730
+cuts (346 and 692 added on 2026-11-23):
 
 | Merge cuts first | Joins made | labeled as splits | Merges | Merge sites the joins add (20 um) | Splits | % merged edges | Edge accuracy | ERL, um |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -900,6 +1032,18 @@ splits as well as merges:
 | | 1,494 | 1,313 | 191 | 18 | 3,464 | 34.94 | 61.75 | 8,360 |
 | | 2,475 | 1,943 | 212 | 63 | 2,366 | 46.54 | 50.44 | 10,893 |
 | | 3,432 | 2,267 | 215 | 93 | 1,352 | 70.85 | 27.03 | 4,493 |
+| 346 | 0 | | 173 | | 5,983 | 15.74 | 80.74 | 6,417 |
+| | 373 | 350 | 172 | 2 | 5,538 | 17.50 | 79.00 | 7,206 |
+| | 743 | 683 | 178 | 6 | 5,040 | 21.04 | 75.50 | 7,588 |
+| | 1,483 | 1,302 | 182 | 19 | 4,130 | 26.76 | 69.90 | 8,322 |
+| | 2,465 | 1,929 | 205 | 64 | 3,052 | 37.88 | 59.06 | 10,815 |
+| | 3,454 | 2,255 | 213 | 95 | 2,056 | 61.88 | 35.89 | 5,004 |
+| 692 | 0 | | 154 | | 6,995 | 7.48 | 88.98 | 7,737 |
+| | 372 | 349 | 153 | 0 | 6,558 | 9.04 | 87.45 | 8,728 |
+| | 737 | 677 | 159 | 6 | 6,069 | 12.33 | 84.20 | 9,094 |
+| | 1,470 | 1,289 | 164 | 18 | 5,178 | 16.98 | 79.66 | 9,908 |
+| | 2,443 | 1,908 | 192 | 62 | 4,135 | 25.98 | 70.92 | 12,297 |
+| | 3,479 | 2,244 | 214 | 100 | 3,224 | 49.63 | 48.01 | 7,542 |
 | 1,730 | 0 | | 125 | | 9,677 | 3.61 | 92.80 | 4,063 |
 | | 370 | 347 | 126 | 2 | 9,239 | 4.03 | 92.41 | 4,575 |
 | | 733 | 673 | 132 | 7 | 8,763 | 5.16 | 91.32 | 5,181 |
@@ -915,24 +1059,40 @@ splits as well as merges:
   5,806. But they do not buy back what the cuts cost within the depths tried: at 3,505 joins
   the splits (6,055) and the ERL (9,015) are still worse than on the unedited graph (4,556 and
   10,511), and the merged edges are back at 20.8%.
-* None of the fifteen graphs is better than the unedited one on all five figures. The nearest
-  is 173 cuts with 749 joins, better on four by margins of a few hundredths (merged edges 27.34
-  against 27.36, edge accuracy 69.22 against 69.17) with an ERL of 8,071 against 10,511.
-* The joins add merge sites as on 841260: 1, 7, about 20, about 60 and about 90 to 110 at the
-  five depths.
+* One of the policy's twenty-five graphs is better than the unedited one on all five figures:
+  692 cuts with 2,443 joins, with 192 merges against 202, 4,135 splits against 4,556, merged
+  edges 25.98% against 27.36%, edge accuracy 70.92 against 69.17 and an ERL of 12,297 against
+  10,511. The first fifteen graphs (none, 173 and 1,730 cuts) had none; the depth between was
+  missing. Its margins are small next to the upper bound's (80 merges, 18.0%, 79.1, ERL 40,836),
+  and its neighbours lose: at 1,470 joins the splits are still above the unedited count
+  (5,178) and the ERL below (9,908); at 3,479 joins the merges are 214, the merged edges 49.6%
+  and the ERL 7,542. Two graphs are better on four figures, both short on ERL: 346 cuts with
+  1,483 joins (8,322) and 173 cuts with 749 joins (8,071, the other margins a few hundredths).
+* The graph was found by trying depths on this brain. It shows that the policy's edits can end
+  better than the unedited graph on every figure here, not that depths chosen beforehand
+  would.
+* ERL is not monotone in the joins on this brain, unlike 841260. After 173, 346 and 692 cuts
+  it is highest at about 2,450 joins (10,893, 10,815, 12,297) and falls at the last depth
+  (4,493, 5,004, 7,542), where merged edges are at 50% to 71%.
+* The joins add merge sites as on 841260: 0 to 2, 6 or 7, about 20, about 60 and about 90 to
+  110 at the five depths.
 
 What the two brains have in common: a cut that hits a merge removes it, joins enlarge the
 merges that are left, edge accuracy rewards cuts and ERL rewards joins. What differs: on
 794495 the damage is merges, so the cuts move the edge figures by tens of points, and the
 price is paid in run length; the gap between the policy and the oracle there is the policy's
-precision on merges, not the cut rule.
+precision on merges, not the cut rule. With ground truth choosing both stages the edited
+graph of 794495 is better than the unedited one on every figure by wide margins; the policy's
+is at one of the twenty-five depths tried, by narrow ones.
 
 Figures (not in Git), drawn by the two plotting scripts with `--unedited`, `--policy` or
-`--cuts`, `--oracle`, `--joined` pointed at the results of 794495: `figure/794495_merge_policy_metrics.png`,
+`--cuts`, `--oracle`, `--joined`, and for the table `--oracle-cut`, `--oracle-joined`, pointed
+at the results of 794495: `figure/794495_merge_policy_metrics.png`,
 `794495_merge_policy_sites.png`, `794495_split_policy_metrics.png`, `794495_split_policy_table.png`
-and the two CSV files.
+(the upper bound in its first rows) and the two CSV files.
 
 Limits: those of the two sections above (stored scores, judgeable rows only, joins an upper
 estimate, no join to a fragment outside ground truth); one policy; depths tried on the brain
 they are reported for; 794495 was used in discovery and detector fitting and as a TRAIN brain
-of earlier runs; the outputs take 25 GB.
+of earlier runs; the upper bound's joins were run for `labels` only, not for `graph`, `detach`
+or `--across-cuts`; the outputs take about 33 GB.
